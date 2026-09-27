@@ -1,7 +1,8 @@
 // The mutant suite for check-crew-manual.mjs. A checker that cannot fail is not
 // a gate, so each rule is shown failing on the text it exists to refuse: the
 // exact wording the 2026-09-27 Crew audit found (DOCS-1, DOCS-2, DOCS-5, DOCS-6,
-// RENDERER-6), put back into an otherwise real tree. The last test is the gate
+// RENDERER-6), or the first fix's wording its review refused, put back into an
+// otherwise real tree. The last test is the gate
 // itself: the tree as committed passes every rule.
 //
 // Run: node --test scripts/check-crew-manual.test.mjs
@@ -12,6 +13,7 @@ import {
   landingCrewPage,
   markdownBlocks,
   repoTree,
+  rustStrConst,
 } from './check-crew-manual.mjs';
 
 const real = repoTree();
@@ -331,6 +333,188 @@ test('spec: the redesign spec may not deny what shipped (RENDERER-6)', () => {
     },
     'spec',
     /Save attachment/
+  );
+});
+
+test('rustStrConst reads a Rust string constant as rustc would', () => {
+  const source =
+    'pub const OTHER: &str = "no";\n' +
+    'pub const SENTENCE: &str = "Crew isn\'t \\\n    here. Say \\"why\\".";\n';
+  assert.equal(rustStrConst(source, 'SENTENCE'), 'Crew isn\'t here. Say "why".');
+  assert.equal(rustStrConst(source, 'MISSING'), null);
+});
+
+// The page a `biorouter serve` browser shows in place of Crew (CROSSCUT-5), and
+// the sentence its daemon refuses a Crew request with.
+const TROUBLE = 'docs/crew/connections-and-troubleshooting.md';
+const NEEDS_DESKTOP = 'ui/desktop/src/components/crew/CrewNeedsDesktop.tsx';
+const AUTHENTICATION = 'crates/biorouter-server/src/routes/crew_authentication.rs';
+const ROUND_ONE_BROWSER_ACCESS =
+  '| Crew | **Not available.** Every Crew action, even listing saved workspaces, needs the approval secret a person types into the desktop application or `biorouter crew`, and the daemon `biorouter serve` starts never holds one. The Crew routes refuse it with `crew_human_authority_unavailable`, and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal. See the [Crew user manual](../crew/README.md). |';
+
+test('needs-desktop: the first fix, which named no page a serve browser shows, is refused (DOCS-1)', () => {
+  assertCaught(
+    {
+      'docs/crew/getting-started.md': (text) =>
+        text
+          .split('\n')
+          .map((line) =>
+            line.startsWith('Crew works only in the desktop app')
+              ? 'Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`: the background service that `biorouter serve` starts never holds the [approval secret](#the-approval-secret) Crew needs, so it refuses every Crew action, even listing your workspaces. Signing in again or restarting does not change that.'
+              : line
+          )
+          .join('\n'),
+    },
+    'needs-desktop',
+    /getting-started\.md does not quote the page a serve browser shows, "Crew needs the Biorouter desktop app"/
+  );
+  assertCaught(
+    {
+      'docs/crew/README.md': swap(
+        ': it shows "Crew needs the Biorouter desktop app" there, for the reason',
+        ', for the reason'
+      ),
+    },
+    'needs-desktop',
+    /docs\/crew\/README\.md does not quote the page/
+  );
+  assertCaught(
+    {
+      'docs/deployment/browser-access.md': (text) =>
+        text
+          .split('\n')
+          .map((line) => (line.startsWith('| Crew |') ? ROUND_ONE_BROWSER_ACCESS : line))
+          .join('\n'),
+    },
+    'needs-desktop',
+    /browser-access\.md's Crew row must open "\*\*Not available, and it says so before you try\.\*\*"/
+  );
+  assertCaught(
+    {
+      'landing/docs.html': (text) =>
+        text.replace(
+          /<tr><td>Crew<\/td><td>No\b[^\n]*<\/td><\/tr>/,
+          '<tr><td>Crew</td><td>No. Every Crew action needs the approval secret a person types into the desktop app or <code>biorouter crew</code>, and the daemon <code>serve</code> starts never holds one. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal.</td></tr>'
+        ),
+    },
+    'needs-desktop',
+    /"What works in a browser" Crew row does not quote "Crew needs the Biorouter desktop app"/
+  );
+  assertCaught(
+    {
+      [TROUBLE]: (text) =>
+        text
+          .split('\n')
+          .filter((line) => !line.startsWith('| "Crew needs the Biorouter desktop app"'))
+          .join('\n'),
+    },
+    'needs-desktop',
+    /has no message row for "Crew needs the Biorouter desktop app"/
+  );
+});
+
+test('needs-desktop: the manual may not send a serve browser to a message it never shows (DOCS-1)', () => {
+  // The sign-in row: CrewAuthentication never mounts in a serve browser any more.
+  assertCaught(
+    {
+      [TROUBLE]: swap(
+        '| "The local daemon is not available." or "Invalid daemon authentication session." | Quit and reopen Biorouter. |\n',
+        '| "The local daemon is not available." or "Invalid daemon authentication session." | Quit and reopen Biorouter. |\n' +
+          '| "Signing in needs the Biorouter desktop app." | You are in a web browser, where Crew does not work ([Getting started](getting-started.md)). Use the desktop app, or run `biorouter crew auth` in a terminal. |\n'
+      ),
+    },
+    'needs-desktop',
+    /tells a serve browser reader about "Signing in needs the Biorouter desktop app\."/
+  );
+  // The keyless refusal's row, led by browser advice for a message the browser no longer shows.
+  assertCaught(
+    {
+      [TROUBLE]: swap(
+        '| "This daemon cannot verify human Crew actions…" | See [Replace an old background service](#replace-an-old-background-service). |',
+        '| "This daemon cannot verify human Crew actions…" | In a web browser opened with `biorouter serve`, Crew never works, and nothing you do there changes that. Use the desktop app, or `biorouter crew` in a terminal. In the desktop app, see [Replace an old background service](#replace-an-old-background-service). |'
+      ),
+    },
+    'needs-desktop',
+    /tells a serve browser reader about "This daemon cannot verify human Crew actions…"/
+  );
+  // The restart section's note that the refusal "also appears in every web browser".
+  assertCaught(
+    {
+      [TROUBLE]: swap(
+        '- "This daemon cannot verify human Crew actions…"\n\nTo replace',
+        '- "This daemon cannot verify human Crew actions…"\n\n' +
+          'The last one also appears in every web browser opened with `biorouter serve`. That service never holds the approval secret Crew needs, so Crew never works there, and the steps below do not help. Use the desktop app or `biorouter crew` instead.\n\nTo replace'
+      ),
+    },
+    'needs-desktop',
+    /"Replace an old background service" sends a browser reader to a restart/
+  );
+});
+
+test('needs-desktop: the page title and the manual cannot drift in either direction', () => {
+  // The page is renamed and the manual does not follow: its old quotes are refused too.
+  assertCaught(
+    {
+      [NEEDS_DESKTOP]: swap(
+        "title: 'Crew needs the Biorouter desktop app'",
+        "title: 'Crew needs the desktop app'"
+      ),
+    },
+    'needs-desktop',
+    /quotes "Crew needs the Biorouter desktop app", but .* titles the page "Crew needs the desktop app"/
+  );
+  // A reader that cannot find the title fails instead of passing.
+  assertCaught(
+    { [NEEDS_DESKTOP]: swap("title: 'Crew needs", "heading: 'Crew needs") },
+    'needs-desktop',
+    /found no crewNeedsDesktopCopy\.title/
+  );
+  // CrewApp stops showing the page in a browser: the manual's account of it is then unfounded.
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/CrewApp.tsx': swap(
+        'if (isBrowserSurface()) return <CrewNeedsDesktop />;',
+        ''
+      ),
+    },
+    'needs-desktop',
+    /no longer returns <CrewNeedsDesktop \/> on the browser surface/
+  );
+});
+
+test("needs-desktop: the daemon's serve sentence is quoted as it begins, and only while it exists", () => {
+  const refusal = rustStrConst(real.read(AUTHENTICATION) || '', 'CREW_NEEDS_THE_DESKTOP');
+  assert.ok(refusal, `${AUTHENTICATION} defines CREW_NEEDS_THE_DESKTOP`);
+  // The daemon rewords its sentence and the manual keeps the old words.
+  assertCaught(
+    {
+      [AUTHENTICATION]: swap(
+        '"Crew isn\'t available in a browser opened with \\',
+        '"Crew is not available in a browser that \\'
+      ),
+    },
+    'needs-desktop',
+    /quotes "Crew isn't available in a browser opened with biorouter serve…", which is not how/
+  );
+  // The constant is gone: a manual that still quotes it describes a refusal nobody gives.
+  assertCaught(
+    {
+      [AUTHENTICATION]: (text) =>
+        text.replaceAll('CREW_NEEDS_THE_DESKTOP', 'SERVE_BROWSER_REFUSAL'),
+    },
+    'needs-desktop',
+    /defines no CREW_NEEDS_THE_DESKTOP/
+  );
+  // The manual misquotes it.
+  assertCaught(
+    {
+      [TROUBLE]: swap(
+        '"Crew isn\'t available in a browser opened with biorouter serve…"',
+        '"Crew isn\'t available in the browser…"'
+      ),
+    },
+    'needs-desktop',
+    /quotes "Crew isn't available in the browser…", which is not how/
   );
 });
 

@@ -16,6 +16,13 @@
 //     refuses it (`require_person` in routes/crew.rs answers
 //     `crew_human_authority_unavailable`). Rule `serve` makes every passage that
 //     names `biorouter serve` say Crew does not work there.
+//   * DOCS-1, round 2: a serve browser then stopped reaching the daemon at all.
+//     CrewApp shows CrewNeedsDesktop there (CROSSCUT-5), and a daemon that
+//     serves the browser refuses a Crew request with its own sentence
+//     (CREW_NEEDS_THE_DESKTOP), but the manual still sent a browser reader to
+//     "This daemon cannot verify human Crew actions…" and to a sign-in message
+//     the browser can no longer show. Rule `needs-desktop` makes the manual
+//     quote the page title and the daemon's sentence as the code spells them.
 //   * DOCS-2: the manual said the host can add people to any team or channel,
 //     but the host's snapshot, like everyone's, holds only the teams and
 //     channels the host is in (`read_workspace_snapshot` in
@@ -62,6 +69,25 @@ const SPEC = 'docs/research/biorouter-crew/ui-redesign-spec.md';
 const DROP_ZONE = 'ui/desktop/src/components/crew/files/FileDropZone.tsx';
 const MESSAGE_BODY = 'ui/desktop/src/components/crew/timeline/MessageBody.tsx';
 const FILES_COPY = 'ui/desktop/src/components/crew/files/copy.ts';
+const CREW_APP = 'ui/desktop/src/components/crew/CrewApp.tsx';
+const NEEDS_DESKTOP = 'ui/desktop/src/components/crew/CrewNeedsDesktop.tsx';
+const CREW_AUTHENTICATION = 'crates/biorouter-server/src/routes/crew_authentication.rs';
+const TROUBLESHOOTING = 'docs/crew/connections-and-troubleshooting.md';
+
+/**
+ * The value of `pub const <name>: &str = "…";` in Rust source, with the string's
+ * line continuations (a backslash, the newline and the next line's leading
+ * whitespace) removed as rustc removes them. Null when the constant is absent.
+ */
+export function rustStrConst(source, name) {
+  const match = new RegExp(
+    `\\bconst ${name}:\\s*&(?:'static\\s+)?str\\s*=\\s*"((?:[^"\\\\]|\\\\[\\s\\S])*)"`
+  ).exec(source);
+  return match ? match[1].replace(/\\\n\s*/g, '').replace(/\\(["'\\])/g, '$1') : null;
+}
+
+/** Straight and curly apostrophes read alike: the claim is the words, not the glyph. */
+const sameApostrophes = (text) => text.replace(/[’‘]/g, "'");
 
 const decode = (html) =>
   html
@@ -272,6 +298,174 @@ export function checkCrewManual(tree = repoTree()) {
     }
     if (!/<tr><td>Crew<\/td><td>No\b/.test(landingHtml)) {
       fail('serve', `${LANDING}'s "What works in a browser" table needs a Crew row that says No`);
+    }
+  }
+
+  // ── needs-desktop ────────────────────────────────────────────────────────
+  // In a `biorouter serve` browser CrewApp shows CrewNeedsDesktop and mounts
+  // nothing that asks the daemon (CROSSCUT-5), so that page's title is what a
+  // browser reader meets. Every place the manual sends such a reader quotes it
+  // exactly: getting-started, the manual's index, a troubleshooting row, and
+  // both browser capability tables, whose Crew rows open as SD-8's rows do,
+  // since Crew now says so before anyone tries. A daemon that serves the
+  // browser refuses a Crew request with CREW_NEEDS_THE_DESKTOP, and the
+  // troubleshooting page quotes its opening words: every quote of it must be
+  // the start of that sentence, and no quote of it may outlive the constant.
+  const crewApp = need(CREW_APP, 'needs-desktop');
+  const showsNeedsDesktop =
+    crewApp !== null &&
+    /if\s*\(\s*isBrowserSurface\(\)\s*\)\s*return\s*<CrewNeedsDesktop\s*\/>/.test(crewApp);
+  if (crewApp !== null && !showsNeedsDesktop) {
+    fail(
+      'needs-desktop',
+      `${CREW_APP} no longer returns <CrewNeedsDesktop /> on the browser surface; ` +
+        're-read it, and rewrite what the manual says a biorouter serve browser shows'
+    );
+  }
+  const needsDesktopSource = need(NEEDS_DESKTOP, 'needs-desktop');
+  const pageTitle =
+    needsDesktopSource === null
+      ? null
+      : (/crewNeedsDesktopCopy\s*=\s*\{[\s\S]*?\btitle:\s*(['"])((?:(?!\1)[^\\\n])+)\1/.exec(
+          needsDesktopSource
+        )?.[2] ?? null);
+  if (needsDesktopSource !== null && pageTitle === null) {
+    fail(
+      'needs-desktop',
+      `found no crewNeedsDesktopCopy.title in ${NEEDS_DESKTOP}; update this reader`
+    );
+  }
+  const browserAccessCrewRow =
+    markdownBlocks(tree.read(BROWSER_ACCESS) || '').find((block) =>
+      /^\|\s*Crew\s*\|/.test(block)
+    ) || '';
+  const landingServeCrewRow = decode(
+    /<tr><td>Crew<\/td><td>(No\b[\s\S]*?)<\/td><\/tr>/.exec(landingHtml)?.[1] || ''
+  );
+  const messageRows = markdownBlocks(tree.read(TROUBLESHOOTING) || '').filter((block) =>
+    block.startsWith('|')
+  );
+  const everyQuote = [
+    ...surfaces.flatMap(({ path, blocks }) =>
+      blocks.flatMap(quotedPhrases).map((phrase) => ({ path, phrase }))
+    ),
+    ...quotedPhrases(browserAccessCrewRow).map((phrase) => ({ path: BROWSER_ACCESS, phrase })),
+    ...quotedPhrases(landingServeCrewRow).map((phrase) => ({ path: LANDING, phrase })),
+  ];
+  const authSource = need(CREW_AUTHENTICATION, 'needs-desktop');
+  const serveRefusal =
+    authSource === null ? null : rustStrConst(authSource, 'CREW_NEEDS_THE_DESKTOP');
+  // A quote of the refusal is its opening words ending in "…", or all of it.
+  const quotesRefusal = (phrase) => {
+    if (serveRefusal === null) return false;
+    const refusal = sameApostrophes(serveRefusal);
+    const said = sameApostrophes(phrase);
+    if (!said.endsWith('…')) return said === refusal;
+    const stem = said.slice(0, -1).trimEnd();
+    return stem.length >= 24 && refusal.startsWith(stem);
+  };
+  const looksLikeRefusal = (phrase) =>
+    /^Crew isn['’]t available\b/i.test(phrase) ||
+    (serveRefusal !== null &&
+      sameApostrophes(phrase).startsWith(
+        sameApostrophes(serveRefusal).split(/\s+/).slice(0, 4).join(' ')
+      ));
+  if (showsNeedsDesktop && pageTitle !== null) {
+    const quote = `"${pageTitle}"`;
+    for (const path of [`${MANUAL_DIR}/getting-started.md`, `${MANUAL_DIR}/README.md`]) {
+      if (!(tree.read(path) || '').includes(quote)) {
+        fail(
+          'needs-desktop',
+          `${path} does not quote the page a serve browser shows, ${quote}, exactly as ${NEEDS_DESKTOP} titles it`
+        );
+      }
+    }
+    if (!messageRows.some((row) => (row.split('|')[1] || '').includes(quote))) {
+      fail('needs-desktop', `${TROUBLESHOOTING} has no message row for ${quote}`);
+    }
+    if (
+      !/^\|\s*Crew\s*\|\s*\*\*Not available, and it says so before you try\.\*\*/.test(
+        browserAccessCrewRow
+      ) ||
+      !browserAccessCrewRow.includes(quote)
+    ) {
+      fail(
+        'needs-desktop',
+        `${BROWSER_ACCESS}'s Crew row must open "**Not available, and it says so before you try.**", ` +
+          `as the other SD-8 rows do, and quote ${quote}`
+      );
+    }
+    if (!landingServeCrewRow.includes(quote)) {
+      fail(
+        'needs-desktop',
+        `${LANDING}'s "What works in a browser" Crew row does not quote ${quote}`
+      );
+    }
+    // A quote that is almost the title is an old title left behind.
+    for (const { path, phrase } of everyQuote) {
+      if (phrase !== pageTitle && /^Crew needs the\b/i.test(phrase)) {
+        fail(
+          'needs-desktop',
+          `${path} quotes "${phrase}", but ${NEEDS_DESKTOP} titles the page ${quote}`
+        );
+      }
+    }
+    // A serve browser shows that page, and a refusal only in the daemon's own
+    // sentence. A passage about the browser that quotes any other message sends
+    // its reader to one the browser never shows, as the audited sign-in row and
+    // the "This daemon cannot verify human Crew actions…" row did.
+    const aboutTheBrowser = (block) => /biorouter serve|web browser/i.test(block);
+    for (const { path, blocks } of surfaces) {
+      for (const block of blocks.filter(aboutTheBrowser)) {
+        for (const phrase of quotedPhrases(block)) {
+          if (phrase !== pageTitle && !quotesRefusal(phrase)) {
+            fail(
+              'needs-desktop',
+              `${path} tells a serve browser reader about "${phrase}", which that browser never shows: ${block.slice(0, 140)}`
+            );
+          }
+        }
+      }
+    }
+    // Restarting the background service cannot help a browser, so the section
+    // that says how does not send a browser reader there.
+    const replaceSection =
+      /\n### Replace an old background service\n([\s\S]*?)(?=\n#{2,3} |$)/.exec(
+        tree.read(TROUBLESHOOTING) || ''
+      );
+    if (!replaceSection) {
+      fail(
+        'needs-desktop',
+        `${TROUBLESHOOTING} has no "### Replace an old background service" section; update this reader`
+      );
+    } else {
+      for (const block of markdownBlocks(replaceSection[1]).filter(aboutTheBrowser)) {
+        fail(
+          'needs-desktop',
+          `${TROUBLESHOOTING}'s "Replace an old background service" sends a browser reader to a restart that cannot help: ${block.slice(0, 140)}`
+        );
+      }
+    }
+  }
+  for (const { path, phrase } of everyQuote.filter(({ phrase }) => looksLikeRefusal(phrase))) {
+    if (serveRefusal === null) {
+      fail(
+        'needs-desktop',
+        `${path} quotes "${phrase}", but ${CREW_AUTHENTICATION} defines no CREW_NEEDS_THE_DESKTOP`
+      );
+    } else if (!quotesRefusal(phrase)) {
+      fail(
+        'needs-desktop',
+        `${path} quotes "${phrase}", which is not how ${CREW_AUTHENTICATION}'s CREW_NEEDS_THE_DESKTOP begins`
+      );
+    }
+  }
+  if (serveRefusal !== null) {
+    if (!messageRows.some((row) => quotedPhrases(row.split('|')[1] || '').some(quotesRefusal))) {
+      fail(
+        'needs-desktop',
+        `${TROUBLESHOOTING} has no message row quoting the refusal a serve daemon gives: "${serveRefusal.slice(0, 60)}…"`
+      );
     }
   }
 
