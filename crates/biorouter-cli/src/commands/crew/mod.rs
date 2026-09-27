@@ -13,7 +13,8 @@ mod args;
 mod files;
 mod output;
 
-use crate::daemon_client::{CrewClient, DaemonRefusal};
+use crate::commands::needs_terminal::{self, NeedsTerminal};
+use crate::daemon_client::{CrewClient, DaemonRefusal, Restated};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 pub use args::CrewOptions;
 use args::*;
@@ -59,6 +60,9 @@ pub async fn handle(mut options: CrewOptions) -> Result<()> {
 /// ID is a machine ID, so it appears only where it is useful: after a mutation that carried it
 /// was sent and its outcome is unknown, as the one retry that is safe. JSON output always
 /// carries it, and the daemon's refusal code when there is one.
+///
+/// A command that needed a person at a terminal and had none keeps that type
+/// ([`NeedsTerminal`]), so it exits with the usage status 2 like every other such refusal.
 fn failure(
     error: &anyhow::Error,
     format: OutputFormat,
@@ -67,19 +71,41 @@ fn failure(
 ) -> anyhow::Error {
     let message = safe_lines(&error_text(error));
     if matches!(format, OutputFormat::Json | OutputFormat::StreamJson) {
-        let mut body = json!({"error": message, "request_id": request_id});
-        if let Some(code) = error_code(error) {
-            body["code"] = json!(code);
-        }
-        if let Some((broker_code, _)) = error.chain().find_map(broker_refusal) {
-            body["broker_code"] = json!(broker_code);
-        }
-        let _ = emit(&body, format);
+        let _ = emit(&failure_body(error, &message, request_id), format);
     }
-    if sent && outcome_uncertain(error) {
+    if error.chain().any(|cause| cause.is::<NeedsTerminal>()) {
+        needs_a_terminal(message)
+    } else if sent && outcome_uncertain(error) {
         anyhow!("{message}\n{}", output::retry_hint(request_id))
     } else {
         anyhow!("{message}")
+    }
+}
+
+/// A failure in JSON: the message, the request ID, and the codes a script can match on.
+fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value {
+    let mut body = json!({"error": message, "request_id": request_id});
+    if let Some(code) = error_code(error) {
+        body["code"] = json!(code);
+    } else if error.chain().any(|cause| cause.is::<NeedsTerminal>()) {
+        body["code"] = json!(NEEDS_TERMINAL_CODE);
+    }
+    if let Some((broker_code, _)) = error.chain().find_map(broker_refusal) {
+        body["broker_code"] = json!(broker_code);
+    }
+    body
+}
+
+/// The JSON code of a command that needed a person at a terminal and had none.
+const NEEDS_TERMINAL_CODE: &str = "crew_needs_terminal";
+
+/// The refusal of a command that needs a person at a terminal and was run without one. It
+/// exits with the usage status 2: nothing was attempted.
+fn needs_a_terminal(sentence: impl Into<String>) -> anyhow::Error {
+    let sentence = sentence.into();
+    match needs_terminal::require(false, &sentence) {
+        Err(refusal) => refusal.into(),
+        Ok(()) => anyhow!(sentence),
     }
 }
 
@@ -122,6 +148,8 @@ fn safe_lines(text: &str) -> String {
 }
 
 async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
+    // Before any prompt: nothing here can work without the shared daemon's Unix socket.
+    crate::daemon_client::require_supported_platform(cfg!(unix))?;
     let CrewOptions {
         connection,
         expected_mode,
@@ -283,26 +311,8 @@ fn outcome_uncertain(error: &anyhow::Error) -> bool {
 }
 
 /// A refusal said again for a person, keeping the daemon's code for JSON output.
-#[derive(Debug)]
-struct Restated {
-    message: String,
-    code: Option<&'static str>,
-}
-
-impl std::fmt::Display for Restated {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for Restated {}
-
 fn restated(message: impl Into<String>, code: Option<&'static str>) -> anyhow::Error {
-    Restated {
-        message: message.into(),
-        code,
-    }
-    .into()
+    Restated::new(message, code).into()
 }
 
 /// A route this CLI needs that the running daemon does not have: a bare 404 (or a 405 where the
@@ -1077,14 +1087,16 @@ async fn join_invitation(api: &Api, args: JoinInvitationArgs) -> Result<Reply> {
     }
     let mut asked = false;
     if !args.yes {
-        ensure!(
-            !from_stdin,
-            "Add --yes to save this connection: the invitation came from stdin, so there is no terminal to ask in. Run with --preview to check it first."
-        );
-        ensure!(
-            api.interactive,
-            "Add --yes to save this connection; there is no terminal to ask in. Run with --preview to check it first."
-        );
+        if from_stdin {
+            return Err(needs_a_terminal(
+                "Add --yes to save this connection: the invitation came from stdin, so there is no terminal to ask in. Run with --preview to check it first.",
+            ));
+        }
+        if !api.interactive {
+            return Err(needs_a_terminal(
+                "Add --yes to save this connection; there is no terminal to ask in. Run with --preview to check it first.",
+            ));
+        }
         let mut stderr = std::io::stderr().lock();
         for line in &summary {
             writeln!(stderr, "{line}")?;
@@ -1679,9 +1691,9 @@ fn revoke_confirmation(
             "Revoke {label}? Their membership, devices and agent grants stop working. Type @{} to confirm:",
             safe_text(username)
         ))),
-        None => bail!(
+        None => Err(needs_a_terminal(format!(
             "Revoking @{username} removes their membership, devices and agent grants. There is no terminal to ask in, so confirm with --confirm @{username}."
-        ),
+        ))),
     }
 }
 
@@ -4319,6 +4331,52 @@ mod tests {
         let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
         assert!(!shown.contains('\u{1b}'), "{shown}");
         assert!(shown.contains("\\u{1b}[2J"), "{shown}");
+    }
+
+    /// CLI-14: a confirmation with no terminal to ask in is the usage refusal, status 2, in
+    /// text and JSON alike, and nothing is sent.
+    #[tokio::test]
+    async fn a_confirmation_without_a_terminal_exits_with_the_usage_status() {
+        let revoke = CrewCommand::Enroll(EnrollmentCommand::Revoke {
+            member: "@bob".into(),
+            confirm: None,
+        });
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        let error = run(&api, revoke).await.expect_err("no terminal");
+        let shown = failure(&error, OutputFormat::Text, "req-1", false);
+        assert!(shown.downcast_ref::<NeedsTerminal>().is_some(), "{shown:?}");
+        assert!(shown.to_string().contains("--confirm @bob"), "{shown}");
+        assert_eq!(
+            failure_body(&error, "m", "req-1")["code"],
+            NEEDS_TERMINAL_CODE
+        );
+        assert!(fake.broker_call("enrollment.revoke").is_none());
+
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(file.path(), "brcrew1:abc").expect("write invitation");
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path == "/crew/connections/from-invitation" {
+                return Ok(preview(&[]));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Json, handler);
+        let mut args = join_args(file.path());
+        args.yes = false;
+        let error = run(
+            &api,
+            CrewCommand::Connections(ConnectionCommand::JoinInvitation(args)),
+        )
+        .await
+        .expect_err("no terminal");
+        let shown = failure(&error, OutputFormat::Json, "req-1", false);
+        assert!(shown.downcast_ref::<NeedsTerminal>().is_some(), "{shown:?}");
+
+        // Any other failure keeps the ordinary status.
+        let refused = refuse(404, Some("crew_grant_not_found"), "No Crew grant.");
+        assert!(failure(&refused, OutputFormat::Text, "req-1", false)
+            .downcast_ref::<NeedsTerminal>()
+            .is_none());
     }
 
     #[test]
