@@ -97,6 +97,12 @@ export const crewDraftCopy = {
 export const crewActionCopy = {
   actionFallback: 'Crew could not complete that action.',
   sendPrivacyUnverified: 'Refresh the workspace to verify connection privacy before sending.',
+  /**
+   * A post refused after the person moved to another channel (RENDERER-4): shown in the connection
+   * bar, since the composer on screen did not send it. `channel` is already `#slug`.
+   */
+  sendFailedIn: (channel: string, reason: string) =>
+    `Couldn’t send your message in ${channel}. ${reason}`,
   grantPrivacyUnverified:
     'Refresh the workspace to verify connection privacy before granting agent access.',
   sendTransferRecordKept:

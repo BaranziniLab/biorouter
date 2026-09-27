@@ -41,8 +41,12 @@ export interface PendingPost {
  */
 export const PENDING_POST_TIMEOUT_MS = 30_000;
 
-/** The draft as a send began: what to recognize the delivered message by. */
-type PostAttempt = PendingPost;
+/**
+ * The draft as a send began: what to recognize the delivered message by, and the connection and
+ * channel it went to (`key`). A send is pending only in its own channel (RENDERER-4), so opening
+ * another channel ends "posting" here without any answer; such an attempt is dropped.
+ */
+type PostAttempt = PendingPost & { key: string };
 
 /**
  * Whether the send that just settled was accepted. The controller's `send()`
@@ -117,17 +121,19 @@ export function usePendingPost(
   viewerId: string | null
 ): PendingPost | null {
   const posting = crew.isPending('send');
-  const [pending, setPending] = useState<PendingPost | null>(null);
+  const key = storeKey(crew.connectionId, crew.channelId);
+  const [pending, setPending] = useState<PostAttempt | null>(null);
   const attempt = useRef<PostAttempt | null>(null);
   const wasPosting = useRef(false);
-  const latest = useRef({ crew, messages });
-  latest.current = { crew, messages };
+  const latest = useRef({ crew, messages, key });
+  latest.current = { crew, messages, key };
   useLayoutEffect(() => {
     const was = wasPosting.current;
     wasPosting.current = posting;
-    const { crew: now, messages: list } = latest.current;
+    const { crew: now, messages: list, key: here } = latest.current;
     if (posting && !was) {
       attempt.current = {
+        key: here,
         body: now.draft.body,
         attachments: now.draft.attachments.map((file) => ({ id: file.id, name: file.name })),
         before: new Set(list.map((message) => message.id)),
@@ -135,11 +141,15 @@ export function usePendingPost(
     } else if (!posting && was) {
       const sent = attempt.current;
       attempt.current = null;
-      setPending(sent && postAccepted(sent, now) ? sent : null);
+      // Another channel's composer says nothing about this post (RENDERER-4).
+      setPending(sent && sent.key === here && postAccepted(sent, now) ? sent : null);
     }
   }, [posting]);
+  // A post is drawn, and delivered, only in the channel it went to (RENDERER-4): the timeline stays
+  // mounted when the person opens another channel.
+  const shown = pending !== null && pending.key === key ? pending : null;
   const delivered =
-    pending !== null && messages.some((message) => isDelivery(pending, message, viewerId));
+    shown !== null && messages.some((message) => isDelivery(shown, message, viewerId));
   useEffect(() => {
     if (delivered) setPending(null);
   }, [delivered]);
@@ -148,9 +158,8 @@ export function usePendingPost(
     const timer = window.setTimeout(() => setPending(null), PENDING_POST_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [pending]);
-  const current = pending && !delivered ? pending : null;
+  const current = shown && !delivered ? shown : null;
 
-  const key = storeKey(crew.connectionId, crew.channelId);
   useLayoutEffect(() => {
     if (!current) return;
     publish(key, current);

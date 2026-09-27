@@ -3,7 +3,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
-import { createSend, useCrewDraft } from './crewSend';
+import { createSend, postDestination, useCrewDraft } from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
 import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
@@ -31,7 +31,13 @@ import {
   type ObservationEnd,
 } from './useCrewObservation';
 import { forgetRememberedView, rememberPaneIntent } from './viewMemory';
-import type { CrewController, CrewControllerOptions, CrewJoinStatus, PaneIntent } from './types';
+import type {
+  ActionKey,
+  CrewController,
+  CrewControllerOptions,
+  CrewJoinStatus,
+  PaneIntent,
+} from './types';
 
 export type * from './types';
 
@@ -700,15 +706,21 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     resetSurfaces,
     act,
   });
+  // The selection a post's answer is compared with: a post refused after the person moved on is
+  // reported where they are, naming its channel (RENDERER-4). Written as the render runs, like
+  // `arrivalActions` below, so an answer never reads a selection older than the one on screen.
+  const selection = useRef({ connectionId, channelId });
+  selection.current = { connectionId, channelId };
   const send = createSend({
     draft,
-    busy: actions.busy,
+    busy: actions.busyExcept('send'),
     connectionId,
     channelId,
     channel,
     snapshot,
     observedPrivacy,
     generation,
+    selection,
     historyPage,
     setHistoryBefore,
     restartObservation,
@@ -717,6 +729,14 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     act,
     reportError,
   });
+
+  // `send` is pending only in the channel whose post is on its way (RENDERER-4): a post left
+  // behind in #methods neither makes #analysis' composer read-only nor draws a "Sending…" there.
+  const postingHere = draft.postingTo.has(postDestination(connectionId, channelId));
+  const isPendingHere = useCallback(
+    (key: ActionKey) => (key === 'send' ? postingHere : isPending(key)),
+    [postingHere, isPending]
+  );
 
   const notJoined = isNotJoined(joinStatus);
   const isReconnecting = reconnecting !== null && reconnecting === connectionId;
@@ -843,7 +863,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     registerErrorSlot: actions.registerErrorSlot,
     reportError,
     dismissError,
-    isPending,
+    isPending: isPendingHere,
     busy: actions.busy,
     request,
     mutate,

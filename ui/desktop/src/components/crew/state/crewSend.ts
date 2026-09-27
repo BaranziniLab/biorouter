@@ -10,8 +10,10 @@ import {
 import type { Channel, Snapshot } from '../crewApi';
 import { clearPublishedTransfers } from '../crewTransfers';
 import { refreshCrewTransfers } from '../files/useCrewTransfers';
+import { channelName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import { forgetStashedDraft } from './draftStash';
+import { failureCode, failureMessage } from './observationFailure';
 import type {
   ActionKey,
   ActOptions,
@@ -33,8 +35,15 @@ export interface CrewDraftState {
   setContextChannels: Dispatch<SetStateAction<string[]>>;
   /** The message attempt whose idempotency key a retry of the same payload reuses. */
   pendingMessage: MutableRefObject<{ fingerprint: string; key: string } | null>;
-  /** True while a `message.post` is in flight; Enter and Send share it. */
-  sendingMessage: MutableRefObject<boolean>;
+  /**
+   * The destinations ({@link postDestination}) with a `message.post` in flight, read and written
+   * synchronously: Enter and Send share it, so a channel posts one message at a time. A post in
+   * one channel never holds another channel's composer (RENDERER-4).
+   */
+  sendingMessage: MutableRefObject<Set<string>>;
+  /** The same destinations, as state: what a render asks to know whether its channel is posting. */
+  postingTo: ReadonlySet<string>;
+  setPosting(destination: string, posting: boolean): void;
   /** The context channels the observer checks against each verified snapshot. */
   selectedSources: MutableRefObject<string[]>;
   /** Clear the body, attachments, references, context channels and the pending attempt. */
@@ -52,7 +61,19 @@ export function useCrewDraft(): CrewDraftState {
   const [references, setReferences] = useState<DraftReference[]>([]);
   const [contextChannels, setContextChannels] = useState<string[]>([]);
   const pendingMessage = useRef<{ fingerprint: string; key: string } | null>(null);
-  const sendingMessage = useRef(false);
+  const sendingMessage = useRef(new Set<string>());
+  const [postingTo, setPostingTo] = useState<ReadonlySet<string>>(() => new Set());
+  const setPosting = useCallback(
+    (destination: string, posting: boolean) =>
+      setPostingTo((current) => {
+        if (current.has(destination) === posting) return current;
+        const next = new Set(current);
+        if (posting) next.add(destination);
+        else next.delete(destination);
+        return next;
+      }),
+    []
+  );
   const selectedSources = useRef(contextChannels);
   useEffect(() => {
     selectedSources.current = contextChannels;
@@ -98,6 +119,8 @@ export function useCrewDraft(): CrewDraftState {
     setContextChannels,
     pendingMessage,
     sendingMessage,
+    postingTo,
+    setPosting,
     selectedSources,
     clearDraft,
     addAttachment,
@@ -108,8 +131,14 @@ export function useCrewDraft(): CrewDraftState {
   };
 }
 
+/** Where a post goes: its connection and channel, as one key. */
+export function postDestination(connectionId: string, channelId: string): string {
+  return `${connectionId}\n${channelId}`;
+}
+
 export interface CrewSendContext {
   draft: CrewDraftState;
+  /** Another action is pending (a post in another channel does not count). */
   busy: boolean;
   connectionId: string;
   channelId: string;
@@ -117,6 +146,8 @@ export interface CrewSendContext {
   snapshot: Snapshot | null;
   observedPrivacy: ObservedPrivacy | null;
   generation: MutableRefObject<number>;
+  /** The connection and channel selected now, as of the latest render. */
+  selection: MutableRefObject<{ connectionId: string; channelId: string }>;
   historyPage: MutableRefObject<string | null>;
   setHistoryBefore: Dispatch<SetStateAction<string | null>>;
   restartObservation(): void;
@@ -148,6 +179,13 @@ export interface CrewSendContext {
  * A post also reads the channel up to the posted message (Q3-10), silently, so the person's own
  * message never sits under the "New" rule. And the transfer records it forgot are re-listed at
  * once (Q3-03), so the Files tab stops calling a sent file "not sent" without waiting for a remount.
+ *
+ * A post belongs to the channel it was sent in (RENDERER-4). Single flight is per channel, so a
+ * person who sends in #methods and moves to #analysis can write and send there while #methods'
+ * post is still on its way. If that post is then refused, the composer on screen is not the one
+ * that sent it: the refusal goes to the connection bar, naming #methods, whose kept draft still
+ * holds the text. While the person is still in the channel it went to, it shows in the composer
+ * as before.
  */
 export function createSend(context: CrewSendContext): () => Promise<void> {
   const {
@@ -159,6 +197,7 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
     snapshot,
     observedPrivacy,
     generation,
+    selection,
     historyPage,
     setHistoryBefore,
     restartObservation,
@@ -168,15 +207,20 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
     reportError,
   } = context;
   const { body, attachments, references, pendingMessage, sendingMessage } = draft;
+  const destination = postDestination(connectionId, channelId);
+  /** The person is still in the channel this post went to. */
+  const stillHere = () =>
+    selection.current.connectionId === connectionId && selection.current.channelId === channelId;
   return async () => {
     if (
       busy ||
-      sendingMessage.current ||
+      sendingMessage.current.has(destination) ||
       channel?.archived ||
       (!body.trim() && attachments.length === 0 && references.length === 0)
     )
       return;
-    sendingMessage.current = true;
+    sendingMessage.current.add(destination);
+    draft.setPosting(destination, true);
     try {
       await act('composer', 'send', async () => {
         if (!snapshot || observedPrivacy?.connectionId !== connectionId)
@@ -193,11 +237,27 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
         if (pendingMessage.current?.fingerprint !== fingerprint)
           pendingMessage.current = { fingerprint, key: crypto.randomUUID() };
         const attempt = pendingMessage.current;
-        const posted = await request<unknown>(
-          'message.post',
-          { ...payload, idempotency_key: attempt.key },
-          { mutation: true }
-        );
+        let posted: unknown;
+        try {
+          posted = await request<unknown>(
+            'message.post',
+            { ...payload, idempotency_key: attempt.key },
+            { mutation: true }
+          );
+        } catch (failure) {
+          if (stillHere()) throw failure;
+          // The composer on screen belongs to another channel now: say which post failed, in the
+          // connection bar, rather than above a draft that was never sent.
+          reportError(
+            crewActionCopy.sendFailedIn(
+              channelName(channel),
+              failureMessage(failure, crewActionCopy.actionFallback)
+            ),
+            'global',
+            failureCode(failure)
+          );
+          return;
+        }
         // Your own post is read: move the read position to it. A failure changes nothing on show.
         const sequence =
           posted !== null && typeof posted === 'object'
@@ -231,7 +291,8 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
         );
       });
     } finally {
-      sendingMessage.current = false;
+      sendingMessage.current.delete(destination);
+      draft.setPosting(destination, false);
     }
   };
 }

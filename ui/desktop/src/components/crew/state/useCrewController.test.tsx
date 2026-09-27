@@ -6,7 +6,7 @@ import { chatAccessRouteState } from '../access/ChatConnectNote';
 import { CrewHttpError } from '../crewApi';
 import { useCrewTransfers } from '../files/useCrewTransfers';
 import { MEMBERSHIP_ENDED_CODE } from './connectFailure';
-import { crewObservationCopy } from './copy';
+import { crewActionCopy, crewObservationCopy } from './copy';
 import { rememberLastChannel, stashedDraft } from './draftStash';
 import {
   ARRIVAL_CONNECT_STORAGE_KEY,
@@ -1724,5 +1724,130 @@ describe('a membership the workspace ended (Q3-12, Q3-50)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('a post still on its way when the person moves to another channel (RENDERER-4)', () => {
+  const methods = { ...channel, id: 'channel-3', name: 'methods' };
+  const analysis = { ...channel, id: 'channel-4', name: 'analysis' };
+  const workspace = { ...snapshot, channels: [channel, methods, analysis] };
+
+  beforeEach(() => {
+    forgetConnectionMemory(connection.id);
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        receive({ ...stateFrame, snapshot: workspace });
+        if (channelId)
+          receive({
+            type: 'messages',
+            channel_id: channelId,
+            messages: [],
+            cursor: null,
+            reset: true,
+          });
+        return 'terminal';
+      }
+    );
+  });
+
+  async function opened(channelId: string) {
+    await waitFor(() => expect(crew.channelId).toBe(channelId));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    await waitFor(() => expect(crew.messagesLoaded).toBe(true));
+  }
+
+  /** Sends "for #methods" from #methods and moves to #analysis while the broker answers. */
+  async function sendThenMove() {
+    const post = deferred<unknown>();
+    let posts = 0;
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method !== 'message.post') return {};
+      posts += 1;
+      // Only the first post, #methods', waits for the test to answer it.
+      return posts === 1 ? post.promise : { sequence: `m-${posts}` };
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    act(() => crew.setBody('for #methods'));
+    let sent!: Promise<void>;
+    act(() => {
+      sent = crew.send();
+    });
+    await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    act(() => crew.selectChannel(analysis.id));
+    await opened(analysis.id);
+    return { post, sent };
+  }
+
+  it('leaves the new channel’s composer free while the old post is on its way', async () => {
+    const { post, sent } = await sendThenMove();
+    // The post is #methods', not #analysis': nothing here is sending.
+    expect(crew.isPending('send')).toBe(false);
+    act(() => crew.setBody('for #analysis'));
+    expect(crew.draft.body).toBe('for #analysis');
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    // The #methods post changed nothing in #analysis' composer.
+    expect(crew.draft.body).toBe('for #analysis');
+    expect(crew.error).toBeNull();
+  });
+
+  it('sends in the new channel without waiting for the old post', async () => {
+    const { post, sent } = await sendThenMove();
+    act(() => crew.setBody('for #analysis'));
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = mocks.crewRequest.mock.calls.filter(([, method]) => method === 'message.post');
+    expect(posts.map(([, , params]) => (params as { channel_id: string }).channel_id)).toEqual([
+      methods.id,
+      analysis.id,
+    ]);
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+  });
+
+  it('reports a refusal in the connection bar, naming its channel, not in the new composer', async () => {
+    const { post, sent } = await sendThenMove();
+    act(() => crew.setBody('for #analysis'));
+    await act(async () => {
+      post.reject(new CrewHttpError('Slow down', 429, 'crew_request_refused'));
+      await sent;
+    });
+    expect(crew.error?.source).toBe('global');
+    expect(crew.error?.message).toBe(crewActionCopy.sendFailedIn('#methods', 'Slow down'));
+    expect(crew.draft.body).toBe('for #analysis');
+    // The unsent text waits in #methods, where the person left it.
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+  });
+
+  it('still reports a refusal in the composer when the person stayed', async () => {
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method === 'message.post') throw new CrewHttpError('Slow down', 429);
+      return {};
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('stay'));
+    await act(async () => {
+      await crew.send();
+    });
+    expect(crew.error).toEqual({ message: 'Slow down', source: 'composer' });
+    expect(crew.draft.body).toBe('stay');
   });
 });

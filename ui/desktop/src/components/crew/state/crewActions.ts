@@ -56,6 +56,11 @@ export interface CrewActions {
   dismissErrorFrom(source: ErrorSource): void;
   isPending(key: ActionKey): boolean;
   busy: boolean;
+  /**
+   * Whether an action other than `key` is pending. A post gates on this rather than `busy`, so a
+   * post on its way in one channel does not hold another channel's Send (RENDERER-4).
+   */
+  busyExcept(key: ActionKey): boolean;
   errorSlotFor(source: ErrorSource): boolean;
   registerErrorSlot(source: ErrorSource): () => void;
 }
@@ -114,6 +119,10 @@ export function useCrewActions(): CrewActions {
   const target = useMemo(() => resolveErrorSlot(error, slots), [error, slots]);
   const errorSlotFor = useCallback((source: ErrorSource) => target === source, [target]);
   const isPending = useCallback((key: ActionKey) => (pending.get(key) ?? 0) > 0, [pending]);
+  const busyExcept = useCallback(
+    (key: ActionKey) => [...pending.keys()].some((pendingKey) => pendingKey !== key),
+    [pending]
+  );
 
   return {
     error,
@@ -123,6 +132,7 @@ export function useCrewActions(): CrewActions {
     dismissErrorFrom,
     isPending,
     busy: pending.size > 0,
+    busyExcept,
     errorSlotFor,
     registerErrorSlot,
   };

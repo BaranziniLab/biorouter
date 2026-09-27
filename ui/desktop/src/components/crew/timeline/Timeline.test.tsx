@@ -1047,6 +1047,35 @@ describe('a post on its way (T-37)', () => {
     expect(row).not.toHaveTextContent('Alice Chen');
   });
 
+  it('never draws another channel’s post as “Sending…” here (RENDERER-4)', () => {
+    // Sent in this channel, then the person opened another while it was on its way: the
+    // controller then says nothing is sending (the post is not this channel's), and the other
+    // channel's composer is empty. That is not this post being accepted.
+    const { idle, posting } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith({
+      ...idle,
+      channelId: 'channel-elsewhere',
+      messages: [],
+      draft: draft(''),
+      isPending: vi.fn(() => false),
+    });
+    expect(sending()).toBeNull();
+  });
+
+  it('keeps an accepted post’s “Sending…” in its own channel when another opens (RENDERER-4)', () => {
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith(accepted);
+    expect(sending()).toBeInTheDocument();
+    view.rerenderWith({ ...accepted, channelId: 'channel-elsewhere', messages: [] });
+    expect(sending()).toBeNull();
+    view.rerenderWith(accepted);
+    expect(sending()).toBeInTheDocument();
+  });
+
   it('shows nothing for a post the broker refused: the composer keeps the words and says why', () => {
     const { idle, posting } = stages();
     const view = renderWithController(<Timeline />, idle);
