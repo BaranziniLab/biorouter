@@ -736,6 +736,56 @@ fn a_snapshot_stays_under_the_frame_limit_whatever_another_member_adds() {
 }
 
 #[test]
+fn one_inviter_cannot_crowd_the_others_out_of_a_snapshot() {
+    let mut ws = Workspace::new("invitation-turns");
+    ws.broker.set_quotas(Quotas {
+        member_live_invitations: 1_000,
+        member_channels: 1_000,
+        ..Quotas::STANDARD
+    });
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let mut victor = ws.enroll(VICTOR, "victor", 22);
+    // The host's invitation is the oldest Victor has.
+    let (host_team, _) = ws.host_team("host-team");
+    let from_host = ws.host_ok(
+        "invitation.create",
+        json!({"kind": "team", "target_id": host_team, "principal_id": victor.principal_id}),
+    )["id"]
+        .clone();
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    // Then Mallory sends him more than a snapshot section holds.
+    let (team, _) = ws.create_team(&mut mallory, "crowd");
+    ws.call_ok(
+        &mut mallory,
+        "team.add_member",
+        json!({"team_id": team, "principal_id": victor.principal_id, "expected_username": "victor"}),
+    );
+    for index in 0..250 {
+        let channel = ws.call_ok(
+            &mut mallory,
+            "channel.create",
+            json!({"team_id": team, "name": format!("c{index}")}),
+        )["id"]
+            .clone();
+        ws.call_ok(
+            &mut mallory,
+            "invitation.create",
+            json!({"kind": "channel", "target_id": channel, "principal_id": victor.principal_id}),
+        );
+    }
+    let snapshot = ws.snapshot(&mut victor);
+    let listed = snapshot["invitations"].as_array().unwrap();
+    assert!(listed.len() < 251, "the section is bounded");
+    assert_eq!(snapshot["totals"]["invitations"], 251);
+    assert!(
+        listed
+            .iter()
+            .any(|invitation| invitation["id"] == from_host),
+        "every inviter's newest invitation gets a turn"
+    );
+}
+
+#[test]
 fn a_member_has_a_bounded_number_of_invitations_outstanding() {
     let mut ws = Workspace::new("invitation-share");
     ws.broker.set_quotas(Quotas {

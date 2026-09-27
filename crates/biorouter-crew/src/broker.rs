@@ -2044,8 +2044,9 @@ impl Broker {
             .collect();
         // An invitee no longer sees an invitation once it has expired (it can never be
         // accepted); its inviter still does, marked `expired`, until it is pruned. What the
-        // invitee can act on comes first, then the actor's own live and expired invitations,
-        // newest first, within one section budget.
+        // invitee can act on comes first, taking each inviter's newest in turn so no one
+        // inviter can crowd out the rest, then the actor's own live and expired invitations,
+        // newest first, all within one section budget.
         let mut invitations: Vec<&Invitation> = s
             .invitations
             .values()
@@ -2060,6 +2061,13 @@ impl Broker {
                 std::cmp::Reverse(i.expires_at),
             )
         });
+        let received = invitations
+            .iter()
+            .take_while(|i| i.principal_id == actor.id)
+            .count();
+        let sent = invitations.split_off(received);
+        let mut invitations = in_turns(invitations, |i| i.inviter_id.as_str());
+        invitations.extend(sent);
         let invitations_total = invitations.len();
         let invitations_wire = within_budget(
             invitations
@@ -2106,13 +2114,14 @@ impl Broker {
         runs.sort_by_key(|r| std::cmp::Reverse(r.expires_at));
         let runs_total = runs.len();
         let runs = within_budget(runs);
-        // Other members add references to shared channels: the actor's own come first.
-        let mut references: Vec<&RemoteReference> = s
+        // Other members add references to shared channels: the actor's own come first, then
+        // each other owner's in turn.
+        let (mut references, others): (Vec<&RemoteReference>, Vec<&RemoteReference>) = s
             .references
             .values()
             .filter(|r| self.reference_authorized(s, actor, r).is_ok())
-            .collect();
-        references.sort_by_key(|r| r.owner_id != actor.id);
+            .partition(|r| r.owner_id == actor.id);
+        references.extend(in_turns(others, |r| r.owner_id.as_str()));
         let references_total = references.len();
         let references = within_budget(references);
         let totals = json!({"invitations": invitations_total, "runs": runs_total, "references": references_total});
@@ -3791,6 +3800,23 @@ impl Broker {
     }
 }
 
+/// `items` reordered so each group (by `group`) takes a turn: every group's first item, then
+/// every group's second, and so on, groups in order of first appearance and each group in its
+/// own order. A budget applied afterwards then shares its room among the groups.
+fn in_turns<T, K: Ord>(items: Vec<T>, group: impl Fn(&T) -> K) -> Vec<T> {
+    let mut seen: BTreeMap<K, usize> = BTreeMap::new();
+    let mut ranked: Vec<(usize, usize, T)> = items
+        .into_iter()
+        .enumerate()
+        .map(|(position, item)| {
+            let turn = seen.entry(group(&item)).or_default();
+            *turn += 1;
+            (*turn, position, item)
+        })
+        .collect();
+    ranked.sort_by_key(|(turn, position, _)| (*turn, *position));
+    ranked.into_iter().map(|(_, _, item)| item).collect()
+}
 /// The leading `items` whose JSON fits in [`SNAPSHOT_SECTION_BYTES`] (at least the first one),
 /// so a snapshot section other members can grow never pushes the snapshot past the frame
 /// limit. The snapshot's `totals` says how many there were.
