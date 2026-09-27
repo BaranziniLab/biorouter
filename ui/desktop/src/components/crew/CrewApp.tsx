@@ -1,3 +1,5 @@
+import { isBrowserSurface } from '../../utils/surface';
+import { CrewNeedsDesktop } from './CrewNeedsDesktop';
 import { CrewLayout } from './layout/CrewLayout';
 import { CrewControllerProvider } from './state/CrewControllerContext';
 import { useCrewController } from './state/useCrewController';
@@ -23,8 +25,17 @@ export const CREW_APP_OPTIONS: Readonly<CrewControllerOptions> = {
  * The old layout (`crew/legacy/`) and its global stylesheet (`crew/crew.css`) are deleted, and
  * `integration/legacyStylesheet.test.ts` keeps them that way: it fails if either path exists
  * again or if any source file imports or mocks them.
+ *
+ * In a browser opened with `biorouter serve` it shows only why Crew needs the desktop app
+ * (`CrewNeedsDesktop`, CROSSCUT-5): the daemon there refuses every Crew request, so the controller
+ * is not mounted and nothing asks it.
  */
 export default function CrewApp() {
+  if (isBrowserSurface()) return <CrewNeedsDesktop />;
+  return <CrewDesktopApp />;
+}
+
+function CrewDesktopApp() {
   const controller = useCrewController(CREW_APP_OPTIONS);
   return (
     <CrewControllerProvider controller={controller}>
