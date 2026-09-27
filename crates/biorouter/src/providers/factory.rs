@@ -1484,6 +1484,115 @@ pub(crate) mod tests {
         );
     }
 
+    /// Providers whose curated list leads with a model other than their shipped
+    /// default, each with the reason its own file gives.
+    ///
+    /// The desktop picker preselects `known_models[0]` when a user switches
+    /// provider (`findFirstAvailableModel` in SwitchModelModal), not
+    /// `default_model`, so for a provider listed here a desktop user starts on
+    /// a different model than `biorouter configure` does. ⚠ A row records a
+    /// decision; it does not make one. A provider that holds its default back
+    /// on purpose (untested, or lower effort) must NOT be listed here, because
+    /// listing a newer model first undoes the hold for every desktop user.
+    /// That is how `anthropic` shipped until 2026-09-27: its default stayed on
+    /// Opus 4.8 pending a smoke test while Opus 5.5, listed first, was what the
+    /// picker chose.
+    fn providers_that_lead_with_a_model_other_than_their_default(
+    ) -> Vec<(&'static str, &'static str)> {
+        vec![
+            (
+                "aws_bedrock",
+                "newest first on purpose; BEDROCK_DEFAULT_MODEL is a separate choice \
+                 (bedrock.rs, above BEDROCK_KNOWN_MODELS)",
+            ),
+            (
+                "google",
+                "Gemini 3.x listed newest first; the default is the only Gemini 3.x Pro \
+                 (google.rs, above GOOGLE_DEFAULT_MODEL)",
+            ),
+            (
+                "llamacpp",
+                "the default is chosen from the machine's memory at runtime \
+                 (default_model_name), so no fixed position in the catalog can hold it",
+            ),
+            (
+                "openrouter",
+                "curated slugs listed newest first per vendor; the default is Sonnet 5 \
+                 on price (openrouter.rs, above OPENROUTER_DEFAULT_MODEL)",
+            ),
+            (
+                "tetrate",
+                "the list leads with the newest Claude; the default is the Haiku the \
+                 Tetrate sign-up flow configures (signup_tetrate::TETRATE_DEFAULT_MODEL)",
+            ),
+            (
+                "venice",
+                "FALLBACK_MODELS is the offline fallback list, ordered small to large",
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_provider_lists_its_default_first_unless_it_records_why_not() {
+        let recorded = providers_that_lead_with_a_model_other_than_their_default();
+        let recorded_names: std::collections::HashSet<&str> =
+            recorded.iter().map(|(name, _)| *name).collect();
+        assert_eq!(recorded_names.len(), recorded.len(), "a row is duplicated");
+        for (name, why) in &recorded {
+            assert!(
+                !why.is_empty(),
+                "{name} leads with another model for no stated reason"
+            );
+        }
+
+        let metadata = builtin_provider_metadata();
+        let mut checked = 0;
+        let mut undeclared = Vec::new();
+        let mut stale = Vec::new();
+        for provider in &metadata {
+            let Some(first) = provider.known_models.first() else {
+                // No curated list: the picker falls back to the live catalog.
+                continue;
+            };
+            if !provider
+                .known_models
+                .iter()
+                .any(|model| model.name == provider.default_model)
+            {
+                continue;
+            }
+            checked += 1;
+            let leads_with_default = first.name == provider.default_model;
+            match (
+                leads_with_default,
+                recorded_names.contains(provider.name.as_str()),
+            ) {
+                (false, false) => undeclared.push(format!(
+                    "{}: picker preselects {} but the default is {}",
+                    provider.name, first.name, provider.default_model
+                )),
+                (true, true) if provider.name != "llamacpp" => stale.push(provider.name.clone()),
+                _ => {}
+            }
+        }
+        assert!(checked > 10, "only {checked} providers were checked");
+        assert!(
+            undeclared.is_empty(),
+            "the desktop picker would start these providers on a model other than their \
+             default; list the default first, or record why not: {undeclared:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "these providers now list their default first; drop their rows: {stale:?}"
+        );
+        for name in recorded_names {
+            assert!(
+                metadata.iter().any(|provider| provider.name == name),
+                "{name} is recorded but not registered"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_openai_compatible_providers_config_keys() {
         let providers_list = providers().await;
