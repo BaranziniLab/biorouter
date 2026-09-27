@@ -213,17 +213,20 @@ export function checkCrewManual(tree = repoTree()) {
 
   // ── serve ────────────────────────────────────────────────────────────────
   // `biorouter serve` spawns its daemon with no user-action key (SD-1), and
-  // every Crew route asks `require_person`, which refuses a keyless daemon.
+  // every Crew route asks `require_person` (or its sibling in another
+  // routes/crew_*.rs file), which answers a keyless daemon with
+  // crew_human_authority_unavailable. The anchor is that mapping in
+  // routes/crew.rs, spelled as the literal or as a HUMAN_AUTHORITY constant.
   const routes = need(CREW_ROUTES, 'serve');
   const refusesKeyless =
     routes !== null &&
-    /fn require_person\b[\s\S]*?UserActionProof::NoKeyInstalled\s*=>[\s\S]*?"crew_human_authority_unavailable"/.test(
+    /UserActionProof::NoKeyInstalled\s*=>[\s\S]{0,600}?("crew_human_authority_unavailable"|HUMAN_AUTHORITY_UNAVAILABLE)/.test(
       routes
     );
   if (routes !== null && !refusesKeyless) {
     fail(
       'serve',
-      `${CREW_ROUTES} no longer maps NoKeyInstalled to crew_human_authority_unavailable in require_person; ` +
+      `${CREW_ROUTES} no longer maps NoKeyInstalled to crew_human_authority_unavailable; ` +
         're-read it, and if Crew now works on a keyless daemon, rewrite what the manual says about biorouter serve'
     );
   }
