@@ -404,6 +404,36 @@ pub fn institution_refusal_text(requested_model: &str, details: Option<&Value>) 
     }
 }
 
+/// The daemon's typed connect failures (`connect_refusal` in `routes/crew.rs`) in words for a
+/// person, each with what to do next, as the desktop's connection-problem screens say them.
+/// `crew_handoff_failed` is not here: its own text is already written for a person.
+pub fn connect_failure_text(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "crew_ssh_auth_required" => {
+            "The server wants your password or a verification code. Run biorouter crew auth to sign in."
+        }
+        "crew_ssh_host_key_unknown" => {
+            "Crew can't verify the server yet: its host key isn't in your known hosts file. Get the server's fingerprint from your IT team, compare it, add the full key to your known hosts file, then connect again."
+        }
+        "crew_ssh_host_key_changed" => {
+            "The server's host key changed since Crew last connected. Don't connect until your IT team confirms the change; Crew won't connect while the old key is in your known hosts file."
+        }
+        "crew_ssh_unreachable" => {
+            "Couldn't reach the server. Check your network or your VPN, then connect again."
+        }
+        "crew_bridge_missing" => {
+            "Crew isn't set up for your account on the server: ~/.local/bin/biorouter-crew is missing there. Install it yourself, or ask your host or IT team to, then connect again."
+        }
+        "crew_ssh_failed" => {
+            "SSH or Crew on the server failed. If the server restarted, ask your host to start the workspace again, then connect again."
+        }
+        "crew_workspace_identity_mismatch" => {
+            "This isn't the workspace you joined: the server answered with a different workspace key than the one saved. Don't continue until your host confirms what changed."
+        }
+        _ => return None,
+    })
+}
+
 /// How text output is rendered.
 #[derive(Clone, Debug, Default)]
 pub struct HumanOptions {

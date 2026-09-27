@@ -2350,6 +2350,27 @@ mod tests {
         assert_eq!(asked.lock().unwrap().len(), 1);
     }
 
+    /// CLI-7: a failed connect keeps OpenSSH's words, line by line, terminal-safe.
+    #[test]
+    fn a_connect_refusal_keeps_its_detail_line_by_line() {
+        let refused = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_ssh_host_key_unknown",
+                "error": "Crew SSH failure [host_key; child_before_cleanup=exit_255]: x",
+                "detail": "Host key verification failed.\r\nfingerprint SHA256:abc\u{1b}[2J"
+            })),
+            "fallback",
+        );
+        assert_eq!(refused.kind.as_deref(), Some("crew_ssh_host_key_unknown"));
+        assert_eq!(
+            refused.detail(),
+            Some("Host key verification failed.\nfingerprint SHA256:abc\\u{1b}[2J")
+        );
+        let none = daemon_refusal(400, Some(&serde_json::json!({"error": "x"})), "fallback");
+        assert_eq!(none.detail(), None);
+    }
+
     /// CLI-3: the one refusal the secret check can give is said as a wrong secret.
     #[test]
     fn a_refused_proof_is_said_as_a_wrong_approval_secret() {
