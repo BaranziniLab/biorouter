@@ -246,6 +246,34 @@ fn handoff_failure_frame(error: &anyhow::Error) -> Value {
 pub const USER_ACTION_REQUIRED_CODE: &str = "crew_user_action_required";
 /// The code `routes::crew`'s person gate answers on a daemon that cannot check a proof.
 pub const HUMAN_AUTHORITY_UNAVAILABLE_CODE: &str = "crew_human_authority_unavailable";
+/// What a Crew route answers a browser opened with `biorouter serve` (CROSSCUT-5). Such a
+/// daemon never holds an approval key (SD-1, SD-7), so no Crew action can work through it, and
+/// the advice every Crew route gave there (start a desktop launcher, or `biorouter crew daemon
+/// start`) would start another daemon on a computer the browser may not be on, one the page
+/// can never reach.
+pub const CREW_NEEDS_THE_DESKTOP: &str = "Crew isn't available in a browser opened with \
+biorouter serve. Every Crew action needs proof that a person asked for it, and this server has no \
+approval key to check that proof. Use Crew in the Biorouter desktop app, or with the biorouter \
+crew command line, on your own computer.";
+
+/// The sentence a Crew route answers when this daemon holds no approval key: `fallback`, the
+/// route's own advice for a daemon someone started by hand, unless this daemon serves the
+/// browser interface, where only [`CREW_NEEDS_THE_DESKTOP`] is true. `biorouter serve` sets
+/// `BIOROUTER_SERVE_UI` on the daemon it starts; a blank value reads as unset, as it does there.
+pub fn no_human_authority(fallback: &'static str) -> &'static str {
+    no_human_authority_when(
+        std::env::var_os("BIOROUTER_SERVE_UI").is_some_and(|dir| !dir.is_empty()),
+        fallback,
+    )
+}
+
+fn no_human_authority_when(serves_browser: bool, fallback: &'static str) -> &'static str {
+    if serves_browser {
+        CREW_NEEDS_THE_DESKTOP
+    } else {
+        fallback
+    }
+}
 /// A request whose body or query is not in the shape the route takes.
 pub const REQUEST_INVALID_CODE: &str = "crew_request_invalid";
 /// The route names a connection this computer has not saved.
@@ -328,7 +356,7 @@ fn person_refusal(proof: UserActionProof) -> Option<AdmissionRefusal> {
         UserActionProof::NoKeyInstalled => Some(AdmissionRefusal::new(
             StatusCode::FORBIDDEN,
             HUMAN_AUTHORITY_UNAVAILABLE_CODE,
-            "This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret.",
+            no_human_authority("This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
         )),
     }
 }
@@ -812,6 +840,29 @@ mod tests {
     /// does: a missing proof and a daemon that cannot check one are told apart, and both refuse.
     /// Pinned here because the digest is a process-global `OnceLock`, so an HTTP test binary
     /// can only ever see one of the two.
+    /// CROSSCUT-5: a browser opened with `biorouter serve` is told Crew needs the desktop app
+    /// or the Crew command line on the person's own computer, never to start a launcher or a
+    /// daemon, which would be another daemon the page cannot reach. A daemon started by hand
+    /// keeps its own advice.
+    #[test]
+    fn a_serve_browser_is_told_where_crew_works() {
+        let hand_started = "Start the trusted desktop launcher.";
+        assert_eq!(no_human_authority_when(false, hand_started), hand_started);
+        let browser = no_human_authority_when(true, hand_started);
+        assert_eq!(browser, CREW_NEEDS_THE_DESKTOP);
+        assert!(browser.contains("biorouter serve"));
+        assert!(browser.contains("desktop app"));
+        assert!(!browser.contains("launcher") && !browser.contains("daemon start"));
+        assert!(!browser.contains('\u{2014}') && !browser.contains('\u{2013}'));
+
+        let _serving =
+            env_lock::lock_env([("BIOROUTER_SERVE_UI", Some("/usr/share/biorouter/web"))]);
+        assert_eq!(no_human_authority(hand_started), CREW_NEEDS_THE_DESKTOP);
+        drop(_serving);
+        let _blank = env_lock::lock_env([("BIOROUTER_SERVE_UI", Some(""))]);
+        assert_eq!(no_human_authority(hand_started), hand_started);
+    }
+
     #[tokio::test]
     async fn the_proof_check_has_the_person_gates_three_answers() {
         assert!(person_refusal(UserActionProof::Proven).is_none());

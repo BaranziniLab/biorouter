@@ -336,7 +336,7 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
         UserActionProof::NoKeyInstalled => Err(CrewRouteError::new(
             StatusCode::FORBIDDEN,
             "crew_human_authority_unavailable",
-            "This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret.",
+            super::crew_authentication::no_human_authority("This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
         )),
     }
 }
@@ -1094,7 +1094,12 @@ fn task_brief(prompt: &str, labels: &AdmissionLabels) -> String {
 /// The admission's machine context (IDs, the names the person saw, the destination's recent
 /// history) for the model only: stored ahead of the brief, visible to the agent and never
 /// rendered as something the person wrote.
+///
+/// The context carries other people's message text, so it goes in with `<`, `>` and `&`
+/// escaped ([`biorouter::crew::wrapper_safe_json`]): a message reading `</crew_context>` can
+/// never end the wrapper [`OWNED_TASK_INSTRUCTIONS`] calls untrusted (DAEMON-4).
 fn task_context_message(context: &str) -> Message {
+    let context = biorouter::crew::wrapper_safe_json(context);
     Message::user()
         .with_text(format!("<crew_context>\n{context}\n</crew_context>"))
         .with_visibility(false, true)
@@ -2045,6 +2050,11 @@ pub async fn cancel_run(
     Path((id, run_id)): Path<(String, String)>,
 ) -> CrewResult {
     require_person(&headers)?;
+    // No run this daemon started has any other shape (RENDERER-2).
+    require_valid(
+        biorouter::crew::is_run_id(&run_id),
+        "Crew run IDs contain only letters, digits, hyphens and underscores",
+    )?;
     let ledger = run_ledger().await?;
     cancellation_response(cancel_owned_run(&ledger, &id, &run_id).await?)
 }
@@ -2333,37 +2343,71 @@ pub async fn grant_session(
             },
         )
         .await?;
-    if let Err(error) = record_admission_affiliation(&state, &session_id, &admission).await {
-        let _ = manager()?
+    let setup = async {
+        record_admission_affiliation(&state, &session_id, &admission).await?;
+        if provider.tier().is_private() {
+            state
+                .session_manager()
+                .update(&session_id)
+                .raise_privacy(
+                    biorouter::privacy::SessionClassification::Private,
+                    "mcp:crew",
+                )
+                .apply()
+                .await?;
+        }
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: "crew".into(),
+                description: "Task-scoped BioRouter Crew and SSH tools".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .map_err(anyhow::Error::from)?;
+        agent.update_provider(provider, &session_id).await?;
+        agent.persist_extension_state(&session_id).await?;
+        anyhow::Ok(())
+    };
+    finish_grant_or_revoke(setup, || async {
+        manager()?
             .cancel_run_if_current(&session_id, &admission.run_id)
-            .await;
-        return Err(error.into());
-    }
-    if provider.tier().is_private() {
-        state
-            .session_manager()
-            .update(&session_id)
-            .raise_privacy(
-                biorouter::privacy::SessionClassification::Private,
-                "mcp:crew",
-            )
-            .apply()
-            .await?;
-    }
-    agent
-        .add_extension(ExtensionConfig::Platform {
-            name: "crew".into(),
-            description: "Task-scoped BioRouter Crew and SSH tools".into(),
-            bundled: Some(true),
-            available_tools: Vec::new(),
-        })
-        .await
-        .map_err(anyhow::Error::from)?;
-    agent.update_provider(provider, &session_id).await?;
-    agent.persist_extension_state(&session_id).await?;
+            .await
+    })
+    .await?;
     Ok(Json(
         json!({"run_id": admission.run_id, "session_id": session_id}),
     ))
+}
+
+/// Finish setting up a chat's grant the workspace has admitted, or take it back (DAEMON-2).
+///
+/// By the time `setup` runs, the workspace honors a new run and this device has recorded the
+/// chat's grant, live. Every step that follows (the chat's institutions, its privacy, the
+/// Crew tools, the model binding, the saved tool state) can fail, and only the first used to
+/// be rolled back: any other left the route answering an error while the grant stayed live
+/// here and at the workspace for up to an hour, the chat Crew-restricted, possibly without the
+/// Crew tools it had apparently been given, and nothing telling the person to revoke it. Now
+/// any failure revokes the grant with `revoke`, exactly as a task whose setup failed is
+/// revoked, and the route answers with the setup's own error. A revocation the workspace
+/// cannot confirm still stops the grant on this device, and the daemon keeps asking (F3).
+async fn finish_grant_or_revoke<S, R, F>(setup: S, revoke: R) -> anyhow::Result<()>
+where
+    S: std::future::Future<Output = anyhow::Result<()>>,
+    R: FnOnce() -> F,
+    F: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let Err(error) = setup.await else {
+        return Ok(());
+    };
+    if let Err(revocation) = revoke().await {
+        tracing::warn!(
+            %revocation,
+            "a Crew grant whose setup failed is stopped on this computer, but the workspace \
+             did not confirm revoking it"
+        );
+    }
+    Err(error)
 }
 
 pub async fn shutdown_owned_runs() {
@@ -3684,6 +3728,85 @@ mod provenance_tests {
         );
         let plain = saved_connection_view(&connection, None).unwrap();
         assert!(plain.get("last_error_code").is_none());
+    }
+}
+
+#[cfg(test)]
+mod grant_rollback_tests {
+    use super::finish_grant_or_revoke;
+    use serde_json::json;
+
+    /// DAEMON-2: a grant whose setup fails after the workspace admitted it is revoked, whatever
+    /// step failed, and the person reads the setup's own error. Only the first step used to be
+    /// rolled back; any later failure left the grant live here and at the workspace.
+    #[tokio::test]
+    async fn a_grant_whose_setup_fails_at_any_step_is_revoked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        for step in ["affiliation", "privacy", "tools", "model", "saved tools"] {
+            let revoked = AtomicUsize::new(0);
+            let error = finish_grant_or_revoke(
+                async { Err(anyhow::anyhow!("the {step} step failed")) },
+                || async {
+                    revoked.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"id": "run"}))
+                },
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.to_string(), format!("the {step} step failed"));
+            assert_eq!(revoked.load(Ordering::SeqCst), 1, "{step}");
+        }
+
+        // A revocation the workspace does not confirm still answers with the setup's error.
+        let error = finish_grant_or_revoke(
+            async { Err(anyhow::anyhow!("the model step failed")) },
+            || async { Err(anyhow::anyhow!("SSH bridge failed")) },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "the model step failed");
+
+        // A setup that succeeds revokes nothing.
+        let revoked = AtomicUsize::new(0);
+        finish_grant_or_revoke(async { Ok(()) }, || async {
+            revoked.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({}))
+        })
+        .await
+        .unwrap();
+        assert_eq!(revoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// The grant route sends every step after admission through [`finish_grant_or_revoke`]:
+    /// nothing between the admission and the answer can return early past it.
+    #[test]
+    fn the_grant_route_rolls_back_every_step_after_admission() {
+        let source = include_str!("crew.rs");
+        let (_, route) = source.split_once("pub async fn grant_session(").unwrap();
+        let (route, _) = route.split_once("\n}\n").unwrap();
+        let (_, admitted) = route.split_once(".begin_run_with_policy(").unwrap();
+        let (between, after) = admitted
+            .split_once("finish_grant_or_revoke(setup,")
+            .unwrap();
+        let (before_setup, setup) = between.split_once("let setup = async {").unwrap();
+        assert_eq!(
+            before_setup.matches('?').count(),
+            1,
+            "only the admission itself may fail before the rollback is armed: {before_setup}"
+        );
+        for step in [
+            "record_admission_affiliation",
+            "raise_privacy",
+            "add_extension",
+            "update_provider",
+            "persist_extension_state",
+        ] {
+            assert!(setup.contains(step), "{step} runs outside the rollback");
+        }
+        for step in ["raise_privacy", "add_extension", "update_provider"] {
+            assert!(!after.contains(step), "{step} runs after the rollback");
+        }
     }
 }
 

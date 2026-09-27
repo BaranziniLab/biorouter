@@ -92,7 +92,7 @@ fn person(headers: &HeaderMap) -> std::result::Result<(), Refusal> {
         UserActionProof::NoKeyInstalled => Err(Refusal::new(
             StatusCode::FORBIDDEN,
             HUMAN_AUTHORITY_UNAVAILABLE,
-            "This daemon cannot verify the human approval secret that Crew profile operations require. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret.",
+            super::crew_authentication::no_human_authority("This daemon cannot verify the human approval secret that Crew profile operations require. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
         )),
     }
 }

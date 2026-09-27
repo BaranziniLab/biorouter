@@ -630,10 +630,18 @@ pub async fn observe(
     Json(request): Json<ObserveRequest>,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     person(&headers).map_err(|_| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error":"Verified human Crew authority is required"})),
-        )
+        // A daemon with no approval key says so in the words every Crew route uses there
+        // (CROSSCUT-5), with the code the interface reads.
+        let refusal = match user_action_proof(&headers) {
+            UserActionProof::NoKeyInstalled => json!({
+                "code": super::crew_authentication::HUMAN_AUTHORITY_UNAVAILABLE_CODE,
+                "error": super::crew_authentication::no_human_authority(
+                    "Verified human Crew authority is required"
+                ),
+            }),
+            _ => json!({"error": "Verified human Crew authority is required"}),
+        };
+        (StatusCode::FORBIDDEN, Json(refusal))
     })?;
     if request
         .channel_id

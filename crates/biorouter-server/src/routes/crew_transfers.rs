@@ -40,12 +40,24 @@ impl IntoResponse for TransferError {
     }
 }
 fn human(headers: &HeaderMap) -> Result<(), TransferError> {
-    if !matches!(user_action_proof(headers), UserActionProof::Proven) {
-        return Err(TransferError(StatusCode::FORBIDDEN,
-            "A verified human action is required for local file and transfer access; agent grants and API keys do not authorize it".into(), TRANSFER_REFUSED_CODE));
+    match user_action_proof(headers) {
+        UserActionProof::Proven => Ok(()),
+        // A daemon with no approval key says so in the words every Crew route uses there
+        // (CROSSCUT-5), with the code the interface reads.
+        UserActionProof::NoKeyInstalled => Err(TransferError(
+            StatusCode::FORBIDDEN,
+            super::crew_authentication::no_human_authority(HUMAN_ACTION_REQUIRED).into(),
+            super::crew_authentication::HUMAN_AUTHORITY_UNAVAILABLE_CODE,
+        )),
+        UserActionProof::Unproven => Err(TransferError(
+            StatusCode::FORBIDDEN,
+            HUMAN_ACTION_REQUIRED.into(),
+            TRANSFER_REFUSED_CODE,
+        )),
     }
-    Ok(())
 }
+/// Every transfer route acts for the person.
+const HUMAN_ACTION_REQUIRED: &str = "A verified human action is required for local file and transfer access; agent grants and API keys do not authorize it";
 #[utoipa::path(post, operation_id = "crew_transfer_register_file", path = "/crew/files", request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
 pub async fn register_file(headers: HeaderMap, Json(body): Json<FileRequest>) -> TransferResult {
     human(&headers)?;
