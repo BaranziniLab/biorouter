@@ -1159,8 +1159,12 @@ impl CrewManager {
     /// and with it every chat that asks it anything (DAEMON-6): it restricts the chats it may
     /// name until it can be read again, and nothing is saved over it (see `freshness.rs`).
     pub fn new(root: PathBuf) -> Result<Self> {
-        let (mut registry, saved_digest, seen_file, unreadable) =
-            freshness::load(&root.join("connections.json"))?;
+        let freshness::Loaded {
+            mut registry,
+            saved_digest,
+            seen_file,
+            unreadable,
+        } = freshness::load(&root.join("connections.json"))?;
         for c in &mut registry.connections {
             c.status = "disconnected".into();
             c.last_error = None;

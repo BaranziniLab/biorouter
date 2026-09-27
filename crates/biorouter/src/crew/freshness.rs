@@ -100,23 +100,32 @@ fn named_sessions(bytes: &[u8]) -> Option<HashSet<String>> {
     Some(sessions)
 }
 
-/// The registry in `path` as a new process loads it: the registry (empty when the file is
-/// missing or cannot be read), the digest to compare later saves with (`None` for no file,
-/// and for one that cannot be read, so no save ever takes it for this copy), the file's stamp
-/// taken before it was read, and what could not be read.
-pub(super) fn load(
-    path: &Path,
-) -> std::io::Result<(
-    Registry,
-    Option<[u8; 32]>,
-    Option<FileStamp>,
-    Option<Unreadable>,
-)> {
+/// The registry as a new process loads it ([`load`]).
+pub(super) struct Loaded {
+    /// Empty when the file is missing or cannot be read.
+    pub(super) registry: Registry,
+    /// The digest later saves compare with: `None` for no file, and for one that cannot be
+    /// read, so no save ever takes it for this copy.
+    pub(super) saved_digest: Option<[u8; 32]>,
+    /// The file's stamp, taken before it was read.
+    pub(super) seen_file: Option<FileStamp>,
+    /// What could not be read.
+    pub(super) unreadable: Option<Unreadable>,
+}
+
+/// The registry in `path` as a new process loads it.
+pub(super) fn load(path: &Path) -> std::io::Result<Loaded> {
     // Taken first: a file replaced after it is then read again, never missed.
     let stamp = file_stamp(path)?;
+    let loaded = |registry, saved_digest, unreadable| Loaded {
+        registry,
+        saved_digest,
+        seen_file: stamp,
+        unreadable,
+    };
     match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<Registry>(&bytes) {
-            Ok(registry) => Ok((registry, Some(registry_digest(&bytes)), stamp, None)),
+            Ok(registry) => Ok(loaded(registry, Some(registry_digest(&bytes)), None)),
             Err(error) => {
                 tracing::error!(
                     path = %path.display(),
@@ -124,17 +133,19 @@ pub(super) fn load(
                     "Crew's saved settings can't be read; the chats they may restrict stay \
                      restricted, and nothing is saved over them"
                 );
-                Ok((
+                Ok(loaded(
                     Registry::default(),
                     None,
-                    stamp,
                     Some(Unreadable::of(&bytes)),
                 ))
             }
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok((Registry::default(), None, None, None))
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Loaded {
+            registry: Registry::default(),
+            saved_digest: None,
+            seen_file: None,
+            unreadable: None,
+        }),
         Err(error) => Err(error),
     }
 }
