@@ -206,6 +206,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement
 
+      # The Crew manual and its landing page quote dialog titles, name what a
+      # `biorouter serve` browser can do and say who may add people. Each rule
+      # reads the code it describes, and the suite first shows every rule
+      # failing on the wording a 2026-09-27 audit found, then runs it on the tree.
+      - name: The Crew manual agrees with the code it describes
+        if: ${{ !cancelled() }}
+        run: node --test scripts/check-crew-manual.test.mjs
+
       # The published registry, the desktop fallback snapshot and the
       # compiled-in private set are one catalog in three forms. Being written by
       # one command is not the same as being in sync — an interrupted run, a
