@@ -518,6 +518,71 @@ fn host_administrative_operations_keep_headroom() {
 }
 
 #[test]
+fn a_run_removed_after_it_expired_is_still_revoked_for_its_owner() {
+    let mut ws = Workspace::new("removed-run-revoke");
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let mut victor = ws.enroll(VICTOR, "victor", 22);
+    let (team, general) = ws.host_team("revoke");
+    ws.host_adds_to_team(&mut mallory, &team);
+    ws.host_adds_to_team(&mut victor, &team);
+    let params = run_params(&ws, &general);
+    let run_id = |run: Value| run["run"]["id"].as_str().unwrap().to_owned();
+    let earlier = run_id(ws.call_ok(&mut mallory, "run.create", params.clone()));
+    let later = run_id(ws.call_ok(&mut mallory, "run.create", params));
+    let expired_two_days_ago = |ws: Workspace, run: &str| {
+        ws.edit_journal(|journal| {
+            journal.append(
+                "system",
+                "test.age",
+                vec![set(
+                    &["runs", run, "expires_at"],
+                    json!(now() - 2 * 24 * 60 * 60),
+                )],
+            );
+        })
+    };
+    let held = |ws: &Workspace, run: &str| ws.broker.state_json()["runs"].get(run).is_some();
+
+    // Removed by an unrelated change, a day after it expired, then revoked by its owner: a
+    // daemon that stopped the grant while the workspace was out of reach asks this whenever it
+    // reconnects.
+    let mut ws = expired_two_days_ago(ws, &earlier);
+    ws.host_ok("profile.update", json!({"nickname": null}));
+    assert!(!held(&ws, &earlier), "retention removed the run");
+    let revoked = ws.call_ok(&mut mallory, "run.revoke", json!({"run_id": earlier}));
+    assert_eq!(revoked["id"], json!(earlier));
+    assert_eq!(revoked["revoked"], true);
+
+    // Removed by the very revoke that asks about it.
+    let mut ws = expired_two_days_ago(ws, &later);
+    assert!(held(&ws, &later));
+    let revoked = ws.call_ok(&mut mallory, "run.revoke", json!({"run_id": later}));
+    assert_eq!(revoked["revoked"], true);
+    assert!(!held(&ws, &later));
+
+    // Anyone else is answered as for a run that never existed.
+    let (code, message) = refused(ws.call(&mut victor, "run.revoke", json!({"run_id": earlier})));
+    let (unknown_code, unknown_message) =
+        refused(ws.call(&mut victor, "run.revoke", json!({"run_id": uuid()})));
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        ("forbidden", unknown_message.as_str())
+    );
+    assert_eq!(unknown_code, "forbidden");
+    let (code, _) = refused(ws.call(&mut mallory, "run.revoke", json!({"run_id": uuid()})));
+    assert_eq!(code, "forbidden");
+
+    // The removals are journaled, so a restarted broker still answers the owner.
+    let mut ws = ws.reopen();
+    for run in [&earlier, &later] {
+        let revoked = ws.call_ok(&mut mallory, "run.revoke", json!({"run_id": run}));
+        assert_eq!(revoked["revoked"], true);
+    }
+    let (code, _) = refused(ws.call(&mut victor, "run.revoke", json!({"run_id": later})));
+    assert_eq!(code, "forbidden");
+}
+
+#[test]
 fn repeated_removals_cannot_use_up_the_journal_headroom() {
     let mut ws = Workspace::new("journal-headroom");
     let mut mallory = ws.enroll(MALLORY, "mallory", 21);

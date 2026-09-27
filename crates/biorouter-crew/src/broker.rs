@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
@@ -535,6 +535,8 @@ pub struct Broker {
     /// Journal bytes each actor's records take, tallied at replay and kept up to date by
     /// [`Broker::commit_with`], for [`Quotas::member_journal_bytes`].
     journal_actor_bytes: BTreeMap<String, u64>,
+    /// The runs retention removed, so `run.revoke` can still answer their owners.
+    removed_runs: RemovedRuns,
     #[cfg(feature = "join-by-name")]
     join_runtime: join::Runtime,
 }
@@ -725,13 +727,66 @@ struct JournalReplay {
     torn_tail: Option<Vec<u8>>,
     /// Journal bytes of each actor's complete records.
     actor_bytes: BTreeMap<String, u64>,
+    /// The runs the journal's records removed from the state.
+    removed_runs: RemovedRuns,
 }
-/// Replay one complete journal record onto `state_value`; returns the record's actor.
+/// The runs retention removed from the state ([`prune_retained`]), each as a short digest of
+/// its ID with a short digest of its owner's principal ID. Kept in memory only, and rebuilt at
+/// every open from the journal, which keeps the record of every removal for as long as the
+/// workspace exists: it costs the logical state nothing and never forgets a run. The journal
+/// also bounds it: each removed run was created by a record of several hundred bytes, so even a
+/// full 1 GiB journal names at most a couple of million, at about 40 bytes each here.
+///
+/// ⚠ **Grant and revocation state; needs human review.** `run.revoke` asks it. A daemon that
+/// stopped a grant while the workspace was out of reach asks to revoke the run whenever it
+/// reconnects, however long after the run expired, and a daemon that replaced or re-granted a
+/// chat's grant asks about the earlier run for a week past its end. Once retention removed the
+/// run that request was refused as a run the owner does not hold, so the stop could never be
+/// confirmed and was asked about again at every reconnect. A removed run is honored by nothing
+/// (it expired, and its grant went with it), so its owner is now told it is revoked; anyone
+/// else is answered as for a run that never existed.
+#[derive(Default)]
+struct RemovedRuns(HashMap<[u8; 16], [u8; 16]>);
+impl RemovedRuns {
+    fn key(text: &str) -> [u8; 16] {
+        let digest = Sha256::digest(text.as_bytes());
+        let mut key = [0; 16];
+        key.copy_from_slice(&digest[..16]);
+        key
+    }
+    fn insert(&mut self, run_id: &str, owner_id: &str) {
+        self.0.insert(Self::key(run_id), Self::key(owner_id));
+    }
+    /// Whether `run_id` was removed while `owner_id` owned it.
+    fn owned_by(&self, run_id: &str, owner_id: &str) -> bool {
+        self.0.get(&Self::key(run_id)) == Some(&Self::key(owner_id))
+    }
+    /// Note a run `patch` removes from `state`, before it is applied.
+    fn note(&mut self, state: &Value, patch: &Patch) {
+        if let Patch::Remove { path } = patch {
+            if let [map, run_id] = path.as_slice() {
+                if map == "runs" {
+                    if let Some(owner) = state
+                        .get("runs")
+                        .and_then(|runs| runs.get(run_id))
+                        .and_then(|run| run.get("owner_id"))
+                        .and_then(Value::as_str)
+                    {
+                        self.insert(run_id, owner);
+                    }
+                }
+            }
+        }
+    }
+}
+/// Replay one complete journal record onto `state_value`, noting the runs it removes in
+/// `removed_runs`; returns the record's actor.
 fn replay_record(
     line: &[u8],
     state_value: &mut Value,
     checksum: &mut String,
     sequence: &mut u64,
+    removed_runs: &mut RemovedRuns,
 ) -> Result<String> {
     let envelope: Value =
         serde_json::from_slice(line).context("journal_corrupt: complete record is invalid")?;
@@ -794,6 +849,7 @@ fn replay_record(
                 "journal_corrupt: checksum mismatch"
             );
             for patch in record.patches {
+                removed_runs.note(state_value, &patch);
                 apply_patch(state_value, patch)?;
             }
             *checksum = actual;
@@ -811,6 +867,7 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
     let mut sequence = 0;
     let mut committed = 0;
     let mut actor_bytes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut removed_runs = RemovedRuns::default();
     loop {
         let mut line = Vec::new();
         let count = std::io::Read::by_ref(&mut replay)
@@ -827,7 +884,13 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
             torn_tail = Some(line);
             break;
         }
-        let actor = replay_record(&line, &mut state_value, &mut checksum, &mut sequence)?;
+        let actor = replay_record(
+            &line,
+            &mut state_value,
+            &mut checksum,
+            &mut sequence,
+            &mut removed_runs,
+        )?;
         *actor_bytes.entry(actor).or_default() += line.len() as u64;
         ensure!(
             state_value.get("sequence").and_then(Value::as_u64) == Some(sequence),
@@ -846,6 +909,7 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
         committed,
         torn_tail,
         actor_bytes,
+        removed_runs,
     })
 }
 fn recovered_state(
@@ -1042,6 +1106,7 @@ impl Broker {
             committed,
             torn_tail,
             actor_bytes,
+            removed_runs,
         } = replay_journal(&journal)?;
         let state = recovered_state(state_value, sequence, bootstrap_key, initial_name)?;
         if let Some(torn_bytes) = torn_tail {
@@ -1066,6 +1131,7 @@ impl Broker {
             name_refusals: BTreeMap::new(),
             quotas: Quotas::STANDARD,
             journal_actor_bytes: actor_bytes,
+            removed_runs,
             #[cfg(feature = "join-by-name")]
             join_runtime: join::Runtime::default(),
         };
@@ -1388,7 +1454,16 @@ impl Broker {
         let mut state = self.state.clone();
         #[cfg(feature = "join-by-name")]
         join::prune_expired(&mut state, now);
-        let expired_uploads = prune_retained(&mut state, now, &self.quotas);
+        let Pruned {
+            uploads: expired_uploads,
+            runs: removed_runs,
+        } = prune_retained(&mut state, now, &self.quotas);
+        // Noted now, before the commit and before `run.revoke` might ask about one of them: a
+        // run removed here expired more than a day ago, so nothing honors it whether or not
+        // this commit lands, and the index is asked only about a run the state does not hold.
+        for (run_id, owner_id) in &removed_runs {
+            self.removed_runs.insert(run_id, owner_id);
+        }
         let result = match self.mutate(&mut state, actor, req) {
             Ok(result) => result,
             Err(error) => {
@@ -3542,13 +3617,20 @@ impl Broker {
     fn mutate_run_revoke(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
-        let run = s
-            .runs
-            .get_mut(text(p, "run_id")?)
-            .filter(|r| r.owner_id == *who)
-            .ok_or_else(|| anyhow!("forbidden: owned run unavailable"))?;
-        run.revoked = true;
-        Ok(json!(run))
+        let run_id = text(p, "run_id")?;
+        match s.runs.get_mut(run_id) {
+            Some(run) if run.owner_id == *who => {
+                run.revoked = true;
+                Ok(json!(run))
+            }
+            // Retention removed it, a day after it expired ([`RemovedRuns`]). Nothing honors
+            // it, so it is revoked, and its owner is told so however long after it ended they
+            // ask. Anyone else is answered as for a run that never existed.
+            None if self.removed_runs.owned_by(run_id, who) => {
+                Ok(json!({"id": run_id, "owner_id": who, "revoked": true, "removed": true}))
+            }
+            _ => bail!("forbidden: owned run unavailable"),
+        }
     }
     fn mutate_reference_create(
         &self,
@@ -3849,9 +3931,8 @@ fn within<T: Serialize>(items: Vec<T>, budget: usize) -> Vec<T> {
 /// carried a time), unfinished uploads untouched for [`BLOB_UPLOAD_TTL_SECS`], invitations
 /// expired more than [`INVITATION_RETENTION_SECS`] ago, and runs, with their grants, expired
 /// more than [`RUN_RETENTION_SECS`] ago. At most [`PRUNE_BATCH`] of each per call, so one
-/// journal record stays small however much aged out at once. Returns the removed uploads,
-/// whose files are deleted once the commit lands.
-fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Vec<String> {
+/// journal record stays small however much aged out at once.
+fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Pruned {
     fn aged(at: Option<u64>, now: u64, ttl: u64) -> bool {
         at.is_none_or(|at| now.saturating_sub(at) >= ttl)
     }
@@ -3886,18 +3967,25 @@ fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Vec<String> {
     for id in invitations {
         s.invitations.remove(&id);
     }
-    let runs: BTreeSet<String> = s
+    let runs: BTreeMap<String, String> = s
         .runs
         .values()
         .filter(|run| run.expires_at.saturating_add(RUN_RETENTION_SECS) <= now)
-        .map(|run| run.id.clone())
+        .map(|run| (run.id.clone(), run.owner_id.clone()))
         .take(PRUNE_BATCH)
         .collect();
     if !runs.is_empty() {
-        s.runs.retain(|id, _| !runs.contains(id));
-        s.grants.retain(|_, run| !runs.contains(run));
+        s.runs.retain(|id, _| !runs.contains_key(id));
+        s.grants.retain(|_, run| !runs.contains_key(run));
     }
-    uploads
+    Pruned { uploads, runs }
+}
+/// What [`prune_retained`] removed that outlives the state.
+struct Pruned {
+    /// Unfinished uploads, whose files are deleted once the commit lands.
+    uploads: Vec<String>,
+    /// Runs, by ID, with their owners (see [`RemovedRuns`]).
+    runs: BTreeMap<String, String>,
 }
 
 /// Cache `cached` under `key` for `actor`, first dropping the actor's oldest results so it
