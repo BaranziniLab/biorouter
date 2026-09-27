@@ -784,11 +784,18 @@ impl Broker {
     ) -> Result<Self> {
         Self::open_inner(root, bootstrap_key, directory, None)
     }
-    /// Point the sibling-workspace probe of `workspace.rename` at another directory than
-    /// `/tmp`. Test builds only.
+    /// Point the sibling-workspace probe of `workspace.rename`, and the runtime directory
+    /// [`Broker::prepare_runtime`] binds, at another directory than `/tmp`. Test builds only.
     #[cfg(feature = "test-seams")]
     pub fn set_runtime_root(&mut self, runtime_root: &Path) {
         self.runtime_root = runtime_root.to_path_buf();
+    }
+    /// What `serve` does before it binds its socket: read the recorded runtime, choose (and
+    /// journal) the runtime directory under the runtime root, and return the socket path.
+    /// `node_id` stands in for the node identity `runtime.json` must name. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn prepare_runtime(&mut self, node_id: &str) -> Result<PathBuf> {
+        persisted_runtime(self, node_id)
     }
     /// Open (or initialize) a workspace. `initial_name` names a workspace this call creates; an
     /// existing workspace keeps its stored name.
@@ -3651,6 +3658,11 @@ fn recorded_runtime(broker: &Broker, node_id: &str) -> Result<Option<String>> {
                     && metadata.len() <= MAX_FRAME as u64,
                 "unsafe_runtime: invalid private runtime descriptor"
             );
+            // An empty descriptor records nothing: older `status` and `stop` created one when
+            // runtime.json was missing, and the first start must not read it as corrupt.
+            if metadata.len() == 0 {
+                return Ok(None);
+            }
             let value: Value = serde_json::from_reader(file)
                 .context("unsafe_runtime: runtime descriptor is corrupt")?;
             ensure!(
@@ -3668,7 +3680,7 @@ fn recorded_runtime(broker: &Broker, node_id: &str) -> Result<Option<String>> {
                 .parent()
                 .ok_or_else(|| anyhow!("unsafe_runtime: runtime directory missing"))?;
             ensure!(
-                directory.parent() == Some(Path::new("/tmp")),
+                directory.parent() == Some(broker.runtime_root.as_path()),
                 "unsafe_runtime: runtime directory must be directly under /tmp"
             );
             Some(
@@ -3715,10 +3727,10 @@ fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
         state.runtime_basename = Some(basename.clone());
         broker.commit(state, "system", "workspace.bind_runtime")?;
     }
-    reclaim_runtime_socket(uid, &basename)
+    reclaim_runtime_socket(&broker.runtime_root, uid, &basename)
 }
-fn reclaim_runtime_socket(uid: u32, basename: &str) -> Result<PathBuf> {
-    let directory = PathBuf::from("/tmp").join(basename);
+fn reclaim_runtime_socket(runtime_root: &Path, uid: u32, basename: &str) -> Result<PathBuf> {
+    let directory = runtime_root.join(basename);
     match fs::symlink_metadata(&directory) {
         Ok(metadata) => ensure!(
             metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o7777 == 0o711,
@@ -4006,10 +4018,7 @@ pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> R
     match command {
         "start" => start(root, key, name),
         "status" => {
-            let mut file = private_file(&root.join("runtime.json"), false)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            let info: Value = serde_json::from_slice(&bytes)?;
+            let info = existing_runtime_descriptor(root)?.ok_or_else(|| anyhow!(NOT_RUNNING))?;
             let socket = PathBuf::from(text(&info, "socket")?);
             let uid = number(&info, "host_uid")? as u32;
             validate_socket(&socket, uid)?;
@@ -4194,6 +4203,50 @@ fn read_runtime_descriptor(root: &Path) -> Result<Option<Value>> {
     );
     Ok(serde_json::from_reader(file).ok())
 }
+/// `status` and `stop` for a state directory that has no runtime descriptor.
+const NOT_RUNNING: &str = "not_running: no broker is running from this state directory; start it with biorouter-crew start";
+/// `runtime.json` for `status` and `stop`, read without creating anything: `None` when the
+/// state directory or the descriptor is missing, or the descriptor is empty (older `status` and
+/// `stop` created an empty one). The state directory must be private, and the descriptor a
+/// private regular file with one link.
+fn existing_runtime_descriptor(root: &Path) -> Result<Option<Value>> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) => ensure!(
+            metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o077 == 0,
+            "unsafe_storage: state directory must be owner-only and not a symlink"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join("runtime.json"))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("unsafe_runtime: cannot read runtime descriptor"),
+    };
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.nlink() == 1
+            && metadata.len() <= MAX_FRAME as u64,
+        "unsafe_runtime: invalid private runtime descriptor"
+    );
+    if metadata.len() == 0 {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .context("unsafe_runtime: runtime descriptor is corrupt")
+}
 /// `hello` from the broker `info` describes, checked as `status` checks it: the socket and its
 /// listener belong to the host account, and the broker answers for the recorded workspace and
 /// key.
@@ -4267,11 +4320,7 @@ fn last_log_line(root: &Path) -> String {
 #[cfg(target_os = "linux")]
 fn stop(root: &Path) -> Result<Value> {
     use std::os::fd::FromRawFd;
-    private_dir(root)?;
-    let mut file = private_file(&root.join("runtime.json"), false)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let info: Value = serde_json::from_slice(&bytes)?;
+    let info = existing_runtime_descriptor(root)?.ok_or_else(|| anyhow!(NOT_RUNNING))?;
     let owner = number(&info, "host_uid")? as u32;
     ensure!(
         owner == unsafe { libc::geteuid() },
