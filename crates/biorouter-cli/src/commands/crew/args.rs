@@ -12,7 +12,7 @@
 //! The shared daemon resolves names against the person's own workspace snapshot. UUID-shaped
 //! text is always an ID and is sent as it is, so scripts that pass IDs keep working.
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -74,6 +74,7 @@ pub struct CrewOptions {
     /// Read the human approval key from stdin's first line instead of a hidden prompt.
     #[arg(long, global = true)]
     pub approval_key_stdin: bool,
+    /// Print text for people (the default), indented JSON, or one JSON value per line.
     #[arg(long, global = true, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
     /// Show the machine IDs of people, teams, channels, tasks and files in text output.
@@ -89,12 +90,15 @@ pub struct CrewOptions {
 
 #[derive(Subcommand)]
 pub enum CrewCommand {
+    /// Start, check or stop this profile's shared Biorouter daemon.
     #[command(subcommand)]
     Daemon(DaemonCommand),
+    /// Set up, unlock or lock the passphrase vault that can hold device keys.
     #[command(subcommand)]
     Credentials(CredentialCommand),
     /// Show saved connections and their daemon-reported state.
     Status,
+    /// List, save, change or remove this computer's saved connections.
     #[command(subcommand)]
     Connections(ConnectionCommand),
     /// Authenticate SSH through the shared daemon's owned authentication session.
@@ -106,20 +110,27 @@ pub enum CrewCommand {
     /// Join the workspace a saved connection points to: show this computer's code for the
     /// host, then wait until they let you in.
     Join(JoinArgs),
+    /// Show the workspace, set it up once as its host, or rename it.
     #[command(subcommand)]
     Workspace(WorkspaceCommand),
+    /// Invite people to the workspace, let them in with their code, or remove them (host).
     #[command(subcommand)]
     Enroll(EnrollmentCommand),
     /// List the people in the selected workspace, or add one to a team or channel.
     Members(MembersArgs),
+    /// List, create or rename teams.
     #[command(subcommand)]
     Teams(TeamCommand),
+    /// List, create, rename, archive or mark channels read.
     #[command(subcommand)]
     Channels(ChannelCommand),
+    /// Invite a member to a team or channel, or accept an invitation.
     #[command(subcommand)]
     Invites(InvitationCommand),
+    /// Show or set your display name and avatar.
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// Hand a channel you own to another member, or accept one offered to you.
     #[command(subcommand)]
     Ownership(OwnershipCommand),
     /// Remove a member from a channel you own.
@@ -138,9 +149,12 @@ pub enum CrewCommand {
     Search {
         /// The channel: methods, '#methods' or analysis-lab/methods.
         channel: String,
+        /// The words to find, in any letter case.
         query: String,
+        /// How many matches to return, 1 to 200.
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=200))]
         limit: u16,
+        /// Continue after this message cursor.
         #[arg(long)]
         after: Option<String>,
     },
@@ -148,47 +162,67 @@ pub enum CrewCommand {
     Watch(WatchArgs),
     /// Post as your own authenticated workspace identity.
     Send(SendArgs),
-    /// Show the channel/context scope of an existing grant.
-    Context { session: String },
+    /// Show the channels an existing chat grant may read and post in.
+    Context {
+        /// The chat's session ID.
+        session: String,
+    },
+    /// Upload, download, follow or share files and server paths.
     #[command(subcommand)]
     Files(FileCommand),
+    /// Start, follow or stop your own agent tasks.
     #[command(subcommand)]
     Tasks(TaskCommand),
+    /// Give a chat access to Crew, list access, or revoke it.
     #[command(subcommand)]
     Grants(GrantCommand),
+    /// Show or change how this computer and the workspace treat privacy.
     #[command(subcommand)]
     Privacy(PrivacyCommand),
 }
 
 #[derive(Subcommand)]
 pub enum DaemonCommand {
+    /// Start the shared daemon and choose its approval secret.
     Start,
+    /// Show whether the shared daemon is running, without asking for the approval secret.
     Status,
+    /// Stop the shared daemon, for the desktop app too.
     Stop,
 }
 
 #[derive(Subcommand)]
 pub enum CredentialCommand {
+    /// Show whether device keys are in the system keyring or the vault, and whether it is locked.
     Status,
+    /// Set up a passphrase vault for device keys; asks for the new passphrase twice.
     Init,
+    /// Open the vault with its passphrase.
     Unlock,
+    /// Close the vault.
     Lock,
 }
 
 #[derive(Subcommand)]
 pub enum ConnectionCommand {
+    /// List saved connections with their state and last error.
     List,
+    /// Show one saved connection in detail.
     Show,
     /// Prepare this device's enrollment public key in the daemon.
     Prepare,
     /// Save a verified connection descriptor from JSON. Use - for stdin.
     Save {
+        /// The JSON descriptor file, or - for stdin.
         input: PathBuf,
     },
     /// Replace the selected connection descriptor from JSON. Use - for stdin.
     Update {
+        /// The JSON descriptor file, or - for stdin.
         input: PathBuf,
     },
+    /// Remove the selected connection from this computer and delete its device key for the
+    /// workspace.
     Remove,
     /// Save a connection from the invitation your host sent. Use - to paste it on stdin.
     JoinInvitation(JoinInvitationArgs),
@@ -229,8 +263,11 @@ pub struct JoinInvitationArgs {
     /// username@server. The invitation's port and jump host are then not applied.
     #[arg(long)]
     pub ssh_target: Option<String>,
+    /// The server's SSH port.
     #[arg(long)]
     pub port: Option<u16>,
+    /// The SSH private key file to sign in with. A relative path or a leading ~/ is made
+    /// absolute before it is saved.
     #[arg(long)]
     pub identity_file: Option<String>,
     /// A jump route. An empty value means none, even when the invitation suggests one.
@@ -257,11 +294,13 @@ pub struct JoinArgs {
 
 #[derive(Subcommand)]
 pub enum WorkspaceCommand {
+    /// Show the workspace's privacy, people, teams, channels, invitations and agent grants.
     Show,
     /// Initialize the workspace using this device's prepared public identity.
     Bootstrap,
     /// Rename the workspace (host only): lowercase letters, numbers and dashes.
     Rename {
+        /// The new name.
         name: String,
     },
 }
@@ -278,6 +317,7 @@ pub struct SecretInput {
 
 #[derive(Subcommand)]
 pub enum EnrollmentCommand {
+    /// Prepare this computer's device key (the same as connections prepare).
     Prepare,
     /// Invite someone to join the workspace by their username on the server (host).
     Invite(EnrollInviteArgs),
@@ -288,6 +328,7 @@ pub enum EnrollmentCommand {
         /// The person, as @username.
         person: String,
         /// The 16-character code they sent you, like 7QK2-M9XA-3JTP-WZ4D.
+        #[arg(value_parser = device_code)]
         code: String,
         /// Replace a code you already approved for them.
         #[arg(long)]
@@ -353,7 +394,8 @@ pub enum MembersCommand {
     /// own), or to channels you own. They already joined the workspace, so there is nothing
     /// for them to accept.
     #[command(
-        after_help = "Examples:\n  biorouter crew members add @bob --team \"Analysis Lab\" --channel '#methods'\n  biorouter crew members add @bob --channel analysis-lab/methods"
+        after_help = "Examples:\n  biorouter crew members add @bob --team \"Analysis Lab\" --channel '#methods'\n  biorouter crew members add @bob --channel analysis-lab/methods",
+        group(ArgGroup::new("place").required(true).multiple(true).args(["team", "channels"]))
     )]
     Add {
         /// The person, as @username. They must already be in the workspace.
@@ -371,8 +413,11 @@ pub enum MembersCommand {
 
 #[derive(Subcommand)]
 pub enum TeamCommand {
+    /// List your teams.
     List,
+    /// Create a team, with its #general channel.
     Create {
+        /// The team's name.
         name: String,
     },
     /// Rename a team you created.
@@ -386,19 +431,25 @@ pub enum TeamCommand {
 
 #[derive(Subcommand)]
 pub enum ChannelCommand {
+    /// List your channels, with their classification, owner and unread count.
     List {
         /// Only this team's channels.
         #[arg(long)]
         team: Option<String>,
     },
+    /// Create a channel in a team.
     Create {
+        /// The channel's name; it is saved lowercase with dashes.
         name: String,
         /// The team: its name or handle.
         #[arg(long)]
         team: String,
+        /// Restricted channels are read only by private models.
         #[arg(long, value_enum, default_value = "restricted")]
         classification: Classification,
     },
+    /// Archive a channel you own, for everyone. Nobody can post in it again, and it cannot be
+    /// undone.
     Archive {
         /// The channel: methods, '#methods' or analysis-lab/methods.
         channel: String,
@@ -421,6 +472,7 @@ pub enum ChannelCommand {
 
 #[derive(Subcommand)]
 pub enum InvitationCommand {
+    /// List the invitations you sent or received.
     List,
     /// Invite a member to a team you created or a channel you own.
     Create {
@@ -443,8 +495,11 @@ pub enum InvitationCommand {
 
 #[derive(Subcommand)]
 pub enum ProfileCommand {
+    /// Show your name and enrolled computers.
     Show,
+    /// Set your display name, and optionally an avatar.
     Set {
+        /// Your display name.
         nickname: String,
         /// Emoji or initials, up to the workspace's supported length.
         #[arg(long)]
@@ -472,10 +527,13 @@ pub enum OwnershipCommand {
 pub struct HistoryArgs {
     /// The channel: methods, '#methods' or analysis-lab/methods.
     pub channel: String,
+    /// Read the page before this message cursor.
     #[arg(long, conflicts_with = "after")]
     pub before: Option<String>,
+    /// Read the page after this message cursor.
     #[arg(long, conflicts_with = "before")]
     pub after: Option<String>,
+    /// How many messages to read, 1 to 200.
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=200))]
     pub limit: u16,
     /// Read the newest matching page.
@@ -487,12 +545,14 @@ pub struct HistoryArgs {
 pub struct WatchArgs {
     /// The channel: methods, '#methods' or analysis-lab/methods.
     pub channel: String,
+    /// Start after this message cursor.
     #[arg(long)]
     pub after: Option<String>,
 }
 
 #[derive(Args)]
 pub struct TextInput {
+    /// The text itself.
     #[arg(long, conflicts_with = "input", required_unless_present = "input")]
     pub text: Option<String>,
     /// Read UTF-8 content from a file, or - for stdin.
@@ -501,55 +561,81 @@ pub struct TextInput {
 }
 
 #[derive(Args)]
+#[command(group(
+    ArgGroup::new("content")
+        .required(true)
+        .multiple(true)
+        .args(["text", "input", "attachments", "references"])
+))]
 pub struct SendArgs {
     /// The channel: methods, '#methods' or analysis-lab/methods.
     pub channel: String,
+    /// The message text.
     #[arg(long, conflicts_with = "input")]
     pub text: Option<String>,
     /// Read UTF-8 content from a file, or - for stdin.
     #[arg(long, conflicts_with = "text")]
     pub input: Option<PathBuf>,
-    #[arg(long = "attachment")]
+    /// An uploaded file's attachment ID. Repeat for more.
+    #[arg(long = "attachment", value_name = "ATTACHMENT_ID")]
     pub attachments: Vec<String>,
-    #[arg(long = "reference")]
+    /// A remote reference's ID. Repeat for more.
+    #[arg(long = "reference", value_name = "REFERENCE_ID")]
     pub references: Vec<String>,
 }
 
 #[derive(Subcommand)]
 pub enum FileCommand {
+    /// Upload a file to a channel. It is posted only when you send it with --attachment.
     Upload {
         /// The channel: methods, '#methods' or analysis-lab/methods.
         channel: String,
+        /// The file to upload.
         file: PathBuf,
     },
+    /// Resume a paused or interrupted transfer with its original file.
     Resume {
+        /// The transfer's ID.
         transfer: String,
+        /// The original file to upload, or the original download destination.
         file: PathBuf,
+        /// Allow replacing the download destination.
         #[arg(long)]
         overwrite: bool,
     },
+    /// Show one transfer.
     Status {
+        /// The transfer's ID.
         transfer: String,
     },
     /// Follow daemon transfer progress; Ctrl-C leaves the transfer running.
     Watch {
+        /// The transfer's ID.
         transfer: String,
     },
+    /// List this connection's transfers.
     Pending,
+    /// Pause a running transfer.
     Pause {
+        /// The transfer's ID.
         transfer: String,
     },
     /// Remove a transfer receipt, cleaning up its owned partial download when needed.
     Forget {
+        /// The transfer's ID.
         transfer: String,
         /// Original destination for an incomplete download. Published files are retained.
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Download a shared file.
     Download {
+        /// The file's attachment ID.
         blob: String,
+        /// Where to save it.
         #[arg(long)]
         output: PathBuf,
+        /// Allow replacing an existing file there.
         #[arg(long)]
         overwrite: bool,
     },
@@ -557,49 +643,67 @@ pub enum FileCommand {
     Reference {
         /// The channel: methods, '#methods' or analysis-lab/methods.
         channel: String,
+        /// The path on the server.
         path: String,
+        /// The name people see for it.
         #[arg(long)]
         label: String,
     },
+    /// Show one remote reference.
     ShowReference {
+        /// The reference's ID.
         reference: String,
     },
 }
 
 #[derive(Subcommand)]
 pub enum TaskCommand {
+    /// Start your own agent on a prompt; it reads the channel and posts its result there.
+    #[command(group(ArgGroup::new("posting").required(true).args(["allow_posting"])))]
     Start {
         /// The channel the task posts to: methods, '#methods' or analysis-lab/methods.
         channel: String,
         #[command(flatten)]
         prompt: TextInput,
+        /// The provider's name in your Biorouter configuration.
         #[arg(long)]
         provider: String,
+        /// The model to run.
         #[arg(long)]
         model: String,
         /// Another channel the task may read. Repeat for more.
         #[arg(long = "context-channel")]
         context_channels: Vec<String>,
-        /// Allow this owned task to publish results to its destination channel.
+        /// Allow this owned task to publish results to its destination channel. Required.
         #[arg(long)]
         allow_posting: bool,
     },
+    /// List your tasks on this connection.
     List,
+    /// Show one task.
     Show {
+        /// The task's ID.
         run: String,
     },
+    /// Follow a task until it ends; Ctrl-C stops watching, not the task.
     Watch {
+        /// The task's ID.
         run: String,
     },
+    /// Stop a task and revoke its access.
     Cancel {
+        /// The task's ID.
         run: String,
     },
 }
 
 #[derive(Subcommand)]
 pub enum GrantCommand {
+    /// List every chat and task with Crew access, its state and time left.
     List,
+    /// Give an existing chat access to a channel.
     Grant {
+        /// The chat's session ID (biorouter session list shows it).
         session: String,
         /// The channel the chat may read and post in: methods, '#methods' or
         /// analysis-lab/methods.
@@ -610,27 +714,48 @@ pub enum GrantCommand {
     },
     /// Stop a chat or task using Crew. Exits non-zero unless the workspace confirmed it.
     Revoke {
+        /// The chat's session ID.
         session: String,
     },
 }
 
 #[derive(Subcommand)]
 pub enum PrivacyCommand {
+    /// Show the privacy, institution and policy epoch of your connection and the workspace.
     Show,
+    /// Choose how this computer treats the workspace.
     SetPersonal {
+        /// private or public.
         #[arg(value_enum)]
         mode: PrivacyMode,
         /// Canonical institution ID for this SSH cluster, required for a new Private label.
         #[arg(long = "institution")]
         institution_id: Option<String>,
     },
+    /// Change the workspace's privacy for everyone (host). It ends every agent grant.
     SetWorkspace {
+        /// private or public.
         #[arg(value_enum)]
         mode: PrivacyMode,
         /// Confirm the immutable workspace institution as its authorized host.
         #[arg(long = "institution")]
         institution_id: Option<String>,
     },
+}
+
+/// A device code as the joiner sent it: 16 letters and digits, whatever separates them. Checked
+/// while the command line is read, so a mistyped code is refused before anything is asked or
+/// sent. The broker applies the full Crockford normalization and refuses what it cannot read.
+pub(super) fn device_code(code: &str) -> Result<String, String> {
+    let bare: Vec<char> = code.chars().filter(|c| c.is_alphanumeric()).collect();
+    if bare.len() == 16 && bare.iter().all(char::is_ascii_alphanumeric) {
+        Ok(code.to_owned())
+    } else {
+        Err(
+            "A code has 16 letters and digits, like 7QK2-M9XA-3JTP-WZ4D. Copy it exactly as they sent it."
+                .to_owned(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1138,6 +1263,97 @@ mod tests {
             ID
         ]));
         assert!(refused(&["enroll", "invite", "@bob", "--public-key", "k"]));
+    }
+
+    /// CLI-17: `--help` is where the manual sends people, so every command and group says what
+    /// it does, and every positional argument what it takes.
+    #[test]
+    fn every_command_and_positional_argument_has_help_text() {
+        fn check(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+            for sub in command.get_subcommands().filter(|sub| !sub.is_hide_set()) {
+                let name = format!("{path} {}", sub.get_name());
+                if sub.get_about().is_none() && sub.get_long_about().is_none() {
+                    missing.push(name.clone());
+                }
+                for arg in sub.get_positionals().filter(|arg| !arg.is_hide_set()) {
+                    if arg.get_help().is_none() && arg.get_long_help().is_none() {
+                        missing.push(format!("{name} <{}>", arg.get_id()));
+                    }
+                }
+                check(sub, &name, missing);
+            }
+        }
+        let mut missing = Vec::new();
+        check(&TestCli::command(), "crew", &mut missing);
+        assert!(missing.is_empty(), "no help text: {missing:#?}");
+
+        let mut command = TestCli::command();
+        let remove = command
+            .find_subcommand_mut("connections")
+            .and_then(|connections| connections.find_subcommand_mut("remove"))
+            .expect("connections remove");
+        let help = remove.render_long_help().to_string();
+        assert!(help.contains("device key"), "{help}");
+    }
+
+    /// CLI-14: a wrong command line is refused while it is read, with clap's usage status 2,
+    /// before any approval secret is asked for or a daemon is started.
+    #[test]
+    fn usage_mistakes_are_refused_before_anything_is_asked() {
+        let usage = |args: &[&str]| {
+            let mut argv = vec!["crew"];
+            argv.extend_from_slice(args);
+            match TestCli::try_parse_from(argv) {
+                Ok(_) => panic!("{args:?} should be refused"),
+                Err(error) => error,
+            }
+        };
+        for args in [
+            &[
+                "tasks",
+                "start",
+                "methods",
+                "--text",
+                "hi",
+                "--provider",
+                "p",
+                "--model",
+                "m",
+            ][..],
+            &["members", "add", "@bob"],
+            &["send", "methods"],
+            &["enroll", "approve", "@bob", "7QK2-M9XA"],
+            &["enroll", "approve", "@bob", "7QK2-M9XA-3JTP-WZ4\u{0414}"],
+        ] {
+            let error = usage(args);
+            assert_eq!(error.exit_code(), 2, "{args:?}: {error}");
+        }
+        let code = usage(&["enroll", "approve", "@bob", "7QK2-M9XA"]).to_string();
+        assert!(code.contains("A code has 16 letters and digits"), "{code}");
+        assert!(usage(&[
+            "tasks",
+            "start",
+            "methods",
+            "--text",
+            "hi",
+            "--provider",
+            "p",
+            "--model",
+            "m"
+        ])
+        .to_string()
+        .contains("--allow-posting"));
+
+        for args in [
+            &["send", "methods", "--attachment", ID][..],
+            &["send", "methods", "--reference", ID],
+            &["send", "methods", "--input", "-"],
+            &["members", "add", "@bob", "--channel", "methods"],
+            &["members", "add", "@bob", "--team", "lab"],
+            &["enroll", "approve", "@bob", "7qk2 m9xa 3jtp wz4d"],
+        ] {
+            parse(args);
+        }
     }
 
     #[test]

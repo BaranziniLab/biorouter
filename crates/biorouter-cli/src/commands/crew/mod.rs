@@ -1533,15 +1533,11 @@ async fn enrollment(api: &Api, command: EnrollmentCommand) -> Result<Reply> {
     })
 }
 
-/// A device code as the joiner sent it: 16 letters and digits, whatever separates them. The
-/// broker applies the full Crockford normalization and refuses what it cannot read.
+/// [`args::device_code`] again, for a caller that did not come through the command line.
 fn check_device_code(code: &str) -> Result<()> {
-    let bare: Vec<char> = code.chars().filter(|c| c.is_alphanumeric()).collect();
-    ensure!(
-        bare.len() == 16 && bare.iter().all(char::is_ascii_alphanumeric),
-        "A code has 16 letters and digits, like 7QK2-M9XA-3JTP-WZ4D. Copy it exactly as they sent it."
-    );
-    Ok(())
+    args::device_code(code)
+        .map(drop)
+        .map_err(anyhow::Error::msg)
 }
 
 async fn enroll_invite(api: &Api, args: EnrollInviteArgs) -> Result<Reply> {
