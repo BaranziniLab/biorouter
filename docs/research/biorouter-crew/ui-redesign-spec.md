@@ -1,7 +1,7 @@
 # Crew UI redesign specification
 
 > **What this is.** The final design for the BioRouter Crew desktop GUI: a clean, Slack-like, layered interface built only from BioRouter's design system. It covers the layout, every screen and control mapped from the current UI, the component and file architecture, progressive disclosure, the full copy deck, identity rules, revoke, privacy, motion, accessibility, theming, the regression-test migration and the acceptance criteria novice reviewers will apply.
-> **Status:** Current. Approved design, 2026-09-23. Nothing in it is built yet; the implementation workplan builds it in packages, and [implementation status](implementation-status.md) records what lands.
+> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). Where this spec and the code disagree, the code is what shipped.
 > **Audience:** Implementers of the Crew GUI (`ui/desktop/src/components/crew/`), the daemon, broker and CLI implementers whose data it shows, reviewers who judge it with a novice walkthrough, and whoever migrates the Crew regression tests.
 
 Crew today is one 2,175-line component (`CrewView.tsx`) that renders a form wearing a page header: a native
@@ -530,7 +530,7 @@ menu** (right-click, or Shift+F10 on the focused row): Channel details · Mark a
 | **Message group** | Head row: 32px avatar (people: circle with initials; agent posts: square with the Bot glyph), author (`PersonName context="header"`), badges, time (`text-supporting tabular-nums`, "10:02 AM"; full date and time in a `Tooltip`). Continuation rows show only the body; the time appears in the 44px gutter on hover and focus. A group breaks on a new author, a gap over 5 minutes, a day divider, the New line, or human versus agent. |
 | **Agent author** | "Alice Chen's agent" (or "Your agent" for mine), `@alice`, `Badge` "Agent". |
 | **Restricted marker** | Shown only when a message's restriction differs from the channel's: a muted "Restricted" after the time with the tooltip "Only private models can read this message." |
-| **Body** | `text-body whitespace-pre-wrap [overflow-wrap:anywhere]`, plain text as today; long bodies fold with `utils/messageClamp.ts`. |
+| **Body** | *Amended at build.* Markdown, rendered by the Crew-only renderer in `crew/timeline/MessageBody.tsx`, not the plain text this row first specified; the [UI-TIMELINE outcome](implementation-plan.md#work-packages-and-order) gives its rules. Long bodies fold with `utils/messageClamp.ts`. |
 | **Row actions** | A floating cluster at top-right (28px ghost buttons on the popover surface): **Copy text**, then `⋯` → Copy message ID. Revealed on `:hover` and `:focus-within`; always visible under `@media (hover: none)`. |
 | **Task status row** | A line, not a card (design.md D-17): a 32px agent tile, "Your agent · {status word}" (`text-label`), the task's first line muted beneath, the inline action, a visible **Stop** (`ghost sm text-text-danger`, accessible name "Stop task") only while cancellable, and `⋯` (Copy task ID, Open chat history, Copy error). Anchored after the first message carrying the run's `run_id` (the agent's "Task: …" post), else at the end of the log. Only the owner's runs appear (`state.runs` is owner-scoped). |
 | **Viewing history** | While a history page is shown, a pill 12px above the composer: **Viewing earlier messages** (pinned) and **Jump to latest** (clears the page, then `refresh()`). Observer message frames are still ignored while paging. |
@@ -573,7 +573,7 @@ shadow, in a `px-4 pb-6 pt-3 bg-background-canvas` bar and the 760px column.
 | Part | Spec |
 |---|---|
 | Textarea | `aria-label="Message #methods"` (pinned), placeholder `Message #methods`, `rows={1}`, auto-grows to 40vh, `bg-transparent border-none px-0 py-1.5`. The keydown handler moves verbatim: Enter sends; Shift+Enter, `isComposing`, `keyCode 229` and key repeat do not. |
-| Attach | Ghost round `Paperclip` (accessible name "Attach", `aria-haspopup="menu"`) opening a `DropdownMenu`: **Upload a file…** (the secure native picker) and **Share a server path…** (dialog). No drag-and-drop: Crew's file capability comes only from the main-process picker. |
+| Attach | Ghost round `Paperclip` (accessible name "Attach", `aria-haspopup="menu"`) opening a `DropdownMenu`: **Upload a file…** (the secure native picker) and **Share a server path…** (dialog). *Amended by [D-DROP](implementation-plan.md#live-qa-round-2-design-changes-2026-09-24).* A file dragged onto the channel or pasted into the composer is shared too, after one confirmation in a native dialog the main process shows. The preload resolves the path with Electron's `webUtils.getPathForFile`, and page script never supplies it (`crew/files/FileDropZone.tsx`). So the picker is not the only door, and the daemon's credential floor applies to every registration. |
 | Ask my agent | `Button variant="ghost" size="sm"`, `Bot` icon, **Ask my agent** (pinned). Opens the pane in agent mode. Disabled while archived or unverified. |
 | Send | `Button shape="round"`, accessible name **Send message** (pinned), `ArrowUp`. `secondary` until there is content, then `default` (accent). While posting it shows the spinner, stays the same DOM node and ignores clicks (single flight). |
 | Chips | `Badge size="chip"` with a 14px `XIcon`. Remove names kept: "Remove counts.csv", "Remove remote reference Remote results" (pinned). Upload chips show a 16px progress ring and a Pause glyph while active. |
@@ -586,7 +586,7 @@ so the draft stays in the composer until the broker answers. A failed send keeps
 above the card; pressing Send again reuses the same key. Success clears only what was sent.
 
 **Files.** Attachment cards are 40px rows (`File` icon, name, human size in 1024 units such as "55 KB", ghost round
-**Save attachment** and, for images, **Preview image**, then `⋯` → Copy file ID, Copy SHA-256), with a thin
+**Save {name}** and, for images, **Preview {name}**, then `⋯` → **Save {name}…** and **Copy for support** with Copy file ID and Copy SHA-256; *amended by Q3-13 and Q3-26*, since one name for every card read the same), with a thin
 `Progress` along the bottom edge while downloading and Pause/Resume in the `⋯`. A server path is a row with the
 `Link` icon, the label and the path in a compact `CopyField`, plus a muted "Not uploaded" with the tooltip "Crew
 shares the path only. It doesn't check that the file exists or grant access to it." One transfers poller serves
@@ -1370,7 +1370,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `composer.archived` / `composer.verifying` | This channel is archived. · Verifying access… |
 | `composer.sendError` | Couldn't send. {error} |
 | `composer.postedMetadata` | Message sent, but its upload record couldn't be cleared. Remove it from Files. |
-| `file.*` | **Save attachment** (tooltip Save {name}) · **Preview image** · Attachment · Copy file ID · Copy SHA-256 |
+| `file.*` | *Amended by Q3-13 and Q3-26; `crew/files/copy.ts` is the source.* **Save {name}** · **Preview {name}** · **Hide preview of {name}** · **Save {name}…** · Copy for support · Attachment · Copy file ID · Copy SHA-256 |
 | `file.tooLarge` | {name} is larger than 1 GB. Crew can share files up to 1 GB. |
 | `transfer.state.*` | Starting… · Uploading {p}% · Downloading {p}% · Finishing… · Pausing… · Paused · Ready · Saved · Failed · Not confirmed |
 | `transfer.*` | Pause · Resume… · Remove from list *(tooltip: Removes the record on this computer. Shared files and saved downloads stay.)* |
