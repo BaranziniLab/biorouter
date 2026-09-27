@@ -28,6 +28,18 @@ const KNOWLEDGE_SELECTION_UNREAD =
   "Could not load this chat's knowledge bases, so none were selected automatically.";
 
 /**
+ * The daemon's refusal sentence, when that is what the create request threw.
+ *
+ * `POST /workflows/create` refuses with a plain-text body written for a person
+ * (why, and what to do instead), and the generated client throws that parsed
+ * body, a string, under `throwOnError`. Any other failure throws something
+ * else, and is not a refusal.
+ */
+function refusalSentence(error: unknown): string | null {
+  return typeof error === 'string' && error.trim() ? error.trim() : null;
+}
+
+/**
  * The primary a captured selection keeps: the one it names, if that base is
  * among the ones the workflow will see, and otherwise none.
  *
@@ -49,18 +61,6 @@ const KNOWLEDGE_SELECTION_UNREAD =
  * chat the workflow starts would fail; after a failed list, it would save the
  * primary as the only visible base and hide every other one.
  */
-/**
- * The daemon's refusal sentence, when that is what the create request threw.
- *
- * `POST /workflows/create` refuses with a plain-text body written for a person
- * (why, and what to do instead), and the generated client throws that parsed
- * body, a string, under `throwOnError`. Any other failure throws something
- * else, and is not a refusal.
- */
-function refusalSentence(error: unknown): string | null {
-  return typeof error === 'string' && error.trim() ? error.trim() : null;
-}
-
 function primaryAmong(
   primary: string | null | undefined,
   visible: readonly string[]
