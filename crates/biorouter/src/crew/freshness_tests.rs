@@ -339,6 +339,17 @@ async fn a_registry_that_names_no_readable_chat_restricts_every_chat() {
         freshness::REGISTRY_UNREADABLE
     );
 
+    // An unreadable registry is not an empty one: no vault is set up over the identities it
+    // may name.
+    let vault = crew
+        .init_vault(zeroize::Zeroizing::new(
+            "correct horse battery staple".into(),
+        ))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(vault.contains("can't be read"), "{vault}");
+
     // Repaired, nothing is restricted that holds no grant.
     fs::write(
         profile.registry_path(),

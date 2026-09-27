@@ -1229,6 +1229,13 @@ impl CrewManager {
         tokio::task::spawn_blocking(move || vault.status()).await?
     }
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
+        // A registry that cannot be read is not an empty one: the identities it names may hold
+        // keyring credentials a new vault would shadow (DAEMON-6).
+        self.refresh_registry().await;
+        ensure!(
+            self.unreadable_sessions().is_none(),
+            "Crew's saved settings on this computer (connections.json) can't be read, so an encrypted vault can't be set up yet. Update Biorouter to the version that saved them, or restore the file from a backup."
+        );
         ensure!(!file_credentials_enabled(), "Encrypted vault initialization requires a production credential profile, not the development plaintext backend");
         let registry = self.registry.lock().await;
         ensure!(registry.connections.is_empty() && registry.scopes.is_empty() && registry.replaced.is_empty() && registry.pending_device.is_none() && registry.completed_preparations.is_empty(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
