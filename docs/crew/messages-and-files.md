@@ -39,7 +39,9 @@ Crew reads Markdown. The box shows what you type, and the formatting appears onc
 - `**bold**`, `*italics*`, `~~struck~~`, `` `code` ``, lists, `>` quotes, `---` lines and tables
   work. `- [ ]` makes a checkbox readers cannot tick. `# Title` makes a bold line.
 - Three backticks on the lines before and after a block make a code box with **Copy code**.
-- Only `http`, `https` and `mailto` addresses become links. They open in your browser.
+- Only public `http` and `https` addresses become links. They open in your browser after you
+  confirm. An email address, or an address on a private network such as `localhost`,
+  `10.0.0.5` or `wiki.internal`, shows as text with the address beside it, for you to copy.
 - An image shows as a link such as "Image: gel". Crew never loads the picture.
 - HTML shows as typed.
 
