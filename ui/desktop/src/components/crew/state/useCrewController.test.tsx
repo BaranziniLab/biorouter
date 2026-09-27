@@ -729,6 +729,27 @@ describe('requests, intents and the composer seams', () => {
     );
   });
 
+  it('stops a task at its own route however the broker spelled its run ID (RENDERER-2)', async () => {
+    renderController();
+    await verifiedChannel();
+    // The run ID is the broker's. Interpolated raw, its dot segments sent this POST, with the
+    // person's proof, to `/crew/credentials/lock`.
+    await act(async () => {
+      await crew.cancelRun('../../../credentials/lock?');
+    });
+    const cancel = mocks.crewHttp.mock.calls.find(([, method]) => method === 'POST');
+    expect(cancel).toEqual([
+      '/connections/conn-1/runs/..%2F..%2F..%2Fcredentials%2Flock%3F/cancel',
+      'POST',
+      {},
+    ]);
+    const url = new URL(`http://127.0.0.1/crew${cancel?.[0]}`);
+    expect(url.pathname).toBe(
+      '/crew/connections/conn-1/runs/..%2F..%2F..%2Fcredentials%2Flock%3F/cancel'
+    );
+    expect(url.search).toBe('');
+  });
+
   it('clears the composer only when it still holds the seed', async () => {
     renderController();
     await verifiedChannel();

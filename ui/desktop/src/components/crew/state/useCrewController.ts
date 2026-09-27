@@ -651,7 +651,13 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   };
   const cancelRun = async (runId: string) => {
     await act('global', 'run.cancel', async () => {
-      await crewHttp(`/connections/${connectionId}/runs/${runId}/cancel`, 'POST', {});
+      // Both segments encoded: the run ID came from the broker, and a raw `../` in it would send
+      // this POST, with the person's proof, to another daemon route (RENDERER-2).
+      await crewHttp(
+        `/connections/${encodeURIComponent(connectionId)}/runs/${encodeURIComponent(runId)}/cancel`,
+        'POST',
+        {}
+      );
       await refresh();
     });
   };
@@ -666,7 +672,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     if (!snapshot || observedPrivacy?.connectionId !== connectionId)
       throw new Error(crewActionCopy.grantPrivacyUnverified);
     await crewHttp(
-      `/connections/${connectionId}/sessions/${encodeURIComponent(sessionId)}/grant`,
+      `/connections/${encodeURIComponent(connectionId)}/sessions/${encodeURIComponent(sessionId)}/grant`,
       'POST',
       {
         expected_mode: observedPrivacy.mode,

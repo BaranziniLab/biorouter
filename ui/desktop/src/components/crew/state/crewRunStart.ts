@@ -245,10 +245,14 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     }
     let started: unknown;
     try {
-      started = await crewHttp<unknown>(`/connections/${connectionId}/runs`, 'POST', {
-        ...payload,
-        request_id: pendingRun.current.key,
-      });
+      started = await crewHttp<unknown>(
+        `/connections/${encodeURIComponent(connectionId)}/runs`,
+        'POST',
+        {
+          ...payload,
+          request_id: pendingRun.current.key,
+        }
+      );
     } catch (failure) {
       if (failure instanceof CrewHttpError && failure.code === 'crew_start_outcome_unknown') {
         const destination = `${connection?.name ?? connectionId} / ${team?.name ?? teamId} / #${channel?.name ?? channelId}`;
