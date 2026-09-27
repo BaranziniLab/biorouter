@@ -484,6 +484,18 @@ impl HumanOptions {
         self.directory = directory;
         self
     }
+
+    /// Dates in UTC with a fixed "now", so a test reads the same in every time zone.
+    #[cfg(test)]
+    pub fn in_utc_at(now: i64) -> Self {
+        Self {
+            clock: Clock::Fixed {
+                now,
+                offset_seconds: 0,
+            },
+            ..Self::default()
+        }
+    }
 }
 
 /// The kind of value being printed, when the caller knows it better than its shape does.
@@ -795,6 +807,12 @@ pub fn authority_label(directory: &Directory, principal_id: &str, show_ids: bool
         .get(principal_id)
         .map_or_else(|| UNKNOWN_MEMBER.to_owned(), Person::label);
     Ctx::new(directory.clone(), show_ids, Clock::System).with_id(label, "ID", Some(principal_id))
+}
+
+/// One computer enrolled as the person, as their profile lists it: its fingerprint, the date
+/// it was added and how.
+pub fn device_text(device: &Value, options: &HumanOptions) -> String {
+    Ctx::new(options.directory.clone(), options.show_ids, options.clock).device_row(device)
 }
 
 /// Render `value` as text for a person.

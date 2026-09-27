@@ -229,7 +229,8 @@ pub enum ConnectionCommand {
     /// Remove the selected connection from this computer and delete its device key for the
     /// workspace. Asks you to type the connection's name first. A host's only computer is
     /// refused unless --give-up-host-controls is added, because nothing restores the host
-    /// controls afterwards.
+    /// controls afterwards. A host with other enrolled computers is shown them first: the host
+    /// controls continue only if one of them still has the workspace saved.
     Remove {
         /// Confirm by typing the connection's name again. Required when there is no terminal
         /// to ask in.

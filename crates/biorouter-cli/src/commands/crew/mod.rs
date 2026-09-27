@@ -1314,8 +1314,13 @@ fn connection_name(connection: &Value) -> String {
 #[derive(Debug, PartialEq, Eq)]
 enum HostStanding {
     NotHost,
-    /// The host, with another enrolled computer.
-    HostElsewhereToo,
+    /// The host, and the workspace lists more than one computer enrolled as them. `others` are
+    /// the listed computers other than this one. The list is not proof that any of them can still
+    /// act as host: a computer stays on it after its connection is removed there, because the
+    /// broker drops a device only when its whole member is revoked.
+    HostElsewhereToo {
+        others: Vec<Value>,
+    },
     /// The host, and no other computer of theirs is known: removing this one ends the host
     /// controls for good.
     OnlyHostComputer {
@@ -1325,7 +1330,18 @@ enum HostStanding {
     Unknown,
 }
 
-fn host_standing(snapshot: &Value) -> HostStanding {
+/// The first 16 hex digits of a device ID or a snapshot fingerprint, uppercased: the broker's
+/// fingerprint is those digits of the device ID, grouped.
+fn fingerprint_digits(text: &str) -> String {
+    text.chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(16)
+        .map(|digit| digit.to_ascii_uppercase())
+        .collect()
+}
+
+/// `own_device_id` is this connection's device ID, left out of `others` when it is known.
+fn host_standing(snapshot: &Value, own_device_id: Option<&str>) -> HostStanding {
     let actor = &snapshot["actor"];
     let Some(actor_id) = actor["id"].as_str() else {
         return HostStanding::Unknown;
@@ -1342,36 +1358,51 @@ fn host_standing(snapshot: &Value) -> HostStanding {
         return HostStanding::NotHost;
     }
     match actor["devices"].as_array() {
-        Some(devices) if devices.len() > 1 => HostStanding::HostElsewhereToo,
+        Some(devices) if devices.len() > 1 => {
+            let own = own_device_id
+                .map(fingerprint_digits)
+                .filter(|own| !own.is_empty());
+            HostStanding::HostElsewhereToo {
+                others: devices
+                    .iter()
+                    .filter(|device| {
+                        own.as_deref().is_none_or(|own| {
+                            device["fingerprint"]
+                                .as_str()
+                                .map(fingerprint_digits)
+                                .as_deref()
+                                != Some(own)
+                        })
+                    })
+                    .cloned()
+                    .collect(),
+            }
+        }
         _ => HostStanding::OnlyHostComputer {
             username: actor["username"].as_str().unwrap_or_default().to_owned(),
         },
     }
 }
 
-/// `connections remove` (CLI-1): delete the saved connection and this computer's device key.
-/// For a host's only computer that ends the host controls for good, so it is refused unless
-/// `--give-up-host-controls` says so; every removal is confirmed by typing the name.
-async fn remove_connection(
-    api: &Api,
-    confirm: Option<&str>,
+/// The device ID of the computer a saved connection belongs to, when the daemon says.
+fn own_device_id(connection: &Value) -> Option<&str> {
+    connection["device_id"]
+        .as_str()
+        .filter(|device| !fingerprint_digits(device).is_empty())
+}
+
+/// What `connections remove` says about hosting before it asks, or its refusal (CLI-1).
+/// `workspace` is already escaped for display, and `own_device_known` says whether `others`
+/// has this computer left out.
+fn host_removal_notice(
+    standing: &HostStanding,
+    workspace: &str,
+    own_device_known: bool,
     give_up_host_controls: bool,
-) -> Result<Reply> {
-    let connection = api.connection().await?;
-    let name = connection_name(&connection);
-    let shown = name_text(&name);
-    let snapshot = api.snapshot().await.ok();
-    let standing = snapshot
-        .as_ref()
-        .map_or(HostStanding::Unknown, host_standing);
-    let workspace = snapshot
-        .as_ref()
-        .and_then(workspace_name_in)
-        .map_or_else(|| shown.clone(), |workspace| name_text(&workspace));
-    let mut lines = vec![format!(
-        "Remove {shown} from this computer? It disconnects, ends every chat's access through it and deletes this computer's device key for the workspace. Your messages stay on the server."
-    )];
-    match &standing {
+    options: &HumanOptions,
+) -> Result<Option<String>> {
+    Ok(match standing {
+        HostStanding::NotHost => None,
         HostStanding::OnlyHostComputer { username } if !give_up_host_controls => {
             let invite = if username.is_empty() {
                 "biorouter crew enroll invite @YOUR_USERNAME --add-device".to_owned()
@@ -1388,19 +1419,71 @@ async fn remove_connection(
                 Some("crew_host_controls_would_end"),
             ));
         }
-        HostStanding::OnlyHostComputer { .. } => lines.push(format!(
+        HostStanding::OnlyHostComputer { .. } => Some(format!(
             "You host {workspace} and no other computer of yours can act as its host, so its host controls end for good."
         )),
-        HostStanding::Unknown => {
-            let warning = format!(
-                "Biorouter couldn't check whether you host {workspace}. If you do and this is your only computer in it, removing it ends the host controls for good."
+        HostStanding::HostElsewhereToo { others } => {
+            let listed = if own_device_known {
+                format!(
+                    "You host {workspace}. Its host controls continue only if one of your other enrolled computers still has {workspace} saved:"
+                )
+            } else {
+                format!(
+                    "You host {workspace}. Its host controls continue only if another of your enrolled computers still has {workspace} saved. These computers are enrolled as you, this one among them:"
+                )
+            };
+            let mut notice = vec![listed];
+            notice.extend(
+                others
+                    .iter()
+                    .map(|device| format!("  {}", output::device_text(device, options))),
             );
-            if confirm.is_some() || !api.interactive {
-                eprintln!("{warning}");
-            }
-            lines.push(warning);
+            notice.push(format!(
+                "A computer stays on this list after its connection is removed there. If none of them still has {workspace} saved, removing it here ends the host controls for good."
+            ));
+            Some(notice.join("\n"))
         }
-        HostStanding::NotHost | HostStanding::HostElsewhereToo => {}
+        HostStanding::Unknown => Some(format!(
+            "Biorouter couldn't check whether you host {workspace}. If you do and this is your only computer in it, removing it ends the host controls for good."
+        )),
+    })
+}
+
+/// `connections remove` (CLI-1): delete the saved connection and this computer's device key.
+/// For a host's only computer that ends the host controls for good, so it is refused unless
+/// `--give-up-host-controls` says so; every removal is confirmed by typing the name, and what
+/// removing it means for the host controls is said first, on stderr when nothing is asked.
+async fn remove_connection(
+    api: &Api,
+    confirm: Option<&str>,
+    give_up_host_controls: bool,
+) -> Result<Reply> {
+    let connection = api.connection().await?;
+    let name = connection_name(&connection);
+    let shown = name_text(&name);
+    let own_device = own_device_id(&connection);
+    let snapshot = api.snapshot().await.ok();
+    let standing = snapshot.as_ref().map_or(HostStanding::Unknown, |snapshot| {
+        host_standing(snapshot, own_device)
+    });
+    let workspace = snapshot
+        .as_ref()
+        .and_then(workspace_name_in)
+        .map_or_else(|| shown.clone(), |workspace| name_text(&workspace));
+    let mut lines = vec![format!(
+        "Remove {shown} from this computer? It disconnects, ends every chat's access through it and deletes this computer's device key for the workspace. Your messages stay on the server."
+    )];
+    if let Some(notice) = host_removal_notice(
+        &standing,
+        &workspace,
+        own_device.is_some(),
+        give_up_host_controls,
+        &HumanOptions::new(api.show_ids),
+    )? {
+        if confirm.is_some() || !api.interactive {
+            eprintln!("{notice}");
+        }
+        lines.push(notice);
     }
     typed_consent(
         &name,
@@ -2918,8 +3001,8 @@ fn channel_add_problems(
 ) -> Vec<String> {
     let actor = snapshot["actor"]["id"].as_str();
     let host = matches!(
-        host_standing(snapshot),
-        HostStanding::HostElsewhereToo | HostStanding::OnlyHostComputer { .. }
+        host_standing(snapshot, None),
+        HostStanding::HostElsewhereToo { .. } | HostStanding::OnlyHostComputer { .. }
     );
     let listed = |key: &str, id: &str| {
         snapshot[key]
@@ -5791,24 +5874,115 @@ mod tests {
             .expect("a member's confirmed removal");
         assert!(deleted(&fake));
 
-        // A host with a second computer can remove this one.
-        let mut two = snapshot();
-        two["actor"]["devices"] = json!([{"fingerprint": "A"}, {"fingerprint": "B"}]);
-        assert_eq!(host_standing(&two), HostStanding::HostElsewhereToo);
-        let (api, fake) = api_with(OutputFormat::Text, removing(two));
-        run(&api, remove_connection_command(Some("UCSF HPC"), false))
-            .await
-            .expect("another computer keeps the host controls");
-        assert!(deleted(&fake));
-
         let mut named = snapshot();
         named["workspace"]["host_principal_id"] = json!(BOB);
-        assert_eq!(host_standing(&named), HostStanding::NotHost);
-        assert_eq!(host_standing(&json!({})), HostStanding::Unknown);
+        assert_eq!(host_standing(&named, None), HostStanding::NotHost);
+        assert_eq!(host_standing(&json!({}), None), HostStanding::Unknown);
         assert_eq!(
             typed_or_ask("UCSF HPC", None, true, "no".into()).expect("asks"),
             Consent::Ask("Type UCSF HPC to confirm:".into())
         );
+    }
+
+    /// CLI-1: the snapshot's list of a host's computers never shrinks when one of them removes
+    /// its connection (the broker drops a device only when its whole member is revoked), so two
+    /// listed computers do not prove the host controls survive removing this one. The removal
+    /// goes ahead, but only after saying which other computers must still have the workspace
+    /// saved, and this computer is never among them.
+    #[tokio::test]
+    async fn a_host_with_another_listed_computer_is_told_the_host_controls_depend_on_it() {
+        const HERE: &str = "70dcffaf1751a59b0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut two = snapshot();
+        two["actor"]["devices"] = json!([
+            {"fingerprint": "70DC FFAF 1751 A59B", "added_at": 1_789_000_000, "added_via": "bootstrap"},
+            {"fingerprint": "3F2A 9C1E 77B0 D4E1", "added_at": 1_790_200_000, "added_via": "invitation_code"}
+        ]);
+        let laptop = two["actor"]["devices"][1].clone();
+        let connection = json!({"id": CONNECTION, "name": "UCSF HPC", "device_id": HERE});
+        assert_eq!(own_device_id(&connection), Some(HERE));
+        assert_eq!(own_device_id(&json!({"device_id": ""})), None);
+        let standing = host_standing(&two, own_device_id(&connection));
+        assert_eq!(
+            standing,
+            HostStanding::HostElsewhereToo {
+                others: vec![laptop.clone()]
+            }
+        );
+
+        // Both refusal flags aside, it is said, never refused, and names only the laptop.
+        let options = HumanOptions::in_utc_at(1_790_214_655);
+        for give_up in [false, true] {
+            let notice = host_removal_notice(&standing, "lab", true, give_up, &options)
+                .expect("not refused: another computer is listed")
+                .expect("hosting is always mentioned");
+            assert_eq!(
+                notice,
+                "You host lab. Its host controls continue only if one of your other enrolled computers still has lab saved:\n  3F2A 9C1E 77B0 D4E1 · added Sep 23, 2026 · via invitation code\nA computer stays on this list after its connection is removed there. If none of them still has lab saved, removing it here ends the host controls for good."
+            );
+            assert!(!notice.contains("70DC"), "{notice}");
+        }
+
+        // Without this computer's device ID nothing can be left out, and the notice says so.
+        let unknown = host_standing(&two, None);
+        assert_eq!(
+            unknown,
+            HostStanding::HostElsewhereToo {
+                others: two["actor"]["devices"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        );
+        let notice = host_removal_notice(&unknown, "lab", false, false, &options)
+            .expect("not refused")
+            .expect("said");
+        assert!(
+            notice.contains("These computers are enrolled as you, this one among them:"),
+            "{notice}"
+        );
+        assert!(notice.contains("70DC FFAF 1751 A59B"), "{notice}");
+
+        // A member is told nothing about hosting.
+        let mut member = two.clone();
+        member["workspace"]["host_uid"] = json!(1001);
+        assert_eq!(
+            host_removal_notice(
+                &host_standing(&member, Some(HERE)),
+                "lab",
+                true,
+                false,
+                &options
+            )
+            .expect("not refused"),
+            None
+        );
+
+        // End to end: without a terminal it still needs the name, and with it the removal
+        // goes ahead without --give-up-host-controls.
+        let snapshot = two.clone();
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if method == "GET" && path == "/crew/connections" {
+                return Ok(json!({"connections": [{
+                    "id": CONNECTION, "name": "UCSF HPC", "ssh_target": "bob@hpc",
+                    "workspace_id": "w", "status": "connected", "public_key": "k",
+                    "device_id": HERE
+                }]}));
+            }
+            removing(snapshot.clone())(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let error = run(&api, remove_connection_command(None, false))
+            .await
+            .expect_err("no terminal, no --confirm");
+        assert!(error.downcast_ref::<NeedsTerminal>().is_some(), "{error:?}");
+        assert!(!deleted(&fake));
+        let lines = said(
+            run(&api, remove_connection_command(Some("UCSF HPC"), false))
+                .await
+                .expect("another listed computer may still hold the host controls"),
+        );
+        assert!(deleted(&fake));
+        assert_eq!(lines, ["Removed UCSF HPC from this computer."]);
     }
 
     /// CLI-10: making the connection or the workspace public is confirmed by typing the

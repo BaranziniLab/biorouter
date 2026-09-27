@@ -232,7 +232,7 @@ biorouter crew --connection lab disconnect
 biorouter crew --connection lab connections remove
 ```
 
-`connections remove` deletes this computer's device key for the workspace, so it asks for the connection's name to be typed again; without a terminal pass `--confirm lab`. When your snapshot shows that you host the workspace and no other computer of yours is enrolled, it refuses (code `crew_host_controls_would_end`) and names the `enroll invite @you --add-device` command that adds one, because nothing restores the host controls once the last key that holds them is gone. `--give-up-host-controls` removes it anyway.
+`connections remove` deletes this computer's device key for the workspace, so it asks for the connection's name to be typed again; without a terminal pass `--confirm lab`. When your snapshot shows that you host the workspace and no other computer of yours is enrolled, it refuses (code `crew_host_controls_would_end`) and names the `enroll invite @you --add-device` command that adds one, because nothing restores the host controls once the last key that holds them is gone. `--give-up-host-controls` removes it anyway. When the snapshot lists another computer enrolled as you, it does not refuse. It says that the host controls continue only if one of those computers still has the workspace saved and lists them by fingerprint and the date each was added, leaving this computer out. That list never shrinks when a computer removes its connection (the broker drops a device only when the whole member is revoked), so it cannot tell whether that computer still holds the workspace. The notice goes to stderr when `--confirm` is given or there is no terminal.
 
 ## Create teams and channels, and invite members
 
