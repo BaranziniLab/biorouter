@@ -60,7 +60,7 @@ describe('markdown', () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it('links only http, https and mailto, and opens them in the system browser', () => {
+  it('links only public http and https addresses, and opens them in the system browser', () => {
     const openExternal = vi.fn(async () => {});
     Object.assign(window, { electron: { ...(window.electron ?? {}), openExternal } });
     const { container } = render(
@@ -76,7 +76,7 @@ describe('markdown', () => {
       />
     );
     const links = screen.getAllByRole('link');
-    expect(links.map((link) => link.textContent)).toEqual(['docs', 'mail']);
+    expect(links.map((link) => link.textContent)).toEqual(['docs']);
     expect(container.innerHTML).not.toMatch(/javascript:|data:text|file:\/\//);
     expect(container).toHaveTextContent('bad');
 
@@ -87,6 +87,68 @@ describe('markdown', () => {
     );
     fireEvent.click(screen.getByRole('link', { name: 'docs' }));
     expect(openExternal).toHaveBeenCalledWith('https://biorouter.ucsf.edu/docs.html');
+  });
+
+  describe('a link the desktop app never opens (RENDERER-3)', () => {
+    // The main process opens only a public http(s) address (`externalBrowserNavigation.ts`): not
+    // mailto, not a literal IP, not localhost, not a name that is never public. Drawn as a link,
+    // such an address was a dead click with nothing said. It is text now, its address in view.
+    const openExternal = vi.fn(async () => {});
+    const body = [
+      '[email the core](mailto:core@lab.org?subject=hi)',
+      'core2@lab.org',
+      '[jupyter](http://10.20.0.5:8888/lab)',
+      'http://127.0.0.1:8888',
+      '[ipv6](http://[::1]:8080/)',
+      '[dev](http://localhost:3000/x)',
+      '[app](http://app.localhost/)',
+      '[printer](http://printer/)',
+      '[wiki](https://wiki.internal/page)',
+      '[nas](http://nas.local/)',
+      '[router](http://router.home.arpa/)',
+      '[creds](https://user:pw@biorouter.ucsf.edu/)',
+    ].join('\n\n');
+
+    it('shows each one as text with its address visible, never as a link', () => {
+      Object.assign(window, { electron: { ...(window.electron ?? {}), openExternal } });
+      const { container } = render(<MessageBody body={body} />);
+      expect(screen.queryAllByRole('link')).toEqual([]);
+      expect(container.querySelector('a')).toBeNull();
+      const text = container.textContent ?? '';
+      expect(text).toContain('email the core (core@lab.org)');
+      expect(text).toContain('core2@lab.org');
+      expect(text).not.toContain('core2@lab.org (core2@lab.org)');
+      expect(text).toContain('jupyter (http://10.20.0.5:8888/lab)');
+      expect(text).toContain('http://127.0.0.1:8888');
+      expect(text).not.toContain('http://127.0.0.1:8888 (http://127.0.0.1:8888/)');
+      expect(text).toContain('wiki (https://wiki.internal/page)');
+      expect(text).toContain('dev (http://localhost:3000/x)');
+      // Why it is not a link, where there is room to say so.
+      const unlinked = [...container.querySelectorAll('.crew-md-unlinked')];
+      expect(unlinked).toHaveLength(12);
+      expect(unlinked[0]).toHaveAttribute('title', timelineCopy.linkNotOpenedEmail);
+      expect(unlinked[2]).toHaveAttribute('title', timelineCopy.linkNotOpenedPrivate);
+      for (const node of unlinked) fireEvent.click(node);
+      expect(openExternal).not.toHaveBeenCalled();
+    });
+
+    it('keeps a public address a link, and an image of a private one text', () => {
+      const { container } = render(
+        <MessageBody
+          body={
+            '[lab site](https://lab.example.org/) ![gel](http://192.168.1.4/gel.png) ' +
+            '![plot](https://lab.example.org/plot.png)'
+          }
+        />
+      );
+      expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
+        'lab site',
+        timelineCopy.imageNamed('plot'),
+      ]);
+      expect(container.textContent).toContain(
+        `${timelineCopy.imageNamed('gel')} (http://192.168.1.4/gel.png)`
+      );
+    });
   });
 
   it('turns headings into bold lines, so a message never adds a page heading', () => {

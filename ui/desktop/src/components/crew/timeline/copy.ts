@@ -95,6 +95,13 @@ export const timelineCopy = {
   /** A message image is never fetched; it is a link the person may choose to open. */
   image: 'Image',
   imageNamed: (alt: string) => `Image: ${alt}`,
+  /**
+   * Why a link is text, not a link (RENDERER-3): the desktop opens only public web addresses in
+   * the browser, so an email link or a private address would be a click that does nothing.
+   */
+  linkNotOpenedEmail: 'Biorouter doesn’t open email links. Copy the address into your email app.',
+  linkNotOpenedPrivate:
+    'Biorouter opens only public web addresses in your browser. Copy this one to open it yourself.',
 
   /** Pinned. */
   viewingEarlier: 'Viewing earlier messages',

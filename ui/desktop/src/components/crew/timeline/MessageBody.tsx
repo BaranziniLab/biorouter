@@ -34,9 +34,12 @@ import { CopyIconButton } from './TimelineCopy';
  *   agent was steered into writing to carry a private workspace's contents out
  *   in a URL. `MarkdownContent` also reads local image paths through
  *   `readArtifactFile`; nothing here touches the viewer's disk.
- * - **Links are http, https or mailto**, opened in the system browser. Any other
- *   scheme (and a relative path, which here could only name the viewer's own
- *   files) renders as plain text.
+ * - **A link is a public http or https address**, opened in the system browser
+ *   after the desktop's own confirmation. Any other scheme (and a relative path,
+ *   which here could only name the viewer's own files) renders as plain text. So
+ *   does a mailto link, or an address the desktop never opens (a literal IP,
+ *   localhost, a name that is never public): text with its address beside it,
+ *   rather than a link whose click does nothing ({@link openableHref}).
  * - **Raw HTML is text.** react-markdown turns an HTML node into a text node
  *   unless `rehype-raw` is installed, and it is not — so `<svg onload>` or
  *   `<script>` shows as the characters typed.
@@ -74,6 +77,92 @@ export function safeExternalHref(url: unknown, allowMailto = true): string | nul
   } catch {
     return null;
   }
+}
+
+/**
+ * Names that never resolve to a public address: RFC 6761's `localhost`, `test`, `invalid` and
+ * `example`, mDNS's `local` (RFC 6762), `home.arpa` (RFC 8375) and `internal` (ICANN, 2024).
+ */
+const NEVER_PUBLIC_NAMES = [
+  'localhost',
+  'local',
+  'internal',
+  'home.arpa',
+  'test',
+  'invalid',
+  'example',
+];
+const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
+/**
+ * Whether the desktop will open `href` (a {@link safeExternalHref} result) in the system browser.
+ *
+ * The main process opens only a public http(s) address (`utils/externalBrowserNavigation.ts`,
+ * `utils/embeddedBrowserPolicy.ts`): never mailto, a URL carrying a user name or password, a
+ * literal IP, `localhost`, or a host that resolves to a private address, and it refuses them
+ * with nothing on screen. Everything but the DNS lookup is known here, so those addresses are not
+ * drawn as links. A single-label name (`http://printer/`) and a name under a never-public suffix
+ * count as private: neither resolves publicly. A public-looking name that resolves to a private
+ * address on the lab's network can only be found by the lookup the main process makes.
+ */
+export function openableHref(href: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+  if (url.username || url.password) return false;
+  const host = url.hostname
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+  // No dot: a single-label name, or an IPv6 literal (the URL parser writes every IPv4-mapped one
+  // in hex).
+  if (!host.includes('.') || IPV4_LITERAL.test(host)) return false;
+  return !NEVER_PUBLIC_NAMES.some((name) => host === name || host.endsWith(`.${name}`));
+}
+
+/** What a link that is not opened shows of its address: a mailto's address, else the URL. */
+function shownAddress(href: string): string {
+  try {
+    const url = new URL(href);
+    return url.protocol === 'mailto:' ? url.pathname : url.href;
+  } catch {
+    return href;
+  }
+}
+
+/**
+ * A link the desktop will not open, as text: its words, then its address in brackets unless the
+ * words already are the address (an autolinked URL or email address).
+ */
+function UnopenedLink({
+  href,
+  text,
+  children,
+}: {
+  href: string;
+  text: string;
+  children?: ReactNode;
+}) {
+  const address = shownAddress(href);
+  const words = text.trim();
+  const same = [address, href, href.replace(/\/$/, ''), `mailto:${address}`].includes(words);
+  return (
+    <span
+      className="crew-md-unlinked"
+      title={
+        href.startsWith('mailto:')
+          ? timelineCopy.linkNotOpenedEmail
+          : timelineCopy.linkNotOpenedPrivate
+      }
+    >
+      {children}
+      {same ? null : ` (${address})`}
+    </span>
+  );
 }
 
 /** Every URL react-markdown emits passes this first; a refused one becomes empty. */
@@ -233,9 +322,15 @@ function Heading({ children }: { children?: ReactNode }) {
 
 const COMPONENTS: Components = {
   p: ({ children }) => <p className="crew-md-p">{children}</p>,
-  a: ({ href, children }) => {
+  a: ({ href, children, node }) => {
     const safe = safeExternalHref(href);
     if (!safe) return <span className="crew-md-unlinked">{children}</span>;
+    if (!openableHref(safe))
+      return (
+        <UnopenedLink href={safe} text={hastText(node)}>
+          {children}
+        </UnopenedLink>
+      );
     return (
       <a
         href={safe}
@@ -260,6 +355,13 @@ const COMPONENTS: Components = {
         {label}
       </>
     );
+    if (safe && !openableHref(safe))
+      return (
+        <span className="crew-md-image" title={timelineCopy.linkNotOpenedPrivate}>
+          {content}
+          {` (${safe})`}
+        </span>
+      );
     return safe ? (
       <a
         href={safe}
