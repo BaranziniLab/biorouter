@@ -7414,8 +7414,11 @@ impl Agent {
             }
             .into());
         }
+        // Crew: the binding and tier are checked on every call; the workspace is asked
+        // whether it still honors the run only when no admission of this grant is recent.
+        // The reply loop asks it afresh before every model request (CROSSCUT-7).
         crate::crew::manager()?
-            .check_provider_dispatch(&self.cached_classification.session_id(), provider.as_ref())
+            .check_provider_use(&self.cached_classification.session_id(), provider.as_ref())
             .await?;
         Ok(provider)
     }
@@ -7607,11 +7610,10 @@ impl Agent {
         };
         match rebuilt {
             Ok(rebuilt) => {
+                // The effort changes the turn's sampling, not its model boundary, so a Crew
+                // grant made to the session's provider binds the rebuilt one too (PROVIDERS-2).
                 crate::crew::manager()?
-                    .check_provider_dispatch(
-                        &self.cached_classification.session_id(),
-                        rebuilt.as_ref(),
-                    )
+                    .check_provider_use(&self.cached_classification.session_id(), rebuilt.as_ref())
                     .await?;
                 Ok(Some(rebuilt))
             }
@@ -8799,8 +8801,10 @@ impl Agent {
         if self.config.biorouter_mode != BioRouterMode::Auto {
             return false;
         }
+        // Only the model's name is read, so the binding is read without the privacy and
+        // Crew checks: they gate a model request, and this is none (CROSSCUT-7).
         if self
-            .provider()
+            .bound_provider_unchecked()
             .await
             .map(|provider| provider.get_active_model_name().starts_with("gemini"))
             .unwrap_or(false)
@@ -9345,9 +9349,11 @@ impl Agent {
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         self.ensure_session_crew_compatible(&session_config.id)
             .await?;
+        // Refused early when the grant no longer stands. Every model request in the loop
+        // below is admitted by the workspace afresh, so this may reuse a recent admission.
         if let Some(provider) = self.bound_provider_unchecked().await {
             crate::crew::manager()?
-                .check_provider_dispatch(&session_config.id, provider.as_ref())
+                .check_provider_use(&session_config.id, provider.as_ref())
                 .await?;
         }
         let task = self.extension_manager.computer_use.task_guard();
@@ -11355,9 +11361,12 @@ impl Agent {
                             // was retried before is over.
                             mistakes.observe_provider_success();
 
-                            // Emit model change event if provider is lead-worker
-                            let provider = self.provider().await?;
-                            if let Some(lead_worker) = provider.as_lead_worker() {
+                            // Emit model change event if provider is lead-worker. Read
+                            // off the provider this request runs on: once per streamed
+                            // chunk, `self.provider()` sent the Crew workspace a live
+                            // `context.manifest` round trip per chunk (PROVIDERS-3); the
+                            // request was admitted when it was opened, above.
+                            if let Some(lead_worker) = reply_provider.as_lead_worker() {
                                 if let Some(ref usage) = usage {
                                     let active_model = usage.model.clone();
                                     let (lead_model, worker_model) = lead_worker.get_model_info();

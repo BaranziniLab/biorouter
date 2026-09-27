@@ -2773,3 +2773,309 @@ async fn saving_a_connection_unchanged_changes_nothing() {
         GRANT_POLICY_CHANGED
     );
 }
+
+/// How many `context.manifest` requests any bridge received: the live admissions.
+fn manifests(root: &Path) -> usize {
+    requests(root)
+        .iter()
+        .filter(|(_, method)| method == "context.manifest")
+        .count()
+}
+
+/// CROSSCUT-7 and PROVIDERS-3: the workspace admits a scoped chat's provider once per model
+/// request. Every other use of the provider (the reply loop read it once per streamed chunk,
+/// and again to name the model, count tokens or title the chat) used to send its own
+/// `context.manifest` over SSH, hundreds for one answer. Now those reuse the last admission of
+/// the same grant, while a model request always asks afresh, and a grant stopped here is
+/// refused at once whatever was admitted before.
+#[tokio::test]
+async fn provider_uses_share_one_live_admission_and_each_model_request_asks_afresh() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("provider-use", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let provider = TurnProvider;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .provider_binding = provider_binding(&provider);
+
+    for _ in 0..40 {
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap();
+    }
+    assert_eq!(manifests(&f.root), 1, "forty uses, one admission");
+
+    // A model request asks the workspace afresh, and later uses share that answer.
+    f.manager
+        .check_provider_dispatch(WORKER, &provider)
+        .await
+        .unwrap();
+    assert_eq!(manifests(&f.root), 2);
+    f.manager
+        .check_provider_use(WORKER, &provider)
+        .await
+        .unwrap();
+    assert_eq!(manifests(&f.root), 2);
+
+    // An admission of one grant never stands for another: the chat granted again (a new run)
+    // is admitted afresh.
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .run_id = "keepalive-run-again".into();
+    f.manager
+        .check_provider_use(WORKER, &provider)
+        .await
+        .unwrap();
+    assert_eq!(manifests(&f.root), 3);
+
+    // A stop here is refused at once, with nothing asked of the workspace.
+    f.manager.revoke_session(WORKER).await.unwrap();
+    assert_eq!(
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_REVOKED
+    );
+    assert_eq!(manifests(&f.root), 3);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// A live admission the workspace refused is never reused: the next use asks again, and the
+/// refusal the workspace answered ends the grant here.
+#[tokio::test]
+async fn a_refused_admission_is_never_reused() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("provider-use-refused", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let provider = TurnProvider;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .provider_binding = provider_binding(&provider);
+    assert_eq!(
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_POLICY_CHANGED
+    );
+    assert_eq!(
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_POLICY_CHANGED
+    );
+    assert_eq!(manifests(&f.root), 1, "the stop is refused here, unasked");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// DAEMON-1: granting a chat again while its earlier grant is still live (another context
+/// channel added, or Grant access again after a settings change) used to drop that grant with
+/// no `run.revoke`: the workspace honored its run until it lapsed, and it was listed nowhere,
+/// so nothing on this device could revoke it. Now the earlier grant is stopped by the new one,
+/// listed as replaced, and revoked at the workspace by the daemon itself, while the new grant
+/// is the chat's, live and never revoked.
+#[tokio::test]
+async fn granting_a_chat_again_revokes_its_still_live_earlier_run() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("regrant-live", &["serve"], quiet()).await;
+    allow_grants(&f.root);
+    let (_store, chat, incarnation) = saved_chat(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_chat(&f, &chat, incarnation).await;
+    assert_eq!(
+        rows_of(&f.manager, "grants", &chat).await[0]["expired"],
+        false
+    );
+
+    let admission = f
+        .manager
+        .begin_run(
+            &chat,
+            CONNECTION_ID,
+            "keepalive-channel",
+            vec![],
+            &TurnProvider,
+        )
+        .await
+        .unwrap();
+    assert_eq!(admission.run_id, REGRANTED_RUN);
+
+    let manager = f.manager.clone();
+    let id = chat.clone();
+    until(async || manager.remote_revocation_confirmed(&id, EARLIER_RUN).await).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 1);
+    assert_eq!(revokes_of(&f.root, REGRANTED_RUN), 0);
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["run_id"], EARLIER_RUN);
+    assert_eq!(replaced[0]["expired"], true);
+    assert_eq!(replaced[0]["revocation"], "confirmed");
+    let current = rows_of(&f.manager, "grants", &chat).await;
+    assert_eq!(current.len(), 1, "{current:?}");
+    assert_eq!(current[0]["run_id"], REGRANTED_RUN);
+    assert_eq!(current[0]["expired"], false);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// DAEMON-1, the other door: a still-live grant made to an earlier chat under a reissued id
+/// is pruned when the id is next looked up (SCOPE-BIND). It used to go with no `run.revoke`;
+/// now it is stopped, listed as replaced, and revoked when the connection is up.
+#[tokio::test]
+async fn a_reissued_chat_id_revokes_the_deleted_chats_still_live_grant() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("reissue-live", &["serve"], quiet()).await;
+    let (store, chat, incarnation) = saved_chat(&f).await;
+    grant_chat(&f, &chat, incarnation).await;
+    store.delete_session(&chat).await.unwrap();
+    store.forget_minted_session_ids_for_test().await.unwrap();
+    let reissued = new_chat(&store, &f.root.join("work")).await;
+    assert_eq!(
+        reissued, chat,
+        "the fixture must hand the deleted chat's id to the next chat, or it proves nothing"
+    );
+
+    assert!(!f.manager.is_scoped_session(&chat).await);
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["run_id"], EARLIER_RUN);
+    assert_eq!(replaced[0]["expired"], true);
+    assert_eq!(replaced[0]["revocation"], "unconfirmed");
+
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = f.manager.clone();
+    let id = chat.clone();
+    until(async || manager.remote_revocation_confirmed(&id, EARLIER_RUN).await).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 1);
+    assert!(!f.manager.is_scoped_session(&chat).await);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// What a grant becomes when its id stops holding it: stopped, and unconfirmed unless the
+/// workspace already confirmed the revocation or ended the run itself.
+#[test]
+fn a_grant_stopped_by_another_door_is_a_stop_the_workspace_is_asked_about() {
+    let scope = |expired: bool, revocation: Option<Revocation>| Scope {
+        connection_id: CONNECTION_ID.into(),
+        run_id: "superseded".into(),
+        channel_id: "keepalive-channel".into(),
+        source_channels: vec![],
+        epoch: 1,
+        provider_binding: "keepalive-provider".into(),
+        public_provider: false,
+        origin_restricted: false,
+        institution_ids: BTreeSet::new(),
+        institution_policy: true,
+        expired,
+        expires_at: Some(4_102_444_800),
+        labels: None,
+        session_incarnation: None,
+        revocation,
+    };
+    for (expired, before, after) in [
+        (false, None, Revocation::Unconfirmed),
+        (true, None, Revocation::Unconfirmed),
+        (true, Some(Revocation::Unconfirmed), Revocation::Unconfirmed),
+        (true, Some(Revocation::Confirmed), Revocation::Confirmed),
+        (
+            true,
+            Some(Revocation::EndedByWorkspace),
+            Revocation::EndedByWorkspace,
+        ),
+    ] {
+        let stopped = scope(expired, before).into_stopped();
+        assert!(stopped.expired, "{before:?}");
+        assert_eq!(stopped.revocation, Some(after), "{before:?}");
+    }
+    // A live grant stopped so is kept for its revocation when its id no longer holds it.
+    let mut registry = Registry::default();
+    assert!(registry.keep_replaced(WORKER, scope(false, None).into_stopped()));
+}
+
+/// DAEMON-7: removing a connection revokes its grants' runs at the workspace while this device
+/// can still sign for them, and deletes their run credentials. Removal used to mark them
+/// expired here and delete the device key without asking the workspace anything: every live run
+/// stayed honored until it lapsed, its credential stayed on disk, and nothing on this device
+/// could revoke it or list it.
+#[tokio::test]
+async fn removing_a_connection_revokes_its_live_runs_and_deletes_their_credentials() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("remove-live", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    assert!(f.manager.read_credential(&format!("run:{WORKER}")).is_ok());
+
+    f.manager.remove(CONNECTION_ID).await.unwrap();
+
+    assert_eq!(
+        revokes_of(&f.root, "keepalive-run"),
+        1,
+        "the live run was revoked"
+    );
+    let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert!(scope.expired);
+    assert_eq!(scope.revocation, Some(Revocation::Confirmed));
+    assert!(
+        f.manager.read_credential(&format!("run:{WORKER}")).is_err(),
+        "the run credential went with the connection"
+    );
+    assert!(f
+        .manager
+        .read_credential(&format!("device:{CONNECTION_ID}"))
+        .is_err());
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    assert!(f.manager.check_dispatch(WORKER, &cap).await.is_err());
+}
+
+/// A connection that is down when it is removed is not dialled: its grants stop here, their
+/// credentials go, and what the workspace was never told is recorded as unconfirmed.
+#[tokio::test]
+async fn removing_a_disconnected_connection_stops_its_grants_without_dialling() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("remove-offline", &["serve"], quiet()).await;
+    grant_worker(&f).await;
+
+    f.manager.remove(CONNECTION_ID).await.unwrap();
+
+    assert_eq!(spawns(&f.root), 0, "removal never dials");
+    let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert!(scope.expired);
+    assert_eq!(scope.revocation, Some(Revocation::Unconfirmed));
+    assert!(f.manager.read_credential(&format!("run:{WORKER}")).is_err());
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    assert!(f.manager.check_dispatch(WORKER, &cap).await.is_err());
+}

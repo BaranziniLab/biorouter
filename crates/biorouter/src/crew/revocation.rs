@@ -52,6 +52,26 @@ fn unix_now() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+impl Scope {
+    /// This grant, stopped on this device by something other than a revoke of it: a newer
+    /// grant to the same chat replaced it, it was made to an earlier chat under the id
+    /// (SCOPE-BIND), or its connection is being removed. A grant still live is stopped here
+    /// now, and its revocation is unconfirmed until the workspace says otherwise, so the daemon
+    /// asks the workspace to revoke the run (DAEMON-1, DAEMON-7). What the workspace already
+    /// said about a stop stands: a confirmed revocation, or a run the workspace ended itself,
+    /// is never asked about again.
+    pub(super) fn into_stopped(mut self) -> Self {
+        self.expired = true;
+        if !matches!(
+            self.revocation,
+            Some(Revocation::Confirmed | Revocation::EndedByWorkspace)
+        ) {
+            self.revocation = Some(Revocation::Unconfirmed);
+        }
+        self
+    }
+}
+
 impl Registry {
     /// Keep `previous`, the grant `session` held until it was replaced or pruned just now, when
     /// it is a stop the workspace has not confirmed; anything else of it goes, as it always did.
@@ -134,16 +154,31 @@ impl CrewManager {
     }
 
     /// Record `scope` as `session`'s grant, in memory even when the saved registry cannot be
-    /// written (the error returned is then the file's). A stop of the chat's earlier grant that
-    /// the workspace has not confirmed is kept, never replaced away ([`Registry::keep_replaced`]),
-    /// and asked about again now, while the connection is known to be up — whether or not the
-    /// save succeeded, since the stop holds here either way (F3).
+    /// written (the error returned is then the file's). The chat's earlier grant, on another
+    /// run, is stopped by it ([`Scope::into_stopped`]): kept for its revocation, never replaced
+    /// away ([`Registry::keep_replaced`]), and asked about again now, while the connection is
+    /// known to be up — whether or not the save succeeded, since the stop holds here either
+    /// way (F3).
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.** An earlier grant still live when
+    /// the chat was granted again (DAEMON-1: another context channel added, or "Grant access
+    /// again" after a settings change the workspace had not yet seen) used to be dropped here
+    /// with no `run.revoke`: the workspace honored its run until it lapsed, a remote job
+    /// started under it kept running, and it was listed nowhere, so nothing on this device
+    /// could revoke it. Its run credential is already gone by now (the new grant's replaced
+    /// it), so nothing here can use it either way.
     pub(super) async fn record_grant(&self, session: &str, scope: Scope) -> anyhow::Result<()> {
         let mut kept = None;
+        let run_id = scope.run_id.clone();
         let recorded = self
             .update_registry_keeping(|r| {
                 if let Some(previous) = r.scopes.insert(session.into(), scope) {
                     let connection = previous.connection_id.clone();
+                    let previous = if previous.run_id == run_id {
+                        previous
+                    } else {
+                        previous.into_stopped()
+                    };
                     if r.keep_replaced(session, previous) {
                         kept = Some(connection);
                     }

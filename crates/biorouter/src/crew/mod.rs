@@ -22,6 +22,9 @@ pub use server_label::server_label;
 mod keepalive_tests;
 pub mod observation;
 #[cfg(test)]
+#[path = "provider_identity_tests.rs"]
+mod provider_identity_tests;
+#[cfg(test)]
 #[path = "registry_lock_tests.rs"]
 mod registry_lock_tests;
 #[cfg(test)]
@@ -627,6 +630,38 @@ pub struct CrewManager {
     /// Connections whose unconfirmed revocations the daemon is asking the workspace about
     /// again (F3), each with the token of the pass doing it; see `revocation.rs`.
     revocation_retries: StdMutex<HashMap<String, u64>>,
+    /// Each chat's last live admission by the workspace (CROSSCUT-7), which
+    /// [`CrewManager::check_provider_use`] may reuse for [`LIVE_ADMISSION_REUSE`]. Memory only.
+    live_admissions: StdMutex<HashMap<String, LiveAdmission>>,
+}
+/// How long one live admission of a chat's grant by the workspace stands for the provider
+/// uses that are not the reply loop's own model requests ([`CrewManager::check_provider_use`]).
+const LIVE_ADMISSION_REUSE: std::time::Duration = std::time::Duration::from_secs(15);
+/// Whether a provider check must ask the workspace now, or may reuse a recent admission.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Fresh,
+    Recent,
+}
+/// One live admission of a chat's grant: the grant and provider it was for, and when.
+struct LiveAdmission {
+    /// The run, the chat it was made to, the policy epoch and the provider's identity: a
+    /// re-grant, a settings change or another model is never admitted by an earlier answer.
+    grant: (String, Option<i64>, u64, String),
+    at: std::time::Instant,
+}
+impl LiveAdmission {
+    fn of(scope: &Scope, provider: &dyn Provider) -> Self {
+        Self {
+            grant: (
+                scope.run_id.clone(),
+                scope.session_incarnation,
+                scope.epoch,
+                provider_binding(provider),
+            ),
+            at: std::time::Instant::now(),
+        }
+    }
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -741,15 +776,52 @@ fn unhex(value: &str) -> Result<Vec<u8>> {
         .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
         .collect()
 }
+/// The model boundary a Crew grant is bound to: the provider's secret-free route and model
+/// identity (what [`Provider::restore_binding`] rebuilds it from), its tier and its affiliation.
+///
+/// ⚠ **Crew provider binding; a change here needs human review.** The identity leaves out
+/// what a provider carries per turn or learns at run time and is not a model boundary: the
+/// context window (Llama Server reads the loaded model's real window back after its first
+/// request, PROVIDERS-1), the sampling settings and the reasoning effort (Quick and Deep
+/// rebuild the provider with `reasoning_effort` and, for Quick, a temperature,
+/// PROVIDERS-2), and the output cap. Hashing them made a granted chat refuse every turn as
+/// "bound to another provider" once any of them moved, although every byte still went to the
+/// same endpoint and model. Everything that does decide where the chat's context goes stays
+/// in: the provider, its route (endpoint, deployment, region, command), the model name, the
+/// fast and toolshim models, provider request parameters, the tier and the affiliation.
 fn provider_binding(provider: &dyn Provider) -> String {
-    let resolved =
-        serde_json::to_vec(&provider.restore_binding()).expect("provider binding serializes");
+    let mut binding = provider.restore_binding();
+    let model = binding.model_mut();
+    model.context_limit = None;
+    model.temperature = None;
+    model.max_tokens = None;
+    model.reasoning_effort = None;
+    binding_digest(&binding, provider)
+}
+/// The binding a grant recorded before [`provider_binding`] left out per-turn state: the hash
+/// of the whole restore binding. Such a grant is still honored for the same provider as it
+/// stood (see [`binds`]); a new grant always records [`provider_binding`].
+fn legacy_provider_binding(provider: &dyn Provider) -> String {
+    binding_digest(&provider.restore_binding(), provider)
+}
+fn binding_digest(
+    binding: &crate::providers::provider_binding::ProviderRestoreBinding,
+    provider: &dyn Provider,
+) -> String {
+    let resolved = serde_json::to_vec(binding).expect("provider binding serializes");
     format!(
         "{}:{:?}:{:?}",
         hex(&Sha256::digest(resolved)),
         provider.tier(),
         provider.affiliation()
     )
+}
+/// Whether `provider` is the model boundary a grant recorded as `recorded`: its identity
+/// ([`provider_binding`]), or — for a grant recorded before that identity existed — the whole
+/// binding exactly as it was hashed then. Two different digests of SHA-256 never collide, so
+/// accepting either never admits another provider.
+fn binds(recorded: &str, provider: &dyn Provider) -> bool {
+    recorded == provider_binding(provider) || recorded == legacy_provider_binding(provider)
 }
 /// The fields `hello` v2 signs besides the pinned identity, read strictly: the signature covers
 /// their exact values, so a malformed field fails verification rather than being skipped.
@@ -976,6 +1048,18 @@ fn file_credentials_enabled() -> bool {
         && std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT")
             .is_some_and(|p| PathBuf::from(p).is_absolute())
 }
+/// Whether `value` has the shape of a run ID: 1 to 128 ASCII letters, digits, `-` or `_`. The
+/// broker mints UUIDs. A run ID travels as a path segment (the renderer's Stop, `POST
+/// /crew/connections/{id}/runs/{run_id}/cancel`), so one the workspace answers with any other
+/// shape is refused where it arrives, in `run.create`, before anything here records or shows
+/// it: `../../credentials/lock?` would otherwise have sent the person's proof to another
+/// daemon route (RENDERER-2).
+pub fn is_run_id(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
 pub(super) fn safe_atom(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -1089,6 +1173,7 @@ impl CrewManager {
             error_codes: StdMutex::new(HashMap::new()),
             run_reads: StdMutex::new(HashMap::new()),
             revocation_retries: StdMutex::new(HashMap::new()),
+            live_admissions: StdMutex::new(HashMap::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -1730,10 +1815,32 @@ impl CrewManager {
         } else {
             input.mode
         };
+        // The connection being edited is judged by its new institution alone, as its mode is
+        // above: its saved one is what the edit replaces. Counting it made every change of
+        // institution a conflict with itself (DAEMON-3), refused as "aliases" there were none
+        // of. Another connection to the same workspace still has to agree, and is named
+        // when it does not.
+        if let Some(given) = input.institution_id.as_deref() {
+            if let Some(other) = r.connections.iter().find(|c| {
+                c.cluster_connection_id == cluster
+                    && Some(c.id.as_str()) != id
+                    && c.institution_id
+                        .as_deref()
+                        .is_some_and(|theirs| theirs != given)
+            }) {
+                anyhow::bail!(
+                    "{name} is also saved on this computer for the same workspace, under \
+                     institution {theirs}. Connections to one workspace share one institution, \
+                     so remove {name} before you use {given} here.",
+                    name = other.name,
+                    theirs = other.institution_id.as_deref().unwrap_or_default(),
+                );
+            }
+        }
         let institution_id = institution::merge(
             r.connections
                 .iter()
-                .filter(|c| c.cluster_connection_id == cluster)
+                .filter(|c| c.cluster_connection_id == cluster && Some(c.id.as_str()) != id)
                 .filter_map(|c| c.institution_id.as_deref())
                 .chain(input.institution_id.as_deref()),
         )?;
@@ -1852,30 +1959,61 @@ impl CrewManager {
         }
         Ok(c)
     }
-    /// Remove a saved connection: disconnect it, drop it from the registry (its grants stay,
-    /// expired), then delete its device private key (T-50). The key goes last, so a registry
-    /// write that fails never leaves a saved connection without its key; a key that is already
-    /// gone is not an error.
+    /// Remove a saved connection: stop every grant on it and ask the workspace to revoke their
+    /// runs, disconnect it, drop it from the registry (its grants stay, stopped), delete its
+    /// grants' run credentials, then delete its device private key (T-50). The key goes last,
+    /// so a registry write that fails never leaves a saved connection without its key; a key
+    /// that is already gone is not an error.
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.** Removing used to mark the grants
+    /// expired here and delete the device key, the only key that can sign `run.revoke`, without
+    /// asking the workspace anything (DAEMON-7). Every live run stayed honored at the workspace
+    /// until it lapsed, remote jobs started under it included, its run credential stayed in the
+    /// keychain or vault, and nothing on this device could revoke it or even list it. Now the
+    /// runs are revoked first, over the bridge when it is up; removal never dials a connection
+    /// that is down, so a run it cannot reach still ends only when it expires (an hour at most).
     pub async fn remove(&self, id: &str) -> Result<()> {
+        // Before the lifecycle guard: a request whose bridge dropped dials again under that
+        // guard, and this one would then wait on itself.
+        self.revoke_before_removal(id).await;
         let _lifecycle = self.connection_guard(id).await?;
         self.disconnect_locked(id).await?;
-        let pending_preparation = self
+        let (pending_preparation, sessions) = self
             .update_registry_keeping(|r| {
                 r.connections.retain(|c| c.id != id);
-                for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
+                let mut sessions = Vec::new();
+                for (session, scope) in r.scopes.iter_mut().filter(|(_, s)| s.connection_id == id) {
+                    // One granted after the revocations above is stopped here all the same.
                     scope.expired = true;
+                    sessions.push(session.clone());
                 }
                 // Nothing can ask the workspace about them any more: the device key goes next.
                 r.replaced.retain(|kept| kept.scope.connection_id != id);
                 // A prepared device not yet saved keeps its key under the same kind of ID; that
                 // one belongs to the next save, not to this removal.
-                Ok(r.pending_device
-                    .as_ref()
-                    .is_some_and(|prepared| prepared.preparation_id == id))
+                Ok((
+                    r.pending_device
+                        .as_ref()
+                        .is_some_and(|prepared| prepared.preparation_id == id),
+                    sessions,
+                ))
             })
             .await??;
         if pending_preparation {
             return Ok(());
+        }
+        // No grant here names these credentials' runs any more.
+        for session in sessions {
+            self.forget_run_reads(&session);
+            self.forget_live_admission(&session);
+            if let Err(error) = self.delete_credential(&format!("run:{session}")) {
+                tracing::warn!(
+                    connection = id,
+                    session,
+                    %error,
+                    "couldn't delete the run credential of a removed Crew connection's grant"
+                );
+            }
         }
         self.delete_credential(&format!("device:{id}"))
             .map_err(|error| {
@@ -1883,6 +2021,39 @@ impl CrewManager {
                     "The connection was removed, but its device key couldn't be deleted from this computer",
                 )
             })
+    }
+    /// [`Self::remove`]'s first step: stop every grant on `id` here (saved, or held in memory
+    /// when it cannot be), then, if its bridge is up, ask the workspace to revoke each run whose
+    /// revocation is not yet confirmed, earlier grants kept for their revocation included.
+    /// Best effort: removal goes on whatever the workspace answers.
+    async fn revoke_before_removal(&self, id: &str) {
+        let stopped = self
+            .update_registry_keeping(|r| {
+                for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
+                    *scope = scope.clone().into_stopped();
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = stopped {
+            // It holds in this process all the same (`update_registry_keeping`).
+            tracing::warn!(connection = id, %error, "Couldn't save the stop of a removed Crew connection's grants");
+        }
+        if !self.transports.lock().await.contains_key(id) {
+            return;
+        }
+        for (session, run_id) in self.unconfirmed_revocations(id).await {
+            if let Err(error) = self.confirm_revocation(id, &session, &run_id).await {
+                tracing::warn!(
+                    connection = id,
+                    session,
+                    run_id,
+                    %error,
+                    "the workspace did not confirm revoking a removed Crew connection's run; it \
+                     ends when it expires"
+                );
+            }
+        }
     }
     pub async fn authentication_plan(&self, id: &str) -> Result<AuthenticationPlan> {
         let c = self.connection(id).await?;
@@ -2749,7 +2920,7 @@ impl CrewManager {
             !provider.uses_tool_bridge(),
             "Crew cannot bind a provider with unscoped external tools"
         );
-        ensure!(scope.provider_binding==provider_binding(provider),"Crew conversation remains bound to its original resolved provider; start a fresh conversation for another model boundary");
+        ensure!(binds(&scope.provider_binding, provider),"Crew conversation remains bound to its original resolved provider; start a fresh conversation for another model boundary");
         let connection =
             connection.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
         ensure!(
@@ -2766,8 +2937,10 @@ impl CrewManager {
         )?;
         Ok(())
     }
-    /// Every check a provider call on `session` must pass: the binding, the tier, and — for a
-    /// scoped chat — a live `context.manifest` through the worker path.
+    /// Every check a model request on `session` must pass: the binding, the tier, and — for a
+    /// scoped chat — a live `context.manifest` through the worker path, asked now whatever was
+    /// asked before. The reply loop calls this before every request it sends; everything else
+    /// calls [`Self::check_provider_use`].
     ///
     /// ⚠ The body runs **boxed**, and must stay that way. `Agent::provider` awaits this, and
     /// `Agent::reply` reaches `Agent::provider` through the tool-surface preparation, so an
@@ -2781,31 +2954,84 @@ impl CrewManager {
         session: &str,
         provider: &dyn Provider,
     ) -> Result<()> {
-        Box::pin(self.check_provider_dispatch_inner(session, provider)).await
+        Box::pin(self.check_provider_dispatch_inner(session, provider, Admission::Fresh)).await
+    }
+    /// [`Self::check_provider_dispatch`] for a use of the provider that is not the reply loop's
+    /// own model request: `Agent::provider`, which the loop and its helpers read many times a
+    /// turn (to name the model, count tokens, or run a title, a summary or a stall check).
+    ///
+    /// The binding and the tier are checked on every call, exactly as the fresh check does,
+    /// so a grant stopped, re-granted or re-bound on this device is refused at once. Only the
+    /// live `context.manifest` is shared: when this grant, with this provider, was admitted by
+    /// the workspace within [`LIVE_ADMISSION_REUSE`], that admission stands for this call too.
+    /// Each call used to send its own, several per model request and one per streamed chunk
+    /// (CROSSCUT-7, PROVIDERS-3): hundreds of SSH round trips for one answer, and a bridge
+    /// hiccup on any of them aborted a turn that was already answering.
+    ///
+    /// ⚠ **Crew admission; a change here needs human review.** What the reuse can miss is a
+    /// run the workspace ended in the last [`LIVE_ADMISSION_REUSE`] that this device has not
+    /// yet heard about, and only for a request outside the reply loop, sent to the model this
+    /// chat's context was already admitted to. The loop's next request asks the workspace
+    /// again, and a refusal it answers ends the grant here ([`Self::heed_worker_refusal`]).
+    pub async fn check_provider_use(&self, session: &str, provider: &dyn Provider) -> Result<()> {
+        Box::pin(self.check_provider_dispatch_inner(session, provider, Admission::Recent)).await
     }
     async fn check_provider_dispatch_inner(
         &self,
         session: &str,
         provider: &dyn Provider,
+        admission: Admission,
     ) -> Result<()> {
         self.check_provider_binding(session, provider).await?;
         self.check_tier(session, provider.tier(), provider.affiliation())
             .await?;
-        if self.is_scoped(session).await {
-            // A turn refused here is shown to the person as it stands ("Model request
-            // failed"), in the chat and in the terminal: a refusal the workspace answered is
-            // said as a sentence, never as the broker's envelope (D-1).
-            self.worker_request(session, "context.manifest", json!({}))
-                .await
-                .map_err(|error| {
-                    if refused_by_workspace(&error) {
-                        anyhow::anyhow!(agent_error_text(&error))
-                    } else {
-                        error
-                    }
-                })?;
+        let scope = match self.standing(session).await {
+            Standing::None => return Ok(()),
+            // The checks above refuse such a grant first; this keeps it refused if it
+            // changed in between.
+            Standing::Unconfirmed(_, reason) => anyhow::bail!(reason),
+            Standing::Own(scope) => scope,
+        };
+        let admitted = LiveAdmission::of(&scope, provider);
+        if admission == Admission::Recent && self.admitted_recently(session, &admitted) {
+            return Ok(());
         }
+        self.forget_live_admission(session);
+        // A turn refused here is shown to the person as it stands ("Model request
+        // failed"), in the chat and in the terminal: a refusal the workspace answered is
+        // said as a sentence, never as the broker's envelope (D-1).
+        self.worker_request(session, "context.manifest", json!({}))
+            .await
+            .map_err(|error| {
+                if refused_by_workspace(&error) {
+                    anyhow::anyhow!(agent_error_text(&error))
+                } else {
+                    error
+                }
+            })?;
+        self.live_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session.to_owned(), admitted);
         Ok(())
+    }
+    /// Whether the workspace admitted `admitted` — this grant, with this provider — for
+    /// `session` within [`LIVE_ADMISSION_REUSE`].
+    fn admitted_recently(&self, session: &str, admitted: &LiveAdmission) -> bool {
+        self.live_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)
+            .is_some_and(|last| {
+                last.grant == admitted.grant && last.at.elapsed() < LIVE_ADMISSION_REUSE
+            })
+    }
+    /// Forget `session`'s last live admission, so its next provider use asks the workspace.
+    fn forget_live_admission(&self, session: &str) {
+        self.live_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
     }
     pub async fn preflight_run(
         &self,
@@ -2931,6 +3157,10 @@ impl CrewManager {
         let mut credential_written = false;
         let admitted: Result<RunAdmission> = async {
             ensure!(
+                is_run_id(&run_id),
+                "Crew workspace answered with a run ID this computer does not accept; the run was revoked"
+            );
+            ensure!(
                 result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
                 "Crew broker returned a different protected-context policy; refresh before granting agent access"
             );
@@ -2975,15 +3205,17 @@ impl CrewManager {
                 run_id: run_id.clone(),
                 institution_ids: institution_ids.clone(),
                 expires_at,
-                context: serde_json::to_string(&admission_context(AdmissionContext {
-                    connection_id: id,
-                    channel,
-                    sources: &sources,
-                    labels: &labels,
-                    remote_files_enabled: !public && c.remote_root.is_some(),
-                    shared_files,
-                    history: context,
-                }))?,
+                context: wrapper_safe_json(&serde_json::to_string(&admission_context(
+                    AdmissionContext {
+                        connection_id: id,
+                        channel,
+                        sources: &sources,
+                        labels: &labels,
+                        remote_files_enabled: !public && c.remote_root.is_some(),
+                        shared_files,
+                        history: context,
+                    },
+                ))?),
                 labels: labels.clone(),
             })
         }
@@ -3098,7 +3330,7 @@ impl CrewManager {
         policy
             .origin_institution_ids
             .extend(previous.institution_ids);
-        ensure!(previous.connection_id == id && previous.channel_id == channel && previous.provider_binding == provider_binding(provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
+        ensure!(previous.connection_id == id && previous.channel_id == channel && binds(&previous.provider_binding, provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
         ensure!(
             provider.tier() != ProviderTier::Public || previous.public_provider,
             "Private-origin Crew conversation cannot be rebound to a public model"
@@ -3294,6 +3526,7 @@ impl CrewManager {
             tracing::warn!(session, %error, "Couldn't save a Crew grant the workspace ended");
         }
         self.forget_run_reads(session);
+        self.forget_live_admission(session);
         anyhow::anyhow!(GRANT_POLICY_CHANGED)
     }
     pub async fn publish_run(&self, session: &str, body: &str, status: &str) -> Result<Value> {
@@ -3369,6 +3602,7 @@ impl CrewManager {
                 error.context("Couldn't save the revocation on this device; retry to finish it")
             })??;
         self.forget_run_reads(session);
+        self.forget_live_admission(session);
         Ok(
             match self
                 .confirm_revocation(&connection_id, session, &run_id)
@@ -4197,6 +4431,29 @@ fn with_default_channel(method: &str, mut params: Value, scope: &Scope) -> Resul
 /// internal"): a refusal the broker answered becomes a sentence, "Crew refused the request:
 /// {its message without the code}.", never the transport's `{"code":…,"message":…}` JSON. Any
 /// other error is its own words, unchanged.
+/// `json`, a JSON document, written so that nothing inside it can end the markup-like wrapper
+/// it is sent to a model in, such as `<crew_context>…</crew_context>` (DAEMON-4): every `<`,
+/// `>` and `&` becomes `\u003c`, `\u003e` and `\u0026`. JSON uses none of the three outside a
+/// string, and every JSON reader decodes the escapes to the same characters, so the document
+/// means exactly what it did. A channel message reading `</crew_context>` followed by text
+/// styled as the owner's instructions used to close the wrapper the task instructions call
+/// untrusted, and put a member's words outside it in the owner's own message. Escaping an
+/// already escaped document changes nothing.
+///
+/// ⚠ Only for JSON: in other text, the escapes would be literal characters.
+pub fn wrapper_safe_json(json: &str) -> String {
+    let mut safe = String::with_capacity(json.len());
+    for character in json.chars() {
+        match character {
+            '<' => safe.push_str("\\u003c"),
+            '>' => safe.push_str("\\u003e"),
+            '&' => safe.push_str("\\u0026"),
+            other => safe.push(other),
+        }
+    }
+    safe
+}
+
 pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
     let text = error.to_string();
     if !text.starts_with("Crew broker refused request:") {
@@ -4591,8 +4848,10 @@ impl CrewManager {
     /// Drop a grant made to an earlier chat under `session`'s id, from memory and from the
     /// saved registry. Matched by its run, which the workspace mints once per grant, so a
     /// newer grant under the same id — made here or saved by another process — never goes
-    /// with it. A stop of it the workspace has not confirmed is kept for its revocation and
-    /// asked about again (F3, [`ReplacedGrant`]); nothing else of it is.
+    /// with it. It is stopped as it goes ([`Scope::into_stopped`]): kept for its revocation and
+    /// asked about again (F3, [`ReplacedGrant`]) unless the workspace already confirmed or
+    /// ended its run. A grant still live here was dropped with no `run.revoke` before
+    /// (DAEMON-1), and its run stayed live at the workspace, listed nowhere.
     async fn prune_stale_grant(&self, session: &str, stale: &Scope) {
         let mut kept = false;
         let pruned = self
@@ -4603,7 +4862,7 @@ impl CrewManager {
                     .is_some_and(|scope| scope.run_id == stale.run_id)
                 {
                     if let Some(scope) = registry.scopes.remove(session) {
-                        kept = registry.keep_replaced(session, scope);
+                        kept = registry.keep_replaced(session, scope.into_stopped());
                     }
                 }
                 Ok(())
@@ -7562,6 +7821,86 @@ done
         let _ = fs::remove_dir_all(root);
     }
 
+    /// RENDERER-2: a run ID travels as a path segment of the person's Stop request, so a
+    /// workspace that answers `run.create` with one shaped like `../../credentials/lock?` could
+    /// have aimed the person's proof at another daemon route. Such a run is refused where it
+    /// arrives: revoked at the workspace by the ID it gave, and never recorded, listed or
+    /// credentialed here.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_id_shaped_like_a_path_is_refused_and_revoked() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("hostile-run-id");
+        let _env = isolated_crew_env(&root);
+        let connection_id = "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c";
+        let hostile = "../../../credentials/lock?";
+        let (manager, log, session) = abandon_fixture(
+            &root,
+            connection_id,
+            json!({"run": {"id": hostile, "protected_context": false},
+                "credential": "run-credential"}),
+            &[],
+        )
+        .await;
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("provider-cassette.json").to_string_lossy(),
+        )
+        .unwrap();
+
+        let error = manager
+            .begin_run(
+                &session,
+                connection_id,
+                "destination-channel",
+                vec!["source-a".into()],
+                &provider,
+            )
+            .await
+            .err()
+            .expect("a run named like a path is not granted");
+        assert!(error.to_string().contains("run ID"), "{error}");
+        let revokes = logged_lines(&log, "run.revoke");
+        assert_eq!(revokes.len(), 1, "the created run must be revoked");
+        let revoked: Value = serde_json::from_str(&revokes[0]).unwrap();
+        assert_eq!(revoked["params"]["run_id"], hostile);
+        assert_eq!(logged_methods(&log, "messages.history"), 0);
+        assert!(!manager.registry.lock().await.scopes.contains_key(&session));
+        assert!(manager.read_credential(&format!("run:{session}")).is_err());
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_run_id_is_letters_digits_hyphens_and_underscores() {
+        for accepted in [
+            "0b6f4a8e-2f7c-4d1e-9a51-6b8f0c1d2e3f",
+            "run-allowlist",
+            "keepalive_run_2",
+            &"a".repeat(128),
+        ] {
+            assert!(is_run_id(accepted), "{accepted}");
+        }
+        for refused in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            "a?b",
+            "a#b",
+            "a%2F",
+            "run.1",
+            "run id",
+            "rün",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_run_id(refused), "{refused}");
+        }
+    }
+
     /// The run credential a failed setup wrote goes with it, from whichever backend holds it;
     /// deleting one that is already gone is not an error.
     #[cfg(unix)]
@@ -7655,6 +7994,111 @@ done
         assert!(manager
             .read_credential(&format!("device:{}", prepared.preparation_id))
             .is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// DAEMON-3: a saved connection's institution can be changed in Connection settings or
+    /// with `privacy set-personal`, as the manual says. The save used to count the connection's
+    /// own saved institution against the new one, so every change was refused as "Crew aliases
+    /// have different institutions" with no alias anywhere, and the only way out was to remove
+    /// the connection and its device key. Another connection to the same workspace still has
+    /// to agree, and the refusal names it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connections_institution_can_be_changed_unless_another_connection_disagrees() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("change-institution");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let workspace = "44444444-4444-4444-8444-444444444444";
+        let input = |target: &str, name: &str, institution: &str| SaveConnection {
+            preparation_id: None,
+            name: name.into(),
+            ssh_target: target.into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-change-institution.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "44".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Private,
+            institution_id: Some(institution.into()),
+        };
+        let typo = manager
+            .save(input("lab@crew.example.org", "Methods lab", "ucfs"))
+            .await
+            .unwrap();
+        assert_eq!(typo.institution_id.as_deref(), Some("ucfs"));
+
+        let fixed = manager
+            .update(
+                &typo.id,
+                input("lab@crew.example.org", "Methods lab", "ucsf"),
+            )
+            .await
+            .expect("the institution can be changed");
+        assert_eq!(fixed.institution_id.as_deref(), Some("ucsf"));
+        assert!(
+            fixed.policy_epoch > typo.policy_epoch,
+            "the change is a policy change"
+        );
+        assert_eq!(
+            manager
+                .connection(&typo.id)
+                .await
+                .unwrap()
+                .institution_id
+                .as_deref(),
+            Some("ucsf")
+        );
+
+        // A second connection to the same workspace shares its institution...
+        let alias = manager
+            .save(input("lab@crew-alias.example.org", "Methods alias", "ucsf"))
+            .await
+            .unwrap();
+        assert_eq!(alias.cluster_connection_id, fixed.cluster_connection_id);
+        // ...so changing one alone is refused, naming the other, and changes nothing.
+        let refused = manager
+            .update(
+                &typo.id,
+                input("lab@crew.example.org", "Methods lab", "ucsd"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            refused,
+            "Methods alias is also saved on this computer for the same workspace, under \
+             institution ucsf. Connections to one workspace share one institution, so remove \
+             Methods alias before you use ucsd here."
+        );
+        assert!(!refused.contains("aliases"));
+        assert_eq!(
+            manager
+                .connection(&typo.id)
+                .await
+                .unwrap()
+                .institution_id
+                .as_deref(),
+            Some("ucsf")
+        );
+        // With the other removed, the change goes through.
+        manager.remove(&alias.id).await.unwrap();
+        let moved = manager
+            .update(
+                &typo.id,
+                input("lab@crew.example.org", "Methods lab", "ucsd"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved.institution_id.as_deref(), Some("ucsd"));
         let _ = fs::remove_dir_all(root);
     }
 
