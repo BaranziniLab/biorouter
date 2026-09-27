@@ -3215,7 +3215,9 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<Reply> {
                 .context("The task's channel was left unresolved")?;
             let context: Vec<&str> = context.iter().map(|target| target.id.as_str()).collect();
             let started = api.connection_action("runs", api.with_run_policy(json!({"request_id":api.request_id,"channel_id":destination.id,"prompt":prompt,"provider":provider,"model":model,"context_channels":context,"posting_grant":allow_posting}))).await;
-            api.show(started.map_err(|error| institution_refusal(error, &model))?)
+            let started = started.map_err(|error| institution_refusal(error, &model))?;
+            // The task is named by the channel it posts to, as `tasks list` names it.
+            api.show_with(started, api.names().await)
         }
         TaskCommand::List => {
             let runs = api
@@ -3229,12 +3231,17 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<Reply> {
             api.show_with(run, api.names().await)
         }
         TaskCommand::Watch { run } => watch_task(api, &run).await?,
+        // The route takes no body, so no request ID is sent and no `--request-id` retry is
+        // offered: running `tasks cancel` again is the retry (CLI-20).
         TaskCommand::Cancel { run } => api.show(
-            api.connection_action(
-                &format!("runs/{}/cancel", component(&run)?),
-                json!({"request_id":api.request_id}),
-            )
-            .await?,
+            api.client
+                .request(
+                    "POST",
+                    &api.path(&format!("/runs/{}/cancel", component(&run)?))
+                        .await?,
+                    None,
+                )
+                .await?,
         ),
     })
 }
@@ -3402,7 +3409,7 @@ fn revoked_lines(session: &str, answer: &Value) -> Result<Vec<String>> {
         Some("cancelled") => lines.push("Its task was stopped.".into()),
         Some(status) => lines.push(format!(
             "Its task's status: {}.",
-            safe_text(&status.replace('_', " "))
+            output::run_status_word(status)
         )),
         None => {}
     }
@@ -5053,6 +5060,88 @@ mod tests {
         assert!(with_unread(json!([{"id": METHODS}]), &snapshot())[0]
             .get("unread")
             .is_none());
+    }
+
+    /// CLI-16: a started task is named by the channel the person typed, and a revoked task's
+    /// status is the word every other surface uses.
+    #[tokio::test]
+    async fn a_started_task_names_its_channel_and_statuses_use_the_shared_words() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if method == "POST" && path.ends_with("/runs") {
+                return Ok(json!({
+                    "run_id": "r-1", "connection_id": CONNECTION, "channel_id": METHODS,
+                    "session_id": "20260927_3", "status": "running"
+                }));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Tasks(TaskCommand::Start {
+                    channel: "methods".into(),
+                    prompt: TextInput {
+                        text: Some("Sum the counts".into()),
+                        input: None,
+                    },
+                    provider: "p".into(),
+                    model: "m".into(),
+                    context_channels: Vec::new(),
+                    allow_posting: true,
+                }),
+            )
+            .await
+            .expect("started"),
+        );
+        assert!(
+            lines[0].starts_with("Task posting to #methods in Analysis Lab · Working…"),
+            "{lines:?}"
+        );
+
+        let lines = revoked_lines(
+            SESSION,
+            &json!({"revoked": true, "remote_revocation_confirmed": true, "task_status": "completed"}),
+        )
+        .expect("revoked");
+        assert_eq!(lines[1], "Its task's status: Done.");
+    }
+
+    /// CLI-20: `tasks cancel` sends no body, so a failure offers no `--request-id` that the
+    /// route would ignore; running it again is the retry.
+    #[tokio::test]
+    async fn tasks_cancel_offers_no_request_id_the_route_ignores() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/runs/r-1/cancel") {
+                return Err(refuse(
+                    503,
+                    Some("crew_revocation_unconfirmed"),
+                    "Local cancellation requested; retry cancellation to confirm revocation.",
+                ));
+            }
+            standard(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let error = run(
+            &api,
+            CrewCommand::Tasks(TaskCommand::Cancel { run: "r-1".into() }),
+        )
+        .await
+        .expect_err("unconfirmed");
+        let cancel = fake
+            .sent()
+            .into_iter()
+            .find(|sent| sent.path.ends_with("/cancel"))
+            .expect("cancel sent");
+        assert_eq!((cancel.method.as_str(), cancel.body), ("POST", None));
+        let shown = failure(
+            &error,
+            OutputFormat::Text,
+            "req-1",
+            api.client.sent.load(Ordering::SeqCst),
+        )
+        .to_string();
+        assert!(!shown.contains("--request-id"), "{shown}");
     }
 
     /// A broker that predates direct add says so, and points at the invitation that works.

@@ -2054,7 +2054,7 @@ fn sentence_case(value: &str) -> String {
 }
 
 /// The run status words the desktop shows (`crewStatus.ts`).
-fn run_status_word(status: &str) -> String {
+pub(super) fn run_status_word(status: &str) -> String {
     match status {
         "starting" => "Starting…".into(),
         "running" => "Working…".into(),
