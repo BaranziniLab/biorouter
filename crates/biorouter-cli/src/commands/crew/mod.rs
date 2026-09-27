@@ -90,7 +90,11 @@ fn failure(
 ) -> anyhow::Error {
     let message = safe_lines(&error_text(error));
     if let Some(line) = failure_json(error, &message, request_id, format) {
-        println!("{line}");
+        // A closed standard output (`| head`) must not turn a failure into a panic, so the
+        // write's own error is ignored, as it always was here.
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(stdout, "{line}");
+        let _ = stdout.flush();
     }
     if error.chain().any(|cause| cause.is::<NeedsTerminal>()) {
         needs_a_terminal(message)
