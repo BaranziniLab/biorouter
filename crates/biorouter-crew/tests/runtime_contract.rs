@@ -131,3 +131,172 @@ fn the_runtime_directory_is_created_private_and_reused_across_restarts() {
     ws.broker.set_runtime_root(runtime.path());
     assert_eq!(ws.broker.prepare_runtime(NODE).unwrap(), socket);
 }
+
+// ---------------------------------------------------------------------------------------------
+// BROKER-3: a runtime path another account took after /tmp was cleaned moves, it never blocks
+// ---------------------------------------------------------------------------------------------
+
+/// The shapes an entry at the recorded runtime name can take when this account did not leave
+/// it there as a usable runtime directory. Another account's directory is the case that
+/// matters and cannot be made without root here; it takes the same path as these (and the
+/// broker's own unit test drives it with a foreign owner).
+fn squat(directory: &Path, shape: usize) {
+    match shape {
+        // A symbolic link, to a directory this account could otherwise use.
+        0 => std::os::unix::fs::symlink("/", directory).unwrap(),
+        // A plain file.
+        1 => fs::write(directory, b"").unwrap(),
+        // A directory anyone can write into.
+        2 => {
+            fs::create_dir(directory).unwrap();
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o777)).unwrap();
+        }
+        // The right directory, holding something that is not the broker's socket.
+        _ => {
+            fs::create_dir(directory).unwrap();
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o711)).unwrap();
+            fs::write(directory.join("planted"), b"").unwrap();
+        }
+    }
+}
+
+#[test]
+fn a_runtime_path_taken_after_tmp_was_cleaned_moves_to_a_fresh_private_one() {
+    for shape in 0..4 {
+        let mut ws = Workspace::new(&format!("runtime-squat-{shape}"));
+        let runtime = TempRoot::short();
+        ws.broker.set_runtime_root(runtime.path());
+        let first = ws.broker.prepare_runtime(NODE).unwrap();
+        write_descriptor(&ws, &first);
+        let (directory, basename) = runtime_dir(&first);
+
+        // /tmp is cleaned, and the recorded name is taken before the broker starts again.
+        fs::remove_dir(&directory).unwrap();
+        squat(&directory, shape);
+        let mut ws = ws.reopen();
+        ws.broker.set_runtime_root(runtime.path());
+        let moved = ws
+            .broker
+            .prepare_runtime(NODE)
+            .unwrap_or_else(|error| panic!("shape {shape}: the start must recover: {error}"));
+        let (new_directory, new_basename) = runtime_dir(&moved);
+        assert_ne!(new_basename, basename, "shape {shape}");
+        assert!(new_basename.starts_with(&format!("crew-{}-", host_uid())));
+        assert_eq!(new_directory.parent().unwrap(), runtime.path());
+        let metadata = fs::symlink_metadata(&new_directory).unwrap();
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.uid(), host_uid());
+        assert_eq!(metadata.mode() & 0o7777, 0o711);
+        assert!(
+            fs::read_dir(&new_directory).unwrap().next().is_none(),
+            "a fresh directory"
+        );
+        assert!(
+            !ws.root.path().join("runtime.json").exists(),
+            "the descriptor naming the old path is retired"
+        );
+        // The squatted entry is left alone.
+        assert!(fs::symlink_metadata(&directory).is_ok());
+
+        // The move is journaled: the next start comes back to the new path.
+        let mut ws = ws.reopen();
+        ws.broker.set_runtime_root(runtime.path());
+        assert_eq!(
+            ws.broker.prepare_runtime(NODE).unwrap(),
+            moved,
+            "shape {shape}"
+        );
+        let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
+    }
+}
+
+#[test]
+fn a_live_listener_on_the_recorded_socket_is_still_refused() {
+    let mut ws = Workspace::new("runtime-live");
+    let runtime = TempRoot::short();
+    ws.broker.set_runtime_root(runtime.path());
+    let socket = ws.broker.prepare_runtime(NODE).unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o666)).unwrap();
+    let error = ws
+        .broker
+        .prepare_runtime(NODE)
+        .expect_err("a live listener");
+    assert!(error.to_string().starts_with("runtime_in_use:"), "{error}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// BROKER-5: decoy directories in /tmp cannot hide a running sibling from the name check
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    /// A fake sibling broker at `runtime_root/basename`: answers every `hello` for
+    /// `workspace_id` named `name`.
+    fn fake_sibling(runtime_root: &Path, basename: &str, workspace_id: &str, name: &str) {
+        let directory = runtime_root.join(basename);
+        fs::create_dir(&directory).unwrap();
+        let listener = UnixListener::bind(directory.join("broker.sock")).unwrap();
+        let answer =
+            json!({"id": "name-probe", "result": {"workspace_id": workspace_id, "name": name}});
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut line = String::new();
+                if BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .is_ok()
+                {
+                    let _ = stream.write_all(format!("{answer}\n").as_bytes());
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn decoys_that_sort_first_cannot_hide_a_running_sibling() {
+        let mut ws = Workspace::new("sibling-decoys");
+        let runtime = TempRoot::short();
+        ws.broker.set_runtime_root(runtime.path());
+        // The real sibling sorts last of everything named for this account.
+        fake_sibling(
+            runtime.path(),
+            &format!("crew-{}-{}", host_uid(), "f".repeat(32)),
+            &uuid(),
+            "lab",
+        );
+        // Forty correctly named decoys that sort before it, of every shape another account
+        // can leave in /tmp: an empty directory, a plain file, a symbolic link to the real
+        // sibling's directory, and a directory whose broker.sock is not a socket.
+        let real = runtime
+            .path()
+            .join(format!("crew-{}-{}", host_uid(), "f".repeat(32)));
+        for index in 0..40u32 {
+            let decoy = runtime
+                .path()
+                .join(format!("crew-{}-{index:032x}", host_uid()));
+            match index % 4 {
+                0 => fs::create_dir(&decoy).unwrap(),
+                1 => fs::write(&decoy, b"").unwrap(),
+                2 => std::os::unix::fs::symlink(&real, &decoy).unwrap(),
+                _ => {
+                    fs::create_dir(&decoy).unwrap();
+                    fs::write(decoy.join("broker.sock"), b"").unwrap();
+                }
+            }
+        }
+        let (code, _) = refused(ws.host_call("workspace.rename", json!({"name": "lab"})));
+        assert_eq!(
+            code, "name_taken",
+            "the running sibling must be probed whatever sorts before it"
+        );
+        assert_eq!(
+            ws.host_ok("workspace.rename", json!({"name": "lab-two"}))["name"],
+            "lab-two"
+        );
+    }
+}

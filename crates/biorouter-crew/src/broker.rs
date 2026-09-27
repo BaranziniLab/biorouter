@@ -3577,6 +3577,10 @@ fn validate_socket(path: &Path, owner: u32) -> Result<()> {
 /// socket is skipped, each probe is bounded by [`SIBLING_PROBE_TIMEOUT`], and nothing is
 /// trusted beyond the name used to refuse a duplicate. Names are what any node user can
 /// already learn from `hello`.
+///
+/// Ownership is checked **before** the probe limit is applied: any account can create entries
+/// named `crew-<uid>-…` in `/tmp`, and decoys that sort first must never take the probe slots
+/// of the account's real runtime directories.
 fn sibling_workspace_names(
     runtime_root: &Path,
     uid: u32,
@@ -3597,6 +3601,7 @@ fn sibling_workspace_names(
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             }) && Some(name.as_str()) != own_basename
         })
+        .filter(|name| owned_runtime_socket(&runtime_root.join(name), uid))
         .collect();
     candidates.sort();
     candidates.truncate(SIBLING_PROBE_LIMIT);
@@ -3609,6 +3614,18 @@ fn sibling_workspace_names(
             (hello_workspace != own_workspace_id).then_some(name?)
         })
         .collect()
+}
+/// Whether `directory` is a directory `uid` owns (not a symlink) holding a `broker.sock` socket
+/// `uid` owns. Metadata only: nothing is opened or connected.
+fn owned_runtime_socket(directory: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let (Ok(dir), Ok(socket)) = (
+        fs::symlink_metadata(directory),
+        fs::symlink_metadata(directory.join("broker.sock")),
+    ) else {
+        return false;
+    };
+    dir.is_dir() && dir.uid() == uid && socket.file_type().is_socket() && socket.uid() == uid
 }
 /// `hello` on one sibling socket: `(workspace_id, name)`.
 fn probe_hello(directory: &Path, socket: &Path, uid: u32) -> Result<(String, Option<String>)> {
@@ -3727,37 +3744,119 @@ fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
         state.runtime_basename = Some(basename.clone());
         broker.commit(state, "system", "workspace.bind_runtime")?;
     }
-    reclaim_runtime_socket(&broker.runtime_root, uid, &basename)
+    match reclaim_runtime_socket(&broker.runtime_root, uid, &basename)? {
+        RuntimeDirectory::Ready(socket) => Ok(socket),
+        RuntimeDirectory::Unusable(reason) => relocate_runtime(broker, uid, &basename, reason),
+    }
 }
-fn reclaim_runtime_socket(runtime_root: &Path, uid: u32, basename: &str) -> Result<PathBuf> {
+/// What [`reclaim_runtime_socket`] found at the recorded runtime path.
+#[derive(Debug)]
+enum RuntimeDirectory {
+    /// The socket path, in a directory this account owns with mode 0711, free to bind.
+    Ready(PathBuf),
+    /// The path cannot be used as it stands: another account's entry, a symbolic link or other
+    /// non-directory, the wrong mode, or an unexpected entry. After `/tmp` is cleaned any
+    /// account can create an entry at the recorded name, and a sticky `/tmp` lets only that
+    /// account and root remove it, so this is never repaired in place. The reason is logged.
+    Unusable(&'static str),
+}
+/// Move the workspace to a fresh runtime directory when its recorded one cannot be used
+/// ([`RuntimeDirectory::Unusable`]). The new name is random and created exclusively, so nobody
+/// can have claimed it first, and it is journaled before the broker binds. Members reach it
+/// through the new invitation line `start` prints; the old line no longer connects.
+fn relocate_runtime(
+    broker: &mut Broker,
+    uid: u32,
+    previous: &str,
+    reason: &str,
+) -> Result<PathBuf> {
+    // A descriptor naming the old path must not outlive the move, or a broker stopped between
+    // the journal record and its new descriptor would find the two disagreeing at next start.
+    match fs::remove_file(broker.root.join("runtime.json")) {
+        Ok(()) => sync_dir(&broker.root)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).context("unsafe_runtime: cannot retire runtime descriptor")
+        }
+    }
+    for _ in 0..8 {
+        let basename = format!("crew-{uid}-{}", Uuid::new_v4().simple());
+        let directory = broker.runtime_root.join(&basename);
+        match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o711))?;
+        let metadata = fs::symlink_metadata(&directory)?;
+        ensure!(
+            metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o7777 == 0o711,
+            "unsafe_runtime: new runtime directory ownership, type or permissions invalid"
+        );
+        let mut state = broker.state.clone();
+        state.runtime_basename = Some(basename);
+        broker.commit(state, "system", "workspace.move_runtime")?;
+        let socket = directory.join("broker.sock");
+        eprintln!(
+            "runtime_moved: the recorded runtime directory {previous} can't be used ({reason}); this workspace now listens at {}. Give members the new invitation line; the old one no longer connects.",
+            socket.display()
+        );
+        return Ok(socket);
+    }
+    bail!("unsafe_runtime: could not create a new runtime directory")
+}
+/// Check (and prepare) the recorded runtime directory `runtime_root/basename`: create it when
+/// it is missing, and remove a stale socket this account left behind. A live listener is an
+/// error (`runtime_in_use`); anything that makes the path unusable is
+/// [`RuntimeDirectory::Unusable`].
+fn reclaim_runtime_socket(
+    runtime_root: &Path,
+    uid: u32,
+    basename: &str,
+) -> Result<RuntimeDirectory> {
+    use RuntimeDirectory::Unusable;
     let directory = runtime_root.join(basename);
     match fs::symlink_metadata(&directory) {
-        Ok(metadata) => ensure!(
-            metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o7777 == 0o711,
-            "unsafe_runtime: persisted directory ownership, type or permissions changed"
-        ),
+        Ok(metadata) if !metadata.is_dir() => {
+            return Ok(Unusable("it is not a directory"));
+        }
+        Ok(metadata) if metadata.uid() != uid => {
+            return Ok(Unusable("another account owns it"));
+        }
+        Ok(metadata) if metadata.mode() & 0o7777 != 0o711 => {
+            return Ok(Unusable("its permissions changed"));
+        }
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::DirBuilder::new().mode(0o700).create(&directory)?;
+            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {}
+                // Created by someone else between the two calls.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Ok(Unusable("another account created it"));
+                }
+                Err(error) => return Err(error.into()),
+            }
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o711))?;
         }
         Err(error) => return Err(error.into()),
     }
     for entry in fs::read_dir(&directory)? {
-        ensure!(
-            entry?.file_name() == "broker.sock",
-            "unsafe_runtime: unexpected entry occupies the persisted runtime directory"
-        );
+        if entry?.file_name() != "broker.sock" {
+            return Ok(Unusable("an unexpected entry occupies it"));
+        }
     }
     let socket = directory.join("broker.sock");
     match fs::symlink_metadata(&socket) {
         Ok(metadata) => {
             use std::os::unix::fs::FileTypeExt;
-            ensure!(
-                metadata.file_type().is_socket()
-                    && metadata.uid() == uid
-                    && metadata.mode() & 0o7777 == 0o666,
-                "unsafe_runtime: socket ownership, type or permissions changed"
-            );
+            if !(metadata.file_type().is_socket()
+                && metadata.uid() == uid
+                && metadata.mode() & 0o7777 == 0o666)
+            {
+                return Ok(Unusable(
+                    "its socket's ownership, type or permissions changed",
+                ));
+            }
             match UnixStream::connect(&socket) {
                 Ok(_) => bail!(
                     "runtime_in_use: persisted socket has a live listener; it will not be replaced"
@@ -3783,7 +3882,7 @@ fn reclaim_runtime_socket(runtime_root: &Path, uid: u32, basename: &str) -> Resu
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    Ok(socket)
+    Ok(RuntimeDirectory::Ready(socket))
 }
 fn write_runtime(root: &Path, info: &Value) -> Result<()> {
     let path = root.join(format!(".runtime-{}.tmp", Uuid::new_v4()));
@@ -3849,6 +3948,8 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
     let socket = persisted_runtime(&mut broker, &node_id)?;
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o666))?;
+    let bound = path_identity(&socket)
+        .ok_or_else(|| anyhow!("unsafe_runtime: the bound socket disappeared"))?;
     let secret: [u8; 32] = hex::decode(&broker.state.workspace_signing_key)?
         .try_into()
         .map_err(|_| anyhow!("storage_corrupt: workspace identity"))?;
@@ -3859,6 +3960,7 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
     write_runtime(root, &info)?;
     println!("{}", info);
     let shared = Arc::new(Mutex::new(broker));
+    watch_runtime(socket.clone(), bound, Arc::clone(&shared));
     let active = Arc::new(Mutex::new(BTreeMap::<u32, usize>::new()));
     for stream in listener.incoming() {
         let stream = stream?;
@@ -3884,6 +3986,37 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
         });
     }
     Ok(())
+}
+/// How often a running broker checks that its socket path still leads to the socket it bound.
+const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(30);
+/// The `(device, inode)` of the entry at `path`, without following a final symbolic link, or
+/// `None` when it cannot be read.
+fn path_identity(path: &Path) -> Option<(u64, u64)> {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+/// Whether `socket` still leads to the socket the broker bound, identified by `bound`.
+fn runtime_intact(socket: &Path, bound: (u64, u64)) -> bool {
+    path_identity(socket) == Some(bound)
+}
+/// Stop the broker once its socket path no longer leads to the socket it bound: the runtime
+/// directory was removed (by root or a `/tmp` cleaner) and perhaps re-created by another
+/// account. Nobody can connect any more and `stop` can no longer verify the process, while it
+/// still holds the writer lock, so it exits and lets the next `start` restore the path or move
+/// the workspace to a new one. It waits for the request in progress, so no commit is cut short.
+fn watch_runtime(socket: PathBuf, bound: (u64, u64), broker: Arc<Mutex<Broker>>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(RUNTIME_WATCH_INTERVAL);
+        if !runtime_intact(&socket, bound) {
+            let _held = broker.lock();
+            eprintln!(
+                "runtime_lost: {} no longer leads to this broker; stopping so the next start can restore or move it",
+                socket.display()
+            );
+            std::process::exit(75);
+        }
+    });
 }
 fn serve_client(mut stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
@@ -4078,6 +4211,11 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
             WORKSPACE_NAME_TAKEN
         );
     }
+    // The socket members were given last time, to tell the host when the broker had to move.
+    let previous_socket = read_runtime_descriptor(root)
+        .ok()
+        .flatten()
+        .and_then(|info| info.get("socket").cloned());
     let log = private_file(&root.join("broker.log"), true)?;
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -4122,6 +4260,14 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
                         "workspace_id": hello["workspace_id"],
                         "name": hello["name"],
                     });
+                    if previous_socket
+                        .as_ref()
+                        .is_some_and(|previous| Some(previous) != info.get("socket"))
+                    {
+                        // The recorded runtime directory could not be used (see broker.log):
+                        // the old invitation line no longer connects.
+                        result["socket_changed"] = json!(true);
+                    }
                     match start_invitation(&info, &hello) {
                         Ok(line) => result["invitation"] = json!(line),
                         Err(error) => {
@@ -4458,5 +4604,70 @@ mod system_account_tests {
         // A node whose login.defs starts people at 500.
         assert!(!is_system_account(&account(600, Some("/bin/bash")), 500));
         assert!(is_system_account(&account(0, Some("/bin/bash")), 0));
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    fn short_root() -> PathBuf {
+        let suffix: String = Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(12)
+            .collect();
+        let path = Path::new("/tmp").join(format!("crt-u-{suffix}"));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn another_accounts_runtime_directory_is_unusable_not_an_error() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let basename = format!("crew-{uid}-{}", Uuid::new_v4().simple());
+        // This account's own directory, as it looks to a host of another UID: exactly what a
+        // host sees when another account created the recorded name after /tmp was cleaned.
+        let directory = root.join(&basename);
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o711)).unwrap();
+        let foreign = reclaim_runtime_socket(&root, uid.wrapping_add(1), &basename).unwrap();
+        assert!(
+            matches!(
+                foreign,
+                RuntimeDirectory::Unusable("another account owns it")
+            ),
+            "{foreign:?}"
+        );
+        // Its own host reclaims it.
+        let own = reclaim_runtime_socket(&root, uid, &basename).unwrap();
+        assert!(
+            matches!(&own, RuntimeDirectory::Ready(socket) if *socket == directory.join("broker.sock")),
+            "{own:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_watchdog_notices_a_removed_or_replaced_socket() {
+        let root = short_root();
+        let socket = root.join("broker.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let bound = path_identity(&socket).unwrap();
+        assert!(runtime_intact(&socket, bound));
+        fs::remove_file(&socket).unwrap();
+        assert!(!runtime_intact(&socket, bound), "removed");
+        let _other = UnixListener::bind(&socket).unwrap();
+        assert!(
+            !runtime_intact(&socket, bound),
+            "replaced by another socket"
+        );
+        drop(listener);
+        let _ = fs::remove_dir_all(&root);
     }
 }
