@@ -2539,22 +2539,54 @@ async fn send_message(api: &Api, args: SendArgs) -> Result<Reply> {
 
 async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
     let channel = api.target(Kind::Channel, &args.channel).await?;
+    let (mut cursor, initial) = watch_start(api, &channel.id, &args).await?;
     let path = api.path("/observe").await?;
     let client = api.client.shared()?;
-    let mut cursor = args.after;
     let mut names = Directory::default();
     let watched = api.label(&channel, "the channel", "channel ID");
     loop {
         let request = ObserveRequest {
             channel_id: Some(channel.id.clone()),
             after: cursor.clone(),
-            initial: Initial::All,
+            initial: match &initial {
+                Initial::Latest => Initial::Latest,
+                Initial::All => Initial::All,
+            },
         };
         cursor = tokio::select! {
             result = client.observe(&path, &request, |event| watch_event(api, &mut names, &watched, event)) => result?,
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(Reply::Streamed); }
         };
     }
+}
+
+/// Where `crew watch` starts (CLI-6): the channel's newest page, as the desktop's channel
+/// view does; with `--new-only`, after the newest message, so only new posts print; with
+/// `--from-start`, the oldest message; with `--after`, that cursor. It used to replay the whole
+/// channel from its oldest message before following it.
+async fn watch_start(
+    api: &Api,
+    channel_id: &str,
+    args: &WatchArgs,
+) -> Result<(Option<String>, Initial)> {
+    if let Some(after) = &args.after {
+        return Ok((Some(after.clone()), Initial::All));
+    }
+    if args.from_start {
+        return Ok((None, Initial::All));
+    }
+    if !args.new_only {
+        return Ok((None, Initial::Latest));
+    }
+    let newest = api
+        .broker(
+            "messages.history",
+            json!({"channel_id": channel_id, "latest": true, "limit": 1}),
+            false,
+        )
+        .await?;
+    // An empty channel has no cursor: everything posted to it from now on is new.
+    Ok((newest["cursor"].as_str().map(str::to_owned), Initial::All))
 }
 
 fn watch_event(
@@ -4385,6 +4417,8 @@ mod tests {
             CrewCommand::Watch(WatchArgs {
                 channel: "methods".into(),
                 after: None,
+                from_start: false,
+                new_only: false,
             }),
             CrewCommand::Join(JoinArgs { no_wait: false }),
             CrewCommand::Tasks(TaskCommand::Watch { run: "r".into() }),
@@ -4403,6 +4437,59 @@ mod tests {
             .expect("json")
             .contains('\n'));
         assert!(failure_json(&lost, "x", "req-1", OutputFormat::Text).is_none());
+    }
+
+    /// CLI-6: a watch starts at the newest page by default, after the newest message with
+    /// `--new-only`, at the oldest with `--from-start`, and at a cursor with `--after`.
+    #[tokio::test]
+    async fn a_watch_starts_at_the_newest_messages_unless_asked_otherwise() {
+        let start = |after: Option<&str>, from_start: bool, new_only: bool| WatchArgs {
+            channel: "methods".into(),
+            after: after.map(str::to_owned),
+            from_start,
+            new_only,
+        };
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        let shape = |(cursor, initial): (Option<String>, Initial)| {
+            (cursor, serde_json::to_value(initial).expect("initial"))
+        };
+        assert_eq!(
+            shape(
+                watch_start(&api, METHODS, &start(None, false, false))
+                    .await
+                    .unwrap()
+            ),
+            (None, json!("latest"))
+        );
+        assert_eq!(
+            shape(
+                watch_start(&api, METHODS, &start(None, true, false))
+                    .await
+                    .unwrap()
+            ),
+            (None, json!("all"))
+        );
+        assert_eq!(
+            shape(
+                watch_start(&api, METHODS, &start(Some("m-3"), false, false))
+                    .await
+                    .unwrap()
+            ),
+            (Some("m-3".into()), json!("all"))
+        );
+        assert!(fake.broker_calls().is_empty(), "no history read so far");
+        assert_eq!(
+            shape(
+                watch_start(&api, METHODS, &start(None, false, true))
+                    .await
+                    .unwrap()
+            ),
+            (Some("m-9".into()), json!("all"))
+        );
+        assert_eq!(
+            fake.broker_call("messages.history").expect("newest"),
+            json!({"channel_id": METHODS, "latest": true, "limit": 1})
+        );
     }
 
     /// CLI-5: a watch the daemon ended prints one error value, the frame and the failure in

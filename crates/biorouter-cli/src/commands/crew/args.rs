@@ -158,7 +158,8 @@ pub enum CrewCommand {
         #[arg(long)]
         after: Option<String>,
     },
-    /// Follow channel messages. Ctrl-C detaches without cancelling tasks.
+    /// Show a channel's newest messages, then print new ones as they arrive. Ctrl-C detaches
+    /// without cancelling tasks.
     Watch(WatchArgs),
     /// Post as your own authenticated workspace identity.
     Send(SendArgs),
@@ -546,8 +547,14 @@ pub struct WatchArgs {
     /// The channel: methods, '#methods' or analysis-lab/methods.
     pub channel: String,
     /// Start after this message cursor.
-    #[arg(long)]
+    #[arg(long, conflicts_with_all = ["from_start", "new_only"])]
     pub after: Option<String>,
+    /// Replay the channel from its oldest message first.
+    #[arg(long, conflicts_with = "new_only")]
+    pub from_start: bool,
+    /// Print only messages posted from now on.
+    #[arg(long)]
+    pub new_only: bool,
 }
 
 #[derive(Args)]
@@ -980,6 +987,29 @@ mod tests {
             };
             assert_eq!(got, channel);
         }
+    }
+
+    #[test]
+    fn watch_takes_one_starting_point() {
+        let CrewCommand::Watch(args) = parse(&["watch", "methods", "--new-only"]).command else {
+            panic!("watch")
+        };
+        assert!(args.new_only && !args.from_start && args.after.is_none());
+        assert!(refused(&["watch", "methods", "--new-only", "--from-start"]));
+        assert!(refused(&[
+            "watch",
+            "methods",
+            "--after",
+            "m-1",
+            "--from-start"
+        ]));
+        assert!(refused(&[
+            "watch",
+            "methods",
+            "--after",
+            "m-1",
+            "--new-only"
+        ]));
     }
 
     #[test]
