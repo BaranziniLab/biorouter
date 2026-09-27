@@ -28,6 +28,18 @@ fn knowledge_service_for_enrichment(
     biorouter_mcp::knowledge::service::KnowledgeService::new_default()
 }
 
+/// How a `/workflow` capture ended. The person has already been told; this is
+/// what the tests read.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkflowCapture {
+    /// A Crew grant restricts this chat: nothing was generated, shown or saved.
+    Refused,
+    /// Generation or the save failed, and the reason has been printed.
+    NotSaved,
+    /// Written to this path.
+    Saved(PathBuf),
+}
+
 use std::io::{IsTerminal, Write};
 use std::str::FromStr;
 use tokio::signal::ctrl_c;
@@ -679,7 +691,8 @@ impl CliSession {
             }
             InputResult::Workflow(filepath_opt) => {
                 history.save(editor);
-                self.handle_workflow(filepath_opt).await;
+                // The person has been told how it ended; the outcome is for tests.
+                let _ = self.handle_workflow(filepath_opt).await;
             }
             InputResult::Compact => {
                 history.save(editor);
@@ -988,7 +1001,29 @@ impl CliSession {
     /// conversation produced a workflow with no `extensions:`, no
     /// `knowledge_bases:` and no `author:` here, and a fully populated one in
     /// the app.
-    async fn handle_workflow(&mut self, filepath_opt: Option<String>) {
+    ///
+    /// ⚠ **A Crew chat is refused FIRST**, before the model is asked to
+    /// summarise the conversation, with the sentence the desktop shows
+    /// ([`biorouter::workflow::service::refuse_crew_source`]). The workflow a
+    /// model writes from a Crew chat restates the channel's context, and a saved
+    /// workflow is shared and run outside the channel's permissions. This door
+    /// asked nothing, so it wrote one to the library.
+    async fn handle_workflow(&mut self, filepath_opt: Option<String>) -> WorkflowCapture {
+        use biorouter::session::session_manager::CrewContextRefusal;
+
+        if let Err(error) = biorouter::workflow::service::refuse_crew_source(&self.session_id).await
+        {
+            // The refusal alone, or the chain of a registry that could not be
+            // read: either way nothing was generated, read or written.
+            match error.downcast_ref::<CrewContextRefusal>() {
+                Some(refusal) => output::render_error(&refusal.to_string()),
+                None => output::render_error(&format!(
+                    "Couldn't check this chat's Crew access, so no workflow was made: {error:#}"
+                )),
+            }
+            return WorkflowCapture::Refused;
+        }
+
         println!("{}", console::style("Generating Workflow").green());
 
         output::show_thinking();
@@ -1003,7 +1038,7 @@ impl CliSession {
                     console::style("Failed to generate workflow").red(),
                     e
                 );
-                return;
+                return WorkflowCapture::NotSaved;
             }
         };
 
@@ -1021,6 +1056,12 @@ impl CliSession {
                         &mut workflow,
                         enrichment,
                     ),
+                    // A grant made while the model was writing: the draft now
+                    // restates Crew context, so it is neither saved nor shown.
+                    Err(e) if e.downcast_ref::<CrewContextRefusal>().is_some() => {
+                        output::render_error(&e.to_string());
+                        return WorkflowCapture::Refused;
+                    }
                     Err(e) => println!(
                         "{}",
                         console::style(format!(
@@ -1040,10 +1081,13 @@ impl CliSession {
         }
 
         match self.save_workflow(&workflow, filepath_opt.as_deref()) {
-            Ok(path) => println!(
-                "{}",
-                console::style(format!("Saved workflow to {}", path.display())).green()
-            ),
+            Ok(path) => {
+                println!(
+                    "{}",
+                    console::style(format!("Saved workflow to {}", path.display())).green()
+                );
+                WorkflowCapture::Saved(path)
+            }
             // ⚠ Print the CHAIN and then the draft. `service::save` wraps the
             // validation failure in "refusing to save a workflow that does not
             // validate", and `anyhow`'s `Display` prints only that outermost
@@ -1077,6 +1121,7 @@ impl CliSession {
                         .red()
                     ),
                 }
+                WorkflowCapture::NotSaved
             }
         }
     }
@@ -2718,6 +2763,80 @@ mod tests {
             output_format.to_string(),
         )
         .await
+    }
+
+    /// `/workflow` refuses a chat a Crew grant restricts BEFORE the model is
+    /// asked to summarise it, with the sentence the desktop shows, and saves
+    /// nothing. It asked nothing, so the workflow a model wrote from the
+    /// channel's context landed in the library, where it can be shared and run
+    /// outside the channel's permissions. A chat no grant restricts goes on to
+    /// generation as before (which fails here, as this agent has no model), so
+    /// the refusal is Crew's and not a refusal of every capture.
+    ///
+    /// In a process of its own, because the Crew registry is read once per
+    /// process and this test saves the one it reads.
+    #[tokio::test]
+    async fn slash_workflow_refuses_a_crew_chat_before_the_model_is_asked() {
+        use biorouter::agents::AgentConfig;
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::session::session_manager::SessionType;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let mut chats = Vec::new();
+        for name in ["Crew task", "Plain chat"] {
+            chats.push(
+                manager
+                    .create_session(
+                        dir.path().to_path_buf(),
+                        name.to_string(),
+                        SessionType::User,
+                    )
+                    .await
+                    .unwrap()
+                    .id,
+            );
+        }
+        crate::commands::session::restrict_by_crew_grant(&[&chats[0]]);
+
+        for (id, expected) in [
+            (&chats[0], WorkflowCapture::Refused),
+            (&chats[1], WorkflowCapture::NotSaved),
+        ] {
+            let agent = Agent::with_config(AgentConfig::new(
+                manager.clone(),
+                PermissionManager::instance(),
+                None,
+                BioRouterMode::Auto,
+            ));
+            let mut cli = CliSession::new(
+                agent,
+                id.clone(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                "text".to_string(),
+            )
+            .await;
+            cli.push_message(Message::user().with_text(
+                "<crew_context>cohort-7 enrolment notes</crew_context> Summarize them.",
+            ));
+            let target = dir.path().join(format!("{id}.yaml"));
+            assert_eq!(
+                cli.handle_workflow(Some(target.display().to_string()))
+                    .await,
+                expected,
+                "{id}"
+            );
+            assert!(!target.exists(), "{id}: a workflow was written");
+        }
     }
 
     /// #40: the full decision matrix for tool-confirmation prompts.

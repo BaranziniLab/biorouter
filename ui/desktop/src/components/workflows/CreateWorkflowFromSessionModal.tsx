@@ -49,6 +49,18 @@ const KNOWLEDGE_SELECTION_UNREAD =
  * chat the workflow starts would fail; after a failed list, it would save the
  * primary as the only visible base and hide every other one.
  */
+/**
+ * The daemon's refusal sentence, when that is what the create request threw.
+ *
+ * `POST /workflows/create` refuses with a plain-text body written for a person
+ * (why, and what to do instead), and the generated client throws that parsed
+ * body, a string, under `throwOnError`. Any other failure throws something
+ * else, and is not a refusal.
+ */
+function refusalSentence(error: unknown): string | null {
+  return typeof error === 'string' && error.trim() ? error.trim() : null;
+}
+
 function primaryAmong(
   primary: string | null | undefined,
   visible: readonly string[]
@@ -65,6 +77,9 @@ export default function CreateWorkflowFromSessionModal({
   const [isCreating, setIsCreating] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStage, setAnalysisStage] = useState<string>('');
+  // The daemon's sentence when it refused to make a workflow from this chat
+  // (a Crew chat's context stays in its channel). Shown in place of the form.
+  const [refusal, setRefusal] = useState<string | null>(null);
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const [workflowExtensions, setWorkflowExtensions] = useState<ExtensionConfig[]>([]);
   const [knowledgeBaseItems, setKnowledgeBaseItems] = useState<WorkflowResourceItem[]>([]);
@@ -297,6 +312,11 @@ export default function CreateWorkflowFromSessionModal({
           if (cancelled) return;
           console.error('Failed to analyze messages:', error);
           setAnalysisStage('Analysis failed');
+          // A refusal is the daemon's plain sentence, thrown as the parsed
+          // body under `throwOnError`; an empty body (a 500, a missing agent)
+          // is thrown as `{}` and leaves the form for the person to fill in.
+          const sentence = refusalSentence(error);
+          if (sentence) setRefusal(sentence);
         })
         .finally(() => {
           if (cancelled) return;
@@ -324,6 +344,7 @@ export default function CreateWorkflowFromSessionModal({
       setHasAnalyzed(false);
       setIsAnalyzing(false);
       setAnalysisStage('');
+      setRefusal(null);
       setWorkflowExtensions([]);
       setKnowledgeBaseItems([]);
       setWorkflowKnowledgeBaseIds([]);
@@ -545,6 +566,19 @@ export default function CreateWorkflowFromSessionModal({
                 </p>
               </div>
             </div>
+          ) : refusal ? (
+            <div
+              role="alert"
+              className="flex flex-col items-center justify-center h-full min-h-[300px] gap-3"
+              data-testid="create-workflow-refused"
+            >
+              <div className="text-center">
+                <p className="text-label text-text-default">
+                  A workflow can&apos;t be made from this chat
+                </p>
+                <p className="text-supporting text-text-muted mt-1">{refusal}</p>
+              </div>
+            </div>
           ) : (
             <div data-testid="form-state">
               <WorkflowFormFields
@@ -599,7 +633,7 @@ export default function CreateWorkflowFromSessionModal({
             Cancel
           </Button>
 
-          {!isAnalyzing && (
+          {!isAnalyzing && !refusal && (
             <div className="flex gap-3">
               {/* V7 — this was `ghost` repainted into `secondary` by hand: a
                   `bg-background-medium` ground, a `rounded-element`, and a

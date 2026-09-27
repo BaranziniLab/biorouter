@@ -6333,7 +6333,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Out of reach - a private or unreadable session named without the user-action proof"
+            "description": "Out of reach - a private or unreadable session named without the user-action proof. Or, to a request that carried that proof, refused because a Crew grant restricts the chat: nothing was exported, and the body is the plain sentence saying why"
           },
           "404": {
             "description": "Session not found"
@@ -7126,7 +7126,7 @@
             "description": "Bad request"
           },
           "403": {
-            "description": "Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)"
+            "description": "Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text). Or, to a caller that may reach it, refused because a Crew grant restricts the chat: nothing was read or generated, and the body is the plain sentence saying why"
           },
           "412": {
             "description": "Precondition failed - Agent not available"

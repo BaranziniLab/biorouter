@@ -529,6 +529,46 @@ describe('CreateWorkflowFromSessionModal', () => {
   });
 
   /**
+   * A workflow is never made from a chat a Crew grant restricts: the daemon
+   * refuses `POST /workflows/create` with a plain sentence, before it reads the
+   * chat or asks a model. The modal used to log that and open an empty form
+   * under "Create workflow from this chat", which said nothing about why.
+   */
+  describe('from a Crew chat', () => {
+    /** Mirrored from `CREW_WORKFLOW_REFUSAL` in `crates/biorouter/src/workflow/service.rs`. */
+    const CREW_WORKFLOW_REFUSAL =
+      'Crew context cannot be turned into a workflow, because a saved workflow can be shared and ' +
+      "run outside the channel's permissions. Write the workflow yourself instead.";
+
+    it("shows the daemon's refusal in place of the form, and nothing can be saved", async () => {
+      // The generated client throws the parsed plain-text body under `throwOnError`.
+      mockCreateWorkflow.mockRejectedValue(CREW_WORKFLOW_REFUSAL);
+      render(<CreateWorkflowFromSessionModal {...defaultProps} sessionId="crew-task" />);
+
+      const refused = await screen.findByTestId('create-workflow-refused', {}, { timeout: 3000 });
+      expect(refused).toHaveAttribute('role', 'alert');
+      expect(refused).toHaveTextContent(CREW_WORKFLOW_REFUSAL);
+      expect(mockCreateWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { session_id: 'crew-task' } })
+      );
+      expect(screen.queryByTestId('form-state')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('create-workflow-button')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('create-and-run-workflow-button')).not.toBeInTheDocument();
+      expect(screen.getByTestId('cancel-button')).toBeEnabled();
+      expect(mockSaveWorkflow).not.toHaveBeenCalled();
+    });
+
+    it('leaves the form to fill in when the failure carries no sentence', async () => {
+      // An empty error body (a 500, no agent) is thrown as `{}`: not a refusal.
+      mockCreateWorkflow.mockRejectedValue({});
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+      await screen.findByTestId('form-state', {}, { timeout: 3000 });
+      expect(screen.queryByTestId('create-workflow-refused')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
    * Issue #56 Task 58: the modal reads the chat's knowledge-base selection with
    * `GET /knowledge/active`, and naming a PRIVATE chat there is on the daemon's
    * reach gate. The read carried no proof, was refused, and the modal fell back

@@ -9506,7 +9506,7 @@ export type ExportSessionErrors = {
      */
     401: unknown;
     /**
-     * Out of reach - a private or unreadable session named without the user-action proof
+     * Out of reach - a private or unreadable session named without the user-action proof. Or, to a request that carried that proof, refused because a Crew grant restricts the chat: nothing was exported, and the body is the plain sentence saying why
      */
     403: unknown;
     /**
@@ -10090,7 +10090,7 @@ export type CreateWorkflowErrors = {
      */
     400: unknown;
     /**
-     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text). Or, to a caller that may reach it, refused because a Crew grant restricts the chat: nothing was read or generated, and the body is the plain sentence saying why
      */
     403: unknown;
     /**
