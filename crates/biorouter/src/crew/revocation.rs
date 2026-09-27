@@ -43,10 +43,11 @@ use std::time::Duration;
 
 /// How long an earlier grant is kept past its run's own end (`expires_at`), confirmed or not:
 /// by then the workspace no longer honors the run whatever it was told, and a task's ledger has
-/// long had its chance to follow the confirmation (F3).
-const REPLACED_KEPT_PAST_END: u64 = 7 * 24 * 60 * 60;
+/// long had its chance to follow the confirmation (F3). A deleted chat's grant is kept as long
+/// (CROSSCUT-8, [`CrewManager::forget_gone_grant`]).
+pub(super) const REPLACED_KEPT_PAST_END: u64 = 7 * 24 * 60 * 60;
 
-fn unix_now() -> u64 {
+pub(super) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())

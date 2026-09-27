@@ -1,6 +1,10 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
 mod credentials;
+mod freshness;
+#[cfg(test)]
+#[path = "freshness_tests.rs"]
+mod freshness_tests;
 mod host_start;
 #[cfg(test)]
 #[path = "host_start_tests.rs"]
@@ -399,6 +403,10 @@ enum Standing {
     /// to: that chat is gone from this device, or its identity could not be read. It keeps
     /// every restriction and authorizes nothing; the text says why.
     Unconfirmed(Scope, &'static str),
+    /// The saved registry cannot be read, and this chat is one it may restrict (DAEMON-6): it
+    /// restricts and authorizes nothing, as an unconfirmed grant does, but there is no grant
+    /// to show or revoke until the file can be read again. See `freshness.rs`.
+    Unreadable(&'static str),
 }
 
 /// Which door a signed request came through. Only the daemon's own join sends `auth.join`,
@@ -633,6 +641,11 @@ pub struct CrewManager {
     /// Each chat's last live admission by the workspace (CROSSCUT-7), which
     /// [`CrewManager::check_provider_use`] may reuse for [`LIVE_ADMISSION_REUSE`]. Memory only.
     live_admissions: StdMutex<HashMap<String, LiveAdmission>>,
+    /// The saved registry's file as this process last read it (CROSSCUT-1): `None` before it
+    /// looked, `Some(None)` for no file. See `freshness.rs`.
+    seen_file: StdMutex<Option<Option<freshness::FileStamp>>>,
+    /// What this process could not read of the saved registry, while it cannot (DAEMON-6).
+    unreadable: StdMutex<Option<freshness::Unreadable>>,
 }
 /// How long one live admission of a chat's grant by the workspace stands for the provider
 /// uses that are not the reply loop's own model requests ([`CrewManager::check_provider_use`]).
@@ -1142,16 +1155,12 @@ impl CrewManager {
             Ok(self.credential_entry(id)?.get_password()?)
         }
     }
+    /// Load the registry under `root`. One that cannot be read no longer fails the manager,
+    /// and with it every chat that asks it anything (DAEMON-6): it restricts the chats it may
+    /// name until it can be read again, and nothing is saved over it (see `freshness.rs`).
     pub fn new(root: PathBuf) -> Result<Self> {
-        let path = root.join("connections.json");
-        let (mut registry, saved_digest): (Registry, _) = match std::fs::read(&path) {
-            Ok(bytes) => (
-                serde_json::from_slice(&bytes)?,
-                Some(registry_digest(&bytes)),
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Registry::default(), None),
-            Err(e) => return Err(e.into()),
-        };
+        let (mut registry, saved_digest, seen_file, unreadable) =
+            freshness::load(&root.join("connections.json"))?;
         for c in &mut registry.connections {
             c.status = "disconnected".into();
             c.last_error = None;
@@ -1174,6 +1183,8 @@ impl CrewManager {
             run_reads: StdMutex::new(HashMap::new()),
             revocation_retries: StdMutex::new(HashMap::new()),
             live_admissions: StdMutex::new(HashMap::new()),
+            seen_file: StdMutex::new(Some(seen_file)),
+            unreadable: StdMutex::new(unreadable),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -1251,6 +1262,8 @@ impl CrewManager {
     /// of their own, after every chat's current grant, so a reader that looks a chat up by its
     /// id in `grants` never finds one of them.
     pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
+        // As another process saved them (CROSSCUT-1).
+        self.refresh_registry().await;
         self.connection(connection_id).await?;
         let sessions: Vec<String> = self
             .registry
@@ -1395,13 +1408,15 @@ impl CrewManager {
         };
         let digest = bytes.as_deref().map(registry_digest);
         let saved: Value = match &bytes {
-            Some(bytes) => serde_json::from_slice(bytes)?,
+            Some(bytes) => serde_json::from_slice(bytes)
+                .map_err(|error| Self::unreadable_save_error(&error))?,
             None => serde_json::to_value(Registry::default())?,
         };
         let registry = if digest == self.saved_digest() {
             here.clone()
         } else {
-            let mut theirs: Registry = serde_json::from_value(saved.clone())?;
+            let mut theirs: Registry = serde_json::from_value(saved.clone())
+                .map_err(|error| Self::unreadable_save_error(&error))?;
             carry_process_state(here, &mut theirs);
             theirs
         };
@@ -1494,6 +1509,8 @@ impl CrewManager {
         }
         *registry = saved.registry;
         self.set_saved_digest(saved.digest);
+        // The file was just read back whole (or is the copy this process last read whole).
+        self.registry_readable_again();
         drop(lock);
         Ok(Ok(out))
     }
@@ -1569,6 +1586,8 @@ impl CrewManager {
         }
     }
     pub async fn list(&self) -> Vec<Connection> {
+        // As another process saved them (CROSSCUT-1).
+        self.refresh_registry().await;
         self.registry.lock().await.connections.clone()
     }
     pub async fn connection(&self, id: &str) -> Result<Connection> {
@@ -2772,7 +2791,7 @@ impl CrewManager {
     /// the same id.
     pub async fn run_metadata(&self, session: &str) -> Option<RunMetadata> {
         match self.standing(session).await {
-            Standing::None => None,
+            Standing::None | Standing::Unreadable(_) => None,
             Standing::Own(scope) | Standing::Unconfirmed(scope, _) => Some(RunMetadata {
                 run_id: scope.run_id,
                 connection_id: scope.connection_id,
@@ -2782,8 +2801,20 @@ impl CrewManager {
     }
     /// Every chat a grant restricts: each id whose grant is its chat's own or cannot be
     /// confirmed, and none whose grant was made to an earlier chat under the same id.
+    ///
+    /// Read against the saved registry as it is now (CROSSCUT-1). While it cannot be read, the
+    /// chats it names are listed too, and every saved chat when it names none this build can
+    /// read (DAEMON-6).
     pub async fn scoped_session_ids(&self) -> std::collections::HashSet<String> {
-        let sessions: Vec<String> = self.registry.lock().await.scopes.keys().cloned().collect();
+        self.refresh_registry().await;
+        let mut sessions: Vec<String> = self.registry.lock().await.scopes.keys().cloned().collect();
+        match self.unreadable_sessions() {
+            None => {}
+            Some(Some(named)) => sessions.extend(named),
+            Some(None) => sessions.extend(self.every_chat().await),
+        }
+        sessions.sort();
+        sessions.dedup();
         let mut scoped = std::collections::HashSet::with_capacity(sessions.len());
         for session in sessions {
             if self.is_scoped(&session).await {
@@ -2819,7 +2850,9 @@ impl CrewManager {
     async fn scope(&self, session: &str) -> Result<Scope> {
         match self.standing(session).await {
             Standing::Own(scope) => Ok(scope),
-            Standing::Unconfirmed(_, reason) => Err(anyhow::anyhow!(reason)),
+            Standing::Unconfirmed(_, reason) | Standing::Unreadable(reason) => {
+                Err(anyhow::anyhow!(reason))
+            }
             Standing::None => Err(anyhow::anyhow!(NO_GRANT)),
         }
     }
@@ -2829,7 +2862,9 @@ impl CrewManager {
     async fn checked_scope(&self, session: &str) -> Result<Option<(Scope, Option<Connection>)>> {
         let own = match self.standing(session).await {
             Standing::None => return Ok(None),
-            Standing::Unconfirmed(_, reason) => anyhow::bail!(reason),
+            Standing::Unconfirmed(_, reason) | Standing::Unreadable(reason) => {
+                anyhow::bail!(reason)
+            }
             Standing::Own(scope) => scope,
         };
         let registry = self.registry.lock().await;
@@ -2989,7 +3024,9 @@ impl CrewManager {
             Standing::None => return Ok(()),
             // The checks above refuse such a grant first; this keeps it refused if it
             // changed in between.
-            Standing::Unconfirmed(_, reason) => anyhow::bail!(reason),
+            Standing::Unconfirmed(_, reason) | Standing::Unreadable(reason) => {
+                anyhow::bail!(reason)
+            }
             Standing::Own(scope) => scope,
         };
         let admitted = LiveAdmission::of(&scope, provider);
@@ -3321,10 +3358,11 @@ impl CrewManager {
         provider: &dyn Provider,
         policy: &mut RunPolicy,
     ) -> Result<()> {
-        let (Standing::Own(previous) | Standing::Unconfirmed(previous, _)) =
-            self.standing(session).await
-        else {
-            return Ok(());
+        let previous = match self.standing(session).await {
+            Standing::None => return Ok(()),
+            // Restrictions that cannot be read cannot be carried, so nothing is granted.
+            Standing::Unreadable(reason) => anyhow::bail!(reason),
+            Standing::Own(previous) | Standing::Unconfirmed(previous, _) => previous,
         };
         policy.origin_restricted |= previous.origin_restricted;
         policy
@@ -4711,6 +4749,16 @@ impl CrewManager {
     }
 }
 
+/// Whether a deleted chat's grant is settled, and can be forgotten: its run ended more than
+/// [`revocation::REPLACED_KEPT_PAST_END`] ago, so the workspace has not honored it for a week
+/// whatever it was told, and no turn of the deleted chat is still unwinding with its context. A
+/// grant whose end was never recorded is kept.
+fn gone_grant_settled(scope: &Scope, now: u64) -> bool {
+    scope
+        .expires_at
+        .is_some_and(|end| end.saturating_add(revocation::REPLACED_KEPT_PAST_END) <= now)
+}
+
 /// SCOPE-BIND: a grant belongs to one chat, not to a session id.
 ///
 /// ⚠ **Security-relevant; needs human review.** Grants are stored by session id, and an id
@@ -4735,8 +4783,15 @@ impl CrewManager {
 /// deleted task's cancel failed on every retry until the run lapsed — and it lifted the
 /// restriction from the chat's turn while that turn was still unwinding, since a delete only
 /// signals the cancel. A deleted chat's grant resolves to [`Standing::Unconfirmed`]: still
-/// restricting, still listed and revocable, never acting. It goes only when a later chat
-/// under the id shows it was an earlier chat's.
+/// restricting, still listed and revocable, never acting.
+///
+/// It goes once it is settled: a week past its run's own end, when the workspace has long
+/// stopped honoring the run and no turn of the deleted chat is still unwinding
+/// ([`CrewManager::forget_gone_grant`], CROSSCUT-8). Session ids are single use now, so no
+/// later chat ever holds a deleted chat's id to show its grant was an earlier chat's, and
+/// waiting for one kept every deleted chat's grant for good: listed, and read on every scope
+/// question, one database query each. A grant under an id another chat holds is still pruned
+/// at once, for stores that reissue ids (a restored backup).
 impl CrewManager {
     /// Resolve chats against `store` in place of the shared one, for a test.
     #[cfg(test)]
@@ -4797,6 +4852,12 @@ impl CrewManager {
         Box::pin(self.standing_inner(session)).await
     }
     async fn standing_inner(&self, session: &str) -> Standing {
+        // Another process may have granted, revoked or re-granted since this one last read
+        // the saved registry (CROSSCUT-1).
+        self.refresh_registry().await;
+        if let Some(reason) = self.unreadable_restriction(session).await {
+            return Standing::Unreadable(reason);
+        }
         let Some(scope) = self.registry.lock().await.scopes.get(session).cloned() else {
             return Standing::None;
         };
@@ -4817,7 +4878,13 @@ impl CrewManager {
                 self.prune_stale_grant(session, &scope).await;
                 Standing::None
             }
-            (Some(_), None) => Standing::Unconfirmed(scope, GRANT_GONE),
+            (Some(_), None) => {
+                if gone_grant_settled(&scope, revocation::unix_now()) {
+                    self.forget_gone_grant(session, &scope).await;
+                    return Standing::None;
+                }
+                Standing::Unconfirmed(scope, GRANT_GONE)
+            }
             (None, Some(current)) => {
                 Standing::Own(self.adopt_binding(session, scope, current).await)
             }
@@ -4883,6 +4950,45 @@ impl CrewManager {
             session,
             run_id = %stale.run_id,
             "ignored a Crew grant that was made to an earlier chat under this id"
+        );
+    }
+
+    /// Forget the grant of a deleted chat that is settled ([`gone_grant_settled`]), from
+    /// memory and the saved registry, with its run credential (CROSSCUT-8). Matched by its run
+    /// and the chat it was made to, so a newer grant under the id never goes with it.
+    async fn forget_gone_grant(&self, session: &str, gone: &Scope) {
+        let mut forgotten = false;
+        let saved = self
+            .update_registry_keeping(|registry| {
+                if registry.scopes.get(session).is_some_and(|scope| {
+                    scope.run_id == gone.run_id
+                        && scope.session_incarnation == gone.session_incarnation
+                }) {
+                    registry.scopes.remove(session);
+                    forgotten = true;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = saved {
+            tracing::warn!(
+                session,
+                %error,
+                "could not remove a deleted chat's settled Crew grant from the saved registry"
+            );
+        }
+        if !forgotten {
+            return;
+        }
+        self.forget_run_reads(session);
+        self.forget_live_admission(session);
+        if let Err(error) = self.delete_credential(&format!("run:{session}")) {
+            tracing::warn!(session, %error, "couldn't delete a settled Crew grant's run credential");
+        }
+        tracing::info!(
+            session,
+            run_id = %gone.run_id,
+            "forgot the settled Crew grant of a deleted chat"
         );
     }
 
