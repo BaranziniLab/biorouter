@@ -1093,17 +1093,20 @@ impl Broker {
         let quotas = self.quotas;
         state.sequence = self.state.sequence + 1;
         let after = serde_json::to_value(&state)?;
-        let size = json_len(&after);
-        if allowance.state_headroom {
-            ensure!(size <= quotas.state_bytes, "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported");
-        } else {
-            ensure!(size <= quotas.state_bytes - quotas.state_admin_headroom, "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported");
-        }
         let before = if self.state.sequence == 0 {
             Value::Null
         } else {
             serde_json::to_value(&self.state)?
         };
+        let size = json_len(&after);
+        // A commit that does not grow the state (removing what aged out) is never refused
+        // for size: it can only help a workspace at its limit.
+        let shrinks = size <= json_len(&before);
+        if allowance.state_headroom {
+            ensure!(shrinks || size <= quotas.state_bytes, "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported");
+        } else {
+            ensure!(shrinks || size <= quotas.state_bytes - quotas.state_admin_headroom, "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported");
+        }
         let mut patches = Vec::new();
         delta(&before, &after, &mut Vec::new(), &mut patches);
         let mut record = DeltaRecord {

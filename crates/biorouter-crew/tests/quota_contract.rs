@@ -295,6 +295,64 @@ fn the_idempotency_cache_ages_out() {
 }
 
 #[test]
+fn a_workspace_filled_by_results_that_never_aged_recovers() {
+    let mut ws = Workspace::new("legacy-cache-full");
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let (team, general) = ws.host_team("legacy");
+    ws.host_adds_to_team(&mut mallory, &team);
+    // 1,500 cached results from a release that kept them forever and recorded no time: more
+    // than one mutation removes at once.
+    let host = ws.host.principal_id.clone();
+    let ws = ws.edit_journal(|journal| {
+        let patches = (0..1_500)
+            .map(|index| {
+                set(
+                    &["dedupe", &dedupe_key(&host, &format!("legacy-{index}"))],
+                    json!({"digest": "0".repeat(64), "result": {"filler": "f".repeat(1_000)}}),
+                )
+            })
+            .collect();
+        journal.append("system", "test.legacy", patches);
+    });
+    let mut ws = ws;
+    // Ordinary changes stop 1.3 MB below the state as it stands, so every change is over the
+    // limit. One that removes more than it adds is still allowed: each mutation removes up to
+    // 1,024 aged results, so the workspace sheds them and recovers.
+    let size = serde_json::to_vec(&ws.broker.state_json()).unwrap().len();
+    ws.broker.set_quotas(Quotas {
+        state_bytes: size - 1_300_000 + 64 * 1024,
+        state_admin_headroom: 64 * 1024,
+        ..Quotas::STANDARD
+    });
+    let legacy = |ws: &Workspace| {
+        ws.broker.state_json()["dedupe"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| key.contains(":legacy-"))
+            .count()
+    };
+    ws.call_ok(
+        &mut mallory,
+        "message.post",
+        json!({"channel_id": general, "body": "hello"}),
+    );
+    assert_eq!(legacy(&ws), 1_500 - 1_024);
+    ws.call_ok(
+        &mut mallory,
+        "message.post",
+        json!({"channel_id": general, "body": "again"}),
+    );
+    assert_eq!(legacy(&ws), 0);
+    // Now under the limit, ordinary changes carry on.
+    ws.call_ok(
+        &mut mallory,
+        "message.post",
+        json!({"channel_id": general, "body": "and again"}),
+    );
+}
+
+#[test]
 fn the_workspace_wide_cache_limit_evicts_instead_of_refusing() {
     let mut ws = Workspace::new("dedupe-total");
     ws.broker.set_quotas(Quotas {
