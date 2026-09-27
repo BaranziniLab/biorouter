@@ -133,6 +133,9 @@ fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value
     if let Some((broker_code, _)) = error.chain().find_map(broker_refusal) {
         body["broker_code"] = json!(broker_code);
     }
+    if let Some(detail) = connect_detail(error) {
+        body["detail"] = json!(detail);
+    }
     if let Some(stopped) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<WatchStopped>())
@@ -176,15 +179,68 @@ fn needs_a_terminal(sentence: impl Into<String>) -> anyhow::Error {
 
 /// `{error:#}`, except that a broker refusal the daemon forwarded is said in words for a person
 /// ([`output::broker_refusal_text`]) instead of as `Daemon returned 400: code: …`.
+///
+/// A failed connect with one of the daemon's typed codes (`crew_ssh_auth_required`, …) is said
+/// the same way, with what to run, then the code the manual's table is keyed on and OpenSSH's
+/// own words (CLI-7), instead of the transport's internal text.
 fn error_text(error: &anyhow::Error) -> String {
     error
         .chain()
-        .map(|cause| match broker_refusal(cause) {
-            Some((code, message)) => output::broker_refusal_text(code, message),
-            None => cause.to_string(),
+        .map(|cause| {
+            if let Some((code, message)) = broker_refusal(cause) {
+                return output::broker_refusal_text(code, message);
+            }
+            match connect_failure(cause) {
+                Some((code, sentence, detail)) => connect_failure_lines(code, sentence, detail),
+                None => cause.to_string(),
+            }
         })
         .collect::<Vec<_>>()
         .join(": ")
+}
+
+/// A refused connect the daemon typed: its code, the sentence for it, and OpenSSH's words.
+fn connect_failure<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<(&'a str, &'static str, Option<&'a str>)> {
+    let (code, detail) = refusal_code_and_detail(cause)?;
+    Some((code, output::connect_failure_text(code)?, detail))
+}
+
+/// A daemon refusal's code and `detail`.
+fn refusal_code_and_detail<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<(&'a str, Option<&'a str>)> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return Some((refused.kind.as_deref()?, refused.detail()));
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return Some((refused.code.as_deref()?, refused.detail.as_deref()));
+    }
+    None
+}
+
+fn connect_failure_lines(code: &str, sentence: &str, detail: Option<&str>) -> String {
+    let mut lines = vec![sentence.to_owned(), format!("  Code: {code}")];
+    if let Some(detail) = detail {
+        for (index, line) in detail.lines().enumerate() {
+            lines.push(if index == 0 {
+                format!("  Details: {line}")
+            } else {
+                format!("    {line}")
+            });
+        }
+    }
+    lines.join("\n")
+}
+
+/// OpenSSH's own words beside a failed connect, for JSON output.
+fn connect_detail(error: &anyhow::Error) -> Option<String> {
+    error
+        .chain()
+        .find_map(|cause| connect_failure(cause).and_then(|(_, _, detail)| detail))
+        .map(str::to_owned)
 }
 
 /// A broker refusal the daemon forwarded: the broker's code and its own `code: sentence`.
@@ -647,7 +703,8 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
             channel,
             member,
             former,
-        } => remove_member(api, &channel, &member, former).await?,
+            yes,
+        } => remove_member(api, &channel, &member, former, yes).await?,
         CrewCommand::History(args) => {
             let channel = api.target(Kind::Channel, &args.channel).await?;
             let page = api
@@ -1070,6 +1127,247 @@ async fn ask(question: String) -> Result<String> {
     .context("The question could not be asked")?
 }
 
+/// How a consequential command is confirmed (CLI-1, CLI-10), matching the desktop's friction:
+/// a plain question for archiving a channel or removing someone from it, the name typed again
+/// for removing a connection or making anything public.
+#[derive(Debug, PartialEq, Eq)]
+enum Consent {
+    /// `--yes`, or the name given again with `--confirm`.
+    Given,
+    /// Ask this on the terminal.
+    Ask(String),
+}
+
+/// A yes-or-no decision: `--yes`, else a question on the terminal, else the terminal refusal
+/// (exit status 2, nothing sent).
+fn yes_or_ask(
+    yes: bool,
+    interactive: bool,
+    question: String,
+    no_terminal: String,
+) -> Result<Consent> {
+    if yes {
+        Ok(Consent::Given)
+    } else if interactive {
+        Ok(Consent::Ask(question))
+    } else {
+        Err(needs_a_terminal(no_terminal))
+    }
+}
+
+async fn ask_yes(question: String, declined: &str) -> Result<()> {
+    let answer = ask(format!("{question} [y/N]")).await?;
+    ensure!(
+        matches!(answer.to_lowercase().as_str(), "y" | "yes"),
+        "{declined}"
+    );
+    Ok(())
+}
+
+/// A decision confirmed by typing `phrase` again, as the desktop's typed confirmations are
+/// (letter case aside): `--confirm PHRASE`, else a question on the terminal, else the terminal
+/// refusal.
+fn typed_or_ask(
+    phrase: &str,
+    confirm: Option<&str>,
+    interactive: bool,
+    no_terminal: String,
+) -> Result<Consent> {
+    match confirm {
+        Some(typed) => {
+            ensure!(
+                same_phrase(typed, phrase),
+                "Not done: --confirm {} doesn't match {}.",
+                safe_text(typed.trim()),
+                name_text(phrase)
+            );
+            Ok(Consent::Given)
+        }
+        None if interactive => Ok(Consent::Ask(format!(
+            "Type {} to confirm:",
+            name_text(phrase)
+        ))),
+        None => Err(needs_a_terminal(no_terminal)),
+    }
+}
+
+fn same_phrase(typed: &str, phrase: &str) -> bool {
+    typed.trim().to_lowercase() == phrase.trim().to_lowercase()
+}
+
+/// Ask for `phrase` on the terminal after `lines`, when [`typed_or_ask`] says to.
+async fn typed_consent(
+    phrase: &str,
+    confirm: Option<&str>,
+    interactive: bool,
+    lines: &[String],
+    no_terminal: String,
+) -> Result<()> {
+    if let Consent::Ask(question) = typed_or_ask(phrase, confirm, interactive, no_terminal)? {
+        let mut stderr = std::io::stderr().lock();
+        for line in lines {
+            writeln!(stderr, "{line}")?;
+        }
+        drop(stderr);
+        let answer = ask(question).await?;
+        ensure!(
+            same_phrase(&answer, phrase),
+            "Not done: that isn't {}.",
+            name_text(phrase)
+        );
+    }
+    Ok(())
+}
+
+/// A public setting, confirmed by typing the workspace's name.
+async fn confirm_public(
+    api: &Api,
+    workspace: &str,
+    confirm: Option<&str>,
+    lines: Vec<String>,
+    no_terminal: String,
+) -> Result<()> {
+    typed_consent(workspace, confirm, api.interactive, &lines, no_terminal).await
+}
+
+/// The name a typed confirmation asks for: the workspace's own name, else the saved
+/// connection's (`workspacePhraseFor` on the desktop).
+async fn workspace_phrase(api: &Api, connection: &Value) -> String {
+    match api.snapshot().await {
+        Ok(snapshot) => workspace_name_in(&snapshot),
+        Err(_) => None,
+    }
+    .unwrap_or_else(|| connection_name(connection))
+}
+
+fn workspace_name_in(snapshot: &Value) -> Option<String> {
+    snapshot["workspace"]["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !uuid_shaped(name))
+        .map(str::to_owned)
+}
+
+fn connection_name(connection: &Value) -> String {
+    connection["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("this connection")
+        .to_owned()
+}
+
+/// Whether the person hosts the workspace, and whether another of their computers could still
+/// act as its host, read from their snapshot.
+#[derive(Debug, PartialEq, Eq)]
+enum HostStanding {
+    NotHost,
+    /// The host, with another enrolled computer.
+    HostElsewhereToo,
+    /// The host, and no other computer of theirs is known: removing this one ends the host
+    /// controls for good.
+    OnlyHostComputer {
+        username: String,
+    },
+    /// The snapshot could not be read or does not say.
+    Unknown,
+}
+
+fn host_standing(snapshot: &Value) -> HostStanding {
+    let actor = &snapshot["actor"];
+    let Some(actor_id) = actor["id"].as_str() else {
+        return HostStanding::Unknown;
+    };
+    let workspace = &snapshot["workspace"];
+    let hosts = match workspace["host_principal_id"].as_str() {
+        Some(host) => host == actor_id,
+        None => match (workspace["host_uid"].as_u64(), actor["uid"].as_u64()) {
+            (Some(host), Some(uid)) => host == uid,
+            _ => return HostStanding::Unknown,
+        },
+    };
+    if !hosts {
+        return HostStanding::NotHost;
+    }
+    match actor["devices"].as_array() {
+        Some(devices) if devices.len() > 1 => HostStanding::HostElsewhereToo,
+        _ => HostStanding::OnlyHostComputer {
+            username: actor["username"].as_str().unwrap_or_default().to_owned(),
+        },
+    }
+}
+
+/// `connections remove` (CLI-1): delete the saved connection and this computer's device key.
+/// For a host's only computer that ends the host controls for good, so it is refused unless
+/// `--give-up-host-controls` says so; every removal is confirmed by typing the name.
+async fn remove_connection(
+    api: &Api,
+    confirm: Option<&str>,
+    give_up_host_controls: bool,
+) -> Result<Reply> {
+    let connection = api.connection().await?;
+    let name = connection_name(&connection);
+    let shown = name_text(&name);
+    let snapshot = api.snapshot().await.ok();
+    let standing = snapshot
+        .as_ref()
+        .map_or(HostStanding::Unknown, host_standing);
+    let workspace = snapshot
+        .as_ref()
+        .and_then(workspace_name_in)
+        .map_or_else(|| shown.clone(), |workspace| name_text(&workspace));
+    let mut lines = vec![format!(
+        "Remove {shown} from this computer? It disconnects, ends every chat's access through it and deletes this computer's device key for the workspace. Your messages stay on the server."
+    )];
+    match &standing {
+        HostStanding::OnlyHostComputer { username } if !give_up_host_controls => {
+            let invite = if username.is_empty() {
+                "biorouter crew enroll invite @YOUR_USERNAME --add-device".to_owned()
+            } else {
+                format!(
+                    "biorouter crew enroll invite @{} --add-device",
+                    safe_text(username)
+                )
+            };
+            return Err(restated(
+                format!(
+                    "Not removed. You host {workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again.\nTo keep them, first add another computer with {invite}.\nTo remove it anyway, add --give-up-host-controls."
+                ),
+                Some("crew_host_controls_would_end"),
+            ));
+        }
+        HostStanding::OnlyHostComputer { .. } => lines.push(format!(
+            "You host {workspace} and no other computer of yours can act as its host, so its host controls end for good."
+        )),
+        HostStanding::Unknown => {
+            let warning = format!(
+                "Biorouter couldn't check whether you host {workspace}. If you do and this is your only computer in it, removing it ends the host controls for good."
+            );
+            if confirm.is_some() || !api.interactive {
+                eprintln!("{warning}");
+            }
+            lines.push(warning);
+        }
+        HostStanding::NotHost | HostStanding::HostElsewhereToo => {}
+    }
+    typed_consent(
+        &name,
+        confirm,
+        api.interactive,
+        &lines,
+        format!(
+            "Removing {shown} deletes this computer's device key for the workspace. There is no terminal to ask in, so confirm with --confirm {}.",
+            safe_text(&shell_word(&name))
+        ),
+    )
+    .await?;
+    let result = api
+        .client
+        .request("DELETE", &api.path("").await?, None)
+        .await?;
+    Ok(api.say(result, vec![format!("Removed {shown} from this computer.")]))
+}
+
 async fn connections(api: &Api, command: ConnectionCommand) -> Result<Reply> {
     Ok(match command {
         ConnectionCommand::List => api.show(api.connections().await?),
@@ -1093,11 +1391,10 @@ async fn connections(api: &Api, command: ConnectionCommand) -> Result<Reply> {
                     .await?,
             )
         }
-        ConnectionCommand::Remove => api.show(
-            api.client
-                .request("DELETE", &api.path("").await?, None)
-                .await?,
-        ),
+        ConnectionCommand::Remove {
+            confirm,
+            give_up_host_controls,
+        } => remove_connection(api, confirm.as_deref(), give_up_host_controls).await?,
         ConnectionCommand::JoinInvitation(args) => join_invitation(api, args).await?,
         ConnectionCommand::Invitation { invitee } => {
             let invitation = fetch_invitation(api, invitee.as_deref()).await?;
@@ -1428,9 +1725,17 @@ async fn join_status(api: &Api, path: &str) -> Result<Value> {
             if refusal(&error)
                 .is_some_and(|refused| refused.code.as_deref() == Some("crew_not_connected")) =>
         {
+            // A typed connect failure already says what to run; anything else is pointed at
+            // `auth`, which signs in and connects.
             api.connection_action("connect", json!({}))
                 .await
-                .context("Connect to the workspace first: biorouter crew auth")?;
+                .map_err(|error| {
+                    if error.chain().any(|cause| connect_failure(cause).is_some()) {
+                        error
+                    } else {
+                        error.context("Connect to the workspace first: biorouter crew auth")
+                    }
+                })?;
             api.client
                 .request("GET", path, None)
                 .await
@@ -1944,8 +2249,18 @@ async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
             }
             api.say(result, vec![line])
         }
-        ChannelCommand::Archive { channel } => {
+        ChannelCommand::Archive { channel, yes } => {
             let channel = api.target(Kind::Channel, &channel).await?;
+            let label = api.label(&channel, "the channel", "channel ID");
+            // The broker has no way back: archiving closes the channel to posts for everyone.
+            if let Consent::Ask(question) = yes_or_ask(
+                yes,
+                api.interactive,
+                format!("Archive {label} for everyone? Nobody can post in it after this, and it can't be undone."),
+                format!("Archiving {label} is permanent for everyone. There is no terminal to ask in, so add --yes."),
+            )? {
+                ask_yes(question, "Nothing was archived.").await?;
+            }
             let result = api
                 .broker("channel.archive", json!({"channel_id":channel.id}), true)
                 .await?;
@@ -2459,7 +2774,13 @@ async fn added_lines(
     vec![format!("Added. {handle} can now see {}.", and_list(&seen))]
 }
 
-async fn remove_member(api: &Api, channel: &str, member: &str, former: bool) -> Result<Reply> {
+async fn remove_member(
+    api: &Api,
+    channel: &str,
+    member: &str,
+    former: bool,
+    yes: bool,
+) -> Result<Reply> {
     let kind = if former {
         Kind::FormerPerson
     } else {
@@ -2469,6 +2790,27 @@ async fn remove_member(api: &Api, channel: &str, member: &str, former: bool) -> 
         .resolve(&[(Kind::Channel, channel), (kind, member)])
         .await?;
     let (channel, who) = (&targets[0], &targets[1]);
+    let place = api.label(channel, "the channel", "channel ID");
+    let handle = who.username.as_deref().map_or_else(
+        || "this member".to_owned(),
+        |username| format!("@{}", safe_text(username)),
+    );
+    let question = if !yes && api.interactive {
+        format!(
+            "Remove {} from {place}? They lose access to its messages and files.",
+            api.authority_label(who).await
+        )
+    } else {
+        String::new()
+    };
+    if let Consent::Ask(question) = yes_or_ask(
+        yes,
+        api.interactive,
+        question,
+        format!("Removing {handle} from {place} needs a yes. There is no terminal to ask in, so add --yes."),
+    )? {
+        ask_yes(question, "Nothing was changed.").await?;
+    }
     let mut params = json!({"channel_id":channel.id,"principal_id":who.id});
     if let Some(username) = &who.username {
         params["expected_username"] = json!(username);
@@ -2885,8 +3227,22 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
         PrivacyCommand::SetPersonal {
             mode,
             institution_id,
+            confirm,
         } => {
             let connection = api.connection().await?;
+            if matches!(mode, PrivacyMode::Public) && connection["mode"].as_str() != Some("public")
+            {
+                let workspace = workspace_phrase(api, &connection).await;
+                let shown = name_text(&workspace);
+                confirm_public(
+                    api,
+                    &workspace,
+                    confirm.as_deref(),
+                    vec![format!("Make your {shown} connection public? Public models will be able to read public-safe work you can see here. Restricted content stays private.")],
+                    format!("Making your {shown} connection public needs its name typed. There is no terminal to ask in, so confirm with --confirm {}.", safe_text(&shell_word(&workspace))),
+                )
+                .await?;
+            }
             let mut input = serde_json::Map::new();
             for key in [
                 "name",
@@ -2920,7 +3276,30 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
         PrivacyCommand::SetWorkspace {
             mode,
             institution_id,
+            confirm,
         } => {
+            if matches!(mode, PrivacyMode::Public) {
+                let connection = api.connection().await?;
+                let snapshot = api.snapshot().await.ok();
+                let already = snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot["workspace"]["mode"] == "public");
+                if !already {
+                    let workspace = snapshot
+                        .as_ref()
+                        .and_then(workspace_name_in)
+                        .unwrap_or_else(|| connection_name(&connection));
+                    let shown = name_text(&workspace);
+                    confirm_public(
+                        api,
+                        &workspace,
+                        confirm.as_deref(),
+                        vec![format!("Allow Public in {shown}? Members will be able to choose Public. Agents with access will need permission again.")],
+                        format!("Allowing Public in {shown} needs its name typed. There is no terminal to ask in, so confirm with --confirm {}.", safe_text(&shell_word(&workspace))),
+                    )
+                    .await?;
+                }
+            }
             let mut policy = json!({"mode":mode.as_str()});
             if let Some(institution_id) = institution_id {
                 policy["institution_id"] = json!(institution_id);
@@ -3051,6 +3430,7 @@ mod tests {
         pub(super) broker_code: Option<String>,
         pub(super) institution_refusal: Option<Value>,
         pub(super) message: String,
+        pub(super) detail: Option<String>,
     }
 
     impl std::fmt::Display for FakeRefusal {
@@ -3072,6 +3452,7 @@ mod tests {
             broker_code: None,
             institution_refusal: None,
             message: message.to_owned(),
+            detail: None,
         }
         .into()
     }
@@ -3085,6 +3466,7 @@ mod tests {
             broker_code: Some(broker_code.into()),
             institution_refusal: None,
             message: message.to_owned(),
+            detail: None,
         }
         .into()
     }
@@ -3252,6 +3634,7 @@ mod tests {
                 channel: METHODS.into(),
                 member: format!("@{BOB}"),
                 former: false,
+                yes: true,
             },
         )
         .await
@@ -3294,6 +3677,7 @@ mod tests {
                     channel: "#methods".into(),
                     member: "@bob".into(),
                     former: false,
+                    yes: true,
                 },
             )
             .await
@@ -3365,6 +3749,7 @@ mod tests {
                 channel: "methods".into(),
                 member: "@carol".into(),
                 former: true,
+                yes: true,
             },
         )
         .await
@@ -3386,6 +3771,7 @@ mod tests {
             &api,
             CrewCommand::Channels(ChannelCommand::Archive {
                 channel: "general".into(),
+                yes: true,
             }),
         )
         .await
@@ -3412,6 +3798,7 @@ mod tests {
                 channel: "raw-data".into(),
                 member: "@Bob".into(),
                 former: false,
+                yes: true,
             },
         )
         .await
@@ -4349,6 +4736,7 @@ mod tests {
                         broker_code: None,
                         institution_refusal: details.clone(),
                         message: DAEMON.into(),
+                        detail: None,
                     }
                     .into());
                 }
@@ -4598,6 +4986,67 @@ mod tests {
         );
     }
 
+    /// CLI-7: a connect the server refused is said in words with what to run, then the code
+    /// the manual's table is keyed on and OpenSSH's own words; JSON keeps the code and detail.
+    #[tokio::test]
+    async fn a_refused_connect_says_what_to_run_with_the_code_and_details() {
+        const TRANSPORT: &str = "Crew SSH failure [ssh_eof; child_before_cleanup=exit_255]: ssh exited; reconnect. Submitted operation outcome may be unknown; inspect history before retrying";
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/connect") {
+                return Err(FakeRefusal {
+                    status: 400,
+                    code: Some("crew_ssh_auth_required".into()),
+                    broker_code: None,
+                    institution_refusal: None,
+                    message: TRANSPORT.into(),
+                    detail: Some(
+                        "bob@hpc: Permission denied (publickey,password).\nsecond line".into(),
+                    ),
+                }
+                .into());
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let error = run(&api, CrewCommand::Connect).await.expect_err("refused");
+        let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
+        assert_eq!(
+            shown,
+            "The server wants your password or a verification code. Run biorouter crew auth to sign in.\n  Code: crew_ssh_auth_required\n  Details: bob@hpc: Permission denied (publickey,password).\n    second line"
+        );
+        assert!(!shown.contains("Submitted operation"), "{shown}");
+        let body = failure_body(&error, &shown, "req-1");
+        assert_eq!(body["code"], "crew_ssh_auth_required");
+        assert_eq!(
+            body["detail"],
+            "bob@hpc: Permission denied (publickey,password).\nsecond line"
+        );
+
+        for code in [
+            "crew_ssh_auth_required",
+            "crew_ssh_host_key_unknown",
+            "crew_ssh_host_key_changed",
+            "crew_ssh_unreachable",
+            "crew_bridge_missing",
+            "crew_ssh_failed",
+            "crew_workspace_identity_mismatch",
+        ] {
+            let text = output::connect_failure_text(code).expect(code);
+            assert!(text.ends_with('.'), "{code}: {text}");
+        }
+        assert!(output::connect_failure_text("crew_request_refused").is_none());
+        // Another refusal keeps its text.
+        let other = refuse(
+            404,
+            Some("crew_connection_not_found"),
+            "No such connection.",
+        );
+        assert_eq!(
+            failure(&other, OutputFormat::Text, "req-1", false).to_string(),
+            "Daemon returned 404: No such connection."
+        );
+    }
+
     #[test]
     fn a_broker_refusal_keeps_terminal_controls_escaped() {
         let error = refuse_broker(
@@ -4655,6 +5104,214 @@ mod tests {
             .is_none());
     }
 
+    /// CLI-10: archiving a channel and removing someone from it ask first, as the desktop
+    /// does; without a terminal they need --yes, and nothing is sent without it.
+    #[tokio::test]
+    async fn archive_and_remove_member_ask_first_and_need_yes_without_a_terminal() {
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        let error = run(
+            &api,
+            CrewCommand::Channels(ChannelCommand::Archive {
+                channel: "methods".into(),
+                yes: false,
+            }),
+        )
+        .await
+        .expect_err("no terminal to ask in");
+        assert!(error.downcast_ref::<NeedsTerminal>().is_some(), "{error:?}");
+        assert_eq!(
+            message(&error),
+            "Archiving #methods is permanent for everyone. There is no terminal to ask in, so add --yes."
+        );
+        let error = run(
+            &api,
+            CrewCommand::RemoveMember {
+                channel: "methods".into(),
+                member: "@bob".into(),
+                former: false,
+                yes: false,
+            },
+        )
+        .await
+        .expect_err("no terminal to ask in");
+        assert!(error.downcast_ref::<NeedsTerminal>().is_some(), "{error:?}");
+        assert!(message(&error).starts_with("Removing @bob from #methods needs a yes."));
+        assert!(fake.broker_call("channel.archive").is_none());
+        assert!(fake.broker_call("membership.revoke").is_none());
+
+        assert_eq!(
+            yes_or_ask(false, true, "Archive?".into(), "no".into()).expect("asks"),
+            Consent::Ask("Archive?".into())
+        );
+        assert_eq!(
+            yes_or_ask(true, false, "Archive?".into(), "no".into()).expect("given"),
+            Consent::Given
+        );
+    }
+
+    /// A daemon with one saved connection whose snapshot is `snapshot`, and which removes it.
+    fn removing(snapshot: Value) -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        move |method: &str, path: &str, body: Option<&Value>| {
+            if method == "DELETE" && path == format!("/crew/connections/{CONNECTION}") {
+                return Ok(json!({"removed": true}));
+            }
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                return Ok(snapshot.clone());
+            }
+            standard(method, path, body)
+        }
+    }
+
+    fn remove_connection_command(confirm: Option<&str>, give_up: bool) -> CrewCommand {
+        CrewCommand::Connections(ConnectionCommand::Remove {
+            confirm: confirm.map(str::to_owned),
+            give_up_host_controls: give_up,
+        })
+    }
+
+    fn deleted(fake: &FakeDaemon) -> bool {
+        fake.sent().iter().any(|sent| sent.method == "DELETE")
+    }
+
+    /// CLI-1: removing a connection deletes this computer's device key, so the name is typed
+    /// again (or given with --confirm), and a host's only computer is refused unless
+    /// --give-up-host-controls says so.
+    #[tokio::test]
+    async fn removing_a_connection_is_confirmed_and_never_silently_ends_the_host_controls() {
+        // Alice hosts lab (her UID is the host's) and no other computer of hers is enrolled.
+        let (api, fake) = api_with(OutputFormat::Text, removing(snapshot()));
+        let error = run(&api, remove_connection_command(Some("UCSF HPC"), false))
+            .await
+            .expect_err("the host's only computer");
+        assert_eq!(
+            error_code(&error).as_deref(),
+            Some("crew_host_controls_would_end")
+        );
+        let shown = message(&error);
+        assert!(shown.contains("You host lab"), "{shown}");
+        assert!(
+            shown.contains("biorouter crew enroll invite @alice --add-device"),
+            "{shown}"
+        );
+        assert!(shown.contains("--give-up-host-controls"), "{shown}");
+        assert!(!deleted(&fake));
+
+        let lines = said(
+            run(&api, remove_connection_command(Some(" ucsf hpc "), true))
+                .await
+                .expect("given up on purpose"),
+        );
+        assert!(deleted(&fake));
+        assert_eq!(lines, ["Removed UCSF HPC from this computer."]);
+
+        // Bob is a member, not the host.
+        let mut member = snapshot();
+        member["actor"] =
+            json!({"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001});
+        let (api, fake) = api_with(OutputFormat::Text, removing(member.clone()));
+        let error = run(&api, remove_connection_command(None, false))
+            .await
+            .expect_err("no terminal, no --confirm");
+        assert!(error.downcast_ref::<NeedsTerminal>().is_some(), "{error:?}");
+        assert!(
+            message(&error).ends_with("so confirm with --confirm 'UCSF HPC'."),
+            "{}",
+            message(&error)
+        );
+        let error = run(&api, remove_connection_command(Some("Elsewhere"), false))
+            .await
+            .expect_err("the wrong name");
+        assert_eq!(
+            message(&error),
+            "Not done: --confirm Elsewhere doesn't match UCSF HPC."
+        );
+        assert!(!deleted(&fake));
+        run(&api, remove_connection_command(Some("UCSF HPC"), false))
+            .await
+            .expect("a member's confirmed removal");
+        assert!(deleted(&fake));
+
+        // A host with a second computer can remove this one.
+        let mut two = snapshot();
+        two["actor"]["devices"] = json!([{"fingerprint": "A"}, {"fingerprint": "B"}]);
+        assert_eq!(host_standing(&two), HostStanding::HostElsewhereToo);
+        let (api, fake) = api_with(OutputFormat::Text, removing(two));
+        run(&api, remove_connection_command(Some("UCSF HPC"), false))
+            .await
+            .expect("another computer keeps the host controls");
+        assert!(deleted(&fake));
+
+        let mut named = snapshot();
+        named["workspace"]["host_principal_id"] = json!(BOB);
+        assert_eq!(host_standing(&named), HostStanding::NotHost);
+        assert_eq!(host_standing(&json!({})), HostStanding::Unknown);
+        assert_eq!(
+            typed_or_ask("UCSF HPC", None, true, "no".into()).expect("asks"),
+            Consent::Ask("Type UCSF HPC to confirm:".into())
+        );
+    }
+
+    /// CLI-10: making the connection or the workspace public is confirmed by typing the
+    /// workspace's name, as the desktop's typed confirmation is; making it private is not.
+    #[tokio::test]
+    async fn going_public_needs_the_workspace_name_typed() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if method == "PATCH" {
+                return Ok(json!({"id": CONNECTION, "mode": "public"}));
+            }
+            standard(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let workspace = |mode: PrivacyMode, confirm: Option<&str>| {
+            CrewCommand::Privacy(PrivacyCommand::SetWorkspace {
+                mode,
+                institution_id: None,
+                confirm: confirm.map(str::to_owned),
+            })
+        };
+        let error = run(&api, workspace(PrivacyMode::Public, None))
+            .await
+            .expect_err("no terminal");
+        assert!(error.downcast_ref::<NeedsTerminal>().is_some(), "{error:?}");
+        assert!(message(&error).starts_with("Allowing Public in lab needs its name typed."));
+        let error = run(&api, workspace(PrivacyMode::Public, Some("lab2")))
+            .await
+            .expect_err("the wrong name");
+        assert_eq!(
+            message(&error),
+            "Not done: --confirm lab2 doesn't match lab."
+        );
+        assert!(fake.broker_call("policy.set").is_none());
+        run(&api, workspace(PrivacyMode::Public, Some("LAB")))
+            .await
+            .expect("confirmed");
+        assert_eq!(
+            fake.broker_call("policy.set").expect("set")["mode"],
+            "public"
+        );
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        run(&api, workspace(PrivacyMode::Private, None))
+            .await
+            .expect("private needs no typed name");
+        assert!(fake.broker_call("policy.set").is_some());
+
+        let personal = |confirm: Option<&str>| {
+            CrewCommand::Privacy(PrivacyCommand::SetPersonal {
+                mode: PrivacyMode::Public,
+                institution_id: None,
+                confirm: confirm.map(str::to_owned),
+            })
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let error = run(&api, personal(None)).await.expect_err("no terminal");
+        assert!(
+            message(&error).starts_with("Making your lab connection public needs its name typed.")
+        );
+        assert!(!fake.sent().iter().any(|sent| sent.method == "PATCH"));
+        run(&api, personal(Some("lab"))).await.expect("confirmed");
+        assert!(fake.sent().iter().any(|sent| sent.method == "PATCH"));
+    }
+
     #[test]
     fn a_device_code_is_checked_for_its_length_whatever_separates_it() {
         for code in [
@@ -4710,6 +5367,7 @@ mod tests {
             &api,
             CrewCommand::Channels(ChannelCommand::Archive {
                 channel: "methods".into(),
+                yes: true,
             }),
         )
         .await

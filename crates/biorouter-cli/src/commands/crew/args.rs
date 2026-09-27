@@ -133,7 +133,8 @@ pub enum CrewCommand {
     /// Hand a channel you own to another member, or accept one offered to you.
     #[command(subcommand)]
     Ownership(OwnershipCommand),
-    /// Remove a member from a channel you own.
+    /// Remove a member from a channel you own. Asks first; add --yes where there is no
+    /// terminal to ask in.
     RemoveMember {
         /// The channel: methods, '#methods' or analysis-lab/methods.
         channel: String,
@@ -142,6 +143,9 @@ pub enum CrewCommand {
         /// Remove someone who has already left the workspace.
         #[arg(long)]
         former: bool,
+        /// Remove without asking. Needed when there is no terminal to ask in.
+        #[arg(long)]
+        yes: bool,
     },
     /// Read a page of authorized channel messages.
     History(HistoryArgs),
@@ -223,8 +227,19 @@ pub enum ConnectionCommand {
         input: PathBuf,
     },
     /// Remove the selected connection from this computer and delete its device key for the
-    /// workspace.
-    Remove,
+    /// workspace. Asks you to type the connection's name first. A host's only computer is
+    /// refused unless --give-up-host-controls is added, because nothing restores the host
+    /// controls afterwards.
+    Remove {
+        /// Confirm by typing the connection's name again. Required when there is no terminal
+        /// to ask in.
+        #[arg(long, value_name = "NAME")]
+        confirm: Option<String>,
+        /// Remove the workspace even from the only computer that can act as its host, which
+        /// ends the host controls for good.
+        #[arg(long)]
+        give_up_host_controls: bool,
+    },
     /// Save a connection from the invitation your host sent. Use - to paste it on stdin.
     JoinInvitation(JoinInvitationArgs),
     /// Print the invitation message to send someone you invited (host).
@@ -450,10 +465,13 @@ pub enum ChannelCommand {
         classification: Classification,
     },
     /// Archive a channel you own, for everyone. Nobody can post in it again, and it cannot be
-    /// undone.
+    /// undone. Asks first; add --yes where there is no terminal to ask in.
     Archive {
         /// The channel: methods, '#methods' or analysis-lab/methods.
         channel: String,
+        /// Archive without asking. Needed when there is no terminal to ask in.
+        #[arg(long)]
+        yes: bool,
     },
     /// Mark a channel read, up to its newest message or to an opaque message cursor.
     MarkRead {
@@ -730,7 +748,8 @@ pub enum GrantCommand {
 pub enum PrivacyCommand {
     /// Show the privacy, institution and policy epoch of your connection and the workspace.
     Show,
-    /// Choose how this computer treats the workspace.
+    /// Choose how this computer treats the workspace. Making it public asks you to type the
+    /// workspace's name first.
     SetPersonal {
         /// private or public.
         #[arg(value_enum)]
@@ -738,8 +757,13 @@ pub enum PrivacyCommand {
         /// Canonical institution ID for this SSH cluster, required for a new Private label.
         #[arg(long = "institution")]
         institution_id: Option<String>,
+        /// Confirm public by typing the workspace's name again. Required when there is no
+        /// terminal to ask in.
+        #[arg(long, value_name = "WORKSPACE")]
+        confirm: Option<String>,
     },
-    /// Change the workspace's privacy for everyone (host). It ends every agent grant.
+    /// Change the workspace's privacy for everyone (host). It ends every agent grant. Allowing
+    /// Public asks you to type the workspace's name first.
     SetWorkspace {
         /// private or public.
         #[arg(value_enum)]
@@ -747,6 +771,10 @@ pub enum PrivacyCommand {
         /// Confirm the immutable workspace institution as its authorized host.
         #[arg(long = "institution")]
         institution_id: Option<String>,
+        /// Confirm public by typing the workspace's name again. Required when there is no
+        /// terminal to ask in.
+        #[arg(long, value_name = "WORKSPACE")]
+        confirm: Option<String>,
     },
 }
 
@@ -896,7 +924,7 @@ mod tests {
             };
             assert_eq!(args.channel, channel);
 
-            let CrewCommand::Channels(ChannelCommand::Archive { channel: got }) =
+            let CrewCommand::Channels(ChannelCommand::Archive { channel: got, .. }) =
                 parse(&["channels", "archive", channel]).command
             else {
                 panic!("archive")
@@ -1046,6 +1074,7 @@ mod tests {
                 channel,
                 member,
                 former,
+                ..
             } = parse(&["remove-member", "#methods", person]).command
             else {
                 panic!("remove-member")
