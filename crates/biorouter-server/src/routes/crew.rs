@@ -108,6 +108,29 @@ impl RunLedger {
         Ok(())
     }
 }
+/// Why a stop the daemon was waiting on when it last stopped reads unconfirmed.
+const RESTARTED_DURING_CANCELLATION: &str = "The daemon stopped while this task's cancellation was waiting on the workspace. Remote grant revocation remains unconfirmed; retry cancellation. Remote jobs may continue until their enforced timeout.";
+
+/// A run as the ledger left it when the daemon last stopped. A run still working reads
+/// `interrupted`: its outcome must be inspected. A stop still waiting on the workspace
+/// (`cancellation_pending`, saved before the remote revocation is asked for) reads
+/// `cancellation_unconfirmed` (CLI-8): nothing else ever moved it, so it said "Stopping…" for
+/// good and `tasks watch` never ended. Unconfirmed, a later connect confirms it by itself
+/// ([`settle_confirmed_revocations`]) and `tasks cancel` retries it.
+fn restore_after_restart(view: &mut RunView) {
+    match view.status.as_str() {
+        "running" | "waiting_for_approval" | "starting" => {
+            view.status = "interrupted".into();
+            view.error = Some("The daemon restarted. Model and remote job outcomes must be inspected before a new task is started.".into());
+        }
+        "cancellation_pending" => {
+            view.status = "cancellation_unconfirmed".into();
+            view.error = Some(RESTARTED_DURING_CANCELLATION.into());
+        }
+        _ => {}
+    }
+}
+
 async fn run_ledger() -> anyhow::Result<Arc<RunLedger>> {
     let path = biorouter::config::paths::Paths::state_dir().join("crew/runs.json");
     let mut ledgers = LEDGERS.lock().await;
@@ -157,13 +180,7 @@ async fn run_ledger() -> anyhow::Result<Arc<RunLedger>> {
     };
     let mut runs = HashMap::new();
     for mut view in stored.runs {
-        if matches!(
-            view.status.as_str(),
-            "running" | "waiting_for_approval" | "starting"
-        ) {
-            view.status = "interrupted".into();
-            view.error=Some("The daemon restarted. Model and remote job outcomes must be inspected before a new task is started.".into());
-        }
+        restore_after_restart(&mut view);
         runs.insert(
             view.run_id.clone(),
             OwnedRun {
@@ -3667,5 +3684,48 @@ mod provenance_tests {
         );
         let plain = saved_connection_view(&connection, None).unwrap();
         assert!(plain.get("last_error_code").is_none());
+    }
+}
+
+/// CLI-8: what a run the ledger saved reads after the daemon restarts.
+#[cfg(test)]
+mod restart_tests {
+    use super::{restore_after_restart, RunView, RESTARTED_DURING_CANCELLATION};
+
+    fn restored(status: &str) -> RunView {
+        let mut view = RunView {
+            run_id: "run-1".into(),
+            connection_id: "connection-1".into(),
+            channel_id: "channel-1".into(),
+            session_id: "session-1".into(),
+            status: status.into(),
+            error: None,
+            started_at: None,
+        };
+        restore_after_restart(&mut view);
+        view
+    }
+
+    #[test]
+    fn a_stop_still_waiting_when_the_daemon_stopped_reads_unconfirmed() {
+        let view = restored("cancellation_pending");
+        assert_eq!(view.status, "cancellation_unconfirmed");
+        assert_eq!(view.error.as_deref(), Some(RESTARTED_DURING_CANCELLATION));
+
+        for working in ["running", "waiting_for_approval", "starting"] {
+            assert_eq!(restored(working).status, "interrupted", "{working}");
+        }
+        for settled in [
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "outcome_not_durable",
+            "cancellation_unconfirmed",
+        ] {
+            let view = restored(settled);
+            assert_eq!(view.status, settled);
+            assert_eq!(view.error, None, "{settled}");
+        }
     }
 }
