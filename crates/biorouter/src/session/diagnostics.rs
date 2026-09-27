@@ -2,7 +2,9 @@ use crate::config::base::Config;
 use crate::config::extensions::get_enabled_extensions;
 use crate::config::paths::Paths;
 use crate::providers::utils::LOGS_TO_KEEP;
-use crate::session::session_manager::{ModelUsageRow, UsageTotals};
+use crate::session::session_manager::{
+    crew_restricts, ModelUsageRow, UsageTotals, CREW_EXPORT_REFUSAL,
+};
 use crate::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -339,6 +341,38 @@ struct RequestLogSweep {
     /// read identically whether the machine had never made a request or whether
     /// every log on it was unattributable — and the second was the normal case.
     excluded: usize,
+    /// The sweep never ran, because a Crew grant restricts the chat (or that
+    /// could not be ruled out). See [`crew_withholding`].
+    withheld: bool,
+}
+
+/// Why this chat's own content stays out of the bundle, or `None` when it ships.
+///
+/// A diagnostics bundle is an export: `session.json` is the transcript, and the
+/// chat's `llm_request.*.jsonl` files are its full request payloads under
+/// `PayloadPolicy::Full`, which for a Crew chat means the agent-only
+/// `<crew_context>` message and every `crew__` result. So a chat a Crew grant
+/// restricts gets neither, the same answer every export door gives, and the
+/// note says so, so whoever reads the report does not conclude the chat was
+/// empty.
+///
+/// ⚠ Fails closed. A registry that cannot be read withholds exactly what a
+/// grant would: "could not check" is never "no grant". The rest of the bundle
+/// still ships, because a bug report without the transcript is still a report.
+fn crew_withholding(session_id: &str, restricts: anyhow::Result<bool>) -> Option<String> {
+    const WITHHELD: &str = "session.json and this chat's request logs (logs/*.jsonl): withheld";
+    match restricts {
+        Ok(false) => None,
+        Ok(true) => Some(format!(
+            "{WITHHELD}, because a Crew grant restricts session '{session_id}'. \
+             {CREW_EXPORT_REFUSAL}"
+        )),
+        Err(error) => Some(format!(
+            "{WITHHELD}, because whether a Crew grant restricts session '{session_id}' could \
+             not be checked ({error:#}). Nothing of this chat's own content ships until that \
+             check succeeds."
+        )),
+    }
 }
 
 fn push_session_logs(
@@ -536,10 +570,19 @@ fn tail_diagnostic_lines(raw: &str, budget: usize) -> String {
 /// Pure, so the wording is testable without building a zip.
 fn log_summary(sweep: &RequestLogSweep, component_logs: usize) -> String {
     let mut out = String::from("Log files in this bundle\n========================\n\n");
-    out.push_str(&format!(
-        "Request logs (logs/*.jsonl) for this session: {}\n",
-        sweep.shipped
-    ));
+    if sweep.withheld {
+        // Not "0": a zero reads as "this chat made no requests", and the
+        // unattributable warning below would blame an older build.
+        out.push_str(
+            "Request logs (logs/*.jsonl) for this session: withheld, not read. \
+             collection-notes.txt says why.\n",
+        );
+    } else {
+        out.push_str(&format!(
+            "Request logs (logs/*.jsonl) for this session: {}\n",
+            sweep.shipped
+        ));
+    }
     if sweep.excluded > 0 {
         out.push_str(&format!(
             "Request logs left out because their header names a different session, or \
@@ -566,7 +609,7 @@ fn log_summary(sweep: &RequestLogSweep, component_logs: usize) -> String {
              \x20 the one being reported.\n",
         );
     }
-    if sweep.shipped == 0 && sweep.excluded == 0 && component_logs == 0 {
+    if !sweep.withheld && sweep.shipped == 0 && sweep.excluded == 0 && component_logs == 0 {
         out.push_str("\nNo log files were found on this machine at all.\n");
     }
     out
@@ -702,12 +745,29 @@ async fn generate_diagnostics_from(
     // conclude the chat was empty.
     let mut notes: Vec<String> = Vec::new();
 
+    // Crew first, before anything of this chat's own is read. Both of the
+    // doors that reach this function (`GET /diagnostics/{id}`, which the
+    // desktop drives with the person's proof, and `biorouter session
+    // diagnostics`) would otherwise carry a Crew chat's channel context out in
+    // the transcript AND in its request logs. `export_session` below refuses
+    // the transcript on its own, but nothing refused the logs.
+    let withheld = crew_withholding(session_id, crew_restricts(session_id).await);
+
     let mut buffer = Vec::new();
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        let sweep = push_session_logs(&mut zip, options, logs_dir, session_id, &mut notes)?;
+        let sweep = match &withheld {
+            Some(note) => {
+                notes.push(note.clone());
+                RequestLogSweep {
+                    withheld: true,
+                    ..RequestLogSweep::default()
+                }
+            }
+            None => push_session_logs(&mut zip, options, logs_dir, session_id, &mut notes)?,
+        };
         let component_logs = push_component_logs(&mut zip, options, logs_dir, &mut notes)?;
 
         // ⚠ Written ALWAYS, and that is the fix. The log sweep used to report
@@ -728,15 +788,18 @@ async fn generate_diagnostics_from(
 
         // The transcript is the most valuable thing in the bundle and still not
         // worth failing over: logs plus system info are a usable report, and no
-        // bundle at all is not.
-        match session_manager.export_session(session_id).await {
-            Ok(session_data) => {
-                zip.start_file("session.json", options)?;
-                zip.write_all(session_data.as_bytes())?;
+        // bundle at all is not. Withheld above is already in the notes, so it
+        // is not read at all rather than refused a second time.
+        if withheld.is_none() {
+            match session_manager.export_session(session_id).await {
+                Ok(session_data) => {
+                    zip.start_file("session.json", options)?;
+                    zip.write_all(session_data.as_bytes())?;
+                }
+                Err(error) => notes.push(format!(
+                    "session.json: could not export session '{session_id}': {error:#}"
+                )),
             }
-            Err(error) => notes.push(format!(
-                "session.json: could not export session '{session_id}': {error:#}"
-            )),
         }
 
         if config_path.exists() {
@@ -1153,6 +1216,7 @@ mod tests {
             &RequestLogSweep {
                 shipped: 0,
                 excluded: 7,
+                withheld: false,
             },
             0,
         );
@@ -1167,6 +1231,155 @@ mod tests {
         assert!(
             !all_excluded.contains("No log files were found on this machine at all"),
             "seven files were found; saying none were is the lie this fixes: {all_excluded}"
+        );
+
+        // A withheld sweep read nothing, so it can claim neither a count nor
+        // an empty machine.
+        let withheld = log_summary(
+            &RequestLogSweep {
+                withheld: true,
+                ..RequestLogSweep::default()
+            },
+            0,
+        );
+        assert!(withheld.contains("this session: withheld"), "{withheld}");
+        assert!(!withheld.contains("this session: 0"), "{withheld}");
+        assert!(
+            !withheld.contains("No log files were found on this machine at all"),
+            "{withheld}"
+        );
+    }
+
+    /// Fail closed: a Crew registry that cannot be read withholds exactly what
+    /// a grant would. "Could not check" is never "no grant".
+    #[test]
+    fn a_crew_check_that_fails_withholds_the_chat_s_content() {
+        let note = crew_withholding("chat-1", Err(anyhow::anyhow!("registry unreadable")))
+            .expect("an unreadable Crew registry must withhold the chat's content");
+        assert!(note.contains("session.json"), "{note}");
+        assert!(note.contains("logs/*.jsonl"), "{note}");
+        assert!(note.contains("registry unreadable"), "{note}");
+
+        let granted = crew_withholding("chat-1", Ok(true)).expect("a grant withholds");
+        assert!(granted.contains(CREW_EXPORT_REFUSAL), "{granted}");
+
+        assert_eq!(crew_withholding("chat-1", Ok(false)), None);
+    }
+
+    /// A chat a Crew grant restricts ships neither its transcript nor its
+    /// request logs. Those logs are full request payloads for a public model
+    /// (`PayloadPolicy::Full`), so they carry the agent-only `<crew_context>`
+    /// message and every `crew__` result; the bundle used to refuse only
+    /// `session.json` (through `export_session`) and ship the logs beside it,
+    /// to the desktop's Diagnostics button and to `biorouter session
+    /// diagnostics` alike. The control: a chat no grant restricts still ships
+    /// both, so the refusal is Crew's and nothing else's.
+    ///
+    /// In a process of its own: the Crew registry is process-global.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_crew_chat_s_transcript_and_request_logs_stay_out_of_the_bundle() {
+        use crate::conversation::message::Message;
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        const CREW_TEXT: &str = "<crew_context>channel says BUDGET-FREEZE-0927</crew_context>";
+        const PLAIN_TEXT: &str = "PLAIN-CHAT-PROMPT-0927";
+
+        let temp = TempDir::new().unwrap();
+        let sources = sources_in(&temp);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let logs_dir = sources.logs_dir.clone();
+        fs::create_dir_all(&logs_dir).unwrap();
+
+        let mut chats = Vec::new();
+        for (index, text) in [CREW_TEXT, PLAIN_TEXT].into_iter().enumerate() {
+            let session = sm
+                .create_session(temp.path().to_path_buf(), "chat".into(), SessionType::User)
+                .await
+                .unwrap();
+            sm.add_message(&session.id, &Message::user().with_text(text))
+                .await
+                .unwrap();
+            // The shape `RequestLog` writes under `PayloadPolicy::Full`: the
+            // header naming the chat, then the whole request.
+            let request = serde_json::json!({
+                "data": { "messages": [ { "role": "user", "content": text } ] }
+            });
+            fs::write(
+                logs_dir.join(format!("llm_request.{index}.jsonl")),
+                format!(
+                    "{}\n{request}\n",
+                    serde_json::json!({ "session_id": session.id, "model_config": {} })
+                ),
+            )
+            .unwrap();
+            chats.push(session.id);
+        }
+        let (crew, plain) = (&chats[0], &chats[1]);
+        let _grant = crate::crew::install_test_scope(crew, None).await;
+
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, crew, &sources)
+                .await
+                .expect("a Crew chat still gets a bundle, without its own content"),
+        );
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(
+            !names.iter().any(|name| name.starts_with("logs/")),
+            "a Crew chat's request logs are in the bundle: {names:?}"
+        );
+        assert!(
+            !names.contains(&"session.json"),
+            "a Crew chat's transcript is in the bundle: {names:?}"
+        );
+        assert!(
+            names.contains(&"system.txt"),
+            "the rest of the bundle still ships: {names:?}"
+        );
+        let all_bytes: Vec<u8> = entries.iter().flat_map(|(_, b)| b.clone()).collect();
+        let all = String::from_utf8_lossy(&all_bytes);
+        assert!(
+            !all.contains("BUDGET-FREEZE-0927"),
+            "channel text reached the bundle"
+        );
+        let notes = entries
+            .iter()
+            .find(|(name, _)| name == "collection-notes.txt")
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("a bundle missing the transcript must say why");
+        assert!(notes.contains("Crew grant"), "{notes}");
+        assert!(notes.contains(CREW_EXPORT_REFUSAL), "{notes}");
+        let summary = entries
+            .iter()
+            .find(|(name, _)| name == "logs-summary.txt")
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("every bundle carries a log summary");
+        assert!(summary.contains("this session: withheld"), "{summary}");
+
+        // Control: a chat no grant restricts ships its transcript and its log.
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, plain, &sources)
+                .await
+                .unwrap(),
+        );
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"session.json"), "{names:?}");
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.starts_with("logs/"))
+                .collect::<Vec<_>>(),
+            vec![&"logs/llm_request.1.jsonl"]
+        );
+        let all_bytes: Vec<u8> = entries.iter().flat_map(|(_, b)| b.clone()).collect();
+        let all = String::from_utf8_lossy(&all_bytes);
+        assert!(
+            all.contains(PLAIN_TEXT),
+            "the plain chat's content is missing"
+        );
+        assert!(
+            !all.contains("BUDGET-FREEZE-0927"),
+            "another chat's channel text reached the plain chat's bundle"
         );
     }
 

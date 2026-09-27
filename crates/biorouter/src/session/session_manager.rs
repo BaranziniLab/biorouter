@@ -2615,8 +2615,11 @@ impl SessionManager {
     ///   handler; this function is deliberately a `SessionManager` method, and
     ///   not private to the CLI, so that call is available.
     /// * `generate_diagnostics` (`session/diagnostics.rs`, driven by `biorouter
-    ///   session diagnostics`) — **does NOT call this**, and reaches
-    ///   [`Self::export_session`] directly.
+    ///   session diagnostics` and by `GET /diagnostics/{id}`) — **does NOT call
+    ///   this**, and reaches [`Self::export_session`] directly. It asks
+    ///   [`crew_restricts`] itself first, because a bundle carries the chat's
+    ///   request logs as well as its transcript: for a Crew chat it ships
+    ///   neither, and says why in the bundle.
     ///
     /// [`Self::export_session`] itself is intentionally left ungated on the
     /// TIER: it is the storage read, and a tier refusal inside it would take
@@ -2721,8 +2724,10 @@ impl SessionManager {
 /// file.
 ///
 /// One constant for every door that writes one: [`SessionManager::export_session`]
-/// (the desktop's export route and `biorouter session diagnostics`) and
-/// [`SessionManager::authorize_export`] (`biorouter session export`), so the
+/// (the desktop's export route), [`SessionManager::authorize_export`]
+/// (`biorouter session export`) and the diagnostics bundle (`GET
+/// /diagnostics/{id}` and `biorouter session diagnostics`), which withholds the
+/// transcript and the chat's request logs and quotes this in its notes. So the
 /// terminal and the desktop cannot answer the same chat differently.
 pub const CREW_EXPORT_REFUSAL: &str = "Crew context cannot be exported without its channel \
      permissions. Share an authorized message or attachment from Crew instead.";
@@ -2749,9 +2754,9 @@ impl std::error::Error for CrewContextRefusal {}
 /// cannot be confirmed not to be its own.
 ///
 /// The one check every door that would carry a chat's context out of its
-/// channel asks through this module (export, and the workflow core's
-/// `refuse_crew_source`). Fails closed: a Crew registry that cannot be opened
-/// is an error, never "no grant".
+/// channel asks through this module (export, the diagnostics bundle, and the
+/// workflow core's `refuse_crew_source`). Fails closed: a Crew registry that
+/// cannot be opened is an error, never "no grant".
 pub async fn crew_restricts(session_id: &str) -> Result<bool> {
     Ok(crate::crew::manager()?.is_scoped_session(session_id).await)
 }

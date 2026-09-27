@@ -1,6 +1,6 @@
-//! A chat a Crew grant restricts keeps its context inside the channel's permissions at the two
-//! HTTP doors that turn a whole chat into something else: an exported file, and a workflow a
-//! model writes from it.
+//! A chat a Crew grant restricts keeps its context inside the channel's permissions at the three
+//! HTTP doors that turn a whole chat into something else: an exported file, a diagnostics
+//! bundle, and a workflow a model writes from it.
 //!
 //! Export already refused a Crew chat, inside the store read, but the route answered that refusal
 //! as a bare 404, so the desktop could only say the chat was not found. Creating a workflow asked
@@ -11,9 +11,13 @@
 //!
 //! - export of a Crew chat, with the person's proof, answers 403 with the plain sentence the
 //!   terminal prints for the same chat, and a chat no grant restricts still exports;
+//! - the diagnostics bundle for a Crew chat, which the desktop's Diagnostics button asks for with
+//!   the person's proof, carries neither the transcript nor the chat's request logs (full request
+//!   payloads, `<crew_context>` included), and says why; a chat no grant restricts still ships
+//!   both;
 //! - `POST /workflows/create` for a Crew chat answers 403 with its own plain sentence, before the
 //!   chat is loaded or a model is asked, so no workflow and none of the chat comes back;
-//! - a caller without the person's proof is refused by the reach gate first at both doors and
+//! - a caller without the person's proof is refused by the reach gate first at every door and
 //!   never learns that the chat is a Crew chat.
 //!
 //! ⚠ **Its own binary**, because the installed user-action digest is a process-global `OnceLock`,
@@ -189,9 +193,11 @@ async fn setup() -> (Arc<AppState>, Chats) {
     (state, chats)
 }
 
-/// The session and workflow routes behind the SAME `check_token` middleware the daemon installs.
+/// The session, diagnostics and workflow routes behind the SAME `check_token` middleware the
+/// daemon installs.
 fn app(state: Arc<AppState>) -> axum::Router {
     biorouter_server::routes::session::routes(state.clone())
+        .merge(biorouter_server::routes::status::routes(state.clone()))
         .merge(biorouter_server::routes::workflow::routes(state))
         .layer(axum::middleware::from_fn_with_state(
             TEST_SECRET.to_string(),
@@ -275,6 +281,105 @@ async fn a_chat_no_grant_restricts_still_exports() {
     );
 }
 
+/// Write a request log for `chat` where the bundle reads them, in the shape `RequestLog` writes
+/// under `PayloadPolicy::Full`: a header naming the chat, then the whole request.
+fn seed_request_log(chat: &str, file: &str, text: &str) {
+    let logs = Paths::in_state_dir("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let header = json!({ "session_id": chat, "model_config": {} });
+    let request = json!({ "data": { "messages": [ { "role": "user", "content": text } ] } });
+    std::fs::write(logs.join(file), format!("{header}\n{request}\n")).unwrap();
+}
+
+/// `GET /diagnostics/{chat}` with the person's proof, as the desktop's Diagnostics button sends
+/// it; each entry of the zip it returns, as text.
+async fn diagnostics_bundle(state: &Arc<AppState>, chat: &str) -> Vec<(String, String)> {
+    use std::io::Read;
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/diagnostics/{chat}"))
+        .header("X-Secret-Key", TEST_SECRET)
+        .header("X-User-Action", USER_KEY)
+        .body(Body::empty())
+        .unwrap();
+    let response = app(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+    (0..archive.len())
+        .map(|index| {
+            let mut entry = archive.by_index(index).unwrap();
+            let mut contents = Vec::new();
+            entry.read_to_end(&mut contents).unwrap();
+            (
+                entry.name().to_string(),
+                String::from_utf8_lossy(&contents).into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// THE CROSSCUT-2 CASE, at the desktop's other door. A diagnostics bundle used to refuse only
+/// `session.json` for a Crew chat and ship the chat's request logs beside it: full payloads for
+/// this public model, the `<crew_context>` message included. Now it carries neither, and its
+/// notes say why in the sentence every export door uses. The rest of the bundle still ships.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_crew_chat_s_diagnostics_bundle_carries_none_of_its_context() {
+    let (state, chats) = setup().await;
+    seed_request_log(
+        &chats.crew,
+        "llm_request.crew-context-exits-crew.jsonl",
+        &format!("<crew_context>{CHANNEL_TEXT}</crew_context> Summarize it."),
+    );
+    seed_request_log(
+        &chats.plain,
+        "llm_request.crew-context-exits-plain.jsonl",
+        "What changed this week?",
+    );
+
+    let entries = diagnostics_bundle(&state, &chats.crew).await;
+    let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(
+        !names.iter().any(|name| name.starts_with("logs/")),
+        "the Crew chat's request logs are in its bundle: {names:?}"
+    );
+    assert!(
+        !names.contains(&"session.json"),
+        "the Crew chat's transcript is in its bundle: {names:?}"
+    );
+    assert!(names.contains(&"system.txt"), "{names:?}");
+    for (name, contents) in &entries {
+        assert!(
+            !contents.contains(CHANNEL_TEXT),
+            "{name} carried the channel's context"
+        );
+    }
+    let notes = entries
+        .iter()
+        .find(|(name, _)| name == "collection-notes.txt")
+        .map(|(_, contents)| contents.as_str())
+        .expect("a bundle without the transcript must say why");
+    assert!(notes.contains(EXPORT_REFUSED), "{notes}");
+
+    // The control: a chat no grant restricts ships its transcript and its own log.
+    let entries = diagnostics_bundle(&state, &chats.plain).await;
+    let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    assert!(names.contains(&"session.json"), "{names:?}");
+    assert!(
+        names.contains(&"logs/llm_request.crew-context-exits-plain.jsonl"),
+        "{names:?}"
+    );
+}
+
 /// THE DAEMON-5 / CROSSCUT-4 CASE. Creating a workflow from a Crew chat is refused with its own
 /// plain sentence, and nothing of the chat comes back. Without the refusal the route loaded the
 /// whole transcript and handed it to the chat's model; here, with no model configured, that
@@ -299,15 +404,16 @@ async fn a_workflow_is_never_made_from_a_crew_chat() {
     );
 }
 
-/// The reach gate answers first at both doors. A caller holding only the daemon secret is
+/// The reach gate answers first at every door. A caller holding only the daemon secret is
 /// refused for a Crew chat before the Crew rule is asked, so the refusal never says the chat is
-/// a Crew chat, and neither door reads it.
+/// a Crew chat, and no door reads it.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_caller_without_the_persons_proof_never_learns_the_chat_is_a_crew_chat() {
     let (state, chats) = setup().await;
     for (method, uri, body) in [
         ("GET", format!("/sessions/{}/export", chats.crew), None),
+        ("GET", format!("/diagnostics/{}", chats.crew), None),
         (
             "POST",
             "/workflows/create".to_string(),
