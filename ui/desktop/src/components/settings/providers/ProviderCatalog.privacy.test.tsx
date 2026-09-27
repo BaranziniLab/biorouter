@@ -154,9 +154,9 @@ describe('ProviderCatalog — the privacy taxonomy, on screen', () => {
     expect(screen.getByText(/recognizes this institutional gateway endpoint/i)).toBeInTheDocument();
 
     // §14.5's note: NOT "a direct cloud account, even if your institution pays
-    // for it" — `azure.rs` defaults AZURE_OPENAI_ENDPOINT to the UCSF gateway
-    // itself, so that wording would claim something the configuration
-    // contradicts.
+    // for it" — `azure_openai` can be pointed at the UCSF gateway itself (its
+    // shipped default until 2026-09-27), so that wording would claim something
+    // a configuration can contradict.
     clickTab('commercial');
     expect(screen.getByText(/can't verify where/i)).toHaveTextContent(/endpoint points/i);
   });

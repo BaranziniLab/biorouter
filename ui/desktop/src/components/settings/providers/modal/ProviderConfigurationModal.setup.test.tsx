@@ -287,3 +287,77 @@ it('does not advance after the configuration modal was closed during its readine
   await Promise.resolve();
   expect(onConfigured).not.toHaveBeenCalled();
 });
+
+/**
+ * PROVIDERS-4 of the 2026-09-27 Crew QA audit, end to end through the modal.
+ * The public Azure OpenAI card's endpoint came up filled in with UCSF's Versa
+ * gateway, so a user who typed only a deployment and a key saved it, and their
+ * first chat sent that key and the transcript to UCSF. The endpoint is the
+ * user's own resource: setup must stop and ask for it.
+ */
+it('does not save an Azure OpenAI setup until the user names their own endpoint', async () => {
+  mocks.submit.mockReset().mockResolvedValue(undefined);
+  const azure = {
+    name: 'azure_openai',
+    is_configured: false,
+    provider_type: 'Builtin',
+    metadata: {
+      name: 'azure_openai',
+      display_name: 'Azure OpenAI',
+      description: '',
+      default_model: 'gpt-6-sol-2026-09-22',
+      known_models: [],
+      model_doc_link: '',
+      config_keys: [
+        {
+          name: 'AZURE_OPENAI_ENDPOINT',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: null,
+        },
+        {
+          name: 'AZURE_OPENAI_DEPLOYMENT_NAME',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: null,
+        },
+        {
+          name: 'AZURE_OPENAI_API_VERSION',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: '2025-01-01-preview',
+        },
+        {
+          name: 'AZURE_OPENAI_API_KEY',
+          required: false,
+          secret: true,
+          oauth_flow: false,
+          default: '',
+        },
+      ],
+    },
+  } as ProviderDetails;
+  render(<ProviderConfigurationModal provider={azure} onClose={vi.fn()} />);
+
+  fireEvent.change(await screen.findByLabelText(/\(AZURE_OPENAI_DEPLOYMENT_NAME\)/), {
+    target: { value: 'my-gpt-6-sol' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  expect(await screen.findByText('AZURE_OPENAI_ENDPOINT is required')).toBeInTheDocument();
+  expect(mocks.submit).not.toHaveBeenCalled();
+
+  fireEvent.change(screen.getByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/), {
+    target: { value: 'https://contoso.openai.azure.com' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1));
+  expect(mocks.submit.mock.calls[0][2]).toMatchObject({
+    AZURE_OPENAI_ENDPOINT: 'https://contoso.openai.azure.com',
+    AZURE_OPENAI_DEPLOYMENT_NAME: 'my-gpt-6-sol',
+  });
+});

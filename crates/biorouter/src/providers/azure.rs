@@ -315,12 +315,16 @@ impl Provider for AzureProvider {
             models,
             AZURE_DOC_URL,
             vec![
-                ConfigKey::new(
-                    "AZURE_OPENAI_ENDPOINT",
-                    true,
-                    false,
-                    Some("https://unified-api.ucsf.edu/general"),
-                ),
+                // ⚠ No default. The endpoint is the user's OWN Azure resource,
+                // and nothing BioRouter could ship is it. Until 2026-09-27 this
+                // was UCSF's Versa gateway, and both setup surfaces persist a
+                // required key's default when the field is left alone (the
+                // desktop form fills it in as a value, `biorouter configure`
+                // offers it as the answer), so a user who typed only a key and
+                // a deployment sent the transcript, with that key in `api-key`
+                // or their `az login` bearer token, to UCSF. The gateway is
+                // reached through `versa_azure`, whose endpoint is compiled in.
+                ConfigKey::new("AZURE_OPENAI_ENDPOINT", true, false, None),
                 ConfigKey::new("AZURE_OPENAI_DEPLOYMENT_NAME", true, false, None),
                 ConfigKey::new(
                     "AZURE_OPENAI_API_VERSION",
@@ -624,6 +628,29 @@ mod tests {
         );
         // A chat bound before the removal can still name them.
         assert!(AzureProvider::metadata().allows_unlisted_models);
+    }
+
+    /// The endpoint is the user's own Azure resource, so the card ships none
+    /// and setup cannot finish until one is typed. A default here is not a
+    /// hint: the desktop form fills it in as the field's value and `biorouter
+    /// configure` offers it as the answer, so a user who types only a key and
+    /// a deployment saves it. It was UCSF's Versa gateway until 2026-09-27,
+    /// which sent a company key (or an `az login` bearer token) and the
+    /// transcript to a host the user never chose.
+    #[test]
+    fn the_endpoint_is_required_and_ships_no_default() {
+        let metadata = AzureProvider::metadata();
+        let endpoint = metadata
+            .config_keys
+            .iter()
+            .find(|key| key.name == "AZURE_OPENAI_ENDPOINT")
+            .expect("azure_openai declares its endpoint");
+        assert!(endpoint.required, "an Azure resource needs an endpoint");
+        assert!(!endpoint.secret);
+        assert_eq!(
+            endpoint.default, None,
+            "azure_openai must not preselect an endpoint for the user"
+        );
     }
 
     /// The route a chat configured with a removed o-series model takes once

@@ -43,13 +43,13 @@ const bedrock = {
   },
 } as unknown as ProviderDetails;
 
-function Harness() {
+function Harness({ provider = bedrock }: { provider?: ProviderDetails }) {
   const [values, setValues] = useState<Record<string, ConfigInput>>({});
   return (
     <DefaultProviderSetupForm
       configValues={values}
       setConfigValues={setValues}
-      provider={bedrock}
+      provider={provider}
       validationErrors={{}}
     />
   );
@@ -151,5 +151,65 @@ describe('the two provider forms mask a key the same way', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show API Key' }));
     expect(input).toHaveAttribute('type', 'text');
+  });
+});
+
+/**
+ * PROVIDERS-4 of the 2026-09-27 Crew QA audit. The public Azure OpenAI card is
+ * for the user's OWN Azure resource, but its endpoint field came up filled in
+ * with UCSF's Versa gateway, and a field left alone is saved. A non-UCSF user
+ * who typed only a key and a deployment sent both, with the transcript, to
+ * UCSF. The fixture is that card's key set as the daemon now serves it
+ * (`azure.rs`): the endpoint is required and has no default.
+ */
+const azure = {
+  name: 'azure_openai',
+  is_configured: false,
+  provider_type: 'Builtin',
+  metadata: {
+    name: 'azure_openai',
+    display_name: 'Azure OpenAI',
+    description: '',
+    default_model: 'gpt-6-sol-2026-09-22',
+    known_models: [],
+    model_doc_link: '',
+    config_keys: [
+      { name: 'AZURE_OPENAI_ENDPOINT', required: true, secret: false, default: null },
+      { name: 'AZURE_OPENAI_DEPLOYMENT_NAME', required: true, secret: false, default: null },
+      {
+        name: 'AZURE_OPENAI_API_VERSION',
+        required: true,
+        secret: false,
+        default: '2025-01-01-preview',
+      },
+      { name: 'AZURE_OPENAI_API_KEY', required: false, secret: true, default: '' },
+    ],
+  },
+} as unknown as ProviderDetails;
+
+describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s own', () => {
+  it('leaves the endpoint empty, with a placeholder that says whose it is', async () => {
+    render(<Harness provider={azure} />);
+
+    const endpoint = await screen.findByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/);
+    expect(endpoint).toHaveValue('');
+    expect(endpoint).toHaveAttribute('placeholder', 'https://<your-resource>.openai.azure.com');
+  });
+
+  it('fills in no value that points at the UCSF gateway', async () => {
+    render(<Harness provider={azure} />);
+    await screen.findByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/);
+
+    expect(screen.queryByDisplayValue(/unified-api\.ucsf\.edu/)).toBeNull();
+  });
+
+  // The control: a default that IS right for every user still arrives as a
+  // value, so the case above is about this one key, not about defaults.
+  it('still fills in the API version, which is the same for everyone', async () => {
+    render(<Harness provider={azure} />);
+
+    expect(await screen.findByLabelText(/\(AZURE_OPENAI_API_VERSION\)/)).toHaveValue(
+      '2025-01-01-preview'
+    );
   });
 });

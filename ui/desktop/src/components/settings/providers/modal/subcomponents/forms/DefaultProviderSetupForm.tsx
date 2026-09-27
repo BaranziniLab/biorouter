@@ -28,13 +28,27 @@ interface DefaultProviderSetupFormProps {
 // both readers below look a default up per declared parameter, so one for any
 // other key is never read. `versa_azure` and `versa_bedrock` declare only their
 // credentials, which is why neither has an entry.
+//
+// ⚠ A default here is a VALUE, not a hint: `loadConfigValues` fills the field
+// with it and the submit handler saves it if the user leaves the field alone.
+// So only a value that is right for every user belongs here. Anything that
+// names one user's resource goes in PROVIDER_KEY_PLACEHOLDERS instead. The
+// Azure endpoint used to default to UCSF's Versa gateway, which sent a
+// non-UCSF user's Azure key and transcript to UCSF.
 const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
   azure_openai: {
-    AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
     AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
   aws_bedrock: {
     AWS_REGION: 'us-west-2',
+  },
+};
+
+// Placeholder text for a key the user must fill in with their own value. Shown
+// in the empty field and never saved.
+const PROVIDER_KEY_PLACEHOLDERS: Record<string, Record<string, string>> = {
+  azure_openai: {
+    AZURE_OPENAI_ENDPOINT: 'https://<your-resource>.openai.azure.com',
   },
 };
 
@@ -109,6 +123,11 @@ export default function DefaultProviderSetupForm({
       if (typeof serverValue === 'object' && 'maskedValue' in serverValue) {
         return serverValue.maskedValue;
       }
+    }
+
+    const hint = (PROVIDER_KEY_PLACEHOLDERS[provider.name] ?? {})[parameter.name];
+    if (hint) {
+      return hint;
     }
 
     const defaultValue =

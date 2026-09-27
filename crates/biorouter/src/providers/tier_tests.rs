@@ -161,9 +161,10 @@ async fn the_private_set_is_a_table_of_reviewed_decisions() {
         assert!(!why.is_empty(), "{name} is private for no stated reason");
     }
     // Everything hosted by an AI company or a large cloud is public — including
-    // the ones whose names look institutional. azure.rs ships the UCSF gateway
-    // as AZURE_OPENAI_ENDPOINT's default, so a name-keyed rule would call
-    // azure_openai Private; it must not.
+    // the ones that can be pointed somewhere institutional. azure_openai can be
+    // set up against the UCSF gateway by hand (it shipped that as
+    // AZURE_OPENAI_ENDPOINT's default until 2026-09-27), and it must still
+    // read Public: only versa_azure carries the agreement.
     for name in [
         "anthropic",
         "openai",

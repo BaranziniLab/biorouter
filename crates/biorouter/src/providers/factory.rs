@@ -659,9 +659,9 @@ pub(crate) mod tests {
             ("anthropic", "public: general commercial endpoint"),
             (
                 "azure_openai",
-                "public: a large cloud. ⚠ azure.rs ships the UCSF gateway as \
-                 AZURE_OPENAI_ENDPOINT's default, so this one *looks* institutional \
-                 and is not; only versa_azure carries the agreement",
+                "public: a large cloud, at an endpoint the user types. ⚠ It stays \
+                 Public even when that endpoint is the UCSF gateway (its shipped \
+                 default until 2026-09-27); only versa_azure carries the agreement",
             ),
             (
                 "claude_code",
@@ -1442,6 +1442,45 @@ pub(crate) mod tests {
                 "keep".into(),
                 serde_json::json!({"nested": true}),
             )]))
+        );
+    }
+
+    /// No built-in provider offers UCSF's gateway as a setup default.
+    ///
+    /// The gateway's agreement covers the two Versa providers only, and they
+    /// declare no endpoint key at all: their endpoint is compiled in and they
+    /// are Private only while it stays there. Every other card is Public and
+    /// takes the user's own credential, and both setup surfaces persist a
+    /// default the user leaves alone, so a default on the gateway sends a user
+    /// who never chose UCSF, with that credential, to it. `azure_openai`
+    /// shipped exactly that until 2026-09-27.
+    #[test]
+    fn no_provider_offers_the_ucsf_gateway_as_a_setup_default() {
+        use crate::providers::UCSF_GATEWAY_HOST;
+
+        let mut defaults_read = 0;
+        let mut offered = Vec::new();
+        for metadata in builtin_provider_metadata() {
+            for key in &metadata.config_keys {
+                let Some(default) = key.default.as_deref() else {
+                    continue;
+                };
+                defaults_read += 1;
+                // A substring, not a parsed host: a scheme-less or oddly
+                // spelled default is still the gateway to the user who saves it.
+                if default.to_ascii_lowercase().contains(UCSF_GATEWAY_HOST) {
+                    offered.push(format!("{}.{} = {default}", metadata.name, key.name));
+                }
+            }
+        }
+        assert!(
+            defaults_read > 0,
+            "no provider declares a default, so this scan read nothing"
+        );
+        assert!(
+            offered.is_empty(),
+            "a provider offers UCSF's gateway as a default a user could save without \
+             choosing it; reach the gateway through versa_azure / versa_bedrock: {offered:?}"
         );
     }
 
