@@ -1499,12 +1499,8 @@ pub(crate) mod tests {
     /// picker chose.
     fn providers_that_lead_with_a_model_other_than_their_default(
     ) -> Vec<(&'static str, &'static str)> {
-        vec![
-            (
-                "aws_bedrock",
-                "newest first on purpose; BEDROCK_DEFAULT_MODEL is a separate choice \
-                 (bedrock.rs, above BEDROCK_KNOWN_MODELS)",
-            ),
+        #[allow(unused_mut)]
+        let mut rows = vec![
             (
                 "google",
                 "Gemini 3.x listed newest first; the default is the only Gemini 3.x Pro \
@@ -1530,7 +1526,17 @@ pub(crate) mod tests {
                 "its list is FALLBACK_MODELS, the offline fallback, which leads with the \
                  small llama-3.2-3b",
             ),
-        ]
+        ];
+        // Registered only under `aws-providers`, like the AWS rows in the tier
+        // tables above; the last loop asserts every row names a registered
+        // provider, so an unconditional row fails `--no-default-features`.
+        #[cfg(feature = "aws-providers")]
+        rows.push((
+            "aws_bedrock",
+            "newest first on purpose; BEDROCK_DEFAULT_MODEL is a separate choice \
+             (bedrock.rs, above BEDROCK_KNOWN_MODELS)",
+        ));
+        rows
     }
 
     #[test]
