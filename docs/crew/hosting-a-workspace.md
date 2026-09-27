@@ -8,7 +8,9 @@ A Crew workspace runs in the host's account on a Linux server. Braces mark a nam
 
 ## What only the host can do
 
-Crew labels you "Hosted by {name}" in the workspace menu and "Host" in the member list. Only you can invite people, let them in, cancel invitations, remove people, rename the workspace, change its privacy and institution, and add people to teams and channels someone else owns. The server accepts these actions only from a person at your computer, never from an agent.
+Crew labels you "Hosted by {name}" in the workspace menu and "Host" in the member list. Only you can invite people, let them in, cancel invitations, remove people, rename the workspace, change its privacy and institution, and add people to teams and channels that you are in and someone else owns. The server accepts these actions only from a person at your computer, never from an agent.
+
+Like every member, you see only the teams and channels you are in. A team or channel another member creates does not appear in your sidebar or in `biorouter crew` until someone adds you, so you cannot add anyone to it. Its owner does that.
 
 The workspace runs on the server, so people can use it while your computer is off. After every server restart, you start Crew again ([After the server restarts](#after-the-server-restarts)).
 
@@ -220,13 +222,13 @@ Never approve a code you did not get from the person. "@{username} has no pendin
 
 ## Add people to teams and channels
 
-You can add members to teams and channels someone else owns. The person does not need to accept, and must be in a team before joining its channels. To add people to someone else's channel:
+You can add members to teams and channels that someone else owns, if you are in them. For a team or channel you are not in, ask its owner. The person does not need to accept, and must be in a team before joining its channels. To add people to someone else's channel:
 
 1. In the sidebar, point at the team, choose **⋯**, then **Add people to {team}…**.
 2. Tick the people, and the channel under **Also add to**.
 3. Choose **Add**. The dialog shows "Added {people} to {team}." and the channels they can now see. Choose **Done**.
 
-The team dialog lists only people not in the team yet. To add someone already in the team to a channel you do not own, use a terminal ([Add people to teams and channels](command-line.md#add-people-to-teams-and-channels)):
+The team dialog lists only people not in the team yet. To add someone already in the team to a channel you are in but do not own, use a terminal ([Add people to teams and channels](command-line.md#add-people-to-teams-and-channels)):
 
 1. Open a terminal on your own computer.
 2. Run `biorouter crew members add @bob --channel '#methods'`.

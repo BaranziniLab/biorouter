@@ -12,12 +12,12 @@ A workspace holds teams, and each team holds channels where you post messages an
 |---|---|
 | Create a team, or a channel in your team | Anyone |
 | Rename a team | The team owner, who created it |
-| Add people to a team | The team owner or the host |
-| Add people to a channel | The channel owner, or the host through the team |
+| Add people to a team | The team owner, or the host if the host is in the team |
+| Add people to a channel | The channel owner, or the host if the host is in the channel |
 | Rename, archive or hand over a channel, or remove people from it | The channel owner only |
 | Remove someone from the workspace | The host only |
 
-The host runs the workspace and has a "Host" badge. A channel's owner starts as its creator and has a "Channel owner" badge. Agents cannot add people. Nobody can delete a team, leave one, or remove someone from one.
+The host runs the workspace and has a "Host" badge. Like everyone else, the host sees only the teams and channels the host is in, so for any other team or channel, ask its owner. A channel's owner starts as its creator and has a "Channel owner" badge. Agents cannot add people. Nobody can delete a team, leave one, or remove someone from one.
 
 ## Find your way around the sidebar
 
@@ -25,7 +25,7 @@ The host runs the workspace and has a "Host" badge. A channel's owner starts as 
 - Point at a team for **+** (new channel) and **⋯** (team menu).
 - A bold channel name with a count, up to "99+", has unread messages. A pencil marks an unsent message. See [Unread messages](messages-and-files.md#unread-messages).
 - **Archived ({n})** under a team shows its archived channels.
-- The sidebar lists only your channels, with no channel browser. Under a team you did not create, it says "Other channels in {team} appear once someone adds you." Ask the channel's owner or the host.
+- The sidebar lists only your channels, with no channel browser. Under a team you did not create, it says "Other channels in {team} appear once someone adds you." Ask the channel's owner, or the host if the host is in that channel.
 - Right click a channel for **Mark as read** (open channel only), **Copy channel name** and **Copy channel ID**, which support staff may ask for.
 
 ### Use the keyboard in the sidebar
@@ -122,7 +122,7 @@ You can add only people who have joined the workspace. The host invites new peop
 
 ### Add people to a team
 
-1. As the team owner or the host, point at the team, choose **⋯**, then **Add people to {team}…**.
+1. As the team owner, or as the host if you are in the team, point at the team, choose **⋯**, then **Add people to {team}…**.
 2. Tick people. "Search by name or @username" narrows the list.
 3. Under **Also add to**, tick channels. `#general` "comes with the team", and channels you own start ticked.
 4. Choose **Add**, or **Add {n} people**.
@@ -135,13 +135,13 @@ A summary appears, such as "Added @ana and @raj to {team}. They can now see #gen
 2. Tick people. Only members of the team are listed.
 3. Choose **Add**. The summary reads "Added {people} to #{channel}."
 
-A host who does not own the channel ticks it in the team's dialog. See [Add people to teams and channels](hosting-a-workspace.md#add-people-to-teams-and-channels).
+A host who is in the channel but does not own it ticks it in the team's dialog. See [Add people to teams and channels](hosting-a-workspace.md#add-people-to-teams-and-channels).
 
 If the dialog says "No one else is in {team} yet.", add people to the team first. If adding fails, "Couldn’t add {people}: {reason}" says why.
 
 ### When someone adds you
 
-The channel appears in your sidebar, and a notice such as "@alice added you to #methods" names its owner. The channel opens with "Welcome to #{channel}" and "Ask {host} to add you to other channels."
+The channel appears in your sidebar, and a notice such as "@alice added you to #methods" names its owner. The channel opens with "Welcome to #{channel}" and "Ask {host} to add you to other channels." The host can add you only to channels the host is in. For any other channel, ask its owner.
 
 ### Remove someone from a channel
 
