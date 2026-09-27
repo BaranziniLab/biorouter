@@ -21,7 +21,8 @@ use biorouter::privacy::declassify::{
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
-    ActivityWindow, ModelUsageRow, SessionInsights, SidebarCursor, TruncateOutcome,
+    ActivityWindow, CrewContextRefusal, ModelUsageRow, SessionInsights, SidebarCursor,
+    TruncateOutcome,
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
@@ -990,7 +991,9 @@ async fn delete_session(
     responses(
         (status = 200, description = "Session exported successfully", body = String),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
-        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof"),
+        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof. \
+                                      Or, to a request that carried that proof, refused because a Crew grant restricts \
+                                      the chat: nothing was exported, and the body is the plain sentence saying why"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -1019,11 +1022,24 @@ async fn export_session(
     {
         return refusal.into_response();
     }
-    let Ok(exported) = state.session_manager().export_session(&session_id).await else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    Json(exported).into_response()
+    match state.session_manager().export_session(&session_id).await {
+        Ok(exported) => Json(exported).into_response(),
+        // A Crew chat is refused by the store read itself, with the sentence the
+        // terminal's `biorouter session export` prints for the same chat. It is a
+        // refusal, not a missing chat: this answered it as a bare 404, which the
+        // desktop could only report as "not found". After the reach gate, which
+        // keeps a Crew chat's standing from a caller without the person's proof.
+        Err(error) => match error.downcast_ref::<CrewContextRefusal>() {
+            Some(refusal) => {
+                tracing::info!(
+                    session_id,
+                    "Refused to export a chat a Crew grant restricts; nothing was read"
+                );
+                (StatusCode::FORBIDDEN, refusal.to_string()).into_response()
+            }
+            None => StatusCode::NOT_FOUND.into_response(),
+        },
+    }
 }
 
 #[utoipa::path(

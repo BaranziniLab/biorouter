@@ -2526,9 +2526,17 @@ impl SessionManager {
         self.storage.get_usage_summary().await
     }
 
+    /// The stored chat as the JSON document an export writes.
+    ///
+    /// Ungated on the privacy TIER (see [`Self::authorize_export`] for why), but never on
+    /// Crew: a chat a Crew grant restricts is refused with [`CrewContextRefusal`] holding
+    /// [`CREW_EXPORT_REFUSAL`], before the transcript is read. The refusal is typed so the
+    /// export route can answer it as a refusal (403 with the sentence) rather than as a
+    /// missing chat.
     pub async fn export_session(&self, id: &str) -> Result<String> {
-        anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(id).await,
-            "Crew context cannot be exported without its channel permissions. Share an authorized message or attachment from Crew instead.");
+        if crew_restricts(id).await? {
+            return Err(CrewContextRefusal(CREW_EXPORT_REFUSAL).into());
+        }
         self.storage.export_session(id).await
     }
 
@@ -2570,6 +2578,16 @@ impl SessionManager {
     ///    row, so the tier the ledger reports is the tier that was true when the
     ///    export was authorised rather than one read a moment earlier.
     ///
+    /// ⚠ **Crew comes before all three, and before the master switch.** A chat a
+    /// Crew grant restricts is [`ExportDecision::CrewContext`] whatever its tier,
+    /// whatever `caller` is and whether or not privacy tiers are on: the rule is
+    /// the channel's membership, not a model's tier, so nothing on this page can
+    /// satisfy it. It is asked here and in [`Self::export_session`] through the
+    /// same check, so the terminal and the desktop give one answer. It used to
+    /// live only in `export_session`, which the terminal never calls, so
+    /// `biorouter session export` wrote a public Crew chat's whole transcript,
+    /// hidden channel context included, with no prompt and no record.
+    ///
     /// ⚠ **A public chat is [`ExportDecision::Unrestricted`] and costs nothing** —
     /// no prompt, no row. A gate that fired on every export is one people route
     /// around, and DR-16's posture is a condition, not a wall in front of the
@@ -2600,16 +2618,24 @@ impl SessionManager {
     ///   session diagnostics`) — **does NOT call this**, and reaches
     ///   [`Self::export_session`] directly.
     ///
-    /// [`Self::export_session`] itself is intentionally left ungated: it is the
-    /// storage read, and a hard refusal inside it would take away the desktop's
-    /// ability to export a private chat *at all* (the route has no way to pass
-    /// an authorisation), which is a worse answer than the one above.
+    /// [`Self::export_session`] itself is intentionally left ungated on the
+    /// TIER: it is the storage read, and a tier refusal inside it would take
+    /// away the desktop's ability to export a private chat *at all* (the route
+    /// has no way to pass an authorisation), which is a worse answer than the
+    /// one above. It does refuse a Crew chat, with the same check this makes
+    /// first, so every one of the three doors above refuses one.
     pub async fn authorize_export(
         &self,
         session_id: &str,
         caller: crate::privacy::ProviderTier,
         authorization: Option<&ExportAuthorization>,
     ) -> Result<ExportDecision> {
+        // Crew first: not a tier rule, so neither the master switch below nor
+        // any capability or prompt can answer it. Fails closed: a registry that
+        // cannot be opened is an error here, never "no grant".
+        if crew_restricts(session_id).await? {
+            return Ok(ExportDecision::CrewContext);
+        }
         // DR-15's master opt-out, read once, before the store is touched.
         if !crate::privacy::privacy_tiers_enabled() {
             return Ok(ExportDecision::Unrestricted);
@@ -2691,6 +2717,45 @@ impl SessionManager {
     }
 }
 
+/// What a person is told when a Crew chat's transcript would be written to a
+/// file.
+///
+/// One constant for every door that writes one: [`SessionManager::export_session`]
+/// (the desktop's export route and `biorouter session diagnostics`) and
+/// [`SessionManager::authorize_export`] (`biorouter session export`), so the
+/// terminal and the desktop cannot answer the same chat differently.
+pub const CREW_EXPORT_REFUSAL: &str = "Crew context cannot be exported without its channel \
+     permissions. Share an authorized message or attachment from Crew instead.";
+
+/// A refusal to carry a Crew chat's context past its channel's permissions,
+/// holding the sentence a person reads.
+///
+/// Typed rather than a bare message so a door can answer it as a refusal and
+/// not as a failure: the export route's 403 with this sentence rather than its
+/// 404, the create-workflow route's 403 rather than a 500, the terminal's
+/// sentence rather than "failed to read".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrewContextRefusal(pub &'static str);
+
+impl std::fmt::Display for CrewContextRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for CrewContextRefusal {}
+
+/// Whether a Crew grant restricts `session_id`: its own grant, or one that
+/// cannot be confirmed not to be its own.
+///
+/// The one check every door that would carry a chat's context out of its
+/// channel asks through this module (export, and the workflow core's
+/// `refuse_crew_source`). Fails closed: a Crew registry that cannot be opened
+/// is an error, never "no grant".
+pub async fn crew_restricts(session_id: &str) -> Result<bool> {
+    Ok(crate::crew::manager()?.is_scoped_session(session_id).await)
+}
+
 /// The `reason` an export writes into `classification_audit`.
 ///
 /// Deliberately not one of `privacy::declassify`'s reasons: nothing about the
@@ -2723,6 +2788,10 @@ pub const EXPORT_NOT_PROTECTED: &str =
 /// different places.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportDecision {
+    /// A Crew grant restricts the chat. Nothing may be written, whatever its
+    /// tier, the caller's capability or the master switch; say
+    /// [`CREW_EXPORT_REFUSAL`]. No prompt is raised and no record is written.
+    CrewContext,
     /// A public chat, or the master switch is off. Export as before: no prompt,
     /// no record, no copy.
     Unrestricted,
@@ -9675,6 +9744,83 @@ mod tests {
             assert!(EXPORT_NOT_PROTECTED.contains("stays private"));
             // …and it never claims the export changed the chat's tier.
             assert!(!EXPORT_NOT_PROTECTED.contains("declassif"));
+        }
+
+        /// A chat a Crew grant restricts is refused at the terminal's door as
+        /// at the desktop's: whatever its tier, whatever the caller's
+        /// capability, with a system authentication that covers it, and with
+        /// the master switch off. Nothing is recorded. The rule used to live
+        /// in `export_session` alone, which `biorouter session export` never
+        /// calls, so the terminal wrote a public Crew chat's whole transcript,
+        /// hidden channel context included, with no prompt and no row.
+        ///
+        /// In a process of its own: the Crew registry and the master switch
+        /// are both process-global.
+        #[tokio::test]
+        async fn a_crew_chat_is_refused_at_every_export_door() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let chats = [public_chat(&sm).await, private_chat(&sm).await];
+            let mut grants = Vec::new();
+            for id in &chats {
+                grants.push(crate::crew::install_test_scope(id, None).await);
+            }
+
+            let refusal = CrewContextRefusal(CREW_EXPORT_REFUSAL);
+            for enabled in [true, false] {
+                biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(enabled);
+                for id in &chats {
+                    let covering = ExportAuthorization::for_test(std::slice::from_ref(id));
+                    for (caller, authorization) in [
+                        (ProviderTier::Public, None),
+                        (ProviderTier::Private, None),
+                        (ProviderTier::Private, Some(&covering)),
+                    ] {
+                        assert_eq!(
+                            sm.authorize_export(id, caller, authorization)
+                                .await
+                                .unwrap(),
+                            ExportDecision::CrewContext,
+                            "the terminal's door let a Crew chat through (switch on: {enabled}, \
+                             caller: {caller:?}, authorized: {})",
+                            authorization.is_some()
+                        );
+                    }
+                    let error = sm
+                        .export_session(id)
+                        .await
+                        .expect_err("the store read must refuse a Crew chat");
+                    assert_eq!(error.downcast_ref::<CrewContextRefusal>(), Some(&refusal));
+                    assert_eq!(error.to_string(), CREW_EXPORT_REFUSAL);
+                    assert!(
+                        export_rows(&sm, id).await.is_empty(),
+                        "a refused export must leave no ledger row"
+                    );
+                }
+            }
+            biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
+
+            // The refusal is Crew's and nothing else's: once no grant
+            // restricts them, the same chats export as they always did.
+            for (grant, id) in grants.iter().zip(&chats) {
+                crate::crew::remove_test_scope(grant, id).await;
+            }
+            assert_eq!(
+                sm.authorize_export(&chats[0], ProviderTier::Public, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::Unrestricted
+            );
+            assert_eq!(
+                sm.authorize_export(&chats[1], ProviderTier::Private, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::SystemAuthenticationRequired
+            );
+            assert!(sm.export_session(&chats[0]).await.is_ok());
         }
     }
 

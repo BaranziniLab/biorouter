@@ -61,6 +61,21 @@ import {
 } from '../../utils/sessionListCache';
 import { renameSession } from '../../utils/sessionNameSync';
 
+/**
+ * What to tell the person when an export fails.
+ *
+ * A refusal from the daemon arrives as its plain-text body (the generated
+ * client throws the parsed body under `throwOnError`), and that sentence is
+ * written for a person: it says why and what to do instead. Anything else (an
+ * empty 404 body, a network error) gets a sentence of its own rather than a
+ * raw status or `[object Object]`.
+ */
+function exportFailureMessage(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  return 'The chat could not be read for export. Nothing was downloaded.';
+}
+
 function getSessionExtensionNames(extensionData: ExtensionData): string[] {
   try {
     const enabledExtensionData = extensionData?.['enabled_extensions.v0'] as
@@ -1006,13 +1021,28 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     // With the user's proof, like every read of a chat's transcript: the
     // export route has refused a private chat to a caller without it since the
     // reach gate's export sweep, and this is the person at the keyboard.
-    const response = await exportSession({
-      path: { session_id: session.id },
-      headers: await userActionHeaders(),
-      throwOnError: true,
-    });
+    let json: string;
+    try {
+      const response = await exportSession({
+        path: { session_id: session.id },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
+      json = response.data;
+    } catch (error) {
+      // A refusal is the daemon's plain sentence, which says why and what to
+      // do instead (a Crew chat's context stays in its channel). Under
+      // `throwOnError` the client throws that parsed body, a string, so it is
+      // shown as it stands. This used to escape the handler, so a refused
+      // export did nothing the person could see.
+      console.error('Failed to export session:', error);
+      toastError({
+        title: "Couldn't export this chat",
+        msg: exportFailureMessage(error),
+      });
+      return;
+    }
 
-    const json = response.data;
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
