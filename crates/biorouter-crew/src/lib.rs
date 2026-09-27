@@ -216,6 +216,11 @@ pub struct Blob {
     pub complete: bool,
     pub restricted: bool,
     pub source_channels: BTreeSet<String>,
+    /// When the upload last began or received a chunk (seconds since the Unix epoch). An
+    /// unfinished upload untouched for a day is removed and stops counting against the
+    /// attachment quotas; one begun before this field existed counts as untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touched_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -363,6 +368,8 @@ fn canonical(value: &Value) -> Value {
 }
 #[cfg(unix)]
 mod broker;
+#[cfg(all(unix, feature = "test-seams"))]
+pub use broker::Quotas;
 #[cfg(unix)]
 pub use broker::{bridge, lifecycle, serve, Account, Broker, Connection, Directory};
 

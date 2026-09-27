@@ -82,7 +82,7 @@ The state directory, by default `~/.local/share/biorouter-crew/<workspace name>`
 | Each file belongs to the host, has mode 0600 and one link. | `unsafe_storage: file ownership, mode or links invalid` |
 | One broker per workspace. | `writer_active` |
 
-With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host UID>-<…>/broker.sock` (folder 0711, socket 0666). The broker checks every request and keeps the same path after `/tmp` is cleaned.
+With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host UID>-<…>/broker.sock` (folder 0711, socket 0666). The broker checks every request and keeps the same path after `/tmp` is cleaned. If another account took that path while `/tmp` was empty, the broker moves to a new one and `start` prints `"socket_changed":true`. Give members the new invitation line, because the old one no longer connects.
 
 ## Plan before you host
 
@@ -230,16 +230,20 @@ Never edit `journal.jsonl`, because a broker refuses records that fail their che
 |---|---|
 | Workspace state (live data) | 16 MiB |
 | Journal file | 1 GiB |
-| Messages, and records kept for retries | 100,000 each |
+| Messages | 100,000 |
+| Records kept for retries | One day each, the newest 512 per person and 100,000 in all. Older ones are dropped, never refused. |
 | Teams, channels | 100, 1,000 |
-| Shared files | 1 GiB each, 10 GiB total, 10,000 files |
+| Shared files | 1 GiB each, 10 GiB total, 10,000 files. An upload with no progress for a day is removed. |
 | Remote references | 10,000 |
+| One member's share (the host has none) | 4 MiB of workspace state, 256 MiB of journal, 10 teams, 100 channels, 2.5 GiB and 2,500 shared files, 2,500 remote references, 100 waiting invitations |
 | Channels an agent reads | A task: its channel plus 16 more. A chat: 20, including its own. |
 | Broker connections | 256, and 8 per account |
 | One agent command on the server | 60 seconds of CPU, 1 GiB memory, 16 MiB files, 64 open files, 30 seconds of run time (60 at most), 4 at once |
 | Agent file access in the remote work folder | 256 KiB per read or write, 64 KiB of command output |
 
-The state limit decides capacity, because each message's text counts about twice: fewer than 8,192 messages of 1 KiB fit, or 1,024 of 8 KiB. Archiving frees nothing. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". Preserve it and start a new workspace with a new state directory.
+The state limit decides capacity. Ordinary changes may use 15 MiB of it, so fewer than 15,360 messages of 1 KiB fit, or 1,920 of 8 KiB. Archiving frees nothing. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". The host can still remove members and change the privacy mode, and anyone can still stop an agent, archive a channel or remove someone from a channel they own. Preserve it and start a new workspace with a new state directory.
+
+A member who reaches their share sees "You have used your share of this workspace's storage" (or its journal, files, teams, channels, references or invitations). Everyone else keeps working, and reading still works for them too.
 
 Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 
@@ -252,6 +256,7 @@ Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 | `bootstrap_key must be a 32-byte Ed25519 public key` | The folder holds no workspace. Check the `--state-dir` path. |
 | `name_mismatch: …` | Start with `--state-dir` and no `--name`. |
 | `name_taken: …` | Another workspace you run uses the name. Choose another. |
+| `not_running: …` | No broker is running from this state directory. Run `start`. |
 | `journal_corrupt: checksum mismatch` | Change nothing. After an upgrade, roll back and use a release build. |
 | `quota_exceeded: journal exceeds supported replay size of 1 GiB` | Preserve the workspace and start a new one. |
 | `ssh -G refused the native configuration; …` | Run `ssh -G <host>` on the member's computer to see the error. |

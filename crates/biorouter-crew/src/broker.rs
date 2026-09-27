@@ -343,6 +343,10 @@ struct Enrollment {
 struct Cached {
     digest: String,
     result: Value,
+    /// When the result was cached (seconds since the Unix epoch). A result is kept for
+    /// [`Quotas::dedupe_ttl_secs`]; one cached before this field existed is pruned first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<u64>,
 }
 struct RunPolicyConsent {
     public_provider: bool,
@@ -526,6 +530,11 @@ pub struct Broker {
     /// Per-actor times of recent name-collision refusals (in memory only), for the rate limit
     /// that bounds the name-existence oracle (D5).
     name_refusals: BTreeMap<String, VecDeque<u64>>,
+    /// The limits this broker enforces.
+    quotas: Quotas,
+    /// Journal bytes each actor's records take, tallied at replay and kept up to date by
+    /// [`Broker::commit_with`], for [`Quotas::member_journal_bytes`].
+    journal_actor_bytes: BTreeMap<String, u64>,
     #[cfg(feature = "join-by-name")]
     join_runtime: join::Runtime,
 }
@@ -568,6 +577,135 @@ const SIBLING_PROBE_LIMIT: usize = 32;
 /// How long one sibling broker may take to answer `hello` during the probe.
 const SIBLING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+const MIB: u64 = 1024 * 1024;
+const DAY_SECS: u64 = 24 * 60 * 60;
+
+/// The workspace's resource limits. Every broker enforces [`Quotas::STANDARD`]; test builds may
+/// scale them down (`Broker::set_quotas`, feature `test-seams`).
+///
+/// Three rules keep one member from exhausting what everyone shares:
+///
+/// - **Shares.** No member other than the host may hold more than a set part of any
+///   workspace-wide budget: a quarter of the state, the journal, the attachment bytes and
+///   counts and the references, a tenth of the teams and channels, and a bounded number of
+///   live invitations. The host, who owns the workspace, has no share.
+/// - **Headroom.** Ordinary changes stop short of the state and journal limits, so the host can
+///   always remove a member, change policy and let people in once they are reached.
+/// - **Retention.** Idempotency results, unfinished uploads, long-expired invitations and runs
+///   age out, so none of them becomes a permanent cap. Messages and completed attachments are
+///   history and are never removed.
+#[derive(Clone, Copy, Debug)]
+pub struct Quotas {
+    /// The serialized logical state.
+    pub state_bytes: usize,
+    /// The part of `state_bytes` only the host's administrative operations and enrollment
+    /// may use.
+    pub state_admin_headroom: usize,
+    /// The retained journal.
+    pub journal_bytes: u64,
+    /// The part of `journal_bytes` only the host's administrative operations, enrollment and
+    /// the broker's own records may use.
+    pub journal_admin_headroom: u64,
+    /// The state one member (not the host) may hold in records they created: their messages,
+    /// runs, attachments, references, invitations, teams and channels.
+    pub member_state_bytes: usize,
+    /// The journal one member (not the host) may write.
+    pub member_journal_bytes: u64,
+    /// Teams one member (not the host) may create.
+    pub member_teams: usize,
+    /// Channels one member (not the host) may create, including their teams' `#general`.
+    pub member_channels: usize,
+    /// Attachments one member (not the host) may hold, finished or in progress.
+    pub member_blobs: usize,
+    /// Declared attachment bytes one member (not the host) may hold.
+    pub member_blob_bytes: u64,
+    /// Remote references one member (not the host) may create.
+    pub member_references: usize,
+    /// Unexpired invitations one member (not the host) may have outstanding.
+    pub member_live_invitations: usize,
+    /// How long an idempotency result is kept.
+    pub dedupe_ttl_secs: u64,
+    /// At most this many idempotency results are kept per principal (newest first) ...
+    pub dedupe_actor_entries: usize,
+    /// ... in at most this many serialized bytes.
+    pub dedupe_actor_bytes: usize,
+    /// At most this many idempotency results are kept in all (newest first).
+    pub dedupe_entries: usize,
+}
+
+impl Quotas {
+    pub const STANDARD: Quotas = Quotas {
+        state_bytes: 16 * MIB as usize,
+        state_admin_headroom: MIB as usize,
+        journal_bytes: 1024 * MIB,
+        journal_admin_headroom: 16 * MIB,
+        member_state_bytes: 4 * MIB as usize,
+        member_journal_bytes: 256 * MIB,
+        member_teams: 10,
+        member_channels: 100,
+        member_blobs: 2_500,
+        member_blob_bytes: 10 * 1024 * MIB / 4,
+        member_references: 2_500,
+        member_live_invitations: 100,
+        dedupe_ttl_secs: DAY_SECS,
+        dedupe_actor_entries: 512,
+        dedupe_actor_bytes: 128 * 1024,
+        dedupe_entries: 100_000,
+    };
+}
+
+/// An upload that has not begun or received a chunk for this long is removed.
+const BLOB_UPLOAD_TTL_SECS: u64 = DAY_SECS;
+/// An invitation is removed this long after it expired (its inviter sees it marked expired
+/// until then).
+const INVITATION_RETENTION_SECS: u64 = 7 * DAY_SECS;
+/// A run (and its grant) is removed this long after it expired.
+const RUN_RETENTION_SECS: u64 = DAY_SECS;
+/// At most this many records of each kind are pruned by one mutation, so one journal record
+/// stays small however much has aged out at once.
+const PRUNE_BATCH: usize = 1024;
+/// The largest single attachment, and every attachment together.
+const BLOB_MAX_BYTES: u64 = 1024 * MIB;
+const WORKSPACE_BLOB_BYTES: u64 = 10 * 1024 * MIB;
+const WORKSPACE_BLOBS: usize = 10_000;
+/// The host's own operations that may use the administrative headroom.
+const ADMIN_METHODS: [&str; 6] = [
+    "enrollment.invite",
+    "enrollment.approve",
+    "enrollment.cancel",
+    "enrollment.revoke",
+    "policy.set",
+    "workspace.rename",
+];
+/// Operations that only take access away. Anyone may use the administrative headroom for them,
+/// so a full workspace never keeps a person in a channel or an agent running: each adds at
+/// most a bounded idempotency result, and one member's results are capped.
+const ACCESS_REMOVAL_METHODS: [&str; 3] = ["run.revoke", "membership.revoke", "channel.archive"];
+/// Methods that add records to the actor's share of the state: a member past
+/// [`Quotas::member_state_bytes`] is refused them. Everything else changes records in place,
+/// removes them, or adds a bounded amount (a read position, a membership).
+const SHARE_METHODS: [&str; 8] = [
+    "message.post",
+    "run.project",
+    "run.create",
+    "blob.begin",
+    "reference.create",
+    "invitation.create",
+    "team.create",
+    "channel.create",
+];
+const MEMBER_STATE_QUOTA: &str = "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.";
+const MEMBER_JOURNAL_QUOTA: &str = "quota_exceeded: You have made as many changes as one member's share of this workspace's audit journal allows. Reading still works; ask the workspace host about starting a new workspace.";
+/// A snapshot's invitations, runs and references are each capped at this many serialized
+/// bytes, so what other members do can never push a snapshot past the frame limit. The full
+/// counts are in `totals`.
+const SNAPSHOT_SECTION_BYTES: usize = 64 * 1024;
+/// A worker's `context.manifest` carries at most this many serialized bytes of messages.
+const CONTEXT_MANIFEST_BYTES: usize = 640 * 1024;
+/// A message body's JSON form: twice its 65,536-byte limit, what quotes and backslashes can
+/// double it to. Only control characters escape to more.
+const MESSAGE_ESCAPED_BYTES: usize = 2 * 65_536;
+
 #[cfg(feature = "join-by-name")]
 mod join;
 #[derive(Clone)]
@@ -585,13 +723,16 @@ struct JournalReplay {
     sequence: u64,
     committed: usize,
     torn_tail: Option<Vec<u8>>,
+    /// Journal bytes of each actor's complete records.
+    actor_bytes: BTreeMap<String, u64>,
 }
+/// Replay one complete journal record onto `state_value`; returns the record's actor.
 fn replay_record(
     line: &[u8],
     state_value: &mut Value,
     checksum: &mut String,
     sequence: &mut u64,
-) -> Result<()> {
+) -> Result<String> {
     let envelope: Value =
         serde_json::from_slice(line).context("journal_corrupt: complete record is invalid")?;
     match envelope.get("version").and_then(Value::as_u64) {
@@ -630,6 +771,7 @@ fn replay_record(
                 .get("state")
                 .cloned()
                 .ok_or_else(|| anyhow!("journal_corrupt: state missing"))?;
+            Ok(record.actor)
         }
         Some(2) => {
             let record: DeltaRecord =
@@ -656,10 +798,10 @@ fn replay_record(
             }
             *checksum = actual;
             *sequence = record.sequence;
+            Ok(record.actor)
         }
         _ => bail!("journal_corrupt: unsupported journal version"),
     }
-    Ok(())
 }
 fn replay_journal(journal: &File) -> Result<JournalReplay> {
     let mut replay = BufReader::new(journal.try_clone()?);
@@ -668,6 +810,7 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
     let mut checksum = String::new();
     let mut sequence = 0;
     let mut committed = 0;
+    let mut actor_bytes: BTreeMap<String, u64> = BTreeMap::new();
     loop {
         let mut line = Vec::new();
         let count = std::io::Read::by_ref(&mut replay)
@@ -684,7 +827,8 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
             torn_tail = Some(line);
             break;
         }
-        replay_record(&line, &mut state_value, &mut checksum, &mut sequence)?;
+        let actor = replay_record(&line, &mut state_value, &mut checksum, &mut sequence)?;
+        *actor_bytes.entry(actor).or_default() += line.len() as u64;
         ensure!(
             state_value.get("sequence").and_then(Value::as_u64) == Some(sequence),
             "journal_corrupt: state sequence mismatch"
@@ -701,6 +845,7 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
         sequence,
         committed,
         torn_tail,
+        actor_bytes,
     })
 }
 fn recovered_state(
@@ -770,6 +915,44 @@ fn recovered_state(
     };
     Ok(state)
 }
+/// Which limits a commit answers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Allowance {
+    /// May use the state's administrative headroom, up to the full state limit: the broker's
+    /// own records, enrollment, the host's administrative operations and anyone's removal of
+    /// access. Everything else stops short of the limit by the headroom.
+    state_headroom: bool,
+    /// May use the journal's administrative headroom, up to the full journal limit: the
+    /// broker's own records, enrollment and the host's administrative operations only. A
+    /// member's removals of access do not get it, since repeating one writes a record each
+    /// time and would let one member use it up.
+    journal_headroom: bool,
+    /// Answers to the actor's own journal share: everyone but the host.
+    member: bool,
+}
+impl Allowance {
+    const FULL: Allowance = Allowance {
+        state_headroom: true,
+        journal_headroom: true,
+        member: false,
+    };
+}
+/// Counts the bytes written to it.
+struct ByteCount(usize);
+impl Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+/// The length of `value`'s JSON serialization, without building it.
+fn json_len<T: Serialize + ?Sized>(value: &T) -> usize {
+    let mut count = ByteCount(0);
+    serde_json::to_writer(&mut count, value).map_or(usize::MAX, |()| count.0)
+}
 impl Broker {
     pub fn open(root: &Path, bootstrap_key: &str) -> Result<Self> {
         Self::open_inner(root, bootstrap_key, Box::new(SystemDirectory), None)
@@ -796,6 +979,18 @@ impl Broker {
     #[cfg(feature = "test-seams")]
     pub fn prepare_runtime(&mut self, node_id: &str) -> Result<PathBuf> {
         persisted_runtime(self, node_id)
+    }
+    /// Enforce `quotas` instead of [`Quotas::STANDARD`], so a test can reach a limit without
+    /// writing a gigabyte. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn set_quotas(&mut self, quotas: Quotas) {
+        self.quotas = quotas;
+    }
+    /// The authoritative state as JSON, for tests that check what is retained. Test builds
+    /// only.
+    #[cfg(feature = "test-seams")]
+    pub fn state_json(&self) -> Value {
+        serde_json::to_value(&self.state).expect("state serializes")
     }
     /// Open (or initialize) a workspace. `initial_name` names a workspace this call creates; an
     /// existing workspace keeps its stored name.
@@ -846,6 +1041,7 @@ impl Broker {
             sequence,
             committed,
             torn_tail,
+            actor_bytes,
         } = replay_journal(&journal)?;
         let state = recovered_state(state_value, sequence, bootstrap_key, initial_name)?;
         if let Some(torn_bytes) = torn_tail {
@@ -868,6 +1064,8 @@ impl Broker {
             directory,
             runtime_root: PathBuf::from("/tmp"),
             name_refusals: BTreeMap::new(),
+            quotas: Quotas::STANDARD,
+            journal_actor_bytes: actor_bytes,
             #[cfg(feature = "join-by-name")]
             join_runtime: join::Runtime::default(),
         };
@@ -876,14 +1074,31 @@ impl Broker {
         }
         Ok(broker)
     }
-    fn commit(&mut self, mut state: State, actor: &str, operation: &str) -> Result<()> {
+    /// Commit with the full limits: the broker's own records, enrollment and the host's
+    /// administrative operations.
+    fn commit(&mut self, state: State, actor: &str, operation: &str) -> Result<()> {
+        self.commit_with(state, actor, operation, Allowance::FULL)
+    }
+    fn commit_with(
+        &mut self,
+        mut state: State,
+        actor: &str,
+        operation: &str,
+        allowance: Allowance,
+    ) -> Result<()> {
         ensure!(
             !self.poisoned,
             "storage_failed: restart and recover before further mutations"
         );
+        let quotas = self.quotas;
         state.sequence = self.state.sequence + 1;
         let after = serde_json::to_value(&state)?;
-        ensure!(serde_json::to_vec(&after)?.len()<=16*1024*1024,"quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported");
+        let size = json_len(&after);
+        if allowance.state_headroom {
+            ensure!(size <= quotas.state_bytes, "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported");
+        } else {
+            ensure!(size <= quotas.state_bytes - quotas.state_admin_headroom, "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported");
+        }
         let before = if self.state.sequence == 0 {
             Value::Null
         } else {
@@ -912,10 +1127,21 @@ impl Broker {
         ))?);
         let mut bytes = serde_json::to_vec(&record)?;
         bytes.push(b'\n');
+        let length = bytes.len() as u64;
+        let journal = self.journal.metadata()?.len() + length;
         ensure!(
-            bytes.len() <= 16 * 1024 * 1024
-                && self.journal.metadata()?.len() + bytes.len() as u64 <= 1024 * 1024 * 1024,
+            bytes.len() <= 16 * 1024 * 1024 && journal <= quotas.journal_bytes,
             "quota_exceeded: retained audit journal exceeds 1 GiB; preserve the complete store and use a new workspace; in-place audit deletion is not supported"
+        );
+        ensure!(
+            allowance.journal_headroom
+                || journal <= quotas.journal_bytes - quotas.journal_admin_headroom,
+            "quota_exceeded: retained audit journal is nearly full; reads remain available and the host can still remove members and change policy; preserve the complete store and use a new workspace"
+        );
+        let written = self.journal_actor_bytes.get(actor).copied().unwrap_or(0);
+        ensure!(
+            !allowance.member || written.saturating_add(length) <= quotas.member_journal_bytes,
+            MEMBER_JOURNAL_QUOTA
         );
         self.poisoned = true;
         self.journal.write_all(&bytes)?;
@@ -923,6 +1149,10 @@ impl Broker {
         sync_dir(&self.root)?;
         self.state = state;
         self.checksum = record.checksum;
+        *self
+            .journal_actor_bytes
+            .entry(actor.to_owned())
+            .or_default() += length;
         self.poisoned = false;
         Ok(())
     }
@@ -1142,10 +1372,6 @@ impl Broker {
             !self.poisoned,
             "storage_failed: restart and recover before further mutations"
         );
-        ensure!(
-            self.state.dedupe.len() < 100_000,
-            "quota_exceeded: workspace operation quota requires maintenance"
-        );
         let naming = NAME_METHODS.contains(&req.method.as_str());
         if naming {
             // Checked before anything about the name is evaluated, so the answer to a
@@ -1155,32 +1381,66 @@ impl Broker {
                 NAME_RATE_LIMITED
             );
         }
+        let now = now();
         let mut state = self.state.clone();
         #[cfg(feature = "join-by-name")]
-        join::prune_expired(&mut state, now());
+        join::prune_expired(&mut state, now);
+        let expired_uploads = prune_retained(&mut state, now, &self.quotas);
         let result = match self.mutate(&mut state, actor, req) {
             Ok(result) => result,
             Err(error) => {
                 if naming && error.to_string().starts_with("name_taken:") {
-                    self.record_name_refusal(&actor.id, now());
+                    self.record_name_refusal(&actor.id, now);
                 }
                 return Err(error);
             }
         };
-        state.dedupe.insert(
-            key,
-            Cached {
-                digest: fingerprint,
-                result: result.clone(),
-            },
-        );
-        if let Err(error) = self.commit(state, &actor.id, &req.method) {
+        let host = self.manager(&self.state, &actor.id).is_ok();
+        let method = req.method.as_str();
+        let administrative = host && actor.run.is_none() && ADMIN_METHODS.contains(&method);
+        let allowance = Allowance {
+            state_headroom: administrative || ACCESS_REMOVAL_METHODS.contains(&method),
+            journal_headroom: administrative,
+            member: !host,
+        };
+        let committed = (|| -> Result<()> {
+            ensure!(
+                host || !SHARE_METHODS.contains(&req.method.as_str())
+                    || member_state_bytes(&state, &actor.id) <= self.quotas.member_state_bytes,
+                MEMBER_STATE_QUOTA
+            );
+            // A message is re-projected from the stored message on replay, so its cached
+            // result needs only what finds it (and the status a terminal replay checks).
+            let cached = match req.method.as_str() {
+                "message.post" | "run.project" => {
+                    json!({"id": result["id"], "status": result["status"]})
+                }
+                _ => result.clone(),
+            };
+            remember(
+                &mut state,
+                &self.quotas,
+                &actor.id,
+                key,
+                Cached {
+                    digest: fingerprint,
+                    result: cached,
+                    at: Some(now),
+                },
+            );
+            self.commit_with(state, &actor.id, &req.method, allowance)
+        })();
+        if let Err(error) = committed {
             if req.method == "blob.begin" && !self.poisoned {
                 if let Some(blob_id) = result.get("id").and_then(Value::as_str) {
                     let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
                 }
             }
             return Err(error);
+        }
+        // Only once the removal is journaled: a failed commit keeps both.
+        for blob_id in expired_uploads {
+            let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
         }
         Ok(result)
     }
@@ -1780,14 +2040,31 @@ impl Broker {
             .filter(|c| c.members.contains(&actor.id))
             .collect();
         // An invitee no longer sees an invitation once it has expired (it can never be
-        // accepted); its inviter still does, marked `expired`.
-        let invitations: Vec<&Invitation> = s
+        // accepted); its inviter still does, marked `expired`, until it is pruned. What the
+        // invitee can act on comes first, then the actor's own live and expired invitations,
+        // newest first, within one section budget.
+        let mut invitations: Vec<&Invitation> = s
             .invitations
             .values()
             .filter(|i| {
                 i.inviter_id == actor.id || (i.principal_id == actor.id && i.expires_at >= now)
             })
             .collect();
+        invitations.sort_by_key(|i| {
+            (
+                i.principal_id != actor.id,
+                i.expires_at < now,
+                std::cmp::Reverse(i.expires_at),
+            )
+        });
+        let invitations_total = invitations.len();
+        let invitations_wire = within_budget(
+            invitations
+                .iter()
+                .map(|invitation| Self::invitation_wire(s, &index, invitation, now))
+                .collect(),
+        );
+        invitations.truncate(invitations_wire.len());
         let mut workspace = json!(s.workspace);
         workspace["host_principal_id"] = json!(host_principal_id(s));
         let stale = if host {
@@ -1811,11 +2088,32 @@ impl Broker {
         let actor_wire = Self::actor_wire(s, &index, &actor.id);
         let teams_wire = Self::teams_wire(&teams);
         let channels_wire = Self::channels_wire(&channels);
-        let invitations_wire: Vec<Value> = invitations
-            .iter()
-            .map(|invitation| Self::invitation_wire(s, &index, invitation, now))
+        // The actor's live runs only (a revoked, expired or superseded run grants nothing),
+        // newest first.
+        let mut runs: Vec<&Run> = s
+            .runs
+            .values()
+            .filter(|r| {
+                r.owner_id == actor.id
+                    && !r.revoked
+                    && r.expires_at >= now
+                    && r.policy_epoch == s.workspace.policy_epoch
+            })
             .collect();
-        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":protected_channel_ids,"actor":actor_wire,"principals":principals,"former_principals":former_principals,"teams":teams_wire,"channels":channels_wire,"invitations":invitations_wire,"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()});
+        runs.sort_by_key(|r| std::cmp::Reverse(r.expires_at));
+        let runs_total = runs.len();
+        let runs = within_budget(runs);
+        // Other members add references to shared channels: the actor's own come first.
+        let mut references: Vec<&RemoteReference> = s
+            .references
+            .values()
+            .filter(|r| self.reference_authorized(s, actor, r).is_ok())
+            .collect();
+        references.sort_by_key(|r| r.owner_id != actor.id);
+        let references_total = references.len();
+        let references = within_budget(references);
+        let totals = json!({"invitations": invitations_total, "runs": runs_total, "references": references_total});
+        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":protected_channel_ids,"actor":actor_wire,"principals":principals,"former_principals":former_principals,"teams":teams_wire,"channels":channels_wire,"invitations":invitations_wire,"runs":runs,"read_positions":positions,"unread":unread,"references":references,"totals":totals});
         if host {
             let refusals: BTreeMap<&str, usize> = self
                 .name_refusals
@@ -2121,7 +2419,11 @@ impl Broker {
             .rev()
             .take(200)
             .collect();
+        // Decided over all 200, before the byte budget drops any.
         let restricted = messages.iter().any(|message| message.restricted);
+        // Every agent turn asks for this manifest, so what other members post in a source
+        // channel must never push it past the frame limit: the newest messages that fit.
+        let messages = within(messages, CONTEXT_MANIFEST_BYTES);
         let (people, channel_names) = self.message_names(s, actor, messages.iter().copied());
         let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
         Ok(
@@ -2414,7 +2716,22 @@ impl Broker {
     fn mutate_team_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
-        ensure!(s.teams.len() < 100, "quota_exceeded: maximum teams");
+        ensure!(
+            s.teams.len() < 100 && s.channels.len() < 1000,
+            "quota_exceeded: maximum teams"
+        );
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.teams.values().filter(|t| t.created_by == *who).count()
+                    < self.quotas.member_teams,
+            "quota_exceeded: You have created as many teams as one member may in this workspace."
+        );
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.channels.values().filter(|c| c.created_by == *who).count()
+                    < self.quotas.member_channels,
+            "quota_exceeded: You have created as many channels as one member may in this workspace."
+        );
         let name = Self::team_name_for(s, p, None)?;
         let team_id = id();
         let channel_id = id();
@@ -2456,6 +2773,12 @@ impl Broker {
             "forbidden: team unavailable"
         );
         ensure!(s.channels.len() < 1000, "quota_exceeded: maximum channels");
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.channels.values().filter(|c| c.created_by == *who).count()
+                    < self.quotas.member_channels,
+            "quota_exceeded: You have created as many channels as one member may in this workspace."
+        );
         let name = Self::channel_name_for(s, p, team_id, None)?;
         let classification = match p.get("classification") {
             Some(v) => serde_json::from_value(v.clone())?,
@@ -2618,6 +2941,26 @@ impl Broker {
             _ => bail!("invalid_params: invitation kind"),
         }
         check_expected_username(s, p, principal)?;
+        // One invitation per inviter, invitee and target: inviting again renews it (same ID,
+        // a fresh day) rather than adding another to the invitee's snapshot.
+        if let Some(existing) = s.invitations.values_mut().find(|i| {
+            i.inviter_id == *who
+                && i.principal_id == principal
+                && i.kind == kind
+                && i.target_id == target
+        }) {
+            existing.expires_at = now() + 86400;
+            return Ok(json!(existing));
+        }
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.invitations
+                    .values()
+                    .filter(|i| i.inviter_id == *who && i.expires_at >= now())
+                    .count()
+                    < self.quotas.member_live_invitations,
+            "quota_exceeded: You have as many invitations waiting as one member may. Wait for some to be accepted or to expire."
+        );
         let invitation = Invitation {
             id: id(),
             kind: kind.into(),
@@ -2950,7 +3293,10 @@ impl Broker {
             .get("body")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("invalid_params: body must be a string"))?;
-        ensure!(body.len() <= 65536, "invalid_params: message too long");
+        ensure!(
+            body.len() <= 65536 && json_len(body) - 2 <= MESSAGE_ESCAPED_BYTES,
+            "invalid_params: message too long"
+        );
         let channel = if let Some(run) = &actor.run {
             run.channel_id.as_str()
         } else {
@@ -3111,10 +3457,10 @@ impl Broker {
             (1..=3600).contains(&expires),
             "invalid_params: expiry must be 1..3600 seconds"
         );
-        let remote_root = p
-            .get("remote_root")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let remote_root = match p.get("remote_root") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(display_text(p, "remote_root", 4096)?.to_owned()),
+        };
         let remote_execution = p
             .get("remote_execution")
             .and_then(Value::as_bool)
@@ -3161,7 +3507,7 @@ impl Broker {
             owner_id: who.clone(),
             channel_id: channel.into(),
             source_channels: sources,
-            provider_policy_id: text(p, "provider_policy_id")?.into(),
+            provider_policy_id: display_text(p, "provider_policy_id", 1024)?.into(),
             public_provider: consent.public_provider,
             personal_mode: consent.personal_mode,
             policy_epoch: s.workspace.policy_epoch,
@@ -3195,10 +3541,11 @@ impl Broker {
         let who = &actor.id;
         let channel = text(p, "channel_id")?;
         self.channel(s, who, channel, true)?;
-        let path = text(p, "path")?;
+        let path = display_text(p, "path", 4096).map_err(|_| {
+            anyhow!("invalid_params: absolute remote path without parent traversal required; at most 4096 bytes, without control or invisible formatting characters")
+        })?;
         ensure!(
-            path.len() <= 4096
-                && Path::new(path).is_absolute()
+            Path::new(path).is_absolute()
                 && !Path::new(path)
                     .components()
                     .any(|c| matches!(c, std::path::Component::ParentDir)),
@@ -3222,11 +3569,14 @@ impl Broker {
             s.references.len() < 10000,
             "quota_exceeded: remote reference limit"
         );
-        let label = text(p, "label")?;
         ensure!(
-            label.len() <= 255 && !label.chars().any(char::is_control),
-            "invalid_params: reference label"
+            self.manager(s, who).is_ok()
+                || s.references.values().filter(|r| r.owner_id == *who).count()
+                    < self.quotas.member_references,
+            "quota_exceeded: You have created as many remote references as one member may."
         );
+        let label = display_text(p, "label", 255)
+            .map_err(|_| anyhow!("invalid_params: reference label"))?;
         let reference = RemoteReference {
             id: id(),
             channel_id: channel.into(),
@@ -3257,31 +3607,50 @@ impl Broker {
         let c = self.channel(s, who, channel, true)?;
         let size = number(p, "size")?;
         ensure!(
-            size <= 1024 * 1024 * 1024,
+            size <= BLOB_MAX_BYTES,
             "quota_exceeded: maximum attachment is 1 GiB"
         );
+        // Declared sizes count, finished or not: an unfinished upload is a reservation, and it
+        // lapses a day after its last chunk (`prune_retained`).
         ensure!(
-            s.blobs.len() < 10000
-                && s.blobs.values().map(|b| b.size).sum::<u64>() + size <= 10 * 1024 * 1024 * 1024,
+            s.blobs.len() < WORKSPACE_BLOBS
+                && s.blobs.values().map(|b| b.size).sum::<u64>() + size <= WORKSPACE_BLOB_BYTES,
             "quota_exceeded: workspace attachment quota"
         );
+        if self.manager(s, who).is_err() {
+            let (count, bytes) = s
+                .blobs
+                .values()
+                .filter(|b| b.owner_id == *who)
+                .fold((0usize, 0u64), |(count, bytes), b| {
+                    (count + 1, bytes + b.size)
+                });
+            ensure!(
+                count < self.quotas.member_blobs
+                    && bytes + size <= self.quotas.member_blob_bytes,
+                "quota_exceeded: You have used your share of this workspace's attachment space. Unfinished uploads free their space a day after their last progress."
+            );
+        }
         let sha = text(p, "sha256")?;
         ensure!(
             sha.len() == 64 && hex::decode(sha)?.len() == 32,
             "invalid_params: sha256"
         );
-        let name = text(p, "name")?;
+        let name = display_text(p, "name", 255)
+            .map_err(|_| anyhow!("invalid_params: attachment display name"))?;
+        let media_type = text(p, "media_type")?;
         ensure!(
-            name.len() <= 255 && !name.chars().any(char::is_control),
-            "invalid_params: attachment display name"
+            media_type.len() <= 255 && media_type.bytes().all(|b| (0x20..0x7f).contains(&b)),
+            "invalid_params: media_type must be 1 to 255 printable ASCII characters"
         );
         let blob = Blob {
+            touched_at: Some(now()),
             run_id: actor.run.as_ref().map(|r| r.id.clone()),
             id: id(),
             owner_id: who.clone(),
             channel_id: channel.into(),
             name: name.into(),
-            media_type: text(p, "media_type")?.into(),
+            media_type: media_type.into(),
             size,
             sha256: sha.to_lowercase(),
             offset: 0,
@@ -3348,6 +3717,7 @@ impl Broker {
         file.sync_all()?;
         let blob = s.blobs.get_mut(blob_id).expect("authorized blob");
         blob.offset += bytes.len() as u64;
+        blob.touched_at = Some(now());
         Ok(json!(blob))
     }
     fn mutate_blob_finish(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
@@ -3416,6 +3786,169 @@ impl Broker {
             times.pop_front();
         }
     }
+}
+
+/// The leading `items` whose JSON fits in [`SNAPSHOT_SECTION_BYTES`] (at least the first one),
+/// so a snapshot section other members can grow never pushes the snapshot past the frame
+/// limit. The snapshot's `totals` says how many there were.
+fn within_budget<T: Serialize>(items: Vec<T>) -> Vec<T> {
+    within(items, SNAPSHOT_SECTION_BYTES)
+}
+/// The leading `items` whose JSON fits in `budget` bytes (at least the first one).
+fn within<T: Serialize>(items: Vec<T>, budget: usize) -> Vec<T> {
+    let mut used: usize = 0;
+    items
+        .into_iter()
+        .enumerate()
+        .take_while(|(index, item)| {
+            used = used.saturating_add(json_len(item)).saturating_add(1);
+            *index == 0 || used <= budget
+        })
+        .map(|(_, item)| item)
+        .collect()
+}
+
+/// Remove, from the state a mutation is about to commit, what no longer serves anyone:
+/// idempotency results older than [`Quotas::dedupe_ttl_secs`] (and any cached before results
+/// carried a time), unfinished uploads untouched for [`BLOB_UPLOAD_TTL_SECS`], invitations
+/// expired more than [`INVITATION_RETENTION_SECS`] ago, and runs, with their grants, expired
+/// more than [`RUN_RETENTION_SECS`] ago. At most [`PRUNE_BATCH`] of each per call, so one
+/// journal record stays small however much aged out at once. Returns the removed uploads,
+/// whose files are deleted once the commit lands.
+fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Vec<String> {
+    fn aged(at: Option<u64>, now: u64, ttl: u64) -> bool {
+        at.is_none_or(|at| now.saturating_sub(at) >= ttl)
+    }
+    let dedupe_ttl = quotas.dedupe_ttl_secs;
+    let stale: Vec<String> = s
+        .dedupe
+        .iter()
+        .filter(|(_, cached)| aged(cached.at, now, dedupe_ttl))
+        .map(|(key, _)| key.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    for key in stale {
+        s.dedupe.remove(&key);
+    }
+    let uploads: Vec<String> = s
+        .blobs
+        .values()
+        .filter(|blob| !blob.complete && aged(blob.touched_at, now, BLOB_UPLOAD_TTL_SECS))
+        .map(|blob| blob.id.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    for id in &uploads {
+        s.blobs.remove(id);
+    }
+    let invitations: Vec<String> = s
+        .invitations
+        .values()
+        .filter(|i| i.expires_at.saturating_add(INVITATION_RETENTION_SECS) <= now)
+        .map(|i| i.id.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    for id in invitations {
+        s.invitations.remove(&id);
+    }
+    let runs: BTreeSet<String> = s
+        .runs
+        .values()
+        .filter(|run| run.expires_at.saturating_add(RUN_RETENTION_SECS) <= now)
+        .map(|run| run.id.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    if !runs.is_empty() {
+        s.runs.retain(|id, _| !runs.contains(id));
+        s.grants.retain(|_, run| !runs.contains(run));
+    }
+    uploads
+}
+
+/// Cache `cached` under `key` for `actor`, first dropping the actor's oldest results so it
+/// keeps at most [`Quotas::dedupe_actor_entries`] in [`Quotas::dedupe_actor_bytes`] (the new
+/// result always stays), then the workspace's oldest beyond [`Quotas::dedupe_entries`]. A
+/// retry comes within seconds or minutes, long before hundreds of newer results; bounding
+/// the cache is what keeps it from ever becoming a cap on the workspace.
+fn remember(s: &mut State, quotas: &Quotas, actor: &str, key: String, cached: Cached) {
+    let size = |key: &str, cached: &Cached| json_len(key) + json_len(cached);
+    let prefix = format!("{actor}:");
+    let mut own: Vec<(Option<u64>, String, usize)> = s
+        .dedupe
+        .range(prefix.clone()..)
+        .take_while(|(k, _)| k.starts_with(&prefix))
+        .map(|(k, c)| (c.at, k.clone(), size(k, c)))
+        .collect();
+    own.sort();
+    let mut count = own.len();
+    let mut bytes = own
+        .iter()
+        .fold(0usize, |total, (_, _, size)| total.saturating_add(*size));
+    let incoming = size(&key, &cached);
+    for (_, old, size) in own {
+        if count < quotas.dedupe_actor_entries
+            && bytes.saturating_add(incoming) <= quotas.dedupe_actor_bytes
+        {
+            break;
+        }
+        s.dedupe.remove(&old);
+        count -= 1;
+        bytes = bytes.saturating_sub(size);
+    }
+    if s.dedupe.len() >= quotas.dedupe_entries {
+        let mut all: Vec<(Option<u64>, String)> =
+            s.dedupe.iter().map(|(k, c)| (c.at, k.clone())).collect();
+        all.sort();
+        let excess = s.dedupe.len() + 1 - quotas.dedupe_entries.max(1);
+        for (_, old) in all.into_iter().take(excess) {
+            s.dedupe.remove(&old);
+        }
+    }
+    s.dedupe.insert(key, cached);
+}
+
+/// The serialized bytes of the records `principal` created and holds against
+/// [`Quotas::member_state_bytes`]: their messages (their agents' included), runs with their
+/// grants, attachments, references, invitations sent, and the teams and channels they
+/// created. Idempotency results and read positions are bounded separately.
+fn member_state_bytes(s: &State, principal: &str) -> usize {
+    fn total<T: Serialize>(items: impl Iterator<Item = T>) -> usize {
+        items.fold(0, |sum, item| sum.saturating_add(json_len(&item)))
+    }
+    let runs = s.runs.values().filter(|r| r.owner_id == principal);
+    // Each run also holds one grant: a 64-hex digest naming its ID.
+    let grants = runs.clone().count().saturating_mul(110);
+    [
+        total(s.messages.iter().filter(|m| m.actor_id == principal)),
+        total(runs),
+        grants,
+        total(s.blobs.values().filter(|b| b.owner_id == principal)),
+        total(s.references.values().filter(|r| r.owner_id == principal)),
+        total(s.invitations.values().filter(|i| i.inviter_id == principal)),
+        total(s.teams.values().filter(|t| t.created_by == principal)),
+        total(s.channels.values().filter(|c| c.created_by == principal)),
+    ]
+    .into_iter()
+    .fold(0, usize::saturating_add)
+}
+
+/// `p[key]` as display text of 1 to `max_bytes` bytes with no control, format, line or
+/// paragraph separator characters: nothing that hides, reorders or spoofs the text around it,
+/// and nothing JSON escapes to more than two bytes, so its stored size is bounded too.
+fn display_text<'a>(p: &'a Value, key: &str, max_bytes: usize) -> Result<&'a str> {
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    let value = text(p, key)?;
+    ensure!(
+        value.len() <= max_bytes
+            && !value.chars().any(|c| matches!(
+                c.general_category(),
+                GeneralCategory::Control
+                    | GeneralCategory::Format
+                    | GeneralCategory::LineSeparator
+                    | GeneralCategory::ParagraphSeparator
+            )),
+        "invalid_params: {key} must be 1 to {max_bytes} bytes without control or invisible formatting characters"
+    );
+    Ok(value)
 }
 
 /// The host's active principal, injected into the snapshot's `workspace` at projection time
