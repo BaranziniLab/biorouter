@@ -4,6 +4,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { Link } from '../../icons/app-icons';
 import { crewRequest } from '../crewApi';
 import { filesCopy } from './copy';
+import { visibleFileText } from './fileName';
 import './files.css';
 
 /** `reference.get`: a path on the server, shared by name only. */
@@ -68,7 +69,12 @@ export function ServerPathRow({
     };
   }, [connectionId, referenceId]);
 
-  const label = reference?.label || reference?.path || filesCopy.serverPathLoading;
+  // Another member chose the label and the path: shown with hidden characters made visible
+  // (RENDERER-1). Copy still takes the path exactly as it was shared.
+  const label =
+    visibleFileText(reference?.label) ||
+    visibleFileText(reference?.path) ||
+    filesCopy.serverPathLoading;
   return (
     <div ref={root} className="crew-server-path">
       <div className="crew-server-path-row">
@@ -86,6 +92,7 @@ export function ServerPathRow({
       {reference ? (
         <CopyField
           value={reference.path}
+          display={visibleFileText(reference.path)}
           label={filesCopy.serverPath}
           truncate="middle"
           className="crew-server-path-field"

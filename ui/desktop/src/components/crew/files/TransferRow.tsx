@@ -6,6 +6,7 @@ import { Download, Pause, Play, Trash2, Upload } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
+import { visibleFileText } from './fileName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import './files.css';
@@ -100,6 +101,8 @@ export function TransferRow({
     : presentation.word;
   const showBar = presentation.percent !== undefined && presentation.key !== 'failed' && !starting;
   const canPause = presentation.active && presentation.key !== 'pausing' && !starting;
+  // A download's name began as another member's (RENDERER-1): hidden characters made visible.
+  const name = visibleFileText(transfer.name);
   return (
     <li
       className="crew-file-row"
@@ -108,7 +111,7 @@ export function TransferRow({
     >
       <div className="crew-file-row-main">
         <Glyph className="crew-file-row-icon" aria-hidden />
-        <span className="crew-file-row-name">{transfer.name}</span>
+        <span className="crew-file-row-name">{name}</span>
         <span className="crew-file-row-meta">
           {word}
           {presentation.key === 'failed' || presentation.key === 'not-confirmed'
@@ -121,7 +124,7 @@ export function TransferRow({
             variant="ghost"
             size="sm"
             onClick={() => onPause(transfer)}
-            aria-label={filesCopy.pauseNamed(transfer.name)}
+            aria-label={filesCopy.pauseNamed(name)}
           >
             <Pause aria-hidden />
             {filesCopy.pause}
@@ -129,7 +132,7 @@ export function TransferRow({
         ) : null}
         {presentation.active ? null : (
           <DropdownMenu>
-            <MoreActionsTrigger name={transfer.name} />
+            <MoreActionsTrigger name={name} />
             <DropdownMenuContent align="end" className="crew-menu">
               <TransferMenuItems transfer={transfer} onResume={onResume} onRemove={onRemove} />
             </DropdownMenuContent>
@@ -139,7 +142,7 @@ export function TransferRow({
       {showBar ? (
         <Progress
           value={presentation.percent}
-          label={`${transfer.name}: ${presentation.word}`}
+          label={`${name}: ${presentation.word}`}
           className="crew-file-row-progress"
         />
       ) : null}

@@ -18,6 +18,7 @@ import { CopyForSupport, useMenuCopy } from '../timeline/TimelineCopy';
 import { postedLabel, useAttachmentWhich, useRegisterAttachment } from './attachmentIndex';
 import { cachedBlob, forgetBlob, rememberBlob } from './blobMetadataCache';
 import { filesCopy } from './copy';
+import { saveNameFor, visibleFileText } from './fileName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { TransferMenuItems } from './TransferRow';
@@ -177,7 +178,8 @@ export function AttachmentCard({
           channel_id: metadata.channel_id,
           direction: 'download',
           blob_id: blobId,
-          suggestedName: metadata.name,
+          // Another member chose this name: its hidden characters never reach the Save dialog.
+          suggestedName: saveNameFor(metadata.name),
         }),
       filesCopy.downloadFailed
     );
@@ -205,12 +207,14 @@ export function AttachmentCard({
     }
   };
 
-  const name = metadata?.name || fallbackName || filesCopy.attachment;
+  // Another member chose the name: shown, and named in every control, with its hidden
+  // characters made visible (RENDERER-1). The index compares names as they are shown.
+  const name = visibleFileText(metadata?.name || fallbackName) || filesCopy.attachment;
   useRegisterAttachment(
     blobId,
     metadata && !sending
       ? {
-          name: metadata.name,
+          name: visibleFileText(metadata.name),
           sha256: metadata.sha256,
           complete: metadata.complete,
           postedAt,

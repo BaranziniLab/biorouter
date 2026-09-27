@@ -4,6 +4,7 @@ import { Loader2, Pause, Play } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
+import { visibleFileText } from './fileName';
 import { ChipAction } from './GlyphButton';
 import './files.css';
 
@@ -71,6 +72,7 @@ export function UploadChip({
     (presentation.percent ?? 0) >= 1;
   const canResume = presentation.key === 'paused' || presentation.key === 'failed';
   const state = starting ? filesCopy.uploading : moving ? `${percent}%` : presentation.word;
+  const name = visibleFileText(transfer.name);
   return (
     <Badge
       variant="chip"
@@ -83,11 +85,11 @@ export function UploadChip({
       ) : presentation.active ? (
         <Loader2 className="crew-chip-icon animate-spin" aria-hidden />
       ) : null}
-      <span className="min-w-0 truncate text-text-default">{transfer.name}</span>
+      <span className="min-w-0 truncate text-text-default">{name}</span>
       <span className="shrink-0 tabular-nums">{state}</span>
       {canPause ? (
         <ChipAction
-          label={filesCopy.pauseNamed(transfer.name)}
+          label={filesCopy.pauseNamed(name)}
           tooltip={filesCopy.pauseUpload}
           onClick={() => onPause(transfer)}
         >
@@ -95,7 +97,7 @@ export function UploadChip({
         </ChipAction>
       ) : null}
       {canResume ? (
-        <ChipAction label={filesCopy.resumeNamed(transfer.name)} onClick={() => onResume(transfer)}>
+        <ChipAction label={filesCopy.resumeNamed(name)} onClick={() => onResume(transfer)}>
           <Play className="crew-chip-icon" aria-hidden />
         </ChipAction>
       ) : null}

@@ -21,6 +21,7 @@ import type { DraftFile, DraftReference } from '../state/types';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { postedLabel, useAttachmentIndexVersion } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
+import { visibleFileText } from '../files/fileName';
 import {
   CrewFileDropZone,
   useCrewDropTarget,
@@ -274,15 +275,18 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   if (attachmentIndex) {
     for (const file of draft.attachments) {
       const sha256 = upload.uploads.find((item) => item.blob_id === file.id)?.sha256 ?? '';
-      const match = attachmentIndex.compare(file.name, sha256, file.id);
+      // Names as the cards show them (RENDERER-1): the index holds shown names, so a name is
+      // compared, and quoted, with its hidden characters made visible.
+      const fileName = visibleFileText(file.name);
+      const match = attachmentIndex.compare(fileName, sha256, file.id);
       if (!match) continue;
       const when = postedLabel(match.earlier.postedAt);
       duplicates[file.id] =
         match.kind === 'same'
-          ? composerCopy.sameFileShared(file.name, match.earlier.name, name, when)
+          ? composerCopy.sameFileShared(fileName, match.earlier.name, name, when)
           : match.kind === 'different'
-            ? composerCopy.differentFileShared(file.name, name, when)
-            : composerCopy.alreadyShared(file.name, name, when);
+            ? composerCopy.differentFileShared(fileName, name, when)
+            : composerCopy.alreadyShared(fileName, name, when);
     }
   }
   const agentOpen = ui.pane?.mode === 'agent';

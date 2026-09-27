@@ -11,6 +11,7 @@ import { isoTime, messageTime } from '../timeline/timelineTime';
 import { AttachmentCard, type CrewBlob } from './AttachmentCard';
 import { postedLabel } from './attachmentIndex';
 import { filesCopy } from './copy';
+import { visibleFileText } from './fileName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { ServerPathRow } from './ServerPathRow';
@@ -202,7 +203,7 @@ export function FilesTab() {
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
                   <span className="crew-file-row-label">
-                    <span className="crew-file-row-name">{file.name}</span>
+                    <span className="crew-file-row-name">{visibleFileText(file.name)}</span>
                     {onItsWay ? (
                       <span className="crew-file-row-meta">{filesCopy.sending}</span>
                     ) : upload ? (
@@ -226,14 +227,14 @@ export function FilesTab() {
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
                   <span className="crew-file-row-label">
-                    <span className="crew-file-row-name">{transfer.name}</span>
+                    <span className="crew-file-row-name">{visibleFileText(transfer.name)}</span>
                     <span className="crew-file-row-meta">{formatBytes(transfer.size)}</span>
                   </span>
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
-                    aria-label={filesCopy.attachNamed(transfer.name)}
+                    aria-label={filesCopy.attachNamed(visibleFileText(transfer.name))}
                     disabled={attaching === transfer.id}
                     onClick={() => void attach(transfer)}
                   >
@@ -241,7 +242,7 @@ export function FilesTab() {
                     {filesCopy.attach}
                   </Button>
                   <DropdownMenu>
-                    <MoreActionsTrigger name={transfer.name} />
+                    <MoreActionsTrigger name={visibleFileText(transfer.name)} />
                     <DropdownMenuContent align="end" className="crew-menu">
                       <TransferMenuItems
                         transfer={transfer}
