@@ -371,11 +371,10 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   // newest, and the pane says which one that is before Start. Only once every name is known, as
   // above, so the count is the whole channel's.
   const sameNamed = sharedFiles === null ? [] : sameNamedFiles(mentioned, sharedFiles);
-  const unknownDestination =
-    unknown ===
-    `${crew.connection?.name ?? crew.connectionId} / ${team?.name ?? crew.teamId} / #${channel.name}`
-      ? unknownOutcomeCopy.destination(here, teamName(team))
-      : unknown;
+  // The names the destination was recorded with (RENDERER-5), wherever the person is now.
+  const unknownDestination = unknown
+    ? unknownOutcomeCopy.destination(unknown.channel, unknown.team)
+    : null;
 
   const submit = async (deliberateRestart: boolean) => {
     if (starting.current) return;

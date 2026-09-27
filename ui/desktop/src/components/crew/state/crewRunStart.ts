@@ -8,15 +8,8 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
-import {
-  crewHttp,
-  CrewHttpError,
-  type Channel,
-  type CrewConnection,
-  type ObservedRun,
-  type Snapshot,
-  type Team,
-} from '../crewApi';
+import { crewHttp, CrewHttpError, type Channel, type ObservedRun, type Snapshot } from '../crewApi';
+import { channelName, teamName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import type {
   ActionKey,
@@ -25,12 +18,13 @@ import type {
   ObservedPrivacy,
   StartOwnedRunInput,
   SurfaceResetReason,
+  UnknownRunDestination,
 } from './types';
 
 interface PendingRunAttempt {
   fingerprint: string;
   key: string;
-  unknownDestination?: string;
+  unknownDestination?: UnknownRunDestination;
 }
 // Inspection can navigate to another route; retain the uncertain attempt in memory, never on disk.
 // Module scope makes the lock survive a remount of Crew (C10).
@@ -46,8 +40,6 @@ export interface CrewRunStartContext {
   connectionId: string;
   teamId: string;
   channelId: string;
-  connection: CrewConnection | null;
-  team: Team | null;
   channel: Channel | null;
   snapshot: Snapshot | null;
   observedPrivacy: ObservedPrivacy | null;
@@ -76,7 +68,7 @@ export interface CrewRunStartContext {
 
 export interface CrewRunStart {
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
-  unknownRunDestination: string;
+  unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;
   setInspectedPriorRun: Dispatch<SetStateAction<boolean>>;
   pendingRun: MutableRefObject<PendingRunAttempt | null>;
@@ -110,16 +102,14 @@ export interface CrewRunStart {
  */
 export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
-  const [unknownRunDestination, setUnknownRunDestination] = useState(
-    unfinishedRunAttempt?.unknownDestination ?? ''
+  const [unknownRunDestination, setUnknownRunDestination] = useState<UnknownRunDestination | null>(
+    unfinishedRunAttempt?.unknownDestination ?? null
   );
   const [inspectedPriorRun, setInspectedPriorRun] = useState(false);
   const {
     connectionId,
     teamId,
     channelId,
-    connection,
-    team,
     channel,
     snapshot,
     observedPrivacy,
@@ -240,7 +230,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     }
     unfinishedRunAttempt = pendingRun.current;
     if (deliberateRestart) {
-      setUnknownRunDestination('');
+      setUnknownRunDestination(null);
       setInspectedPriorRun(false);
     }
     let started: unknown;
@@ -255,7 +245,16 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
       );
     } catch (failure) {
       if (failure instanceof CrewHttpError && failure.code === 'crew_start_outcome_unknown') {
-        const destination = `${connection?.name ?? connectionId} / ${team?.name ?? teamId} / #${channel?.name ?? channelId}`;
+        // Named as Crew names them everywhere else, from the channel's own team (RENDERER-5): the
+        // gate shows this in every channel until it is cleared, never as stored names or an ID.
+        const destinationTeamId = channel?.team_id ?? teamId;
+        const destination: UnknownRunDestination = {
+          connectionId,
+          teamId: destinationTeamId,
+          channelId,
+          channel: channelName(channel),
+          team: teamName(snapshot.teams.find((item) => item.id === destinationTeamId)),
+        };
         pendingRun.current.unknownDestination = destination;
         unfinishedRunAttempt = pendingRun.current;
         setUnknownRunDestination(destination);
@@ -265,7 +264,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     }
     pendingRun.current = null;
     unfinishedRunAttempt = null;
-    setUnknownRunDestination('');
+    setUnknownRunDestination(null);
     setInspectedPriorRun(false);
     resetSurfaces('run-started');
     if (clearBody) setBody('');

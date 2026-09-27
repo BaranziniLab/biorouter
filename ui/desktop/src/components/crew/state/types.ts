@@ -248,6 +248,21 @@ export interface StartOwnedRunInput {
   clearBody?: boolean;
 }
 
+/**
+ * Where a task start whose outcome is unknown went (RENDERER-5): the IDs, for comparing, and the
+ * names as the rest of Crew shows them, for saying. The names are sanitized display names and are
+ * never an ID: an object missing from the view reads "Untitled team" or `#untitled`.
+ */
+export interface UnknownRunDestination {
+  connectionId: string;
+  teamId: string;
+  channelId: string;
+  /** `#slug`, as `channelName` shows it. */
+  channel: string;
+  /** The team's name, as `teamName` shows it. */
+  team: string;
+}
+
 export interface CrewController {
   // Connections
   connections: CrewConnection[];
@@ -419,7 +434,8 @@ export interface CrewController {
   // Owned runs (module-scoped unknown-outcome lock, C10)
   /** Records its error under `pane:agent`; resolves true only when the start was accepted. */
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
-  unknownRunDestination: string | null;
+  /** Where a start whose outcome is unknown went, while that lock holds; else null. */
+  unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;
   setInspectedPriorRun(value: boolean): void;
   /** POST cancel, then refresh. Records its error under `global`; never throws. */

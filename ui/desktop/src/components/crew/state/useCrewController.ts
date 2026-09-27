@@ -694,8 +694,6 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connectionId,
     teamId,
     channelId,
-    connection,
-    team,
     channel,
     snapshot,
     observedPrivacy,
@@ -881,7 +879,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     clearBodyIfEquals: draft.clearBodyIfEquals,
 
     startOwnedRun: runStart.startOwnedRun,
-    unknownRunDestination: runStart.unknownRunDestination || null,
+    unknownRunDestination: runStart.unknownRunDestination,
     inspectedPriorRun: runStart.inspectedPriorRun,
     setInspectedPriorRun: runStart.setInspectedPriorRun,
     cancelRun,
