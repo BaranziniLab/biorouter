@@ -25,8 +25,8 @@ compliance boundary is on [the compliance page](compliance.md).
 | Executable | `claude` | `codex` |
 | Config key naming the executable | `CLAUDE_CODE_COMMAND` | `CODEX_COMMAND` |
 | Surface driven | `claude -p` (headless) | `codex app-server` (JSON-RPC over stdio) |
-| Default model | `claude-fable-5-1` | `gpt-6-astra` |
-| Advertised models | `claude-fable-5-1`, `claude-opus-5`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000) — all accept images | `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5` (1,050,000 each), `gpt-5.3-codex-spark` (400,000, **text only** — no images) |
+| Default model | `claude-opus-5-5` | `gpt-6-astra` |
+| Advertised models | `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000). All accept images. | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (258,400 each, the window Codex gives a ChatGPT sign-in). All accept images. |
 | Unlisted models | Accepted — a user may type an alias such as `sonnet` by hand | Accepted |
 | Vendor documentation | [Claude Code headless mode](https://code.claude.com/docs/en/headless) | [Codex CLI](https://developers.openai.com/codex/cli) |
 | Privacy tier | `Public`, not `runs_locally` | `Public`, not `runs_locally` |
@@ -54,27 +54,56 @@ not on this page.
 
 ## Which models you can pick depends on the CLI version
 
-Both catalogues track the vendor's current lineup, and the newest model in each needs a recent CLI.
+Both catalogues track the vendor's current lineup, and the newest models in each need a recent CLI.
 The floors are the vendor's, not BioRouter's:
 
 | Model | Minimum CLI | What an older CLI says |
 | --- | --- | --- |
-| `claude-fable-5-1` | `claude` **2.1.251** | `400 Claude Code 2.1.235 does not support this model; version 2.1.251 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.` |
-| `gpt-6-astra` | `codex-cli` **0.153.4** | `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.` |
+| `claude-opus-5-5` (the default) | `claude` **2.1.280** | The same `claude_code_version_too_old` 400 as the next row, naming 2.1.280. Not captured for this model, because the CLI used for the 2026-09-25 probe was signed out; the shape is Anthropic's documented one. |
+| `claude-fable-5-1` | `claude` **2.1.257** | `400 Claude Code 2.1.235 does not support this model; version 2.1.251 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.` |
+| `claude-sonnet-5` | `claude` **2.1.197** | The same 400. |
+| `gpt-6-astra` (the default) | `codex-cli` **0.153.4** | `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.` |
+| `gpt-6-sol`, `gpt-6-luna` | `codex-cli` **0.156.1** | `The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.` BioRouter adds the floor and the update command, because this sentence does not say that an update fixes it. |
 
 BioRouter surfaces that text **verbatim** and stops the turn. It does not quietly retry on an older
-model: the vendor's message already names the fix, and answering from a model you did not pick is
-worse than an error you can act on. Every other advertised model in both catalogues answered on the
-older CLI as well as the newer one, so the gate is per-model, not per-catalogue.
+model: the vendor's message names the fix, and answering from a model you did not pick is worse
+than an error you can act on. The one case where the vendor's message does *not* name the fix is
+the last row. On codex-cli 0.153.4, Sol and Luna are refused with the same sentence Codex uses for
+a model your account can never select, so on that refusal, and only for those models, BioRouter
+appends a sentence naming the 0.156.1 floor, `codex --version` to check it, and
+`npm install -g @openai/codex@latest` to update. Any other failure on those models reads exactly as
+the vendor wrote it.
 
-> **Note.** The two sources for the Claude floor disagree by four patch versions — Anthropic's
-> model-configuration page says v2.1.255, the API's own 400 says 2.1.251. BioRouter documents the
-> number the API returns, because that is the one a user will read on their own screen.
+The gate is per model, not per catalogue. On the older CLIs probed, every model without a row here
+still works. `codex-cli` 0.153.4 still lists the three 5.6 models, which answered on it on
+2026-09-08. `claude` 2.1.266 still recognizes Fable 5.1, Sonnet 5 and Haiku 4.5 by name, though not
+Opus 5.5.
 
-Aliases still work, and on a CLI new enough for Fable 5.1 they land where you would expect: `fable`
-and `best` both resolve to `claude-fable-5-1`, `opus` to `claude-opus-5`, `sonnet` to
-`claude-sonnet-5`, and `haiku` to `claude-haiku-4-5-20251001`. Advertising concrete ids rather than
-these aliases is the context-window decision above, not a claim that aliases are unsupported.
+> **Note.** The sources for the Fable 5.1 floor have moved. The API's own 400 on 2.1.235 named
+> 2.1.251 (measured 2026-09-08). Anthropic's model-configuration page said v2.1.255 on that date and
+> says v2.1.257 now, which is also the version whose changelog added the model. The table gives the
+> highest of the three, because a CLI at that version is certain to work.
+
+Aliases still work. On `claude` 2.1.280 they land where you would expect: `opus` resolves to
+`claude-opus-5-5`, `fable` and `best` to `claude-fable-5-1`, `sonnet` to `claude-sonnet-5`, and
+`haiku` to `claude-haiku-4-5`. From 2.1.219 through 2.1.279, `opus` means `claude-opus-5`. Advertising
+concrete ids rather than these aliases is the context-window decision above, not a claim that
+aliases are unsupported.
+
+> **Why `claude-opus-5` left the picker.** Anthropic now lists Opus 5 as a legacy model,
+> superseded at the same tier by Opus 5.5, which also costs less ($4 input and $20 output per million
+> tokens, against $5 and $25). It is still served until at least 2027-07-24, so typing
+> `claude-opus-5` by hand keeps working. That is also the way to get an Opus model on a CLI older
+> than 2.1.280, which cannot run Opus 5.5.
+>
+> **Why the default moved from Fable 5.1 to Opus 5.5.** Opus 5.5 is what Claude Code itself defaults
+> to for Pro, Max, Team, Enterprise and API accounts from 2.1.280. Anthropic's model-configuration
+> page also says Fable is not the default on any plan, and that Fable usage can bill to usage credits
+> rather than to plan limits, depending on plan and seat tier. Under `claude -p`, which is how
+> BioRouter drives the CLI, Claude Code never asks before billing those credits. A provider built to
+> use your subscription should not start every new chat on the model most likely to spend credits
+> you did not choose to spend. Fable 5.1 is still the most capable model in the catalogue, and it is
+> still in the picker.
 
 > **Why `claude-sonnet-4-6` is no longer advertised.** A bare `claude-sonnet-4-6` gets a
 > **200,000**-token window on a Max plan, not the 1M this table used to claim: the million needs
@@ -89,19 +118,46 @@ these aliases is the context-window decision above, not a claim that aliases are
 > `claude-fable-5` left for a duller reason — Fable 5.1 supersedes it at the same tier — and it
 > too remains usable by hand.
 
-On the Codex side, `gpt-5.4` and `gpt-5.4-mini` were **retired by OpenAI on 2026-08-31**, with
-`gpt-5.6-terra` and `gpt-5.6-luna` named as their replacements. They no longer appear in
-`model/list`, and a turn on one fails with
-`400 The '<id>' model is not supported when using Codex with a ChatGPT account`. `gpt-5.3-codex`
-was rejected by that same 400 and is listed as deprecated by OpenAI; the surviving member of that
-family is the text-only research preview `gpt-5.3-codex-spark`, which is a **different id** rather
-than a rename BioRouter could have followed.
+On the Codex side, four ids have left the picker:
 
-Measured on 2026-09-08 against `claude` 2.1.235 and 2.1.260, and `codex-cli` 0.147.0 and 0.153.4,
-by running every id through the CLI itself. The Claude windows are what the CLI reports back in
-`modelUsage`; Codex's `model/list` carries no context-window field on either version, so those
-windows come from OpenAI's published model pages and only the *existence* and effort ladder of each
-id is a local measurement.
+- `gpt-5.3-codex-spark` is **retired**. OpenAI announced it on 2026-09-11, and by 2026-09-25 it was
+  gone from `model/list` on `codex-cli` 0.153.4 and 0.157.0, even with hidden models included. A
+  turn on it fails with `400 The 'gpt-5.3-codex-spark' model is not supported when using Codex with
+  a ChatGPT account`. It was the only text-only model either catalogue carried, so every advertised
+  model now accepts images.
+- `gpt-5.5` **retires from Codex on 2026-10-14**. Both CLIs still list it as a legacy model, with
+  the notice "GPT-5.5 retires on October 14, 2026. Switch to GPT-5.6 Sol to continue working in
+  Codex." Until then it still runs if you type it. Only Codex is retiring it; the OpenAI API
+  provider is unaffected.
+- `gpt-5.4` and `gpt-5.4-mini` have **left Codex**, with `gpt-5.6-terra` and `gpt-5.6-luna` as the
+  Codex replacements. A turn on one fails with the same
+  `not supported when using Codex with a ChatGPT account` 400. Only Codex dropped them; both are
+  still active on the OpenAI API provider.
+
+There is no `gpt-6-terra`. The GPT-6 family is Astra, Sol and Luna; Terra exists only as
+`gpt-5.6-terra`, and Codex refuses `gpt-6-terra` with the same 400. Two further models run but are
+hidden from the ordinary `model/list`: `codex-auto-review`, which Codex uses to review approvals, and
+`gpt-reserve`, the metered fallback for a plan whose allowance has run out. Neither is advertised.
+
+The current catalogues were measured on 2026-09-25. For Codex, `codex-cli` 0.153.4 and 0.157.0
+(the npm `latest` that day) were each asked for `model/list`, and each GPT-6 id was run once with
+`codex exec`. For Claude Code, the CLI on this machine was signed out, so no turn could run; what
+was measured is whether `claude` 2.1.266, 2.1.275 and 2.1.280 recognize each id, together with the
+model catalogue each binary carries. The earlier round, on 2026-09-08 against `claude` 2.1.235 and
+2.1.260, did run a turn per id, and the Sonnet 5, Haiku 4.5 and Fable 5.1 windows are the ones the
+CLI reported back in `modelUsage` then. The Opus 5.5 window comes from the CLI's own catalogue and
+Anthropic's model page, and should be re-read from `modelUsage` on a signed-in 2.1.280.
+
+`model/list` carries no context-window field. OpenAI's published model pages give 1,050,000 tokens
+for every model in the catalogue, but that is the OpenAI API's window. The Codex backend's own model
+catalogue, which `codex-cli` 0.157.0 caches locally, gives a ChatGPT sign-in a smaller working
+window: 272,000 tokens (with a maximum of 872,000), of which it uses 95%, or 258,400. Codex reports
+that same 258,400 on every turn. Since 2026-09-25 the Codex provider advertises 258,400 for every
+model, and compaction sizes against it, so the context gauge and the point where BioRouter compacts
+match what Codex really uses. Before that both read 1,050,000, and a chat past about 258,000 tokens
+sent Codex prompts larger than its window while the gauge read a quarter full. A limit you set with
+`BIOROUTER_CONTEXT_LIMIT` still wins. The shared `MODEL_CONTEXT_WINDOWS` registry keeps 1,050,000,
+because the OpenAI API provider does serve the full window.
 
 ## Where each credential lives, and who reads it
 
@@ -382,34 +438,35 @@ Both CLIs expose a taller reasoning scale than the API providers do —
 | --- | --- | --- |
 | `quick` | `low` | `low` |
 | *default* | `high` | `high` |
-| `deep` | `max` | the model's top rung — `max` on `gpt-6-astra` and the 5.6 family, `xhigh` elsewhere |
+| `deep` | `max` | the model's top rung: `max` on every advertised model, `xhigh` on anything else |
 
 Three things follow that are worth knowing before you rely on it.
 
 **The default is no longer silent.** Everywhere else in BioRouter the default effort means "say
 nothing and let the model choose". Here it emits `high`, so every turn — including from someone who
-has never typed `/effort` — asks for more reasoning than the vendor default (`medium` on
-`gpt-6-astra`, `low` on `gpt-5.6-sol`). That is deliberate: a coding agent is what you reach for
+has never typed `/effort` — asks for more reasoning than the vendor default (`medium` on the three
+GPT-6 models, `low` on `gpt-5.6-sol`). That is deliberate: a coding agent is what you reach for
 when the work is hard. It also costs thinking tokens against your own subscription on every turn,
 which is the trade being made.
 
-**Codex's ladder is per-model, so `deep` lands differently.** Four of the six advertised Codex
-models advertise `max` and get it — `gpt-6-astra`, `gpt-5.6-sol`, `gpt-5.6-terra` and
-`gpt-5.6-luna`; `gpt-5.5` and `gpt-5.3-codex-spark` stop at `xhigh`. Sending an unadvertised rung
-is *accepted* rather than rejected — measured on `gpt-5.5`, which has no `max` — so the failure
-mode is a silent clamp or a silent ignore, and there is no way to tell which from the outside. An
-ignore would fall back to the model's default and quietly deliver *less* than `deep` asked for, so
-BioRouter sends only what the model advertises.
+**Codex's ladder is per-model, so `deep` lands differently.** All six advertised Codex models
+advertise `max` and get it (measured with `model/list` on `codex-cli` 0.157.0, 2026-09-25). A model
+BioRouter does not advertise gets `xhigh`, the highest rung every listed model has. The listed model
+that stops there is `gpt-5.5`, which you can still type until Codex retires it on 2026-10-14.
+Sending an unadvertised rung is *accepted* rather than rejected (measured on `gpt-5.5`, which has no
+`max`), so the failure mode is a silent clamp or a silent ignore, and there is no way to tell which
+from the outside. An ignore would fall back to the model's default and quietly deliver *less* than
+`deep` asked for, so BioRouter sends only what the model advertises.
 
-That rule is also why the hidden review model `codex-auto-review` is not on the `max` list. It
-answers a turn on every CLI version probed, but it appears in no `model/list` response, so its
-ladder cannot be read — and a rung nobody can verify is exactly the silent-clamp case above.
+The hidden review model `codex-auto-review` is treated like any other unlisted id and gets `xhigh`.
+It answers a turn on every CLI version probed, and asking `model/list` to include hidden models now
+shows it with a `max` rung, but no picker offers it and a hidden surface can change without notice.
 
-**`deep` is not `ultra`.** Three Codex models advertise an `ultra` rung above `max` — `gpt-6-astra`,
-`gpt-5.6-sol` and `gpt-5.6-terra` — and Claude Code has no such level at all (passing one makes the
-CLI warn and fall back to its default, which is a silent downgrade rather than an error). `deep` is
-the strongest *ordinary* tier; the delegating mode
-above it is not something `/effort deep` should buy without being asked for.
+**`deep` is not `ultra`.** Four Codex models advertise an `ultra` rung above `max`: `gpt-6-astra`,
+`gpt-6-sol`, `gpt-5.6-sol` and `gpt-5.6-terra`. Claude Code has no such level at all (passing one
+makes the CLI warn and fall back to its default, which is a silent downgrade rather than an error).
+`deep` is the strongest *ordinary* tier; the delegating mode above it is not something
+`/effort deep` should buy without being asked for.
 
 ## Using one for a single task, without rebinding the chat
 

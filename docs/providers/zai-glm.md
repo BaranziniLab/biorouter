@@ -1,7 +1,7 @@
 # z.ai (GLM) provider
 
 > **What this is.** The integration reference for the z.ai provider (`zai`), which serves the GLM model family: how it is wired into the provider registry, every surface where a user can select it, and the checks that verify it works.
-> **Status:** Current — written 2026-06-19 against v1.85.3 alongside the commit that added the provider; the module, model list, and environment-variable contract described here still match the shipped code.
+> **Status:** Current. Written 2026-06-19 against v1.85.3 alongside the commit that added the provider. The default model and model list were re-derived from `zai.rs` on 2026-09-25.
 > **Audience:** maintainers working on LLM providers.
 
 z.ai — the international platform of **Zhipu AI** — is integrated as a first-class, OpenAI-compatible provider serving the **GLM** models. Because every model-selection surface in BioRouter is registry-driven, the provider appears automatically once it is registered and configured; only display polish needed explicit wiring. This document records that wiring so a maintainer can re-derive it, and gives the commands to re-verify the integration.
@@ -14,16 +14,18 @@ Run the verification section after changing `crates/biorouter/src/providers/zai.
 
 - **Native provider module:** `crates/biorouter/src/providers/zai.rs`
   (`ZaiProvider`), registered in `crates/biorouter/src/providers/factory.rs`.
-  Provider id `zai`, display name **z.ai**, default model `glm-4.6`.
+  Provider id `zai`, display name **z.ai**, default model `glm-5.3`.
 - **Auth / endpoint:** Bearer `ZAI_API_KEY`. Default host is the
   OpenAI-compatible base `https://api.z.ai/api/paas/v4`; override with
   `ZAI_HOST`. (z.ai also exposes an Anthropic-compatible surface at
   `https://api.z.ai/api/anthropic` used by Claude Code — not used here; we
   integrate the OpenAI surface, matching the other ~16 OpenAI-compatible
   providers.)
-- **Models:** `glm-4.7`, `glm-4.6`, `glm-4.5`, `glm-4.5-air`, `glm-5.2`,
-  `glm-5.1`, `glm-5`, `glm-5-turbo`. Context limits registered in
-  `crates/biorouter/src/model.rs` (`MODEL_SPECIFIC_LIMITS`, `glm-*` patterns).
+- **Models:** `glm-5.3`, `glm-5.3-flash`, `glm-5.3-flashx`, `glm-5.2`, `glm-5.1`,
+  `glm-5`, `glm-5-turbo`, `glm-4.7`, `glm-4.6`, `glm-4.5`, `glm-4.5-air`. Context limits
+  are registered per id in `MODEL_CONTEXT_WINDOWS` in
+  `crates/biorouter/src/model.rs`, with the `glm-*` patterns in
+  `MODEL_SPECIFIC_LIMITS` as the fallback for other ids.
 
 > **Why.** The model list, default model, and default host above are copied from
 > code and will drift as the catalog changes. The authoritative values are the
@@ -31,10 +33,9 @@ Run the verification section after changing `crates/biorouter/src/providers/zai.
 > `crates/biorouter/src/providers/zai.rs` — re-derive from there rather than
 > trusting this page.
 
-> **Note.** The default model `glm-4.6` is older than the `glm-5.x` entries in
-> the catalog above. This document does not record why the default was not
-> advanced; check with the provider's maintainer before assuming it is a
-> deliberate pin or an oversight.
+> **Note.** GLM-5.3, GLM-5.3 Flash and GLM-5.3 FlashX reason on every request:
+> z.ai rejects a request that disables thinking. Of the listed models, only
+> `glm-5.3-flash` and its faster variant `glm-5.3-flashx` accept image input.
 
 ## Where GLM appears
 
@@ -49,7 +50,7 @@ backend-driven and required no z.ai-specific code.
 | Main model selector (bottom menu / `SwitchModelModal`) | Once configured, `glm-*` models appear in the picker | Backend-driven |
 | Leader/Worker mode | GLM models selectable for both lead and worker | `LeadWorkerSettings.tsx`, backend-driven |
 | Knowledge base ingestion/digestion | GLM models selectable for ingest | `IngestModelPicker.tsx`, backend-driven |
-| CLI (`biorouter configure`) | Appears in the provider list under Commercial; usable via `biorouter run --provider zai --model glm-4.6` | `configure_provider_dialog()` reads the registry |
+| CLI (`biorouter configure`) | Appears in the provider list under Commercial; usable via `biorouter run --provider zai --model glm-5.3` | `configure_provider_dialog()` reads the registry |
 | TUI | Stores the selected provider/model string; no separate list | — |
 | Daemon/server | `GET /config/providers`, `GET /config/providers/zai/models`, and `/config/detect-provider` all surface it | Registry-driven; no allowlist |
 
@@ -93,8 +94,9 @@ Exercises factory → `ZaiProvider::from_env` → live HTTP.
 
 ### Context window
 
-`glm-4.6` and `glm-4.7` report ~200k tokens for token accounting, from
-`MODEL_SPECIFIC_LIMITS` in `crates/biorouter/src/model.rs`.
+The default `glm-5.3` reports 1,048,576 tokens for token accounting, as do
+`glm-5.3-flash`, `glm-5.3-flashx` and `glm-5.2`; `glm-4.6` and `glm-4.7` report 200,000. The
+values come from `MODEL_CONTEXT_WINDOWS` in `crates/biorouter/src/model.rs`.
 
 ## Gotchas
 

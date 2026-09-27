@@ -94,7 +94,7 @@ biorouter models list openai
 biorouter models list ollama --format json
 
 # Set the default provider and model
-biorouter models set --provider openai --model gpt-5.5
+biorouter models set --provider openai --model gpt-6-sol
 ```
 
 ### version
@@ -686,7 +686,7 @@ biorouter run --workflow workflow.yaml --params environment=production --params 
 biorouter run --no-session -i instructions.txt
 
 # Run with a specified provider and model
-biorouter run --provider anthropic --model claude-4-sonnet -t "initial prompt"
+biorouter run --provider anthropic --model claude-sonnet-5 -t "initial prompt"
 
 # Run with limited turns before prompting user
 biorouter run --workflow workflow.yaml --max-turns 10

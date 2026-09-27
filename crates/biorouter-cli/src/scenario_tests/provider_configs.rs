@@ -64,6 +64,7 @@ static PROVIDER_CONFIGS: LazyLock<Vec<ProviderConfig>> = LazyLock::new(|| {
             skip_reason: Some("No valid keys around"),
         },
         ProviderConfig::simple("google", "gemini-2.5-flash"),
+        // Enterprise-only on Groq since 2026-08-16; kept because recordings/groq replays it.
         ProviderConfig::simple("groq", "llama-3.3-70b-versatile"),
         ProviderConfig::simple_skip(
             "openrouter",
@@ -90,8 +91,8 @@ static PROVIDER_CONFIGS: LazyLock<Vec<ProviderConfig>> = LazyLock::new(|| {
         ProviderConfig::simple_skip("snowflake", "claude-3-7-sonnet", Some("No keys available")),
         ProviderConfig::simple_skip("venice", "llama-3.3-70b", Some("No keys available")),
         ProviderConfig::simple_skip("xai", "grok-3", Some("No keys available")),
-        ProviderConfig::simple_skip("zai", "glm-4.6", Some("No keys available")),
-        ProviderConfig::simple_skip("xiaomi_mimo", "mimo-v2.5", Some("No keys available")),
+        ProviderConfig::simple_skip("zai", "glm-5.3", Some("No keys available")),
+        ProviderConfig::simple_skip("xiaomi_mimo", "mimo-v2.6-flash", Some("No keys available")),
     ]
 });
 

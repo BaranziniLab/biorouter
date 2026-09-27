@@ -15,17 +15,17 @@
 //! |---|---|---|
 //! | `Quick` | `low` | `low` |
 //! | `Normal` (and unset) | `high` | `high` |
-//! | `Deep` | `max` | the model's own top rung: `max` on Astra and 5.6, else `xhigh` |
+//! | `Deep` | `max` | the model's own top rung: `max` on the GPT-6 and 5.6 models, else `xhigh` |
 //!
 //! # Two consequences worth knowing before changing this
 //!
 //! **The default is no longer silent.** Elsewhere in Biorouter `Normal` means "say
 //! nothing and let the model decide". Here it emits `high`, so *every* turn from a
 //! user who never touched `/effort` asks for more reasoning than the vendor default
-//! (`model/list`'s own `defaultReasoningEffort`: `medium` on `gpt-6-astra`, `low`
-//! on `gpt-5.6-sol`). That is a deliberate product choice — a coding agent is
-//! reached for when the work is hard — and it costs thinking tokens against the
-//! user's own subscription on every turn.
+//! (`model/list`'s own `defaultReasoningEffort`: `medium` on the three GPT-6
+//! models, `low` on `gpt-5.6-sol`). That is a deliberate product choice — a
+//! coding agent is reached for when the work is hard — and it costs thinking
+//! tokens against the user's own subscription on every turn.
 //!
 //! **`Normal` never actually arrives.** `Agent::effort_stamped_provider` returns
 //! early when `effort.is_default()`, so the model config is not re-stamped and the
@@ -46,10 +46,12 @@ const CLAUDE_TOP: &str = "max";
 
 /// The rung `Deep` reaches on a Codex model whose ladder we cannot confirm.
 ///
-/// `xhigh` is the highest rung **every** model in the live catalogue advertises,
-/// which is what makes it the safe floor: `max` and `ultra` exist only on part of
-/// the 5.6 family and on Astra, and the two advertised models that stop here are
-/// `gpt-5.5` and `gpt-5.3-codex-spark`.
+/// `xhigh` is the highest rung **every** model in `model/list` advertises, which
+/// is what makes it the safe floor for a model this file has no row for. On
+/// 2026-09-25 (codex-cli 0.157.0) every model Biorouter advertises goes higher,
+/// to `max`; the one listed model that stops at `xhigh` is `gpt-5.5`, which
+/// Biorouter no longer advertises and Codex retires on 2026-10-14, but which a
+/// user can still type until then. An unlisted or hidden id lands here too.
 const CODEX_SAFE_TOP: &str = "xhigh";
 
 /// Codex models known to advertise `max`, from `model/list`'s
@@ -59,22 +61,29 @@ const CODEX_SAFE_TOP: &str = "xhigh";
 /// would otherwise pay on every turn, and being wrong in the safe direction costs
 /// one rung. Re-derive it with
 /// `codex app-server` → `model/list` → `supportedReasoningEfforts` when the
-/// catalogue moves. Measured against codex-cli 0.153.4 on 2026-09-08: Astra,
-/// Sol and Terra advertise `low, medium, high, xhigh, max, ultra`; Luna stops at
-/// `max`; `gpt-5.5` and `gpt-5.3-codex-spark` stop at `xhigh`.
+/// catalogue moves. Measured against codex-cli 0.157.0 on 2026-09-25 (0.153.4
+/// agrees for every model it lists): `gpt-6-astra`, `gpt-6-sol`, `gpt-5.6-sol`
+/// and `gpt-5.6-terra` advertise `low, medium, high, xhigh, max, ultra`;
+/// `gpt-6-luna` and `gpt-5.6-luna` stop at `max`; `gpt-5.5` stops at `xhigh`.
+/// `gpt-6-sol` and `gpt-6-luna` are listed only from codex-cli 0.156.1 (an
+/// older CLI refuses them outright), so 0.157.0 is the only reading of their
+/// ladder there is.
 ///
-/// ⚠ Deliberately **not** reaching for `ultra`, which three of these also
+/// ⚠ Deliberately **not** reaching for `ultra`, which four of these also
 /// advertise. `Deep` is the strongest ordinary tier; `ultra` is the delegating
 /// mode above it and is not what `/effort deep` should silently buy.
 ///
-/// ⚠ `codex-auto-review` used to sit here and has been removed. It is a hidden
-/// review model: `codex exec -m codex-auto-review` is accepted on both 0.147.0
-/// and 0.153.4, but it is absent from `model/list` on **both**, so its
-/// `supportedReasoningEfforts` cannot be read and the `max` claim was never
-/// evidence. Dropping it costs one rung on a model no picker offers — `Deep`
-/// now sends `xhigh`, which every Codex model accepts.
+/// ⚠ `codex-auto-review` used to sit here and was removed when its ladder could
+/// not be read: it is a hidden review model, absent from the plain `model/list`
+/// on 0.147.0 and 0.153.4. `model/list` with `includeHidden: true` now shows it
+/// topping out at `max` (0.153.4 and 0.157.0, 2026-09-25), so the claim would
+/// be evidence today. It stays off anyway, like every other hidden or unlisted
+/// id: no picker offers it, and a hidden surface can change with no notice, so
+/// `Deep` sends it `xhigh`, which every Codex model accepts.
 const CODEX_MODELS_WITH_MAX: &[&str] = &[
     "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -147,21 +156,26 @@ mod tests {
         assert_eq!(claude_effort(None), "high");
     }
 
-    /// Codex's ladder is per-model, and two of Biorouter's advertised models —
-    /// `gpt-5.5` and `gpt-5.3-codex-spark` — stop at `xhigh`. Sending `max` to
-    /// one of them is accepted but not observably applied, so `Deep` must not
+    /// Codex's ladder is per-model. `gpt-5.5` stops at `xhigh`: no longer in
+    /// Biorouter's picker, but still listed by `model/list` and still runnable
+    /// until Codex retires it on 2026-10-14, so a user can type it. Sending
+    /// `max` to it is accepted but not observably applied, so `Deep` must not
     /// reach for it.
+    ///
+    /// The taller half is every model the Codex provider advertises; the
+    /// provider's own test (`every_advertised_model_reaches_its_top_ordinary_rung`)
+    /// cross-checks that from the catalog side.
     #[test]
     fn codex_deep_never_exceeds_what_the_model_advertises() {
-        for advertised in ["gpt-5.5", "gpt-5.3-codex-spark"] {
-            assert_eq!(
-                codex_effort(Some(ReasoningEffort::Deep), advertised),
-                "xhigh",
-                "{advertised} does not advertise `max`"
-            );
-        }
+        assert_eq!(
+            codex_effort(Some(ReasoningEffort::Deep), "gpt-5.5"),
+            "xhigh",
+            "gpt-5.5 does not advertise `max`"
+        );
         for taller in [
             "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
@@ -177,16 +191,17 @@ mod tests {
     /// test walks the *advertised* catalog, and this model is advertised
     /// nowhere, so re-adding it to the const table would break nothing.
     ///
-    /// The reason it does not belong there: `codex exec -m codex-auto-review`
-    /// is accepted on both 0.147.0 and 0.153.4, but the id is absent from
-    /// `model/list` on **both**, so its `supportedReasoningEfforts` cannot be
-    /// read and the `max` it used to be given was never evidence.
+    /// The reason it stays off: it is a hidden model. The plain `model/list`
+    /// omits it on every CLI measured; `includeHidden: true` shows a `max` rung
+    /// (0.153.4 and 0.157.0, 2026-09-25), but a hidden surface can change with
+    /// no notice and no picker offers it, so it gets the floor every unlisted
+    /// id gets.
     #[test]
-    fn codex_auto_review_gets_the_safe_rung_because_no_model_list_declares_it() {
+    fn codex_auto_review_gets_the_safe_rung_because_it_is_hidden() {
         assert_eq!(
             codex_effort(Some(ReasoningEffort::Deep), "codex-auto-review"),
             "xhigh",
-            "absent from `model/list` on 0.147.0 and 0.153.4, so its ladder is unverifiable"
+            "hidden from the plain `model/list`, so it is treated like any unlisted id"
         );
     }
 
@@ -218,7 +233,15 @@ mod tests {
     /// someone editing a constant, not evidence that the ladder is right.
     #[test]
     fn deep_never_reaches_ultra() {
-        for model in ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"] {
+        // Every model `model/list` shows with an `ultra` rung, plus the
+        // short-ladder `gpt-5.5` for contrast.
+        for model in [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.5",
+        ] {
             assert_ne!(codex_effort(Some(ReasoningEffort::Deep), model), "ultra");
         }
         assert_ne!(claude_effort(Some(ReasoningEffort::Deep)), "ultra");

@@ -438,6 +438,35 @@ mod tests {
             Some("anthropic/claude-sonnet-5".to_string())
         );
 
+        // === September 2026 Claude models ===
+        // Anthropic spells minor versions with a dash; the catalog, like
+        // OpenRouter, with a dot. `claude-opus-5-5` must land on Opus 5.5's own
+        // record, never on Opus 5's (the prefix of its name).
+        assert_eq!(
+            map_to_canonical_model("anthropic", "claude-opus-5-5", r),
+            Some("anthropic/claude-opus-5.5".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("anthropic", "claude-fable-5-1", r),
+            Some("anthropic/claude-fable-5.1".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("anthropic", "claude-opus-5", r),
+            Some("anthropic/claude-opus-5".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("bedrock", "us.anthropic.claude-opus-5-5", r),
+            Some("anthropic/claude-opus-5.5".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("gcp_vertex_ai", "claude-fable-5-1", r),
+            Some("anthropic/claude-fable-5.1".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("openrouter", "anthropic/claude-opus-5.5", r),
+            Some("anthropic/claude-opus-5.5".to_string())
+        );
+
         // === Moonshot Kimi — the direct provider maps to the moonshotai canon ===
         assert_eq!(
             map_to_canonical_model("moonshot", "kimi-k2.5", r),
@@ -450,6 +479,10 @@ mod tests {
         assert_eq!(
             map_to_canonical_model("moonshot", "kimi-k2.7-code", r),
             Some("moonshotai/kimi-k2.7-code".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("moonshot", "kimi-k3", r),
+            Some("moonshotai/kimi-k3".to_string())
         );
 
         // === OpenAI GPT ===
@@ -482,6 +515,35 @@ mod tests {
             Some("openai/gpt-5.4-mini".to_string())
         );
 
+        // === GPT-6 and GPT-5.6 (OpenAI direct, and Azure's dated ids) ===
+        for model in ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+            assert_eq!(
+                map_to_canonical_model("openai", model, r),
+                Some(format!("openai/{model}"))
+            );
+        }
+        for model in ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            assert_eq!(
+                map_to_canonical_model("openai", model, r),
+                Some(format!("openai/{model}"))
+            );
+        }
+        assert_eq!(
+            map_to_canonical_model("azure_openai", "gpt-6-sol-2026-09-22", r),
+            Some("openai/gpt-6-sol".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("azure_openai", "gpt-6-astra-2026-09-03", r),
+            Some("openai/gpt-6-astra".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("azure", "gpt-5.6-luna-2026-07-09", r),
+            Some("openai/gpt-5.6-luna".to_string())
+        );
+        // There is no GPT-6 Terra (Terra exists only as gpt-5.6-terra), so a
+        // typed-in `gpt-6-terra` must not borrow another record.
+        assert_eq!(map_to_canonical_model("openai", "gpt-6-terra", r), None);
+
         // === OpenAI O-series ===
         assert_eq!(
             map_to_canonical_model("databricks", "biorouter-o1", r),
@@ -504,6 +566,21 @@ mod tests {
         assert_eq!(
             map_to_canonical_model("google", "gemini-3.5-flash", r),
             Some("google/gemini-3.5-flash".to_string())
+        );
+        for model in [
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+        ] {
+            assert_eq!(
+                map_to_canonical_model("google", model, r),
+                Some(format!("google/{model}"))
+            );
+        }
+        assert_eq!(
+            map_to_canonical_model("gcp_vertex_ai", "gemini-3.8-flash", r),
+            Some("google/gemini-3.8-flash".to_string())
         );
 
         // === Meta Llama ===
@@ -559,11 +636,27 @@ mod tests {
             map_to_canonical_model("xai", "grok-4.3", r),
             Some("x-ai/grok-4.3".to_string())
         );
+        for model in ["grok-4.7", "grok-4.6", "grok-4.5"] {
+            assert_eq!(
+                map_to_canonical_model("xai", model, r),
+                Some(format!("x-ai/{model}"))
+            );
+        }
 
         // === Provider aliases for newer standalone providers ===
         assert_eq!(
             map_to_canonical_model("zai", "glm-5.2", r),
             Some("z-ai/glm-5.2".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("zai", "glm-5.3", r),
+            Some("z-ai/glm-5.3".to_string())
+        );
+        // The version token `v4.1` sits mid-name, so the `-vN` suffix strip
+        // must leave it alone.
+        assert_eq!(
+            map_to_canonical_model("openrouter", "deepseek/deepseek-v4.1-flash", r),
+            Some("deepseek/deepseek-v4.1-flash".to_string())
         );
         assert_eq!(
             map_to_canonical_model("xiaomi_mimo", "mimo-v2.5-pro", r),

@@ -28,28 +28,43 @@ use serde_json::Value;
 // The wire format (OpenAI-compatible chat/completions + Bearer auth) follows
 // the same shape every other OpenAI-compatible provider here uses.
 pub const XIAOMI_MIMO_API_HOST: &str = "https://token-plan-sgp.xiaomimimo.com/v1";
-pub const XIAOMI_MIMO_DEFAULT_MODEL: &str = "mimo-v2.5";
+// MiMo V2.6 (2026-09-22) replaces V2.5 at the same prices: Xiaomi deprecated
+// mimo-v2.5 and mimo-v2.5-pro with a shutdown at 2026-10-21 10:00 Beijing
+// time and NO replacement routing — requests to either name fail after that
+// (platform.xiaomimimo.com, read 2026-09-24). The v2-pro / v2-omni names
+// expired on 2026-06-30. Flash is the default because it is the same-price
+// successor to the old default and is on the Token Plan the default host
+// serves ("V2.6 Flagship Model Access").
+pub const XIAOMI_MIMO_DEFAULT_MODEL: &str = "mimo-v2.6-flash";
+/// Default first: the desktop model switcher preselects entry 0.
 pub const XIAOMI_MIMO_KNOWN_MODELS: &[&str] = &[
-    // MiMo v2.5 family (~1M context)
-    "mimo-v2.5",
-    "mimo-v2.5-pro",
-    // MiMo v2 family (~256k context)
-    "mimo-v2-pro",
-    "mimo-v2-omni",
+    // MiMo V2.6 family: 1M context, text/image/video/audio input.
+    "mimo-v2.6-flash",
+    "mimo-v2.6-pro",
 ];
 
 pub const XIAOMI_MIMO_DOC_URL: &str = "https://github.com/XiaomiMiMo/MiMo";
 
-/// Whether a MiMo model accepts image input. Only the multimodal "omni" models
-/// do on the served endpoints; the text models 404 on images
-/// ("No endpoints found that support image input"). Override is intentional and
-/// conservative — an unknown/custom model name is treated as text-only so we
-/// never feed images to an endpoint that will reject them.
+/// MiMo chat models that accept image input, by exact id. Xiaomi lists the
+/// input modality of both V2.6 models as "Text, Image, Video, Audio"
+/// (platform.xiaomimimo.com, 2026-09-24).
+///
+/// An explicit list, not a name heuristic: the rule this replaced ("the name
+/// contains `omni`") was right for the V2 generation, where only mimo-v2-omni
+/// took images and the text models 404'd on them ("No endpoints found that
+/// support image input"), but it would have marked every V2.6 model text-only
+/// and stripped the images they accept.
+const XIAOMI_MIMO_VISION_MODELS: &[&str] = &["mimo-v2.6-flash", "mimo-v2.6-pro"];
+
+/// Whether a MiMo model accepts image input. Deliberately conservative: an
+/// unknown or custom model name is treated as text-only, so images are never
+/// fed to an endpoint that will reject them.
 pub fn model_supports_vision(name: &str) -> bool {
-    name.to_ascii_lowercase().contains("omni")
+    let name = name.to_ascii_lowercase();
+    XIAOMI_MIMO_VISION_MODELS.contains(&name.as_str())
 }
 
-const IMAGE_OMITTED_PLACEHOLDER: &str = "[image omitted: the active MiMo model does not accept image input. Describe what you need in text, or switch to a vision-capable model such as mimo-v2-omni.]";
+const IMAGE_OMITTED_PLACEHOLDER: &str = "[image omitted: the active MiMo model does not accept image input. Describe what you need in text, or switch to a vision-capable model such as mimo-v2.6-flash.]";
 
 /// Defensive: replace any image content with a text placeholder so a text-only
 /// model never *receives* image input — even if a tool (e.g. the developer
@@ -128,14 +143,14 @@ impl XiaomiMimoProvider {
 #[async_trait]
 impl Provider for XiaomiMimoProvider {
     fn metadata() -> ProviderMetadata {
-        // Only the multimodal "omni" MiMo models actually accept image input on
-        // the served endpoints. The text models (mimo-v2.5 / mimo-v2.5-pro /
-        // mimo-v2-pro) return `404: No endpoints found that support image input`
-        // when sent an image — so declaring them vision-capable made the harness
-        // and UI feed them screenshots (e.g. via the developer image_processor /
+        // Declare `.with_vision()` ONLY for models that really take images. A
+        // text-only MiMo model (the V2 generation's mimo-v2.5 / mimo-v2.5-pro /
+        // mimo-v2-pro) returns `404: No endpoints found that support image
+        // input` when sent one, so declaring it vision-capable made the harness
+        // and UI feed it screenshots (e.g. via the developer image_processor /
         // Biorouter Copilot screen_capture), which then 404'd and got the agent
-        // stuck. We therefore declare `.with_vision()` ONLY for vision-capable
-        // models (name contains "omni"); see `model_supports_vision`.
+        // stuck. Both listed V2.6 models take images; see
+        // `model_supports_vision`.
         let models = XIAOMI_MIMO_KNOWN_MODELS
             .iter()
             .map(|&name| {
@@ -252,12 +267,35 @@ mod tests {
 
     #[test]
     fn test_metadata_structure() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
         let metadata = XiaomiMimoProvider::metadata();
 
         assert_eq!(metadata.name, "xiaomi_mimo");
-        assert_eq!(metadata.default_model, "mimo-v2.5");
-        assert!(metadata.known_models.iter().any(|m| m.name == "mimo-v2.5"));
-        assert!(!metadata.known_models.is_empty());
+        assert_eq!(metadata.default_model, "mimo-v2.6-flash");
+        // The model switcher preselects entry 0, so it must be the default.
+        assert_eq!(metadata.known_models[0].name, metadata.default_model);
+        let names: Vec<&str> = metadata
+            .known_models
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(names, ["mimo-v2.6-flash", "mimo-v2.6-pro"]);
+        // Retired upstream: v2-pro / v2-omni expired 2026-06-30, and v2.5 /
+        // v2.5-pro shut down 2026-10-21 with no replacement routing.
+        for retired in ["mimo-v2-pro", "mimo-v2-omni", "mimo-v2.5", "mimo-v2.5-pro"] {
+            assert!(!names.contains(&retired), "{retired} must not be offered");
+        }
+        // Both are 1M-context, from their own registry entries rather than
+        // the older `mimo-v2` pattern's 256k.
+        for model in &metadata.known_models {
+            assert_eq!(model.context_limit, 1_048_576, "{}", model.name);
+        }
 
         assert_eq!(metadata.config_keys.len(), 2);
         assert_eq!(metadata.config_keys[0].name, "XIAOMI_MIMO_API_KEY");
@@ -265,25 +303,33 @@ mod tests {
     }
 
     #[test]
-    fn test_only_omni_models_declare_vision() {
-        // The text models must NOT advertise vision (they 404 on image input);
-        // only the multimodal "omni" model does.
-        assert!(model_supports_vision("mimo-v2-omni"));
+    fn vision_is_declared_per_model_id() {
+        // Both V2.6 models take images, and neither name contains "omni" —
+        // the heuristic this replaced would have stripped their images.
+        assert!(model_supports_vision("mimo-v2.6-flash"));
+        assert!(model_supports_vision("mimo-v2.6-pro"));
+        assert!(
+            model_supports_vision("MiMo-V2.6-Flash"),
+            "ids are case-folded"
+        );
+        // The V2 generation's text models 404 on image input.
         assert!(!model_supports_vision("mimo-v2.5"));
         assert!(!model_supports_vision("mimo-v2.5-pro"));
         assert!(!model_supports_vision("mimo-v2-pro"));
-        // an unknown/custom model is conservatively text-only
+        // An unknown or custom model is conservatively text-only — including
+        // one that merely looks multimodal.
         assert!(!model_supports_vision("some-custom-model"));
+        assert!(!model_supports_vision("some-omni-model"));
 
         let metadata = XiaomiMimoProvider::metadata();
         for m in &metadata.known_models {
-            let expected = m.name.contains("omni");
             assert_eq!(
                 m.supports_vision,
-                if expected { Some(true) } else { None },
+                model_supports_vision(&m.name).then_some(true),
                 "vision flag wrong for {}",
                 m.name
             );
+            assert_eq!(m.supports_vision, Some(true), "{} takes images", m.name);
         }
     }
 

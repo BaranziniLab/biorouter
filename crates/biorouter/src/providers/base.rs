@@ -95,19 +95,21 @@ impl ModelInfo {
         }
     }
 
-    /// Mark this model as supporting image inputs (multimodal vision).
     /// Mark the model as **known** not to take images.
     ///
     /// Distinct from leaving `supports_vision` as `None`, which says only that
     /// nobody has looked. A provider that can enumerate its catalog knows the
     /// answer and should say so: Codex's `model/list` reports `inputModalities`
-    /// per model, and `gpt-5.3-codex-spark` is `["text"]`. Recording that as
-    /// "unknown" throws away a fact the provider was told.
+    /// per model, and `gpt-5.3-codex-spark` reported `["text"]` until OpenAI
+    /// retired it in September 2026. No catalog carries a text-only model
+    /// today, but recording the next one as "unknown" would throw away a fact
+    /// the provider was told.
     pub fn without_vision(mut self) -> Self {
         self.supports_vision = Some(false);
         self
     }
 
+    /// Mark this model as supporting image inputs (multimodal vision).
     pub fn with_vision(mut self) -> Self {
         self.supports_vision = Some(true);
         if self.supported_input_mime_types.is_none() {
@@ -1891,12 +1893,8 @@ mod tests {
         use crate::providers::versa_azure::VersaAzureProvider;
         use crate::providers::versa_bedrock::VersaBedrockProvider;
         use crate::providers::xai::XaiProvider;
+        use crate::providers::xiaomi_mimo::XiaomiMimoProvider;
 
-        // Note: Xiaomi MiMo is intentionally NOT covered here — its catalog has no
-        // vision-capable model. Only "omni" MiMo models accept image input; the
-        // text models (mimo-v2.5 / -pro, mimo-v2-pro) return 404 for images
-        // (live-verified — see xiaomi_mimo.rs `model_supports_vision`), so none of
-        // the known_models declare supports_vision: true.
         let cases: Vec<(ProviderMetadata, &str, &str)> = vec![
             (
                 AnthropicProvider::metadata(),
@@ -1964,12 +1962,25 @@ mod tests {
                 "claude-sonnet-4-6",
                 "Tetrate Claude Sonnet 4.6",
             ),
+            // Copilot retired Claude Sonnet 4.5 and 4.6 on Sep 1, 2026.
             (
                 GithubCopilotProvider::metadata(),
-                "claude-sonnet-4.6",
-                "GitHub Copilot Claude Sonnet 4.6",
+                "claude-sonnet-5",
+                "GitHub Copilot Claude Sonnet 5",
             ),
             (XaiProvider::metadata(), "grok-4.3", "xAI Grok 4.3"),
+            // Both MiMo V2.6 models take images (the V2 generation's text
+            // models did not; see xiaomi_mimo.rs `model_supports_vision`).
+            (
+                XiaomiMimoProvider::metadata(),
+                "mimo-v2.6-flash",
+                "Xiaomi MiMo V2.6 Flash",
+            ),
+            (
+                XiaomiMimoProvider::metadata(),
+                "mimo-v2.6-pro",
+                "Xiaomi MiMo V2.6 Pro",
+            ),
         ];
 
         for (metadata, model_name, label) in cases {

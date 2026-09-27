@@ -19,45 +19,85 @@ use crate::providers::formats::openai::{create_request, get_usage};
 use crate::providers::formats::openrouter as openrouter_format;
 use rmcp::model::Tool;
 
-pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
+// Sonnet 5 is Anthropic's current Sonnet: GA on OpenRouter since Jun 30, 2026,
+// cheaper than Sonnet 4.6 ($2/$10 vs $3/$15 per MTok) with the same 1M/128K
+// limits. Sonnet 4.6 is still active and stays listed.
+pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
 pub const OPENROUTER_DEFAULT_FAST_MODEL: &str = "google/gemini-3.5-flash";
 pub const OPENROUTER_MODEL_PREFIX_ANTHROPIC: &str = "anthropic";
 
 // OpenRouter can run many models; this is a curated list of current,
 // tool-capable slugs verified against the live /api/v1/models catalog
-// (June 2026). x-ai/grok-code-fast-1 was removed from OpenRouter.
+// (Sep 25, 2026): every slug below lists `tools` in its supported_parameters
+// and none carries an expiration_date. x-ai/grok-code-fast-1 was removed from
+// OpenRouter. There is no gpt-6-terra; Terra exists only as gpt-5.6-terra.
 pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
+    "anthropic/claude-opus-5.5",
+    "anthropic/claude-fable-5.1",
     "anthropic/claude-opus-4.8",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-sonnet-4.6",
     "anthropic/claude-haiku-4.5",
+    "openai/gpt-6-astra",
+    "openai/gpt-6-sol",
+    "openai/gpt-6-luna",
+    "openai/gpt-5.6-terra",
     "google/gemini-3.1-pro-preview",
+    "google/gemini-3.8-flash",
     "google/gemini-3.5-flash",
+    "x-ai/grok-4.7",
     "x-ai/grok-4.3",
     "x-ai/grok-4.20",
     "x-ai/grok-build-0.1",
     "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4.1-flash",
     "deepseek/deepseek-v4-flash",
     "qwen/qwen3-coder-next",
+    "moonshotai/kimi-k3",
     "moonshotai/kimi-k2.7-code",
     "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.3",
     "z-ai/glm-5.2",
     "z-ai/glm-5.1",
     "minimax/minimax-m3",
 ];
 pub const OPENROUTER_DOC_URL: &str = "https://openrouter.ai/models";
 
+/// xAI's chat models take png/jpeg only (docs.x.ai), so they get the narrower
+/// MIME list rather than `with_vision()`'s.
+fn openrouter_model_is_png_jpeg_only(normalized: &str) -> bool {
+    normalized.starts_with("x-ai/grok-4") || normalized == "x-ai/grok-build-0.1"
+}
+
+/// Image input per OpenRouter's `architecture.input_modalities` (Sep 25, 2026).
+/// Text-only slugs in the curated list: deepseek-v4-pro / -v4-flash,
+/// qwen3-coder-next and the z-ai GLM models (glm-5.3 included).
 fn openrouter_model_supports_vision(name: &str) -> bool {
+    const IMAGE_INPUT_PREFIXES: &[&str] = &[
+        "anthropic/claude-",
+        "google/gemini-",
+        "openai/gpt-6-",
+        "openai/gpt-5.6-",
+    ];
+    const IMAGE_INPUT_SLUGS: &[&str] = &[
+        "moonshotai/kimi-k3",
+        "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
+        "minimax/minimax-m3",
+        "deepseek/deepseek-v4.1-flash",
+    ];
     let normalized = name.to_ascii_lowercase();
-    normalized.starts_with("anthropic/claude-")
-        || normalized.starts_with("google/gemini-")
-        || normalized.starts_with("x-ai/grok-4")
+    openrouter_model_is_png_jpeg_only(&normalized)
+        || IMAGE_INPUT_PREFIXES
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
+        || IMAGE_INPUT_SLUGS.contains(&normalized.as_str())
 }
 
 fn openrouter_model_info(name: &str) -> ModelInfo {
     let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
     let normalized = name.to_ascii_lowercase();
-    if normalized.starts_with("x-ai/grok-4") {
+    if openrouter_model_is_png_jpeg_only(&normalized) {
         info.with_png_jpeg_image_inputs()
     } else if openrouter_model_supports_vision(name) {
         info.with_vision()
@@ -449,5 +489,72 @@ impl Provider for OpenRouterProvider {
             })?;
 
         stream_openai_compat(response, log)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn known(name: &str) -> ModelInfo {
+        OpenRouterProvider::metadata()
+            .known_models
+            .into_iter()
+            .find(|m| m.name == name)
+            .unwrap_or_else(|| panic!("{name} should be advertised"))
+    }
+
+    #[test]
+    fn default_is_claude_sonnet_5_and_advertised() {
+        assert_eq!(OPENROUTER_DEFAULT_MODEL, "anthropic/claude-sonnet-5");
+        assert!(OPENROUTER_KNOWN_MODELS.contains(&OPENROUTER_DEFAULT_MODEL));
+        assert!(OPENROUTER_KNOWN_MODELS.contains(&OPENROUTER_DEFAULT_FAST_MODEL));
+        assert_eq!(
+            OpenRouterProvider::metadata().default_model,
+            OPENROUTER_DEFAULT_MODEL
+        );
+    }
+
+    #[test]
+    fn image_input_follows_openrouters_input_modalities() {
+        for slug in [
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-fable-5.1",
+            "openai/gpt-6-astra",
+            "openai/gpt-6-sol",
+            "openai/gpt-6-luna",
+            "openai/gpt-5.6-terra",
+            "google/gemini-3.8-flash",
+            "moonshotai/kimi-k3",
+            "moonshotai/kimi-k2.6",
+            "moonshotai/kimi-k2.7-code",
+            "minimax/minimax-m3",
+            "deepseek/deepseek-v4.1-flash",
+        ] {
+            assert_eq!(known(slug).supports_vision, Some(true), "{slug}");
+        }
+        for slug in [
+            "z-ai/glm-5.3",
+            "z-ai/glm-5.2",
+            "deepseek/deepseek-v4-pro",
+            "deepseek/deepseek-v4-flash",
+            "qwen/qwen3-coder-next",
+        ] {
+            assert_eq!(known(slug).supports_vision, None, "{slug} is text-only");
+        }
+    }
+
+    #[test]
+    fn xai_slugs_are_limited_to_png_and_jpeg() {
+        let png_jpeg = Some(vec![
+            "image/png".to_string(),
+            "image/jpeg".to_string(),
+            "image/jpg".to_string(),
+        ]);
+        for slug in ["x-ai/grok-4.7", "x-ai/grok-4.3", "x-ai/grok-build-0.1"] {
+            let info = known(slug);
+            assert_eq!(info.supports_vision, Some(true), "{slug}");
+            assert_eq!(info.supported_input_mime_types, png_jpeg, "{slug}");
+        }
     }
 }

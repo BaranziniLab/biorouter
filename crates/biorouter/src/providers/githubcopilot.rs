@@ -26,49 +26,119 @@ use crate::model::ModelConfig;
 use crate::providers::base::{ConfigKey, MessageStream};
 use rmcp::model::Tool;
 
-// Verified against docs.github.com supported-models (June 2026). GitHub made
-// gpt-5.3-codex the Copilot base/LTS model on Mar 18, 2026 and removed
-// gpt-4.1 (Jun 1, 2026), gpt-4o, gpt-5, gpt-5-codex, claude-sonnet-4, and
-// grok-code-fast-1 from Copilot Chat.
+// Verified against docs.github.com supported-models and the GitHub changelog
+// (Sep 25, 2026). Copilot API ids spell Claude versions with dots
+// (claude-opus-5.5), not Anthropic's dashes.
+//
+// Default: GitHub made gpt-5.3-codex the Copilot base/LTS model on Mar 18,
+// 2026 with support through Mar 18, 2027. It is the fallback when no other
+// model is enabled and is included on every paid plan.
+//
+// Removed Sep 2026 (retired, or removal already scheduled):
+// - claude-sonnet-4.5, claude-sonnet-4.6: retired Sep 1, 2026 (Sonnet 4.6
+//   survives only on annual Pro/Pro+ plans); GitHub suggests Claude Sonnet 5.
+// - gemini-2.5-pro: retired Jul 31, 2026.
+// - gemini-3.5-flash: removal from every Copilot experience scheduled for
+//   Oct 2, 2026; GitHub suggests Gemini 3.8 Flash.
+// - gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5-mini: removal scheduled for Oct 19,
+//   2026; GitHub suggests GPT-5.6 Sol (GPT-5.6 Luna for the two minis).
+// Earlier: gpt-4.1 (Jun 1, 2026), gpt-4o, gpt-5, gpt-5-codex,
+// claude-sonnet-4 and grok-code-fast-1 left Copilot Chat. There is no
+// gpt-6-terra; Terra exists only as gpt-5.6-terra.
+//
+// Plan gating is GitHub's, not ours: Opus 4.8/5.5, Fable 5.1, GPT-6 Astra/Sol
+// and GPT-5.6 Sol are not included on Copilot Pro, and Fable and Kimi K3 are
+// off by default for Business/Enterprise, so `fetch_supported_models` is what
+// a given account can really use.
+//
+// Kimi K3 (GA on Copilot 2026-08-06, GitHub changelog and the copilot-cli
+// changelog; the supported-models page names it the replacement for Kimi K2.7
+// Code, which leaves Copilot on 2026-10-02) is listed from 2026-09-25. It
+// rejects any non-default temperature, which
+// `formats::openai::model_rejects_sampling_params` drops for the bare id.
+//
+// Not listed, each deliberately: grok-4.6 (superseded by 4.7 at the same
+// price and window; its Copilot vision support rests on models.dev alone),
+// claude-opus-5 and claude-fable-5 (superseded by 5.5 and 5.1 at the same
+// price and window; the dotted Opus 5 id has no primary source), and
+// mai-code-1.1-flash (medium confidence, no registry window). Each can still
+// be typed through "Enter a model not listed".
 pub const GITHUB_COPILOT_DEFAULT_MODEL: &str = "gpt-5.3-codex";
 pub const GITHUB_COPILOT_KNOWN_MODELS: &[&str] = &[
     "gpt-5.3-codex",
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5-mini",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "claude-opus-5.5",
+    "claude-fable-5.1",
     "claude-opus-4.8",
-    "claude-sonnet-4.6",
-    "claude-sonnet-4.5",
+    "claude-sonnet-5",
     "claude-haiku-4.5",
-    "gemini-3.5-flash",
-    "gemini-2.5-pro",
+    "gemini-3.8-flash",
+    "grok-4.7",
+    "kimi-k3",
 ];
 
+/// Model-id prefixes that stream. Claude has never been on this list: it stays
+/// on the non-streaming path, which is where `promote_tool_choice` repairs
+/// Copilot putting a Claude tool call in a non-zero choice.
 pub const GITHUB_COPILOT_STREAM_MODELS: &[&str] = &[
     "gpt-5.3-codex",
+    "gpt-6-astra",
+    "gpt-6-sol",
+    "gpt-6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gemini-3.8-flash",
+    "grok-4.7",
+    "kimi-k3",
+    // No longer advertised, but Copilot still serves them until their removal
+    // date (gemini-3.5-flash Oct 2, 2026; the GPT-5.x ids Oct 19, 2026), so a
+    // chat already bound to one keeps streaming until then. "gpt-5.4" also
+    // matches gpt-5.4-mini. Drop these once the dates pass.
     "gpt-5.5",
     "gpt-5.4",
-    "gpt-5.4-mini",
     "gpt-5-mini",
     "gemini-3.5-flash",
-    "gemini-2.5-pro",
 ];
 
 const GITHUB_COPILOT_DOC_URL: &str =
-    "https://docs.github.com/en/copilot/using-github-copilot/ai-models";
+    "https://docs.github.com/en/copilot/reference/ai-models/supported-models";
 const GITHUB_COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const GITHUB_COPILOT_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_COPILOT_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_COPILOT_API_KEY_URL: &str = "https://api.github.com/copilot_internal/v2/token";
 
+fn github_copilot_model_streams(name: &str) -> bool {
+    GITHUB_COPILOT_STREAM_MODELS
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// Codex ids are left without image input, as they always have been here
+/// (base.rs `text_only_provider_does_not_claim_vision` pins gpt-5.3-codex).
 fn github_copilot_model_supports_vision(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
     (normalized.starts_with("claude-")
         || normalized.starts_with("gemini-")
+        || normalized.starts_with("gpt-6")
         || normalized.starts_with("gpt-5")
-        || normalized.starts_with("gpt-4.1"))
+        || normalized.starts_with("gpt-4.1")
+        || normalized.starts_with("grok-4")
+        // Kimi K3 takes text and images (platform.kimi.ai; moonshot.json).
+        || normalized.starts_with("kimi-k3"))
         && !normalized.contains("codex")
+}
+
+/// xAI's chat models take png/jpeg only (docs.x.ai), so Grok gets the narrower
+/// MIME list rather than `with_vision()`'s gif/webp, as it does on the xAI and
+/// OpenRouter providers.
+fn github_copilot_model_is_png_jpeg_only(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("grok-")
 }
 
 #[derive(Debug, Deserialize)]
@@ -394,10 +464,12 @@ impl Provider for GithubCopilotProvider {
             .iter()
             .map(|&name| {
                 let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
-                if github_copilot_model_supports_vision(name) {
-                    info.with_vision()
-                } else {
+                if !github_copilot_model_supports_vision(name) {
                     info
+                } else if github_copilot_model_is_png_jpeg_only(name) {
+                    info.with_png_jpeg_image_inputs()
+                } else {
+                    info.with_vision()
                 }
             })
             .collect();
@@ -428,9 +500,7 @@ impl Provider for GithubCopilotProvider {
     }
 
     fn supports_streaming(&self) -> bool {
-        GITHUB_COPILOT_STREAM_MODELS
-            .iter()
-            .any(|prefix| self.model.model_name.starts_with(prefix))
+        github_copilot_model_streams(&self.model.model_name)
     }
 
     #[tracing::instrument(
@@ -617,8 +687,98 @@ fn promote_tool_choice(response: Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::promote_tool_choice;
+    use super::{
+        github_copilot_model_streams, promote_tool_choice, GithubCopilotProvider,
+        GITHUB_COPILOT_DEFAULT_MODEL, GITHUB_COPILOT_KNOWN_MODELS,
+    };
+    use crate::providers::base::Provider;
     use serde_json::json;
+
+    #[test]
+    fn default_is_the_lts_codex_model_and_advertised() {
+        assert_eq!(GITHUB_COPILOT_DEFAULT_MODEL, "gpt-5.3-codex");
+        assert!(GITHUB_COPILOT_KNOWN_MODELS.contains(&GITHUB_COPILOT_DEFAULT_MODEL));
+    }
+
+    #[test]
+    fn retired_and_scheduled_for_removal_models_are_not_advertised() {
+        for removed in [
+            "claude-sonnet-4.5",
+            "claude-sonnet-4.6",
+            "gemini-2.5-pro",
+            "gemini-3.5-flash",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5-mini",
+        ] {
+            assert!(
+                !GITHUB_COPILOT_KNOWN_MODELS.contains(&removed),
+                "{removed} should no longer be advertised"
+            );
+        }
+    }
+
+    #[test]
+    fn new_models_are_advertised_with_vision() {
+        let metadata = GithubCopilotProvider::metadata();
+        for id in [
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "claude-opus-5.5",
+            "claude-sonnet-5",
+            "claude-fable-5.1",
+            "gemini-3.8-flash",
+            "grok-4.7",
+            "kimi-k3",
+        ] {
+            let info = metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == id)
+                .unwrap_or_else(|| panic!("{id} should be advertised"));
+            assert_eq!(info.supports_vision, Some(true), "{id} accepts images");
+        }
+    }
+
+    /// Grok is png/jpeg only (docs.x.ai); the other vision models keep the
+    /// wider `with_vision()` list, gif and webp included.
+    #[test]
+    fn grok_is_limited_to_png_and_jpeg() {
+        let metadata = GithubCopilotProvider::metadata();
+        let mime_types = |id: &str| {
+            metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == id)
+                .unwrap_or_else(|| panic!("{id} should be advertised"))
+                .supported_input_mime_types
+                .clone()
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            mime_types("grok-4.7"),
+            vec!["image/png", "image/jpeg", "image/jpg"]
+        );
+        assert!(mime_types("gemini-3.8-flash").contains(&"image/webp".to_string()));
+    }
+
+    /// Every non-Claude model streams; Claude stays on the non-streaming path,
+    /// where `promote_tool_choice` repairs a tool call in a later choice.
+    #[test]
+    fn every_advertised_non_claude_model_streams() {
+        for id in GITHUB_COPILOT_KNOWN_MODELS {
+            assert_eq!(
+                github_copilot_model_streams(id),
+                !id.starts_with("claude-"),
+                "{id}"
+            );
+        }
+    }
 
     #[test]
     fn promotes_choice_with_tool_call() {

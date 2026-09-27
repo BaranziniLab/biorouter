@@ -2,7 +2,7 @@ use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
 use crate::providers::errors::ProviderError;
-use crate::providers::formats::audience;
+use crate::providers::formats::{anthropic, audience};
 use crate::providers::utils::{
     convert_image, detect_image_path, is_valid_function_name, load_image_file, safely_parse_json,
     sanitize_function_name, ImageFormat,
@@ -1019,6 +1019,19 @@ where
 /// Keep this separate from endpoint routing: GPT-4.1/4o support tools but are
 /// non-reasoning models, while some reasoning models need the Responses API to
 /// combine reasoning controls with function tools.
+///
+/// Every model this answers `true` for is shaped as a reasoning model. The Chat
+/// Completions builder ([`create_request`]) sends no `temperature`, uses
+/// `max_completion_tokens` rather than `max_tokens`, and a `developer` system
+/// role. The Responses builder (`openai_responses::create_responses_request`)
+/// drops `temperature`; it sends `max_output_tokens` and a `system` input item
+/// for every model.
+///
+/// GPT-6 (Astra GA 2026-09-03, Sol and Luna GA 2026-09-22) is a reasoning
+/// family: OpenAI's model pages list `reasoning.effort`, and the family rejects
+/// `temperature`/`top_p` whenever the effort is not `none`. Astra accepts no
+/// `none` at all; BioRouter never sends it (Quick/Deep map to low/high), so the
+/// one prefix covers all three.
 pub(crate) fn model_supports_reasoning_effort(model_name: &str) -> bool {
     let model_name = model_name.to_ascii_lowercase();
     model_name.starts_with("o1")
@@ -1026,6 +1039,7 @@ pub(crate) fn model_supports_reasoning_effort(model_name: &str) -> bool {
         || model_name.starts_with("o3")
         || model_name.starts_with("o4")
         || model_name.starts_with("gpt-5")
+        || model_name.starts_with("gpt-6")
 }
 
 /// Return an effort accepted by the selected model.
@@ -1062,6 +1076,15 @@ pub(crate) fn model_reasoning_effort(
 /// `o4-mini` supports Chat Completions in isolation, but OpenAI rejects the
 /// function-tools + `reasoning_effort` combination there. Responses supports
 /// that combination and is also the preferred endpoint for reasoning models.
+///
+/// GPT-6 is in the same position, and says so on every one of its model pages
+/// (developers.openai.com/api/docs/models/gpt-6-sol, read 2026-09-25): "Use the
+/// Responses API for built-in tools and function calling. Chat Completions
+/// supports function calling only with reasoning_effort set to none." BioRouter
+/// sends tools on nearly every turn and never sends `none`, so on Chat
+/// Completions every tool-bearing GPT-6 turn would be refused.
+///
+/// Both the OpenAI and the Azure OpenAI provider route by this one predicate.
 pub(crate) fn model_uses_responses_api(model_name: &str) -> bool {
     let model_name = model_name.to_ascii_lowercase();
     model_name.starts_with("gpt-5-codex")
@@ -1070,8 +1093,42 @@ pub(crate) fn model_uses_responses_api(model_name: &str) -> bool {
         || model_name.starts_with("gpt-5.4")
         || model_name.starts_with("gpt-5.5")
         || model_name.starts_with("gpt-5.6")
+        || model_name.starts_with("gpt-6")
         || model_name.starts_with("o3-pro")
         || model_name.starts_with("o4-mini")
+}
+
+/// Models that answer any non-default `temperature`, `top_p` or `top_k` with
+/// a 400, in every spelling an OpenAI-compatible gateway gives them (GitHub
+/// Copilot, Tetrate, OpenRouter, LiteLLM, a custom provider, Moonshot itself).
+///
+/// - Claude Opus 4.7 and later — Opus 4.7/4.8, Opus 5/5.5, Sonnet 5,
+///   Fable 5/5.1, Mythos 5 (Anthropic's model-deprecations page). The set is
+///   the Claude API builder's adaptive-only gate,
+///   [`anthropic::uses_adaptive_thinking`], asked rather than re-spelled, so
+///   Copilot's `claude-opus-4.8`, Tetrate's `claude-opus-5-5`, OpenRouter's
+///   `anthropic/claude-opus-5.5` and Bedrock's `us.anthropic.claude-…` all
+///   match. The id must also name Claude: a gateway serves many vendors, and
+///   `opus-5` / `sonnet-5` are Anthropic's family names, not anyone else's.
+/// - Kimi K3, whose `temperature` (1.0) and `top_p` (0.95) are fixed and which
+///   Moonshot's docs say to omit — bare, or behind a vendor prefix
+///   (`moonshotai/kimi-k3`, `databricks-kimi-k3`). `kimi-k3` followed by
+///   another digit is a different model and does not match.
+///
+/// This matters because Quick effort fills `temperature: 0.0` when nothing is
+/// pinned (`agents/effort.rs`), so without it every Quick turn on these models
+/// would be refused. A pinned `BIOROUTER_TEMPERATURE` is dropped for them too;
+/// the model would refuse it just the same.
+pub(crate) fn model_rejects_sampling_params(model_name: &str) -> bool {
+    let lower = model_name.to_ascii_lowercase();
+    if lower.contains("claude") && anthropic::uses_adaptive_thinking(&lower) {
+        return true;
+    }
+    // Whatever follows each `kimi-k3` must not continue its version number.
+    lower
+        .split("kimi-k3")
+        .skip(1)
+        .any(|rest| !rest.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 pub fn create_request(
@@ -1151,8 +1208,10 @@ pub fn create_request(
         payload["tools"] = json!(tools_spec);
     }
 
-    // o1, o3 models currently don't support temperature
-    if !is_ox_model {
+    // Reasoning models take no temperature, and neither do the models that
+    // refuse every non-default sampling parameter. `top_p` and `top_k` are
+    // never sent from here at all.
+    if !is_ox_model && !model_rejects_sampling_params(&model_config.model_name) {
         if let Some(temp) = model_config.temperature {
             payload["temperature"] = json!(temp);
         }
@@ -2382,6 +2441,205 @@ data: [DONE]
             .unwrap()
             .get("reasoning_effort")
             .is_none());
+        Ok(())
+    }
+
+    /// The three GPT-6 ids, bare and in the dated spelling Azure deploys them
+    /// under. There is no `gpt-6-terra`: Terra exists only as `gpt-5.6-terra`.
+    const GPT_6_IDS: &[&str] = &[
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-6-astra",
+        "gpt-6-sol-2026-09-22",
+        "gpt-6-luna-2026-09-22",
+        "gpt-6-astra-2026-09-03",
+    ];
+
+    #[test]
+    fn gpt_6_is_a_reasoning_model_routed_to_the_responses_api() {
+        for id in GPT_6_IDS {
+            assert!(
+                model_supports_reasoning_effort(id),
+                "{id} is a reasoning model"
+            );
+            assert!(
+                model_uses_responses_api(id),
+                "{id} calls tools only through /v1/responses"
+            );
+            // Quick/Deep map to low/high, both of which every GPT-6 tier
+            // accepts. Astra rejects `none`, which BioRouter never sends.
+            assert_eq!(model_reasoning_effort(id, "low"), Some("low"), "{id}");
+            assert_eq!(model_reasoning_effort(id, "high"), Some("high"), "{id}");
+        }
+        // A provider-prefixed id (OpenRouter's `openai/...`, Databricks'
+        // `databricks-...`) belongs to a provider that speaks Chat Completions,
+        // so the bare-id prefix must not reroute it.
+        assert!(!model_uses_responses_api("openai/gpt-6-sol"));
+        assert!(!model_uses_responses_api("databricks-gpt-6-sol"));
+    }
+
+    /// Chat Completions is still reachable with a GPT-6 id through providers
+    /// that always speak it (LiteLLM, GitHub Copilot, Tetrate, or a
+    /// provider-prefixed id such as OpenRouter's `openai/gpt-6-sol`), and there
+    /// it must be shaped as the reasoning model it is: GPT-6 refuses
+    /// `temperature` whenever the effort is not `none`, and refuses
+    /// `max_tokens` outright. The OpenAI provider itself (and a declarative
+    /// provider built on it) never gets here for a bare GPT-6 id: it routes on
+    /// the model name to the hard-coded `v1/responses`, and `OPENAI_BASE_PATH`
+    /// is not consulted. (This comment said a custom `OPENAI_BASE_PATH` reached
+    /// Chat Completions until 2026-09-25; it never did.)
+    #[test]
+    fn gpt_6_chat_completions_request_is_shaped_as_a_reasoning_model() -> anyhow::Result<()> {
+        for id in ["gpt-6-sol", "gpt-6-astra-2026-09-03"] {
+            let model_config = ModelConfig::new_or_fail(id)
+                .with_temperature(Some(0.2))
+                .with_max_tokens(Some(1024));
+            let request = create_request(
+                &model_config,
+                "system",
+                &[],
+                &[],
+                &ImageFormat::OpenAi,
+                false,
+            )?;
+            let obj = request.as_object().unwrap();
+            assert_eq!(obj["model"], json!(id), "the id is sent as given");
+            assert_eq!(obj["messages"][0]["role"], json!("developer"), "{id}");
+            assert_eq!(obj["max_completion_tokens"], json!(1024), "{id}");
+            assert!(obj.get("max_tokens").is_none(), "{id}");
+            assert!(obj.get("temperature").is_none(), "{id}");
+            assert!(obj.get("top_p").is_none(), "{id}");
+            assert_eq!(obj["reasoning_effort"], json!("medium"), "{id}");
+        }
+        Ok(())
+    }
+
+    /// Claude Opus 4.7 and later and Kimi K3 as the OpenAI-compatible gateways
+    /// spell them: Copilot (dotted), Tetrate and Anthropic (dashed), OpenRouter
+    /// (`anthropic/`, `moonshotai/`), Bedrock-style prefixes, Moonshot direct.
+    const REJECTS_SAMPLING_IDS: &[&str] = &[
+        "claude-opus-5.5",
+        "claude-fable-5.1",
+        "claude-opus-4.8",
+        "claude-sonnet-5",
+        "claude-opus-5-5",
+        "claude-fable-5-1",
+        "claude-opus-4-7",
+        "claude-mythos-5",
+        "anthropic/claude-opus-5.5",
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-sonnet-5",
+        "Anthropic/Claude-Fable-5.1",
+        "us.anthropic.claude-opus-5-5",
+        "anthropic.claude-sonnet-5",
+        "kimi-k3",
+        "moonshotai/kimi-k3",
+        "databricks-kimi-k3",
+    ];
+
+    /// Models that still take a sampling temperature, including the Claude
+    /// generation just before the cut-off and the Kimi models before K3.
+    const KEEPS_SAMPLING_IDS: &[&str] = &[
+        "claude-sonnet-4-6",
+        "claude-sonnet-4.6",
+        "claude-haiku-4.5",
+        "claude-haiku-4-5",
+        "claude-opus-4-6",
+        "claude-opus-4-5-20251101",
+        "anthropic/claude-sonnet-4.6",
+        "us.anthropic.claude-sonnet-4-6",
+        "gpt-4.1",
+        "gpt-4o",
+        "kimi-k2.7-code",
+        "moonshotai/kimi-k2.6",
+        "kimi-k30",
+    ];
+
+    #[test]
+    fn sampling_param_gate_matches_every_gateway_spelling() {
+        for id in REJECTS_SAMPLING_IDS {
+            assert!(model_rejects_sampling_params(id), "{id} rejects sampling");
+        }
+        for id in KEEPS_SAMPLING_IDS {
+            assert!(!model_rejects_sampling_params(id), "{id} takes sampling");
+        }
+    }
+
+    /// Quick effort fills `temperature: 0.0` when nothing is pinned. A model
+    /// that refuses non-default sampling must never see it, nor a pinned one.
+    #[test]
+    fn quick_effort_sends_no_temperature_to_models_that_reject_sampling() -> anyhow::Result<()> {
+        for id in REJECTS_SAMPLING_IDS {
+            let quick = ReasoningEffort::Quick
+                .apply_to_model(ModelConfig::new_or_fail(id).with_temperature(None));
+            assert_eq!(quick.temperature, Some(0.0), "{id}: Quick fills 0.0");
+            let pinned = ModelConfig::new_or_fail(id).with_temperature(Some(0.7));
+            for config in [quick, pinned] {
+                let request =
+                    create_request(&config, "system", &[], &[], &ImageFormat::OpenAi, false)?;
+                let obj = request.as_object().unwrap();
+                for key in ["temperature", "top_p", "top_k"] {
+                    assert!(obj.get(key).is_none(), "{id}: {key} in {request}");
+                }
+                assert_eq!(obj["model"], json!(id), "the id is sent as given");
+                assert!(obj.get("reasoning_effort").is_none(), "{id}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn models_that_take_sampling_still_get_a_configured_temperature() -> anyhow::Result<()> {
+        for id in KEEPS_SAMPLING_IDS {
+            let config = ModelConfig::new_or_fail(id).with_temperature(Some(0.7));
+            let request = create_request(&config, "system", &[], &[], &ImageFormat::OpenAi, false)?;
+            let temperature = request["temperature"]
+                .as_f64()
+                .unwrap_or_else(|| panic!("{id}: temperature sent"));
+            assert!((temperature - 0.7).abs() < 1e-6, "{id}");
+        }
+        // Quick's 0.0 still reaches a model that accepts it.
+        let quick = ReasoningEffort::Quick
+            .apply_to_model(ModelConfig::new_or_fail("claude-sonnet-4-6").with_temperature(None));
+        let request = create_request(&quick, "system", &[], &[], &ImageFormat::OpenAi, false)?;
+        assert_eq!(request["temperature"], json!(0.0));
+        Ok(())
+    }
+
+    /// The Chat Completions builder never replays a thinking block, so a
+    /// preserved-thinking Claude model reached through a gateway can never be
+    /// sent a signature bound to an earlier prefix (see
+    /// `formats::anthropic::uses_preserved_thinking`). Pinned so a future
+    /// replay path has to decide about those models deliberately.
+    #[test]
+    fn gateway_requests_never_replay_thinking_signatures() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("first question"),
+            Message::assistant()
+                .with_thinking("earlier reasoning", "SIG-bound-to-an-old-prefix")
+                .with_text("first answer"),
+            Message::user().with_text("second question"),
+        ];
+        for id in [
+            "claude-opus-5.5",
+            "claude-fable-5-1",
+            "anthropic/claude-opus-5.5",
+        ] {
+            assert!(anthropic::uses_preserved_thinking(id), "{id}");
+            let config = ModelConfig::new_or_fail(id);
+            let request = create_request(
+                &config,
+                "system",
+                &messages,
+                &[],
+                &ImageFormat::OpenAi,
+                false,
+            )?;
+            let body = request.to_string();
+            assert!(!body.contains("SIG-bound-to-an-old-prefix"), "{id}: {body}");
+            assert!(!body.contains("earlier reasoning"), "{id}: {body}");
+            assert!(body.contains("first answer"), "{id}: {body}");
+        }
         Ok(())
     }
 

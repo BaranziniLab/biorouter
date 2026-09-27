@@ -43,7 +43,7 @@ pub struct ModelSelection {
     /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
+    /// Model name (e.g. "mimo-v2.6-flash", "claude-opus-4-8").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Provider-agnostic generation settings (temperature, reasoning effort, …).
