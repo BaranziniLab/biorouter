@@ -671,7 +671,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         CrewCommand::Enroll(command) => enrollment(api, command).await?,
         CrewCommand::Members(MembersArgs { command: None }) => {
             let snapshot = api.snapshot().await?;
-            let people = snapshot_field(&snapshot, "principals")?;
+            let people = with_roles(snapshot_field(&snapshot, "principals")?, &snapshot);
             api.show_with(people, Directory::from_snapshot(&snapshot))
         }
         CrewCommand::Members(MembersArgs {
@@ -1004,6 +1004,54 @@ impl Api {
         let mut targets = self.resolve(&[(kind, text)]).await?;
         targets.pop().context("A name was left unresolved")
     }
+}
+
+/// Each person in `people` with the two facts the text list shows beside them (CLI-15):
+/// `is_you` and `is_host`, from the snapshot's actor and host.
+fn with_roles(mut people: Value, snapshot: &Value) -> Value {
+    let actor = snapshot["actor"]["id"].as_str();
+    let host = snapshot["workspace"]["host_principal_id"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            // An older broker names only the host's UID; one active principal holds it.
+            let uid = snapshot["workspace"]["host_uid"].as_u64()?;
+            snapshot["principals"]
+                .as_array()?
+                .iter()
+                .find(|person| {
+                    person["uid"].as_u64() == Some(uid) && person["active"].as_bool() != Some(false)
+                })
+                .and_then(|person| person["id"].as_str())
+                .map(str::to_owned)
+        });
+    if let Some(people) = people.as_array_mut() {
+        for person in people.iter_mut().filter(|person| person.is_object()) {
+            let id = person["id"].as_str().map(str::to_owned);
+            person["is_you"] = json!(id.is_some() && id.as_deref() == actor);
+            person["is_host"] = json!(id.is_some() && id == host);
+        }
+    }
+    people
+}
+
+/// Each channel in `channels` with its `unread` count from the snapshot's separate map, which
+/// the text list shows (CLI-15). A snapshot without the map (an older broker) adds nothing.
+fn with_unread(mut channels: Value, snapshot: &Value) -> Value {
+    let Some(unread) = snapshot["unread"].as_object() else {
+        return channels;
+    };
+    if let Some(channels) = channels.as_array_mut() {
+        for channel in channels.iter_mut().filter(|channel| channel.is_object()) {
+            let count = channel["id"]
+                .as_str()
+                .and_then(|id| unread.get(id))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            channel["unread"] = json!(count);
+        }
+    }
+    channels
 }
 
 fn snapshot_field(snapshot: &Value, field: &str) -> Result<Value> {
@@ -2278,6 +2326,7 @@ async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
                     .filter(|item| item["team_id"].as_str() == Some(team.id.as_str()))
                     .collect::<Vec<_>>());
             }
+            let channels = with_unread(channels, &snapshot);
             api.show_with(channels, Directory::from_snapshot(&snapshot))
         }
         ChannelCommand::Create {
@@ -4958,6 +5007,52 @@ mod tests {
                 "{shown}"
             );
         }
+    }
+
+    /// CLI-15: JSON output of `members` and `channels list` carries what the text shows.
+    #[tokio::test]
+    async fn json_lists_carry_who_you_are_the_host_and_unread_counts() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                let mut snapshot = snapshot();
+                snapshot["unread"] = json!({METHODS: 3});
+                return Ok(snapshot);
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Json, handler);
+        let Reply::Show(people, _) = run(&api, CrewCommand::Members(MembersArgs { command: None }))
+            .await
+            .expect("members")
+        else {
+            panic!("members is a list")
+        };
+        assert_eq!(people[0]["id"], ALICE);
+        assert_eq!(
+            (people[0]["is_you"].clone(), people[0]["is_host"].clone()),
+            (json!(true), json!(true))
+        );
+        assert_eq!(
+            (people[1]["is_you"].clone(), people[1]["is_host"].clone()),
+            (json!(false), json!(false))
+        );
+
+        let Reply::Show(channels, _) = run(
+            &api,
+            CrewCommand::Channels(ChannelCommand::List { team: None }),
+        )
+        .await
+        .expect("channels") else {
+            panic!("channels is a list")
+        };
+        assert_eq!(channels[0]["id"], GENERAL);
+        assert_eq!(channels[0]["unread"], 0);
+        assert_eq!(channels[1]["unread"], 3);
+
+        // Without the map (an older broker), nothing is invented.
+        assert!(with_unread(json!([{"id": METHODS}]), &snapshot())[0]
+            .get("unread")
+            .is_none());
     }
 
     /// A broker that predates direct add says so, and points at the invitation that works.
