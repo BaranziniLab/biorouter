@@ -1784,11 +1784,14 @@ impl Provider for ClaudeCodeProvider {
     ///    detached `claude` would keep burning the user's own subscription quota
     ///    on an answer nobody will read. `AbortOnDrop` aborts the reader, which
     ///    drops the child, which `kill_on_drop(true)` then reaps.
-    /// 3. **The turn ceiling lives inside the stream.** The blocking path's
-    ///    ceiling wraps `child.wait()` in `run`, which this path never calls, and
-    ///    the agent loop's cancellation check only fires *between* stream items —
-    ///    so without a deadline here a wedged child would hang the session
-    ///    forever with user cancel as the only escape.
+    /// 3. **The optional turn ceiling lives inside the stream.** A turn has no
+    ///    wall clock by default: it ends when the child finishes or the user
+    ///    cancels. When an operator sets `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`
+    ///    (`coding_agent::turn_timeout`), the pump races that deadline itself,
+    ///    because the blocking path's ceiling wraps `child.wait()` in `run`,
+    ///    which this path never calls, and the agent loop's cancellation check
+    ///    only fires *between* stream items. Without it here the setting would
+    ///    silently not apply to a streamed turn.
     ///
     /// Text and thinking are decoded by the Anthropic decoder the API provider
     /// already uses; `claude_stream` diverts every `tool_use` event away from it

@@ -1935,8 +1935,11 @@ impl Provider for CodexProvider {
     /// the bridge URL is read **here**, at construction, because the task-local
     /// scope is gone once the stream is polled; the app server is owned by a task
     /// the stream aborts on drop, so a cancelled turn cannot leave one running
-    /// with the user's credential; and the turn ceiling lives inside the stream,
-    /// because the blocking path's timeout wraps a join this path never reaches.
+    /// with the user's credential; and the optional turn ceiling
+    /// (`BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`, unset by default, so a turn
+    /// normally ends only on completion or cancellation) is applied inside the
+    /// stream, because the blocking path's timeout wraps a join this path never
+    /// reaches.
     async fn stream(
         &self,
         system: &str,
