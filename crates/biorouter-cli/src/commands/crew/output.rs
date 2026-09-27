@@ -150,7 +150,20 @@ const STORAGE_FULL_PREFIXES: [&str; 4] = [
     "retained audit journal exceeds",
     "journal exceeds",
     "workspace logical state exceeds",
-    "workspace operation quota requires maintenance",
+    LEGACY_OPERATION_QUOTA,
+];
+/// The operation quota an older broker refused with once its table of remembered request IDs
+/// was full. The broker no longer writes it (that table now evicts), but a workspace still
+/// running an older broker does, so it is still said as [`STORAGE_FULL`].
+const LEGACY_OPERATION_QUOTA: &str = "workspace operation quota requires maintenance";
+/// The limits that stop ordinary changes a little short of full, so the host can still remove
+/// members and change policy (`commit`'s admin headroom in `broker.rs`).
+const FULL_BUT_HOST_CAN_ADMINISTER: &str = "This workspace is full. Reading still works, and the host can still remove members and change its privacy, but nothing else can change. Ask the host about starting a new workspace.";
+/// How the `quota_exceeded` texts that [`FULL_BUT_HOST_CAN_ADMINISTER`] rewords begin, in
+/// lowercase.
+const FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES: [&str; 2] = [
+    "workspace logical state is full",
+    "retained audit journal is nearly full",
 ];
 const IDENTITY_CONFLICT_UNNAMED: &str =
     "Another active member already has this username. Remove the old member first.";
@@ -330,6 +343,13 @@ pub fn broker_refusal_text(code: &str, message: &str) -> String {
         // is kept. The desktop matches the same texts (`STORAGE_FULL_TEXT` in `refusals.ts`).
         ("quota_exceeded", _) if STORAGE_FULL_PREFIXES.iter().any(|p| lower.starts_with(p)) => {
             STORAGE_FULL.to_owned()
+        }
+        ("quota_exceeded", _)
+            if FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES
+                .iter()
+                .any(|p| lower.starts_with(p)) =>
+        {
+            FULL_BUT_HOST_CAN_ADMINISTER.to_owned()
         }
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
         ("already_approved", Some(name)) => already_approved(name),
@@ -3298,10 +3318,26 @@ mod tests {
             "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported",
             STORAGE_FULL,
         ),
+        // An older broker's operation quota; the current one no longer writes it.
         (
             "quota_exceeded",
             "quota_exceeded: workspace operation quota requires maintenance",
             STORAGE_FULL,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported",
+            FULL_BUT_HOST_CAN_ADMINISTER,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: retained audit journal is nearly full; reads remain available and the host can still remove members and change policy; preserve the complete store and use a new workspace",
+            FULL_BUT_HOST_CAN_ADMINISTER,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.",
+            "You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.",
         ),
         (
             "identity_conflict",
@@ -3398,23 +3434,35 @@ mod tests {
     /// A reworded text that the broker never writes makes a check that can never fire, and a
     /// fixture row for it passes all the same. The storage-full rows are therefore read back
     /// against the broker's source, where each must appear exactly as written.
+    ///
+    /// The one exception is [`LEGACY_OPERATION_QUOTA`], which only an older broker writes and
+    /// which must therefore be absent from the current one.
     #[test]
     fn each_storage_full_fixture_is_the_brokers_literal_text() {
         const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
-        let storage_full: Vec<&str> = BROKER_REFUSALS
+        let legacy = format!("quota_exceeded: {LEGACY_OPERATION_QUOTA}");
+        let full: Vec<&str> = BROKER_REFUSALS
             .iter()
-            .filter(|(_, _, shown)| *shown == STORAGE_FULL)
+            .filter(|(_, _, shown)| {
+                *shown == STORAGE_FULL || *shown == FULL_BUT_HOST_CAN_ADMINISTER
+            })
             .map(|(_, broker, _)| *broker)
+            .filter(|broker| *broker != legacy)
             .collect();
-        // The journal limit at startup and in `commit`, the state-size limit and the operation
-        // quota.
-        assert_eq!(storage_full.len(), 4, "{storage_full:#?}");
-        for text in storage_full {
+        // The journal limit at startup and in `commit`, the state-size limit, and the two
+        // limits that leave the host room to administer.
+        assert_eq!(full.len(), 5, "{full:#?}");
+        for text in full {
             assert!(
                 BROKER.contains(&format!("\"{text}\"")),
                 "{text} is not a literal in broker.rs"
             );
         }
+        assert!(
+            !BROKER.contains(&format!("\"{legacy}\"")),
+            "the broker writes {legacy} again: it is no longer legacy"
+        );
+        assert_eq!(broker_refusal_text("quota_exceeded", &legacy), STORAGE_FULL);
     }
 
     #[test]
