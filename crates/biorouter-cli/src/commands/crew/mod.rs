@@ -2689,6 +2689,19 @@ async fn add_member(
         .split_first()
         .context("A name was left unresolved")?;
     let username = member_username(api, who).await?;
+    if team.is_none() {
+        // One channel.add_member per channel cannot be taken back, so what the person's own
+        // view already shows would be refused stops the command before the first one.
+        if let Ok(snapshot) = api.snapshot().await {
+            let problems = channel_add_problems(&snapshot, &who.id, &username, places);
+            if !problems.is_empty() {
+                return Err(restated(
+                    format!("{}\nNothing was added.", problems.join("\n")),
+                    Some("crew_request_refused"),
+                ));
+            }
+        }
+    }
     let (result, added) = match team {
         Some(_) => {
             let (team, channels) = places.split_first().context("A name was left unresolved")?;
@@ -2791,12 +2804,21 @@ async fn add_to_channels(
             .map_err(|error| direct_add_unsupported(error, username));
         let result = match answer {
             Ok(result) => result,
+            // Say what already changed. Whether a retry with --request-id is offered is the
+            // failure path's to decide: only for an outcome that is uncertain, never for a
+            // refusal, which the same command would meet again.
             Err(error) if !added.is_empty() => {
+                let done: Vec<String> = channels
+                    .iter()
+                    .filter(|target| added.contains(&target.id))
+                    .map(|target| api.label(target, "a channel", "channel ID"))
+                    .collect();
                 return Err(error.context(format!(
-                    "@{} was added to some of the channels before this one failed; run the same command again with --request-id {} to finish.",
+                    "Added @{} to {}, then stopped at {}",
                     safe_text(username),
-                    api.request_id
-                )))
+                    and_list(&done),
+                    api.label(channel, "the next channel", "channel ID")
+                )));
             }
             Err(error) => return Err(error),
         };
@@ -2806,6 +2828,65 @@ async fn add_to_channels(
         results.push(result);
     }
     Ok((Value::Array(results), added))
+}
+
+/// What the person's snapshot already shows the broker would refuse for `channel.add_member`
+/// (CLI-11): a channel they neither own nor host, an archived one, or one whose team the person
+/// being added is not in. A channel the snapshot does not list (a host adding to a channel they
+/// are not in) is left to the broker, which authorizes every add either way.
+fn channel_add_problems(
+    snapshot: &Value,
+    principal_id: &str,
+    username: &str,
+    channels: &[Target],
+) -> Vec<String> {
+    let actor = snapshot["actor"]["id"].as_str();
+    let host = matches!(
+        host_standing(snapshot),
+        HostStanding::HostElsewhereToo | HostStanding::OnlyHostComputer { .. }
+    );
+    let listed = |key: &str, id: &str| {
+        snapshot[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| item["id"].as_str() == Some(id))
+            .cloned()
+    };
+    let mut problems = Vec::new();
+    for target in channels {
+        let Some(channel) = listed("channels", &target.id) else {
+            continue;
+        };
+        let name = channel["name"]
+            .as_str()
+            .map_or_else(|| "this channel".to_owned(), channel_text);
+        if channel["archived"].as_bool() == Some(true) {
+            problems.push(format!("{name} is archived, so no one can be added to it."));
+        } else if !host
+            && channel["owner_id"].as_str().is_some()
+            && channel["owner_id"].as_str() != actor
+        {
+            problems.push(format!(
+                "You don't own {name}. Only its owner or the workspace host can add people to it."
+            ));
+        } else if let Some(members) = channel["team_id"]
+            .as_str()
+            .and_then(|team| listed("teams", team))
+            .and_then(|team| team["members"].as_array().cloned())
+        {
+            if !members
+                .iter()
+                .any(|member| member.as_str() == Some(principal_id))
+            {
+                problems.push(format!(
+                    "@{} isn't in the team {name} belongs to yet. Add them to the team first.",
+                    safe_text(username)
+                ));
+            }
+        }
+    }
+    problems
 }
 
 /// "Added. @bob can now see #general and #methods.", or that nothing needed adding.
@@ -4771,6 +4852,112 @@ mod tests {
             .expect_err("nowhere to add them");
         assert!(message(&error).starts_with("Choose where to add them"));
         assert!(fake.broker_calls().is_empty());
+    }
+
+    /// A snapshot in which Alice owns #methods but not #general, and Bob is in their team.
+    fn owned_snapshot() -> Value {
+        let mut snapshot = snapshot();
+        snapshot["workspace"]["host_principal_id"] = json!(CAROL);
+        snapshot["teams"][0]["members"] = json!([ALICE, BOB]);
+        snapshot["channels"][0]["owner_id"] = json!(CAROL);
+        snapshot["channels"][1]["owner_id"] = json!(ALICE);
+        snapshot
+    }
+
+    /// CLI-11: without --team each channel is its own add, so what the person's own view
+    /// shows would be refused stops the command before anything is added.
+    #[tokio::test]
+    async fn members_add_to_channels_checks_every_channel_before_adding_any() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("workspace.snapshot") => Ok(owned_snapshot()),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::Text, handler);
+        let error = run(
+            &api,
+            add_member_command(None, &["#methods", "analysis-lab/general"]),
+        )
+        .await
+        .expect_err("#general is not Alice's");
+        assert_eq!(
+            message(&error),
+            "You don't own #general. Only its owner or the workspace host can add people to it.\nNothing was added."
+        );
+        assert!(fake.broker_call("channel.add_member").is_none());
+        assert!(!failure(&error, OutputFormat::Text, "req-1", true)
+            .to_string()
+            .contains("--request-id"));
+
+        let mut snapshot = owned_snapshot();
+        snapshot["channels"][1]["archived"] = json!(true);
+        snapshot["teams"][0]["members"] = json!([ALICE]);
+        let targets = [Target {
+            id: METHODS.into(),
+            label: None,
+            username: None,
+        }];
+        assert_eq!(
+            channel_add_problems(&snapshot, BOB, "bob", &targets),
+            ["#methods is archived, so no one can be added to it."]
+        );
+        snapshot["channels"][1]["archived"] = json!(false);
+        assert_eq!(
+            channel_add_problems(&snapshot, BOB, "bob", &targets),
+            ["@bob isn't in the team #methods belongs to yet. Add them to the team first."]
+        );
+        // The host may add anyone to any channel, listed or not.
+        snapshot["workspace"]["host_principal_id"] = json!(ALICE);
+        snapshot["teams"][0]["members"] = json!([ALICE, BOB]);
+        snapshot["channels"][1]["owner_id"] = json!(CAROL);
+        assert!(channel_add_problems(&snapshot, BOB, "bob", &targets).is_empty());
+    }
+
+    /// CLI-11: a channel that fails after another was added says what changed; a refusal
+    /// offers no retry, and a lost answer does.
+    #[tokio::test]
+    async fn a_partial_add_says_what_changed_and_offers_a_retry_only_when_uncertain() {
+        for (refused, retry) in [(true, false), (false, true)] {
+            let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                let body_value = body.cloned().unwrap_or_default();
+                match body_value["method"].as_str() {
+                    Some("channel.add_member") if body_value["params"]["channel_id"] == GENERAL => {
+                        Err(if refused {
+                            refuse_broker(
+                                "forbidden",
+                                "forbidden: Only the channel's owner or the workspace host can add people to it.",
+                            )
+                        } else {
+                            anyhow!("connection reset")
+                        })
+                    }
+                    Some("channel.add_member") => Ok(json!({
+                        "channel_id": body_value["params"]["channel_id"],
+                        "principal_id": BOB,
+                        "already_member": false,
+                    })),
+                    _ => standard(method, path, body),
+                }
+            };
+            let (api, _) = api_with(OutputFormat::Text, handler);
+            let error = run(
+                &api,
+                add_member_command(None, &["#methods", "analysis-lab/general"]),
+            )
+            .await
+            .expect_err("the second channel failed");
+            let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+            assert!(
+                shown.starts_with("Added @bob to #methods, then stopped at #general: "),
+                "{shown}"
+            );
+            assert_eq!(
+                shown.contains("Retry safely with --request-id req-1"),
+                retry,
+                "{shown}"
+            );
+        }
     }
 
     /// A broker that predates direct add says so, and points at the invitation that works.
