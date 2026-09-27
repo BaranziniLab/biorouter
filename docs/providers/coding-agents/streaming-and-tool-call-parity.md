@@ -54,7 +54,9 @@ record rather than a description of the current runtime.
   with local model tools disabled and an isolated config home.
 - **In-stream turn ceilings** in both providers (`claude_code.rs:891-902`,
   `codex.rs:649-659`), because the blocking path's timeouts wrap awaits the streaming path
-  never reaches.
+  never reaches. The fixed ceiling they enforced then was removed on 2026-08-26. A turn now
+  has no time limit unless `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` sets one, and the
+  in-stream check applies that same optional limit.
 - **Lead/worker forwarding** (`lead_worker.rs:410-412`): the pair streams only when both
   halves do.
 - **No schema change was needed.** `metadata` was already a free-form object on

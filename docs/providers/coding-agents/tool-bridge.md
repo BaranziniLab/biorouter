@@ -555,10 +555,15 @@ So the deadline is set explicitly, per server, on both sides:
 | Claude Code | `timeout` | milliseconds | the `--mcp-config` server entry. Its own help calls it a "hard wall-clock limit per call; **progress notifications do not extend it**". |
 | Codex | `tool_timeout_sec` | seconds | the `thread/start` config override, beside the URL. `startup_timeout_sec` covers the initial connect. |
 
-`bridge::CHILD_TOOL_CALL_TIMEOUT` is what both are given: 31 minutes, just above
-the providers' own 30-minute turn ceiling so the enclosing turn always ends
-first. `bridge::child_tool_call_budget()` is the shorter ten-minute budget for
-parking tools that can return a partial result, such as approval and watch.
+`bridge::child_tool_call_timeout()` is what both are given: 31 minutes by
+default (`bridge::DEFAULT_CHILD_TOOL_CALL_TIMEOUT`), which an operator can change
+with `BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS`. It is a transport safeguard
+for one call, not a limit on the turn: coding-agent turns have no time limit by
+default (`BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` sets one). A configured value
+is clamped to at least the parking budget plus 30 seconds, so a typo cannot
+bring back the CLIs' short hidden deadline, and to at most 24 hours.
+`bridge::child_tool_call_budget()` is the shorter ten-minute budget for parking
+tools that can return a partial result, such as approval and watch.
 
 **A parking tool that waits must clamp to the budget.** `BridgeGrant::call` publishes it
 in a task-local for the duration of the call, readable as

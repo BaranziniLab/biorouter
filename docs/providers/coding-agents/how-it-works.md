@@ -30,7 +30,7 @@ compliance boundary is on [the compliance page](compliance.md).
 | Unlisted models | Accepted — a user may type an alias such as `sonnet` by hand | Accepted |
 | Vendor documentation | [Claude Code headless mode](https://code.claude.com/docs/en/headless) | [Codex CLI](https://developers.openai.com/codex/cli) |
 | Privacy tier | `Public`, not `runs_locally` | `Public`, not `runs_locally` |
-| Turn timeout | 30 minutes | 30 minutes |
+| Turn timeout | None by default. `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` sets one. | None by default. `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` sets one. |
 
 > **A note on the name.** The provider is shown as **Claude Code**, which is a deliberate deviation
 > from Anthropic's Agent SDK branding guidelines: those permit "Claude Agent", "Claude", or
@@ -324,8 +324,12 @@ the `bridged`/`child` distinction and the remaining gaps are on
 ⚠ **The bridge URL is read at construction time, never from a poll.** `Agent::reply` scopes the URL
 around the call that *builds* the stream, not around consuming it, so both `stream()`
 implementations read the URL and spawn the child before returning the stream. The same applies to
-the turn ceiling: the blocking path's 30-minute timeout wraps an await the streaming path never
-reaches, so each `stream()` carries its own deadline (`claude_code.rs:891-902`, `codex.rs:649-659`).
+the optional turn ceiling. A turn has none unless `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` is set
+to a positive number of seconds. Without it, a turn ends only when the child finishes or the user
+stops it. When the key is set, the blocking path's timeout wraps an await the streaming path never
+reaches, so each `stream()` applies the same limit inside itself. Every turn, blocking or streamed,
+reads it from one function, `coding_agent::turn_timeout()`, and a unit test fails if either
+provider brings back a fixed ceiling of its own.
 
 ## The conversation becomes one prompt
 

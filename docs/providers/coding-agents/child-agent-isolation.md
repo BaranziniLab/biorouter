@@ -261,9 +261,11 @@ Isolation is not a sandbox, and this section is the honest statement of the boun
   the daemon's secrets are stripped from the child's environment, so it cannot act as the daemon
   against its REST API. The inference-diverting credentials are stripped too — see
   [keeping the run on the subscription](how-it-works.md#keeping-the-run-on-the-subscription).
-- **It is reaped.** Each turn has a 30-minute ceiling, and the Codex app server is always shut down
-  after a turn whether the turn succeeded or not: a leaked `codex app-server` is a live process
-  holding the user's credential.
+- **It is reaped.** Stopping a turn drops the child process, which `kill_on_drop(true)` then kills,
+  and the Codex app server is always shut down after a turn whether the turn succeeded or not: a
+  leaked `codex app-server` is a live process holding the user's credential. A turn has no time
+  limit by default, because a turn supervising a delegated task can legitimately run long; an
+  operator who wants one sets `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`.
 
 This is the same posture BioRouter's own shell tooling takes, and it rests on the same premise
 recorded in [where the privacy campaign stands](../../security/privacy-tiers-campaign-state.md):

@@ -22,7 +22,7 @@ most of what follows, and it is a fixed cost that no amount of prompt tuning rem
 | A `codex exec` turn, wall clock | ~3.1 s |
 | A cold `claude` start, warm dev machine | ~3.5 s |
 | Probe ceiling, per CLI | 20 s |
-| Turn ceiling, both providers | 30 minutes |
+| Turn ceiling, both providers | None, unless `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` sets one |
 
 So roughly 3.5 of the 5.3 seconds is process start, not inference. Two consequences worth
 internalising:
@@ -33,10 +33,14 @@ internalising:
   slower than a cold start, and reporting "not installed" for a slow-but-working binary is worse than
   waiting.
 
-The turn ceiling exists because none of the earlier CLI-agent providers had one, and a wedged child
-held a session open indefinitely with no way to stop it. It is generous because a real coding-agent
-turn can legitimately run for minutes, and finite because "forever" is not a state a session should
-be able to reach.
+There is no turn ceiling by default. A coding-agent turn can legitimately run for a long time, for
+example while it supervises a delegated task, so a turn ends when the child finishes or when the
+user presses Stop, not when a clock runs out. A wedged child can always be stopped: Stop drops the
+turn, which drops the child process, and `kill_on_drop(true)` reaps it. An operator who also wants a
+hard resource ceiling sets `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` to a positive number of
+seconds, in `config.yaml` or the environment. A missing, invalid or zero value keeps the default.
+Both providers first shipped with a fixed ceiling; it was removed on 2026-08-26, in favour of this
+default.
 
 ## Prompt overhead: replacing the vendor prompt is the single biggest win
 
@@ -119,9 +123,11 @@ What streaming does **not** change:
 - **The process launch is still there.** Streaming removes the wait for the whole turn, not the
   ~3.5 s cold start before the first token can exist. Short turns still feel disproportionately
   slow.
-- **The turn ceiling moved rather than went away.** The blocking path's 30-minute timeout wraps an
-  await the streaming path never reaches, so each `stream()` carries the same ceiling inside itself
-  (`claude_code.rs:891-902`, `codex.rs:649-659`). A wedged child is still reaped at 30 minutes.
+- **The optional turn ceiling covers both paths.** When `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`
+  sets one, the blocking path's timeout wraps an await the streaming path never reaches, so each
+  `stream()` applies the same limit inside itself, read from the same
+  `coding_agent::turn_timeout()`. With the key unset, which is the default, neither path has one,
+  and Stop is how a wedged turn ends.
 - **A lead/worker pair streams only if both halves do.** `LeadWorkerProvider` forwards
   `supports_streaming()` as the **conjunction** of the two providers
   (`crates/biorouter/src/providers/lead_worker.rs:410-412`), so pairing a coding agent with a
@@ -153,7 +159,7 @@ separate from the hard-stop path and preserves the partial conversation.
 | The child says it cannot do something and asks you to approve it | Since #107 this should not happen: a bridged call routed to `needs_approval` [raises a real dialog and waits](tool-bridge.md#a-call-needing-approval-is-put-to-a-person-and-the-call-waits-107). If you see it anyway, the request expired, was dismissed, or the turn ended before you answered — the child's text says which, and a chat reply cannot approve it. Re-ask. |
 | The child has no tools at all | No bridge was established — typically a CLI process with no HTTP server. The turn still answers from the conversation; this is deliberate degradation, not an error. |
 | An empty response with nothing in the logs | For Codex, the app server exited before a terminal frame; the error carries a bounded tail of the child's stderr. For Claude Code, stderr is drained concurrently and included in the failure. |
-| A turn that stops at 30 minutes | The turn ceiling. The child is killed rather than left holding the session. |
+| A turn that fails saying it "did not finish within" a number of seconds | `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` is set and the turn ran past it. The child is killed rather than left holding the session. Raise the value, or remove the key so turns run until they finish. |
 | "The operation timed out" on a slow Biorouter tool | The child's own per-call MCP deadline abandoned the request. Biorouter configures it (`timeout` for Claude Code, `tool_timeout_sec` for Codex) — see [the child's per-call deadline](tool-bridge.md#the-childs-per-call-deadline-is-configured-not-discovered-110) — so seeing this means the field was not honoured. A tool that waits should have clamped to `bridge::bridged_call_budget()` and returned a partial result instead. |
 | A watch that reports a shorter wait than you asked for | Working as intended (#110). The wait was clamped to fit the transport, and the reply names both numbers. Watch again; the completions already reported are not repeated. |
 

@@ -478,6 +478,85 @@ mod tests {
         }
     }
 
+    /// The pages under `docs/providers/coding-agents/` that describe the running
+    /// system. They promised a 30-minute turn ceiling for a month after the code
+    /// dropped it (PROVIDERS-6, 2026-09-27), so an operator relying on the page
+    /// to reap a wedged `claude` or `codex` child got a turn that never ended.
+    /// `streaming-and-tool-call-parity.md` is a design record whose analysis
+    /// describes the tree before streaming landed, so only its "What shipped"
+    /// section is held to the running behaviour.
+    fn current_coding_agent_docs() -> Vec<(&'static str, &'static str)> {
+        let parity = include_str!(
+            "../../../../../docs/providers/coding-agents/streaming-and-tool-call-parity.md"
+        );
+        let shipped_start = parity
+            .find("## What shipped")
+            .expect("the parity record keeps its What shipped section");
+        let shipped_len = parity[shipped_start..]
+            .find("\n## Summary")
+            .expect("What shipped is followed by the Summary");
+        vec![
+            (
+                "how-it-works.md",
+                include_str!("../../../../../docs/providers/coding-agents/how-it-works.md"),
+            ),
+            (
+                "performance-and-limits.md",
+                include_str!(
+                    "../../../../../docs/providers/coding-agents/performance-and-limits.md"
+                ),
+            ),
+            (
+                "child-agent-isolation.md",
+                include_str!(
+                    "../../../../../docs/providers/coding-agents/child-agent-isolation.md"
+                ),
+            ),
+            (
+                "tool-bridge.md",
+                include_str!("../../../../../docs/providers/coding-agents/tool-bridge.md"),
+            ),
+            (
+                "streaming-and-tool-call-parity.md (What shipped)",
+                &parity[shipped_start..shipped_start + shipped_len],
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_coding_agent_docs_describe_the_default_unbounded_turn() {
+        for (page, text) in current_coding_agent_docs() {
+            // A fixed ceiling, in the words the stale pages used for it.
+            for (number, line) in text.lines().enumerate() {
+                let lower = line.to_ascii_lowercase();
+                assert!(
+                    !lower.contains("30-minute") && !lower.contains("30 minutes"),
+                    "{page}:{}: promises a fixed turn ceiling, but turns are unbounded unless \
+                     {TURN_TIMEOUT_CONFIG_KEY} is set: {line}",
+                    number + 1
+                );
+            }
+            // The key that does set one, named wherever the limit is explained
+            // so an operator can find it.
+            assert!(
+                text.contains(TURN_TIMEOUT_CONFIG_KEY),
+                "{page} explains the turn limit without naming {TURN_TIMEOUT_CONFIG_KEY}"
+            );
+        }
+
+        // The bridge's per-call deadline is a separate, configurable transport
+        // safeguard, and its page used to name a constant that is gone.
+        let (_, bridge) = current_coding_agent_docs()
+            .into_iter()
+            .find(|(name, _)| *name == "tool-bridge.md")
+            .expect("the bridge page is scanned");
+        assert!(bridge.contains(super::bridge::CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY));
+        assert!(
+            !bridge.contains("bridge::CHILD_TOOL_CALL_TIMEOUT`"),
+            "tool-bridge.md names a constant that no longer exists"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_default_turn_has_no_hidden_wall_clock_deadline() {
         let turn = tokio::spawn(await_turn(std::future::pending::<()>(), None));
