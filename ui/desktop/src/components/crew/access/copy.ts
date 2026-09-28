@@ -200,7 +200,8 @@ export const accessCopy = {
   emptyWorkspace: (workspace: string, past = false) =>
     `None of your chats can post in ${workspace} ${past ? 'now' : 'yet'}.`,
   /** Follows `empty`: a chat is connected from inside it. `/crew` is drawn as code. */
-  emptyHow: 'To connect one, open that chat and type /crew.',
+  // A chat with no message yet cannot connect: /crew there says "Start the chat first" (UXN-8).
+  emptyHow: 'To connect one, open that chat and type /crew. A new chat needs a message first.',
   untitled: 'Untitled chat',
   yourTask: 'Your task',
   /**

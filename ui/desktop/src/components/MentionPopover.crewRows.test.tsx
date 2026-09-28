@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { createRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MentionPopover, {
+  CREW_COMMAND_BEFORE_FIRST_MESSAGE,
   CREW_EXTENSION_DESCRIPTION,
   type DisplayItemWithMatch,
 } from './MentionPopover';
@@ -50,7 +51,7 @@ type Handle = {
   selectFile: (index: number) => void;
 };
 
-function renderPalette(query: string) {
+function renderPalette(query: string, sessionId: string | null = CHAT) {
   const ref = createRef<Handle>();
   const view = render(
     <MentionPopover
@@ -58,7 +59,7 @@ function renderPalette(query: string) {
       isOpen
       isSlashCommand
       query={query}
-      sessionId={CHAT}
+      sessionId={sessionId}
       workingDir="/w"
       position={{ x: 0, y: 400 }}
       selectedIndex={0}
@@ -165,6 +166,20 @@ describe('the / palette’s Crew rows', () => {
   it('says what the /crew command does', async () => {
     renderPalette('cr');
     expect(await screen.findByText('Connect this chat to a Crew channel')).toBeInTheDocument();
+  });
+
+  /**
+   * UXN-8: a new chat, with no session yet, offered /crew as if it could connect, and Enter then
+   * said "Start the chat first". The row says when it works, and is still the one row for crew.
+   */
+  it('says /crew works after the first message in a chat that has not started', async () => {
+    const { ref } = renderPalette('cr', null);
+    expect(await screen.findByText(CREW_COMMAND_BEFORE_FIRST_MESSAGE)).toBeInTheDocument();
+    expect(CREW_COMMAND_BEFORE_FIRST_MESSAGE).toBe(
+      'Connect this chat to a Crew channel after your first message'
+    );
+    expect(screen.queryByText('Connect this chat to a Crew channel')).toBeNull();
+    expect(ref.current?.getDisplayFiles()[0]).toMatchObject({ name: 'crew', itemType: 'Builtin' });
   });
 
   it('leaves every other row’s order to the match', async () => {

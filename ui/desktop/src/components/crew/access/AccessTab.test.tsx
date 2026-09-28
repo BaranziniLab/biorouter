@@ -509,7 +509,8 @@ describe('the Access tab', () => {
     const how = screen.getByText((_, element) =>
       Boolean(
         element?.tagName === 'P' &&
-        element.textContent === 'To connect one, open that chat and type /crew.'
+        element.textContent ===
+          'To connect one, open that chat and type /crew. A new chat needs a message first.'
       )
     );
     // The command is drawn as something to type.
