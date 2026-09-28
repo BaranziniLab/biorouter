@@ -18,6 +18,7 @@ import { canFocus, focusIsLost, restoreFocusSoon } from '../state/focusReturn';
 import type { CrewController } from '../state/types';
 import { emptyCopy } from './copy';
 import { attemptTime } from './joinText';
+import { NameSuggestionNote } from './NameSuggestionNote';
 import { SetupCard, SetupScreen, Spinner } from './parts';
 import { SetupChecklist } from './SetupChecklist';
 
@@ -348,6 +349,7 @@ export function NoTeamState() {
     const accepting = crew.isPending('mutate:invitation.accept');
     return (
       <SetupScreen>
+        <ArrivalNameOffer />
         <EmptyState
           icon={Inbox}
           title={emptyCopy.invitedTitle(team)}
@@ -384,6 +386,7 @@ export function NoTeamState() {
     : emptyCopy.yourHost;
   return (
     <SetupScreen>
+      <ArrivalNameOffer />
       <EmptyState
         icon={Users}
         title={emptyCopy.memberTitle(workspace)}
@@ -403,6 +406,21 @@ export function NoTeamState() {
   );
 }
 
+/**
+ * The server-account name offer on the screens a new member lands on before any channel (DW-01):
+ * "You're in {workspace}", "You're invited to {team}" and a team with no open channel. The spec
+ * places it right after joining (naming design D2), and the composer, its only other home for a
+ * member, is not there until a channel is. One offer: answering it anywhere answers it everywhere
+ * (`useNameSuggestion`), so it shows once.
+ */
+function ArrivalNameOffer() {
+  return (
+    <div className="crew-onboard-offer">
+      <NameSuggestionNote />
+    </div>
+  );
+}
+
 /** A team with no open channel (fixes L15: it offers Create channel). */
 export function NoChannelState() {
   const crew = useCrew();
@@ -412,6 +430,7 @@ export function NoChannelState() {
   const live = Boolean(crew.snapshot);
   return (
     <SetupScreen>
+      <ArrivalNameOffer />
       <EmptyState
         icon={Hash}
         title={emptyCopy.noChannelTitle(teamName(team))}

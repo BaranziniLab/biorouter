@@ -27,6 +27,17 @@
    grows downward and the code stays under the pointer (Q3-48). Centred, it
    moved up by half of every section that opened. The top inset keeps it
    off the channel header without re-centring it. */
+/* The name offer above a member's arrival card (DW-01): the card's width, so the two read as one
+   column, and nothing at all when there is no offer. */
+.crew-onboard-offer {
+  width: 100%;
+  max-width: var(--dialog-md);
+}
+
+.crew-onboard-offer:empty {
+  display: none;
+}
+
 .crew-onboard-screen[data-anchor='top'] {
   justify-content: flex-start;
   padding-top: 48px;

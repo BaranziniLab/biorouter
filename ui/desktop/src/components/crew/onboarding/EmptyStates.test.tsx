@@ -8,7 +8,14 @@ import type { ConnectFailureKind } from '../state/connectFailure';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { ChannelIntro } from '../timeline/ChannelIntro';
-import { checklistCopy, emptyCopy, INSTALL_COMMANDS, notSetUpCopy, welcomeCopy } from './copy';
+import {
+  checklistCopy,
+  emptyCopy,
+  INSTALL_COMMANDS,
+  nameSuggestionCopy,
+  notSetUpCopy,
+  welcomeCopy,
+} from './copy';
 import {
   ConnectingCard,
   focusComposerOnceMounted,
@@ -474,6 +481,84 @@ describe('NoTeamState', () => {
     expect(screen.getByText(emptyCopy.memberBody('Alice Chen (@alice)'))).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: emptyCopy.memberAction }));
     expect(crew.openDialog).toHaveBeenCalledWith({ kind: 'create-team' });
+  });
+
+  // DW-01: the offer appeared only above a channel's composer, so a new member first saw it after
+  // reaching a channel, although the design places it right after joining.
+  it('offers the server-account name on "You’re in {workspace}", once', async () => {
+    const verifiedCrew = (overrides: Partial<CrewController> = {}) =>
+      crewWith({
+        snapshot: fakeSnapshot(),
+        screen: 'no-team',
+        observedPrivacy: {
+          connectionId: 'conn-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+        request: vi.fn(async (method: string) =>
+          method === 'profile.suggest' ? { full_name: 'Bob Lee' } : {}
+        ) as CrewController['request'],
+        ...overrides,
+      });
+    const prompt = nameSuggestionCopy.prompt('Bob Lee', 'lab');
+    const view = renderWithCrew(<NoTeamState />, verifiedCrew());
+    expect(await screen.findByText(prompt)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: emptyCopy.memberTitle('lab') })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: nameSuggestionCopy.dismiss }));
+    expect(screen.queryByText(prompt)).toBeNull();
+    view.unmount();
+
+    // Answered once is answered on every screen: the team with no channel does not ask again.
+    renderWithCrew(
+      <NoChannelState />,
+      verifiedCrew({
+        snapshot: fakeSnapshot({
+          teams: [
+            {
+              id: 'team-1',
+              name: 'Analysis Lab',
+              created_by: 'p-alice',
+              members: ['p-alice', 'p-bob'],
+              general_channel_id: 'c-1',
+            },
+          ],
+        }),
+        teamId: 'team-1',
+      })
+    );
+    await act(async () => {});
+    expect(screen.queryByText(prompt)).toBeNull();
+  });
+
+  it('offers the server-account name on a team with no open channel', async () => {
+    renderWithCrew(
+      <NoChannelState />,
+      crewWith({
+        snapshot: fakeSnapshot({
+          teams: [
+            {
+              id: 'team-1',
+              name: 'Analysis Lab',
+              created_by: 'p-alice',
+              members: ['p-alice', 'p-bob'],
+              general_channel_id: 'c-1',
+            },
+          ],
+        }),
+        teamId: 'team-1',
+        observedPrivacy: {
+          connectionId: 'conn-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+        request: vi.fn(async (method: string) =>
+          method === 'profile.suggest' ? { full_name: 'Bob Lee' } : {}
+        ) as CrewController['request'],
+      })
+    );
+    expect(await screen.findByText(nameSuggestionCopy.prompt('Bob Lee', 'lab'))).toBeVisible();
   });
 
   it('offers to join the team a person is invited to', () => {
