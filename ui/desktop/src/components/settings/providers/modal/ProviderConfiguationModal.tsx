@@ -23,6 +23,7 @@ import { AlertTriangle } from '../../../icons/app-icons';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../../components/ui/button';
 import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
+import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
   CODING_AGENT_ORDER,
   fetchCodingAgentStatus,
@@ -44,6 +45,7 @@ export default function ProviderConfigurationModal({
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const { upsert, remove } = useConfig();
   const { getCurrentModelAndProvider } = useModelAndProvider();
+  const returnFocusToOpener = useReturnFocusToOpener();
   const [configValues, setConfigValues] = useState<Record<string, ConfigInput>>({});
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [isActiveProvider, setIsActiveProvider] = useState(false);
@@ -255,7 +257,13 @@ export default function ProviderConfigurationModal({
         </DialogContent>
       </Dialog>
       <Dialog open={!error} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+        <DialogContent
+          className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto"
+          // T3-SH-12: back to the Configure button when this closes for good.
+          // Not when it gives way to the error dialog above, which takes the
+          // focus itself.
+          onCloseAutoFocus={error ? undefined : returnFocusToOpener}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {getModalIcon()}

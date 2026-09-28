@@ -33,6 +33,7 @@ import {
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
+import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
   llamacppStatus,
   ProviderType,
@@ -293,6 +294,9 @@ export const SwitchModelModal = ({
 }: SwitchModelModalProps) => {
   const { getProviders, getProviderModels, read, upsert } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
+  // T3-SH-12: opened from state, not a Dialog.Trigger, so Radix alone would
+  // leave the focus on the page when Escape closes it.
+  const returnFocusToOpener = useReturnFocusToOpener();
   /**
    * W2-PRV-15. A chat with Crew access keeps the model its access was granted
    * on: the daemon refuses any other (`crew_model_fixed`). Said up front, with
@@ -1004,7 +1008,7 @@ export const SwitchModelModal = ({
 
   return (
     <Dialog open={true} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-[500px]" onCloseAutoFocus={returnFocusToOpener}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Brain size={24} className="text-text-default" />

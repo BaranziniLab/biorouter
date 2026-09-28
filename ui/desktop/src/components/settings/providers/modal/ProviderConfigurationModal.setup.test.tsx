@@ -1,4 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../api';
 import type {
@@ -388,5 +390,37 @@ it('does not save an Azure OpenAI setup until the user names their own endpoint'
   expect(mocks.submit.mock.calls[0][2]).toMatchObject({
     AZURE_OPENAI_ENDPOINT: 'https://contoso.openai.azure.com',
     AZURE_OPENAI_DEPLOYMENT_NAME: 'my-gpt-6-sol',
+  });
+});
+
+// T3-SH-12: opened from a row's Configure button with no Dialog.Trigger, the
+// dialog left the focus on the page when Escape closed it.
+describe('closing with Escape', () => {
+  function Row() {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Configure
+        </button>
+        {open ? (
+          <ProviderConfigurationModal provider={provider('codex')} onClose={() => setOpen(false)} />
+        ) : null}
+      </>
+    );
+  }
+
+  it('gives the focus back to the Configure button', async () => {
+    mocks.submit.mockReset();
+    mocks.status.mockResolvedValue({ agents: [] });
+    const user = userEvent.setup();
+    render(<Row />);
+    await user.click(screen.getByRole('button', { name: 'Configure' }));
+    await screen.findByDisplayValue('/custom/codex');
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Configure' })).toHaveFocus());
   });
 });

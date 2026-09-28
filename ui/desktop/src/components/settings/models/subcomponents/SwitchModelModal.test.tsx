@@ -1,4 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type Model from '../modelInterface';
 import {
@@ -454,5 +456,43 @@ describe('configureProvidersReturn', () => {
 
   it('names no chat when opened from no chat', () => {
     expect(configureProvidersReturn(null, undefined)).toEqual({ returnTo: '/pair' });
+  });
+});
+
+// T3-SH-12: Settings opens this from its "Switch models" button with no
+// Dialog.Trigger, and Escape used to leave the focus on the page.
+describe('closing with Escape', () => {
+  function SettingsButton() {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Switch models
+        </button>
+        {open ? (
+          <SwitchModelModal sessionId={null} setView={vi.fn()} onClose={() => setOpen(false)} />
+        ) : null}
+      </>
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.read.mockResolvedValue('');
+  });
+
+  it('gives the focus back to the button that opened it', async () => {
+    const user = userEvent.setup();
+    render(<SettingsButton />);
+    await user.click(screen.getByRole('button', { name: 'Switch models' }));
+    await screen.findByRole('dialog');
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Switch models' })).toHaveFocus()
+    );
   });
 });
