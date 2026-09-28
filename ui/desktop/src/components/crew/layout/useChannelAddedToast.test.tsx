@@ -250,6 +250,33 @@ describe('the person hears when someone adds them to a channel (Q2-63)', () => {
     expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
   });
 
+  /**
+   * MSG2-N8: the views compared were one Crew screen's, so an add made while the person was on
+   * Home was never said: the first view after they came back had nothing to compare with.
+   */
+  it('says it when they come back to Crew after being added while away', async () => {
+    const daemon = installDaemon({ snapshot: richSnapshot({ actor: bob }) });
+    const first = renderCrew();
+    await channelReady();
+    first.unmount();
+
+    // On Home meanwhile: Alice adds Bob to #plots.
+    const plots = channel({
+      created_by: general.owner_id,
+      owner_id: general.owner_id,
+      members: [general.owner_id, bob.id],
+    });
+    daemon.state.snapshot = richSnapshot({ actor: bob, channels: [general, methods, plots] });
+    renderCrew();
+    await channelReady();
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: layoutCopy.channelAdded('Alice Chen (@alice)', '#plots'),
+      })
+    );
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(1);
+  });
+
   it('says nothing for a channel they made themselves', async () => {
     const daemon = installDaemon();
     renderCrew();

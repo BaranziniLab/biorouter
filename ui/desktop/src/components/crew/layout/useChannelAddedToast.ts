@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { toastSuccess } from '../../../toasts';
 import type { Channel, Snapshot, Team } from '../crewApi';
 import {
@@ -9,20 +9,8 @@ import {
   teamName,
 } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { lastSeenMemberships, rememberSeenMemberships } from '../state/viewMemory';
 import { layoutCopy } from './copy';
-
-interface Seen {
-  connectionId: string;
-  workspaceId: string;
-  channels: ReadonlySet<string>;
-  teams: ReadonlySet<string>;
-  /**
-   * Each member channel's own name (`#name`) and its label in a sentence (with its team where two
-   * teams share the name), and each member team's name (M12).
-   */
-  channelNames: ReadonlyMap<string, { own: string; label: string }>;
-  teamNames: ReadonlyMap<string, string>;
-}
 
 /**
  * The teams and channels being renamed on this computer, by ID, with when: the person who renames
@@ -101,9 +89,11 @@ function adderOf(channel: Channel, viewer: string): string | null {
  * ticked with it — is one toast naming the team, "… added you to Bench Crew", not a channel's.
  *
  * Modelled on `useJoinedToast`: only between two verified views of the same connection and
- * workspace, so opening Crew, switching workspaces or re-verifying after a failure never
- * announces the channels already there. Display only: membership is the broker's, and this reads
- * the snapshot it projected.
+ * workspace, so re-verifying after a failure never announces the channels already there, and the
+ * first view of a connection this app session announces nothing. The two views need not be one
+ * Crew screen's: coming back to Crew, or to a workspace, compares with the last view of it this app
+ * session showed, so an add while the person was away is said on their return (MSG2-N8). Display
+ * only: membership is the broker's, and this reads the snapshot it projected.
  */
 export function useChannelAddedToast(): void {
   const crew = useCrew();
@@ -111,14 +101,16 @@ export function useChannelAddedToast(): void {
     crew.snapshot && crew.observedPrivacy?.connectionId === crew.connectionId
       ? crew.snapshot
       : null;
-  const seen = useRef<Seen | null>(null);
   const { connectionId, labels } = crew;
 
   useEffect(() => {
-    if (!verified) return;
+    if (!verified || !connectionId) return;
     const current = memberChannels(verified);
     const teams = memberTeams(verified);
-    const before = seen.current;
+    // What the last view of this connection showed, on this Crew screen or an earlier one: kept
+    // by the layout, it went with the screen, and an add made while the person was on Home was
+    // never said (MSG2-N8).
+    const before = lastSeenMemberships(connectionId);
     const places = channelNamesAcrossTeams(verified.channels, verified.teams);
     const channelNames = new Map(
       current.map((channel) => {
@@ -127,20 +119,14 @@ export function useChannelAddedToast(): void {
       })
     );
     const teamNames = new Map(teams.map((team) => [team.id, teamName(team)]));
-    seen.current = {
-      connectionId,
+    rememberSeenMemberships(connectionId, {
       workspaceId: verified.workspace.id,
       channels: new Set(current.map((channel) => channel.id)),
       teams: new Set(teams.map((team) => team.id)),
       channelNames,
       teamNames,
-    };
-    if (
-      !before ||
-      before.connectionId !== connectionId ||
-      before.workspaceId !== verified.workspace.id
-    )
-      return;
+    });
+    if (!before || before.workspaceId !== verified.workspace.id) return;
     // Renamed while the viewer was a member, and not by this computer: said once (M12). A team's
     // old name also stops working in the CLI, and the sidebar just shows the new one.
     for (const [id, name] of teamNames) {

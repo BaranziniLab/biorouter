@@ -189,10 +189,51 @@ export function rememberedPaneIntent(connectionId: string): PaneIntent | null {
   return intent ? { ...intent } : null;
 }
 
-/** Forget everything kept for `connectionId`: its view, its channels' lists and its pane. */
+/**
+ * The teams and channels the last verified view of a connection listed the person in, with their
+ * names: what `useChannelAddedToast` compares the next view with. Kept here rather than by the
+ * layout, so an add made while the person was away from Crew is said on their return (MSG2-N8).
+ * Display only, memory only, never storage.
+ */
+export interface SeenMemberships {
+  workspaceId: string;
+  channels: ReadonlySet<string>;
+  teams: ReadonlySet<string>;
+  /**
+   * Each member channel's own name (`#name`) and its label in a sentence (with its team where two
+   * teams share the name), and each member team's name (M12).
+   */
+  channelNames: ReadonlyMap<string, { own: string; label: string }>;
+  teamNames: ReadonlyMap<string, string>;
+}
+
+const seenMemberships = new Map<string, SeenMemberships>();
+
+/** What the last verified view of `connectionId` this app session listed the person in. */
+export function lastSeenMemberships(connectionId: string): SeenMemberships | null {
+  return seenMemberships.get(connectionId) ?? null;
+}
+
+/** Remember what a verified view of `connectionId` listed the person in. */
+export function rememberSeenMemberships(connectionId: string, seen: SeenMemberships): void {
+  if (!connectionId) return;
+  seenMemberships.delete(connectionId);
+  seenMemberships.set(connectionId, seen);
+  while (seenMemberships.size > MAX_REMEMBERED_CONNECTIONS) {
+    const oldest = seenMemberships.keys().next().value;
+    if (oldest === undefined) break;
+    seenMemberships.delete(oldest);
+  }
+}
+
+/**
+ * Forget everything kept for `connectionId`: its view, its channels' lists, its pane and the
+ * memberships it showed.
+ */
 export function forgetViewMemory(connectionId: string): void {
   remembered.delete(connectionId);
   paneIntents.delete(connectionId);
+  seenMemberships.delete(connectionId);
 }
 
 /** How many connections have a remembered view. For tests; never shown. */
@@ -204,5 +245,6 @@ export function rememberedViewCount(): number {
 export function resetViewMemoryForTests(): void {
   remembered.clear();
   paneIntents.clear();
+  seenMemberships.clear();
 }
 resetBetweenTests(resetViewMemoryForTests);
