@@ -211,8 +211,10 @@ middle of a file larger than 128 KB is beyond it, so check large files yourself.
 
 ## Open and save a shared file
 
-A shared file appears as a card. When two cards share a name, each shows its post time. Preview
-shows a PNG, JPEG, GIF or WebP picture. **More actions** (⋯) holds the download controls and
+A shared file appears as a card. When two cards share a name, each shows its post time. A name too
+long for the card is cut in the middle, so its extension stays in sight, and characters that draw
+nothing show as �, one for each run of them. The save window's suggested name leaves them out.
+Preview shows a PNG, JPEG, GIF or WebP picture. **More actions** (⋯) holds the download controls and
 **Copy for support** (**Copy file ID**, **Copy SHA-256**).
 
 1. Choose Save (tooltip "Save counts.csv") on the card.

@@ -60,7 +60,7 @@ A refusal says what to change. After ten taken names in ten minutes, Crew says "
 
 ### See who is in a team
 
-Point at the team, choose **⋯**, then **Members of {team}…**. Under the list you see **Add people to {team}…**, or a line naming who can add people. For the whole workspace, choose the workspace name, then **People…**.
+Point at the team, choose **⋯**, then **Members of {team}…**. The list gives the number of members and marks the team's owner and who is online. To scroll it with the keyboard, press Tab until it is selected, then use the arrow keys. Under the list you see **Add people to {team}…**, or a line naming who can add people. For the whole workspace, choose the workspace name, then **People…**.
 
 ### See who is online
 

@@ -104,7 +104,7 @@ The agent's reply is posted as the result, and its first line names the file use
 
 **Open** shows the task's own conversation, titled "Crew · #methods · " and the task's first line. It may be missing from "Recents", so use **Open** or **Show in chat history**. A task uses only Crew tools and the checklist tool, the task list the agent keeps while it works.
 
-A task's access ends once it posts its result, and its access row reads "Ended". This is normal. The conversation offers only **Start a new chat**. For more work, start a new task.
+A task's access ends once it posts its result, and its access row reads "Ended", or "Stopped" if you stopped it. This is normal. The conversation offers only **Start a new chat**. For more work, start a new task.
 
 ## Connect a chat with /crew
 
@@ -201,6 +201,7 @@ Most refusals say what to do. For these:
 | "Revoked · 2:05 PM" | Revoked and confirmed |
 | "Expired" | Its hour ran out |
 | "Ended" | A task's access ended with the task |
+| "Stopped" | You stopped the task, so its access ended |
 | "Ended: Crew settings changed" | See [Why settings changes end access](#why-settings-changes-end-access) |
 
 Old rows sit under **Show past access (3)**, and only this computer remembers them. In the Agents section, choose ⋯ (**Agents options**) > **Show revoked and finished**.

@@ -58,7 +58,7 @@ These work before or after the command name.
 | `--no-start` | Fails instead of starting a daemon. |
 | `--approval-key-stdin` | Reads the approval secret from the first line of standard input. See [Supply the secret from a script](#supply-the-secret-from-a-script). |
 | `--request-id ID` | Reuses the ID of a change whose result was uncertain. See [Retry after an uncertain result](#retry-after-an-uncertain-result). |
-| `--expected-mode private` or `public` | Refuses `send`, `tasks start`, `grants grant` and file transfers when the connection is in the other mode. |
+| `--expected-mode private` or `public` | Refuses `send`, `tasks start`, `grants grant` and file transfers unless the mode you name is the privacy in force, the one `status` shows, or your connection's own setting. |
 | `--expected-policy-epoch N`, `--expected-workspace-policy-epoch N` | Refuse `tasks start` and `grants grant` when the policy changed. See [Privacy settings](#privacy-settings). |
 
 ## Output and exit status
