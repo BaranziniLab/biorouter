@@ -685,6 +685,17 @@ export function SavedViewBody({
               </div>
             );
           })}
+          {/* An addition shows them each channel's whole past (M19); in the sizer too, so the
+              code view reserves its room. */}
+          {offers.some((offer) => offer.outcome === undefined) ? (
+            sizer ? (
+              <p className="crew-say text-supporting" data-say={copy.history(first)} />
+            ) : (
+              <p className="text-supporting text-text-muted" data-testid="crew-let-in-history">
+                {copy.history(first)}
+              </p>
+            )
+          ) : null}
           {hint !== null || holdHint ? (
             <NextStepHint
               text={sizer ? null : hint}

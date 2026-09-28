@@ -282,6 +282,12 @@ export const letInCopy = {
   channelsIn: (team: string) => `Channels in ${team}`,
   /** Under the fingerprint while the code is awaited (QA Q4-36). `phrase` is `expiryPhrase`'s. */
   expires: (first: string, phrase: string) => `${first}’s invitation ${phrase}.`,
+  /**
+   * Under the team offers (M19), as Add people says it: a member reads a channel's whole past, files
+   * included. Never "they" (QA Q3-36).
+   */
+  history: (first: string) =>
+    `Once added, ${first} can read everything already posted in the channels ${first} is added to, including files.`,
   /** Closes with the team additions still undone. */
   notNow: 'Not now',
   /** Under the team offers while the joiner's Crew has not checked in yet (QA Q3-36). */
@@ -404,6 +410,18 @@ export const addPeopleCopy = {
   /** An older broker invites: say that it is waiting on the person, never that they are in. */
   sent: (person: string) => `Invited. ${person} will see it in Crew and needs to accept.`,
   alreadyIn: (person: string, place: string) => `${person} is already in ${place}.`,
+  /**
+   * Before Add (M19): the broker lets a member read a channel's whole past, files included, so an
+   * addition shows them everything already posted, and a person removed and added again what was
+   * posted meanwhile. `channel` is `#name`; for a team, `general` is its #general, with the
+   * channels ticked beside it when there are any to tick.
+   */
+  historyChannel: (channel: string) =>
+    `They’ll be able to read everything already posted in ${channel}, including files.`,
+  historyTeam: (general: string, picked: boolean) =>
+    picked
+      ? `They’ll be able to read everything already posted in ${general} and the channels you pick, including files.`
+      : `They’ll be able to read everything already posted in ${general}, including files.`,
   /** The checklist (QA Q2-05): everyone it shows, ticked at once. */
   people: 'People',
   selectAll: (count: number) => `Select all (${count})`,

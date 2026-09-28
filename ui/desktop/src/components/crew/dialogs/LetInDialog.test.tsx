@@ -375,10 +375,16 @@ describe('LetInDialog', () => {
     expect(general).toBeChecked();
     expect(general).toBeDisabled();
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).toBeChecked();
+    // M19: before the addition, what it shows them, in the dialog's one name for them.
+    expect(within(dialog).getByTestId('crew-let-in-history')).toHaveTextContent(
+      'Once added, Eve can read everything already posted in the channels Eve is added to, including files.'
+    );
 
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
     });
+    // Said only while an addition is still to do.
+    await waitFor(() => expect(within(dialog).queryByTestId('crew-let-in-history')).toBeNull());
     await waitFor(() =>
       expect(requestsFor(crew, 'team.add_member')).toEqual([
         {

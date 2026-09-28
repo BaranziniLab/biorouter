@@ -343,6 +343,14 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     : offered.length === 0
       ? emptyState()
       : null;
+  // A team's #general comes with it, and ticked channels with that (`choices`, adding directly).
+  const general = team
+    ? (snapshot?.channels.find((item) => item.id === team.general_channel_id) ?? null)
+    : null;
+  const historyLine =
+    target === 'channel'
+      ? copy.historyChannel(place)
+      : copy.historyTeam(general ? channelName(general) : '#general', choices.length > 1);
   const members =
     message || membersView
       ? withJoinerNames(targetMembers(snapshot, dir, pickerTarget, added), workspaceId)
@@ -467,6 +475,10 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
                 onChange={(id, next) => setChecked((current) => ({ ...current, [id]: next }))}
               />
             ) : null}
+            {/* Before Add: an addition shows them the channel's whole past (M19). */}
+            <p className="text-supporting text-text-muted" data-testid="crew-add-history">
+              {historyLine}
+            </p>
           </>
         )}
         <DialogErrorNote source={SOURCE} render={directAdd ? directAddRefusalText : refusalText} />

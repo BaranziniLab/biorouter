@@ -542,6 +542,12 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     expect(general).toBeChecked();
     expect(general).toBeDisabled();
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).toBeChecked();
+    // M19: before Add, what an addition shows them: the channels' whole past, files included.
+    expect(
+      screen.getByText(
+        'They’ll be able to read everything already posted in #general and the channels you pick, including files.'
+      )
+    ).toBeVisible();
 
     await add('Add');
     await waitFor(() =>
@@ -596,6 +602,17 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       ])
     );
     expect(await screen.findByText('Added Carol Diaz (@carol) to #general.')).toBeInTheDocument();
+  });
+
+  it('says before Add that people added to a channel read everything already posted in it', async () => {
+    renderDirect({ target: 'channel', targetId: 'channel-general' });
+    await checklist();
+    expect(screen.getByTestId('crew-add-history')).toHaveTextContent(
+      'They’ll be able to read everything already posted in #general, including files.'
+    );
+    expect(addPeopleCopy.historyChannel('#general')).toBe(
+      'They’ll be able to read everything already posted in #general, including files.'
+    );
   });
 
   it('shows a refusal in words, in the dialog, and adds no one', async () => {
