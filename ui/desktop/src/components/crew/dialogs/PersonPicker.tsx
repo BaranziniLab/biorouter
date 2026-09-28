@@ -6,10 +6,22 @@ import { Input } from '../../ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { ChevronDown } from '../../icons/app-icons';
 import { cn } from '../../../utils';
-import { PersonName, type CrewPerson, type PeopleDirectory } from '../identity';
+import { carriesJoinerName, PersonName, type CrewPerson, type PeopleDirectory } from '../identity';
 import { addPeopleCopy } from './copy';
 import { personMatches } from './people';
 import './dialogs.css';
+
+/**
+ * The directory a row refreshes its person from — none for a person carrying the name on their
+ * server account in place of one they have not chosen (`withJoinerNames`, F8), whom the directory's
+ * copy would name as a bare `@username` again.
+ */
+function rowDir(
+  person: CrewPerson,
+  dir: PeopleDirectory | null | undefined
+): PeopleDirectory | null | undefined {
+  return carriesJoinerName(person) ? null : dir;
+}
 
 export interface PersonPickerProps {
   /** Who may be chosen. The caller has already removed members and pending invitees. */
@@ -100,7 +112,7 @@ export function PersonPicker({
                 username={chosen.username}
               />
               <span id={valueId} className="min-w-0 flex-1 truncate">
-                <PersonName person={chosen} context="authority" dir={dir} />
+                <PersonName person={chosen} context="authority" dir={rowDir(chosen, dir)} />
               </span>
             </>
           ) : (
@@ -136,7 +148,7 @@ export function PersonPicker({
                 <PersonName
                   person={person}
                   context="authority"
-                  dir={dir}
+                  dir={rowDir(person, dir)}
                   className="min-w-0 flex-1 truncate"
                 />
               </CommandItem>
@@ -262,7 +274,7 @@ export function PersonChecklist({
               <PersonName
                 person={person}
                 context="authority"
-                dir={dir}
+                dir={rowDir(person, dir)}
                 className="min-w-0 flex-1 truncate"
               />
             </label>

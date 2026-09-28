@@ -17,6 +17,15 @@ export {
   type PersonLayout,
 } from './personLabel';
 export {
+  carriesJoinerName,
+  forgetJoinerNames,
+  joinedAsNamed,
+  joinedLabel,
+  joinerServerName,
+  rememberJoinerNames,
+  withJoinerNames,
+} from './joinerNames';
+export {
   buildPeopleDirectory,
   usePeopleDirectory,
   type PeopleDirectory,

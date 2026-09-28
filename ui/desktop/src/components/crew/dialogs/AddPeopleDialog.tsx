@@ -5,7 +5,15 @@ import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
-import { channelName, PersonName, teamName, usableName, type CrewPerson } from '../identity';
+import {
+  carriesJoinerName,
+  channelName,
+  PersonName,
+  teamName,
+  usableName,
+  withJoinerNames,
+  type CrewPerson,
+} from '../identity';
 import { focusIsLost } from '../state/focusReturn';
 import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
@@ -123,7 +131,13 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     pickerTarget,
     { directAdd }
   );
-  const offered = candidates.filter((person) => !added.has(person.id as string));
+  // Someone who joined without choosing a name is named as the Joined row and the toast name them,
+  // "Henry Ito (@crew_henry)", and found by that name (F8).
+  const workspaceId = snapshot?.workspace.id ?? null;
+  const offered = withJoinerNames(
+    candidates.filter((person) => !added.has(person.id as string)),
+    workspaceId
+  );
   const chosen = offered.filter((person) => selected.includes(person.id as string));
   const choices = directAdd && target === 'team' ? directAddChannels(snapshot, targetId, dir) : [];
   const key = !directAdd ? INVITE_KEY : target === 'team' ? TEAM_ADD_KEY : CHANNEL_ADD_KEY;
@@ -328,7 +342,10 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     : offered.length === 0
       ? emptyState()
       : null;
-  const members = message || membersView ? targetMembers(snapshot, dir, pickerTarget, added) : [];
+  const members =
+    message || membersView
+      ? withJoinerNames(targetMembers(snapshot, dir, pickerTarget, added), workspaceId)
+      : [];
   // Named as the host knows them (QA Q4-42): "Jack Moreno (@crew_jack)", as Let in named them.
   const inviteesLine =
     invitees.length > 0
@@ -491,7 +508,8 @@ function MemberList({
           <PersonName
             person={person}
             context="header"
-            dir={dir}
+            // A stand-in name (`withJoinerNames`) is drawn as given: the directory's copy has none.
+            dir={carriesJoinerName(person) ? null : dir}
             you={person.isYou}
             className="min-w-0 flex-1 truncate"
           />

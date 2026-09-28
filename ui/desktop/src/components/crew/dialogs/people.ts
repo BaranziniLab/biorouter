@@ -284,14 +284,17 @@ export function ownershipCandidates(
 }
 
 /**
- * Whether a person matches a picker query: by display name or username, ignoring case, spacing
- * and a leading `@`. Display-name matching is safe here because every row shows `@username`
- * before it can be chosen (naming design, "Selectors and the resolver", rule 3).
+ * Whether a person matches a picker query: by display name, username or the name on their server
+ * account (which a joiner's row shows until they choose a name, F8), ignoring case, spacing and a
+ * leading `@`. Name matching is safe here because every row shows `@username` before it can be
+ * chosen (naming design, "Selectors and the resolver", rule 3).
  */
 export function personMatches(person: CrewPerson, query: string): boolean {
   const wanted = nameKey(query.trim().replace(/^@/, ''));
   if (!wanted) return true;
-  return nameKey(person.displayName).includes(wanted) || nameKey(person.username).includes(wanted);
+  return [person.displayName, person.username, person.serverName].some(
+    (name) => typeof name === 'string' && nameKey(name).includes(wanted)
+  );
 }
 
 /**

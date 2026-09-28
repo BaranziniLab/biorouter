@@ -5,7 +5,7 @@ import { Input } from '../../ui/input';
 import { toastSuccess } from '../../../toasts';
 import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
-import { nameKey, personLabel, teamName } from '../identity';
+import { nameKey, personLabel, teamName, withJoinerNames } from '../identity';
 import type { ErrorSource } from '../state/types';
 import { addPeopleCopy, createTeamCopy as copy, nameRuleCopy } from './copy';
 import {
@@ -88,7 +88,11 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
   // A broker that adds members directly puts them in the new team; an older one invites them.
   const directAdd = directAddSupported(crew.capabilities);
   const inviting = crew.isPending(directAdd ? ADD_KEY : INVITE_KEY);
-  const candidates = dir.people.filter((person) => !person.isYou && !person.isFormer && person.id);
+  // Named as the Joined row names them when they have not chosen a name (F8).
+  const candidates = withJoinerNames(
+    dir.people.filter((person) => !person.isYou && !person.isFormer && person.id),
+    snapshot?.workspace.id ?? null
+  );
 
   const finish = (created: CreatedTeam) => {
     crew.selectTeam(created.id);
@@ -116,7 +120,8 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
     event.preventDefault();
     const person = candidates.find((item) => item.id === principalId);
     if (!team || !person?.id) return;
-    const label = personLabel(person, 'inline', dir);
+    // The candidate as listed, already current: the directory's copy would drop a stand-in name.
+    const label = personLabel(person, 'inline');
     void crew
       .act(SOURCE, directAdd ? ADD_KEY : INVITE_KEY, async () => {
         if (!directAdd) {

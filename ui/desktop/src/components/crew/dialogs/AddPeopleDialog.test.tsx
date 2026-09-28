@@ -2,6 +2,7 @@ import type * as React from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation, Snapshot } from '../crewApi';
+import { forgetJoinerNames, rememberJoinerNames } from '../identity';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { AddPeopleDialog, type AddPeopleDialogProps } from './AddPeopleDialog';
 import { addPeopleCopy } from './copy';
@@ -158,6 +159,52 @@ describe('AddPeopleDialog and its checklist', () => {
     expect(rowNames(list)).toEqual(['Dan Wu (@dan)']);
     fireEvent.change(search, { target: { value: 'zed' } });
     expect(screen.getByText(addPeopleCopy.noMatch('zed'))).toBeInTheDocument();
+  });
+
+  // F8: Henry joined without choosing a name. The sidebar's Joined row and the toast said "Henry
+  // Ito (@crew_henry)", while this list said "@crew_henry" and searching "Ito" found no one.
+  it('names someone who joined without choosing a name by the name on their server account', async () => {
+    const henry = {
+      id: 'person-henry',
+      uid: 1005,
+      username: 'crew_henry',
+      nickname: 'crew_henry',
+      display_name: 'crew_henry',
+    };
+    // The host's view while Henry waited, then the view once he joined.
+    rememberJoinerNames({
+      workspace: makeSnapshot().workspace,
+      pending_joins: [{ username: 'crew_henry', full_name: 'Henry Ito' }],
+    });
+    try {
+      const snapshot = makeSnapshot({
+        principals: [...makeSnapshot().principals, henry],
+        teams: [{ ...makeSnapshot().teams[0], members: [alice.id] }],
+      });
+      renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+        snapshot,
+      });
+      const list = await checklist();
+      expect(rowNames(list)).toContain('Henry Ito (@crew_henry)');
+      const search = screen.getByRole('searchbox', { name: addPeopleCopy.search });
+      fireEvent.change(search, { target: { value: 'Ito' } });
+      expect(rowNames(list)).toEqual(['Henry Ito (@crew_henry)']);
+    } finally {
+      forgetJoinerNames();
+    }
+  });
+
+  it('names a member by @username alone when no server-account name was ever seen', async () => {
+    forgetJoinerNames();
+    const henry = { id: 'person-henry', uid: 1005, username: 'crew_henry', nickname: 'crew_henry' };
+    const snapshot = makeSnapshot({
+      principals: [...makeSnapshot().principals, henry],
+      teams: [{ ...makeSnapshot().teams[0], members: [alice.id] }],
+    });
+    renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+      snapshot,
+    });
+    expect(rowNames(await checklist())).toContain('@crew_henry');
   });
 
   it('invites the ticked person with their expected username, says they still have to accept, and stays open', async () => {
