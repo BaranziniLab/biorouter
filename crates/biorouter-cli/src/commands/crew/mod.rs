@@ -1961,15 +1961,9 @@ async fn connections(api: &Api, command: ConnectionCommand) -> Result<Reply> {
             let connection = api.connection().await?;
             api.show(api.with_effective_privacy(connection).await)
         }
-        // SF-F3: `connections prepare` is the host's first step (`command-line.md`, "Host a
-        // workspace"), so it speaks to the host; `enroll prepare` keeps neutral words.
-        ConnectionCommand::Prepare => Reply::Show(
-            prepare(api).await?,
-            Box::new(
-                api.human(Directory::default())
-                    .with_view(output::View::HostingKey),
-            ),
-        ),
+        // SF-F3: the host's first step and a joiner's are this one command, the same as
+        // `enroll prepare`, so the key is described for both uses in one set of words.
+        ConnectionCommand::Prepare => api.show(prepare(api).await?),
         ConnectionCommand::Save { input } => {
             let body: Value = serde_json::from_str(&read_input(&input)?)
                 .context("Connection input must be a JSON descriptor")?;
@@ -5427,6 +5421,58 @@ mod tests {
         let joining = invitation_summary(&preview["preview"], false);
         assert_eq!(joining[0], "Invitation to lab");
         assert!(joining.contains(&"  You'll join as Private · ucsf.".to_owned()));
+    }
+
+    /// SF-F3: `connections prepare` and `enroll prepare` are one command, used by a host before
+    /// `biorouter-crew start` and by a joiner before `connections save`. Both print the same
+    /// words, and those words tell each reader where the key and the preparation ID go,
+    /// without sending either of them down the other's path.
+    #[tokio::test]
+    async fn both_prepare_commands_describe_the_key_for_a_host_and_a_joiner() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if (method, path) == ("POST", "/crew/devices/prepare") {
+                return Ok(json!({
+                    "preparation_id": "9e7a0000-0000-4000-8000-000000000009",
+                    "public_key": "ab".repeat(32),
+                    "device_id": "de71ce00-0000-4000-8000-00000000000a",
+                }));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let connections = said(
+            run(&api, CrewCommand::Connections(ConnectionCommand::Prepare))
+                .await
+                .expect("connections prepare"),
+        );
+        let enroll = said(
+            run(&api, CrewCommand::Enroll(EnrollmentCommand::Prepare))
+                .await
+                .expect("enroll prepare"),
+        );
+        assert_eq!(connections, enroll, "the two names are one command");
+        let text = connections.join("\n");
+        for (use_, words) in [
+            (
+                "host: the key",
+                "pass this key to biorouter-crew start --bootstrap-key",
+            ),
+            (
+                "joiner: the key",
+                "To join one, send it to the workspace's host.",
+            ),
+            (
+                "host: the ID",
+                "connections join-invitation --preparation-id when you host",
+            ),
+            (
+                "joiner: the ID",
+                "the descriptor for connections save when you join",
+            ),
+        ] {
+            assert!(text.contains(words), "{use_}: {text}");
+        }
+        assert!(!text.contains("for hosting"), "{text}");
     }
 
     /// CLI-9: the next steps after saving a connection: a host signs in, then sets the

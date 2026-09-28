@@ -740,9 +740,6 @@ pub enum View {
     Reference,
     Attachment,
     Workspace,
-    /// A device key a host prepared for their own workspace (`connections prepare`), which
-    /// they pass to `biorouter-crew start`.
-    HostingKey,
     /// A mutation result or anything else: recognized results get a sentence, the rest a
     /// field list with ID-like fields left out.
     Result,
@@ -1378,7 +1375,6 @@ impl Ctx {
                 "workspace ID",
                 str_field(value, "id"),
             )],
-            View::HostingKey => self.prepared(value, true),
             View::Result => self.result(value),
         }
     }
@@ -2259,7 +2255,7 @@ impl Ctx {
             return self.joined(value);
         }
         if has("preparation_id") && has("public_key") {
-            return self.prepared(value, false);
+            return self.prepared(value);
         }
         if has("invitation") && has("uid") && has("expires_at") {
             return self.enrollment_token(value);
@@ -2344,21 +2340,18 @@ impl Ctx {
         out
     }
 
-    /// A prepared device key (SF-F3). A host preparing their own workspace passes it to
-    /// `biorouter-crew start` and its preparation ID to `connections join-invitation`, so they
-    /// are told that, not to give it to "the workspace host", which is themselves. Otherwise the
-    /// words fit either use.
-    fn prepared(&self, value: &Value, hosting: bool) -> Vec<String> {
+    /// A prepared device key (SF-F3). `connections prepare` and `enroll prepare` are one
+    /// command, and nothing in it says which use the key is for: a host passes it to
+    /// `biorouter-crew start` and the preparation ID to `connections join-invitation`, while a
+    /// joiner sends the key to the host and puts the ID in a `connections save` descriptor. So
+    /// both uses are named, and neither reader is sent down the other's path.
+    fn prepared(&self, value: &Value) -> Vec<String> {
         let key = str_field(value, "public_key").map_or_else(String::new, safe_text);
-        let (lead, takes) = if hosting {
-            (
-                "Device key prepared for hosting. Pass it to biorouter-crew start --bootstrap-key on the server:",
-                "connections join-invitation --preparation-id",
-            )
-        } else {
-            ("Device key prepared. Its public key:", "connections save")
-        };
-        let mut out = vec![lead.to_owned(), format!("  {key}")];
+        let mut out = vec![
+            "Device key prepared. Its public key:".to_owned(),
+            format!("  {key}"),
+            PREPARED_KEY_USES.to_owned(),
+        ];
         if self.show_ids {
             out.extend(self.detail_ids(
                 value,
@@ -2367,9 +2360,10 @@ impl Ctx {
                     ("device_id", "Device ID"),
                 ],
             ));
+            out.push(format!("The preparation ID {PREPARATION_ID_USES}."));
         } else {
             out.push(format!(
-                "Add --show-ids for the preparation ID that {takes} takes."
+                "Add --show-ids for the preparation ID, which {PREPARATION_ID_USES}."
             ));
         }
         out
@@ -2498,6 +2492,12 @@ fn last_error_lines(connection: &Value) -> Vec<String> {
         None => vec![format!("  Last error: {}", safe_text(error))],
     }
 }
+
+/// What a prepared device key is for, both ways (`command-line.md` "Host a workspace", and
+/// `cli-guide.md` "Save a connection from a descriptor").
+const PREPARED_KEY_USES: &str = "To host a workspace, pass this key to biorouter-crew start --bootstrap-key on the server. To join one, send it to the workspace's host.";
+/// Where each reader puts the preparation ID, completing "The preparation ID …".
+const PREPARATION_ID_USES: &str = "goes to connections join-invitation --preparation-id when you host, or into the descriptor for connections save when you join";
 
 const CONNECTION_IDS: &[(&str, &str)] = &[
     ("id", "Connection ID"),
@@ -4088,22 +4088,31 @@ mod tests {
     fn deliverable_keys_and_tokens_are_printed_but_their_ids_are_not() {
         let prepared = json!({"preparation_id":CONNECTION,"public_key":KEY,"device_id":DEVICE});
         let text = plain(&prepared);
+        // SF-F3: one command serves a host and a joiner, and nothing in it says which, so the
+        // key and the preparation ID are described for both, each with its own next command.
         assert_eq!(
             text,
-            format!("Device key prepared. Its public key:\n  {KEY}\nAdd --show-ids for the preparation ID that connections save takes.")
+            format!(
+                "Device key prepared. Its public key:\n  {KEY}\n\
+                 To host a workspace, pass this key to biorouter-crew start --bootstrap-key on the server. \
+                 To join one, send it to the workspace's host.\n\
+                 Add --show-ids for the preparation ID, which goes to connections join-invitation \
+                 --preparation-id when you host, or into the descriptor for connections save when you join."
+            )
         );
         assert!(!text.contains(CONNECTION) && !text.contains(DEVICE));
-        assert!(with_ids(&prepared, &json!({})).contains(CONNECTION));
-        // SF-F3: a host preparing their own workspace is told what to do with it.
-        let hosting = render_text(
-            &prepared,
-            &options(false, Directory::default()).with_view(View::HostingKey),
-        );
+        let shown = with_ids(&prepared, &json!({}));
         assert_eq!(
-            hosting,
-            format!("Device key prepared for hosting. Pass it to biorouter-crew start --bootstrap-key on the server:\n  {KEY}\nAdd --show-ids for the preparation ID that connections join-invitation --preparation-id takes.")
+            shown,
+            format!(
+                "Device key prepared. Its public key:\n  {KEY}\n\
+                 To host a workspace, pass this key to biorouter-crew start --bootstrap-key on the server. \
+                 To join one, send it to the workspace's host.\n  \
+                 Preparation ID: {CONNECTION}\n  Device ID: {DEVICE}\n\
+                 The preparation ID goes to connections join-invitation --preparation-id when you \
+                 host, or into the descriptor for connections save when you join."
+            )
         );
-        assert!(!hosting.contains("workspace host"), "{hosting}");
         let token = "4f".repeat(32);
         let invite =
             json!({"invitation":token,"expires_at":NOW + 3600,"uid":10002,"device_id":DEVICE});
