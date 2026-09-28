@@ -26,6 +26,7 @@ import {
   identityCopy,
   isMachineIdShaped,
   sanitizeDisplayText,
+  teamName,
 } from '../identity';
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
@@ -139,7 +140,10 @@ export function isLocalHistoryFailure(failure: unknown): boolean {
  * The team to show for a verified view: the selected channel's team (a selection across teams is
  * never undone, Q2-10); else the team already shown while the view still has it; else, when
  * nothing is chosen yet, the team of the channel the person last chose (Q2-21) when the view
- * offers it open; else the view's first team.
+ * offers it open; else the view's first team by name.
+ *
+ * By name, not by the snapshot's order (setup F6): the snapshot lists teams by their random IDs,
+ * so "the first team" was whichever ID sorted lowest.
  */
 export function teamForView(
   snapshot: Pick<Snapshot, 'teams' | 'channels'>,
@@ -155,7 +159,12 @@ export function teamForView(
     ? snapshot.channels.find((item) => item.id === remembered && !item.archived)
     : undefined;
   if (last && hasTeam(last.team_id)) return last.team_id;
-  return snapshot.teams[0]?.id ?? '';
+  const [first] = [...snapshot.teams].sort(
+    (a, b) =>
+      teamName(a).localeCompare(teamName(b), undefined, { sensitivity: 'base' }) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+  return first?.id ?? '';
 }
 
 function sameList(a: readonly string[] | null, b: readonly string[] | null): boolean {

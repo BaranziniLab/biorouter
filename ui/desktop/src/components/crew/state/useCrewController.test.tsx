@@ -1321,6 +1321,42 @@ describe('the team and channel a verified view picks (pure)', () => {
     expect(channelForTeam(view, 'team-1', '', 'imaging')).toBe('general');
     expect(channelForTeam(view, 'team-2', 'general', null)).toBe('imaging');
   });
+
+  /**
+   * Setup F6: channels and teams arrive in the order of their random IDs, so a new member with
+   * nothing remembered landed on whichever sorted first: #random, for Bob, Henry and Mallory.
+   */
+  describe('with nothing chosen yet (setup F6)', () => {
+    const byId = {
+      teams: [
+        { id: '4c78-zeta', name: 'Zeta Core', general_channel_id: 'zeta-general' },
+        { id: '9f00-chen', name: 'chen-lab', general_channel_id: '630e-general' },
+      ],
+      channels: [
+        { id: '4c78-random', team_id: '9f00-chen', name: 'random', archived: false },
+        { id: '5ee2-methods', team_id: '9f00-chen', name: 'methods', archived: false },
+        { id: '630e-general', team_id: '9f00-chen', name: 'general', archived: false },
+        { id: 'zeta-general', team_id: '4c78-zeta', name: 'general', archived: false },
+      ],
+    } as unknown as Parameters<typeof teamForView>[0];
+
+    it('opens the team’s #general, not the channel whose ID sorts first', () => {
+      expect(channelForTeam(byId, '9f00-chen', '', null)).toBe('630e-general');
+      // A remembered channel still wins, and an archived #general gives way to the first open one.
+      expect(channelForTeam(byId, '9f00-chen', '', '5ee2-methods')).toBe('5ee2-methods');
+      const archived = {
+        ...byId,
+        channels: byId.channels.map((item) =>
+          item.id === '630e-general' ? { ...item, archived: true } : item
+        ),
+      };
+      expect(channelForTeam(archived, '9f00-chen', '', null)).toBe('4c78-random');
+    });
+
+    it('opens the first team by name, not the team whose ID sorts first', () => {
+      expect(teamForView(byId, '', '', null)).toBe('9f00-chen');
+    });
+  });
 });
 
 describe('CrewView', () => {

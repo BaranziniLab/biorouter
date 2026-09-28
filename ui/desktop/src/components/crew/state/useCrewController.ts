@@ -58,19 +58,26 @@ export function isWorkspaceHost(snapshot: Snapshot | null): boolean {
 
 /**
  * The channel to show for `teamId`: `current` while the team still has it, else `preferred` (the
- * channel the person last chose, Q2-21) while the team has it open, else the team's first channel
- * that is not archived, else none.
+ * channel the person last chose, Q2-21) while the team has it open, else the team's #general
+ * while it is open, else the team's first channel that is not archived, else none.
+ *
+ * #general comes before any other (setup F6): the snapshot lists channels by their random IDs, so
+ * "the first channel" was whichever ID sorted lowest, and new members landed on #random instead
+ * of where the host's welcome is.
  */
 export function channelForTeam(
-  snapshot: Pick<Snapshot, 'channels'>,
+  snapshot: Pick<Snapshot, 'channels'> & Partial<Pick<Snapshot, 'teams'>>,
   teamId: string,
   current: string,
   preferred: string | null = null
 ): string {
   const channels = snapshot.channels.filter((item) => item.team_id === teamId);
   if (channels.some((item) => item.id === current)) return current;
-  if (preferred && channels.some((item) => item.id === preferred && !item.archived))
-    return preferred;
+  const open = (id: string | null | undefined) =>
+    Boolean(id) && channels.some((item) => item.id === id && !item.archived);
+  if (open(preferred)) return preferred as string;
+  const general = snapshot.teams?.find((item) => item.id === teamId)?.general_channel_id;
+  if (open(general)) return general as string;
   return channels.find((item) => !item.archived)?.id ?? '';
 }
 
