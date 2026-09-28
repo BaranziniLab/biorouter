@@ -72,6 +72,19 @@ against a commercial model is public for its whole life. Neither can drift.
 **Consequence to accept.** The interface must explain the refusal rather than appear broken. A
 disabled picker with a reason is the requirement; a 409 toast is not.
 
+> **Added 2026-09-28: a provider's destination is the host's too.** A browser served by
+> `biorouter serve` cannot change a setting that decides where a provider sends its requests and
+> credentials: a host, endpoint, base path, region, CA or client certificate path, or a coding
+> agent's command. Whoever changes the host decides who receives the saved key, so
+> `/config/upsert` and `/config/remove` refuse such a change without the proof, and so does a
+> custom provider's URL change that keeps its saved key or headers. Saving the value already
+> there is fine, and a custom provider may move to a new URL when the key is typed again. The
+> provider form shows these fields read only, with a note saying they are changed on the host
+> with `biorouter configure`. The desktop app's keyless fault state behaves the same way. The
+> list is `DESTINATION_CONFIG_KEYS` in `crates/biorouter/src/providers/destination_keys.rs`.
+> Ollama and llama.cpp hosts are not in it: they send no credential, and stay privacy capability
+> keys, governed by the master switch.
+
 > **Why this closes an open question.** `docs/security/privacy-tiers-execution-plan.md` Open
 > Question 23 left the headless case explicitly unruled, noting that such a deployment "has no
 > GUI, so there is no process that can mint a key on the user's behalf." SD-1 answers it: none

@@ -193,6 +193,16 @@ when `BIOROUTER_PROVIDER` is empty **and** that key is true.
   (SD-1), so "continue without a provider" would lead to a chat this tab can never
   configure — a second dead end wearing the clothes of an escape.
 
+### Settings that belong to the host
+
+On a browser-served surface, the provider form shows the settings that decide where a provider
+sends its requests and key (host, endpoint, base path, region, CA or client certificate path, a
+coding agent's command) read only, with a note that they are changed with `biorouter configure`
+on the host computer. The save leaves them out, and a required one the host has not set says so
+instead of "is required". A custom provider's form asks for the key again before a browser moves
+its saved key to a new URL, the one such move the daemon allows there. The daemon's side of this
+is [SD-1](../deployment/serve-decisions.md#sd-1--a-browser-session-cannot-change-its-model-or-provider-and-that-is-the-point).
+
 ### The in-app no-provider state
 
 This is what makes "get in first" honest rather than a trapdoor. `composerNoProvider.ts`
