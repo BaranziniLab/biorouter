@@ -112,12 +112,7 @@ pub fn create_custom_provider(
 
     let provider_config = DeclarativeProviderConfig {
         name: id.clone(),
-        engine: match engine {
-            "openai_compatible" => ProviderEngine::OpenAI,
-            "anthropic_compatible" => ProviderEngine::Anthropic,
-            "ollama_compatible" => ProviderEngine::Ollama,
-            _ => return Err(anyhow::anyhow!("Invalid provider type: {}", engine)),
-        },
+        engine: engine_named(engine)?,
         display_name: display_name.clone(),
         description: Some(format!("Custom {} provider", display_name)),
         api_key_env: api_key_name,
@@ -165,12 +160,7 @@ pub fn update_custom_provider(
 
         let updated_config = DeclarativeProviderConfig {
             name: id.to_string(),
-            engine: match provider_type {
-                "openai_compatible" => ProviderEngine::OpenAI,
-                "anthropic_compatible" => ProviderEngine::Anthropic,
-                "ollama_compatible" => ProviderEngine::Ollama,
-                _ => return Err(anyhow::anyhow!("Invalid provider type: {}", provider_type)),
-            },
+            engine: engine_named(provider_type)?,
             display_name,
             description: existing_config.description,
             api_key_env: existing_config.api_key_env,
@@ -186,6 +176,117 @@ pub fn update_custom_provider(
         std::fs::write(file_path, json_content)?;
     }
     Ok(())
+}
+
+fn engine_named(engine: &str) -> Result<ProviderEngine> {
+    match engine {
+        "openai_compatible" => Ok(ProviderEngine::OpenAI),
+        "anthropic_compatible" => Ok(ProviderEngine::Anthropic),
+        "ollama_compatible" => Ok(ProviderEngine::Ollama),
+        _ => Err(anyhow::anyhow!("Invalid provider type: {}", engine)),
+    }
+}
+
+/// T3-SH-3 — the provider a creation would register, for checking the key typed
+/// with it before anything is written. See [`typed_key_rejection`].
+pub fn config_for_new_provider(
+    engine: &str,
+    display_name: String,
+    api_url: String,
+    models: Vec<String>,
+    supports_streaming: Option<bool>,
+    headers: Option<HashMap<String, String>>,
+) -> Result<DeclarativeProviderConfig> {
+    Ok(DeclarativeProviderConfig {
+        name: "custom_key_check".to_string(),
+        engine: engine_named(engine)?,
+        description: None,
+        display_name,
+        api_key_env: TYPED_KEY_CHECK_ENV.to_string(),
+        base_url: api_url,
+        models: models
+            .into_iter()
+            .map(|name| ModelInfo::new(name, 128000))
+            .collect(),
+        headers,
+        timeout_seconds: None,
+        supports_streaming,
+    })
+}
+
+/// T3-SH-3 — the provider `update_custom_provider` would leave registered under
+/// `id`: the saved one, with the typed URL and engine when it is editable (a
+/// bundled provider such as Groq keeps its own). Its saved headers go with it,
+/// exactly as they would with the next chat.
+pub fn config_for_updated_provider(
+    id: &str,
+    engine: &str,
+    api_url: String,
+) -> Result<DeclarativeProviderConfig> {
+    let loaded = load_provider(id)?;
+    let mut config = loaded.config;
+    if loaded.is_editable {
+        config.engine = engine_named(engine)?;
+        config.base_url = api_url;
+    }
+    Ok(config)
+}
+
+/// The name the typed key is handed to a key check under, so a check never
+/// reads a saved key (see [`typed_key_rejection`]).
+const TYPED_KEY_CHECK_ENV: &str = "BIOROUTER_TYPED_KEY_CHECK";
+
+/// T3-SH-3 — the provider's refusal of `api_key`, in its own words, or `None`
+/// when it accepted the key or said nothing about it.
+///
+/// A declarative provider's key used to be saved with no check at all, so a
+/// made-up Groq key was stored over the working one and the provider shown
+/// Configured, although api.groq.com refuses it. The provider is built the way
+/// the registry builds it (`from_custom_config`), with the typed key and
+/// nothing saved in its place, and asked with `Provider::check_credentials` (an
+/// OpenAI- or Anthropic-compatible server's model listing). Only an
+/// authentication failure is a refusal: a provider that cannot be built, a
+/// network failure or a slow server says nothing about the key, and `timeout`
+/// bounds the wait. Nothing is written.
+pub async fn typed_key_rejection(
+    mut config: DeclarativeProviderConfig,
+    api_key: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    use crate::providers::base::Provider;
+    use crate::providers::errors::ProviderError;
+
+    config.api_key_env = TYPED_KEY_CHECK_ENV.to_string();
+    let model = config
+        .models
+        .first()
+        .map(|model| model.name.clone())
+        .unwrap_or_else(|| "default".to_string());
+    let Ok(model) = crate::model::ModelConfig::new(&model) else {
+        return None;
+    };
+    // A JSON string literal, as `/config/check_provider` passes a typed secret,
+    // so an all-digit key stays a string on every read path.
+    let typed = serde_json::to_string(api_key).unwrap_or_default();
+    let overrides = HashMap::from([(TYPED_KEY_CHECK_ENV.to_string(), typed)]);
+    let check = crate::config::with_config_overrides(overrides, async move {
+        let provider: Box<dyn Provider> = match config.engine {
+            ProviderEngine::OpenAI => {
+                Box::new(OpenAiProvider::from_custom_config(model, config).ok()?)
+            }
+            ProviderEngine::Anthropic => {
+                Box::new(AnthropicProvider::from_custom_config(model, config).ok()?)
+            }
+            ProviderEngine::Ollama => {
+                Box::new(OllamaProvider::from_custom_config(model, config).ok()?)
+            }
+        };
+        match provider.check_credentials().await {
+            Err(ProviderError::Authentication(reason)) => Some(reason.trim().to_string()),
+            _ => None,
+        }
+    });
+    tokio::time::timeout(timeout, check).await.ok().flatten()
 }
 
 pub fn remove_custom_provider(id: &str) -> Result<()> {
@@ -812,6 +913,111 @@ mod tests {
                     "{label}: kimi-k3 rejects a non-default {key}; got {payload}"
                 );
             }
+        }
+    }
+
+    /// T3-SH-3: a declarative provider's key was saved with no check, so a
+    /// made-up Groq key replaced the working one and showed Configured.
+    mod typed_key_check {
+        use super::*;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        /// Groq's bundled entry, pointed at `server`.
+        fn groq_at(server: &MockServer) -> DeclarativeProviderConfig {
+            let mut config = load_provider("groq").expect("groq is bundled").config;
+            config.base_url = format!("{}/openai/v1/chat/completions", server.uri());
+            config
+        }
+
+        #[tokio::test]
+        async fn a_key_the_provider_refuses_is_named_in_its_words() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/openai/v1/models"))
+                .and(header("authorization", "Bearer gsk_wrong"))
+                .respond_with(
+                    ResponseTemplate::new(401).set_body_json(
+                        serde_json::json!({"error": {"message": "Invalid API Key"}}),
+                    ),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let refusal = typed_key_rejection(groq_at(&server), "gsk_wrong", WAIT)
+                .await
+                .expect("a key the provider refuses is refused");
+            assert!(refusal.contains("Invalid API Key"), "{refusal}");
+        }
+
+        #[tokio::test]
+        async fn a_key_the_provider_accepts_passes() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/openai/v1/models"))
+                .and(header("authorization", "Bearer 1234567890"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"data": [{"id": "openai/gpt-oss-120b"}]}),
+                    ),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            // All digits, as typed: the check must send exactly this, not a
+            // number and not a quoted string.
+            assert_eq!(
+                typed_key_rejection(groq_at(&server), "1234567890", WAIT).await,
+                None
+            );
+        }
+
+        #[tokio::test]
+        async fn a_provider_that_does_not_answer_says_nothing_about_the_key() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&server)
+                .await;
+            assert_eq!(
+                typed_key_rejection(groq_at(&server), "gsk_any", WAIT).await,
+                None
+            );
+
+            let slow = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(401).set_delay(std::time::Duration::from_secs(3)),
+                )
+                .mount(&slow)
+                .await;
+            assert_eq!(
+                typed_key_rejection(
+                    groq_at(&slow),
+                    "gsk_any",
+                    std::time::Duration::from_millis(200)
+                )
+                .await,
+                None,
+                "an answer that comes too late is no answer"
+            );
+        }
+
+        #[test]
+        fn an_update_of_a_bundled_provider_keeps_its_own_url() {
+            let config = config_for_updated_provider(
+                "groq",
+                "anthropic_compatible",
+                "https://elsewhere.example".into(),
+            )
+            .expect("groq loads");
+            assert_eq!(
+                config.base_url,
+                "https://api.groq.com/openai/v1/chat/completions"
+            );
+            assert!(matches!(config.engine, ProviderEngine::OpenAI));
         }
     }
 }

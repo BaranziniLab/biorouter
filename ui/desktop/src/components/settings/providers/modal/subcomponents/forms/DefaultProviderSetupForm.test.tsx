@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
@@ -457,5 +457,62 @@ describe('CustomProviderForm in a browser', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
     expect(onSubmit).toHaveBeenCalled();
+  });
+});
+
+/**
+ * T3-SH-3. The daemon now refuses a declarative or custom provider's key when
+ * the provider rejects it. The refusal used to be an unhandled rejection: the
+ * form stayed as it was, with nothing said.
+ */
+describe('CustomProviderForm when the save is refused', () => {
+  const groq = {
+    engine: 'openai',
+    display_name: 'Groq',
+    api_url: 'https://api.groq.com/openai/v1/chat/completions',
+    api_key: '',
+    models: ['openai/gpt-oss-120b'],
+    supports_streaming: true,
+  };
+  const REFUSAL = 'Groq rejected this key, so it was not saved: Invalid API Key';
+
+  it("shows the daemon's sentence in the form and keeps what was typed", async () => {
+    const onSubmit = vi.fn().mockRejectedValue(REFUSAL);
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={groq}
+        isEditable={false}
+        hasSavedKey={false}
+      />
+    );
+    const key = container.querySelector('#api-key') as HTMLInputElement;
+    fireEvent.change(key, { target: { value: 'gsk_wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(REFUSAL);
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ api_key: 'gsk_wrong' }));
+    expect(key).toHaveValue('gsk_wrong');
+  });
+
+  it('says nothing when the save goes through', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={groq}
+        isEditable={false}
+        hasSavedKey={false}
+      />
+    );
+    fireEvent.change(container.querySelector('#api-key') as HTMLInputElement, {
+      target: { value: 'gsk_right' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled());
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

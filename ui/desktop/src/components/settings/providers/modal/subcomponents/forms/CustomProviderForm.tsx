@@ -9,8 +9,24 @@ import { UpdateCustomProviderRequest } from '../../../../../../api';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
 
+/**
+ * What to show when the save was refused. The daemon's refusal is a sentence
+ * written for a person (a key the provider rejected, a URL move it will not
+ * make), and the generated client throws that parsed body, a string, under
+ * `throwOnError`.
+ */
+export function customProviderSaveFailure(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  return 'The provider was not saved. Try again.';
+}
+
 interface CustomProviderFormProps {
-  onSubmit: (data: UpdateCustomProviderRequest) => void;
+  /**
+   * Save the provider. A rejection is shown in the form, which stays open with
+   * everything typed (T3-SH-3: the daemon refuses a key the provider rejects).
+   */
+  onSubmit: (data: UpdateCustomProviderRequest) => void | Promise<void>;
   onCancel: () => void;
   initialData: UpdateCustomProviderRequest | null;
   isEditable?: boolean;
@@ -48,6 +64,8 @@ export default function CustomProviderForm({
   const [isLocalModel, setIsLocalModel] = useState(false);
   const [supportsStreaming, setSupportsStreaming] = useState(true);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (initialData) {
@@ -95,14 +113,31 @@ export default function CustomProviderForm({
       .map((m) => m.trim())
       .filter((m) => m);
 
-    onSubmit({
-      engine,
-      display_name: displayName,
-      api_url: apiUrl,
-      api_key: apiKey,
-      models: modelList,
-      supports_streaming: supportsStreaming,
-    });
+    // T3-SH-3: a save can be refused (a key the provider rejected), and that
+    // used to be an unhandled rejection with the form sitting there as if
+    // nothing had happened. The sentence is shown here, in the form. The save
+    // itself is started synchronously, as it always was.
+    setSubmitError(null);
+    let saved: void | Promise<void>;
+    try {
+      saved = onSubmit({
+        engine,
+        display_name: displayName,
+        api_url: apiUrl,
+        api_key: apiKey,
+        models: modelList,
+        supports_streaming: supportsStreaming,
+      });
+    } catch (error) {
+      setSubmitError(customProviderSaveFailure(error));
+      return;
+    }
+    if (saved instanceof Promise) {
+      setSaving(true);
+      saved
+        .catch((error: unknown) => setSubmitError(customProviderSaveFailure(error)))
+        .finally(() => setSaving(false));
+    }
   };
 
   return (
@@ -281,11 +316,20 @@ export default function CustomProviderForm({
         </>
       )}
       <SecureStorageNotice />
+      {submitError && (
+        <p
+          role="alert"
+          data-testid="custom-provider-submit-error"
+          className="text-text-danger text-sm whitespace-pre-wrap break-words"
+        >
+          {submitError}
+        </p>
+      )}
       <div className="flex justify-end space-x-2 pt-4">
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit">
+        <Button type="submit" disabled={saving}>
           {initialData ? (keepsSavedKey ? 'Update Provider' : 'Save') : 'Create Provider'}
         </Button>
       </div>

@@ -1959,7 +1959,24 @@ pub async fn validate_config() -> Result<Json<String>, StatusCode> {
 )]
 pub async fn create_custom_provider(
     Json(request): Json<UpdateCustomProviderRequest>,
-) -> Result<Json<String>, StatusCode> {
+) -> Result<Json<String>, (StatusCode, String)> {
+    // T3-SH-3: the key typed with it is checked before anything is written. The
+    // check sends it, with the typed headers, to the typed URL: nothing saved
+    // goes anywhere.
+    if !request.api_key.is_empty() {
+        let candidate = biorouter::config::declarative_providers::config_for_new_provider(
+            &request.engine,
+            request.display_name.clone(),
+            request.api_url.clone(),
+            request.models.clone(),
+            request.supports_streaming,
+            request.headers.clone(),
+        )
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+        if let Some(refusal) = typed_key_refusal(candidate, &request.api_key).await {
+            return Err((StatusCode::UNPROCESSABLE_ENTITY, refusal));
+        }
+    }
     let config = biorouter::config::declarative_providers::create_custom_provider(
         &request.engine,
         request.display_name,
@@ -1969,7 +1986,12 @@ pub async fn create_custom_provider(
         request.supports_streaming,
         request.headers,
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create the custom provider".to_string(),
+        )
+    })?;
 
     if let Err(e) = biorouter::providers::refresh_custom_providers().await {
         tracing::warn!("Failed to refresh custom providers after creation: {}", e);
@@ -2041,6 +2063,21 @@ pub async fn update_custom_provider(
             return Err(refusal);
         }
     }
+    // T3-SH-3: a new key is checked before it replaces the saved one. After the
+    // move refusal, so a check never carries a saved key or header to a URL an
+    // unproven caller chose. A provider that cannot be loaded is left for the
+    // update to report.
+    if !request.api_key.is_empty() {
+        if let Ok(candidate) = biorouter::config::declarative_providers::config_for_updated_provider(
+            &id,
+            &request.engine,
+            request.api_url.clone(),
+        ) {
+            if let Some(refusal) = typed_key_refusal(candidate, &request.api_key).await {
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, refusal));
+            }
+        }
+    }
     biorouter::config::declarative_providers::update_custom_provider(
         &id,
         &request.engine,
@@ -2062,6 +2099,25 @@ pub async fn update_custom_provider(
     }
 
     Ok(Json(format!("Updated custom provider: {}", id)))
+}
+
+/// T3-SH-3 — the sentence refusing a key typed for a declarative or custom
+/// provider, when the provider itself rejects it; `None` when it accepted the
+/// key, said nothing about it, or did not answer within [`LIVE_CHECK_TIMEOUT`].
+async fn typed_key_refusal(
+    candidate: biorouter::config::declarative_providers::DeclarativeProviderConfig,
+    api_key: &str,
+) -> Option<String> {
+    let display_name = candidate.display_name.clone();
+    let reason = biorouter::config::declarative_providers::typed_key_rejection(
+        candidate,
+        api_key,
+        LIVE_CHECK_TIMEOUT,
+    )
+    .await?;
+    Some(format!(
+        "{display_name} rejected this key, so it was not saved: {reason}"
+    ))
 }
 
 /// Why an update from a caller that could not prove a person is refused, or
@@ -2442,9 +2498,15 @@ fn candidate_overrides(
 }
 
 /// The provider's refusal of its credentials, from one authenticated call, or
-/// `None` when it accepted them, has no live listing, or could not answer in
+/// `None` when it accepted them, has no way to be asked, or could not answer in
 /// time. Only an authentication failure refuses: a network error or a missing
 /// models endpoint says nothing about the key.
+///
+/// The call is the provider's own `Provider::check_credentials`: its model
+/// listing by default, and for the Versa gateways, which have none, a probe the
+/// gateway authenticates without running a model (T3-SH-3). Checking only the
+/// listing sent nothing for them, so a wrong Versa key was saved over the
+/// working one and shown Configured.
 async fn live_credential_refusal(
     display_name: &str,
     provider: &dyn biorouter::providers::base::Provider,
@@ -2457,7 +2519,7 @@ async fn live_credential_refusal_within(
     provider: &dyn biorouter::providers::base::Provider,
     timeout: std::time::Duration,
 ) -> Option<String> {
-    match tokio::time::timeout(timeout, provider.fetch_supported_models()).await {
+    match tokio::time::timeout(timeout, provider.check_credentials()).await {
         Ok(Err(ProviderError::Authentication(message))) => Some(format!(
             "{display_name} rejected these credentials: {}",
             message.trim()
@@ -3650,6 +3712,59 @@ mod tests {
         }
     }
 
+    /// A provider with no model listing that can still be asked, as the Versa
+    /// gateways can.
+    struct Unlisted;
+
+    #[async_trait::async_trait]
+    impl biorouter::providers::base::Provider for Unlisted {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "unlisted"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("test-model").unwrap()
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[biorouter::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (
+                biorouter::conversation::message::Message,
+                biorouter::providers::base::ProviderUsage,
+            ),
+            ProviderError,
+        > {
+            Err(ProviderError::ExecutionError("not used".to_string()))
+        }
+        async fn check_credentials(&self) -> Result<(), ProviderError> {
+            Err(ProviderError::Authentication(
+                "Invalid client id or secret".to_string(),
+            ))
+        }
+    }
+
+    /// T3-SH-3. The live check asked only for a model listing, and a provider
+    /// with none (Versa) answered `Ok(None)` without sending anything, so a
+    /// wrong Versa key was saved. The check is the provider's own now.
+    #[tokio::test]
+    async fn the_live_check_asks_a_provider_with_no_listing_its_own_way() {
+        use biorouter::providers::base::Provider;
+        assert!(matches!(Unlisted.fetch_supported_models().await, Ok(None)));
+        let refused = live_credential_refusal("Versa API Azure", &Unlisted)
+            .await
+            .expect("a key the gateway refuses fails the check");
+        assert_eq!(
+            refused,
+            "Versa API Azure rejected these credentials: Invalid client id or secret"
+        );
+    }
+
     /// W2-PRV-8. Privacy is a section of Settings > App, not a tab of its own, so
     /// a refusal that sends the person to "Settings > Privacy" names a place
     /// that does not exist.
@@ -4733,6 +4848,112 @@ mod destination_route_tests {
         assert!(!sentence.contains("no proof"), "{sentence}");
         let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(kept["base_url"], "https://lab.example/v1");
+    }
+
+    /// T3-SH-3: a declarative or custom provider's key was saved with no check,
+    /// so a key the provider refuses replaced the working one.
+    #[tokio::test]
+    #[serial]
+    async fn a_key_the_provider_refuses_is_not_saved_over_the_working_one() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        // The saved key is read and written only where secrets are kept in the
+        // sandbox's file, never in the real keychain. The refusals themselves
+        // touch no secret store, so they are asserted either way.
+        let file_secrets = crate::test_sandbox::global_config_reads_secrets_from_a_file();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .and(header("authorization", "Bearer working-key"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"data": [{"id": "m"}]})),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(serde_json::json!({"error": {"message": "Invalid API Key"}})),
+            )
+            .with_priority(2)
+            .mount(&server)
+            .await;
+
+        let dir = biorouter::config::declarative_providers::custom_providers_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let url = format!("{}/v1/chat/completions", server.uri());
+        let saved = serde_json::json!({
+            "name": "custom_lab",
+            "engine": "openai",
+            "display_name": "Lab gateway",
+            "api_key_env": "CUSTOM_LAB_API_KEY",
+            "base_url": url,
+            "models": [{"name": "m", "context_limit": 128000}],
+        });
+        std::fs::write(dir.join("custom_lab.json"), saved.to_string()).unwrap();
+        if file_secrets {
+            Config::global()
+                .set_secret("CUSTOM_LAB_API_KEY", &"working-key".to_string())
+                .unwrap();
+        }
+        let update = |api_key: &str| {
+            Json(UpdateCustomProviderRequest {
+                engine: "openai_compatible".to_string(),
+                display_name: "Lab gateway".to_string(),
+                api_url: url.clone(),
+                api_key: api_key.to_string(),
+                models: vec!["m".to_string()],
+                supports_streaming: None,
+                headers: None,
+            })
+        };
+
+        let (status, sentence) = update_custom_provider(
+            Path("custom_lab".to_string()),
+            headers_with(None),
+            update("wrong-key"),
+        )
+        .await
+        .expect_err("a key the provider refuses is not saved");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            sentence.starts_with("Lab gateway rejected this key, so it was not saved:"),
+            "{sentence}"
+        );
+        assert!(sentence.contains("Invalid API Key"), "{sentence}");
+        if file_secrets {
+            let kept: String = Config::global().get_secret("CUSTOM_LAB_API_KEY").unwrap();
+            assert_eq!(kept, "working-key", "the working key was replaced");
+
+            let _ = update_custom_provider(
+                Path("custom_lab".to_string()),
+                headers_with(None),
+                update("working-key"),
+            )
+            .await
+            .expect("a key the provider accepts is saved");
+        }
+
+        // A new provider is checked the same way before it is created.
+        let (status, _) = create_custom_provider(Json(UpdateCustomProviderRequest {
+            engine: "openai_compatible".to_string(),
+            display_name: "Second lab".to_string(),
+            api_url: url.clone(),
+            api_key: "wrong-key".to_string(),
+            models: vec!["m".to_string()],
+            supports_streaming: None,
+            headers: None,
+        }))
+        .await
+        .expect_err("a new provider with a refused key is not created");
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(!dir.join("custom_second_lab.json").exists());
     }
 
     /// The desktop's daemon: it holds a key, the app sends it, and a caller

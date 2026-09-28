@@ -977,6 +977,24 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// Ask the provider, with the cheapest call that it authenticates, whether it
+    /// accepts the credentials this instance was built with.
+    ///
+    /// `Err(ProviderError::Authentication(reason))` means the provider REFUSED
+    /// them, and `reason` is its own words. Every other outcome means nothing
+    /// about the key: `Ok(())` when it was accepted or no such call exists, and
+    /// any other error when the call could not be made or answered. A caller
+    /// that acts on this (`/config/check_provider`, which refuses to save a key
+    /// the provider rejects) must act on the `Authentication` arm alone, so a
+    /// network fault or a slow gateway never rolls back a working key.
+    ///
+    /// The default is the model listing, which is authenticated wherever it
+    /// exists. T3-SH-3: a provider with no listing (the Versa gateways) answers
+    /// `Ok(None)` without sending anything, so it has to say how else to ask.
+    async fn check_credentials(&self) -> Result<(), ProviderError> {
+        self.fetch_supported_models().await.map(|_| ())
+    }
+
     /// Fetch models filtered by canonical registry and usability
     async fn fetch_recommended_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         let all_models = match self.fetch_supported_models().await? {
