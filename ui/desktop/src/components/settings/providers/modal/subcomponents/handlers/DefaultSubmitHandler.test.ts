@@ -175,3 +175,72 @@ describe('providerConfigSubmitHandler value types', () => {
     expect(values.GCP_LOCATION).toBe('us-central1');
   });
 });
+
+/**
+ * W2-PRV-2. A key was saved over the working one and only then "checked" by
+ * building the provider, which makes no network call, so a typo saved as
+ * Configured. The values are now checked live, as candidates, BEFORE anything
+ * is written, and a rejection writes nothing.
+ */
+describe('providerConfigSubmitHandler checks a credential before saving it', () => {
+  const anthropic = {
+    name: 'anthropic',
+    metadata: {
+      config_keys: [
+        { name: 'ANTHROPIC_API_KEY', required: true, secret: true },
+        {
+          name: 'ANTHROPIC_HOST',
+          required: true,
+          secret: false,
+          default: 'https://api.anthropic.com',
+        },
+      ],
+    },
+  } as Parameters<typeof providerConfigSubmitHandler>[1];
+
+  let upsert: Mock<(key: string, value: unknown, isSecret: boolean) => Promise<void>>;
+  let check: Mock;
+
+  beforeEach(async () => {
+    upsert = vi.fn(async () => undefined);
+    check = (await import('../../../../../../api')).checkProvider as unknown as Mock;
+    check.mockReset();
+    check.mockResolvedValue({ data: {} });
+  });
+
+  it('checks the exact values live, as candidates, before the first write', async () => {
+    await providerConfigSubmitHandler(upsert, anthropic, { ANTHROPIC_API_KEY: 'sk-ant-new' });
+
+    expect(check.mock.calls[0][0]).toMatchObject({
+      body: {
+        provider: 'anthropic',
+        live: true,
+        candidate: { ANTHROPIC_API_KEY: 'sk-ant-new', ANTHROPIC_HOST: 'https://api.anthropic.com' },
+      },
+      throwOnError: true,
+    });
+    expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
+    expect(upsert).toHaveBeenCalledWith('ANTHROPIC_API_KEY', 'sk-ant-new', true);
+  });
+
+  it('writes nothing when the provider rejects the key', async () => {
+    check.mockRejectedValueOnce('Anthropic rejected these credentials: invalid x-api-key');
+    await expect(
+      providerConfigSubmitHandler(upsert, anthropic, { ANTHROPIC_API_KEY: 'sk-ant-typo' })
+    ).rejects.toBe('Anthropic rejected these credentials: invalid x-api-key');
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('does not check live a save that carries no credential', async () => {
+    await providerConfigSubmitHandler(
+      upsert,
+      {
+        name: 'databricks',
+        metadata: { config_keys: [{ name: 'DATABRICKS_HOST', required: true, secret: false }] },
+      },
+      { DATABRICKS_HOST: 'https://x.cloud.databricks.com' }
+    );
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(check.mock.calls[0][0].body).toEqual({ provider: 'databricks' });
+  });
+});

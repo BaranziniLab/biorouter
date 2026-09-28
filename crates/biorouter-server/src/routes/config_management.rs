@@ -176,7 +176,24 @@ pub struct UpdateCustomProviderRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct CheckProviderRequest {
     pub provider: String,
+    /// W2-PRV-2. Also make one cheap authenticated call (listing the provider's
+    /// models, bounded at [`LIVE_CHECK_TIMEOUT`]) and refuse the check when the
+    /// provider rejects the credentials. Constructing a provider makes no
+    /// network call, so without this a wrong key passed. A provider with no
+    /// secret, or with no live model listing, is checked as before.
+    #[serde(default)]
+    pub live: bool,
+    /// W2-PRV-2. Values to check BEFORE they are saved: keys this provider
+    /// declares, applied as task-local overrides for the check only
+    /// (`with_config_overrides`, the mechanism provider auto-detection uses).
+    /// Nothing is written, so a rejected key never replaces a working one.
+    #[serde(default)]
+    pub candidate: Option<HashMap<String, String>>,
 }
+
+/// How long [`check_provider`]'s live call may take. A check that cannot finish
+/// in time says nothing about the credentials, so it passes, as it did before.
+const LIVE_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Deserialize, ToSchema)]
 pub struct SetProviderRequest {
@@ -1789,14 +1806,146 @@ pub async fn update_custom_provider(
     post,
     path = "/config/check_provider",
     request_body = CheckProviderRequest,
+    responses(
+        (status = 200, description = "The provider could be built, and with `live` set its \
+                                      credentials were not rejected"),
+        (status = 400, description = "The provider could not be built from the saved (or \
+                                      candidate) settings, or a candidate named a setting this \
+                                      provider does not declare"),
+        (status = 401, description = "With `live` set: the provider rejected the credentials. \
+                                      The body is its message"),
+        (status = 403, description = "`live` or `candidate` from a caller that could not prove a \
+                                      person asked, on a daemon that holds a user-action key"),
+    )
 )]
 pub async fn check_provider(
-    Json(CheckProviderRequest { provider }): Json<CheckProviderRequest>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
+    Json(CheckProviderRequest {
+        provider,
+        live,
+        candidate,
+    }): Json<CheckProviderRequest>,
 ) -> Result<(), (StatusCode, String)> {
-    create_with_default_model(&provider)
+    // A live check sends a credential to the provider's host, and a candidate
+    // can name the host. Together they would let a caller holding only the
+    // daemon secret (which a public chat's shell can recover) send a SAVED key
+    // to a host of its choosing, so both need the same proof of a person the
+    // other credential writes do. A daemon holding no user-action key (`serve`)
+    // cannot check one; there `/config/upsert` plus a chat already reaches the
+    // same place, so nothing new is opened.
+    if let Some(refusal) = credential_check_refusal(
+        live,
+        candidate.is_some(),
+        &biorouter_server::auth::user_action_proof(&headers),
+    ) {
+        return Err(refusal);
+    }
+    let metadata = get_providers()
         .await
-        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-    Ok(())
+        .into_iter()
+        .map(|(metadata, _)| metadata)
+        .find(|metadata| metadata.name == provider);
+    let overrides = match candidate {
+        Some(values) => candidate_overrides(metadata.as_ref(), &provider, values)?,
+        None => HashMap::new(),
+    };
+    let has_secret = metadata
+        .as_ref()
+        .is_some_and(|metadata| metadata.config_keys.iter().any(|key| key.secret));
+    let display_name = metadata.as_ref().map_or_else(
+        || provider.clone(),
+        |metadata| metadata.display_name.clone(),
+    );
+
+    biorouter::config::with_config_overrides(overrides, async {
+        let built = create_with_default_model(&provider)
+            .await
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+        if live && has_secret {
+            if let Some(refusal) = live_credential_refusal(&display_name, built.as_ref()).await {
+                return Err((StatusCode::UNAUTHORIZED, refusal));
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Whether a credential check may run for this caller: see [`check_provider`].
+/// Only a check that sends a credential somewhere (`live`) or names new values
+/// (`candidate`) asks, and only a daemon that holds a user-action key can refuse.
+fn credential_check_refusal(
+    live: bool,
+    has_candidate: bool,
+    proof: &biorouter_server::auth::UserActionProof,
+) -> Option<(StatusCode, String)> {
+    ((live || has_candidate) && matches!(proof, biorouter_server::auth::UserActionProof::Unproven))
+        .then(|| {
+            (
+                StatusCode::FORBIDDEN,
+                "Checking credentials against a provider is the user's decision, and this request \
+             did not come from the app's settings."
+                    .to_string(),
+            )
+        })
+}
+
+/// A candidate's values as the task-local overrides the check runs under, or
+/// the refusal. Only settings `provider` declares are accepted: a check is
+/// about this provider, and an override of anything else (the master privacy
+/// switch, another provider's key) is not a candidate for it.
+fn candidate_overrides(
+    metadata: Option<&ProviderMetadata>,
+    provider: &str,
+    values: HashMap<String, String>,
+) -> Result<HashMap<String, String>, (StatusCode, String)> {
+    let Some(metadata) = metadata else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("There is no provider named '{provider}'."),
+        ));
+    };
+    let mut overrides = HashMap::new();
+    for (key, value) in values {
+        let declared = metadata
+            .config_keys
+            .iter()
+            .any(|declared| declared.name.eq_ignore_ascii_case(&key));
+        if !declared {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("'{key}' is not a setting of {}.", metadata.display_name),
+            ));
+        }
+        overrides.insert(key.to_uppercase(), value);
+    }
+    Ok(overrides)
+}
+
+/// The provider's refusal of its credentials, from one authenticated call, or
+/// `None` when it accepted them, has no live listing, or could not answer in
+/// time. Only an authentication failure refuses: a network error or a missing
+/// models endpoint says nothing about the key.
+async fn live_credential_refusal(
+    display_name: &str,
+    provider: &dyn biorouter::providers::base::Provider,
+) -> Option<String> {
+    live_credential_refusal_within(display_name, provider, LIVE_CHECK_TIMEOUT).await
+}
+
+async fn live_credential_refusal_within(
+    display_name: &str,
+    provider: &dyn biorouter::providers::base::Provider,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    match tokio::time::timeout(timeout, provider.fetch_supported_models()).await {
+        Ok(Err(ProviderError::Authentication(message))) => Some(format!(
+            "{display_name} rejected these credentials: {}",
+            message.trim()
+        )),
+        _ => None,
+    }
 }
 
 #[utoipa::path(
@@ -2042,6 +2191,145 @@ mod tests {
     use http::HeaderMap;
 
     use super::*;
+
+    /// W2-PRV-2. A check that sends a credential (`live`) or names new values
+    /// (`candidate`) needs the proof of a person on a daemon that holds a key; a
+    /// plain construction check stays open, as it was.
+    #[test]
+    fn a_credential_check_needs_a_person_where_one_can_be_proven() {
+        use biorouter_server::auth::UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        for (live, candidate) in [(true, false), (false, true), (true, true)] {
+            let refusal = credential_check_refusal(live, candidate, &Unproven)
+                .expect("an unproven caller is refused");
+            assert_eq!(refusal.0, StatusCode::FORBIDDEN);
+            assert!(credential_check_refusal(live, candidate, &Proven).is_none());
+            assert!(credential_check_refusal(live, candidate, &NoKeyInstalled).is_none());
+        }
+        assert!(credential_check_refusal(false, false, &Unproven).is_none());
+    }
+
+    /// W2-PRV-2. A candidate may only name settings the provider declares, and
+    /// is looked up the way `get_secret`/`get_param` look overrides up.
+    #[test]
+    fn a_candidate_names_only_the_providers_own_settings() {
+        use biorouter::providers::base::ConfigKey;
+        let mut metadata = ProviderMetadata::empty();
+        metadata.name = "anthropic".to_string();
+        metadata.display_name = "Anthropic".to_string();
+        metadata.config_keys = vec![
+            ConfigKey::new("ANTHROPIC_API_KEY", true, true, None),
+            ConfigKey::new(
+                "ANTHROPIC_HOST",
+                true,
+                false,
+                Some("https://api.anthropic.com"),
+            ),
+        ];
+
+        let overrides = candidate_overrides(
+            Some(&metadata),
+            "anthropic",
+            HashMap::from([("anthropic_api_key".to_string(), "sk-ant-x".to_string())]),
+        )
+        .expect("a declared key is a candidate");
+        assert_eq!(
+            overrides.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-ant-x")
+        );
+
+        for foreign in [
+            "BIOROUTER_PRIVACY_TIERS",
+            "OPENAI_API_KEY",
+            "BIOROUTER_PROVIDER",
+        ] {
+            let refusal = candidate_overrides(
+                Some(&metadata),
+                "anthropic",
+                HashMap::from([(foreign.to_string(), "x".to_string())]),
+            )
+            .expect_err("a setting the provider does not declare is refused");
+            assert_eq!(refusal.0, StatusCode::BAD_REQUEST, "{foreign}");
+        }
+        assert!(candidate_overrides(None, "nope", HashMap::new()).is_err());
+    }
+
+    /// A stand-in whose model listing answers what each test needs.
+    struct Listing(fn() -> Result<Option<Vec<String>>, ProviderError>);
+
+    #[async_trait::async_trait]
+    impl biorouter::providers::base::Provider for Listing {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "listing"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("test-model").unwrap()
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[biorouter::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (
+                biorouter::conversation::message::Message,
+                biorouter::providers::base::ProviderUsage,
+            ),
+            ProviderError,
+        > {
+            Err(ProviderError::ExecutionError("not used".to_string()))
+        }
+        async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
+            if (self.0)()
+                .is_err_and(|e| matches!(e, ProviderError::ServerError(ref m) if m == "hang"))
+            {
+                std::future::pending::<()>().await;
+            }
+            (self.0)()
+        }
+    }
+
+    /// W2-PRV-2. Only the provider's rejection of the credentials refuses the
+    /// check, with its own message; anything that says nothing about the key
+    /// (no listing, a server error, no answer in time) passes, as before.
+    #[tokio::test]
+    async fn only_a_rejected_credential_fails_the_live_check() {
+        let refused = live_credential_refusal(
+            "Anthropic",
+            &Listing(|| {
+                Err(ProviderError::Authentication(
+                    "Authentication failed. Status: 401. Response: invalid x-api-key".to_string(),
+                ))
+            }),
+        )
+        .await
+        .expect("a rejected key fails the check");
+        assert!(
+            refused.starts_with("Anthropic rejected these credentials:"),
+            "{refused}"
+        );
+        assert!(refused.contains("invalid x-api-key"), "{refused}");
+
+        for accepts in [
+            (|| Ok(Some(vec!["m".to_string()]))) as fn() -> _,
+            || Ok(None),
+            || Err(ProviderError::ServerError("503".to_string())),
+            || Err(ProviderError::ServerError("hang".to_string())),
+        ] {
+            assert_eq!(
+                live_credential_refusal_within(
+                    "Anthropic",
+                    &Listing(accepts),
+                    std::time::Duration::from_millis(200)
+                )
+                .await,
+                None
+            );
+        }
+    }
 
     /// W2-PRV-8. Privacy is a section of Settings > App, not a tab of its own, so
     /// a refusal that sends the person to "Settings > Privacy" names a place

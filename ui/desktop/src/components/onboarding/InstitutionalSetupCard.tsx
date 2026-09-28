@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useConfig } from '../ConfigContext';
 import { checkProvider } from '../../api';
+import { checkCandidateCredentials } from '../settings/providers/modal/subcomponents/handlers/DefaultSubmitHandler';
 import { Button } from '../ui/button';
 import { ArrowRight } from '../icons/ArrowRight';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
@@ -96,7 +97,15 @@ export default function InstitutionalSetupCard({
     setError(null);
 
     try {
+      // W2-PRV-2: the credentials are checked as candidates BEFORE anything is
+      // saved, so a pair or key the check refuses never replaces a working one.
+      // (Versa has no live model listing, so today the check can only build the
+      // provider with them; it is the order that the save now keeps.)
       if (flavor === 'bedrock') {
+        await checkCandidateCredentials('versa_bedrock', {
+          VERSA_BEDROCK_ACCESS_KEY_ID: bedrockAccessKey.trim(),
+          VERSA_BEDROCK_SECRET_ACCESS_KEY: bedrockSecretKey.trim(),
+        });
         await upsert('VERSA_BEDROCK_ACCESS_KEY_ID', bedrockAccessKey.trim(), true);
         await upsert('VERSA_BEDROCK_SECRET_ACCESS_KEY', bedrockSecretKey.trim(), true);
         await upsert('VERSA_BEDROCK_ENDPOINT', bedrockEndpoint.trim(), false);
@@ -105,6 +114,9 @@ export default function InstitutionalSetupCard({
         await upsert('BIOROUTER_PROVIDER', 'versa_bedrock', false);
         onSuccess('versa_bedrock');
       } else {
+        await checkCandidateCredentials('versa_azure', {
+          VERSA_AZURE_API_KEY: azureApiKey.trim(),
+        });
         await upsert('VERSA_AZURE_API_KEY', azureApiKey.trim(), true);
         await upsert('VERSA_AZURE_ENDPOINT', azureEndpoint.trim(), false);
         await upsert('VERSA_AZURE_API_VERSION', azureApiVersion.trim(), false);
@@ -113,11 +125,11 @@ export default function InstitutionalSetupCard({
         onSuccess('versa_azure');
       }
     } catch (e) {
-      setError(
-        e instanceof Error
-          ? `Could not connect: ${e.message}`
-          : 'Could not connect with these credentials.'
-      );
+      // The daemon's refusal arrives as its body text, not an `Error`, and it
+      // is the sentence that says what is wrong.
+      const said =
+        e instanceof Error ? e.message : typeof e === 'string' && e.trim() ? e.trim() : null;
+      setError(said ? `Could not connect: ${said}` : 'Could not connect with these credentials.');
     } finally {
       setIsLoading(false);
     }

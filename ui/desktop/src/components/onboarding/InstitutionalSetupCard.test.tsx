@@ -140,4 +140,36 @@ describe('InstitutionalSetupCard', () => {
       ['BIOROUTER_PROVIDER', 'versa_bedrock', false],
     ]);
   });
+
+  /**
+   * W2-PRV-2: the key was saved over the working one and only then checked.
+   * It is now checked as a candidate first, and a refusal saves nothing and
+   * shows the daemon's sentence.
+   */
+  it('checks the key as a candidate before saving anything', async () => {
+    await connectVersaAzure();
+    expect(mockCheckProvider.mock.calls[0][0]).toMatchObject({
+      body: { provider: 'versa_azure', live: true, candidate: { VERSA_AZURE_API_KEY: 'a-key' } },
+    });
+    expect(mockCheckProvider.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUpsert.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('saves nothing when the key is refused, and says why', async () => {
+    mockCheckProvider.mockRejectedValueOnce(
+      'Versa API Azure rejected these credentials: Invalid client id or secret'
+    );
+    const onSuccess = vi.fn();
+    render(<InstitutionalSetupCard onSuccess={onSuccess} />);
+    fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
+    fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Azure OpenAI/i }));
+    expect(
+      await screen.findByText(
+        'Could not connect: Versa API Azure rejected these credentials: Invalid client id or secret'
+      )
+    ).toBeInTheDocument();
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
 });

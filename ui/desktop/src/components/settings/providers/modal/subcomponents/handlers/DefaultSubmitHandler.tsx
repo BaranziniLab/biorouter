@@ -1,5 +1,37 @@
-import { checkProvider } from '../../../../../../api';
+import { checkProvider, type CheckProviderRequest } from '../../../../../../api';
+import { userActionHeaders } from '../../../../../../utils/userAction';
 import { coerceConfigKeyValue } from '../../../configKeyValue';
+
+/**
+ * W2-PRV-2 — `/config/check_provider`'s live, pre-save form.
+ *
+ * `candidate` holds the values about to be saved; the daemon builds the provider
+ * with them as task-local overrides and, with `live`, makes one authenticated
+ * call (listing models). Nothing is written by the check, so a key the provider
+ * rejects never replaces the working one: the save below happens only after it
+ * passes. A provider with no secret or no live listing passes as before.
+ *
+ * Typed here until the generated client carries the two fields.
+ */
+type LiveCheckRequest = CheckProviderRequest & {
+  live: boolean;
+  candidate: Record<string, string>;
+};
+
+/** Check `values` for `providerName` before any of them is saved. Throws the refusal. */
+export async function checkCandidateCredentials(
+  providerName: string,
+  values: Record<string, string>
+): Promise<void> {
+  const body: LiveCheckRequest = { provider: providerName, live: true, candidate: values };
+  await checkProvider({
+    body,
+    // The daemon refuses a live or candidate check that cannot prove a person
+    // asked, because it can send a credential to a host the candidate names.
+    headers: await userActionHeaders(),
+    throwOnError: true,
+  });
+}
 
 /**
  * Standalone function to submit provider configuration
@@ -55,34 +87,34 @@ export const providerConfigSubmitHandler = async (
     }
   }
 
-  const upsertPromises = parameters.map(
-    async (parameter: {
-      name: string;
-      required?: boolean;
-      default?: unknown;
-      secret?: boolean;
-    }) => {
-      if (!configValues[parameter.name] && !parameter.required) {
-        return;
-      }
-
-      const value =
-        configValues[parameter.name] !== undefined
-          ? configValues[parameter.name]
-          : parameter.default;
-
-      if (value === undefined || value === null) {
-        return;
-      }
-
-      const configKey = `${parameter.name}`;
-      const isSecret = parameter.secret === true;
-
-      await upsertFn(configKey, coerceConfigKeyValue(parameter, value), isSecret);
+  // What this save will write, decided once, so the check below is of exactly
+  // these values.
+  const writes = parameters.flatMap((parameter) => {
+    if (!configValues[parameter.name] && !parameter.required) {
+      return [];
     }
-  );
+    const value =
+      configValues[parameter.name] !== undefined ? configValues[parameter.name] : parameter.default;
+    if (value === undefined || value === null) {
+      return [];
+    }
+    return [{ parameter, value }];
+  });
 
-  await Promise.all(upsertPromises);
+  // W2-PRV-2: checked BEFORE anything is saved. Only a save that carries a
+  // credential is checked this way; the rest is saved and built as before.
+  if (writes.some(({ parameter }) => parameter.secret === true)) {
+    await checkCandidateCredentials(
+      provider.name,
+      Object.fromEntries(writes.map(({ parameter, value }) => [parameter.name, String(value)]))
+    );
+  }
+
+  await Promise.all(
+    writes.map(({ parameter, value }) =>
+      upsertFn(parameter.name, coerceConfigKeyValue(parameter, value), parameter.secret === true)
+    )
+  );
   await checkProvider({
     body: { provider: provider.name },
     throwOnError: true,

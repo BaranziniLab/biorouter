@@ -546,6 +546,83 @@ fn prompt_unlisted_model(
     Ok(model.trim().to_string())
 }
 
+/// W2-PRV-2 — a provider's settings as they were before `configure` changed
+/// them. `configure` stores each key as it is typed and only then asks the
+/// provider (a model listing, then one tool call), so a key the provider
+/// rejected had already replaced the working one. Captured before the first
+/// write, and put back when the provider refuses what was typed.
+struct PreviousProviderSettings {
+    keys: Vec<(String, bool, Option<Value>)>,
+}
+
+impl PreviousProviderSettings {
+    /// The stored value of every setting in `keys`, from the config file and
+    /// the secret store only: an environment variable is not a saved value.
+    fn capture(config: &Config, keys: &[biorouter::providers::base::ConfigKey]) -> Self {
+        let values = config.all_values().unwrap_or_default();
+        let secrets = if keys.iter().any(|key| key.secret) {
+            config.all_secrets().unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        Self {
+            keys: keys
+                .iter()
+                .map(|key| {
+                    let stored = if key.secret {
+                        secrets.get(&key.name)
+                    } else {
+                        values.get(&key.name)
+                    };
+                    (key.name.clone(), key.secret, stored.cloned())
+                })
+                .collect(),
+        }
+    }
+
+    /// Put back every setting that changed since [`Self::capture`], removing
+    /// one that did not exist then. Returns whether anything was put back.
+    fn restore(&self, config: &Config) -> anyhow::Result<bool> {
+        let values = config.all_values().unwrap_or_default();
+        let secrets = if self.keys.iter().any(|(_, secret, _)| *secret) {
+            config.all_secrets().unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        let mut restored = false;
+        for (name, secret, previous) in &self.keys {
+            let now = if *secret {
+                secrets.get(name)
+            } else {
+                values.get(name)
+            };
+            if now == previous.as_ref() {
+                continue;
+            }
+            let result = match previous {
+                Some(value) => config.set(name, value, *secret),
+                None if *secret => config.delete_secret(name),
+                None => config.delete(name),
+            };
+            match result {
+                Ok(()) | Err(ConfigError::FallbackToFileStorage) => restored = true,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(restored)
+    }
+
+    /// [`Self::restore`], said to the person, after the provider refused.
+    fn restore_after_refusal(&self, config: &Config, display_name: &str) -> anyhow::Result<()> {
+        if self.restore(config)? {
+            let _ = cliclack::log::info(format!(
+                "Your previous {display_name} settings were kept; nothing you typed was saved."
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn try_store_secret(config: &Config, key_name: &str, value: String) -> anyhow::Result<bool> {
     match config.set_secret(key_name, &value) {
         Ok(_) => Ok(true),
@@ -608,6 +685,10 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     // reads it while they can still pick something else — and unconditionally on
     // the master privacy switch, which turns off enforcement and not the truth.
     print_non_private_model_disclosure(provider_meta)?;
+
+    // W2-PRV-2: before the first write, so a key the provider refuses below
+    // never replaces the one that worked.
+    let previous = PreviousProviderSettings::capture(config, &provider_meta.config_keys);
 
     // Configure required provider keys
     for key in &provider_meta.config_keys {
@@ -777,20 +858,26 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
 
     let spin = spinner();
     spin.start("Attempting to fetch supported models...");
-    let models_res = {
-        let temp_model_config = ModelConfig::new(&provider_meta.default_model)?;
-        let temp_provider = create(provider_name, temp_model_config).await?;
-        retry_operation(&RetryConfig::default(), || async {
-            temp_provider.fetch_recommended_models().await
-        })
-        .await
+    let temp_model_config = ModelConfig::new(&provider_meta.default_model)?;
+    let temp_provider = match create(provider_name, temp_model_config).await {
+        Ok(provider) => provider,
+        Err(error) => {
+            spin.stop(style("The provider could not be set up").red());
+            previous.restore_after_refusal(config, &provider_meta.display_name)?;
+            return Err(error);
+        }
     };
+    let models_res = retry_operation(&RetryConfig::default(), || async {
+        temp_provider.fetch_recommended_models().await
+    })
+    .await;
     spin.stop(style("Model fetch complete").green());
 
     // Select a model: on fetch error show styled error and abort; if Some(models), show list; if None, free-text input
     let model: String = match models_res {
         Err(e) => {
             // Provider hook error
+            previous.restore_after_refusal(config, &provider_meta.display_name)?;
             cliclack::outro(style(e.to_string()).on_red().white())?;
             return Ok(false);
         }
@@ -822,6 +909,7 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
         }
         Err(e) => {
             spin.stop(style(e.to_string()).red());
+            previous.restore_after_refusal(config, &provider_meta.display_name)?;
             cliclack::outro(style("Failed to configure provider: init chat completion request with tool did not succeed.").on_red().white())?;
             Ok(false)
         }
@@ -2421,5 +2509,59 @@ mod max_turns_tests {
         }
         assert_eq!(parse_max_turns("1"), Ok(1));
         assert_eq!(parse_max_turns(" 250 "), Ok(250));
+    }
+}
+
+#[cfg(test)]
+mod previous_provider_settings_tests {
+    use super::PreviousProviderSettings;
+    use biorouter::config::Config;
+    use biorouter::providers::base::ConfigKey;
+
+    /// W2-PRV-2: a key the provider refused had already replaced the working
+    /// one. Whatever `configure` wrote is put back to what was saved before,
+    /// and a setting that did not exist before is removed again.
+    #[test]
+    fn a_refused_setup_leaves_the_saved_settings_as_they_were() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+        config
+            .set_secret("W2PRV2_PROBE_API_KEY", &"working-key")
+            .unwrap();
+        config
+            .set_param("W2PRV2_PROBE_HOST", "https://api.example.test")
+            .unwrap();
+        let keys = vec![
+            ConfigKey::new("W2PRV2_PROBE_API_KEY", true, true, None),
+            ConfigKey::new("W2PRV2_PROBE_HOST", true, false, None),
+            ConfigKey::new("W2PRV2_PROBE_ORG", false, false, None),
+        ];
+
+        let previous = PreviousProviderSettings::capture(&config, &keys);
+        config
+            .set_secret("W2PRV2_PROBE_API_KEY", &"typo-key")
+            .unwrap();
+        config
+            .set_param("W2PRV2_PROBE_HOST", "https://elsewhere.test")
+            .unwrap();
+        config.set_param("W2PRV2_PROBE_ORG", "new-org").unwrap();
+
+        assert!(previous.restore(&config).unwrap());
+        assert_eq!(
+            config.get_secret::<String>("W2PRV2_PROBE_API_KEY").unwrap(),
+            "working-key"
+        );
+        assert_eq!(
+            config.get_param::<String>("W2PRV2_PROBE_HOST").unwrap(),
+            "https://api.example.test"
+        );
+        assert!(config.get_param::<String>("W2PRV2_PROBE_ORG").is_err());
+
+        // Nothing changed since: nothing to put back.
+        assert!(!previous.restore(&config).unwrap());
     }
 }
