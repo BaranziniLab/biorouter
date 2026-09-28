@@ -196,7 +196,7 @@ export function WorkspaceMenu({
   // Never the transport's words (NEW-1): the daemon's saved `last_error` for an SSH drop is its
   // record ("Crew SSH failure [ssh_eof; …]"), read here by its typed code, or plainly.
   const errorContext = {
-    failureHost: connectFailureHost(lastConnectFailure),
+    failureHost: connectFailureHost(lastConnectFailure, connection),
     user: sshUsername(connection.ssh_target) ?? joinContext.username ?? null,
     hosts: isHost ? true : (joinContext.hosts ?? null),
     hostName: joinContext.hostDisplayName ?? joinContext.hostUsername ?? null,

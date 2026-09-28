@@ -519,8 +519,15 @@ export const trustCopy = {
   copied: 'Copied',
   copyFailed: 'Copy failed',
   detailsFallbackLabel: 'details',
-  /** The first lines of "Copy details for IT"; OpenSSH's own words follow. */
-  detailsHeader: (host: string, problem: string) => [`Server: ${host}`, `Problem: ${problem}`],
+  /**
+   * The first lines of "Copy details for IT"; OpenSSH's own words follow. `address` is the saved
+   * login's server when `host` is the person's own alias for it, which IT would not know.
+   */
+  detailsHeader: (host: string, problem: string, address: string | null = null) => [
+    `Server: ${host}`,
+    ...(address ? [`Address: ${address}`] : []),
+    `Problem: ${problem}`,
+  ],
   changedProblem: 'The server’s host key changed since Crew last connected.',
   workspaceProblem: 'The server answered with a different workspace key than the one saved.',
 } as const;

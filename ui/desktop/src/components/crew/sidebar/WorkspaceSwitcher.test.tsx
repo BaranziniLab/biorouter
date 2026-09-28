@@ -351,6 +351,50 @@ describe('WorkspaceSwitcher', () => {
     expect(menu).not.toHaveTextContent(/ssh_eof|child_before_cleanup/);
   });
 
+  // W2-UIW-3, DW-03: the daemon names the destination's own host on a host-key failure too, as
+  // OpenSSH writes it. The menu names that server by the person's alias, and only a separate hop
+  // (a jump host) by the name OpenSSH gave it.
+  it('names the server by its alias on a host-key failure, and a jump host by its own name', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_alice@52.33.141.141',
+      port: 2222,
+      server_label: 'lab-server',
+      status: 'disconnected' as const,
+    };
+    const failure = (host: string) => ({
+      kind: 'host_key_unknown' as const,
+      message: 'Host key verification failed.',
+      code: 'crew_ssh_host_key_unknown',
+      host,
+    });
+    const { unmount } = renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        status: 'cant-connect',
+        connection: labelled,
+        lastConnectFailure: failure('[52.33.141.141]:2222'),
+      })
+    );
+    let { menu } = await openMenu();
+    expect(within(menu).getByText(connectionBarCopy.cantVerify('lab-server'))).toBeInTheDocument();
+    expect(menu).not.toHaveTextContent('52.33.141.141');
+    unmount();
+
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        status: 'cant-connect',
+        connection: labelled,
+        lastConnectFailure: failure('gate.example.edu'),
+      })
+    );
+    ({ menu } = await openMenu());
+    expect(
+      within(menu).getByText(connectionBarCopy.cantVerify('gate.example.edu'))
+    ).toBeInTheDocument();
+  });
+
   it('lists the workspace items, the connection tools, and Add a workspace', async () => {
     renderWithCrew(<WorkspaceSwitcher />);
     const { menu } = await openMenu();

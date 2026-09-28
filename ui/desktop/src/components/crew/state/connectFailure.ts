@@ -1,4 +1,5 @@
 import { CrewHttpError } from '../crewApi';
+import { connectionServer } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import type { LastConnectFailure } from './types';
 
@@ -159,18 +160,48 @@ export function classifyConnectFailure(failure: unknown): LastConnectFailure {
 }
 
 /**
- * A classified failure with the hop OpenSSH named, when the daemon sent one (W2-DMN-5): a jump
- * host's unknown or changed key concerns the jump host, not the destination. Read through
- * {@link connectFailureHost}.
+ * A classified failure with the host OpenSSH named, when the daemon sent one (W2-DMN-5). It may be
+ * a jump host or the destination itself. Read through {@link connectFailureHost}, never directly.
  */
 export interface ClassifiedConnectFailure extends LastConnectFailure {
   host?: string;
 }
 
-/** The host a failure concerns, when the daemon named one; `null` to name the server instead. */
-export function connectFailureHost(failure: LastConnectFailure | null | undefined): string | null {
+/**
+ * A host name as OpenSSH prints it, reduced to what identifies the machine: lower case, without
+ * the `[addr]:port` wrapping it uses off port 22 (`[52.33.141.141]:2222`), and without brackets
+ * around an IPv6 address.
+ */
+function bareHost(value: string): string {
+  const lowered = value.trim().toLowerCase();
+  const bracketed = /^\[([^\]]*)\](?::\d+)?$/.exec(lowered);
+  return (bracketed ? bracketed[1] : lowered).replace(/\.$/, '');
+}
+
+/**
+ * The hop a failure concerns when it is NOT the saved server, such as a jump host whose key could
+ * not be verified (W2-DMN-5); `null` to name the server as the rest of Crew does, by
+ * `serverLabel` (D-ALIAS, DW-03).
+ *
+ * The daemon sends `host` for every failure OpenSSH names a host in, the destination's own
+ * included, and that name is the RESOLVED one: the `HostName` behind an alias, written
+ * `[addr]:port` off port 22. Passed on as it came, a person who calls `crew_alice@52.33.141.141`
+ * lab-server read "Can't verify [52.33.141.141]:2222" on the trust screen, in the bar and in the
+ * menu, while every other surface said lab-server. So the named host is compared with the saved
+ * login's server, the way OpenSSH writes it, and only a different one is named.
+ *
+ * ⚠ When the saved login is itself an SSH alias (`crew_alice@lab-server`), this side does not know
+ * the address it resolves to, so a failure naming that address still reads as a separate hop. Only
+ * the daemon, which resolves the alias, can tell the two apart.
+ */
+export function connectFailureHost(
+  failure: LastConnectFailure | null | undefined,
+  connection: { ssh_target?: string | null } | null | undefined
+): string | null {
   const host = (failure as ClassifiedConnectFailure | null | undefined)?.host;
-  return typeof host === 'string' && host ? host : null;
+  if (typeof host !== 'string' || !host) return null;
+  const destination = connectionServer({ id: '', ssh_target: connection?.ssh_target ?? '' });
+  return destination && bareHost(host) === bareHost(destination) ? null : host;
 }
 
 /**

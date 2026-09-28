@@ -448,6 +448,49 @@ describe('ConnectionBar', () => {
     expect(bar()).not.toHaveTextContent(/hpc\.example\.edu|password/);
   });
 
+  // W2-UIW-3, DW-03: the daemon's `host` names the destination too, by the address OpenSSH
+  // resolved and as `[addr]:port` off port 22. That is still the server the person calls
+  // lab-ubuntu; only a separate hop keeps its own name.
+  it('names the server by its label when the host a key failure names is the saved server', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'alice@52.33.141.141',
+      port: 2222,
+      server_label: 'lab-ubuntu',
+    };
+    installDaemon([labelled]);
+    renderCrew(Layout);
+    await verified();
+    let host = '[52.33.141.141]:2222';
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [labelled] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError(
+          TRANSPORT_TEXT,
+          400,
+          'crew_ssh_host_key_unknown',
+          undefined,
+          undefined,
+          undefined,
+          { host }
+        );
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(await screen.findByText(connectionBarCopy.cantVerify('lab-ubuntu'))).toBeInTheDocument();
+    expect(bar()).not.toHaveTextContent('52.33.141.141');
+
+    host = 'gate.example.edu';
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(
+      await screen.findByText(connectionBarCopy.cantVerify('gate.example.edu'))
+    ).toBeInTheDocument();
+  });
+
   it('says any other SSH failure plainly — never the transport’s words — with Try again (NEW-1)', async () => {
     renderCrew(Layout);
     await verified();

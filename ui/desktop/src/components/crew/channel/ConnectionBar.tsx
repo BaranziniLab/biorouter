@@ -198,7 +198,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   const host = serverLabel(connection) || connection?.name || '';
   const joinContext = useJoinContext(connectionId);
   const errorContext: ConnectErrorContext = {
-    failureHost: connectFailureHost(failure),
+    failureHost: connectFailureHost(failure, connection),
     user: sshUsername(connection?.ssh_target) ?? joinContext.username ?? null,
     hosts: crew.isHost ? true : (joinContext.hosts ?? null),
     hostName: joinContext.hostDisplayName ?? joinContext.hostUsername ?? null,
