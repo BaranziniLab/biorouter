@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -15,7 +16,7 @@ import {
   subscribeSessionNameChanges,
 } from '../../../utils/sessionNameSync';
 import { grantDestinationLabel, sessionGrantState, type CrewSessionGrant } from '../api/grants';
-import { AlertCircle } from '../../icons/app-icons';
+import { AlertCircle, AlertTriangle } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
@@ -27,10 +28,24 @@ import {
   channelNamesAcrossTeams,
   connectionNames,
   identityCopy,
+  isMachineIdShaped,
   sanitizeDisplayText,
   usePeopleDirectory,
   type DaemonPersonLabels,
 } from '../identity';
+import { agentCopy } from '../pane/copy';
+import { ModelTierMarks } from '../pane/CrewModelPicker';
+import {
+  knownInstitutions,
+  modelDisplay,
+  modelMismatch,
+  modelRefusalText,
+  protectedRunContext,
+  publicModelRefusal,
+  runInstitution,
+  workspaceInstitutionLabel,
+} from '../pane/presentation';
+import { useConfiguredModels } from '../pane/useConfiguredModels';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { accessStatusOf, accessStatusTone, channelLabels, chatTitleOf } from './accessRows';
 import { rememberChannelLabels } from './chatCrewAccess';
@@ -41,6 +56,7 @@ import {
   RevokeResultNote,
   useConfirmedAfterWait,
 } from './RevokeControls';
+import { useChatModel } from './useChatModel';
 import {
   announceGrantsChanged,
   revocationUnconfirmed,
@@ -210,6 +226,12 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   const revokeButton = useRef<HTMLButtonElement>(null);
   const allowButton = useFocusAllowOnConsent();
   const cachedTitle = useKnownChatTitle(sessionId);
+  // The chat's own model, which the grant binds (AG-F1, SF-F5): named in the consent, and checked
+  // before Allow as Ask my agent checks its model before Start. Outside the app's configuration (a
+  // test harness) nothing is known about it, and the pane says nothing about it.
+  const models = useConfiguredModels({ optional: true });
+  const chatModel = useChatModel(sessionId);
+  const blockId = useId();
 
   // A new pane intent (Review, Manage, Grant again, a row) or another chat starts fresh.
   useEffect(() => {
@@ -298,6 +320,47 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
       )
     : consentExtras;
 
+  // The workspace and the chat's model, as the consent names them and the checks read them. The
+  // workspace as Ask my agent names it: its own name, else the saved connection's.
+  const signedName = sanitizeDisplayText(view?.workspace.name);
+  const workspace =
+    (signedName && !isMachineIdShaped(signedName) ? signedName : '') ||
+    (connectionId && workspaces.get(connectionId)) ||
+    identityCopy.unnamedWorkspace;
+  const chatProvider = chatModel
+    ? models.providers?.find((item) => item.name === chatModel.provider)
+    : undefined;
+  const shownModel = chatModel ? modelDisplay(chatModel, chatProvider) : null;
+  const known = knownInstitutions(models.providers);
+  const checkContext = {
+    connection: controller.connection,
+    snapshot: view,
+    channel,
+    contextChannels: consentExtras,
+  };
+  const institution = runInstitution({ ...checkContext, known });
+  const mismatch = modelMismatch(chatProvider, institution);
+  // What the daemon would refuse this chat's model for, said before Allow, which it disables
+  // (SF-F5): the words Ask my agent says before Start.
+  const mismatchText =
+    mismatch && institution && shownModel
+      ? mismatch.affiliation
+        ? agentCopy.institutionMismatch(
+            shownModel.model,
+            mismatch.affiliation,
+            workspace,
+            institution.label
+          )
+        : agentCopy.institutionUnstated(shownModel.model, workspace, institution.label)
+      : null;
+  const publicText = publicModelRefusal({
+    ...checkContext,
+    provider: chatProvider,
+    workspace,
+    channelLabel: (item) => destinations.get(item.id) ?? channelName(item),
+  });
+  const blockText = mismatchText ?? publicText;
+
   const openChat = () => navigate(chatRoute(sessionId));
 
   const revoke = async () => {
@@ -336,10 +399,18 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     announceGrantsChanged({ connectionId, sessionId, change: 'granted' });
   };
 
+  // A model refusal in the words Ask my agent uses (SF-F4, SF-F5); any other as the daemon words it.
   const errorNote =
     showError && controller.error ? (
       <Note tone="danger" icon={AlertCircle} role="alert" testId="crew-chat-access-error">
-        {controller.error.message}
+        {modelRefusalText({
+          error: controller.error,
+          mismatch: mismatchText,
+          publicText,
+          model: shownModel?.model ?? agentCopy.model,
+          institution:
+            institution?.label ?? workspaceInstitutionLabel(controller.connection, view, known),
+        }) ?? controller.error.message}
       </Note>
     ) : null;
 
@@ -401,8 +472,9 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     );
   }
 
-  // You, at the authority point: whom the chat posts as. Only for this connection's grants.
-  const me = dir.me ? <PersonName person={dir.me} context="authority" dir={dir} /> : null;
+  // Whose agent the chat posts as, at the authority point (AG-F1): its posts appear as "Dave
+  // Patel's agent", never as Dave. Only for this connection's grants.
+  const me = dir.me ? <PersonName person={dir.me} context="authority" dir={dir} agent you /> : null;
   const summaryLines = (future: boolean, where: string, extras: string[], who: ReactNode) => (
     <ul className="flex flex-col gap-1 text-secondary text-text-default">
       <li>
@@ -585,6 +657,27 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
         <p className="text-label text-text-default">{accessCopy.willBeAble(chat)}</p>
         {summaryLines(true, here, consentExtras, me)}
+        {/* Where and with what (AG-F1): the workspace, and the chat's model with its tier, as
+            Ask my agent names a model. */}
+        <dl className="crew-consent-facts text-secondary">
+          <dt className="text-text-muted">{accessCopy.consentWorkspace}</dt>
+          <dd className="min-w-0 break-words text-text-default">{workspace}</dd>
+          {shownModel ? (
+            <>
+              <dt className="text-text-muted">{accessCopy.consentModel}</dt>
+              <dd className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-text-default">
+                <span className="min-w-0 break-words">
+                  {agentCopy.modelChoice(shownModel.model, shownModel.provider)}
+                </span>
+                <ModelTierMarks
+                  provider={chatProvider}
+                  privateOnly={protectedRunContext(checkContext)}
+                />
+              </dd>
+            </>
+          ) : null}
+        </dl>
+        <p className="text-supporting text-text-muted">{accessCopy.fixedOnFirstAccess}</p>
         <p className="text-supporting text-text-muted">{accessCopy.expiry}</p>
         <AlsoRead
           contextChannels={contextChannels}
@@ -592,6 +685,12 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           currentChannelId={channelId}
           currentChannelName={here}
         />
+        {/* Before Allow, which it disables: what the daemon would refuse this chat's model for. */}
+        {blockText ? (
+          <Note tone="warning" icon={AlertTriangle} testId="crew-chat-access-model-refused">
+            <span id={blockId}>{blockText}</span>
+          </Note>
+        ) : null}
         {errorNote}
         <div className="flex justify-end">
           {/* It names the chat, and a chat's title can be long: the label wraps rather than
@@ -605,7 +704,8 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
             onKeyDown={onAllowKeyDown}
             type="submit"
             className="h-auto min-h-control-md w-full min-w-0 max-w-full whitespace-normal break-words py-1.5 text-center"
-            disabled={controller.isPending('grant')}
+            disabled={controller.isPending('grant') || blockText !== null}
+            aria-describedby={blockText ? blockId : undefined}
           >
             {chat && channel ? accessCopy.allowChat(chat, here) : accessCopy.allow}
           </Button>

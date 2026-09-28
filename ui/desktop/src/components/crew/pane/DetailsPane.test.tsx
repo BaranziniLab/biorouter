@@ -446,6 +446,22 @@ describe('DetailsPane', () => {
       await waitFor(() => expect(currentCrew().error?.message).toBe('late refusal'));
     });
 
+    // SF-F5: an institution refusal from Allow stayed as a red banner over #general once the
+    // Chat access pane had closed.
+    it('goes for Chat access too when the pane closes', async () => {
+      const user = userEvent.setup();
+      renderCrew(Layout);
+      const toggle = await ready();
+      await user.click(toggle);
+      await user.click(within(pane()).getByRole('tab', { name: paneCopy.tabs.access }));
+      await user.click(within(pane()).getByRole('button', { name: 'Open chat access' }));
+      expect(currentCrew().ui.pane).toEqual({ mode: 'chat-access' });
+      act(() => currentCrew().reportError('not approved here', 'pane:chat-access'));
+      await user.click(within(pane()).getByRole('button', { name: paneCopy.closeChatAccess }));
+      await waitFor(() => expect(currentCrew().error).toBeNull());
+      expect(screen.queryByText('not approved here')).toBeNull();
+    });
+
     it('leaves every other source’s error alone', async () => {
       const user = userEvent.setup();
       renderCrew(Layout);

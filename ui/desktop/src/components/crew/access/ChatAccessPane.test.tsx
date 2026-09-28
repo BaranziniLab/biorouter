@@ -13,7 +13,9 @@ import { useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../../../api';
+import { announceSessionBinding } from '../../../utils/sessionBindingSync';
 import { announceSessionName, cacheSet } from '../../../utils/sessionNameSync';
+import { agentCopy } from '../pane/copy';
 import { CrewHttpError } from '../crewApi';
 import CrewView from '../CrewView';
 import { paneCopy } from '../pane/copy';
@@ -60,6 +62,26 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => mocks.navigate };
 });
+/**
+ * The app's configured providers, as the pane reads them to name and check the chat's model. Stable
+ * functions: a new one per render would refetch on every render. None configured by default, as a
+ * pane with nothing to check a model against.
+ */
+const config = vi.hoisted(() => {
+  const state = { providers: [] as unknown[] };
+  return {
+    state,
+    value: {
+      getProviders: async () => state.providers,
+      read: async () => '',
+      getProviderModels: async () => [],
+    },
+  };
+});
+vi.mock('../../ConfigContext', () => ({
+  useConfig: () => config.value,
+  usePrivacyTiersEnabled: () => true,
+}));
 
 const REVOKE_PATH = '/connections/conn-1/sessions/agent-1/revoke';
 const GRANT_PATH = '/connections/conn-1/sessions/agent-1/grant';
@@ -1110,5 +1132,152 @@ describe('chat access: a revoke waiting for the workspace (F3)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * AG-F1, SF-F5: the consent named no model and no workspace, said nothing of the access binding
+ * the chat for good, and offered Allow for a model the workspace refuses — the refusal came only
+ * after the click, in the daemon's words, and stayed over #general once the pane closed.
+ */
+describe('chat access: the chat’s model and workspace, before Allow', () => {
+  const versa = {
+    name: 'versa_azure',
+    is_configured: true,
+    resolved_tier: 'private',
+    affiliation: { kind: 'institutions', institutions: [{ id: 'ucsf', display_name: 'UCSF' }] },
+    metadata: { display_name: 'Versa', known_models: [{ name: 'gpt-5.5' }] },
+  };
+  const stanfordGateway = {
+    name: 'stanford_gateway',
+    is_configured: true,
+    resolved_tier: 'private',
+    affiliation: {
+      kind: 'institutions',
+      institutions: [{ id: 'stanford', display_name: 'Stanford' }],
+    },
+    metadata: { display_name: 'Stanford AI', known_models: [{ name: 'gpt-5.5' }] },
+  };
+  const openRouter = {
+    name: 'openrouter',
+    is_configured: true,
+    resolved_tier: 'public',
+    metadata: { display_name: 'OpenRouter', known_models: [{ name: 'free-model' }] },
+  };
+
+  /**
+   * The chat, as the chat store's cache holds it once the chat has loaded in this window: untitled,
+   * so Allow keeps its pinned name, and on `provider`'s `model` (none when omitted).
+   */
+  function chatOn(provider?: string, model?: string) {
+    cacheSet('agent-1', {
+      session: {
+        id: 'agent-1',
+        name: 'New chat',
+        ...(provider && model
+          ? { provider_name: provider, model_config: { model_name: model, toolshim: false } }
+          : {}),
+      } as unknown as Session,
+      messages: [],
+    });
+  }
+
+  const allow = () => within(pane()).getByRole('button', { name: accessCopy.allow });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    forgetUnconfirmedRevocations();
+    forgetChatAccessIntents();
+    config.state.providers = [];
+    chatOn();
+  });
+
+  it('names the workspace, the chat’s model and its tier, whose agent posts, and what the access fixes', async () => {
+    config.state.providers = [versa];
+    chatOn('versa_azure', 'gpt-5.5');
+    setup({});
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    expect(paneNode).toHaveTextContent('This chat will be able to');
+    expect(
+      within(paneNode)
+        .getAllByRole('term')
+        .map((term) => term.textContent)
+    ).toEqual([accessCopy.consentWorkspace, accessCopy.consentModel]);
+    expect(paneNode).toHaveTextContent(/Workspace\s*lab/);
+    await waitFor(() => expect(pane()).toHaveTextContent('gpt-5.5 · Versa'));
+    expect(pane().querySelector('[data-crew-model-tier="private"]')).not.toBeNull();
+    expect(pane()).toHaveTextContent(
+      'The first access fixes this chat’s workspace, channel and model.'
+    );
+    // Posts appear as the agent's, never as the person's own.
+    expect(pane()).toHaveTextContent("Post in #general as Alice Chen (@alice)'s agent");
+    expect(allow()).toBeEnabled();
+  });
+
+  it('disables Allow, with the reason, for a model the workspace’s institution has not approved', async () => {
+    config.state.providers = [stanfordGateway];
+    chatOn('stanford_gateway', 'gpt-5.5');
+    setup({});
+    await openPaneFromNote(accessCopy.noteReviewName);
+    const reason = agentCopy.institutionMismatch('gpt-5.5', 'Stanford', 'lab', 'ucsf');
+    expect(await within(pane()).findByText(reason)).toBeInTheDocument();
+    expect(allow()).toBeDisabled();
+    expect(allow()).toHaveAccessibleDescription(reason);
+  });
+
+  it('disables Allow, with the reason, for a public model in a Private workspace', async () => {
+    config.state.providers = [openRouter];
+    chatOn('openrouter', 'free-model');
+    setup({});
+    await openPaneFromNote(accessCopy.noteReviewName);
+    const reason = agentCopy.publicWorkspace('lab');
+    expect(await within(pane()).findByText(reason)).toBeInTheDocument();
+    expect(allow()).toBeDisabled();
+  });
+
+  it('follows a model switched in the chat', async () => {
+    config.state.providers = [versa, openRouter];
+    chatOn('versa_azure', 'gpt-5.5');
+    setup({});
+    await openPaneFromNote(accessCopy.noteReviewName);
+    await waitFor(() => expect(pane()).toHaveTextContent('gpt-5.5 · Versa'));
+    expect(allow()).toBeEnabled();
+    act(() =>
+      announceSessionBinding({ sessionId: 'agent-1', provider: 'openrouter', model: 'free-model' })
+    );
+    expect(await within(pane()).findByText(agentCopy.publicWorkspace('lab'))).toBeInTheDocument();
+    expect(allow()).toBeDisabled();
+  });
+
+  it('words the daemon’s institution refusal as Ask my agent does, never in its internal words', async () => {
+    // The pane cannot tell who approved this model, so it lets Allow through to the daemon.
+    config.state.providers = [];
+    setup({
+      grant: () => {
+        throw new CrewHttpError(
+          "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution",
+          400,
+          'crew_request_refused'
+        );
+      },
+    });
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.allow }));
+    expect(await within(paneNode).findByRole('alert')).toHaveTextContent(
+      agentCopy.institutionRefused(agentCopy.model, 'ucsf')
+    );
+    expect(paneNode).not.toHaveTextContent(/resolved affiliation/);
+  });
+
+  it('shows a coded refusal’s own sentence from a daemon that words it', async () => {
+    const sentence = 'This connection is for stanford, but lab belongs to ucsf.';
+    setup({
+      grant: () => {
+        throw new CrewHttpError(sentence, 400, 'crew_institution_mismatch');
+      },
+    });
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.allow }));
+    expect(await within(paneNode).findByRole('alert')).toHaveTextContent(sentence);
   });
 });

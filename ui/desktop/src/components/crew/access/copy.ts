@@ -64,6 +64,13 @@ export const accessCopy = {
   post: (channel: string) => `Post in ${channel}`,
   posts: (channel: string) => `Posts in ${channel}`,
   expiry: 'Access ends when you revoke it, or after an hour.',
+  /**
+   * The consent's facts (AG-F1): the workspace, and the chat's model with its tier. Access binds
+   * the chat to both, and to the channel, for good (`carry_previous_grant` in the daemon).
+   */
+  consentWorkspace: 'Workspace',
+  consentModel: 'Model',
+  fixedOnFirstAccess: 'The first access fixes this chat’s workspace, channel and model.',
   alsoRead: 'Also read',
   /** Beside Advanced while it is closed: what the chat reads, not what it doesn't (Q3-30). */
   alsoReadSummary: (count: number, channel: string) =>

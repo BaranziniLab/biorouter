@@ -17,6 +17,20 @@ export interface ConfiguredModels {
   failure: string | null;
 }
 
+/**
+ * The app's configuration, or `null` outside a `ConfigProvider` when `optional` — for a surface
+ * that only adds to what it says with it (the Chat access pane's model line), never one that needs
+ * it. `useConfig` reads the context before it throws, so the hook order is the same either way.
+ */
+function useOptionalConfig(optional: boolean): ReturnType<typeof useConfig> | null {
+  try {
+    return useConfig();
+  } catch (failure) {
+    if (optional) return null;
+    throw failure;
+  }
+}
+
 /** A provider's display name, falling back to its key for a row with no metadata. */
 export function providerLabel(provider: ProviderDetails | undefined, fallback = ''): string {
   const name = provider?.metadata?.display_name;
@@ -30,8 +44,10 @@ export function providerLabel(provider: ProviderDetails | undefined, fallback = 
  * `providers` is an empty list, which the pane turns into "No models are set up." A failed read is
  * reported separately and never claims that nothing is set up.
  */
-export function useConfiguredModels(): ConfiguredModels {
-  const { getProviders, read } = useConfig();
+export function useConfiguredModels(options: { optional?: boolean } = {}): ConfiguredModels {
+  const config = useOptionalConfig(options.optional === true);
+  const getProviders = config?.getProviders;
+  const read = config?.read;
   const [state, setState] = useState<ConfiguredModels>({
     providers: null,
     defaults: null,
@@ -39,6 +55,7 @@ export function useConfiguredModels(): ConfiguredModels {
   });
 
   useEffect(() => {
+    if (!getProviders || !read) return;
     let active = true;
     void Promise.all([
       getProviders(false),

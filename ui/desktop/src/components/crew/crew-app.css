@@ -44,6 +44,7 @@
        .crew-access-row-text                    title + destination (>= 10rem)
        .crew-access-row-end                     badge + actions, kept together
          .crew-access-row-actions               Open, Revoke / Retry / Stop, ⋯
+     .crew-consent-facts                      Chat access's Workspace and Model rows
 
    The skin of each column (the sidebar's `bg-sidebar` + hairline, a header's
    `h-chrome` band) belongs to the component inside it. This file owns the
@@ -454,6 +455,18 @@
    shrinks, and it may wrap inside itself (badge over actions) rather than
    grow past the row, so `⋯` is never cut off. Order and names are the
    markup's; this only places them. */
+/* Chat access's consent facts (AG-F1): a label column as wide as its longest
+   label, and the value beside it, wrapping within the pane. */
+.crew-consent-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 0.75rem;
+  row-gap: 0.25rem;
+  align-items: baseline;
+  min-width: 0;
+  margin: 0;
+}
+
 .crew-access-row-line {
   display: flex;
   flex-wrap: wrap;
