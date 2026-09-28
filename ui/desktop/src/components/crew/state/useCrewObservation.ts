@@ -487,8 +487,16 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     direction: HistoryDirection;
   } | null>(null);
   const messagesNow = useRef<CrewMessage[]>([]);
-  /** The last page request added to the window: a request is answered once. */
+  /**
+   * The last page request added to the window: a request is answered once. Request IDs come from
+   * `pageRequestIds`, which never goes back, because `answeredPage` does not either: while IDs were
+   * counted from the request before (and so from 1 again after `resetWindow` set it to null), the
+   * first Load older after a channel switch, or after a newer page reached the live tail, had an
+   * ID already answered and was dropped with nothing on screen, and "Jump to first unread" waited
+   * for it forever.
+   */
   const answeredPage = useRef(0);
+  const pageRequestIds = useRef(0);
   const resetWindow = useCallback(() => {
     windowLimit.current = HISTORY_PAGE_SIZE;
     setReachesStart(undefined);
@@ -1478,14 +1486,14 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     resetWindow,
     generation,
   ]);
-  const loadOlder = useCallback(
-    () => setPageRequest((previous) => ({ id: (previous?.id ?? 0) + 1, direction: 'older' })),
-    []
-  );
-  const loadNewer = useCallback(
-    () => setPageRequest((previous) => ({ id: (previous?.id ?? 0) + 1, direction: 'newer' })),
-    []
-  );
+  const loadOlder = useCallback(() => {
+    pageRequestIds.current += 1;
+    setPageRequest({ id: pageRequestIds.current, direction: 'older' });
+  }, []);
+  const loadNewer = useCallback(() => {
+    pageRequestIds.current += 1;
+    setPageRequest({ id: pageRequestIds.current, direction: 'newer' });
+  }, []);
 
   // Presentation only: remember the last verified view so a re-verification can keep drawing it,
   // and so can coming back to Crew (`viewMemory`, Q4-04). A list is taken for the channel's only

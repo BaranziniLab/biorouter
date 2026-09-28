@@ -474,6 +474,109 @@ describe('an older page', () => {
     await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observers));
   });
 
+  /**
+   * W2-UIC-7: request IDs were counted from the request before, which a window reset clears, while
+   * the ID last answered only grew. So after one older page, the first Load older in another
+   * channel, or back at the live tail, reused an answered ID and was dropped: nothing was fetched
+   * and nothing said so.
+   */
+  describe('after the window was reset', () => {
+    const methods = { ...channel, id: 'channel-2', name: 'methods' };
+    const twoChannels = { ...snapshot, channels: [channel, methods] };
+    const historyAsks = () =>
+      mocks.crewRequest.mock.calls
+        .filter(([, method]) => method === 'messages.history')
+        .map(([, , params]) => params as Record<string, unknown>);
+
+    it('fetches the next older page in the channel it moved to', async () => {
+      mocks.crewRequest.mockImplementation(
+        async (_connection: string, method: string, params: Record<string, unknown>) =>
+          method === 'messages.history'
+            ? {
+                messages: [
+                  {
+                    ...message(`older-${String(params.channel_id)}`),
+                    channel_id: params.channel_id,
+                  },
+                ],
+                cursor: null,
+              }
+            : {}
+      );
+      render(
+        <MemoryRouter initialEntries={['/crew']}>
+          <Harness />
+        </MemoryRouter>
+      );
+      await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+      act(() => sessions[sessions.length - 1].receive(stateFrame({ snapshot: twoChannels })));
+      await waitFor(() => expect(crew.channelId).toBe(channel.id));
+      const openIn = async (channelId: string, id: string) => {
+        let session: Observation | undefined;
+        await waitFor(() => {
+          const open = sessions.filter(
+            (item) => item.channelId === channelId && !item.signal.aborted
+          );
+          session = open[open.length - 1];
+          expect(session).toBeDefined();
+        });
+        send(session!, stateFrame({ snapshot: twoChannels }));
+        send(session!, {
+          ...messagesFrame(id, { reset: true, remaining: 0, page_size: 200 }),
+          channel_id: channelId,
+          messages: [{ ...message(id), channel_id: channelId }],
+        });
+        await waitFor(() => expect(crew.messages.map((item) => item.id)).toEqual([id]));
+      };
+      await openIn(channel.id, 'a');
+
+      act(() => crew.loadOlder());
+      await waitFor(() =>
+        expect(crew.messages.map((item) => item.id)).toEqual([`older-${channel.id}`, 'a'])
+      );
+
+      act(() => crew.selectChannel(methods.id));
+      await waitFor(() => expect(crew.channelId).toBe(methods.id));
+      await openIn(methods.id, 'm');
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(historyAsks()).toHaveLength(2));
+      expect(historyAsks()[1]).toMatchObject({ channel_id: methods.id, before: 'sequence-m' });
+      await waitFor(() =>
+        expect(crew.messages.map((item) => item.id)).toEqual([`older-${methods.id}`, 'm'])
+      );
+      expect(crew.historyLoading).toBeNull();
+    });
+
+    it('fetches the next older page after a newer page brought the window back to the live tail', async () => {
+      const session = await openFullTail(200);
+      let older = 0;
+      mocks.crewRequest.mockImplementation(
+        async (_connection: string, method: string, params: Record<string, unknown>) => {
+          if (method !== 'messages.history') return {};
+          if (params.after) return { messages: [message('b')], cursor: null };
+          older += 1;
+          return { messages: pageOf(`old${older}`, 200), cursor: null };
+        }
+      );
+      for (const total of [201, 401, 600]) {
+        act(() => crew.loadOlder());
+        await waitFor(() => expect(crew.messages).toHaveLength(total));
+      }
+      act(() => crew.loadNewer?.());
+      await waitFor(() => expect(crew.historyBefore).toBeNull());
+      // The observer brings the live tail back; then an older page is asked for again.
+      const tail = await latestChannelObserver();
+      send(tail, messagesFrame('b', { reset: true, remaining: 0, page_size: 200 }));
+      await waitFor(() => expect(crew.messages.map((item) => item.id)).toEqual(['b']));
+      expect(session.signal.aborted).toBe(true);
+      const asked = historyAsks().length;
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(historyAsks()).toHaveLength(asked + 1));
+      expect(historyAsks()[asked]).toMatchObject({ before: 'sequence-b' });
+      await waitFor(() => expect(crew.messages).toHaveLength(201));
+    });
+  });
+
   it.each([
     ['a broker access refusal', refused('forbidden')],
     ['a stale cursor', refused('stale_cursor')],
