@@ -1712,9 +1712,7 @@ impl Ctx {
             "connection ID",
             str_field(connection, "id"),
         )];
-        if let Some(error) = str_field(connection, "last_error") {
-            out.push(format!("  Last error: {}", safe_text(error)));
-        }
+        out.extend(last_error_lines(connection));
         out
     }
 
@@ -1769,9 +1767,7 @@ impl Ctx {
         if let Some(file) = str_field(connection, "identity_file") {
             out.push(format!("  SSH key file: {}", safe_text(file)));
         }
-        if let Some(error) = str_field(connection, "last_error") {
-            out.push(format!("  Last error: {}", safe_text(error)));
-        }
+        out.extend(last_error_lines(connection));
         out.extend(self.detail_ids(connection, CONNECTION_IDS));
         out
     }
@@ -2437,6 +2433,23 @@ impl Ctx {
             }
             other => json_terminal_safe(other.to_string()),
         }
+    }
+}
+
+/// A saved connection's last error. When the daemon types it (`last_error_code`) with a code
+/// the connect failures share, the sentence that says what to do comes first and the daemon's
+/// own text follows as its details (a wave-1 follow-up to CLI-7); otherwise the text is shown
+/// as it is.
+fn last_error_lines(connection: &Value) -> Vec<String> {
+    let Some(error) = str_field(connection, "last_error") else {
+        return Vec::new();
+    };
+    match str_field(connection, "last_error_code").and_then(connect_failure_text) {
+        Some(sentence) => vec![
+            format!("  Last error: {sentence}"),
+            format!("    Details: {}", safe_text(error)),
+        ],
+        None => vec![format!("  Last error: {}", safe_text(error))],
     }
 }
 
@@ -3569,6 +3582,26 @@ mod tests {
         );
         assert_eq!(effective_mode(Some("public"), None), None);
         assert_eq!(effective_mode(Some("private"), None), Some("private"));
+    }
+
+    /// A last error the daemon typed with a connect code leads with what to do; an untyped
+    /// one, or one typed with a code of its own (`crew_membership_ended`), reads as it is.
+    #[test]
+    fn a_typed_last_error_says_what_to_do_first() {
+        let mut failed = connection();
+        failed["status"] = json!("disconnected");
+        failed["last_error"] = json!("Crew SSH failure [ssh_eof]: ssh exited");
+        failed["last_error_code"] = json!("crew_ssh_unreachable");
+        let rows = plain(&json!({"connections": [failed.clone()]}));
+        assert!(
+            rows.ends_with("  Last error: Couldn't reach the server. Check your network or your VPN, then connect again.\n    Details: Crew SSH failure [ssh_eof]: ssh exited"),
+            "{rows}"
+        );
+        failed["last_error"] = json!("This computer is no longer a member of lab.");
+        failed["last_error_code"] = json!("crew_membership_ended");
+        assert!(
+            plain(&failed).contains("  Last error: This computer is no longer a member of lab.")
+        );
     }
 
     #[test]
