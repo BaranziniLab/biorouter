@@ -23,6 +23,9 @@ import { preloadSessionList } from '../../utils/sessionListCache';
 import { preloadHomeActivity } from '../../utils/homeInsightsCache';
 import SidebarUpdateButton from './SidebarUpdateButton';
 import DaemonRestartNotice from './DaemonRestartNotice';
+import { Badge } from '../ui/badge';
+import { attentionBadgeText } from '../crew/attention/crewAttention';
+import { useCrewAttention } from '../crew/attention/useCrewAttention';
 import RecentChats from './RecentChats';
 import useSidebarSessions from './useSidebarSessions';
 
@@ -229,6 +232,16 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     navigateWithViewTransition(navigate, path);
   };
 
+  // Crew's unread messages across every connected workspace, and a notification when one
+  // arrives while this window is not showing Crew in front (M2). A clicked notification opens
+  // Crew, as the Crew item does, with that channel remembered.
+  const crewUnread = useCrewAttention({
+    onCrewRoute: currentPath === '/crew',
+    onOpenChannel: () => {
+      if (currentPath !== '/crew') handleNavigation('/crew');
+    },
+  });
+
   // A click opens the chat as its own tab; if it is already open anywhere the
   // reducer dedupes and just activates it. This is a cross-route entry, so it
   // keeps today's PUSH navigation — only in-strip tab clicks use replace, which
@@ -276,6 +289,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     const IconComponent = entry.icon;
     const isActive = isDestinationActive(entry);
     const isAction = entry.path === '/pair';
+    const unread = entry.path === '/crew' ? crewUnread : 0;
 
     return (
       <SidebarMenuItem key={entry.path}>
@@ -285,6 +299,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
             handleNavigation(entry.path);
             if (isAction) blurAfterPointerActivation(event);
           }}
+          aria-label={unread > 0 ? `${entry.label}, ${unread} unread` : undefined}
           onFocus={entry.path === '/' ? preloadHome : undefined}
           onPointerEnter={entry.path === '/' ? preloadHome : undefined}
           isActive={isActive}
@@ -304,6 +319,11 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               where the brand actually lives in that theme. */}
           <IconComponent className="h-4 w-4 text-sidebar-icon" />
           <span>{entry.label}</span>
+          {unread > 0 ? (
+            <Badge tone="accent" className="ml-auto tabular-nums" aria-hidden="true">
+              {attentionBadgeText(unread)}
+            </Badge>
+          ) : null}
         </SidebarMenuButton>
       </SidebarMenuItem>
     );

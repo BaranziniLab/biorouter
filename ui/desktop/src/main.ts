@@ -111,6 +111,12 @@ import {
   shareDroppedFile,
 } from './utils/crewSharePath';
 import { CREW_SHARE_DROPPED_FILE_CHANNEL } from './utils/crewSharePathBridge';
+import {
+  AttentionBadges,
+  AttentionThrottle,
+  attentionNotificationAllowed,
+  parseAttentionRequest,
+} from './components/crew/attention/attentionMain';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
@@ -1438,6 +1444,17 @@ const requestExistingDaemonApprovalSecret = async (runtime: {
 // address to the new instance when they agree. Every window is told where things stand over
 // `daemon-connection`, and the sidebar offers Reconnect and Quit and Reopen from then on.
 
+// M2: the dock badge across windows, and the one limit on Crew notifications.
+const crewAttentionBadges = new AttentionBadges();
+const crewAttentionThrottle = new AttentionThrottle();
+const applyCrewAttentionBadge = (count: number) => {
+  try {
+    app.setBadgeCount(count);
+  } catch (error) {
+    log.warn('[crew-attention] could not set the badge count:', error);
+  }
+};
+
 /** The attachment the controller reconnects through; set by the first shared `createChat`. */
 let sharedDaemonLink: SharedDaemonLink | undefined;
 const wiredDaemonLinks = new WeakSet<SharedDaemonLink>();
@@ -1720,7 +1737,10 @@ const createChat = async (
     const sheetWindowId = mainWindow.id;
     mainWindow.on('sheet-begin', () => crewSheetGate.sheetBegan(sheetWindowId));
     mainWindow.on('sheet-end', () => crewSheetGate.sheetEnded(sheetWindowId));
-    mainWindow.once('closed', () => crewSheetGate.forget(sheetWindowId));
+    mainWindow.once('closed', () => {
+      crewSheetGate.forget(sheetWindowId);
+      applyCrewAttentionBadge(crewAttentionBadges.forget(sheetWindowId));
+    });
   }
 
   if (!app.isPackaged) {
@@ -6680,6 +6700,36 @@ async function appMain() {
   // asks the person for the approval secret natively; the renderer never sees or sends one.
   ipcMain.handle('daemon-connection:get', () => daemonReattach.state());
   ipcMain.handle('daemon-connection:reconnect', () => daemonReattach.reconnect());
+
+  // M2: Crew's attention signals outside Crew. Each window reports its unread count and the
+  // dock shows the largest; a window asks for a notification, shown at most once per channel a
+  // minute across every window, and never while another window of the app is in front.
+  ipcMain.on('crew-attention:badge', (event, count: unknown) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return;
+    applyCrewAttentionBadge(crewAttentionBadges.set(window.id, count));
+  });
+  ipcMain.on('crew-attention:notify', (event, raw: unknown) => {
+    const request = parseAttentionRequest(raw);
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (!request || !sender || sender.isDestroyed()) return;
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!attentionNotificationAllowed(sender.id, focused?.id ?? null)) return;
+    if (!crewAttentionThrottle.allow(request.key, Date.now())) return;
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({ title: request.title, body: request.body });
+    notification.on('click', () => {
+      if (sender.isDestroyed()) return;
+      if (sender.isMinimized()) sender.restore();
+      sender.show();
+      sender.focus();
+      sender.webContents.send('crew-attention:open', {
+        connectionId: request.connectionId,
+        channelId: request.channelId,
+      });
+    });
+    notification.show();
+  });
 
   // Handler for getting app version
   ipcMain.on('get-app-version', (event) => {
