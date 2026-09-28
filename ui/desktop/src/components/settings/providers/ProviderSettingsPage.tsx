@@ -17,6 +17,8 @@ interface ProviderSettingsProps {
   /** W2-PRV-5: the chat whose model picker opened this page; see `ProviderCatalog`. */
   chatSessionId?: string | null;
   chatPrivacyTier?: SessionClassification;
+  /** T3-SH-2: the tab of the unsent chat whose model picker opened this page. */
+  heldChatTabId?: string | null;
 }
 
 export default function ProviderSettings({
@@ -25,6 +27,7 @@ export default function ProviderSettings({
   onProviderLaunched,
   chatSessionId,
   chatPrivacyTier,
+  heldChatTabId,
 }: ProviderSettingsProps) {
   const { getProviders, read, upsert } = useConfig();
   const navigate = useNavigate();
@@ -139,6 +142,7 @@ export default function ProviderSettings({
               initialTab={tabHint}
               chatSessionId={chatSessionId}
               chatPrivacyTier={chatPrivacyTier}
+              heldChatTabId={heldChatTabId}
             />
           )}
         </div>

@@ -33,6 +33,7 @@ import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
+import { disclosureRequiredForTier, readDisclosureAcknowledgement } from './privacy/disclosureCopy';
 import { PinnedModelNote } from './privacy/PinnedModelNote';
 import { ChatCrewAccessBar } from './crew/access/ChatCrewAccessBar';
 import { useChatCrewAccess } from './crew/access/chatCrewAccess';
@@ -41,7 +42,7 @@ import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 import { useModelAndProvider, type ChangeModelOptions } from './ModelAndProviderContext';
-import { PendingChatModelContext } from './settings/models/pendingChatModel';
+import { PendingChatModelContext, useHeldChatModel } from './settings/models/pendingChatModel';
 import type Model from './settings/models/modelInterface';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
@@ -109,6 +110,7 @@ import type {
   CallToolResponse,
   Content,
   EmbeddedResource,
+  ProviderDetails,
   RawResource,
   ResourceContents,
 } from '../api';
@@ -857,6 +859,54 @@ export async function bindHeldChatModel(
   return changeModel(sessionId, held, { quiet: true });
 }
 
+/**
+ * T3-SH-1 — may the first message of a chat started on a HELD model go out, as
+ * far as the non-private-model disclosure is concerned (issue #56, DR-17
+ * requirement 3: the disclosure comes before the first turn on such a model)?
+ *
+ * The two gates that show the dialog key on a PROVIDER: the app-level one on
+ * the configured provider, this chat's on its bound one. A held pick is
+ * neither until `bindHeldChatModel` binds it, and that runs in the same click
+ * that sends the first message, so on a public held pick the dialog came up
+ * over the answer (measured: sent 21:53:11, dialog 21:53:13, answer 21:53:14).
+ * `BaseChat` now also passes the held pick to its gate, which puts the dialog
+ * up as soon as the pick is made; this is the send's half of the same rule,
+ * for a send that beats the dialog (the gate needs the daemon's answer first)
+ * or a dialog that never came up.
+ *
+ * Resolves `false` while the disclosure is due and not acknowledged: the
+ * message is handed back (the dialog is up, and after reading it the person
+ * may choose another model rather than send). It is NOT sent once they
+ * acknowledge, deliberately: an acknowledgement that doubles as "send" takes
+ * that choice away. `true` otherwise: nothing is held, the model is private,
+ * the disclosure was acknowledged, or the daemon could not say. That last one
+ * is the answer every disclosure surface gives a failed fetch (no dialog can
+ * be shown without the daemon's copy, `useDisclosure`); refusing here instead
+ * would leave a message that can never be sent behind no visible reason.
+ *
+ * ⚠ The tier decides, never the chat's classification and never the master
+ * privacy switch (`disclosureCopy.ts` says why). A provider the registry does
+ * not know, or a registry that cannot be read, counts as public: towards
+ * telling the person, as the gate itself does.
+ */
+export async function heldModelMayBeSent(
+  held: Model | null,
+  getProviders: (forceRefresh: boolean) => Promise<ProviderDetails[]>,
+  readAcknowledgement: () => Promise<boolean | null> = readDisclosureAcknowledgement
+): Promise<boolean> {
+  if (!held?.provider) return true;
+  let required = true;
+  try {
+    const providers = await getProviders(false);
+    const match = providers.find((provider) => provider.name === held.provider);
+    required = disclosureRequiredForTier(match?.metadata?.tier);
+  } catch {
+    required = true;
+  }
+  if (!required) return true;
+  return (await readAcknowledgement()) !== false;
+}
+
 export function handleCreateSessionError(err: unknown): false {
   toastError(startChatFailureNotice(err, { kept: true }));
   return false;
@@ -1330,14 +1380,18 @@ function BaseChatContent({
   // shown by the chip as this chat's model, and bound to the chat by the
   // pre-session submit below, right after `/agent/start` creates it. A pick in
   // an unsent chat used to rewrite the model every new chat starts on.
-  const [pendingChatModel, setPendingChatModel] = useState<Model | null>(null);
+  //
+  // T3-SH-2: held under this chat's TAB, not in this component's state, so the
+  // pick outlives a tab switch and the trip to the provider catalog ("Use other
+  // provider"), whose model step holds the pick under the same tab.
+  const [pendingChatModel, setPendingChatModel] = useHeldChatModel(terminalKey);
   const { changeModel } = useModelAndProvider();
   useEffect(() => {
     if (sessionId) setPendingChatModel(null);
-  }, [sessionId]);
+  }, [sessionId, setPendingChatModel]);
   const pendingChatModelScope = useMemo(
-    () => (sessionId ? null : { choose: setPendingChatModel }),
-    [sessionId]
+    () => (sessionId ? null : { choose: setPendingChatModel, tabId: terminalKey }),
+    [sessionId, setPendingChatModel, terminalKey]
   );
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -1819,6 +1873,11 @@ function BaseChatContent({
       // Not asked when this chat has a model of its own: the chip names that
       // one, and it is bound below before anything is sent.
       if (!chosenModel && !(await confirmNewChatModel())) return false;
+      // T3-SH-1: a public held model is disclosed BEFORE its chat is created
+      // (`/agent/start`), let alone sent to. While the disclosure is due, the
+      // dialog is up (the gate below keys on the held pick) and the message is
+      // handed back.
+      if (!(await heldModelMayBeSent(chosenModel, getProviders))) return false;
       setIsCreatingSession(true);
       try {
         // #39 — honour the directory picked in the composer before the
@@ -2938,8 +2997,15 @@ function BaseChatContent({
         this mount stays because a chat's own picker can bind a public provider
         on a machine whose default is private. `useSoleDisclosurePresenter`
         keeps the two to one dialog.
+
+        ⚠ T3-SH-1: and before this chat has a session, the model HELD for it.
+        A pick made in an unsent chat is bound in the same click that sends its
+        first message, so keyed on the session alone the dialog came up over
+        the answer. The send checks the same thing (`heldModelMayBeSent`).
       */}
-      <NonPrivateModelDisclosureGate providerName={session?.provider_name} />
+      <NonPrivateModelDisclosureGate
+        providerName={session?.provider_name ?? (sessionId ? null : pendingChatModel?.provider)}
+      />
 
       {workflow && (
         <WorkflowWarningModal

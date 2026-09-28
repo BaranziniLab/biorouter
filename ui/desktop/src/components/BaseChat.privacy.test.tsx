@@ -68,7 +68,11 @@ describe('the chat header — the privacy marker', () => {
     const source = read('src', 'components', 'BaseChat.tsx');
     const gate = /<NonPrivateModelDisclosureGate\b[\s\S]*?\/>/.exec(source);
     expect(gate, 'BaseChat does not mount the disclosure gate').not.toBeNull();
-    expect(gate![0]).toMatch(/providerName=\{session\?\.provider_name\}/);
+    // The bound provider first; before the chat has a session, the model held
+    // for it (T3-SH-1), which is bound in the same click that sends.
+    expect(gate![0]).toMatch(
+      /providerName=\{session\?\.provider_name \?\? \(sessionId \? null : pendingChatModel\?\.provider\)\}/
+    );
     expect(gate![0]).not.toMatch(/privacy_tier/);
   });
 });

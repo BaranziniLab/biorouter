@@ -229,15 +229,21 @@ const renderModelOptionLabel = (
 /**
  * Where "Use other provider" sends the catalog back to, and for which chat.
  * HashRouter: the screen the dialog was opened on is the hash, without its `#`.
+ *
+ * T3-SH-2: a chat not sent yet has no session to name, so it is named by its
+ * tab (`heldChatTabId`), and the catalog's model step holds its pick for that
+ * chat rather than writing the model every new chat starts on.
  */
 export function configureProvidersReturn(
   sessionId: string | null,
-  privacyTier: SessionClassification | undefined
+  privacyTier: SessionClassification | undefined,
+  unsentChatTabId?: string
 ): ViewOptions {
   const returnTo = window.location.hash.replace(/^#/, '') || '/';
-  return sessionId
-    ? { returnTo, resumeSessionId: sessionId, ...(privacyTier ? { privacyTier } : {}) }
-    : { returnTo };
+  if (sessionId) {
+    return { returnTo, resumeSessionId: sessionId, ...(privacyTier ? { privacyTier } : {}) };
+  }
+  return unsentChatTabId ? { returnTo, heldChatTabId: unsentChatTabId } : { returnTo };
 }
 
 type SwitchModelModalProps = {
@@ -267,6 +273,11 @@ type SwitchModelModalProps = {
    * the model new chats start on. See `pendingChatModel.ts`.
    */
   onChooseForUnsentChat?: (model: Model) => void;
+  /**
+   * T3-SH-2. The tab of the unsent chat `onChooseForUnsentChat` holds a pick
+   * for, so "Use other provider" can name that chat to the catalog it opens.
+   */
+  unsentChatTabId?: string;
 };
 export const SwitchModelModal = ({
   sessionId,
@@ -278,6 +289,7 @@ export const SwitchModelModal = ({
   titleOverride,
   privacyTier,
   onChooseForUnsentChat,
+  unsentChatTabId,
 }: SwitchModelModalProps) => {
   const { getProviders, getProviderModels, read, upsert } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
@@ -1143,7 +1155,11 @@ export const SwitchModelModal = ({
                       // and set the model every new chat starts on.
                       setView(
                         'ConfigureProviders',
-                        configureProvidersReturn(sessionId, privacyTier)
+                        configureProvidersReturn(
+                          sessionId,
+                          privacyTier,
+                          onChooseForUnsentChat ? unsentChatTabId : undefined
+                        )
                       );
                       onClose(); // Close the current modal
                     } else {

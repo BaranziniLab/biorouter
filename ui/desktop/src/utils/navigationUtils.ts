@@ -46,6 +46,12 @@ export type ViewOptions = {
   returnTo?: string;
   /** The tier of the chat `resumeSessionId` names, for a picker opened on its behalf. */
   privacyTier?: SessionClassification;
+  /**
+   * The tab of a chat not sent yet, for a picker opened on its behalf: the
+   * provider catalog holds the model chosen after a setup for that chat
+   * (`pendingChatModel.ts`) instead of making it every new chat's (T3-SH-2).
+   */
+  heldChatTabId?: string;
 };
 
 export const navigateWithViewTransition = (

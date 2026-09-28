@@ -764,6 +764,7 @@ export default function ModelsBottomBar({
           initialModel={effectiveModel?.model}
           setView={setView}
           onChooseForUnsentChat={unsentChat ? pendingChat?.choose : undefined}
+          unsentChatTabId={unsentChat ? pendingChat?.tabId : undefined}
           onClose={() => setIsAddModelModalOpen(false)}
         />
       ) : null}

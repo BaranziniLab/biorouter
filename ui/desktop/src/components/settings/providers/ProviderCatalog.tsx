@@ -12,6 +12,8 @@ import { Plus } from '../../icons/app-icons';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
+import { holdChatModel } from '../models/pendingChatModel';
+import type Model from '../models/modelInterface';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import type { View } from '../../../utils/navigationUtils';
 import type { SessionClassification } from '../../../api';
@@ -115,6 +117,14 @@ interface ProviderCatalogProps {
    */
   chatSessionId?: string | null;
   chatPrivacyTier?: SessionClassification;
+  /**
+   * T3-SH-2. The tab of a chat not sent yet whose model picker opened this
+   * catalog. It has no session for {@link chatSessionId} to name, so the model
+   * step holds its pick for that chat (`holdChatModel`), with "for this chat"
+   * and "Also use for new chats", instead of setting the model every new chat
+   * starts on. Ignored when {@link chatSessionId} is set.
+   */
+  heldChatTabId?: string | null;
 }
 
 /**
@@ -232,9 +242,18 @@ export default function ProviderCatalog({
   initialTab,
   chatSessionId = null,
   chatPrivacyTier,
+  heldChatTabId = null,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
   const { read } = useConfig();
+  // T3-SH-2: a chat not sent yet, named by its tab, gets the model step's pick.
+  const unsentChatTabId = !chatSessionId && heldChatTabId ? heldChatTabId : undefined;
+  const holdForUnsentChat = useCallback(
+    (model: Model) => {
+      if (unsentChatTabId) holdChatModel(unsentChatTabId, model);
+    },
+    [unsentChatTabId]
+  );
 
   // W2-PRV-1. A configured Azure OpenAI whose saved endpoint is the one older
   // versions filled in by mistake (UCSF's gateway) says so on its row. Read only
@@ -759,6 +778,8 @@ export default function ProviderCatalog({
         <SwitchModelModal
           sessionId={chatSessionId}
           privacyTier={chatPrivacyTier}
+          onChooseForUnsentChat={unsentChatTabId ? holdForUnsentChat : undefined}
+          unsentChatTabId={unsentChatTabId}
           onClose={() => setShowSwitchModelModal(false)}
           setView={handleSetView}
           onModelSelected={onModelSelected}

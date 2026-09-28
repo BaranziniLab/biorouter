@@ -7,6 +7,7 @@ import {
   SWITCH_SCOPE_NEW_CHATS,
   SWITCH_SCOPE_THIS_CHAT,
   SwitchModelModal,
+  configureProvidersReturn,
 } from './SwitchModelModal';
 
 const mocks = vi.hoisted(() => ({
@@ -423,5 +424,35 @@ describe('SwitchModelModal — what the switch changes', () => {
 
     expect(await screen.findByTestId('switch-model-submit-error')).toBeInTheDocument();
     expect(choose).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T3-SH-2. "Use other provider" from a chat not sent yet carried nothing that
+ * named the chat, so the catalog's model step set the model every new chat
+ * starts on. The chat is named by its tab.
+ */
+describe('configureProvidersReturn', () => {
+  beforeEach(() => {
+    window.location.hash = '#/pair';
+  });
+
+  it('names a started chat by its session and tier', () => {
+    expect(configureProvidersReturn('s-7', 'private', 'tab-3')).toEqual({
+      returnTo: '/pair',
+      resumeSessionId: 's-7',
+      privacyTier: 'private',
+    });
+  });
+
+  it('names a chat not sent yet by its tab', () => {
+    expect(configureProvidersReturn(null, undefined, 'tab-3')).toEqual({
+      returnTo: '/pair',
+      heldChatTabId: 'tab-3',
+    });
+  });
+
+  it('names no chat when opened from no chat', () => {
+    expect(configureProvidersReturn(null, undefined)).toEqual({ returnTo: '/pair' });
   });
 });

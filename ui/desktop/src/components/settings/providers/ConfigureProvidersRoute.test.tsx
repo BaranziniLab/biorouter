@@ -59,9 +59,30 @@ describe('ConfigureProvidersRoute', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/pair?resumeSessionId=s-7');
   });
 
+  // T3-SH-2: a chat not sent yet has no session; it is named by its tab.
+  it('opened from a chat not sent yet, names it by its tab and goes back to it', () => {
+    renderAt({ returnTo: '/pair', heldChatTabId: 'tab-3' });
+    expect(seen.props?.chatSessionId).toBeNull();
+    expect(seen.props?.heldChatTabId).toBe('tab-3');
+
+    fireEvent.click(screen.getByText('Model chosen'));
+    expect(screen.getByTestId('where')).toHaveTextContent('/pair');
+  });
+
+  it('a started chat outranks a tab: its session is what the model step switches', () => {
+    renderAt({
+      returnTo: '/pair?resumeSessionId=s-7',
+      resumeSessionId: 's-7',
+      heldChatTabId: 'tab-3',
+    });
+    expect(seen.props?.chatSessionId).toBe('s-7');
+    expect(seen.props?.heldChatTabId).toBeNull();
+  });
+
   it('opened from Settings, Back still goes to Settings and nothing is scoped to a chat', () => {
     renderAt();
     expect(seen.props?.chatSessionId).toBeNull();
+    expect(seen.props?.heldChatTabId).toBeNull();
     expect(seen.props?.onProviderLaunched).toBeUndefined();
     fireEvent.click(screen.getByText('Back'));
     expect(screen.getByTestId('where')).toHaveTextContent('/settings');

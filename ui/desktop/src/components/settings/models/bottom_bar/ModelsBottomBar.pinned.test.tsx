@@ -230,7 +230,7 @@ describe('the chip where there is no chat yet', () => {
     const choose = vi.fn();
     switchModal.props = null;
     render(
-      <PendingChatModelContext.Provider value={{ choose }}>
+      <PendingChatModelContext.Provider value={{ choose, tabId: 'tab-3' }}>
         <ModelsBottomBar sessionId={null} dropdownRef={dropdownRef} setView={vi.fn()} alerts={[]} />
       </PendingChatModelContext.Provider>
     );
@@ -243,6 +243,8 @@ describe('the chip where there is no chat yet', () => {
     fireEvent.click(await screen.findByText('Change model'));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
     expect(lastSwitchProps()?.onChooseForUnsentChat).toBe(choose);
+    // T3-SH-2: and the tab that names it, for "Use other provider".
+    expect(lastSwitchProps()?.unsentChatTabId).toBe('tab-3');
   });
 
   it('gives Home\u2019s switch no unsent chat to hold a pick for', async () => {
@@ -252,5 +254,6 @@ describe('the chip where there is no chat yet', () => {
     fireEvent.click(await screen.findByText('Change model'));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
     expect(lastSwitchProps()?.onChooseForUnsentChat).toBeUndefined();
+    expect(lastSwitchProps()?.unsentChatTabId).toBeUndefined();
   });
 });

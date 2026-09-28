@@ -203,6 +203,27 @@ function ensureFetched() {
 }
 
 /**
+ * Whether the person may be taken past the disclosure right now, once the
+ * daemon has answered: `true` when it is acknowledged (or they were told it
+ * could not be saved and went on), `false` when it is still due, and `null`
+ * when the daemon could not say.
+ *
+ * T3-SH-1. For a send that has to wait for the answer rather than render
+ * whatever the store holds so far: a chat started on a model held for it before
+ * it was sent is bound in the same click that sends its first message, so the
+ * gates that key on a bound provider answer only after that message has gone.
+ *
+ * `null` is the same "renders nothing" answer every surface gives a failed
+ * fetch (see {@link useDisclosure}); the caller decides what to do with it.
+ */
+export async function readDisclosureAcknowledgement(): Promise<boolean | null> {
+  ensureFetched();
+  if (fetching) await fetching;
+  if (store.acknowledged === true || store.dismissedUnrecorded) return true;
+  return store.acknowledged;
+}
+
+/**
  * Drop everything this module remembers.
  *
  * ⚠ **Tests only.** The store outlives a `cleanup()` because it is module state,
