@@ -2000,17 +2000,18 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
   <li>Type in the message box. Enter sends, and Shift+Enter starts a new line. Messages use Markdown.</li>
   <li>If sending fails, your text stays in the box with "Couldn’t send." and the reason. Press Send again. An unchanged message is never posted twice.</li>
   <li>Unsent text stays in each channel's message box until you quit Biorouter.</li>
-  <li>Crew sends no system notifications or sounds, and typing <code>@bob</code> does not notify Bob. New messages show as bold channel names with a count in the Crew sidebar.</li>
+  <li>New messages show as bold channel names with a count in the Crew sidebar, and as a count on the <strong>Crew</strong> item in the app sidebar. While you are not looking at Crew, they also raise a system notification, such as "3 new messages in chen-lab".</li>
+  <li>Typing <code>@bob</code> mentions Bob. Bob sees the message marked for him, and a notification such as "Alice Chen mentioned you in #methods".</li>
   <li>You cannot edit or delete a posted message. To search messages, use <code>biorouter crew search</code>.</li>
 </ul>
 
 <h3>Share a file</h3>
 <ol>
-  <li>Choose the paperclip, then <strong>Upload a file…</strong>, and pick the file. You can also drag a file onto the channel, or paste a copied file into the message box. For a dragged or pasted file, check the full path in the "Share file to Crew" window and choose <strong>Share</strong>.</li>
+  <li>Choose the paperclip, then <strong>Upload a file…</strong>, and pick the file. You can also drag a file onto the channel, or paste a copied file into the message box. For a dragged or pasted file, Crew asks, for example, 'Share "counts.csv" (55 KB) to Crew?'. Check the full path it shows, and choose <strong>Share</strong>.</li>
   <li>Wait until the line "Press Send to share it." appears.</li>
   <li>Press Send. The file appears in the channel as a card with its name and size.</li>
 </ol>
-<div class="alert alert-warning"><strong>An upload cannot be deleted.</strong> The file leaves your computer as soon as you confirm, even if you then remove it from your message.</div>
+<div class="alert alert-warning"><strong>A finished upload cannot be deleted.</strong> The file leaves your computer as soon as you confirm, even if you then remove it from your message. The × on a file still uploading is <strong>Cancel upload</strong>, and the part already sent stays on the server for up to a day.</div>
 <p>A file can be up to 1 GB. Crew refuses folders and credential files, such as <code>.env</code>, <code>id_rsa</code> or any file that holds a private key. To download a shared file, choose Save on its card.</p>
 <p>For a large file already on the server, choose the paperclip, then <strong>Share a server path…</strong>, type the full path, and choose <strong>Add to message</strong>. Crew shares only the path. Others open the file only if their own server account may read it. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/messages-and-files.md" target="_blank">Messages and files</a>.</p>
 
@@ -2063,14 +2064,16 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>Workspace</td><td>"Private for everyone" or "Allows Public"</td><td>The host</td></tr>
   </tbody>
 </table></div>
-<p>Your privacy is Public only when your connection is Public and the workspace allows Public. Otherwise it is Private. A new workspace starts as "Private for everyone". To change your connection, choose the privacy chip in the status row, then <strong>Make my connection public…</strong> or <strong>Make private</strong>.</p>
+<p>Your privacy is Public only when your connection is Public and the workspace allows Public. Otherwise it is Private. A new workspace starts as "Private for everyone", and only the host can allow Public. Once the host has, choose the privacy chip in the status row, then <strong>Make my connection public…</strong>, or <strong>Make private</strong> to go back. While the workspace is Private for everyone, the chip offers neither.</p>
 <p>The host sets the workspace's institution once. Your connection's institution must match it. Content an agent reads is protected when your privacy is Private, when a channel it reads is "Restricted" or holds Restricted material, or when it uses your remote work folder. Only a local model or a Private model approved for the workspace's institution may read protected content, and only once the workspace has an institution. Restricted content stays Restricted after the host allows Public. Crew on the server applies these rules even when <strong>Privacy tiers</strong> is off in Biorouter's settings.</p>
 
 <h3>What other people can see</h3>
 <ul>
   <li>Members of a channel see your display name, your username, and your messages, files and agent posts there.</li>
+  <li>Everyone in the workspace sees whether you are online, meaning your computer is connected to it now or made a request in the last three minutes.</li>
   <li>The host sees the same channels as any member, plus the member list. The Crew window shows nobody your connection's privacy or your devices.</li>
   <li>The host's server account and the server's administrators can read everything the workspace stores.</li>
+  <li>Anyone who can sign in to the server can see the workspace's name, and who is connected to it and when, in the server's process list.</li>
 </ul>
 <p><strong>Keys and security…</strong> in the You menu, at the bottom of the Crew sidebar, lists your devices and where your keys are stored. If you use an encrypted vault and it is locked, choose <strong>Unlock</strong> in the connection bar. When the connection bar reads "A new device was added to your account on {date}.", choose <strong>Review</strong>, and tell your host about a device you do not recognize. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/privacy-and-security.md" target="_blank">Privacy and security</a>.</p>
 
@@ -2080,14 +2083,14 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
   <tbody>
     <tr><td>Connected</td><td>Nothing.</td></tr>
     <tr><td>Connecting…, Reconnecting…</td><td>Wait.</td></tr>
-    <tr><td>Offline</td><td>Choose <strong>Connect to chen-lab</strong>. You see this after <strong>Disconnect</strong>, after you save <strong>Connection settings…</strong>, and after the background service restarts.</td></tr>
-    <tr><td>Can’t connect</td><td>Read the reason in the connection bar, then choose <strong>Connect to chen-lab</strong> in the main area.</td></tr>
+    <tr><td>Offline</td><td>Choose <strong>Connect to chen-lab</strong>. You see this after <strong>Disconnect</strong>, after you change your server login, port, identity file or jump hosts in <strong>Connection settings…</strong>, and after the background service restarts.</td></tr>
+    <tr><td>Can’t connect</td><td>Read the reason in the main area, such as "Crew isn’t running on lab.example.edu" or "lab.example.edu refused this computer’s SSH key", then do what it says.</td></tr>
     <tr><td><strong>Sign-in needed</strong></td><td>Choose it and type your password or code.</td></tr>
     <tr><td>Can’t verify server</td><td>See <a href="#crew-server-identity">Server identity</a>.</td></tr>
     <tr><td>Not set up on this server</td><td>Install <code>biorouter-crew</code> in your own server account, as <strong>Install it yourself</strong> on that screen or <a href="#crew-administrators">Server setup for administrators</a> shows, or ask IT. Then choose <strong>Try again</strong>.</td></tr>
   </tbody>
 </table></div>
-<p>When the network drops, Crew reconnects by itself for up to an hour. It never sends a message a second time, so if the connection broke while you sent something, check whether it arrived.</p>
+<p>When the network drops, or the workspace is stopped on the server, Crew reconnects by itself for up to an hour. It never sends a message a second time, so if the connection broke while you sent something, check whether it arrived. If the background service restarts while Biorouter is open, Biorouter asks "Biorouter's background service restarted. Reconnect?". Choose <strong>Reconnect</strong> and type the approval secret.</p>
 
 <h3 id="crew-server-identity">Server identity</h3>
 <p>Crew connects only to a server whose host key is in your known hosts file, and only to the workspace your invitation names.</p>
@@ -2110,6 +2113,10 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>"This invitation expired."</td><td>Ask the host to invite you again.</td></tr>
     <tr><td>"You’re not in chen-lab yet"</td><td>Check <strong>Your server login</strong> in <strong>Connection settings…</strong>, then send the host the message Crew offers.</td></tr>
     <tr><td>"Can’t reach lab.example.edu."</td><td>Check your network, and your VPN if your lab uses one.</td></tr>
+    <tr><td>"Crew isn’t running on lab.example.edu"</td><td>The workspace is stopped on the server. The host starts it again, as <a href="#crew-administrators">Server setup for administrators</a> shows. The host's own screen shows the line to run, with <strong>Copy</strong>.</td></tr>
+    <tr><td>"lab.example.edu refused this computer’s SSH key"</td><td>Signing in with a password cannot help. Check <strong>Your server login</strong> in <strong>Connection settings…</strong>, and ask IT which login and key to use.</td></tr>
+    <tr><td>"This computer has no keyring service Biorouter can use…"</td><td>This Linux computer has no keyring. Set up an encrypted vault in <strong>Keys and security…</strong> before your first workspace, or run <code>biorouter crew credentials init</code>.</td></tr>
+    <tr><td>"The workspace server can’t save messages right now…"</td><td>The server's disk is full or failing. The host frees space, then stops and starts Crew on the server.</td></tr>
     <tr><td>"Confirm this workspace's institution before granting an agent…"</td><td>Ask the host to set the workspace's institution.</td></tr>
     <tr><td>"This feature needs a newer Biorouter background service."</td><td>On a Mac or a Linux computer, reopening Biorouter keeps the old service running. Restart the computer, or run <code>daemon stop</code> as <a href="#crew-command-line">Command line</a> shows, then open Biorouter. On Windows, quit and reopen Biorouter. See <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#upgrade-crew" target="_blank">Upgrade Crew</a>.</td></tr>
     <tr><td>"Authorize this action in the Crew panel…"</td><td>Do the action yourself in Crew. If it repeats, quit and reopen Biorouter.</td></tr>
@@ -2123,7 +2130,8 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
   <li>Every command except <code>daemon status</code> asks for your approval secret. In a script, add <code>--approval-key-stdin</code> and send the secret as the first line of standard input.</li>
   <li>Add <code>--connection NAME</code> when you have more than one saved connection.</li>
   <li>Write a channel without its <code>#</code>, or quote it: <code>'#methods'</code>. Name people by username, such as <code>@bob</code>. Files, tasks and chats take an ID.</li>
-  <li><code>--output-format json</code> prints JSON. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line.</li>
+  <li><code>--output-format json</code> prints JSON, an error included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>
+  <li>Reading with <code>history</code> or <code>watch</code> leaves a channel unread. Run <code>channels mark-read</code> when you have read it.</li>
 </ul>
 <pre><code># Join a workspace
 biorouter crew connections join-invitation ./invitation.txt
@@ -2142,6 +2150,9 @@ biorouter crew --show-ids files upload methods ./counts.csv
 biorouter crew files watch TRANSFER_ID
 biorouter crew --show-ids files status TRANSFER_ID
 biorouter crew send methods --attachment ATTACHMENT_ID
+biorouter crew --show-ids history methods --latest
+biorouter crew --show-ids files download ATTACHMENT_ID --output ./counts.csv
+biorouter crew files watch TRANSFER_ID
 
 # Agents
 biorouter crew tasks start methods --text "Summarize this week" \
@@ -2151,10 +2162,10 @@ biorouter crew grants revoke SESSION_ID
 
 # Stop the background service on this computer
 biorouter crew daemon stop</code></pre>
-<p>An upload alone posts nothing. The upload prints a transfer ID. When <code>files watch</code> reads <code>Transfer Ready.</code>, <code>files status</code> shows the <code>Attachment ID:</code> to send. <code>privacy set-personal public</code> and <code>privacy set-workspace public</code> take effect at once, with no typed confirmation. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md" target="_blank">Command line</a>.</p>
+<p>An upload alone posts nothing. The upload prints a transfer ID. When <code>files watch</code> reads <code>Transfer Ready.</code>, <code>files status</code> shows the <code>Attachment ID:</code> to send. A download returns as soon as it starts: the file is there when <code>files watch</code> reads <code>Transfer Saved.</code>. <code>history</code> names each attached file beside its ID. <code>privacy set-personal public</code> and <code>privacy set-workspace public</code> ask you to type the workspace name first, as the desktop app does. In a script, add <code>--confirm WORKSPACE</code>. On a Linux computer with no keyring service, run <code>biorouter crew credentials init</code> before your first workspace. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md" target="_blank">Command line</a>.</p>
 
 <h2 id="crew-administrators">Server setup for administrators</h2>
-<p>The host's copy of <code>biorouter-crew</code> stores the workspace and checks every request. Each member's Biorouter starts the same program in the member's own account over SSH, which passes requests to the host's copy through a Unix socket under <code>/tmp</code>. Crew needs no root, no system service, no open network port and no database.</p>
+<p>The host's copy of <code>biorouter-crew</code> stores the workspace and checks every request. Each member's Biorouter starts the same program in the member's own account over SSH, which passes requests to the host's copy through a Unix socket under <code>/tmp</code>. Crew needs no root, no system service, no open network port and no database. Any account on the server can see in the process list who is connected to which workspace; mount <code>/proc</code> with <code>hidepid=2</code> to hide it (<a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#what-other-accounts-can-see" target="_blank">What other accounts can see</a>).</p>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Requirement</th><th>Detail</th></tr></thead>
   <tbody>
@@ -2173,7 +2184,7 @@ install -m 0755 /path/to/verified/biorouter-crew "$HOME/.local/bin/biorouter-cre
 <pre><code>"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/chen-lab"
 "$HOME/.local/bin/biorouter-crew" status --name chen-lab
 "$HOME/.local/bin/biorouter-crew" stop --name chen-lab</code></pre>
-<p>The folder keeps the workspace's original name after a rename, and <code>status</code> and <code>stop</code> take that name. Adding <code>--name</code> to <code>start</code> after a rename fails with <code>name_mismatch</code>. <code>start --name … --bootstrap-key …</code> is only for creating a workspace, which the steps in <a href="#crew-host">Host a workspace</a> do.</p>
+<p><code>status</code> prints <code>"state":"running"</code> when the workspace answers. The folder keeps the workspace's original name after a rename, and <code>status</code> and <code>stop</code> take that name. Adding <code>--name</code> to <code>start</code> after a rename fails with <code>name_mismatch</code>. <code>start --name … --bootstrap-key …</code> is only for creating a workspace, which the steps in <a href="#crew-host">Host a workspace</a> do.</p>
 <p>To upgrade, stop the program, replace the file, and run the <code>start</code> line above. The state directory, <code>~/.local/share/biorouter-crew/chen-lab</code> by default, holds <code>journal.jsonl</code>, the whole workspace history, and <code>blobs/</code>, the shared file contents.</p>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Item</th><th>Limit</th></tr></thead>
@@ -2184,7 +2195,7 @@ install -m 0755 /path/to/verified/biorouter-crew "$HOME/.local/bin/biorouter-cre
     <tr><td>Agent access</td><td>1 hour per grant. A task reads at most 16 other channels. A connected chat reads at most 20 channels, including its own.</td></tr>
   </tbody>
 </table></div>
-<p>At a limit, reading still works and changes are refused. Crew has no export or backup tools. To keep a copy, stop the program and copy the whole state directory to equally private storage. Never edit <code>journal.jsonl</code>. SSH encryption alone does not make a deployment HIPAA compliant. Your institution decides approval, retention and backup. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md" target="_blank">Administration</a>.</p>
+<p>At a limit, reading still works and changes are refused. The host's Crew sidebar warns from 80% full. If the server's disk fills, Crew stops saving changes until the host frees space and runs <code>stop</code>, then the <code>start</code> line above (<a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#server-storage-full-or-failing" target="_blank">Server storage full or failing</a>). Crew has no export or backup tools. To keep a copy, stop the program and copy the whole state directory to equally private storage. Never edit <code>journal.jsonl</code>. SSH encryption alone does not make a deployment HIPAA compliant. Your institution decides approval, retention and backup. Details: <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md" target="_blank">Administration</a>.</p>
 
         <div class="doc-next"><span class="lbl">Next</span> <a href="#workflows" onclick="showDoc('workflows');return false;">Workflows &amp; scheduler &rarr;</a></div>
       </div>

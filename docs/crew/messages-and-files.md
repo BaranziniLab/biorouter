@@ -266,7 +266,7 @@ A transfer is one upload or download on this computer.
 
 | State | Meaning | What to do |
 |---|---|---|
-| "Paused" | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running" or "The connection’s privacy changed". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. |
+| "Paused" | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running", "The connection’s privacy changed" or, for any other interruption, "It stopped". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. After "The connection’s privacy changed", check the connection first, and share or save the file again if Crew refuses. |
 | "Failed" | The workspace refused it. The reason shows under the row. Resuming cannot fix it. | Remove it. Upload or save again once the cause is fixed. |
 | "Not confirmed" | It stopped at the end, so Crew cannot tell whether it finished. | Upload or save again, then remove the old row. |
 

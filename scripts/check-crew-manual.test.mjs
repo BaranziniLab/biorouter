@@ -10,10 +10,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   checkCrewManual,
+  codeSpans,
   landingCrewPage,
   markdownBlocks,
   repoTree,
   rustStrConst,
+  saysTemplate,
 } from './check-crew-manual.mjs';
 
 const real = repoTree();
@@ -515,6 +517,240 @@ test("needs-desktop: the daemon's serve sentence is quoted as it begins, and onl
     },
     'needs-desktop',
     /quotes "Crew isn't available in the browser…", which is not how/
+  );
+});
+
+// ── The wave-2 rules (W2-DOC-3, -4, -6, -7, -8). Each mutant puts back the
+// manual's text from before the 2026-09-28 update, or rewords the code it
+// quotes, and the rule must notice.
+const COMMAND_LINE = 'docs/crew/command-line.md';
+const AGENTS = 'docs/crew/agents-and-chat-access.md';
+const MESSAGES = 'docs/crew/messages-and-files.md';
+const PRIVACY = 'docs/crew/privacy-and-security.md';
+const LANDING = 'landing/docs.html';
+
+test('codeSpans reads single and double backtick spans', () => {
+  assert.deepEqual(codeSpans('Run `auth`, then ``It said `x` twice.`` and `y`.'), [
+    'auth',
+    'It said `x` twice.',
+    'y',
+  ]);
+});
+
+test('saysTemplate: all of a sentence, its first sentences, or its opening words', () => {
+  const template =
+    "Crew couldn't confirm whether this reached {workspace}. Check the channel, then retry.";
+  assert.ok(
+    saysTemplate(
+      "Crew couldn't confirm whether this reached lab. Check the channel, then retry.",
+      template
+    )
+  );
+  assert.ok(saysTemplate('Crew couldn’t confirm whether this reached lab.', template));
+  assert.ok(saysTemplate('Crew couldn’t confirm whether this reached {workspace}…', template));
+  assert.ok(saysTemplate("Crew couldn't confirm whether", template));
+  assert.ok(!saysTemplate("Crew couldn't confirm whether this arrived at lab.", template));
+  assert.ok(!saysTemplate("Crew couldn't confirm whether this reached lab. Try again.", template));
+  assert.ok(!saysTemplate("Crew couldn't confirm that…", template));
+});
+
+test("daemon-sentences: a quote of the daemon's sentence is that sentence, and the pages that need it quote it", () => {
+  // The manual rewords a sentence the daemon writes.
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '"This chat\'s model is fixed by its Crew access. Start a new chat to use another model."',
+        '"This chat\'s model is fixed. Start a new chat."'
+      ),
+    },
+    'daemon-sentences',
+    /quotes "This chat's model is fixed\. Start a new chat\.", which is not how MODEL_FIXED_TEXT/
+  );
+  // The daemon rewords it and the manual keeps the old words.
+  assertCaught(
+    {
+      'crates/biorouter/src/crew/refusal.rs': swap(
+        '"This chat\'s model is fixed by its Crew access. Start a new chat to use another model."',
+        '"This chat\'s model is fixed by its Crew grant. Start a new chat to use another model."'
+      ),
+    },
+    'daemon-sentences',
+    /which is not how MODEL_FIXED_TEXT/
+  );
+  // The command-line page loses its quote of the missing-keyring refusal (SETUPHPC-F1).
+  assertCaught(
+    {
+      [COMMAND_LINE]: swap(
+        '``This computer has no keyring service Biorouter can use. Run `biorouter crew credentials init` to keep Crew keys in an encrypted vault, then try again.``',
+        'an opaque refusal'
+      ),
+    },
+    'daemon-sentences',
+    /command-line\.md does not quote CREDENTIAL_STORE_UNAVAILABLE_TEXT/
+  );
+  // The retry section without the crew_outcome_unknown sentence (R-3).
+  assertCaught(
+    {
+      [COMMAND_LINE]: swap(
+        "such as `Crew couldn't confirm whether this reached lab. Check the channel, then retry with the same request ID.`, ",
+        ''
+      ),
+    },
+    'daemon-sentences',
+    /does not quote the crew_outcome_unknown sentence/
+  );
+  // A storage sentence the broker never wrote.
+  assertCaught(
+    {
+      [COMMAND_LINE]: swap(
+        'A sentence that starts `The workspace server is out of disk space`',
+        'A sentence that starts `The workspace server is out of room, please restart.`'
+      ),
+    },
+    'daemon-sentences',
+    /quotes "The workspace server is out of room, please restart\.", which is not how the storage_full/
+  );
+  // A reader whose constant is gone fails instead of passing.
+  assertCaught(
+    {
+      'crates/biorouter/src/crew/refusal.rs': (text) =>
+        text.replaceAll('MODEL_FIXED_TEXT', 'CHAT_MODEL_SENTENCE'),
+    },
+    'daemon-sentences',
+    /found no MODEL_FIXED_TEXT/
+  );
+});
+
+test('refusal-codes and ssh-codes: every code the daemon and the command line give is in the command-line page', () => {
+  // The manual as it was: no word of an uncertain outcome's code.
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text.replaceAll('`crew_outcome_unknown`', 'the uncertain-outcome code'),
+    },
+    'refusal-codes',
+    /never names the daemon's refusal code `crew_outcome_unknown`/
+  );
+  // A new refusal code the page does not know.
+  assertCaught(
+    {
+      'crates/biorouter/src/crew/refusal.rs': (text) =>
+        `${text}\npub const SOMETHING_NEW: &str = "crew_something_new";\n`,
+    },
+    'refusal-codes',
+    /`crew_something_new`/
+  );
+  // The SSH table as it was, without the key-refused and stopped-server rows (W2-DMN-5).
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text
+          .split('\n')
+          .filter((line) => !/^\| `crew_(ssh_key_refused|broker_not_running)` \|/.test(line))
+          .join('\n'),
+    },
+    'ssh-codes',
+    /no row for `crew_ssh_key_refused`/
+  );
+});
+
+test('notifications: the manual may not deny what the desktop app does (M2)', () => {
+  assertCaught(
+    {
+      [MESSAGES]: swap(
+        'A channel with unread messages shows its name in bold, with a count, in the Crew sidebar. The',
+        'Crew sends no system notifications or sounds. A channel with unread messages shows its name in bold, with a count, in the Crew sidebar. The'
+      ),
+    },
+    'notifications',
+    /messages-and-files\.md says Crew does not notify/
+  );
+  assertCaught(
+    {
+      [LANDING]: swap(
+        '<li>Typing <code>@bob</code> mentions Bob.',
+        '<li>Typing <code>@bob</code> does not notify Bob.'
+      ),
+    },
+    'notifications',
+    /landing\/docs\.html#crew says Crew does not notify/
+  );
+  assertCaught(
+    { [MESSAGES]: (text) => text.replaceAll('mentioned you in #general', 'wrote in #general') },
+    'notifications',
+    /does not quote a "… mentioned you in #channel" notification/
+  );
+});
+
+test('pause-reasons: every reason a paused transfer shows is listed (FILES-F4)', () => {
+  assertCaught(
+    { [MESSAGES]: (text) => text.replaceAll('"The connection dropped"', 'a dropped connection') },
+    'pause-reasons',
+    /does not list the pause reason "The connection dropped"/
+  );
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/state/crewStatus.ts': swap(
+        "[/^Transfer stopped\\b/, 'It stopped'],",
+        "[/^Transfer stopped\\b/, 'It stopped'],\n  [/^Disk full\\b/, 'The disk is full'],"
+      ),
+    },
+    'pause-reasons',
+    /does not list the pause reason "The disk is full"/
+  );
+});
+
+test('cancel-upload: an unfinished upload can be cancelled, so the manual may not say it cannot (FILES-F7)', () => {
+  assertCaught(
+    {
+      [MESSAGES]: swap(
+        '- Crew cannot delete a finished upload, even one you remove from your message.',
+        '- Crew cannot delete an upload, even one you remove from your message.'
+      ),
+    },
+    'cancel-upload',
+    /says an upload cannot be deleted/
+  );
+  assertCaught(
+    { [MESSAGES]: (text) => text.replaceAll('**Cancel upload**', 'the ×') },
+    'cancel-upload',
+    /does not name \*\*Cancel upload\*\*/
+  );
+});
+
+test('privacy-confirm: going public from a terminal asks for the name (CLI-10)', () => {
+  assertCaught(
+    {
+      [PRIVACY]: swap(
+        'To change it from a terminal, see [Privacy settings](command-line.md#privacy-settings). Going public there asks you to type the workspace name, as the desktop does; in a script, add `--confirm WORKSPACE`.',
+        'To change it from a terminal, see [Privacy settings](command-line.md#privacy-settings), where the commands ask for no typed confirmation.'
+      ),
+    },
+    'privacy-confirm',
+    /privacy-and-security\.md says the privacy commands need no typed confirmation/
+  );
+  assertCaught(
+    {
+      [LANDING]: swap(
+        'ask you to type the workspace name first, as the desktop app does. In a script, add <code>--confirm WORKSPACE</code>.',
+        'take effect at once, with no typed confirmation.'
+      ),
+    },
+    'privacy-confirm',
+    /landing\/docs\.html#crew says the privacy commands need no typed confirmation/
+  );
+});
+
+test('share-dialog: the manual quotes the Share message, never the title macOS hides (DW-15)', () => {
+  assertCaught(
+    {
+      [LANDING]: swap(
+        `Crew asks, for example, 'Share "counts.csv" (55 KB) to Crew?'. Check the full path it shows, and choose`,
+        'check the full path in the "Share file to Crew" window and choose'
+      ),
+    },
+    'share-dialog',
+    /names the Share window "Share file to Crew"/
   );
 });
 

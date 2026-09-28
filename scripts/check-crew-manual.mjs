@@ -33,6 +33,28 @@
 //     drag and drop, plain-text bodies and "Save attachment" buttons, and that
 //     nothing was built. Rule `spec` reads the shipped components instead.
 //
+// The wave-2 fixes of 2026-09-28 reworded many sentences the manual quotes,
+// and some of the manual's promises stopped being true (W2-DOC-3, -4, -6, -7,
+// -8). The rules below hold the manual to them:
+//
+//   * `daemon-sentences`: a quote of the daemon's or the workspace server's
+//     own sentence (a Crew chat's fixed model, a missing keyring, an outcome
+//     that could not be confirmed, a reconnect, a full or failing disk) is
+//     that sentence, whole, its first sentences, or its opening words.
+//   * `refusal-codes` and `ssh-codes`: every code the daemon refuses with, and
+//     every connect failure the command line explains, is in the command-line
+//     page, so a script author can look each one up.
+//   * `notifications`: the manual said Crew sends no notifications and that a
+//     mention notifies nobody, after the desktop app started doing both.
+//   * `pause-reasons`: the manual defined "Paused" as "You paused it"; every
+//     reason a paused transfer shows is listed.
+//   * `cancel-upload`: the manual said an upload cannot be deleted, with no
+//     word of the Cancel upload control.
+//   * `privacy-confirm`: the manual and the landing page said the privacy
+//     commands go public with no typed confirmation (CLI-10).
+//   * `share-dialog`: the landing page named the Share window by a title
+//     macOS never shows (DW-15).
+//
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
 // code and update the rule, never to delete the anchor check.
@@ -73,6 +95,17 @@ const CREW_APP = 'ui/desktop/src/components/crew/CrewApp.tsx';
 const NEEDS_DESKTOP = 'ui/desktop/src/components/crew/CrewNeedsDesktop.tsx';
 const CREW_AUTHENTICATION = 'crates/biorouter-server/src/routes/crew_authentication.rs';
 const TROUBLESHOOTING = 'docs/crew/connections-and-troubleshooting.md';
+const COMMAND_LINE = 'docs/crew/command-line.md';
+const AGENTS_PAGE = 'docs/crew/agents-and-chat-access.md';
+const MESSAGES_PAGE = 'docs/crew/messages-and-files.md';
+const REFUSAL_RS = 'crates/biorouter/src/crew/refusal.rs';
+const CREW_CORE = 'crates/biorouter/src/crew/mod.rs';
+const BROKER = 'crates/biorouter-crew/src/broker.rs';
+const CLI_OUTPUT = 'crates/biorouter-cli/src/commands/crew/output.rs';
+const CLI_ARGS = 'crates/biorouter-cli/src/commands/crew/args.rs';
+const ATTENTION = 'ui/desktop/src/components/crew/attention/crewAttention.ts';
+const CREW_STATUS = 'ui/desktop/src/components/crew/state/crewStatus.ts';
+const SHARE_PATH = 'ui/desktop/src/utils/crewSharePath.ts';
 
 /**
  * The value of `pub const <name>: &str = "…";` in Rust source, with the string's
@@ -152,6 +185,55 @@ export function htmlBlocks(html) {
 
 /** Every double-quoted phrase in a block of prose, straight or curly quotes. */
 const quotedPhrases = (text) => [...text.matchAll(/["“]([^"”\n]+)["”]/g)].map((m) => m[1]);
+
+/**
+ * Every inline code span in a Markdown block, its content trimmed as Markdown trims it. A span
+ * opened by two backticks may hold single ones, as a quoted sentence naming a command does.
+ */
+export const codeSpans = (text) =>
+  [...text.matchAll(/(`+)(?!`)([\s\S]+?)(?<!`)\1(?!`)/g)].map((m) => m[2].trim());
+
+/** Quotes and apostrophes read alike, straight or curly: the claim is the words. */
+const sameQuotes = (text) => sameApostrophes(text).replace(/[“”]/g, '"');
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** A template's `{name}` holes, which the code fills with a name. */
+const TEMPLATE_HOLE = /\{[^{}]*\}/g;
+
+/** `template` as a pattern: its words as they are, each hole matching any text within a sentence. */
+const templatePattern = (template) =>
+  sameQuotes(template).split(TEMPLATE_HOLE).map(escapeRegExp).join('(?:(?![.!?] )[^\\n])+?');
+
+/**
+ * Whether `phrase` quotes `template`, a sentence from the code whose `{…}` holes a name fills
+ * (the manual's own `{workspace}` included). A phrase ending in a full stop, "!" or "?" is all
+ * of it, or its first sentences, ending at one of its own full stops. A phrase that ends in
+ * "…", or without such a mark, is its opening words.
+ */
+export function saysTemplate(phrase, template) {
+  const said = sameQuotes(phrase).trim();
+  const whole = sameQuotes(template).trim();
+  if (!said || !whole) return false;
+  const full = (source) => new RegExp(`^${source}$`, 's').test(said);
+  if (full(templatePattern(whole))) return true;
+  if (/[.!?]$/.test(said)) {
+    // Its first sentences: every full stop followed by a space ends one.
+    for (const boundary of whole.matchAll(/[.!?](?= )/g)) {
+      if (full(templatePattern(whole.slice(0, boundary.index + 1)))) return true;
+    }
+    return false;
+  }
+  const stem = said.replace(/\s*(…|\.\.\.)$/, '').trimEnd();
+  const opening = (end) => new RegExp(`^${templatePattern(whole.slice(0, end))}$`, 's').test(stem);
+  for (let end = 1; end <= whole.length; end += 1) {
+    // Never cut a hole in half.
+    const before = whole.slice(0, end);
+    if (before.lastIndexOf('{') > before.lastIndexOf('}')) continue;
+    if (opening(end)) return true;
+  }
+  return false;
+}
 
 export function checkCrewManual(tree = repoTree()) {
   const failures = [];
@@ -558,6 +640,303 @@ export function checkCrewManual(tree = repoTree()) {
         'spec',
         `${SPEC}'s file.* copy row names "Save attachment", which ${FILES_COPY} replaced (Q3-13)`
       );
+    }
+  }
+
+  // What each surface quotes: double-quoted phrases, and in the manual its code spans too, since
+  // the command-line page quotes terminal output that way.
+  const quotesOf = ({ path, blocks }) =>
+    blocks.flatMap((block) =>
+      path.endsWith('.md') ? [...quotedPhrases(block), ...codeSpans(block)] : quotedPhrases(block)
+    );
+  const pageQuotes = (page) =>
+    quotesOf(surfaces.find(({ path }) => path === page) || { path: page, blocks: [] });
+
+  // ── daemon-sentences ─────────────────────────────────────────────────────
+  // A sentence the daemon or the workspace server writes for a person, quoted
+  // by the manual, is that sentence (W2-DOC-7). Each family is found by its
+  // opening words, and some pages must quote it: the one place a reader who
+  // meets it is sent.
+  const refusalSource = need(REFUSAL_RS, 'daemon-sentences');
+  const coreSource = need(CREW_CORE, 'daemon-sentences');
+  const brokerSource = need(BROKER, 'daemon-sentences');
+  const formatSentence = (source, opening) =>
+    source === null
+      ? null
+      : (new RegExp(`"(${escapeRegExp(opening)}[^"\\n]*)"`).exec(source)?.[1] ?? null);
+  const families = [
+    {
+      name: `MODEL_FIXED_TEXT in ${REFUSAL_RS}`,
+      opens: /^This chat's model is fixed\b/,
+      templates: [refusalSource === null ? null : rustStrConst(refusalSource, 'MODEL_FIXED_TEXT')],
+      source: refusalSource,
+      requiredIn: [AGENTS_PAGE],
+    },
+    {
+      name: `CREDENTIAL_STORE_UNAVAILABLE_TEXT in ${CREW_CORE}`,
+      opens: /^This computer has no keyring service\b/,
+      templates: [
+        coreSource === null ? null : rustStrConst(coreSource, 'CREDENTIAL_STORE_UNAVAILABLE_TEXT'),
+      ],
+      source: coreSource,
+      requiredIn: [COMMAND_LINE],
+    },
+    {
+      name: `KEYRING_NOT_RUNNING_TEXT in ${CREW_CORE}`,
+      opens: /^This computer's keyring service isn't answering\b/,
+      templates: [
+        coreSource === null ? null : rustStrConst(coreSource, 'KEYRING_NOT_RUNNING_TEXT'),
+      ],
+      source: coreSource,
+      requiredIn: [],
+    },
+    {
+      name: `the crew_outcome_unknown sentence in ${CREW_CORE}`,
+      opens: /^Crew couldn't confirm whether this reached\b/,
+      templates: [formatSentence(coreSource, "Crew couldn't confirm whether this reached {")],
+      source: coreSource,
+      requiredIn: [COMMAND_LINE],
+    },
+    {
+      name: `the crew_reconnecting sentence in ${CREW_CORE}`,
+      opens: /^Reconnecting to\b/,
+      templates: [formatSentence(coreSource, 'Reconnecting to {')],
+      source: coreSource,
+      requiredIn: [COMMAND_LINE],
+    },
+    {
+      name: `the storage_full and storage_failed sentences in ${BROKER}`,
+      opens: /^The workspace server (is out of|ran out of|could not)\b/,
+      templates:
+        brokerSource === null
+          ? [null]
+          : [...brokerSource.matchAll(/const STORAGE_[A-Z_]+: &str =\s*"((?:[^"\\]|\\.)*)";/g)].map(
+              (m) => m[1].replace(/^storage_(?:full|failed): /, '')
+            ),
+      source: brokerSource,
+      requiredIn: [COMMAND_LINE],
+    },
+  ];
+  for (const family of families) {
+    if (family.source === null) continue;
+    const templates = family.templates.filter((template) => typeof template === 'string');
+    if (templates.length === 0) {
+      fail(
+        'daemon-sentences',
+        `found no ${family.name}; re-read the code and update this rule and the manual together`
+      );
+      continue;
+    }
+    for (const surface of surfaces) {
+      for (const phrase of quotesOf(surface)) {
+        if (!family.opens.test(sameQuotes(phrase))) continue;
+        if (!templates.some((template) => saysTemplate(phrase, template))) {
+          fail(
+            'daemon-sentences',
+            `${surface.path} quotes "${phrase}", which is not how ${family.name} reads: "${templates[0]}"`
+          );
+        }
+      }
+    }
+    for (const page of family.requiredIn) {
+      if (!pageQuotes(page).some((phrase) => family.opens.test(sameQuotes(phrase)))) {
+        fail('daemon-sentences', `${page} does not quote ${family.name}: "${templates[0]}"`);
+      }
+    }
+  }
+
+  // ── refusal-codes ────────────────────────────────────────────────────────
+  // Every code the daemon refuses a Crew request with is in the command-line
+  // page, which is where a script author looks a code up (W2-DOC-6).
+  if (refusalSource !== null) {
+    const codes = [...refusalSource.matchAll(/pub const [A-Z_]+: &str = "(crew_[a-z_]+)";/g)].map(
+      (m) => m[1]
+    );
+    if (codes.length < 8) {
+      fail(
+        'refusal-codes',
+        `found ${codes.length} refusal codes in ${REFUSAL_RS}; if refusal.rs changed shape, update this reader`
+      );
+    }
+    const commandLine = tree.read(COMMAND_LINE) || '';
+    for (const code of codes) {
+      if (!commandLine.includes(`\`${code}\``)) {
+        fail('refusal-codes', `${COMMAND_LINE} never names the daemon's refusal code \`${code}\``);
+      }
+    }
+  }
+
+  // ── ssh-codes ────────────────────────────────────────────────────────────
+  // Every connect failure the command line explains has a row in the
+  // command-line page's SSH failure table (W2-DOC-6).
+  const cliOutput = need(CLI_OUTPUT, 'ssh-codes');
+  if (cliOutput !== null) {
+    const body = /pub fn connect_failure_text\([\s\S]*?\n\}/.exec(cliOutput)?.[0] ?? '';
+    const codes = [...body.matchAll(/"(crew_[a-z_]+)" =>/g)].map((m) => m[1]);
+    if (codes.length < 5) {
+      fail(
+        'ssh-codes',
+        `found ${codes.length} codes in ${CLI_OUTPUT}'s connect_failure_text; update this reader`
+      );
+    }
+    const rows = markdownBlocks(tree.read(COMMAND_LINE) || '').filter((b) => b.startsWith('|'));
+    for (const code of codes) {
+      if (!rows.some((row) => new RegExp(`^\\|\\s*\`${code}\`\\s*\\|`).test(row))) {
+        fail('ssh-codes', `${COMMAND_LINE}'s SSH failure table has no row for \`${code}\``);
+      }
+    }
+  }
+
+  // ── notifications ────────────────────────────────────────────────────────
+  // The desktop app counts unread Crew messages and notifies the person while
+  // they are elsewhere, a mention by name (M2). The manual said the opposite.
+  const attention = need(ATTENTION, 'notifications');
+  if (attention !== null) {
+    const notifies =
+      /mentioned you in \$\{/.test(attention) && /new messages`?\}? in \$\{/.test(attention);
+    if (!notifies) {
+      fail(
+        'notifications',
+        `${ATTENTION} no longer words "mentioned you in" and "new messages in" notifications; ` +
+          're-read it, and rewrite what the manual says about notifications'
+      );
+    } else {
+      const denies = (block) =>
+        /\bCrew sends no (system )?notifications\b/i.test(block) ||
+        /\bdoes(?: not|n['’]t) notify\b/i.test(block);
+      for (const { path, blocks } of surfaces) {
+        for (const block of blocks.filter(denies)) {
+          fail(
+            'notifications',
+            `${path} says Crew does not notify, but ${ATTENTION} does: ${block.slice(0, 140)}`
+          );
+        }
+      }
+      const quoted = pageQuotes(MESSAGES_PAGE).map(sameQuotes);
+      if (!quoted.some((phrase) => /^.+ mentioned you in #[\w-]+$/.test(phrase))) {
+        fail(
+          'notifications',
+          `${MESSAGES_PAGE} does not quote a "… mentioned you in #channel" notification`
+        );
+      }
+      if (!quoted.some((phrase) => /^\d+ new messages in [\w-]+$/.test(phrase))) {
+        fail(
+          'notifications',
+          `${MESSAGES_PAGE} does not quote a "3 new messages in workspace" notification`
+        );
+      }
+    }
+  }
+
+  // ── pause-reasons ────────────────────────────────────────────────────────
+  // "Paused" is every stop a transfer can resume from, and its row says why
+  // (FILES-F4). The manual lists every reason the row can show.
+  const crewStatus = need(CREW_STATUS, 'pause-reasons');
+  if (crewStatus !== null) {
+    const table = /PAUSE_REASONS[^=]*=\s*\[([\s\S]*?)\n\];/.exec(crewStatus)?.[1] ?? '';
+    const reasons = [...table.matchAll(/,\s*'([^']+)'\s*\]/g)].map((m) => sameQuotes(m[1]));
+    if (reasons.length < 3) {
+      fail(
+        'pause-reasons',
+        `found ${reasons.length} pause reasons in ${CREW_STATUS}; update this reader`
+      );
+    }
+    const quoted = pageQuotes(MESSAGES_PAGE).map(sameQuotes);
+    for (const reason of reasons) {
+      if (!quoted.includes(reason)) {
+        fail('pause-reasons', `${MESSAGES_PAGE} does not list the pause reason "${reason}"`);
+      }
+    }
+  }
+
+  // ── cancel-upload ────────────────────────────────────────────────────────
+  // An upload can be cancelled now (FILES-F7): its unfinished part stays up to
+  // a day. "Cannot be deleted" is true only of a finished upload.
+  const filesCopy = need(FILES_COPY, 'cancel-upload');
+  if (filesCopy !== null) {
+    if (!/cancelUpload:\s*'Cancel upload'/.test(filesCopy)) {
+      fail('cancel-upload', `${FILES_COPY} no longer offers 'Cancel upload'; update this rule`);
+    } else {
+      for (const { path, blocks } of surfaces) {
+        for (const block of blocks) {
+          if (
+            /\b(?:cannot|can['’]t) delete an upload\b|\bAn upload cannot be deleted\b/i.test(block)
+          ) {
+            fail(
+              'cancel-upload',
+              `${path} says an upload cannot be deleted: ${block.slice(0, 140)}`
+            );
+          }
+        }
+      }
+      if (!(tree.read(MESSAGES_PAGE) || '').includes('**Cancel upload**')) {
+        fail('cancel-upload', `${MESSAGES_PAGE} does not name **Cancel upload**`);
+      }
+    }
+  }
+
+  // ── privacy-confirm ──────────────────────────────────────────────────────
+  // Going public from a terminal asks for the workspace's name, as the desktop
+  // does, and a script passes --confirm (CLI-10).
+  const cliArgs = need(CLI_ARGS, 'privacy-confirm');
+  if (cliArgs !== null) {
+    if (!/SetPersonal\s*\{[\s\S]{0,900}?confirm:\s*Option<String>/.test(cliArgs)) {
+      fail(
+        'privacy-confirm',
+        `${CLI_ARGS}'s privacy set-personal no longer takes --confirm; re-read it and update the manual`
+      );
+    } else {
+      for (const { path, blocks } of surfaces) {
+        for (const block of blocks) {
+          if (
+            /no typed confirmation/i.test(block) ||
+            (/privacy set-/.test(block) && /take effect at once/i.test(block))
+          ) {
+            fail(
+              'privacy-confirm',
+              `${path} says the privacy commands need no typed confirmation: ${block.slice(0, 140)}`
+            );
+          }
+        }
+      }
+      if (!(tree.read(COMMAND_LINE) || '').includes('--confirm WORKSPACE')) {
+        fail('privacy-confirm', `${COMMAND_LINE} does not say a script passes --confirm WORKSPACE`);
+      }
+    }
+  }
+
+  // ── share-dialog ─────────────────────────────────────────────────────────
+  // The drop confirmation is a message box. macOS shows its message, never its
+  // title, so the manual quotes the message (DW-15).
+  const sharePath = need(SHARE_PATH, 'share-dialog');
+  if (sharePath !== null) {
+    const title = /title:\s*'([^']+)',\s*\n\s*message:\s*`Share "\$\{/.exec(sharePath)?.[1] ?? null;
+    if (title === null) {
+      fail(
+        'share-dialog',
+        `found no message box titled beside a 'Share "…" (…) to Crew?' message in ${SHARE_PATH}; update this reader`
+      );
+    } else {
+      const sayMessage = /Share "[^"]+" \([^)]+\) to Crew\?/;
+      for (const { path, blocks } of surfaces) {
+        for (const phrase of blocks.flatMap(quotedPhrases)) {
+          if (phrase === title) {
+            fail(
+              'share-dialog',
+              `${path} names the Share window "${title}", a title macOS never shows; quote its message`
+            );
+          }
+        }
+      }
+      for (const path of [MESSAGES_PAGE, `${LANDING}#crew`]) {
+        const surface = surfaces.find((entry) => entry.path === path);
+        if (!surface?.blocks.some((block) => sayMessage.test(sameQuotes(block)))) {
+          fail(
+            'share-dialog',
+            `${path} does not quote the Share message, such as 'Share "counts.csv" (55 KB) to Crew?'`
+          );
+        }
+      }
     }
   }
 
