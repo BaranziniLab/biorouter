@@ -192,6 +192,23 @@ export interface CrewActionError {
   message: string;
   code?: string;
   source: ErrorSource;
+  /**
+   * The connection and channel (`postDestination`) whose composer this error belongs to: a send
+   * failure answers the draft of one channel, so another channel's composer never shows it
+   * (QA M5, R-4).
+   */
+  destination?: string;
+  /**
+   * The link to the workspace failed, rather than the workspace answering: stale once the
+   * connection verifies again, so it is dismissed then instead of staying under "Connected".
+   */
+  transport?: boolean;
+}
+
+/** What an error may say beyond its words: the composer it belongs to, and whether it is the link's. */
+export interface ErrorDetails {
+  destination?: string;
+  transport?: boolean;
 }
 
 /**
@@ -399,8 +416,13 @@ export interface CrewController {
   errorSlotFor(source: ErrorSource): boolean;
   /** A surface that can show its own errors registers while mounted; returns the unregister. */
   registerErrorSlot(source: ErrorSource): () => void;
-  reportError(message: string, source?: ErrorSource, code?: string): void;
+  reportError(message: string, source?: ErrorSource, code?: string, details?: ErrorDetails): void;
   dismissError(): void;
+  /**
+   * Dismiss `error` only if it is still the one on show: a surface letting go of the error it
+   * showed never takes a newer one with it. Absent on a stand-in controller.
+   */
+  dismissErrorIfShown?(error: CrewActionError): void;
   isPending(key: ActionKey): boolean;
   /** The coarse view: true while any action is pending. */
   busy: boolean;

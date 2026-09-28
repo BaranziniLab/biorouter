@@ -24,6 +24,9 @@ import type { DraftScope } from './observationFailure';
  *      it is kept exactly as long as the body is and every door that forgets the body forgets it.
  *      It holds a SHA-256 digest of what was posted and the key, never the attachment or
  *      reference IDs themselves.
+ *    - With the composer's note about that body, when it had one (QA M5): the words of a send
+ *      failure, so the failure comes back with its draft rather than following the person into
+ *      another channel. Words only, never a capability.
  * 2. **The last channel** the person chose, per connection: the channel ID only, in memory and in
  *    `localStorage` (`crew:lastChannel:<connectionId>`), so Crew reopens where they were instead
  *    of on the team's first channel. It only ever picks among the channels a verified view offers.
@@ -56,12 +59,21 @@ export interface DraftAttempt {
   current: MessageAttempt | null;
 }
 
+/** The composer's note about a kept draft: what its last send said, in words. */
+export interface StashedNote {
+  message: string;
+  code?: string;
+  transport?: boolean;
+}
+
 export interface StashedDraft {
   body: string;
   /** What the draft was written under: the last verified view of its channel. */
   scope: DraftScope;
   /** The attempt made for this very body, when it was sent and no answer cleared it. */
   attempt?: DraftAttempt;
+  /** What the composer said about this body when it was put aside. */
+  note?: StashedNote;
 }
 
 const drafts = new Map<string, StashedDraft>();
@@ -98,7 +110,7 @@ function bodyBytes(body: string): number {
 
 /**
  * Keep `body` as the unsent draft of `channelId` on `connectionId`, written under `scope`, with
- * `attempt` when one was made for this very body.
+ * `attempt` when one was made for this very body, and `note` when the composer had one about it.
  *
  * Nothing is kept — and nothing already kept is touched — for an empty body, a missing
  * connection or channel, or a scope that is not the last verified view of this very channel on
@@ -110,7 +122,8 @@ export function stashDraft(
   channelId: string,
   body: string,
   scope: DraftScope | null,
-  attempt?: DraftAttempt | null
+  attempt?: DraftAttempt | null,
+  note?: StashedNote | null
 ): void {
   if (!connectionId || !channelId || !body.trim()) return;
   if (!scope || scope.connectionId !== connectionId || scope.channel?.id !== channelId) return;
@@ -120,7 +133,12 @@ export function stashDraft(
     if (replaced) notifyDrafts();
     return;
   }
-  drafts.set(key, attempt ? { body, scope, attempt } : { body, scope });
+  drafts.set(key, {
+    body,
+    scope,
+    ...(attempt ? { attempt } : {}),
+    ...(note ? { note } : {}),
+  });
   while (drafts.size > DRAFT_STASH_MAX_ENTRIES) {
     const oldest = drafts.keys().next().value;
     if (oldest === undefined) break;

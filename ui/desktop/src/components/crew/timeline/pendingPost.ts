@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CrewMessage } from '../crewApi';
-import { crewActionCopy } from '../state/copy';
+import { lastPostOutcome } from '../state/crewSend';
 import type { CrewController } from '../state/types';
 
 /**
@@ -32,6 +32,11 @@ export interface PendingPost {
   attachments: readonly PendingPostFile[];
   /** Messages already on screen when it was sent: the delivered one is not among them. */
   before: ReadonlySet<string>;
+  /**
+   * The message the broker answered with, when it named one. A resend under the same key is
+   * answered with the message already on screen (QA R-4), which is then delivered at once.
+   */
+  messageId?: string | null;
 }
 
 /**
@@ -49,28 +54,12 @@ export const PENDING_POST_TIMEOUT_MS = 30_000;
 type PostAttempt = PendingPost & { key: string };
 
 /**
- * Whether the send that just settled was accepted. The controller's `send()`
- * says nothing (and `state/*` is not this area's to change), so it is read the
- * way the composer sees it: an accepted post clears exactly what was sent from
- * the draft, and a refused one leaves the draft and records a composer error. A
- * post whose only trouble was the kept upload record still went out. A draft
- * cleared because the verified view was dropped proves nothing either way.
+ * Whether `message` is the post on its way: the message the broker answered with, by its ID, even
+ * one already on screen (a deduplicated resend, QA R-4); otherwise, for an answer that named none,
+ * the viewer's own words among messages that were not on screen when it was sent.
  */
-function postAccepted(attempt: PostAttempt, crew: CrewController): boolean {
-  const { error, draft, snapshot } = crew;
-  if (error?.source === 'composer' && error.message !== crewActionCopy.sendTransferRecordKept) {
-    return false;
-  }
-  // A reset that dropped the verified view (and cleared the draft with it) is not an answer.
-  if (!snapshot) return false;
-  const bodyCleared = !attempt.body.trim() || !draft.body.trim();
-  const filesCleared = attempt.attachments.every(
-    (sent) => !draft.attachments.some((file) => file.id === sent.id)
-  );
-  return bodyCleared && filesCleared;
-}
-
 function isDelivery(post: PendingPost, message: CrewMessage, viewerId: string | null): boolean {
+  if (post.messageId) return message.id === post.messageId;
   return (
     viewerId !== null &&
     !post.before.has(message.id) &&
@@ -107,9 +96,10 @@ export function usePendingPostOf(connectionId: string, channelId: string): Pendi
 }
 
 /**
- * The post on its way from this timeline's composer, matched on arrival by who posted it and its
- * words among messages that were not already on screen (`send()` returns no message ID to match
- * by). Published for the Files tab under the controller's connection and channel while it lasts.
+ * The post on its way from this timeline's composer, matched on arrival by the message ID the
+ * broker answered with (or, when it named none, by who posted it and its words among messages that
+ * were not already on screen). Published for the Files tab under the controller's connection and
+ * channel while it lasts.
  *
  * The answer is taken in a layout effect, so the draft emptying and the "Sending…" row appearing
  * land in one painted frame, and the Files tab's rows move from the draft to the post in the same
@@ -149,8 +139,14 @@ export function usePendingPost(
     } else if (!posting && was) {
       const sent = attempt.current;
       attempt.current = null;
-      // Another channel's composer says nothing about this post (RENDERER-4).
-      setPending(sent && sent.key === here && postAccepted(sent, now) ? sent : null);
+      // The send says what became of it (`lastPostOutcome`): only a post the broker took, and
+      // whose words this composer let go, stands in until it lands. Another channel's composer
+      // says nothing about this post (RENDERER-4).
+      const outcome =
+        sent && sent.key === here ? lastPostOutcome(now.connectionId, now.channelId) : null;
+      setPending(
+        sent && outcome?.kind === 'accepted' ? { ...sent, messageId: outcome.messageId } : null
+      );
     }
   }, [posting]);
   // A post is drawn, and delivered, only in the channel it went to (RENDERER-4): the timeline stays

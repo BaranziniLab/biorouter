@@ -51,6 +51,17 @@ export const CREW_JOIN_UNSUPPORTED = 'crew_join_unsupported';
 export const CREW_JOIN_CODE_MISMATCH = 'crew_join_code_mismatch';
 
 /**
+ * A request-carrying route (W2-DMN-7, 503): the bridge was lost after the request was written, so
+ * whether the workspace applied it is not known. The request's own idempotency key makes sending
+ * it again safe.
+ */
+export const CREW_OUTCOME_UNKNOWN = 'crew_outcome_unknown';
+/** A request-carrying route (W2-DMN-7, 503): the bridge was lost before anything was written. */
+export const CREW_NOT_SENT = 'crew_not_sent';
+/** The bridge broke and Biorouter is dialling it again (W2-DMN-6). */
+export const CREW_RECONNECTING = 'crew_reconnecting';
+
+/**
  * Set by this renderer, never by the daemon: the daemon answered successfully, but not with a body
  * the route promises. It never means success.
  */
@@ -120,4 +131,46 @@ export function unexpectedCrewResponse(what: string): CrewHttpError {
 /** A 2xx answer from a newer route that is not a JSON object at all: the daemon predates it. */
 export function outdatedDaemonResponse(): CrewHttpError {
   return new CrewHttpError(STALE_DAEMON_MESSAGE, 200, CREW_DAEMON_OUTDATED);
+}
+
+/**
+ * What a daemon from before W2-DMN-7 said, in words only, when the bridge died after carrying a
+ * request: `Crew SSH failure [ssh_eof; …]: …; reconnect. Submitted operation outcome may be
+ * unknown; …` (`transport.rs`), or `SSH bridge failed. Reconnect; inspect any submitted operation
+ * before retrying because its outcome may be unknown.` (`crew/mod.rs`).
+ */
+const OUTCOME_UNKNOWN_TEXT = /outcome may be unknown/i;
+/** The same daemon's words for a bridge that failed, whatever it was carrying. */
+const TRANSPORT_TEXT =
+  /^(?:Crew SSH failure \[|SSH bridge failed\b|Crew connection is disconnected\b)/i;
+
+/** Whether `text` is an older daemon's words for a bridge that failed (no person wrote them). */
+export function isTransportText(text: string): boolean {
+  return TRANSPORT_TEXT.test(text);
+}
+
+/**
+ * Whether a request may or may not have been applied (QA R-3, R-4): the daemon says so by code, or,
+ * before it had one, in words. A clean refusal and `crew_not_sent` are not: nothing was applied.
+ */
+export function isOutcomeUnknown(error: unknown): boolean {
+  if (!(error instanceof CrewHttpError)) return false;
+  if (error.code === CREW_OUTCOME_UNKNOWN) return true;
+  if (error.code === CREW_NOT_SENT || error.brokerCode) return false;
+  return OUTCOME_UNKNOWN_TEXT.test(error.message);
+}
+
+/**
+ * Whether a failure is the link to the workspace failing rather than the workspace answering:
+ * a lost or re-dialling bridge, an SSH failure, or the daemon's own gateway timeout. Such an error
+ * stops describing anything once the connection verifies again. A broker's refusal never is one.
+ */
+export function isTransportFailure(error: unknown): boolean {
+  if (!(error instanceof CrewHttpError) || error.brokerCode) return false;
+  const code = error.code;
+  if (code === CREW_OUTCOME_UNKNOWN || code === CREW_NOT_SENT || code === CREW_RECONNECTING)
+    return true;
+  if (isConnectFailureCode(code)) return true;
+  if (error.status === 502 || error.status === 503 || error.status === 504) return true;
+  return isTransportText(error.message);
 }

@@ -1977,7 +1977,12 @@ describe('a post still on its way when the person moves to another channel (REND
     await act(async () => {
       await crew.send();
     });
-    expect(crew.error).toEqual({ message: 'Slow down', source: 'composer' });
+    // It belongs to this channel's draft (QA M5): no other channel's composer shows it.
+    expect(crew.error).toEqual({
+      message: 'Slow down',
+      source: 'composer',
+      destination: `${connection.id}\n${channel.id}`,
+    });
     expect(crew.draft.body).toBe('stay');
   });
 
@@ -2094,10 +2099,13 @@ describe('a post still on its way when the person moves to another channel (REND
         post.reject(new CrewHttpError('The computer did not answer in time', 504));
         await sent;
       });
-      // Told to the screen open now, in its composer, since the words are its.
+      // Told to the screen open now, in its composer, since the words are its. A gateway timeout
+      // is the link's failure: stale once the connection verifies again (QA R-4).
       expect(crew.error).toEqual({
         message: 'The computer did not answer in time',
         source: 'composer',
+        destination: `${connection.id}\n${methods.id}`,
+        transport: true,
       });
       expect(crew.isPending('send')).toBe(false);
       await act(async () => {
@@ -2204,7 +2212,9 @@ describe('a post still on its way when the person moves to another channel (REND
       await opened(analysis.id);
 
       const kept = stashedDraft(connection.id, methods.id);
-      expect(Object.keys(kept ?? {}).sort()).toEqual(['attempt', 'body', 'scope']);
+      // The composer's note about the words goes aside with them (QA M5): words, never an ID.
+      expect(Object.keys(kept ?? {}).sort()).toEqual(['attempt', 'body', 'note', 'scope']);
+      expect(JSON.stringify(kept?.note)).not.toMatch(/blob-1|ref-1/);
       const attempt = kept?.attempt?.current;
       expect(Object.keys(attempt ?? {}).sort()).toEqual(['digest', 'key']);
       expect(attempt?.digest).toMatch(/^[0-9a-f]{64}$/);

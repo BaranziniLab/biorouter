@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage } from '../crewApi';
 import { identityCopy } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { notePostOutcomeForTests, type PostOutcome } from '../state/crewSend';
 import { timelineCopy } from './copy';
 import { HISTORY_PAGE_SIZE } from './groupMessages';
 import { PENDING_POST_TIMEOUT_MS, Timeline } from './Timeline';
@@ -1058,11 +1059,19 @@ describe('a post on its way (T-37)', () => {
   const draft = (body: string) => ({ body, attachments: [], references: [] });
   const before = message({ id: 'm-before', body: 'Morning.' });
 
-  /** The controller as the composer drives it: the draft, then the post in flight, then its answer. */
+  /** What the send says became of the post, as `createSend` records it before its flight ends. */
+  const answered = (outcome: PostOutcome) => notePostOutcomeForTests('conn-1', ID.general, outcome);
+
+  /**
+   * The controller as the composer drives it: the draft, then the post in flight, then its answer.
+   * The send records the broker's answer as it ends (`lastPostOutcome`); taken, unless a test says
+   * otherwise.
+   */
   function stages() {
     const idle = makeController({ messages: [before], draft: draft(sent) });
     const posting = { ...idle, isPending: vi.fn((key: string) => key === 'send') };
     const accepted = { ...idle, draft: draft(''), isPending: vi.fn(() => false) };
+    answered({ kind: 'accepted', messageId: null });
     return { idle, posting, accepted };
   }
   const sending = () => screen.queryByText(timelineCopy.sending);
@@ -1108,6 +1117,7 @@ describe('a post on its way (T-37)', () => {
   it('continues the viewer’s own group without a second head, as the message will', () => {
     const mine = message({ id: 'm-mine', actor_id: ID.alice, body: 'First.', at: new Date() });
     const idle = makeController({ messages: [mine], draft: draft(sent) });
+    answered({ kind: 'accepted', messageId: null });
     const view = renderWithController(<Timeline />, idle);
     view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
     view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
@@ -1147,6 +1157,7 @@ describe('a post on its way (T-37)', () => {
 
   it('shows nothing for a post the broker refused: the composer keeps the words and says why', () => {
     const { idle, posting } = stages();
+    answered({ kind: 'refused' });
     const view = renderWithController(<Timeline />, idle);
     view.rerenderWith(posting);
     view.rerenderWith({
@@ -1173,12 +1184,27 @@ describe('a post on its way (T-37)', () => {
       return <Timeline view={crew.snapshot ? null : lastView} readOnly={!crew.snapshot} />;
     }
     const { idle, posting, accepted } = stages();
+    // Taken after the view that sent it was dropped: the words stay where they were, as told.
+    answered({ kind: 'kept' });
     const view = renderWithController(<Stage />, idle);
     view.rerenderWith(posting);
     view.rerenderWith({ ...accepted, snapshot: null });
     view.rerenderWith(accepted);
     expect(screen.getByText('Morning.')).toBeInTheDocument();
     expect(sending()).toBeNull();
+  });
+
+  it('draws no ghost for a resend the broker answers with the message already on screen (QA R-4)', () => {
+    // The first try was committed and delivered while its answer was lost; the resend under the
+    // same key is answered with that message. It is on screen already: nothing stands in for it.
+    const delivered = message({ id: 'm-delivered', actor_id: ID.alice, body: sent });
+    const idle = makeController({ messages: [before, delivered], draft: draft(sent) });
+    answered({ kind: 'accepted', messageId: 'm-delivered' });
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+    view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
+    expect(sending()).toBeNull();
+    expect(screen.getAllByText(sent)).toHaveLength(1);
   });
 
   it('is not fooled by someone else posting the same words', () => {
@@ -1248,6 +1274,7 @@ describe('a post on its way (T-37)', () => {
     it('draws no second band when today already has one', () => {
       const earlier = message({ id: 'm-today', body: 'Morning.', at: new Date() });
       const idle = makeController({ messages: [earlier], draft: draft(sent) });
+      answered({ kind: 'accepted', messageId: null });
       const view = renderWithController(<Timeline />, idle);
       view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
       view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
@@ -1278,6 +1305,7 @@ describe('a post on its way (T-37)', () => {
         references: [],
       };
       const idle = makeController({ messages: [before], draft: withFile });
+      answered({ kind: 'accepted', messageId: null });
       const view = renderWithController(<Timeline renderAttachments={renderAttachments} />, idle);
       view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
       view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
@@ -1308,6 +1336,7 @@ describe('a post on its way (T-37)', () => {
         unread: { [ID.general]: 1 },
       }),
     });
+    answered({ kind: 'accepted', messageId: null });
     const view = renderWithController(<Timeline />, idle);
     expect(screen.getByRole('separator', { name: timelineCopy.newLineLabel })).toBeInTheDocument();
     view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
@@ -1337,6 +1366,7 @@ describe('a post on its way (T-37)', () => {
         unread: { [ID.general]: 1 },
       }),
     });
+    answered({ kind: 'refused' });
     const view = renderWithController(<Timeline />, idle);
     view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
     view.rerenderWith({

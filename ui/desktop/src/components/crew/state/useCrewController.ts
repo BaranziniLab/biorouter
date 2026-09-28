@@ -3,7 +3,13 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
-import { createSend, useCrewDraft, useOpenSendScreen, usePostInFlight } from './crewSend';
+import {
+  createSend,
+  useCrewDraft,
+  useOpenSendScreen,
+  usePostCheck,
+  usePostInFlight,
+} from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
 import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
@@ -92,7 +98,28 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const arrival = arrivalConnectIntent(location.state);
 
   const actions = useCrewActions();
-  const { act, reportError, dismissError, dismissErrorFrom, isPending } = actions;
+  const {
+    act,
+    reportError,
+    dismissError,
+    dismissErrorFrom,
+    dismissErrorIfShown,
+    dismissTransportError,
+    isPending,
+  } = actions;
+  // The error on show, for what reads it outside a render: the composer's note put aside with its
+  // draft (QA M5).
+  const errorNow = useRef(actions.error);
+  errorNow.current = actions.error;
+  const composerNoteFor = useCallback((destination: string) => {
+    const shown = errorNow.current;
+    if (!shown || shown.source !== 'composer' || shown.destination !== destination) return null;
+    return {
+      message: shown.message,
+      ...(shown.code !== undefined ? { code: shown.code } : {}),
+      ...(shown.transport ? { transport: true } : {}),
+    };
+  }, []);
   const generation = useRef(0);
   const {
     connections,
@@ -176,6 +203,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft,
     reportError,
     dismissError,
+    composerNoteFor,
     closeSignIn,
     setJoinStatus,
     resetSurfaces,
@@ -204,6 +232,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     refreshError,
     refreshErrorCode,
     reverifying,
+    verifiedViews,
     lastVerified,
     setSnapshot,
     refresh,
@@ -233,6 +262,17 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setReconnecting(null);
     setLossPending(null);
   }, [refreshError, stopReconnectingTimer]);
+
+  // The connection verified again after it was not: a failure of the link from before (a send the
+  // bridge lost, the daemon's gateway timeout) no longer describes anything, and stayed in red
+  // under a green "Connected" (QA R-4). An answer from the workspace stays.
+  const verifiedAgain = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  const wasVerified = useRef(verifiedAgain);
+  useEffect(() => {
+    const was = wasVerified.current;
+    wasVerified.current = verifiedAgain;
+    if (verifiedAgain && !was) dismissTransportError();
+  }, [verifiedAgain, dismissTransportError]);
 
   const savedConnection = connections.find((item) => item.id === connectionId);
   const connection =
@@ -305,11 +345,14 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   //
   // A deliberate selection also puts the unsent body aside for the channel it was written in
   // (Q2-07), remembers the chosen channel for next time (Q2-21), and dismisses a "channel was
-  // closed" note that no longer describes what is on screen (Q2-19).
+  // closed" note that no longer describes what is on screen (Q2-19). The composer's note about the
+  // body (a send failure) goes aside with it and leaves the screen (QA M5): it answered that
+  // channel's draft, and comes back with it.
   const leaveChannel = () => {
     stashDraft();
-    if (actions.error?.source === 'observer' && actions.error.code === CHANNEL_LOST_ERROR_CODE)
-      dismissError();
+    const shown = actions.error;
+    if (shown?.source === 'observer' && shown.code === CHANNEL_LOST_ERROR_CODE) dismissError();
+    if (shown?.source === 'composer') dismissErrorIfShown(shown);
   };
   // A channel the person selects opens with its kept draft already in the composer (Q4-05), in the
   // same render as the selection — not when its first frame arrives, which left the composer empty
@@ -711,6 +754,24 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const selection = useRef({ connectionId, channelId });
   selection.current = { connectionId, channelId };
   useOpenSendScreen(selection, reportError);
+  // What a post whose outcome turns out unknown is looked for among (QA R-4).
+  const messagesNow = useRef(messages);
+  messagesNow.current = messages;
+  const viewsNow = useRef(verifiedViews);
+  viewsNow.current = verifiedViews;
+  const viewerId = snapshot?.actor?.id ?? null;
+  usePostCheck({
+    connectionId,
+    channelId,
+    messages,
+    liveTailLoaded:
+      verifiedAgain && messagesLoaded && historyBefore === null && backlogComplete !== false,
+    verifiedViews,
+    viewerId,
+    draft,
+    markRead,
+    reportError,
+  });
   const send = createSend({
     draft,
     busy: actions.busyExcept('send'),
@@ -728,6 +789,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     markRead,
     act,
     reportError,
+    messageIdsNow: () => new Set(messagesNow.current.map((message) => message.id)),
+    verifiedViews: () => viewsNow.current,
   });
 
   // `send` is pending only in the channel whose post is on its way (RENDERER-4): a post left
@@ -864,6 +927,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     registerErrorSlot: actions.registerErrorSlot,
     reportError,
     dismissError,
+    dismissErrorIfShown,
     isPending: isPendingHere,
     busy: actions.busy,
     request,
