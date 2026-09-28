@@ -632,6 +632,8 @@ pub struct HumanOptions {
     pub view: View,
     /// Names known from elsewhere, such as the workspace snapshot behind a history page.
     pub directory: Directory,
+    /// Lines printed after the value in text, such as that a list is not complete.
+    pub notes: Vec<String>,
     clock: Clock,
 }
 
@@ -651,6 +653,11 @@ impl HumanOptions {
 
     pub fn with_directory(mut self, directory: Directory) -> Self {
         self.directory = directory;
+        self
+    }
+
+    pub fn with_notes(mut self, notes: impl IntoIterator<Item = String>) -> Self {
+        self.notes.extend(notes);
         self
     }
 
@@ -1042,7 +1049,91 @@ pub fn render_text(value: &Value, options: &HumanOptions) -> String {
         View::Auto => detect(value),
         view => view,
     };
-    ctx.render(view, value).join("\n")
+    let mut lines = ctx.render(view, value);
+    lines.extend(options.notes.iter().cloned());
+    lines.join("\n")
+}
+
+/// "Showing 100 of your 140 channels." when a snapshot left some out (`totals`): the broker
+/// lists as many teams and channels as fit in one answer, and the rest are still the person's.
+pub fn partial_list_note(noun: &str, listed: usize, total: Option<u64>) -> Option<String> {
+    let total = usize::try_from(total?).ok()?;
+    (total > listed).then(|| format!("Showing {listed} of your {total} {noun}."))
+}
+
+/// Channels as a person reads them (M17, F6, SF-F10): grouped by team, teams by name, each
+/// team's `#general` first and then its channels by name. A channel whose team is not listed
+/// comes last. The broker sends them in the order of their random IDs.
+pub fn channels_in_order(channels: &mut [Value], teams: &[Value]) {
+    let team_rank: BTreeMap<&str, (String, &str)> = teams
+        .iter()
+        .filter_map(|team| {
+            let id = str_field(team, "id")?;
+            let name = display_or_name(team).unwrap_or_default().to_lowercase();
+            Some((
+                id,
+                (
+                    name,
+                    str_field(team, "general_channel_id").unwrap_or_default(),
+                ),
+            ))
+        })
+        .collect();
+    let key = |channel: &Value| {
+        let id = str_field(channel, "id").unwrap_or_default().to_owned();
+        let team = str_field(channel, "team_id").and_then(|team| team_rank.get(team));
+        let name = display_or_name(channel)
+            .unwrap_or_default()
+            .trim_start_matches('#')
+            .to_lowercase();
+        (
+            team.is_none(),
+            team.map(|(name, _)| name.clone()).unwrap_or_default(),
+            str_field(channel, "team_id").unwrap_or_default().to_owned(),
+            team.is_none_or(|(_, general)| *general != id),
+            name,
+            id,
+        )
+    };
+    channels.sort_by_cached_key(key);
+}
+
+/// Teams by name, case aside.
+pub fn teams_in_order(teams: &mut [Value]) {
+    teams.sort_by_cached_key(|team| {
+        (
+            display_or_name(team).unwrap_or_default().to_lowercase(),
+            str_field(team, "id").unwrap_or_default().to_owned(),
+        )
+    });
+}
+
+/// People as a person reads them (SF-F10, M17): the host, then you, then everyone else by the
+/// name their row leads with, a leading `@` and letter case aside, then by username. The
+/// desktop's `peopleInOrder`, so the terminal lists a team the way the app does.
+pub fn people_in_order(people: &mut [Value], host_id: Option<&str>, actor_id: Option<&str>) {
+    people.sort_by_cached_key(|person| {
+        let id = str_field(person, "id");
+        let rank = if id.is_some() && id == host_id {
+            0
+        } else if id.is_some() && id == actor_id {
+            1
+        } else {
+            2
+        };
+        let username = str_field(person, "username").unwrap_or_default();
+        let display = str_field(person, "display_name")
+            .or_else(|| str_field(person, "nickname"))
+            .map(str::trim)
+            .filter(|display| {
+                !display.is_empty() && display.to_lowercase() != username.to_lowercase()
+            });
+        let shown = display
+            .unwrap_or(username)
+            .trim_start_matches('@')
+            .to_lowercase();
+        (rank, shown, username.to_lowercase(), username.to_owned())
+    });
 }
 
 fn detect(value: &Value) -> View {
@@ -1299,17 +1390,36 @@ impl Ctx {
             ("Agent grants", "runs", Self::run_grant_row),
         ];
         for (title, key, row) in sections {
-            let items = list_key(snapshot, key);
-            if items.is_empty() {
+            let mut items = list_key(snapshot, key).to_vec();
+            let noun = match key {
+                "principals" | "former_principals" => {
+                    people_in_order(&mut items, self.dir.host_id(), self.dir.actor_id.as_deref());
+                    ""
+                }
+                "teams" => {
+                    teams_in_order(&mut items);
+                    "teams"
+                }
+                "channels" => {
+                    channels_in_order(&mut items, list_key(snapshot, "teams"));
+                    "channels"
+                }
+                "invitations" => "invitations",
+                "references" => "remote references",
+                _ => "agent grants",
+            };
+            let note = partial_list_note(noun, items.len(), snapshot["totals"][key].as_u64());
+            if items.is_empty() && note.is_none() {
                 if matches!(title, "People" | "Teams" | "Channels") {
                     out.push(format!("{title}: none"));
                 }
                 continue;
             }
             out.push(format!("{title} ({}):", items.len()));
-            for item in items {
+            for item in &items {
                 out.extend(row(self, item).into_iter().map(|line| format!("  {line}")));
             }
+            out.extend(note.map(|note| format!("  {note}")));
         }
         out
     }
@@ -2925,9 +3035,9 @@ mod tests {
             "Privacy: Private for everyone · institution ucsf · policy epoch 4".into(),
             format!("You: {}", alice()),
             "People (3):".into(),
-            "  @crew_carol".into(),
             format!("  {} · you · host", alice()),
             format!("  {}", bob()),
+            "  @crew_carol".into(),
             "Teams (1):".into(),
             "  Crew QA Lab · 3 members · created by you".into(),
             "Channels (2):".into(),
@@ -2949,6 +3059,74 @@ mod tests {
         .join("\n");
         assert_eq!(text, expected);
         assert_no_machine_ids(&text);
+    }
+
+    /// M17, F6, SF-F10: lists read in one order everywhere, not in the order of random IDs:
+    /// channels by team with each `#general` first, teams by name, and people with the host
+    /// first, then you, then by the name their row leads with.
+    #[test]
+    fn channels_teams_and_people_are_listed_in_a_readers_order() {
+        let team = |id: &str, name: &str, general: &str| json!({"id": id, "name": name, "general_channel_id": general, "members": []});
+        let place = |id: &str, team: &str, name: &str| json!({"id": id, "team_id": team, "name": name, "classification": "restricted"});
+        let teams = vec![
+            team("t-b", "bench crew", "c-4"),
+            team("t-a", "Chen Lab", "c-6"),
+        ];
+        let mut channels = vec![
+            place("c-1", "t-a", "msg-qa"),
+            place("c-2", "t-a", "random"),
+            place("c-3", "t-a", "methods"),
+            place("c-4", "t-b", "general"),
+            place("c-5", "t-b", "scratch"),
+            place("c-6", "t-a", "general"),
+            place("c-7", "t-gone", "orphan"),
+        ];
+        channels_in_order(&mut channels, &teams);
+        let order: Vec<&str> = channels
+            .iter()
+            .map(|channel| channel["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["c-4", "c-5", "c-6", "c-3", "c-1", "c-2", "c-7"]);
+
+        let mut sorted_teams = teams.clone();
+        teams_in_order(&mut sorted_teams);
+        assert_eq!(sorted_teams[0]["id"], "t-b");
+
+        let mut people = vec![
+            json!({"id": "p-jack", "username": "crew_jack", "display_name": "Jack Moreno"}),
+            json!({"id": "p-mal", "username": "crew_mallory"}),
+            json!({"id": "p-alice", "username": "crew_alice", "display_name": "Alice Chen"}),
+            json!({"id": "p-carol", "username": "crew_carol", "display_name": "carol nguyen"}),
+            json!({"id": "p-bob", "username": "crew_bob", "display_name": "Bob Lee"}),
+        ];
+        people_in_order(&mut people, Some("p-alice"), Some("p-mal"));
+        let order: Vec<&str> = people
+            .iter()
+            .map(|person| person["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["p-alice", "p-mal", "p-bob", "p-carol", "p-jack"]);
+    }
+
+    /// The broker lists as many teams and channels as fit in one answer (`totals` counts them
+    /// all), so a list that leaves some out says so, and one that does not says nothing more.
+    #[test]
+    fn a_partial_list_says_how_many_it_shows() {
+        assert_eq!(
+            partial_list_note("channels", 100, Some(140)).as_deref(),
+            Some("Showing 100 of your 140 channels.")
+        );
+        assert_eq!(partial_list_note("channels", 3, Some(3)), None);
+        assert_eq!(partial_list_note("channels", 3, None), None);
+        let mut snapshot = alice_snapshot();
+        snapshot["totals"] =
+            json!({"teams": 1, "channels": 5, "invitations": 1, "runs": 1, "references": 1});
+        let text = plain(&snapshot);
+        assert!(
+            text.contains("Channels (2):\n  #general · Crew QA Lab · Restricted · 3 members · you own it · 2 unread\n  #methods"),
+            "{text}"
+        );
+        assert!(text.contains("\n  Showing 2 of your 5 channels."), "{text}");
+        assert!(!text.contains("of your 1 teams"), "{text}");
     }
 
     #[test]

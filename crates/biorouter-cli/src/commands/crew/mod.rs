@@ -826,7 +826,11 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         CrewCommand::Enroll(command) => enrollment(api, command).await?,
         CrewCommand::Members(MembersArgs { command: None }) => {
             let snapshot = api.snapshot().await?;
-            let people = with_roles(snapshot_field(&snapshot, "principals")?, &snapshot);
+            let mut people = with_roles(snapshot_field(&snapshot, "principals")?, &snapshot);
+            if let Some(list) = people.as_array_mut() {
+                let host = snapshot_host_id(&snapshot);
+                output::people_in_order(list, host.as_deref(), snapshot["actor"]["id"].as_str());
+            }
             api.show_with(people, Directory::from_snapshot(&snapshot))
         }
         CrewCommand::Members(MembersArgs {
@@ -1370,15 +1374,13 @@ impl Api {
     }
 }
 
-/// Each person in `people` with the two facts the text list shows beside them (CLI-15):
-/// `is_you` and `is_host`, from the snapshot's actor and host.
-fn with_roles(mut people: Value, snapshot: &Value) -> Value {
-    let actor = snapshot["actor"]["id"].as_str();
-    let host = snapshot["workspace"]["host_principal_id"]
+/// The host's principal ID: projected by newer brokers, else the active principal holding the
+/// host's UID.
+fn snapshot_host_id(snapshot: &Value) -> Option<String> {
+    snapshot["workspace"]["host_principal_id"]
         .as_str()
         .map(str::to_owned)
         .or_else(|| {
-            // An older broker names only the host's UID; one active principal holds it.
             let uid = snapshot["workspace"]["host_uid"].as_u64()?;
             snapshot["principals"]
                 .as_array()?
@@ -1388,7 +1390,15 @@ fn with_roles(mut people: Value, snapshot: &Value) -> Value {
                 })
                 .and_then(|person| person["id"].as_str())
                 .map(str::to_owned)
-        });
+        })
+}
+
+/// Each person in `people` with the two facts the text list shows beside them (CLI-15):
+/// `is_you` and `is_host`, from the snapshot's actor and host.
+fn with_roles(mut people: Value, snapshot: &Value) -> Value {
+    let actor = snapshot["actor"]["id"].as_str();
+    // An older broker names only the host's UID; one active principal holds it.
+    let host = snapshot_host_id(snapshot);
     if let Some(people) = people.as_array_mut() {
         for person in people.iter_mut().filter(|person| person.is_object()) {
             let id = person["id"].as_str().map(str::to_owned);
@@ -2774,8 +2784,20 @@ async fn teams(api: &Api, command: TeamCommand) -> Result<Reply> {
     Ok(match command {
         TeamCommand::List => {
             let snapshot = api.snapshot().await?;
-            let teams = snapshot_field(&snapshot, "teams")?;
-            api.show_with(teams, Directory::from_snapshot(&snapshot))
+            let mut teams = snapshot_field(&snapshot, "teams")?;
+            let listed = teams.as_array().map_or(0, Vec::len);
+            if let Some(list) = teams.as_array_mut() {
+                output::teams_in_order(list);
+            }
+            let note =
+                output::partial_list_note("teams", listed, snapshot["totals"]["teams"].as_u64());
+            Reply::Show(
+                teams,
+                Box::new(
+                    api.human(Directory::from_snapshot(&snapshot))
+                        .with_notes(note),
+                ),
+            )
         }
         // The result names the team as the broker stored it, which `output` prints.
         TeamCommand::Create { name } => api.show(
@@ -2822,8 +2844,28 @@ async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
                     .filter(|item| item["team_id"].as_str() == Some(team.id.as_str()))
                     .collect::<Vec<_>>());
             }
-            let channels = with_unread(channels, &snapshot);
-            api.show_with(channels, Directory::from_snapshot(&snapshot))
+            let mut channels = with_unread(channels, &snapshot);
+            if let Some(list) = channels.as_array_mut() {
+                output::channels_in_order(
+                    list,
+                    snapshot["teams"].as_array().map_or(&[], Vec::as_slice),
+                );
+            }
+            // A partial snapshot lists some of the person's channels (wave 1's bounded
+            // snapshot): say so, rather than let the list read as all of them.
+            let listed = snapshot["channels"].as_array().map_or(0, Vec::len);
+            let note = output::partial_list_note(
+                "channels",
+                listed,
+                snapshot["totals"]["channels"].as_u64(),
+            );
+            Reply::Show(
+                channels,
+                Box::new(
+                    api.human(Directory::from_snapshot(&snapshot))
+                        .with_notes(note),
+                ),
+            )
         }
         ChannelCommand::Create {
             name,
@@ -5670,6 +5712,63 @@ mod tests {
         assert!(with_unread(json!([{"id": METHODS}]), &snapshot())[0]
             .get("unread")
             .is_none());
+    }
+
+    /// M17, F6, SF-F10: `members` and `channels list` come out in a reader's order in text and
+    /// JSON alike, whatever order the broker's IDs put them in, and a partial list says so.
+    #[tokio::test]
+    async fn lists_come_out_in_a_readers_order_and_say_when_they_are_partial() {
+        let shuffled = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                let mut snapshot = snapshot();
+                snapshot["actor"] =
+                    json!({"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001});
+                snapshot["principals"] = json!([
+                    {"id": CAROL, "username": "carol", "display_name": "Carol Diaz", "uid": 1002},
+                    {"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001},
+                    {"id": ALICE, "username": "alice", "display_name": "Alice Chen", "uid": 1000}
+                ]);
+                snapshot["channels"] = json!([
+                    {"id": METHODS, "team_id": TEAM, "name": "methods", "classification": "restricted"},
+                    {"id": GENERAL, "team_id": TEAM, "name": "general", "classification": "restricted"}
+                ]);
+                snapshot["totals"] = json!({"channels": 4, "teams": 1});
+                return Ok(snapshot);
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Json, shuffled);
+        let Reply::Show(people, _) = run(&api, CrewCommand::Members(MembersArgs { command: None }))
+            .await
+            .expect("members")
+        else {
+            panic!("members is a list")
+        };
+        let ids: Vec<&str> = people
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|person| person["id"].as_str().unwrap())
+            .collect();
+        // Alice hosts, Bob is you, then Carol by name.
+        assert_eq!(ids, [ALICE, BOB, CAROL]);
+
+        let (api, _) = api_with(OutputFormat::Text, shuffled);
+        let reply = run(
+            &api,
+            CrewCommand::Channels(ChannelCommand::List { team: None }),
+        )
+        .await
+        .expect("channels");
+        let Reply::Show(ref channels, _) = reply else {
+            panic!("channels is a list")
+        };
+        assert_eq!(channels[0]["id"], GENERAL, "#general first");
+        let text = said(reply);
+        assert!(
+            text[0].ends_with("Showing 2 of your 4 channels."),
+            "{text:?}"
+        );
     }
 
     /// CLI-16: a started task is named by the channel the person typed, and a revoked task's
