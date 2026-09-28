@@ -70,6 +70,24 @@ describe('Crew transfer privacy handoff', () => {
     expect(mocks.crewHttp.mock.calls[0][2]).not.toHaveProperty('expected_mode');
   });
 
+  it("rethrows a picker refusal as the main process's sentence, without Electron's wrapper (FILES-F6)", async () => {
+    const picker = window.electron.crewSelectTransferFile as ReturnType<typeof vi.fn>;
+    picker.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'crew:select-transfer-file': Error: Finish the open Save or Open window first."
+      )
+    );
+    await expect(
+      beginTransfer({
+        connection_id: 'connection-1',
+        channel_id: 'channel-1',
+        direction: 'download',
+        blob_id: 'blob-1',
+      })
+    ).rejects.toThrow(/^Finish the open Save or Open window first\.$/);
+    expect(mocks.crewHttp).not.toHaveBeenCalled();
+  });
+
   it('does not turn a cancelled async picker into a transfer request', async () => {
     const picker = window.electron.crewSelectTransferFile as ReturnType<typeof vi.fn>;
     picker.mockResolvedValue(null);

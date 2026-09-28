@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewTransfer } from '../crewTransfers';
-import { AttachmentCard, type CrewBlob } from './AttachmentCard';
+import { AttachmentCard, SAVE_PATIENCE_MS, type CrewBlob } from './AttachmentCard';
 import { AttachmentIndexProvider } from './attachmentIndex';
 import { cachedBlob, clearBlobCache } from './blobMetadataCache';
 import { filesCopy } from './copy';
@@ -364,6 +364,58 @@ describe('AttachmentCard', () => {
       'The daemon refused this file selection.'
     );
     expect(screen.getAllByRole('alert')).toHaveLength(1);
+  });
+});
+
+describe('a Save that another window is in the way of (FILES-F2, FILES-F6)', () => {
+  beforeEach(() => {
+    for (const mock of Object.values(mocks)) mock.mockReset();
+    mocks.listTransfers.mockResolvedValue([]);
+    installBlobs();
+    clearBlobCache();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows the refusal as one plain sentence, without Electron’s wrapper, and offers Save again', async () => {
+    mocks.beginTransfer.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'crew:select-transfer-file': Error: Finish the open Save or Open window first."
+      )
+    );
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Finish the open Save or Open window first\.$/
+    );
+    expect(document.body.textContent).not.toContain('Error invoking remote method');
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeEnabled();
+  });
+
+  it('offers Save again after a window that never answers, and ignores that window’s late answer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let late: (reason: unknown) => void = () => undefined;
+    mocks.beginTransfer.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (late = reject))
+    );
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeDisabled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_PATIENCE_MS);
+    });
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeEnabled();
+    // A second Save runs as its own action; the first one's answer, when it finally comes,
+    // changes nothing.
+    mocks.beginTransfer.mockImplementationOnce(() => new Promise(() => {}));
+    await user.click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    await act(async () => late(new Error('stale')));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeDisabled();
   });
 });
 

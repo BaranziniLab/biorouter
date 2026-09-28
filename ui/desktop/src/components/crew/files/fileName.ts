@@ -44,15 +44,23 @@ export function visibleFileText(raw: unknown): string {
     .replace(WHITE_SPACE_RUN, ' ');
 }
 
+/** Private-use characters draw a glyph of some font's choosing, never one a name can rely on. */
+const PRIVATE_USE = /^\p{Co}$/u;
+
 /**
- * The default name for the native Save dialog: the name with every hidden character left out and
- * trimmed. `undefined` when nothing usable is left (the main process then offers its own default).
+ * The default name for the native Save dialog, one the daemon accepts (FILES-F3): the name with
+ * every hidden and private-use character left out, trimmed, and without a leading dot (the daemon
+ * never saves a dot name into the home, so `.Rprofile` is offered as `Rprofile`). `undefined`
+ * when nothing usable is left (the main process then offers its own default). The main process
+ * applies the same rule again to whatever it is sent (`crewSaveName` in `utils/crewSharePath.ts`).
  */
 export function saveNameFor(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const name = Array.from(raw)
-    .filter((character) => !isHidden(character))
+    .filter((character) => !isHidden(character) && !PRIVATE_USE.test(character))
     .join('')
+    .trim()
+    .replace(/^\.+/, '')
     .trim();
-  return name && name !== '.' && name !== '..' ? name : undefined;
+  return name || undefined;
 }

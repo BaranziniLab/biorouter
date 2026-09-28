@@ -3,6 +3,7 @@ import { beginTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from 
 import type { CrewShareDroppedFileResult } from '../../../utils/crewSharePathBridge';
 import { filesCopy } from './copy';
 import { isTransferActive, useCrewTransfers } from './useCrewTransfers';
+import { failureSentence } from '../../../utils/ipcError';
 
 export interface CrewUploadOptions {
   connectionId: string;
@@ -70,8 +71,8 @@ export interface CrewUpload {
   forget(): void;
 }
 
-const message = (failure: unknown, fallback: string) =>
-  failure instanceof Error && failure.message ? failure.message : fallback;
+/** A failure's own sentence, without Electron's IPC wrapper (FILES-F6), else `fallback`. */
+const message = failureSentence;
 
 type ShareDroppedFile = (
   file: File,

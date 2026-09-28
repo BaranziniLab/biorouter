@@ -227,6 +227,24 @@ describe('the two rules (visibleFileText, saveNameFor)', () => {
     expect(saveNameFor('\u202E..')).toBeUndefined();
     expect(saveNameFor(null)).toBeUndefined();
   });
+
+  it('offers no leading dot and no private-use character, which the daemon would refuse (FILES-F3)', () => {
+    expect(saveNameFor('.Rprofile')).toBe('Rprofile');
+    expect(saveNameFor('..hidden.txt')).toBe('hidden.txt');
+    expect(saveNameFor('private\uE000use.csv')).toBe('privateuse.csv');
+    expect(saveNameFor('.')).toBeUndefined();
+  });
+
+  it('proposes the name the main process proposes (utils/crewSharePath.ts crewSaveName)', async () => {
+    // The Save window's default is chosen again in the main process, which a compromised
+    // renderer cannot skip; the two rules must agree on every name.
+    const { crewSaveName, CREW_DEFAULT_SAVE_NAME } = await import('../../../utils/crewSharePath');
+    for (const sample of [...samples, '.Rprofile', 'a\uE000b', '\u202E..', ' . x']) {
+      const renderer = saveNameFor(sample);
+      expect(crewSaveName(sample)).toBe(renderer ?? CREW_DEFAULT_SAVE_NAME);
+      if (renderer) expect(crewSaveName(renderer)).toBe(renderer);
+    }
+  });
 });
 
 describe('a server path another member shared', () => {

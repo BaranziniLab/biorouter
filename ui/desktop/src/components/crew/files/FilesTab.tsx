@@ -17,10 +17,11 @@ import { formatBytes } from './formatBytes';
 import { ServerPathRow } from './ServerPathRow';
 import { TransferMenuItems, TransferRow } from './TransferRow';
 import { useCrewTransfers } from './useCrewTransfers';
+import { failureSentence } from '../../../utils/ipcError';
 import './files.css';
 
-const failureText = (failure: unknown, fallback: string) =>
-  failure instanceof Error && failure.message ? failure.message : fallback;
+/** A failure's own sentence, without Electron's IPC wrapper (FILES-F6), else `fallback`. */
+const failureText = failureSentence;
 
 type SharedItem =
   | { kind: 'attachment'; id: string; message: CrewMessage }

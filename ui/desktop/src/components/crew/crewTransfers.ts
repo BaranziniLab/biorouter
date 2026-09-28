@@ -1,4 +1,5 @@
 import { crewHttp } from './crewApi';
+import { unwrapIpcError } from '../../utils/ipcError';
 
 export type TransferDirection = 'upload' | 'download';
 export interface CrewTransfer {
@@ -31,6 +32,11 @@ export interface FileCapability {
   name: string;
   size?: number | null;
 }
+/**
+ * The secure picker in the main process. A refusal comes back as the main process's own sentence:
+ * Electron wraps an error thrown across `invoke` in "Error invoking remote method …", and that
+ * wrapper is taken off here, once, so every surface shows what the drop path shows (FILES-F6).
+ */
 export async function chooseTransferFile(
   request: FileSelectionRequest
 ): Promise<FileCapability | null> {
@@ -39,16 +45,20 @@ export async function chooseTransferFile(
     throw new Error(
       'This desktop build does not provide the secure Crew file picker. Update the desktop app before transferring local files.'
     );
-  return picker({
-    expectedMode: request.expected_mode,
-    purpose: request.purpose,
-    direction: request.direction,
-    connectionId: request.connection_id,
-    channelId: request.channel_id,
-    blobId: request.blob_id,
-    transferId: request.transfer_id,
-    suggestedName: request.suggestedName,
-  });
+  try {
+    return await picker({
+      expectedMode: request.expected_mode,
+      purpose: request.purpose,
+      direction: request.direction,
+      connectionId: request.connection_id,
+      channelId: request.channel_id,
+      blobId: request.blob_id,
+      transferId: request.transfer_id,
+      suggestedName: request.suggestedName,
+    });
+  } catch (error) {
+    throw unwrapIpcError(error, 'The file window could not open.');
+  }
 }
 export async function listTransfers(
   connectionId: string,

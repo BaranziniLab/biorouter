@@ -95,12 +95,13 @@ import {
 import { artifactSourceRevision } from './utils/artifactSourceRevision';
 import { sanitizeUntrustedLabel } from './utils/untrustedText';
 import {
-  CrewSharePending,
+  CrewSheetGate,
   DEV_AUTO_CONFIRM_SHARE_ENV,
-  crewFileRefusal,
-  crewShareCopy,
+  holdCrewSheet,
+  parseCrewPickerRequest,
   parseCrewShareRequest,
   resolveDevAutoConfirmShare,
+  selectCrewTransferFile,
   shareDroppedFile,
 } from './utils/crewSharePath';
 import { CREW_SHARE_DROPPED_FILE_CHANNEL } from './utils/crewSharePathBridge';
@@ -1295,6 +1296,15 @@ const windowMap = new Map<number, BrowserWindow>();
 const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
+/**
+ * The window a Save or Open panel may be attached to, or `undefined` for an app-modal panel. On
+ * macOS AppKit neither shows nor queues a panel asked for while the window already has a sheet,
+ * and the promise never settles (FILES-F2), so a panel asked for then is shown on its own.
+ */
+function panelParent(window: BrowserWindow | null | undefined): BrowserWindow | undefined {
+  if (!window || window.isDestroyed()) return undefined;
+  return crewSheetGate.hasSheet(window.id) ? undefined : window;
+}
 
 const trackArtifactPreviewFrames = (contents: Electron.WebContents) => {
   const frameIds = new Set<string>();
@@ -1632,6 +1642,12 @@ const createChat = async (
   });
 
   copilotPermissionSettings.bindWindow(mainWindow, Boolean(settings.externalBiorouterd?.enabled));
+  {
+    const sheetWindowId = mainWindow.id;
+    mainWindow.on('sheet-begin', () => crewSheetGate.sheetBegan(sheetWindowId));
+    mainWindow.on('sheet-end', () => crewSheetGate.sheetEnded(sheetWindowId));
+    mainWindow.once('closed', () => crewSheetGate.forget(sheetWindowId));
+  }
 
   if (!app.isPackaged) {
     installExtension(REACT_DEVELOPER_TOOLS, {
@@ -4094,7 +4110,7 @@ ipcMain.handle(
       }
 
       const bytes = diagnosticsArchiveBytes(archive);
-      const parent = BrowserWindow.fromWebContents(event.sender);
+      const parent = panelParent(BrowserWindow.fromWebContents(event.sender));
       const options = {
         title: 'Save Diagnostics Bundle',
         defaultPath: path.join(app.getPath('downloads'), diagnosticsArchiveFilename(sessionId)),
@@ -4237,12 +4253,15 @@ ipcMain.handle('brxt:open-file-dialog', async (event) => {
   if (process.env.PLAYWRIGHT_BRXT_FILE) {
     return process.env.PLAYWRIGHT_BRXT_FILE;
   }
-  const win = BrowserWindow.fromWebContents(event.sender);
-  const result = await dialog.showOpenDialog(win!, {
+  const win = panelParent(BrowserWindow.fromWebContents(event.sender));
+  const options: OpenDialogOptions = {
     title: 'Select Biorouter Extension Bundle',
     filters: [{ name: 'Biorouter Extension Bundle', extensions: ['brxt'] }],
     properties: ['openFile'],
-  });
+  };
+  const result = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options);
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
 });
@@ -4749,7 +4768,10 @@ function disposeTerminalSession(sessionId: string) {
 // live in `utils/crewSharePath.ts`; this is only the Electron and daemon wiring.
 // Set once in `appMain` from `resolveDevAutoConfirmShare`, and false everywhere else.
 let crewShareAutoConfirm = false;
-const crewSharePending = new CrewSharePending();
+// One Crew native flow per window (the drop confirmation here, the picker in
+// `crew:select-transfer-file`), and none while another sheet is attached (FILES-F2). Fed by
+// each window's `sheet-begin`/`sheet-end` in `createChat`; `panelParent` asks it too.
+const crewSheetGate = new CrewSheetGate();
 
 function registerCrewShareHandler() {
   ipcMain.handle(CREW_SHARE_DROPPED_FILE_CHANNEL, async (event, raw: unknown) => {
@@ -4757,9 +4779,9 @@ function registerCrewShareHandler() {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
     if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
-    const ownerId = event.sender.id;
-    if (!crewSharePending.enter(ownerId))
-      return { outcome: 'refused', message: crewShareCopy.busy };
+    const ownerId = owner.id;
+    const busy = crewSheetGate.enter(ownerId, 'share');
+    if (busy) return { outcome: 'refused', message: busy };
     const windowClosed = () => event.sender.isDestroyed() || owner.isDestroyed();
     const crewFiles = async (endpoint: string, method: 'POST' | 'DELETE', body: unknown) => {
       const settings = loadSettings();
@@ -4792,7 +4814,7 @@ function registerCrewShareHandler() {
         log: (message) => log.warn(message),
       });
     } finally {
-      crewSharePending.leave(ownerId);
+      crewSheetGate.leave(ownerId);
     }
   });
 }
@@ -4927,186 +4949,35 @@ function registerCliInstallHandlers() {
     }
   });
 
+  // The rules (what each window asks, what a refusal says) live in `utils/crewSharePath.ts`;
+  // this is only the Electron and daemon wiring, and the per-window gate (FILES-F2).
   ipcMain.handle('crew:select-transfer-file', async (event, raw: unknown) => {
-    if (!raw || typeof raw !== 'object') throw new Error('Invalid transfer request.');
-    const options = raw as Record<string, unknown>;
-    if (
-      options.expectedMode !== undefined &&
-      options.expectedMode !== 'private' &&
-      options.expectedMode !== 'public'
-    )
-      throw new Error(
-        'Invalid expected transfer privacy. Refresh the workspace before choosing a file.'
-      );
-    if (
-      !['upload', 'download'].includes(String(options.direction)) ||
-      typeof options.connectionId !== 'string' ||
-      typeof options.channelId !== 'string' ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.connectionId) ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.channelId)
-    )
-      throw new Error('Invalid transfer destination.');
-    for (const field of ['blobId', 'transferId']) {
-      const value = options[field];
-      if (
-        value !== undefined &&
-        (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(value))
-      )
-        throw new Error('Invalid transfer capability binding.');
-    }
-    const purpose = options.purpose ?? 'transfer';
-    if (!['transfer', 'cleanup'].includes(String(purpose)))
-      throw new Error('Invalid transfer selection purpose.');
-    if (purpose === 'cleanup' && (options.direction !== 'download' || !options.transferId))
-      throw new Error('Temporary download cleanup needs its original transfer.');
+    const request = parseCrewPickerRequest(raw);
     const owner = BrowserWindow.fromWebContents(event.sender);
     const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
     if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
-    let selected: string | undefined;
-    if (purpose === 'cleanup') {
-      if (
-        typeof options.suggestedName !== 'string' ||
-        !options.suggestedName ||
-        path.basename(options.suggestedName) !== options.suggestedName ||
-        ['.', '..'].includes(options.suggestedName)
-      )
-        throw new Error('The original download filename is unavailable.');
-      const folder = await dialog.showOpenDialog(owner, {
-        title: `Locate the original folder for ${options.suggestedName}`,
-        properties: ['openDirectory'],
-      });
-      if (folder.canceled || !folder.filePaths[0]) return null;
-      selected = path.join(folder.filePaths[0], options.suggestedName);
-      const cleanup = await dialog.showMessageBox(owner, {
-        type: 'question',
-        title: 'Remove incomplete Crew download',
-        message: `Remove the temporary download for ${options.suggestedName}?`,
-        detail:
-          'Only this transfer’s verified temporary file will be removed. The destination file and the attachment in Crew are kept.',
-        buttons: ['Cancel', 'Remove temporary file'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      });
-      if (cleanup.response !== 1) return null;
-    } else if (options.direction === 'upload') {
-      const result = await dialog.showOpenDialog(owner, {
-        title: 'Choose a file for Crew',
-        properties: ['openFile'],
-      });
-      if (!result.canceled) selected = result.filePaths[0];
-    } else {
-      const suggested =
-        typeof options.suggestedName === 'string'
-          ? Array.from(path.basename(options.suggestedName))
-              .filter((character) => character.charCodeAt(0) >= 32)
-              .join('')
-          : 'crew-download';
-      const result = await dialog.showSaveDialog(owner, {
-        title: 'Save Crew file',
-        defaultPath: suggested,
-      });
-      if (!result.canceled) selected = result.filePath;
-    }
-    if (!selected) return null;
-    const pendingDownload = options.direction === 'download' && purpose !== 'cleanup';
-    const postSelection = async (
-      endpoint: string,
-      body: Record<string, unknown>,
-      method: 'POST' | 'DELETE' = 'POST'
-    ) => {
-      if (event.sender.isDestroyed() || owner.isDestroyed())
-        throw new Error('The file selection window closed.');
-      const settings = loadSettings();
-      const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Secret-Key': getServerSecret(settings),
-          'X-User-Action': getUserActionKey(settings),
+    return holdCrewSheet(crewSheetGate, owner.id, 'picker', () =>
+      selectCrewTransferFile(request, {
+        showOpenDialog: (options) => dialog.showOpenDialog(owner, options),
+        showSaveDialog: (options) => dialog.showSaveDialog(owner, options),
+        showMessageBox: (options) => dialog.showMessageBox(owner, options),
+        crewFiles: async (endpoint, method, body) => {
+          const settings = loadSettings();
+          const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
+            method,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Secret-Key': getServerSecret(settings),
+              'X-User-Action': getUserActionKey(settings),
+            },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(15000),
+          });
+          return { ok: response.ok, body: await response.json().catch(() => null) };
         },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!response.ok) {
-        const failure = await response.json().catch(() => null);
-        // Q3-01: the daemon's credential floor has a sentence of its own, rebuilt here from the
-        // name this process chose, never relayed from the daemon's text.
-        const credential = crewFileRefusal(
-          failure,
-          options.direction === 'upload' ? 'upload' : 'download',
-          path.basename(selected ?? '')
-        );
-        if (credential) throw new Error(credential);
-        if (
-          failure?.error ===
-          'Crew connection privacy changed; refresh the verified workspace before selecting a file'
-        )
-          throw new Error('Connection privacy changed. Refresh Crew and choose the file again.');
-        if (endpoint)
-          throw new Error(
-            'The selected destination could not be confirmed. Choose the destination again and review any replacement request.'
-          );
-        throw new Error(
-          'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
-        );
-      }
-      return method === 'DELETE' ? null : response.json();
-    };
-    let result = await postSelection('', {
-      direction: options.direction,
-      purpose,
-      path: selected,
-      overwrite: pendingDownload,
-      approval_pending: pendingDownload,
-      connection_id: options.connectionId,
-      channel_id: options.channelId,
-      blob_id: options.blobId,
-      transfer_id: options.transferId,
-      expected_mode: options.expectedMode,
-    });
-    if (
-      typeof result?.capability_id !== 'string' ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(result.capability_id) ||
-      typeof result.name !== 'string'
-    )
-      throw new Error('Invalid daemon file capability.');
-    if (pendingDownload) {
-      if (typeof result.target_exists !== 'boolean')
-        throw new Error(
-          'The daemon did not verify this destination. Update the daemon before downloading.'
-        );
-      if (event.sender.isDestroyed() || owner.isDestroyed())
-        throw new Error('The file selection window closed.');
-      if (result.target_exists) {
-        const replacement = await dialog.showMessageBox(owner, {
-          type: 'warning',
-          title: 'Replace Crew download destination',
-          message: `Replace ${path.basename(selected)} after the download is verified?`,
-          detail:
-            'The daemon has checked the existing file. It remains in place until the download passes verification; any destination change requires a new selection.',
-          buttons: ['Cancel', 'Replace file'],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-        });
-        if (replacement.response !== 1) {
-          await postSelection(`/${encodeURIComponent(result.capability_id)}`, {}, 'DELETE').catch(
-            () => undefined
-          );
-          return null;
-        }
-      }
-      const capabilityId = result.capability_id;
-      result = await postSelection(`/${encodeURIComponent(capabilityId)}/confirm`, {});
-      if (result?.capability_id !== capabilityId || typeof result.name !== 'string')
-        throw new Error('The daemon did not confirm the selected destination. Choose it again.');
-    }
-    return {
-      capability_id: result.capability_id,
-      name: result.name,
-      ...(typeof result.size === 'number' ? { size: result.size } : {}),
-    };
+        isClosed: () => event.sender.isDestroyed() || owner.isDestroyed(),
+      })
+    );
   });
 
   ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
