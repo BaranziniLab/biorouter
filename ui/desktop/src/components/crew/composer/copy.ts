@@ -78,6 +78,13 @@ export const composerCopy = {
    */
   tooLong: 'Messages can be up to 64 KB. Attach long text as a file.',
   /**
+   * Above the card while the draft is over what Crew keeps when the person switches channel or
+   * leaves Crew (`DRAFT_STASH_MAX_BODY_BYTES`, 1 MB), so they learn it before the words go
+   * (MSG2-N4).
+   */
+  draftTooLongToKeep:
+    'This draft is too long to keep when you switch channel. Attach it as a file.',
+  /**
    * `storage_failed` / `storage_full`, or the host's disk full as a post was written: nothing more
    * can be saved until the host restarts the workspace server. `host` is the host in the authority
    * form ("Iris Wong (@crew_iris)"), or null when the viewer cannot see who that is.

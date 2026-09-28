@@ -12,8 +12,11 @@ import type { DraftScope } from './observationFailure';
  *    - Memory only: a module-level map, never `localStorage`, so nothing survives the app.
  *    - The body only. Attachments, references and context channels carry capabilities (an
  *      uploaded blob, a server path, another channel's content) and are never kept.
- *    - Bounded: at most `DRAFT_STASH_MAX_ENTRIES` entries, the oldest dropped first, and a body
- *      over `DRAFT_STASH_MAX_BODY_BYTES` is not kept at all rather than cut short.
+ *    - Bounded: at most `DRAFT_STASH_MAX_ENTRIES` entries and `DRAFT_STASH_MAX_TOTAL_BYTES` of
+ *      text, the oldest dropped first, and a body over `DRAFT_STASH_MAX_BODY_BYTES` is not kept at
+ *      all rather than cut short. That bound is well above a message's 64 KB, so the very drafts
+ *      the composer's "Messages can be up to 64 KB" note is about are kept with it (MSG2-N4); the
+ *      composer says so while a draft is too long to keep (`draftTooLongToKeep`).
  *    - A draft with no verified scope for its own channel is not kept: it could not be checked
  *      before it came back.
  *    - The rail marks a channel that holds one (Q3-09) through `useChannelHasDraft`: whether a
@@ -34,8 +37,14 @@ import type { DraftScope } from './observationFailure';
 
 /** The most drafts kept at once; the oldest goes first. */
 export const DRAFT_STASH_MAX_ENTRIES = 50;
-/** The largest body kept, in UTF-8 bytes. A longer one is not kept. */
-export const DRAFT_STASH_MAX_BODY_BYTES = 64 * 1024;
+/**
+ * The largest body kept, in UTF-8 bytes. A longer one is not kept. It was 64 KiB, the message
+ * limit itself, so a draft over the limit, the one the composer tells the person to attach as a
+ * file, went the moment they switched channel, and the note with it (MSG2-N4).
+ */
+export const DRAFT_STASH_MAX_BODY_BYTES = 1024 * 1024;
+/** The most text kept across every draft, in UTF-8 bytes; the oldest goes first. */
+export const DRAFT_STASH_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
 /** One `message.post` attempt: a digest of what it carried, and the idempotency key it used. */
 export interface MessageAttempt {
@@ -77,6 +86,8 @@ export interface StashedDraft {
 }
 
 const drafts = new Map<string, StashedDraft>();
+/** Each kept body's size in UTF-8 bytes, by the same key, for the total bound. */
+const draftBytes = new Map<string, number>();
 const draftListeners = new Set<() => void>();
 
 function draftKey(connectionId: string, channelId: string): string {
@@ -109,6 +120,23 @@ function bodyBytes(body: string): number {
 }
 
 /**
+ * Whether `body` is too long to be kept when the person switches channel or leaves Crew. The
+ * composer says so while it is (MSG2-N4), before the words could go. A UTF-16 unit is at least one
+ * UTF-8 byte and at most three, so only a body between the two bounds is encoded.
+ */
+export function draftTooLongToKeep(body: string): boolean {
+  if (body.length * 3 <= DRAFT_STASH_MAX_BODY_BYTES) return false;
+  if (body.length > DRAFT_STASH_MAX_BODY_BYTES) return true;
+  return bodyBytes(body) > DRAFT_STASH_MAX_BODY_BYTES;
+}
+
+/** Forget one kept draft and its size. Returns whether one was kept. */
+function dropDraft(key: string): boolean {
+  draftBytes.delete(key);
+  return drafts.delete(key);
+}
+
+/**
  * Keep `body` as the unsent draft of `channelId` on `connectionId`, written under `scope`, with
  * `attempt` when one was made for this very body, and `note` when the composer had one about it.
  *
@@ -128,8 +156,9 @@ export function stashDraft(
   if (!connectionId || !channelId || !body.trim()) return;
   if (!scope || scope.connectionId !== connectionId || scope.channel?.id !== channelId) return;
   const key = draftKey(connectionId, channelId);
-  const replaced = drafts.delete(key);
-  if (bodyBytes(body) > DRAFT_STASH_MAX_BODY_BYTES) {
+  const replaced = dropDraft(key);
+  const size = draftTooLongToKeep(body) ? Number.POSITIVE_INFINITY : bodyBytes(body);
+  if (size > DRAFT_STASH_MAX_BODY_BYTES) {
     if (replaced) notifyDrafts();
     return;
   }
@@ -139,10 +168,14 @@ export function stashDraft(
     ...(attempt ? { attempt } : {}),
     ...(note ? { note } : {}),
   });
-  while (drafts.size > DRAFT_STASH_MAX_ENTRIES) {
+  draftBytes.set(key, size);
+  let total = 0;
+  for (const bytes of draftBytes.values()) total += bytes;
+  while (drafts.size > DRAFT_STASH_MAX_ENTRIES || total > DRAFT_STASH_MAX_TOTAL_BYTES) {
     const oldest = drafts.keys().next().value;
-    if (oldest === undefined) break;
-    drafts.delete(oldest);
+    if (oldest === undefined || oldest === key) break;
+    total -= draftBytes.get(oldest) ?? 0;
+    dropDraft(oldest);
   }
   notifyDrafts();
 }
@@ -170,13 +203,13 @@ export function takeStashedDraft(
 ): StashedDraft | undefined {
   const key = draftKey(connectionId, channelId);
   const entry = drafts.get(key);
-  if (drafts.delete(key)) notifyDrafts();
+  if (dropDraft(key)) notifyDrafts();
   return entry;
 }
 
 /** Forget the kept draft of one channel, and its attempt (it was sent, or the channel was lost). */
 export function forgetStashedDraft(connectionId: string, channelId: string): void {
-  if (drafts.delete(draftKey(connectionId, channelId))) notifyDrafts();
+  if (dropDraft(draftKey(connectionId, channelId))) notifyDrafts();
 }
 
 /**
@@ -195,7 +228,7 @@ export function forgetConnectionDrafts(
     if (!key.startsWith(prefix)) continue;
     const channelId = key.slice(prefix.length);
     if (keep?.(channelId)) continue;
-    drafts.delete(key);
+    dropDraft(key);
     forgotten.push({ channelId, body: entry.body });
   }
   if (forgotten.length > 0) notifyDrafts();
@@ -280,6 +313,7 @@ export function resetBetweenTests(reset: () => void): void {
 export function resetDraftStashForTests(): void {
   const had = drafts.size > 0;
   drafts.clear();
+  draftBytes.clear();
   if (had) notifyDrafts();
   for (const connectionId of [...lastChannels.keys()]) forgetLastChannel(connectionId);
   try {

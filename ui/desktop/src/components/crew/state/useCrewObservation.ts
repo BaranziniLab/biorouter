@@ -709,17 +709,38 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   );
 
   const verifiedScope = useRef<DraftScope | null>(null);
+  /**
+   * SECURITY-SENSITIVE (human review). The scope a draft of `channel` on `connection` was written
+   * under: the verified view on screen while it was written, when that view is this connection's
+   * and offers the channel, else the scope recorded from the last frame (which `stashDraft` takes
+   * only when it is this very channel's). `verifiedScope` is recorded for the channel observed when
+   * a frame arrives, so a draft written in a channel selected since, before that channel's own first
+   * frame, had no scope of its own and was dropped when the person moved on: a post sent in that
+   * second and then refused lost its words (MSG2-N3). The view on screen is what the words were
+   * written under, and the draft still comes back only when nothing in it moved.
+   */
+  const scopeFor = useCallback((connection: string, channel: string): DraftScope | null => {
+    const frame = currentScopeFrame.current;
+    if (
+      frame &&
+      channel &&
+      frame.connection_id === connection &&
+      frame.snapshot.channels.some((item) => item.id === channel)
+    )
+      return draftScope(frame, channel, []);
+    return verifiedScope.current;
+  }, []);
   const stashCurrentDraft = useCallback(() => {
     const current = selection.current;
     stashDraft(
       current.connectionId,
       current.channelId,
       current.body,
-      verifiedScope.current,
+      scopeFor(current.connectionId, current.channelId),
       attemptFor(current.connectionId, current.channelId),
       noteFor(current.connectionId, current.channelId)
     );
-  }, [attemptFor, noteFor]);
+  }, [attemptFor, noteFor, scopeFor]);
   /**
    * SECURITY-SENSITIVE (human review). Every clearing of the protected view clears the view kept
    * across unmounts too (Q4-04), except a refresh's (and the moment a loss is being decided, which
@@ -885,7 +906,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         previous,
         channelId,
         body,
-        verifiedScope.current,
+        scopeFor(previous, channelId),
         attemptFor(previous, channelId),
         noteFor(previous, channelId)
       );
@@ -976,7 +997,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         connectionId,
         previous.channelId,
         body,
-        verifiedScope.current,
+        scopeFor(connectionId, previous.channelId),
         attemptFor(connectionId, previous.channelId),
         noteFor(connectionId, previous.channelId)
       );

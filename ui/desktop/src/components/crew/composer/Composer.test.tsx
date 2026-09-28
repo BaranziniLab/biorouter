@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event';
 import { useEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { crewActionCopy } from '../state/copy';
+import { DRAFT_STASH_MAX_BODY_BYTES } from '../state/draftStash';
 import type { CrewController, CrewDraft, SurfaceResetListener } from '../state/types';
 import { AttachmentIndexProvider, useAttachmentIndex } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
@@ -659,6 +660,27 @@ describe('Crew composer', () => {
       });
       expect(screen.getByRole('status')).toHaveTextContent(composerCopy.postedMetadata);
       expect(screen.queryByText(composerCopy.sendErrorLead)).toBeNull();
+    });
+
+    /**
+     * MSG2-N4: a draft too long to keep across a channel switch went without a word. The composer
+     * says so while the words are still there to be saved.
+     */
+    it('says a draft is too long to keep before the person switches channel (MSG2-N4)', () => {
+      const note = <p>Allow this chat?</p>;
+      const { rerenderWith } = renderComposer(withBody('x'.repeat(70_007)), note);
+      // Over the message limit is still kept: nothing to say beyond the send's own answer.
+      expect(screen.queryByText(composerCopy.draftTooLongToKeep)).toBeNull();
+      rerenderWith(withBody('x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1)));
+      expect(screen.getByRole('status')).toHaveTextContent(composerCopy.draftTooLongToKeep);
+      expect(screen.queryByText('Allow this chat?')).toBeNull();
+      // The send's answer still comes first.
+      rerenderWith({
+        ...withBody('x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1)),
+        error: { message: composerCopy.tooLong, source: 'composer' },
+      });
+      expect(screen.queryByText(composerCopy.draftTooLongToKeep)).toBeNull();
+      expect(screen.getByRole('alert')).toHaveTextContent(composerCopy.tooLong);
     });
 
     it('shows the layout note only while nothing more urgent is showing', () => {

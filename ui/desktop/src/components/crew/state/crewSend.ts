@@ -510,13 +510,14 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
      * be shown when they come back (a refusal while Crew was closed used to be told nowhere).
      */
     const tell = (words: string, code: string | undefined, transport: boolean, lead = true) => {
+      const note = {
+        message: words,
+        ...(code !== undefined ? { code } : {}),
+        ...(transport ? { transport } : {}),
+      };
       const screen = screenToTell(selection);
       if (!screen) {
-        noteKeptDraft(connectionId, channelId, {
-          message: words,
-          ...(code !== undefined ? { code } : {}),
-          ...(transport ? { transport } : {}),
-        });
+        noteKeptDraft(connectionId, channelId, note);
         return;
       }
       const there = screen.selection.current;
@@ -524,6 +525,9 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
         screen.reportError(words, 'composer', code, { destination, transport });
         return;
       }
+      // The words wait in the channel's kept draft, and what was said about them goes with them,
+      // so the reason comes back with the words (MSG2-N3).
+      noteKeptDraft(connectionId, channelId, note);
       screen.reportError(
         lead ? crewActionCopy.sendFailedIn(channelName(channel), words) : words,
         'global',

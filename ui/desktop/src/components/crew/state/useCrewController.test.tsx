@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { MemoryRouter, type InitialEntry } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatAccessRouteState } from '../access/ChatConnectNote';
+import { CREW_NOT_SENT } from '../api/errors';
+import { composerCopy } from '../composer/copy';
 import { CrewHttpError } from '../crewApi';
 import { useCrewTransfers } from '../files/useCrewTransfers';
 import { MEMBERSHIP_ENDED_CODE } from './connectFailure';
@@ -1273,6 +1275,79 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
       expect(crew.draft.body).toBe('written before leaving');
       expect(crew.messagesLoaded).toBe(false);
     });
+  });
+
+  /**
+   * MSG2-N4: the stash kept nothing over 64 KB, the message limit itself, so the very draft the
+   * composer had just told the person to attach as a file went when they switched channel.
+   */
+  it('keeps a draft over the message limit, and its note, through a channel switch (MSG2-N4)', async () => {
+    renderController();
+    await opened(channel.id);
+    const long = 'x'.repeat(70_007);
+    act(() => crew.setBody(long));
+    await act(async () => {
+      await crew.send();
+    });
+    expect(crew.error?.message).toBe(composerCopy.tooLong);
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    expect(crew.draft.body).toBe('');
+    act(() => crew.selectChannel(channel.id));
+    await opened(channel.id);
+    await waitFor(() => expect(crew.draft.body).toBe(long));
+    expect(crew.error?.message).toBe(composerCopy.tooLong);
+    expect(crew.error?.source).toBe('composer');
+  });
+
+  /**
+   * MSG2-N3: a draft was kept only under the scope recorded from its own channel's first frame. The
+   * words of a post sent in the second after the channel was selected had none, and were dropped
+   * when the person moved on, so a post refused after that lost its text.
+   */
+  it('keeps the words of a post sent before its channel verified, when it fails after the person moved on (MSG2-N3)', async () => {
+    const sessions = controllableObserver();
+    const latest = () => sessions[sessions.length - 1]!;
+    const post = deferred<unknown>();
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) =>
+      method === 'message.post' ? post.promise : {}
+    );
+    renderController();
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => latest().receive({ ...stateFrame, snapshot: view }));
+    await waitFor(() => expect(latest().channelId).toBe(channel.id));
+    act(() => latest().receive({ ...stateFrame, snapshot: view }));
+
+    // #methods is selected, and the person writes and sends before its first frame arrives…
+    act(() => crew.selectChannel(methods.id));
+    await waitFor(() => expect(latest().channelId).toBe(methods.id));
+    act(() => crew.setBody('for #methods'));
+    let sending: Promise<void> = Promise.resolve();
+    act(() => {
+      sending = crew.send();
+    });
+    await waitFor(() =>
+      expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'message.post')).toBe(
+        true
+      )
+    );
+    // …then moves on while it is out: the words wait for #methods.
+    act(() => crew.selectChannel(channel.id));
+    expect(crew.draft.body).toBe('');
+    expect(stashedDraft(connection.id, methods.id)?.body).toBe('for #methods');
+
+    // The connection drops before the post is written.
+    await act(async () => {
+      post.reject(new CrewHttpError('Nothing was sent', 503, CREW_NOT_SENT));
+      await sending;
+    });
+    expect(crew.error?.message).toContain('#methods');
+
+    // Back in #methods: its draft, and what was said about it.
+    act(() => crew.selectChannel(methods.id));
+    expect(crew.draft.body).toBe('for #methods');
+    await waitFor(() => expect(crew.error?.source).toBe('composer'));
+    expect(crew.error?.message).toBe(composerCopy.notSent);
   });
 
   it('never overwrites a newer draft the person typed before the channel verified again', async () => {

@@ -20,6 +20,7 @@ import { cn } from '../../../utils';
 import { channelSlug } from '../identity';
 import { crewActionCopy } from '../state/copy';
 import { POST_NOTE_CODES, postDestination } from '../state/crewSend';
+import { draftTooLongToKeep } from '../state/draftStash';
 import type { CrewActionError, DraftFile, DraftReference } from '../state/types';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { postedLabel, useAttachmentIndexVersion } from '../files/attachmentIndex';
@@ -361,6 +362,7 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   });
   const notes = composerNote({
     error: composerError,
+    tooLongToKeep: draftTooLongToKeep(draft.body),
     uploadError: upload.error,
     onDismissUpload: dismissUploadError,
     extraFiles,
@@ -497,8 +499,9 @@ function sendNote(error: CrewActionError): ReactNode {
 
 /**
  * The one note directly above the card, in priority order: the send's answer, an upload failure,
- * the note about several dropped files, the picker a drop just opened, then the layout's standing
- * note. One at a time, so nothing stacks above the composer.
+ * the note about several dropped files, a draft too long to keep across a channel switch
+ * (MSG2-N4), the picker a drop just opened, then the layout's standing note. One at a time, so
+ * nothing stacks above the composer.
  *
  * The upload failure sits above the layout's note, beside the send failure, for the same
  * reason the spec puts the send failure first: it is the answer to what the person just did.
@@ -515,6 +518,7 @@ function sendNote(error: CrewActionError): ReactNode {
  */
 function composerNote({
   error,
+  tooLongToKeep,
   uploadError,
   onDismissUpload,
   extraFiles,
@@ -523,6 +527,7 @@ function composerNote({
   note,
 }: {
   error: CrewActionError | null;
+  tooLongToKeep: boolean;
   uploadError: string;
   onDismissUpload(): void;
   extraFiles: string;
@@ -543,6 +548,12 @@ function composerNote({
     content = (
       <Note tone="danger" role="alert" action={<DismissNote onDismiss={onDismissExtraFiles} />}>
         {extraFiles}
+      </Note>
+    );
+  } else if (tooLongToKeep) {
+    content = (
+      <Note tone="warning" role="status">
+        {composerCopy.draftTooLongToKeep}
       </Note>
     );
   } else if (dropHint) {
