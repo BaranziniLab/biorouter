@@ -6535,7 +6535,7 @@ export type UpdateAgentProviderErrors = {
      */
     403: unknown;
     /**
-     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text)
+     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text). Or a Crew chat, whose model is fixed by its access: `crew_model_fixed` (body = `{code, error}`, W2-DMN-10); start a new chat to use another model
      */
     409: PrivacyBarrierBody;
     /**

@@ -1807,7 +1807,10 @@ async fn model_visible_tool_count(
                                       chat's capability to Private and the request carried no \
                                       proof it came from the user; on a daemon with no \
                                       user-action key, any bind to a private model (SD-12) \
-                                      (body = plain text)",
+                                      (body = plain text). Or a Crew chat, whose model is \
+                                      fixed by its access: `crew_model_fixed` (body = \
+                                      `{code, error}`, W2-DMN-10); start a new chat to use \
+                                      another model",
                        body = PrivacyBarrierBody),
         (status = 424, description = "Agent not initialized"),
         (status = 500, description = "Internal server error")
