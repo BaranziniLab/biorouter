@@ -64,6 +64,7 @@ fn grant(connection_id: &str, run_id: &str) -> Scope {
         expires_at: None,
         labels: None,
         session_incarnation: None,
+        session_store: None,
         revocation: None,
     }
 }
@@ -382,8 +383,8 @@ async fn a_stop_that_could_not_be_saved_survives_another_process_write() {
 }
 
 /// What the file never holds for this process is carried over when another's write is read
-/// back: this process's live connection status, and a binding it made in memory. A
-/// connection only the other process knows reads as a fresh load reads it.
+/// back: this process's live connection status, and a binding to a chat and its store that it
+/// made in memory. A connection only the other process knows reads as a fresh load reads it.
 #[tokio::test]
 async fn reading_another_process_write_keeps_this_process_state() {
     let profile = Profile::new(Registry {
@@ -399,7 +400,9 @@ async fn reading_another_process_write_keeps_this_process_state() {
     {
         let mut here = profile.first.registry.lock().await;
         here.connections[0].status = "connected".into();
-        here.scopes.get_mut(SESSION).unwrap().session_incarnation = Some(42);
+        let scope = here.scopes.get_mut(SESSION).unwrap();
+        scope.session_incarnation = Some(42);
+        scope.session_store = Some("/first/sessions".into());
     }
     profile
         .second
@@ -426,6 +429,10 @@ async fn reading_another_process_write_keeps_this_process_state() {
     assert_eq!(status(FIRST), ("connected".into(), None));
     assert_eq!(status(SECOND), ("disconnected".into(), None));
     assert_eq!(here.scopes[SESSION].session_incarnation, Some(42));
+    assert_eq!(
+        here.scopes[SESSION].session_store.as_deref(),
+        Some("/first/sessions")
+    );
 }
 
 /// A grant another process replaced (a new run under the same chat) is the file's: this

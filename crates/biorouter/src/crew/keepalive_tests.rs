@@ -822,6 +822,7 @@ async fn a_scoped_worker_request_after_a_long_idle_dials_again_first() {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         },
     );
@@ -904,6 +905,7 @@ async fn grant_worker(f: &Fixture) {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         },
     );
@@ -2174,6 +2176,7 @@ async fn grant_chat(f: &Fixture, chat: &str, incarnation: i64) {
             expires_at: Some(4_102_444_800),
             labels: None,
             session_incarnation: Some(incarnation),
+            session_store: f.manager.own_store(),
             revocation: None,
         },
     );
@@ -2396,6 +2399,7 @@ fn only_an_unconfirmed_stop_is_kept_when_replaced() {
         expires_at: Some(4_102_444_800),
         labels: None,
         session_incarnation: None,
+        session_store: None,
         revocation,
     };
     let mut registry = Registry::default();
@@ -2452,6 +2456,7 @@ fn an_earlier_grant_is_forgotten_only_once_settled() {
             expires_at: end,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: Some(revocation),
         },
     };
@@ -2513,6 +2518,7 @@ fn an_earlier_grant_survives_a_registry_merge() {
         expires_at: Some(4_102_444_800),
         labels: None,
         session_incarnation: None,
+        session_store: None,
         revocation: Some(revocation),
     };
     let kept = |run: &str, revocation: Revocation| ReplacedGrant {
@@ -2607,6 +2613,7 @@ fn a_confirmed_revocation_is_never_forgotten_across_processes() {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         scope.revocation = revocation;
@@ -3000,6 +3007,7 @@ fn a_grant_stopped_by_another_door_is_a_stop_the_workspace_is_asked_about() {
         expires_at: Some(4_102_444_800),
         labels: None,
         session_incarnation: None,
+        session_store: None,
         revocation,
     };
     for (expired, before, after) in [

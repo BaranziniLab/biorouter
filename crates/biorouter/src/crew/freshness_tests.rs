@@ -4,6 +4,7 @@
 //! directory the way separate processes do, each with its own copy and its own session store
 //! handle, and checks the answers every Crew boundary reads: whether a chat is scoped, which
 //! chats listings leave out, which tools a chat may call, and whether its model may be used.
+//! Processes need not share a store either: the CROSSCUT-8 tests open one registry over two.
 
 use super::*;
 use crate::{
@@ -42,6 +43,8 @@ fn connection() -> Connection {
     }
 }
 
+/// A live grant bound to `incarnation`, with no store recorded (as for a grant recorded before
+/// stores were kept). [`Profile::grant`] is a grant made now.
 fn grant(incarnation: i64, expires_at: Option<u64>) -> Scope {
     Scope {
         connection_id: CONNECTION.into(),
@@ -58,6 +61,7 @@ fn grant(incarnation: i64, expires_at: Option<u64>) -> Scope {
         expires_at,
         labels: None,
         session_incarnation: Some(incarnation),
+        session_store: None,
         revocation: None,
     }
 }
@@ -108,6 +112,26 @@ impl Profile {
 
     fn registry_path(&self) -> PathBuf {
         self.crew_root.path().join("connections.json")
+    }
+
+    /// The directory of this profile's session store.
+    fn store_dir(&self) -> PathBuf {
+        self.store.storage().session_dir().to_path_buf()
+    }
+
+    /// A live grant made now to a chat of this profile's store, on `run`: bound to the chat
+    /// and to the store, as the grant path records it (CROSSCUT-8).
+    fn grant(&self, run: &str, incarnation: i64, expires_at: Option<u64>) -> Scope {
+        Scope {
+            run_id: run.into(),
+            session_store: Some(store_name(&self.store_dir())),
+            ..grant(incarnation, expires_at)
+        }
+    }
+
+    /// The saved registry, read from disk.
+    fn saved(&self) -> Value {
+        serde_json::from_slice(&fs::read(self.registry_path()).unwrap()).unwrap()
     }
 
     fn write(&self, registry: &Value) {
@@ -382,6 +406,22 @@ fn an_unreadable_registry_names_its_chats_or_none() {
     }
 }
 
+/// Hold this test's process to a profile of its own, with file credentials: forgetting a grant
+/// deletes its run credential, and a test must never reach the OS keychain. Only in a process
+/// [`crate::test_sandbox::in_a_process_of_its_own`] started.
+fn own_profile(scratch: &TempDir) -> env_lock::EnvGuard<'static> {
+    let profile_dir = scratch.path().join("profile");
+    fs::create_dir_all(&profile_dir).unwrap();
+    let profile_dir = profile_dir.to_string_lossy().into_owned();
+    crate::test_sandbox::relocate_path_root_and(
+        profile_dir.as_str(),
+        [
+            ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_dir.as_str())),
+            ("BIOROUTER_DISABLE_KEYRING", Some("true")),
+        ],
+    )
+}
+
 /// CROSSCUT-8: a deleted chat's grant is forgotten once it is settled, a week past its run's
 /// end, with its run credential. Session ids are single use, so the pruning that waited for a
 /// later chat under the id never came: every deleted chat's grant stayed listed, and cost a
@@ -393,16 +433,7 @@ async fn a_deleted_chats_grant_is_forgotten_once_settled() {
         return;
     }
     let scratch = TempDir::new().unwrap();
-    let profile_dir = scratch.path().join("profile");
-    fs::create_dir_all(&profile_dir).unwrap();
-    let profile_dir = profile_dir.to_string_lossy().into_owned();
-    let _env = crate::test_sandbox::relocate_path_root_and(
-        profile_dir.as_str(),
-        [
-            ("BIOROUTER_DEV_PROFILE_ROOT", Some(profile_dir.as_str())),
-            ("BIOROUTER_DISABLE_KEYRING", Some("true")),
-        ],
-    );
+    let _env = own_profile(&scratch);
     let profile = Profile::new();
     let crew = profile.open();
     let now = revocation::unix_now();
@@ -414,7 +445,10 @@ async fn a_deleted_chats_grant_is_forgotten_once_settled() {
             if r.connections.is_empty() {
                 r.connections.push(connection());
             }
-            r.scopes.insert(chat.clone(), grant(incarnation, end));
+            r.scopes.insert(
+                chat.clone(),
+                profile.grant(&format!("run-{chat}"), incarnation, end),
+            );
             Ok(())
         })
         .await
@@ -451,4 +485,230 @@ async fn a_deleted_chats_grant_is_forgotten_once_settled() {
         .map(|row| row["session_id"].as_str().unwrap())
         .collect();
     assert_eq!(listed, HashSet::from([recent.as_str(), unknown.as_str()]));
+}
+
+/// CROSSCUT-8, from review: a process whose session store is not the grant's never forgets or
+/// prunes it. The Crew registry lives under the config folder and chats under the data folder,
+/// which the environment sets apart, so a terminal whose shell sets its own `XDG_DATA_HOME`
+/// shares the desktop's Crew settings over another `sessions.db`, and both stores mint
+/// `<date>_1` onward. Every scope question the terminal asked read the desktop's grants as its
+/// own store's: a grant whose chat it lacked was "deleted" and forgotten once its run had ended
+/// a week ago, and a grant under an id its own chat held was "an earlier chat's", pruned and
+/// revoked. Once the desktop read the file again, its live Crew chat, the channel's messages in
+/// its history, had no grant and no restriction at all.
+#[tokio::test]
+async fn a_process_on_another_store_leaves_this_stores_grants_alone() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let scratch = TempDir::new().unwrap();
+    let _env = own_profile(&scratch);
+    let profile = Profile::new();
+    let desktop = profile.open();
+    let ended_a_week_ago = Some(revocation::unix_now() - revocation::REPLACED_KEPT_PAST_END - 60);
+    // Two Crew chats of the desktop's store, each on a run that ended over a week ago.
+    let (live, live_incarnation) = profile.chat().await;
+    let (deleted, deleted_incarnation) = profile.chat().await;
+    desktop
+        .update_registry(|r| {
+            r.connections.push(connection());
+            r.scopes.insert(
+                live.clone(),
+                profile.grant("run-live", live_incarnation, ended_a_week_ago),
+            );
+            r.scopes.insert(
+                deleted.clone(),
+                profile.grant("run-deleted", deleted_incarnation, ended_a_week_ago),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for chat in [&live, &deleted] {
+        desktop
+            .write_credential(&format!("run:{chat}"), "run-credential")
+            .unwrap();
+    }
+    profile.store.delete_session(&deleted).await.unwrap();
+
+    // The terminal: the same Crew settings, another store, whose first chat has the id of the
+    // desktop's first. In two processes both first stores mint `<date>_1`; in one test
+    // process each store gets a prefix of its own (and a debug build panics on a duplicate),
+    // so the terminal's chat is given that id the way its own process would have minted it.
+    let terminal_data = TempDir::new().unwrap();
+    let terminal_store = Arc::new(SessionManager::new(terminal_data.path().to_path_buf()));
+    let minted = terminal_store
+        .create_session(
+            terminal_data.path().to_path_buf(),
+            "terminal chat".into(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id;
+    sqlx::query("UPDATE sessions SET id = ?1 WHERE id = ?2")
+        .bind(&live)
+        .bind(&minted)
+        .execute(terminal_store.storage().pool().await.unwrap())
+        .await
+        .unwrap();
+    let terminal_chat = live.clone();
+    let terminal_incarnation = terminal_store
+        .session_incarnation(&terminal_chat)
+        .await
+        .unwrap()
+        .expect("the terminal's store holds a chat under the desktop chat's id");
+    assert_ne!(
+        terminal_incarnation, live_incarnation,
+        "the fixture must give each store's chat under the id its own identity"
+    );
+    let terminal = CrewManager::new(profile.crew_root.path().to_path_buf()).unwrap();
+    terminal.use_session_store(terminal_store.clone());
+
+    // Every scope question the terminal asks, over every grant.
+    let scoped = terminal.scoped_session_ids().await;
+    assert!(
+        scoped.contains(&deleted),
+        "a grant whose chat this store never held must keep restricting"
+    );
+    assert!(!scoped.contains(&terminal_chat));
+    assert_eq!(
+        terminal
+            .check_dispatch(&deleted, &public_call())
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_GONE
+    );
+    // The terminal's own chat under the colliding id holds no grant: it keeps its tools and
+    // can never act under the desktop chat's grant.
+    assert!(!terminal.is_scoped_session(&terminal_chat).await);
+    terminal
+        .authorize_session_tool(&terminal_chat, "developer__shell")
+        .await
+        .unwrap();
+    assert_eq!(
+        terminal
+            .worker_request(&terminal_chat, "messages.history", json!({}))
+            .await
+            .unwrap_err()
+            .to_string(),
+        NO_GRANT
+    );
+    // Nor can it be granted: that would overwrite the desktop chat's run credential and stop
+    // its grant. Refused before any run exists at the workspace.
+    assert_eq!(
+        terminal
+            .grantable_chat(&terminal_chat)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_ID_HELD_ELSEWHERE
+    );
+
+    // Both grants are as the desktop saved them: neither forgotten, nor pruned and stopped,
+    // and neither run credential deleted.
+    let saved = profile.saved();
+    for (chat, run) in [(&live, "run-live"), (&deleted, "run-deleted")] {
+        let scope = &saved["scopes"][chat.as_str()];
+        assert_eq!(scope["run_id"], json!(run), "{chat}: {saved}");
+        assert_eq!(scope["expired"], json!(false), "{chat}");
+        assert!(scope.get("revocation").is_none(), "{chat}");
+        assert!(terminal.read_credential(&format!("run:{chat}")).is_ok());
+    }
+    assert!(saved.get("replaced").is_none(), "{saved}");
+
+    // The desktop, reading the file again, still holds its live Crew chat to its grant...
+    let desktop = profile.open();
+    assert!(desktop.is_scoped_session(&live).await);
+    assert!(desktop.scoped_session_ids().await.contains(&live));
+    assert!(desktop
+        .authorize_session_tool(&live, "developer__shell")
+        .await
+        .is_err());
+    // ...and its own store, which saw the other chat go, is what lets it forget that grant.
+    assert!(!desktop.is_scoped_session(&deleted).await);
+    let saved = profile.saved();
+    assert!(saved["scopes"].get(deleted.as_str()).is_none());
+    assert!(saved["scopes"].get(live.as_str()).is_some());
+    assert!(desktop.read_credential(&format!("run:{deleted}")).is_err());
+    assert!(desktop.read_credential(&format!("run:{live}")).is_ok());
+}
+
+/// CROSSCUT-8: a grant recorded before stores were kept names none, so no process may forget
+/// it because its own store lacks the chat: kept, restricting, as before. A process whose store
+/// holds its chat records that store, and so does a delete, which is the store seeing the chat
+/// go; from then on it is forgotten once settled like any grant.
+#[tokio::test]
+async fn a_grant_with_no_recorded_store_is_forgotten_only_once_its_store_saw_the_chat_go() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let scratch = TempDir::new().unwrap();
+    let _env = own_profile(&scratch);
+    let profile = Profile::new();
+    let crew = profile.open();
+    let ended_a_week_ago = Some(revocation::unix_now() - revocation::REPLACED_KEPT_PAST_END - 60);
+    let (held, held_incarnation) = profile.chat().await;
+    let (gone, gone_incarnation) = profile.chat().await;
+    crew.update_registry(|r| {
+        r.connections.push(connection());
+        r.scopes.insert(
+            held.clone(),
+            Scope {
+                run_id: "run-held".into(),
+                ..grant(held_incarnation, ended_a_week_ago)
+            },
+        );
+        r.scopes.insert(
+            gone.clone(),
+            Scope {
+                run_id: "run-gone".into(),
+                ..grant(gone_incarnation, ended_a_week_ago)
+            },
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+    crew.write_credential(&format!("run:{gone}"), "run-credential")
+        .unwrap();
+
+    // Found in this store: its chat's own, and this is its store.
+    assert!(crew.is_scoped_session(&held).await);
+    crew.update_registry(|_| Ok(())).await.unwrap();
+    assert_eq!(
+        profile.saved()["scopes"][held.as_str()]["session_store"],
+        json!(store_name(&profile.store_dir()))
+    );
+
+    // Its chat deleted where no process on this registry heard of it (the delete hook reached
+    // another registry): missing from this store says nothing about a store never recorded.
+    profile.store.delete_session(&gone).await.unwrap();
+    for _ in 0..2 {
+        assert!(crew.is_scoped_session(&gone).await);
+        assert_eq!(
+            crew.check_dispatch(&gone, &public_call())
+                .await
+                .unwrap_err()
+                .to_string(),
+            GRANT_GONE
+        );
+    }
+    assert!(profile.saved()["scopes"].get(gone.as_str()).is_some());
+    assert!(crew.read_credential(&format!("run:{gone}")).is_ok());
+
+    // The delete as its store reports it records that store, and the settled grant goes at
+    // the next question.
+    crew.retire_deleted_sessions(&[(gone.clone(), gone_incarnation)], &profile.store_dir())
+        .await
+        .unwrap();
+    assert_eq!(
+        profile.saved()["scopes"][gone.as_str()]["session_store"],
+        json!(store_name(&profile.store_dir()))
+    );
+    assert!(!crew.is_scoped_session(&gone).await);
+    assert!(profile.saved()["scopes"].get(gone.as_str()).is_none());
+    assert!(crew.read_credential(&format!("run:{gone}")).is_err());
+    assert!(crew.is_scoped_session(&held).await);
 }

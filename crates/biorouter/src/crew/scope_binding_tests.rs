@@ -52,7 +52,8 @@ fn connection() -> Connection {
 }
 
 /// A live grant on [`CONNECTION`], bound to `incarnation` (`None`: recorded before grants
-/// were bound).
+/// were bound), with no store recorded (as for a grant recorded before stores were kept).
+/// [`Device::granted`] is a grant made now.
 fn grant(run_id: &str, incarnation: Option<i64>) -> Scope {
     Scope {
         connection_id: CONNECTION.into(),
@@ -69,6 +70,7 @@ fn grant(run_id: &str, incarnation: Option<i64>) -> Scope {
         expires_at: None,
         labels: None,
         session_incarnation: incarnation,
+        session_store: None,
         revocation: None,
     }
 }
@@ -129,6 +131,15 @@ impl Device {
         self.store.storage().session_dir().to_path_buf()
     }
 
+    /// A live grant made now to a chat of this device's store: bound to the chat and to the
+    /// store, as the grant path records it (CROSSCUT-8).
+    fn granted(&self, run_id: &str, incarnation: i64) -> Scope {
+        Scope {
+            session_store: Some(store_name(&self.own_store())),
+            ..grant(run_id, Some(incarnation))
+        }
+    }
+
     /// This device's registry as a fresh process loads it.
     fn restarted(&self) -> CrewManager {
         let crew = CrewManager::new(self.crew_root.path().to_path_buf()).unwrap();
@@ -183,7 +194,7 @@ async fn a_chat_reissued_a_deleted_chats_id_does_not_inherit_its_grant() {
     let device = Device::new().await;
     let (granted, incarnation) = device.chat().await;
     device
-        .record(&granted, grant("run-granted", Some(incarnation)))
+        .record(&granted, device.granted("run-granted", incarnation))
         .await;
     assert_restricted_to_its_grant(&device.crew, &granted).await;
     device.crew.agent_connections(&granted).await.unwrap();
@@ -233,7 +244,7 @@ async fn a_reissued_chat_cannot_act_under_a_live_grant_after_a_restart() {
     let device = Device::new().await;
     let (granted, incarnation) = device.chat().await;
     device
-        .record(&granted, grant("run-live", Some(incarnation)))
+        .record(&granted, device.granted("run-live", incarnation))
         .await;
     let (reissued, _) = device.reissue(&granted).await;
 
@@ -257,7 +268,7 @@ async fn a_granted_chat_stays_scoped_across_a_restart() {
     let (granted, incarnation) = device.chat().await;
     let (other, _) = device.chat().await;
     device
-        .record(&granted, grant("run-granted", Some(incarnation)))
+        .record(&granted, device.granted("run-granted", incarnation))
         .await;
     assert_eq!(
         device.saved_scopes()[&granted]["session_incarnation"],
@@ -289,7 +300,7 @@ async fn a_granted_chat_stays_scoped_across_a_restart() {
 async fn a_revoked_grant_still_refuses_the_same_chat() {
     let device = Device::new().await;
     let (granted, incarnation) = device.chat().await;
-    let mut revoked = grant("run-revoked", Some(incarnation));
+    let mut revoked = device.granted("run-revoked", incarnation);
     revoked.expired = true;
     device.record(&granted, revoked).await;
 
@@ -319,7 +330,7 @@ async fn a_deleted_chats_grant_restricts_but_never_authorizes() {
     let (bound, bound_incarnation) = device.chat().await;
     let (legacy, legacy_incarnation) = device.chat().await;
     device
-        .record(&bound, grant("run-gone", Some(bound_incarnation)))
+        .record(&bound, device.granted("run-gone", bound_incarnation))
         .await;
     device.record(&legacy, grant("run-gone-legacy", None)).await;
     // Deleted through the store, which tells the process-wide registry; this device's is
@@ -379,6 +390,11 @@ async fn a_deleted_chats_grant_restricts_but_never_authorizes() {
         device.saved_scopes()[&legacy]["session_incarnation"],
         json!(legacy_incarnation)
     );
+    // And to the store that saw the chat go (CROSSCUT-8), the one that may later forget it.
+    assert_eq!(
+        device.saved_scopes()[&legacy]["session_store"],
+        json!(store_name(&device.own_store()))
+    );
 }
 
 /// A store that cannot be read never lifts a restriction and never authorizes.
@@ -387,7 +403,7 @@ async fn an_unreadable_store_keeps_the_grant_restrictive() {
     let device = Device::new().await;
     let (granted, incarnation) = device.chat().await;
     device
-        .record(&granted, grant("run-granted", Some(incarnation)))
+        .record(&granted, device.granted("run-granted", incarnation))
         .await;
     device.store.close().await;
 
@@ -433,7 +449,7 @@ async fn a_no_session_store_never_holds_a_saved_chats_grant() {
     let device = Device::new().await;
     let (granted, incarnation) = device.chat().await;
     device
-        .record(&granted, grant("run-granted", Some(incarnation)))
+        .record(&granted, device.granted("run-granted", incarnation))
         .await;
 
     assert!(!SessionManager::is_ephemeral_session_id(&granted));
@@ -500,7 +516,7 @@ async fn deleting_a_chat_retires_its_own_grant_and_nothing_else() {
     let (granted, incarnation) = device.chat().await;
     let (legacy, legacy_incarnation) = device.chat().await;
     device
-        .record(&granted, grant("run-granted", Some(incarnation)))
+        .record(&granted, device.granted("run-granted", incarnation))
         .await;
     device.record(&legacy, grant("run-legacy", None)).await;
     // Another process's newer grant, on disk only.
@@ -538,6 +554,12 @@ async fn deleting_a_chat_retires_its_own_grant_and_nothing_else() {
         bindings(&device.saved_scopes()),
         [Some(json!(incarnation)), None, Some(json!(7))]
     );
+    assert!(
+        device.saved_scopes()[&legacy]
+            .get("session_store")
+            .is_none(),
+        "another store's delete recorded itself as the store of a grant it never held"
+    );
     assert_eq!(
         device.crew.registry.lock().await.scopes[&legacy].session_incarnation,
         None
@@ -568,7 +590,13 @@ async fn deleting_a_chat_retires_its_own_grant_and_nothing_else() {
     );
     for session in [&granted, &legacy] {
         assert_eq!(scopes[session.as_str()]["expired"], json!(false));
+        assert_eq!(
+            scopes[session.as_str()]["session_store"],
+            json!(store_name(&device.own_store())),
+            "{session}"
+        );
     }
+    assert!(scopes["elsewhere_1"].get("session_store").is_none());
     // In memory: both kept, and — since every write now reads the saved registry back (D8) —
     // the grant another process saved is held here too, as it was saved.
     let registry = device.crew.registry.lock().await;
@@ -630,17 +658,25 @@ async fn deleting_through_the_store_keeps_the_grant_restricting_and_revocable() 
     {
         let mut registry = crew.registry.lock().await;
         registry.connections.push(connection());
-        registry
-            .scopes
-            .insert(bound.clone(), grant("run-bound", Some(bound_incarnation)));
+        registry.scopes.insert(
+            bound.clone(),
+            Scope {
+                session_store: crew.own_store(),
+                ..grant("run-bound", Some(bound_incarnation))
+            },
+        );
         // Recorded before grants were bound, and never looked at since, so not bound in
         // memory either: the delete is what has to bind it.
         registry
             .scopes
             .insert(legacy.clone(), grant("run-legacy", None));
-        registry
-            .scopes
-            .insert(reset.clone(), grant("run-reset", Some(reset_incarnation)));
+        registry.scopes.insert(
+            reset.clone(),
+            Scope {
+                session_store: crew.own_store(),
+                ..grant("run-reset", Some(reset_incarnation))
+            },
+        );
         crew.persist(&registry).unwrap();
     }
     let saved_scopes = || {
@@ -674,6 +710,11 @@ async fn deleting_through_the_store_keeps_the_grant_restricting_and_revocable() 
         saved_scopes()[&legacy]["session_incarnation"],
         json!(legacy_incarnation),
         "the delete must bind a grant recorded before binding to the chat it was made to"
+    );
+    assert_eq!(
+        saved_scopes()[&legacy]["session_store"],
+        json!(crew.own_store()),
+        "the delete must record the store it saw the chat go from"
     );
     let listed = crew.session_grants(CONNECTION).await.unwrap();
     let listed: Vec<&str> = listed["grants"]

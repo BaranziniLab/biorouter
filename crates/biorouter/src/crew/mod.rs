@@ -152,6 +152,15 @@ struct Scope {
     /// [`CrewManager::standing`]. `None` only for a grant recorded before this was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_incarnation: Option<i64>,
+    /// The session store the chat was saved in: the directory of the `sessions.db` whose row
+    /// held the session id at grant time (CROSSCUT-8). Processes that share this registry need
+    /// not share a store (a terminal whose shell sets its own `XDG_DATA_HOME` reads the same
+    /// Crew settings as the desktop and another `sessions.db`), and two stores mint the same
+    /// ids, so what one store holds, or lacks, says nothing about a chat saved in another. See
+    /// [`GrantStore`]. `None` for a grant recorded before this was kept, until a process whose
+    /// store holds the chat, or saw it deleted, records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_store: Option<String>,
     /// Where a stopped grant stands with the workspace (F3, D-1). `None` while the grant is
     /// live, and for one stopped before this was recorded or by removing its connection,
     /// whose standing with the workspace is not known.
@@ -385,6 +394,10 @@ const GRANT_UNCONFIRMED: &str =
     "Couldn't confirm this chat's Crew access on this device. Try again in a moment.";
 /// A grant asked for a chat that is not saved on this device (`--no-session`, or gone).
 const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this device. Start a saved chat, then grant it access from Crew.";
+/// A grant asked for a chat whose id a chat saved in another Biorouter data folder on this
+/// computer also has, and that chat holds Crew access (CROSSCUT-8). One grant is kept per id,
+/// so granting this chat would take that chat's grant away.
+const GRANT_ID_HELD_ELSEWHERE: &str = "A chat saved in another Biorouter data folder on this computer has the same ID as this chat and holds Crew access, so this chat can't be granted access. Start a new chat, then grant it access from Crew.";
 /// The grant changed between two reads of one check.
 const ACCESS_CHANGED: &str = "Crew access or settings changed while this was in progress. Check whether it already took effect before you grant access again.";
 /// A bridge that failed carrying a request: what was sent may or may not have reached the
@@ -394,8 +407,9 @@ const BRIDGE_FAILED: &str = "SSH bridge failed. Reconnect; inspect any submitted
 /// Whether a grant stored under a session id is the grant of the chat that holds that id now
 /// (SCOPE-BIND). See [`CrewManager::standing`].
 enum Standing {
-    /// No grant is this chat's: none was made, or the one stored under its id was made to an
-    /// earlier chat that has since been replaced under the same id (and has been pruned).
+    /// No grant is this chat's: none was made, the one stored under its id was made to an
+    /// earlier chat that has since been replaced under the same id (and has been pruned), or
+    /// it was made to a chat under the same id in another session store ([`GrantStore`]).
     None,
     /// The chat's own grant: bound to its incarnation, or recorded before grants were bound.
     Own(Scope),
@@ -407,6 +421,21 @@ enum Standing {
     /// restricts and authorizes nothing, as an unconfirmed grant does, but there is no grant
     /// to show or revoke until the file can be read again. See `freshness.rs`.
     Unreadable(&'static str),
+}
+
+/// Whether this process resolves chats in the session store a grant's chat was saved in
+/// ([`Scope::session_store`], CROSSCUT-8). Only that store can say the grant's chat is gone,
+/// or that a chat holding its id is a later one: in any other store the id is one both
+/// stores minted, and its absence or its holder says nothing about the grant's chat.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrantStore {
+    /// This process's own store.
+    Here,
+    /// Another store that shares this registry.
+    Elsewhere,
+    /// Not recorded: the grant predates recording it, so no process may forget or prune it
+    /// on the strength of what its own store lacks.
+    Unrecorded,
 }
 
 /// Which door a signed request came through. Only the daemon's own join sends `auth.join`,
@@ -464,8 +493,9 @@ fn registry_digest(bytes: &[u8]) -> [u8; 32] {
 /// - each connection's status and last error, which describe this process's own transports
 ///   (the file's copy is whatever process wrote last, and is reset on load for that reason);
 ///   a connection this process has not seen reads as a fresh load reads it, disconnected;
-/// - a grant's binding to its chat, when this process bound a grant recorded before grants
-///   were bound ([`CrewManager::adopt_binding`]) and the file still has it unbound;
+/// - a grant's binding to its chat and that chat's store, when this process bound a grant
+///   recorded before either was kept ([`CrewManager::adopt_binding`]) and the file still has
+///   it unbound;
 /// - a stop: a grant this process expired stays expired even if its save failed, because
 ///   nothing may bring a revoked run back to life;
 /// - what the workspace said about a stop ([`Revocation`]), so a confirmation heard here is
@@ -502,6 +532,9 @@ fn carry_process_state(here: &Registry, theirs: &mut Registry) {
         scope.expired |= mine.expired;
         if scope.session_incarnation.is_none() {
             scope.session_incarnation = mine.session_incarnation;
+        }
+        if scope.session_store.is_none() {
+            scope.session_store = mine.session_store.clone();
         }
         // What the workspace said about a stop, whichever process heard it: a confirmation
         // this process got (and failed to save) is not lost to the file's "not yet".
@@ -747,6 +780,7 @@ pub(crate) async fn install_test_scope(
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         },
     );
@@ -3233,6 +3267,7 @@ impl CrewManager {
                 expires_at,
                 labels: Some(labels.clone()),
                 session_incarnation: Some(session_incarnation),
+                session_store: self.own_store(),
                 revocation: None,
             };
             // Recorded here even when the save fails, as it always was: the abandon below
@@ -4476,10 +4511,6 @@ fn with_default_channel(method: &str, mut params: Value, scope: &Scope) -> Resul
     }
 }
 
-/// A Crew error as the agent's tool result says it (Q4-11, naming design "Machine IDs stay
-/// internal"): a refusal the broker answered becomes a sentence, "Crew refused the request:
-/// {its message without the code}.", never the transport's `{"code":…,"message":…}` JSON. Any
-/// other error is its own words, unchanged.
 /// `json`, a JSON document, written so that nothing inside it can end the markup-like wrapper
 /// it is sent to a model in, such as `<crew_context>…</crew_context>` (DAEMON-4): every `<`,
 /// `>` and `&` becomes `\u003c`, `\u003e` and `\u0026`. JSON uses none of the three outside a
@@ -4503,6 +4534,10 @@ pub fn wrapper_safe_json(json: &str) -> String {
     safe
 }
 
+/// A Crew error as the agent's tool result says it (Q4-11, naming design "Machine IDs stay
+/// internal"): a refusal the broker answered becomes a sentence, "Crew refused the request:
+/// {its message without the code}.", never the transport's `{"code":…,"message":…}` JSON. Any
+/// other error is its own words, unchanged.
 pub(crate) fn agent_error_text(error: &anyhow::Error) -> String {
     let text = error.to_string();
     if !text.starts_with("Crew broker refused request:") {
@@ -4770,6 +4805,13 @@ fn gone_grant_settled(scope: &Scope, now: u64) -> bool {
         .is_some_and(|end| end.saturating_add(revocation::REPLACED_KEPT_PAST_END) <= now)
 }
 
+/// A session store's directory as [`Scope::session_store`] records it: a string, since a
+/// `PathBuf` that is not UTF-8 would fail to save the whole registry. Lossy only for such a
+/// path, where two stores that differ only in their non-UTF-8 bytes would read as one.
+fn store_name(dir: &Path) -> String {
+    dir.to_string_lossy().into_owned()
+}
+
 /// SCOPE-BIND: a grant belongs to one chat, not to a session id.
 ///
 /// ⚠ **Security-relevant; needs human review.** Grants are stored by session id, and an id
@@ -4803,6 +4845,20 @@ fn gone_grant_settled(scope: &Scope, now: u64) -> bool {
 /// waiting for one kept every deleted chat's grant for good: listed, and read on every scope
 /// question, one database query each. A grant under an id another chat holds is still pruned
 /// at once, for stores that reissue ids (a restored backup).
+///
+/// ⚠ **Only the grant's own session store may forget or prune it** ([`GrantStore`]). The
+/// registry lives under the config folder and the chats under the data folder, which the
+/// environment sets apart (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`), so a terminal and the desktop
+/// can share one registry over two `sessions.db`s, each minting `<date>_1` and onward. A
+/// process asking about another store's chat finds no chat under its id, or finds its own
+/// chat there, on every scope question it asks (and [`CrewManager::scoped_session_ids`] asks
+/// about every grant). When that was read as "deleted" or "an earlier chat's", the other
+/// store's live Crew chat lost its grant: once the saved registry dropped it, that chat, with
+/// the channel's messages in its history, answered [`Standing::None`] and every restriction
+/// was lifted, and a pruned live grant was also revoked at the workspace. So each grant
+/// records its store, and a grant from another store, or one whose store was never recorded,
+/// is never forgotten or pruned here: absent, it stays [`Standing::Unconfirmed`], and a chat
+/// of this store under its id simply does not hold it.
 impl CrewManager {
     /// Resolve chats against `store` in place of the shared one, for a test.
     #[cfg(test)]
@@ -4844,14 +4900,32 @@ impl CrewManager {
             .map(|root| root.join(crate::session::session_manager::SESSIONS_FOLDER))
     }
 
+    /// [`Self::own_store_dir`] as [`Scope::session_store`] records it.
+    fn own_store(&self) -> Option<String> {
+        self.own_store_dir().map(|dir| store_name(&dir))
+    }
+
+    /// Whether this process resolves chats in the store `scope`'s chat was saved in. A process
+    /// that has not opened its store can confirm none, so every recorded store is elsewhere.
+    fn grant_store(&self, scope: &Scope) -> GrantStore {
+        match &scope.session_store {
+            None => GrantStore::Unrecorded,
+            Some(recorded) if self.own_store().as_ref() == Some(recorded) => GrantStore::Here,
+            Some(_) => GrantStore::Elsewhere,
+        }
+    }
+
     /// Whether the grant stored under `session` is the grant of the chat holding that id
     /// now:
     ///
-    /// - bound to that chat's incarnation: its own;
-    /// - bound to another incarnation: made to an earlier chat under the id, so none — and
-    ///   pruned;
+    /// - bound to that chat's incarnation: its own, and when its store was never recorded,
+    ///   recorded in memory as this process's (the store holding the chat);
+    /// - bound to another incarnation: none. Made to an earlier chat under the id when this
+    ///   is the grant's own store, and pruned; otherwise another store's chat's grant under an
+    ///   id both stores minted, and left alone ([`GrantStore`]);
     /// - bound, with no chat under the id: [`Standing::Unconfirmed`], since the chat it was
-    ///   made to is gone (a turn still unwinding may yet hold its context);
+    ///   made to is gone from this store (a turn still unwinding may yet hold its context), or
+    ///   was never in it. Forgotten once settled, and only when this is the grant's own store;
     /// - the chat's identity unreadable: [`Standing::Unconfirmed`];
     /// - recorded before grants were bound: its own, as it always was, and bound in memory
     ///   to the chat holding the id when there is one.
@@ -4883,14 +4957,23 @@ impl CrewManager {
                 return Standing::Unconfirmed(scope, GRANT_UNCONFIRMED);
             }
         };
+        let store = self.grant_store(&scope);
         match (scope.session_incarnation, current) {
-            (Some(bound), Some(current)) if bound == current => Standing::Own(scope),
+            (Some(bound), Some(current)) if bound == current => {
+                if store == GrantStore::Unrecorded {
+                    Standing::Own(self.adopt_binding(session, scope, current).await)
+                } else {
+                    Standing::Own(scope)
+                }
+            }
             (Some(_), Some(_)) => {
-                self.prune_stale_grant(session, &scope).await;
+                if store == GrantStore::Here {
+                    self.prune_stale_grant(session, &scope).await;
+                }
                 Standing::None
             }
             (Some(_), None) => {
-                if gone_grant_settled(&scope, revocation::unix_now()) {
+                if store == GrantStore::Here && gone_grant_settled(&scope, revocation::unix_now()) {
                     self.forget_gone_grant(session, &scope).await;
                     return Standing::None;
                 }
@@ -4909,17 +4992,29 @@ impl CrewManager {
     /// same row. This process's next registry update carries it into the saved registry
     /// ([`carry_process_state`]), which — reading the file back first (D8) — can no longer
     /// overwrite a grant another process saved since this one loaded.
+    ///
+    /// The store is recorded the same way, for a grant bound to its chat before stores were
+    /// kept: the store holding that chat is its own (CROSSCUT-8), and only with it recorded may
+    /// the grant ever be forgotten or pruned.
     async fn adopt_binding(&self, session: &str, legacy: Scope, current: i64) -> Scope {
+        let store = self.own_store();
         let mut registry = self.registry.lock().await;
+        let adopt = |scope: &mut Scope| {
+            scope.session_incarnation.get_or_insert(current);
+            if scope.session_store.is_none() {
+                scope.session_store = store.clone();
+            }
+        };
         match registry.scopes.get_mut(session) {
             Some(scope) if scope.run_id == legacy.run_id => {
-                scope.session_incarnation.get_or_insert(current);
+                adopt(scope);
                 scope.clone()
             }
-            _ => Scope {
-                session_incarnation: Some(current),
-                ..legacy
-            },
+            _ => {
+                let mut scope = legacy;
+                adopt(&mut scope);
+                scope
+            }
         }
     }
 
@@ -4930,6 +5025,10 @@ impl CrewManager {
     /// asked about again (F3, [`ReplacedGrant`]) unless the workspace already confirmed or
     /// ended its run. A grant still live here was dropped with no `run.revoke` before
     /// (DAEMON-1), and its run stayed live at the workspace, listed nowhere.
+    ///
+    /// ⚠ Only for a grant of this process's own store ([`GrantStore::Here`]): a chat of
+    /// another store under the same id is not a later chat, and pruning its grant revoked a
+    /// live run and lifted that chat's restriction (CROSSCUT-8).
     async fn prune_stale_grant(&self, session: &str, stale: &Scope) {
         let mut kept = false;
         let pruned = self
@@ -4965,8 +5064,14 @@ impl CrewManager {
     }
 
     /// Forget the grant of a deleted chat that is settled ([`gone_grant_settled`]), from
-    /// memory and the saved registry, with its run credential (CROSSCUT-8). Matched by its run
-    /// and the chat it was made to, so a newer grant under the id never goes with it.
+    /// memory and the saved registry, with its run credential (CROSSCUT-8). Matched by its run,
+    /// the chat it was made to and that chat's store, so a newer grant under the id never goes
+    /// with it.
+    ///
+    /// ⚠ Only for a grant of this process's own store ([`GrantStore::Here`]), where no chat
+    /// under the id means the chat is gone. Every chat of another store is missing from this
+    /// one, so forgetting there took the grant of a live chat saved in that store, and with it
+    /// every restriction on that chat.
     async fn forget_gone_grant(&self, session: &str, gone: &Scope) {
         let mut forgotten = false;
         let saved = self
@@ -4974,6 +5079,7 @@ impl CrewManager {
                 if registry.scopes.get(session).is_some_and(|scope| {
                     scope.run_id == gone.run_id
                         && scope.session_incarnation == gone.session_incarnation
+                        && scope.session_store == gone.session_store
                 }) {
                     registry.scopes.remove(session);
                     forgotten = true;
@@ -5005,12 +5111,33 @@ impl CrewManager {
 
     /// The identity a new grant is bound to: the incarnation of the chat holding `session`
     /// in the store grants name. A chat that is not saved there cannot be granted.
+    ///
+    /// ⚠ Nor can a chat whose id holds the grant of a chat saved in another store (CROSSCUT-8):
+    /// one grant is kept per id, and the run credential is stored under the id, so granting
+    /// this chat would overwrite that chat's credential, stop and revoke its run
+    /// ([`Self::record_grant`]), and leave it, Crew context and all, with no restriction. Asked
+    /// before anything is created at the workspace. A grant whose store was never recorded is
+    /// replaced as it always was: which chat it is cannot be told, and refusing would block
+    /// the chat under its id for good.
     async fn grantable_chat(&self, session: &str) -> Result<i64> {
-        match self.chat_incarnation(session).await {
-            Ok(Some(incarnation)) => Ok(incarnation),
-            Ok(None) => Err(anyhow::anyhow!(UNSAVED_CHAT)),
-            Err(error) => Err(error.context(GRANT_UNCONFIRMED)),
-        }
+        let incarnation = match self.chat_incarnation(session).await {
+            Ok(Some(incarnation)) => incarnation,
+            Ok(None) => return Err(anyhow::anyhow!(UNSAVED_CHAT)),
+            Err(error) => return Err(error.context(GRANT_UNCONFIRMED)),
+        };
+        self.refresh_registry().await;
+        let held_elsewhere = self
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get(session)
+            .is_some_and(|scope| {
+                scope.session_incarnation != Some(incarnation)
+                    && self.grant_store(scope) == GrantStore::Elsewhere
+            });
+        ensure!(!held_elsewhere, GRANT_ID_HELD_ELSEWHERE);
+        Ok(incarnation)
     }
 
     /// Retire the grants of chats just deleted from the store at `store_dir`, each named
@@ -5018,42 +5145,54 @@ impl CrewManager {
     /// made to.
     ///
     /// ⚠ **Security-relevant; needs human review.** Keeping is the point. The workspace still
-    /// honors the run, so the grant must stay listed and revocable — a deleted task's cancel
-    /// revokes through it — and a delete only signals the chat's turn to stop, so the turn
+    /// honors the run, so the grant must stay listed and revocable (a deleted task's cancel
+    /// revokes through it), and a delete only signals the chat's turn to stop, so the turn
     /// may still be dispatching tool calls with Crew context in hand. With no chat under its
     /// id, a bound grant resolves to [`Standing::Unconfirmed`]: it restricts that turn and
-    /// authorizes nothing. It is pruned only once a later chat holds the id
-    /// ([`Self::standing`]), and `expired` is left alone: that flag says the grant was
-    /// stopped here, which is what the access list shows and what hides its Revoke control,
-    /// and deleting a chat stops nothing at the workspace.
+    /// authorizes nothing. `expired` is left alone: that flag says the grant was stopped
+    /// here, which is what the access list shows and what hides its Revoke control, and
+    /// deleting a chat stops nothing at the workspace.
     ///
-    /// So a grant already bound to its chat needs nothing. What this does is bind a grant
-    /// recorded before grants were bound, which would otherwise read as its chat's own with
-    /// no chat under the id — acting for the unwinding turn in any process that had not yet
-    /// bound it in memory, and handed to whichever chat next held the id. Such a grant is
-    /// the deleted chat's only when it sits under the id in the very store grants name; a
-    /// grant under one of these ids bound to another incarnation, or recorded against
-    /// another store, belongs to a chat elsewhere and is not touched. One update of the saved
-    /// registry as it is now ([`Self::update_registry_keeping`]), so a grant another process
-    /// saved since this one loaded is never written away, and is bound too when it is the
-    /// deleted chat's; memory takes the same edit even if the save fails.
+    /// It goes in one of two ways, both decided by [`Self::standing`] and both only in a
+    /// process whose own store is the grant's ([`GrantStore::Here`]): pruned at once if a later
+    /// chat of that store holds the id, or forgotten once settled, a week past its run's own
+    /// end ([`Self::forget_gone_grant`], [`gone_grant_settled`]). A process on another store
+    /// never removes it, whatever its own store holds under the id (CROSSCUT-8).
+    ///
+    /// So a grant already bound to its chat and store needs nothing. What this does is bind a
+    /// grant recorded before grants were bound, which would otherwise read as its chat's own
+    /// with no chat under the id: acting for the unwinding turn in any process that had not
+    /// yet bound it in memory, and handed to whichever chat next held the id. Such a grant is
+    /// the deleted chat's only when it sits under the id in the very store grants name. And it
+    /// records `store_dir` as the store of a grant made to a deleted chat before stores were
+    /// kept: the delete is that store seeing the chat go, the one proof its grant may later be
+    /// forgotten. A grant under one of these ids bound to another incarnation, or recorded
+    /// against another store, belongs to a chat elsewhere and is not touched. One update of
+    /// the saved registry as it is now ([`Self::update_registry_keeping`]), so a grant another
+    /// process saved since this one loaded is never written away, and is bound too when it is
+    /// the deleted chat's; memory takes the same edit even if the save fails.
     pub(crate) async fn retire_deleted_sessions(
         &self,
         deleted: &[(String, i64)],
         store_dir: &Path,
     ) -> Result<()> {
         let from_own_store = self.own_store_dir().is_some_and(|own| own == store_dir);
+        let deleting_store = store_name(store_dir);
         let deleted: HashMap<&str, i64> = deleted
             .iter()
             .map(|(session, incarnation)| (session.as_str(), *incarnation))
             .collect();
         // The deleted chat's incarnation, when the grant under `session` was made to it.
         let deleted_chat = |session: &str, scope: &Scope| {
+            let same_store = scope
+                .session_store
+                .as_ref()
+                .is_none_or(|recorded| *recorded == deleting_store);
             deleted
                 .get(session)
                 .copied()
                 .filter(|&incarnation| match scope.session_incarnation {
-                    Some(bound) => bound == incarnation,
+                    Some(bound) => same_store && bound == incarnation,
                     None => from_own_store,
                 })
         };
@@ -5083,6 +5222,9 @@ impl CrewManager {
             for (session, scope) in registry.scopes.iter_mut() {
                 if let Some(incarnation) = deleted_chat(session, scope) {
                     scope.session_incarnation = Some(incarnation);
+                    if scope.session_store.is_none() {
+                        scope.session_store = Some(deleting_store.clone());
+                    }
                 }
             }
             Ok(())
@@ -5447,6 +5589,7 @@ mod tests {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let manager = CrewManager::new(root.clone())?;
@@ -5727,6 +5870,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         (connection, scope)
@@ -6018,6 +6162,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let registry = Registry {
@@ -6115,6 +6260,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let registry = Registry {
@@ -6309,6 +6455,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let registry = Registry {
@@ -6498,6 +6645,7 @@ done
                     expires_at: None,
                     labels: None,
                     session_incarnation: None,
+                    session_store: None,
                     revocation: None,
                 },
             )]),

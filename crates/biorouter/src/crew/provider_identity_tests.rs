@@ -106,6 +106,7 @@ impl Device {
                 expires_at: None,
                 labels: None,
                 session_incarnation: Some(self.incarnation),
+                session_store: self.crew.own_store(),
                 revocation: None,
             },
         );
