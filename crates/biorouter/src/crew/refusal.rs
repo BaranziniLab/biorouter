@@ -13,9 +13,15 @@
 use serde_json::Value;
 use std::fmt;
 
-/// `crew_credential_store_unavailable`: this computer has no keyring service Biorouter can use
-/// and no encrypted Crew vault, so a Crew key cannot be saved (W2-DMN-1).
+/// `crew_credential_store_unavailable`: no keyring service answers on this computer (only a
+/// Secret Service can be missing) and there is no encrypted Crew vault, so a Crew key cannot be
+/// saved or read (W2-DMN-1). Its sentence names `credentials init` only for a profile that
+/// holds no identity yet, the only kind that command accepts.
 pub const CREDENTIAL_STORE_UNAVAILABLE: &str = "crew_credential_store_unavailable";
+/// `crew_credential_store_refused`: the keyring is there and did not let Biorouter use a Crew
+/// key (denied at its prompt, locked, or no session to ask in); allowing access or unlocking
+/// it, then trying again, helps (W2-DMN-1).
+pub const CREDENTIAL_STORE_REFUSED: &str = "crew_credential_store_refused";
 /// `crew_institution_mismatch`: the model, the connection or the workspace belong to different
 /// institutions (W2-DMN-9).
 pub const INSTITUTION_MISMATCH: &str = "crew_institution_mismatch";

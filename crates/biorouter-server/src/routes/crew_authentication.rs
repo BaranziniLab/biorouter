@@ -1071,4 +1071,31 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(root);
     }
+
+    /// W2-DMN-1 (review): a keyring that is there and refused (Deny at the macOS Keychain
+    /// prompt, a locked Secret Service) keeps its own code and sentence too, which name the
+    /// refusal and never a missing keyring service.
+    #[tokio::test]
+    async fn a_keyring_that_refused_says_so_on_the_admission_routes() {
+        let (crew, root) = scratch_manager("keyring-refused");
+        for fallback in [FROM_INVITATION_FAILED, JOIN_FAILED] {
+            let error = anyhow::Error::new(biorouter::crew::CrewRefusal::new(
+                biorouter::crew::refusal::CREDENTIAL_STORE_REFUSED,
+                biorouter::crew::CREDENTIAL_STORE_REFUSED_TEXT,
+            ))
+            .context("Couldn't read this connection's device key");
+            let (status, body) =
+                body_of(core_refusal(&crew, Some("unknown"), error, fallback).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body,
+                json!({
+                    "code": "crew_credential_store_refused",
+                    "error": biorouter::crew::CREDENTIAL_STORE_REFUSED_TEXT,
+                })
+            );
+            assert!(!body.to_string().contains("no keyring service"), "{body}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

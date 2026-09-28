@@ -572,6 +572,18 @@ struct Registry {
     #[serde(default)]
     completed_preparations: HashMap<String, String>,
 }
+impl Registry {
+    /// Whether this profile holds no Crew identity at all: no connection, grant, stopped grant,
+    /// prepared device or finished preparation. Only such a profile may have an encrypted vault
+    /// set up, since keys already in the keyring are never silently replaced.
+    fn holds_no_identity(&self) -> bool {
+        self.connections.is_empty()
+            && self.scopes.is_empty()
+            && self.replaced.is_empty()
+            && self.pending_device.is_none()
+            && self.completed_preparations.is_empty()
+    }
+}
 /// How long a registry update waits for another Biorouter process to finish its own.
 const REGISTRY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// A registry update that waited [`REGISTRY_LOCK_WAIT`] for another process and gave up.
@@ -1271,33 +1283,162 @@ pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(Non
 /// history carries private context a public model must not continue with (W2-DMN-9).
 const ORIGIN_RESTRICTED_PUBLIC: &str = "This chat has used a private model, so a public model can't continue it with Crew context. Choose a private model.";
 
-/// What `crew_credential_store_unavailable` says (W2-DMN-1).
+/// What `crew_credential_store_unavailable` says to a profile that holds no Crew identity yet,
+/// where an encrypted vault can still be set up (W2-DMN-1).
 pub const CREDENTIAL_STORE_UNAVAILABLE_TEXT: &str = "This computer has no keyring service Biorouter can use. Run `biorouter crew credentials init` to keep Crew keys in an encrypted vault, then try again.";
+/// What `crew_credential_store_unavailable` says to a profile whose Crew identities keep their
+/// keys in the keyring: a vault can't be set up over them (`credentials init` refuses), so the
+/// keyring has to answer again.
+pub const KEYRING_NOT_RUNNING_TEXT: &str = "This computer's keyring service isn't answering, and Biorouter keeps this profile's Crew keys there. Start it (for example, by signing in to this computer's desktop), then try again.";
+/// What `crew_credential_store_refused` says: the keyring is there and did not let Biorouter
+/// use a Crew key (denied at its prompt, locked, or no session to ask in).
+pub const CREDENTIAL_STORE_REFUSED_TEXT: &str = if cfg!(target_os = "macos") {
+    "macOS Keychain didn't let Biorouter use this computer's Crew keys. Allow access when Keychain asks, or unlock your login keychain, then try again."
+} else if cfg!(target_os = "windows") {
+    "Windows Credential Manager didn't let Biorouter use this computer's Crew keys. Allow access if Windows asks, then try again."
+} else {
+    "This computer's keyring is locked or didn't let Biorouter use its Crew keys. Unlock it, or allow access when it asks, then try again."
+};
 
-/// A keyring error as the refusal a person can act on. A platform store that does not answer
-/// (no Secret Service on a headless Linux node: "The name is not activatable") or refuses
-/// access fails every Crew key the same way, and "try again" never helps; the encrypted vault
-/// does (W2-DMN-1). Crew never falls back to plaintext for a device key. Any other keyring
-/// error keeps its own words.
-fn keyring_failure(error: keyring::Error) -> anyhow::Error {
-    match error {
-        keyring::Error::PlatformFailure(cause) | keyring::Error::NoStorageAccess(cause) => {
-            tracing::warn!(cause = %cause, "Crew can't use this computer's keyring service");
-            anyhow::Error::new(CrewRefusal::new(
+/// Whether this platform's credential store is always there: the macOS Keychain and the
+/// Windows Credential Manager are. Only a Secret Service (Linux and the other Unixes) can be
+/// missing, on a headless node or in an SSH-only session.
+const PLATFORM_STORE_ALWAYS_PRESENT: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+
+/// What a keyring failure says about the store behind it (W2-DMN-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyringTrouble {
+    /// No keyring service answers on this computer.
+    Absent,
+    /// The keyring is there and refused: locked, a prompt denied or dismissed, no session to
+    /// ask in.
+    Refused,
+}
+
+impl KeyringTrouble {
+    /// The refusal a person can act on. An absent keyring never gets the vault's advice here:
+    /// only the first key of a profile that holds no identity may ([`first_key_failure`]),
+    /// because `credentials init` refuses any other.
+    fn refusal(self) -> CrewRefusal {
+        match self {
+            Self::Absent => CrewRefusal::new(
                 refusal::CREDENTIAL_STORE_UNAVAILABLE,
-                CREDENTIAL_STORE_UNAVAILABLE_TEXT,
-            ))
+                KEYRING_NOT_RUNNING_TEXT,
+            ),
+            Self::Refused => CrewRefusal::new(
+                refusal::CREDENTIAL_STORE_REFUSED,
+                CREDENTIAL_STORE_REFUSED_TEXT,
+            ),
         }
-        other => other.into(),
     }
 }
+
+/// What `error` says about the keyring, when it says anything. Where the store is always
+/// there (`store_always_present`), a failure is a refusal and never an absence: keyring maps
+/// the Keychain's errSecUserCanceled, errSecAuthFailed and errSecInteractionNotAllowed (Deny at
+/// its prompt, or no session to show one in) to `PlatformFailure`. A Secret Service that is
+/// locked or whose prompt was dismissed answers `NoStorageAccess`, a refusal too. A
+/// Secret Service `PlatformFailure` is an absence only when `service_absent` confirms it (a
+/// read of an entry Crew never writes fails the same way); otherwise it is not about the store
+/// being there, and keeps its own words, as any other keyring error does.
+fn keyring_trouble(
+    error: &keyring::Error,
+    store_always_present: bool,
+    service_absent: impl FnOnce() -> bool,
+) -> Option<KeyringTrouble> {
+    match error {
+        keyring::Error::NoStorageAccess(_) => Some(KeyringTrouble::Refused),
+        keyring::Error::PlatformFailure(_) if store_always_present => Some(KeyringTrouble::Refused),
+        keyring::Error::PlatformFailure(_) => service_absent().then_some(KeyringTrouble::Absent),
+        _ => None,
+    }
+}
+
+/// A keyring error as the refusal a person can act on (W2-DMN-1). A store that does not answer
+/// (no Secret Service on a headless Linux node: "The name is not activatable") fails every
+/// Crew key the same way, and "try again" never helps; a store that refused says so, and that
+/// allowing access or unlocking it will. Crew never falls back to plaintext for a device key.
+/// Any other keyring error keeps its own words.
+fn keyring_failure(error: keyring::Error) -> anyhow::Error {
+    let trouble = keyring_trouble(&error, PLATFORM_STORE_ALWAYS_PRESENT, || {
+        keyring_service_absent(keyring::Entry::new(CREDENTIAL_SERVICE, KEYRING_PROBE))
+    });
+    match trouble {
+        Some(trouble) => {
+            tracing::warn!(cause = %error, ?trouble, "Crew can't use this computer's keyring");
+            trouble.refusal().into()
+        }
+        None => error.into(),
+    }
+}
+
+/// What a refused keyring adds for a profile that holds no identity yet (W2-DMN-1).
+pub const VAULT_INSTEAD_TEXT: &str =
+    "Or run `biorouter crew credentials init` to keep Crew keys in an encrypted vault instead.";
+
+/// `error`, from saving the first Crew key of a profile: while `registry` holds no identity at
+/// all, the encrypted vault that `biorouter crew credentials init` can still set up here is
+/// offered, as the way out of a keyring with no service behind it and as the other way out of
+/// one that refused (W2-DMN-1). Once any identity exists that command refuses, so the vault is
+/// named nowhere else.
+fn first_key_failure(error: anyhow::Error, registry: &Registry) -> anyhow::Error {
+    if !registry.holds_no_identity() {
+        return error;
+    }
+    match CrewRefusal::find(&error).map(CrewRefusal::code) {
+        Some(refusal::CREDENTIAL_STORE_UNAVAILABLE) => CrewRefusal::new(
+            refusal::CREDENTIAL_STORE_UNAVAILABLE,
+            CREDENTIAL_STORE_UNAVAILABLE_TEXT,
+        )
+        .into(),
+        Some(refusal::CREDENTIAL_STORE_REFUSED) => CrewRefusal::new(
+            refusal::CREDENTIAL_STORE_REFUSED,
+            format!("{CREDENTIAL_STORE_REFUSED_TEXT} {VAULT_INSTEAD_TEXT}"),
+        )
+        .into(),
+        _ => error,
+    }
+}
+
+/// A keyring failure a test makes the manager rooted at each path meet on every key it saves,
+/// in place of the platform store's answer (W2-DMN-1).
+#[cfg(test)]
+static TEST_KEYRING_TROUBLE: StdMutex<Vec<(PathBuf, KeyringTrouble)>> = StdMutex::new(Vec::new());
+
+#[cfg(test)]
+impl CrewManager {
+    fn set_test_keyring_trouble(&self, trouble: Option<KeyringTrouble>) {
+        let mut all = TEST_KEYRING_TROUBLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.retain(|(root, _)| *root != self.root);
+        if let Some(trouble) = trouble {
+            all.push((self.root.clone(), trouble));
+        }
+    }
+
+    fn test_keyring_trouble(&self) -> Option<KeyringTrouble> {
+        TEST_KEYRING_TROUBLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(root, _)| *root == self.root)
+            .map(|(_, trouble)| *trouble)
+    }
+}
+
+/// The keyring service every Crew key is kept under.
+const CREDENTIAL_SERVICE: &str = "org.biorouter.crew";
+/// An entry Crew never writes, read to learn whether the keyring answers.
+const KEYRING_PROBE: &str = "keyring-probe";
+
 /// Whether the OS keyring answers, by reading an entry Crew never writes. A working keyring
 /// answers "no entry" (or, harmlessly, a value); one with no service behind it fails.
 ///
 /// Only a Secret Service can be missing, so macOS and Windows are not asked: a read there can
 /// raise a Keychain prompt for nothing, and their stores are always present.
 fn keyring_answers(probe: Result<keyring::Entry>) -> bool {
-    if cfg!(any(target_os = "macos", target_os = "windows")) {
+    if PLATFORM_STORE_ALWAYS_PRESENT {
         return true;
     }
     let Ok(entry) = probe else {
@@ -1307,6 +1448,18 @@ fn keyring_answers(probe: Result<keyring::Entry>) -> bool {
         entry.get_password(),
         Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))
     )
+}
+
+/// Whether no keyring service answers at all: a read of an entry Crew never writes fails as
+/// the platform failing, not as the entry being missing or the store being locked. A probe that
+/// cannot be built confirms nothing.
+fn keyring_service_absent(probe: keyring::Result<keyring::Entry>) -> bool {
+    probe.is_ok_and(|entry| {
+        matches!(
+            entry.get_password(),
+            Err(keyring::Error::PlatformFailure(_))
+        )
+    })
 }
 fn file_credentials_enabled() -> bool {
     std::env::var("BIOROUTER_DISABLE_KEYRING").as_deref() == Ok("true")
@@ -1355,7 +1508,7 @@ impl CrewManager {
     }
     fn credential_entry(&self, id: &str) -> Result<keyring::Entry> {
         keyring::Entry::new(
-            "org.biorouter.crew",
+            CREDENTIAL_SERVICE,
             &format!(
                 "{}:{id}",
                 hex(&Sha256::digest(self.root.to_string_lossy().as_bytes()))
@@ -1368,6 +1521,10 @@ impl CrewManager {
             .write(id, value, || self.write_legacy_credential(id, value))
     }
     fn write_legacy_credential(&self, id: &str, value: &str) -> Result<()> {
+        #[cfg(test)]
+        if let Some(trouble) = self.test_keyring_trouble() {
+            return Err(trouble.refusal().into());
+        }
         if file_credentials_enabled() {
             let path = self.credential_path(id);
             let parent = path.parent().expect("credential parent");
@@ -1505,7 +1662,7 @@ impl CrewManager {
     }
     pub async fn credential_status(&self) -> Result<CredentialStatus> {
         let vault = self.credential_vault.clone();
-        let probe = self.credential_entry("keyring-probe");
+        let probe = self.credential_entry(KEYRING_PROBE);
         tokio::task::spawn_blocking(move || vault.status(|| keyring_answers(probe))).await?
     }
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
@@ -1518,7 +1675,7 @@ impl CrewManager {
         );
         ensure!(!file_credentials_enabled(), "Encrypted vault initialization requires a production credential profile, not the development plaintext backend");
         let registry = self.registry.lock().await;
-        ensure!(registry.connections.is_empty() && registry.scopes.is_empty() && registry.replaced.is_empty() && registry.pending_device.is_none() && registry.completed_preparations.is_empty(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
+        ensure!(registry.holds_no_identity(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
         let vault = self.credential_vault.clone();
         let result = tokio::task::spawn_blocking(move || vault.init(passphrase)).await?;
         drop(registry);
@@ -1896,7 +2053,8 @@ impl CrewManager {
             let preparation_id = uuid::Uuid::new_v4().to_string();
             let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
             let public = key.verifying_key().to_bytes();
-            self.write_credential(&format!("device:{preparation_id}"), &hex(&key.to_bytes()))?;
+            self.write_credential(&format!("device:{preparation_id}"), &hex(&key.to_bytes()))
+                .map_err(|error| first_key_failure(error, registry))?;
             let prepared = PreparedDevice {
                 preparation_id,
                 public_key: hex(&public),
@@ -2069,6 +2227,7 @@ impl CrewManager {
     }
     fn connection_device(
         &self,
+        r: &Registry,
         connection_id: &str,
         old: Option<&Connection>,
         prepared: Option<&PreparedDevice>,
@@ -2090,7 +2249,8 @@ impl CrewManager {
             let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
             let public = key.verifying_key().to_bytes();
             let device = hex(&Sha256::digest(public));
-            self.write_credential(&format!("device:{connection_id}"), &hex(&key.to_bytes()))?;
+            self.write_credential(&format!("device:{connection_id}"), &hex(&key.to_bytes()))
+                .map_err(|error| first_key_failure(error, r))?;
             (device, hex(&public))
         })
     }
@@ -2122,7 +2282,7 @@ impl CrewManager {
             })
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let (device_id, public_key) =
-            self.connection_device(&connection_id, old.as_ref(), prepared)?;
+            self.connection_device(r, &connection_id, old.as_ref(), prepared)?;
         // Workspace aliases share the most restrictive existing cluster identity automatically.
         let canonical = r
             .connections
@@ -6064,25 +6224,254 @@ mod tests {
         assert_eq!(none, json!({"results": []}));
     }
 
-    /// W2-DMN-1: a keyring with no service behind it (a headless node: "The name is not
-    /// activatable") or one that refuses access is the typed refusal that names the vault, on
-    /// every Crew key; any other keyring error keeps its own words.
+    /// W2-DMN-1: a Secret Service that nothing provides (a headless node: "The name is not
+    /// activatable"), confirmed by a probe that fails the same way, is a keyring that is not
+    /// there. One that is locked or whose prompt was dismissed is there and refused. A platform
+    /// failure the probe does not confirm, and any other keyring error, keeps its own words.
     #[test]
-    fn a_keyring_with_no_service_is_the_typed_vault_refusal() {
-        for error in [
+    fn a_secret_service_is_absent_only_when_the_probe_agrees() {
+        let dbus = || {
             keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
                 "DBus error: The name is not activatable",
-            ))),
-            keyring::Error::NoStorageAccess(Box::new(std::io::Error::other("locked"))),
-        ] {
-            let error = keyring_failure(error);
-            let refused = CrewRefusal::find(&error).expect("typed");
-            assert_eq!(refused.code(), "crew_credential_store_unavailable");
-            assert_eq!(error.to_string(), CREDENTIAL_STORE_UNAVAILABLE_TEXT);
-            assert!(!error.to_string().contains("DBus"));
+            )))
+        };
+        assert_eq!(
+            keyring_trouble(&dbus(), false, || true),
+            Some(KeyringTrouble::Absent)
+        );
+        assert_eq!(keyring_trouble(&dbus(), false, || false), None);
+        let locked = keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
+            "Secret Service: object locked",
+        )));
+        for always_present in [false, true] {
+            assert_eq!(
+                keyring_trouble(&locked, always_present, || panic!(
+                    "a refusal needs no probe"
+                )),
+                Some(KeyringTrouble::Refused)
+            );
+            assert_eq!(
+                keyring_trouble(&keyring::Error::NoEntry, always_present, || {
+                    panic!("not about the store")
+                }),
+                None
+            );
         }
+        let absent = KeyringTrouble::Absent.refusal();
+        assert_eq!(absent.code(), "crew_credential_store_unavailable");
+        assert_eq!(absent.message(), KEYRING_NOT_RUNNING_TEXT);
+        assert!(!absent.message().contains("DBus"));
         let other = keyring_failure(keyring::Error::NoEntry);
         assert!(CrewRefusal::find(&other).is_none());
+    }
+
+    /// W2-DMN-1 (review): keyring maps the macOS Keychain's errSecUserCanceled (Deny at its
+    /// prompt), errSecAuthFailed and errSecInteractionNotAllowed (no session to ask in) to
+    /// `PlatformFailure`. The Keychain is always there, so each is a refusal the person can
+    /// answer: never "no keyring service", never the vault's advice, and the Keychain is never
+    /// probed (a read could raise a prompt for nothing).
+    #[test]
+    fn a_keychain_that_refused_is_a_refusal_never_a_missing_service() {
+        for cause in [
+            "User canceled the operation.",
+            "The user name or passphrase you entered is not correct.",
+            "User interaction is not allowed.",
+        ] {
+            let error = keyring::Error::PlatformFailure(Box::new(std::io::Error::other(cause)));
+            let trouble = keyring_trouble(&error, true, || panic!("the Keychain is never probed"));
+            assert_eq!(trouble, Some(KeyringTrouble::Refused), "{cause}");
+            let refused = KeyringTrouble::Refused.refusal();
+            assert_eq!(refused.code(), "crew_credential_store_refused");
+            assert_eq!(refused.message(), CREDENTIAL_STORE_REFUSED_TEXT);
+            for words in ["no keyring service", "credentials init", "isn't answering"] {
+                assert!(!refused.message().contains(words), "{words}");
+            }
+            // Where this test runs on such a platform, the whole path says the same.
+            if PLATFORM_STORE_ALWAYS_PRESENT {
+                let error = keyring_failure(keyring::Error::PlatformFailure(Box::new(
+                    std::io::Error::other(cause),
+                )));
+                let found = CrewRefusal::find(&error).expect("typed");
+                assert_eq!(found.code(), "crew_credential_store_refused");
+                assert_eq!(error.to_string(), CREDENTIAL_STORE_REFUSED_TEXT);
+            }
+        }
+    }
+
+    /// W2-DMN-1 (review): `biorouter crew credentials init` refuses a profile that holds any
+    /// identity, so only a profile that holds none is pointed at it. A profile with a
+    /// connection, a grant, a prepared device or a finished preparation is told to bring its
+    /// keyring back, and a refusal stays a refusal.
+    #[test]
+    fn the_vault_is_offered_only_to_a_profile_that_holds_no_identity() {
+        let absent = || {
+            anyhow::Error::new(KeyringTrouble::Absent.refusal())
+                .context("Couldn't save this connection's device key")
+        };
+        let refused = || anyhow::Error::new(KeyringTrouble::Refused.refusal());
+        let message = |error: &anyhow::Error| {
+            let found = CrewRefusal::find(error).expect("typed");
+            (found.code(), found.message().to_owned())
+        };
+
+        let fresh = Registry::default();
+        assert!(fresh.holds_no_identity());
+        assert_eq!(
+            message(&first_key_failure(absent(), &fresh)),
+            (
+                "crew_credential_store_unavailable",
+                CREDENTIAL_STORE_UNAVAILABLE_TEXT.to_owned()
+            )
+        );
+        assert_eq!(
+            message(&first_key_failure(refused(), &fresh)),
+            (
+                "crew_credential_store_refused",
+                format!("{CREDENTIAL_STORE_REFUSED_TEXT} {VAULT_INSTEAD_TEXT}")
+            )
+        );
+        let other = first_key_failure(anyhow::anyhow!("disk full"), &fresh);
+        assert_eq!(other.to_string(), "disk full");
+
+        let (connection, scope) =
+            worker_race_connection("keyring-held", ClusterMode::Public, 1, true);
+        let prepared = PreparedDevice {
+            preparation_id: "prepared".into(),
+            public_key: "11".repeat(32),
+            device_id: "22".repeat(32),
+        };
+        let held = [
+            Registry {
+                connections: vec![connection],
+                ..Default::default()
+            },
+            Registry {
+                scopes: HashMap::from([("chat".to_owned(), scope)]),
+                ..Default::default()
+            },
+            Registry {
+                pending_device: Some(prepared),
+                ..Default::default()
+            },
+            Registry {
+                completed_preparations: HashMap::from([("done".to_owned(), "saved".to_owned())]),
+                ..Default::default()
+            },
+        ];
+        for registry in &held {
+            assert!(!registry.holds_no_identity());
+            let kept = first_key_failure(absent(), registry);
+            assert_eq!(
+                message(&kept),
+                (
+                    "crew_credential_store_unavailable",
+                    KEYRING_NOT_RUNNING_TEXT.to_owned()
+                )
+            );
+            assert!(
+                !format!("{kept:#}").contains("credentials init"),
+                "{kept:#}"
+            );
+            assert_eq!(
+                message(&first_key_failure(refused(), registry)),
+                (
+                    "crew_credential_store_refused",
+                    CREDENTIAL_STORE_REFUSED_TEXT.to_owned()
+                )
+            );
+        }
+    }
+
+    /// W2-DMN-1 (review): end to end, the first key a fresh profile saves (a prepared device, a
+    /// new connection) is refused with the vault's advice when no keyring answers; once the
+    /// profile holds a connection, the same failure says to bring the keyring back, since
+    /// `credentials init` would now refuse, and a keyring that refused says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_a_profile_with_no_identity_is_told_to_set_up_the_vault() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("keyring-first-key");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let input = |workspace: &str, target: &str| SaveConnection {
+            preparation_id: None,
+            name: format!("saved {target}"),
+            ssh_target: target.into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-keyring.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "44".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Public,
+            institution_id: None,
+        };
+        let said = |error: anyhow::Error| {
+            let found = CrewRefusal::find(&error).expect("typed");
+            (found.code(), found.message().to_owned())
+        };
+        let vault = (
+            "crew_credential_store_unavailable",
+            CREDENTIAL_STORE_UNAVAILABLE_TEXT.to_owned(),
+        );
+        manager.set_test_keyring_trouble(Some(KeyringTrouble::Absent));
+        assert_eq!(said(manager.prepare_device().await.unwrap_err()), vault);
+        assert_eq!(
+            said(
+                manager
+                    .save(input(
+                        "11111111-1111-4111-8111-111111111111",
+                        "bob@a.example.org"
+                    ))
+                    .await
+                    .unwrap_err()
+            ),
+            vault
+        );
+        assert!(manager.registry.lock().await.holds_no_identity());
+
+        manager.set_test_keyring_trouble(None);
+        manager
+            .save(input(
+                "22222222-2222-4222-8222-222222222222",
+                "bob@b.example.org",
+            ))
+            .await
+            .unwrap();
+        manager.set_test_keyring_trouble(Some(KeyringTrouble::Absent));
+        let restart = (
+            "crew_credential_store_unavailable",
+            KEYRING_NOT_RUNNING_TEXT.to_owned(),
+        );
+        assert_eq!(said(manager.prepare_device().await.unwrap_err()), restart);
+        assert_eq!(
+            said(
+                manager
+                    .save(input(
+                        "33333333-3333-4333-8333-333333333333",
+                        "bob@c.example.org"
+                    ))
+                    .await
+                    .unwrap_err()
+            ),
+            restart
+        );
+        manager.set_test_keyring_trouble(Some(KeyringTrouble::Refused));
+        assert_eq!(
+            said(manager.prepare_device().await.unwrap_err()),
+            (
+                "crew_credential_store_refused",
+                CREDENTIAL_STORE_REFUSED_TEXT.to_owned()
+            )
+        );
+        manager.set_test_keyring_trouble(None);
+        let _ = fs::remove_dir_all(root);
     }
 
     /// W2-DMN-4: a `BatchMode yes` in the person's ssh configuration must not suppress the
