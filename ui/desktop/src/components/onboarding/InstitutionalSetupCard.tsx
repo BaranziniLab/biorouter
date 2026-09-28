@@ -106,10 +106,12 @@ export default function InstitutionalSetupCard({
           VERSA_BEDROCK_ACCESS_KEY_ID: bedrockAccessKey.trim(),
           VERSA_BEDROCK_SECRET_ACCESS_KEY: bedrockSecretKey.trim(),
         });
-        await upsert('VERSA_BEDROCK_ACCESS_KEY_ID', bedrockAccessKey.trim(), true);
-        await upsert('VERSA_BEDROCK_SECRET_ACCESS_KEY', bedrockSecretKey.trim(), true);
+        // Settings before credentials: a daemon that cannot prove a person
+        // refuses to move the endpoint, and a refusal then saves no key.
         await upsert('VERSA_BEDROCK_ENDPOINT', bedrockEndpoint.trim(), false);
         await upsert('VERSA_BEDROCK_REGION', bedrockRegion.trim(), false);
+        await upsert('VERSA_BEDROCK_ACCESS_KEY_ID', bedrockAccessKey.trim(), true);
+        await upsert('VERSA_BEDROCK_SECRET_ACCESS_KEY', bedrockSecretKey.trim(), true);
         await checkProvider({ body: { provider: 'versa_bedrock' }, throwOnError: true });
         await upsert('BIOROUTER_PROVIDER', 'versa_bedrock', false);
         onSuccess('versa_bedrock');
@@ -117,9 +119,9 @@ export default function InstitutionalSetupCard({
         await checkCandidateCredentials('versa_azure', {
           VERSA_AZURE_API_KEY: azureApiKey.trim(),
         });
-        await upsert('VERSA_AZURE_API_KEY', azureApiKey.trim(), true);
         await upsert('VERSA_AZURE_ENDPOINT', azureEndpoint.trim(), false);
         await upsert('VERSA_AZURE_API_VERSION', azureApiVersion.trim(), false);
+        await upsert('VERSA_AZURE_API_KEY', azureApiKey.trim(), true);
         await checkProvider({ body: { provider: 'versa_azure' }, throwOnError: true });
         await upsert('BIOROUTER_PROVIDER', 'versa_azure', false);
         onSuccess('versa_azure');

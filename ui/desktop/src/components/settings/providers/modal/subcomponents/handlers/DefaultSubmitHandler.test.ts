@@ -244,6 +244,31 @@ describe('providerConfigSubmitHandler checks a credential before saving it', () 
     expect(check.mock.calls[0][0].body).toEqual({ provider: 'databricks' });
   });
 
+  it('writes every setting before any credential', async () => {
+    await providerConfigSubmitHandler(upsert, anthropic, {
+      ANTHROPIC_API_KEY: 'sk-ant-new',
+      ANTHROPIC_HOST: 'https://gateway.example',
+    });
+    const order = (key: string) =>
+      upsert.mock.invocationCallOrder[upsert.mock.calls.findIndex((call) => call[0] === key)];
+    expect(order('ANTHROPIC_HOST')).toBeLessThan(order('ANTHROPIC_API_KEY'));
+  });
+
+  it('saves no key when the daemon refuses the host beside it', async () => {
+    // What a daemon that cannot prove a person answers for a moved host.
+    const refusal = "'ANTHROPIC_HOST' decides where a provider sends its requests";
+    upsert.mockImplementation(async (key) => {
+      if (key === 'ANTHROPIC_HOST') throw refusal;
+    });
+    await expect(
+      providerConfigSubmitHandler(upsert, anthropic, {
+        ANTHROPIC_API_KEY: 'sk-ant-new',
+        ANTHROPIC_HOST: 'https://gateway.example',
+      })
+    ).rejects.toBe(refusal);
+    expect(upsert).not.toHaveBeenCalledWith('ANTHROPIC_API_KEY', 'sk-ant-new', true);
+  });
+
   it('checks a new host against the saved key before saving it', async () => {
     await providerConfigSubmitHandler(upsert, anthropic, {
       ANTHROPIC_HOST: 'https://gateway.example',

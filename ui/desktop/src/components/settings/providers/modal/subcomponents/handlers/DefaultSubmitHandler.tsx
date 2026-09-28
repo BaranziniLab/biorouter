@@ -105,8 +105,8 @@ export const providerConfigSubmitHandler = async (
   // W2-PRV-2: checked BEFORE anything is saved, whenever the provider holds a
   // credential: a save that carries a new key, and (in the app) one that moves a
   // host or endpoint the saved key will be sent to. A browser served by
-  // `biorouter serve` cannot prove a person, so there the daemon refuses a
-  // candidate that moves a saved key, and only a save carrying the key is
+  // `biorouter serve` cannot prove a person, so there the daemon checks only
+  // with a key typed into the form, and only a save carrying the key is
   // checked. A provider with no credential is saved and built as before.
   const carriesKey = writes.some(({ parameter }) => parameter.secret === true);
   const holdsKey = parameters.some((parameter) => parameter.secret === true);
@@ -117,11 +117,19 @@ export const providerConfigSubmitHandler = async (
     );
   }
 
-  await Promise.all(
-    writes.map(({ parameter, value }) =>
-      upsertFn(parameter.name, coerceConfigKeyValue(parameter, value), parameter.secret === true)
-    )
-  );
+  // Settings before credentials. Where no person can be proven (`biorouter
+  // serve`), the daemon refuses to move a host or endpoint, since the saved key
+  // goes wherever it points; writing the key first would leave a new key saved
+  // beside the old host. A refused setting stops the save before any
+  // credential is written.
+  const save = (batch: typeof writes) =>
+    Promise.all(
+      batch.map(({ parameter, value }) =>
+        upsertFn(parameter.name, coerceConfigKeyValue(parameter, value), parameter.secret === true)
+      )
+    );
+  await save(writes.filter(({ parameter }) => parameter.secret !== true));
+  await save(writes.filter(({ parameter }) => parameter.secret === true));
   await checkProvider({
     body: { provider: provider.name },
     throwOnError: true,

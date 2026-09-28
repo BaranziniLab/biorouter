@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
 import ProviderCatalog, { defaultCatalogTab, tabFromHint } from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   checkProvider: vi.fn(),
   read: vi.fn(),
   getCustomProvider: vi.fn(),
+  updateCustomProvider: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -24,6 +25,7 @@ vi.mock('../../../api', async (importOriginal) => ({
   // The configure form's submit handler validates the saved keys through it.
   checkProvider: mocks.checkProvider,
   getCustomProvider: mocks.getCustomProvider,
+  updateCustomProvider: mocks.updateCustomProvider,
 }));
 // The configure modal asks which provider is bound before offering "Remove".
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -778,5 +780,63 @@ describe('a declarative provider nobody has set up', () => {
     expect(within(dialog).queryByText(/Provider$/)).toBeNull();
     expect(within(dialog).getByRole('button', { name: 'Save' })).toBeInTheDocument();
     expect(within(dialog).queryByPlaceholderText(/keep existing key/)).toBeNull();
+  });
+});
+
+/**
+ * Review of W2-PRV-2, round 3. The daemon refuses an update that moves a custom
+ * provider's URL while keeping its saved key unless the request proves a person
+ * made it, so the catalog's update carries that proof.
+ */
+describe('updating a custom provider', () => {
+  // The editable form's streaming switch measures itself, which jsdom cannot.
+  beforeAll(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+  });
+  afterAll(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the proof that the user made the change', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: true,
+        config: {
+          engine: 'openai',
+          display_name: 'Lab gateway',
+          base_url: 'https://lab.example/v1',
+          models: [{ name: 'lab-model' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    mocks.updateCustomProvider.mockResolvedValue({ data: 'ok' });
+    const lab = {
+      ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update Provider' }));
+    await waitFor(() => expect(mocks.updateCustomProvider).toHaveBeenCalledTimes(1));
+    expect(mocks.updateCustomProvider.mock.calls[0][0]).toMatchObject({
+      path: { id: 'custom_lab' },
+      headers: { 'X-User-Action': 'test-key' },
+    });
   });
 });

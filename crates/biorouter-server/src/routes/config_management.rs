@@ -285,7 +285,9 @@ pub struct DetectableProvidersResponse {
                                       decides what privacy capability new chats start at, so \
                                       writing it requires proof the request came from the user. \
                                       Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is \
-                                      user-only in every mode"),
+                                      user-only in every mode. Also a key that decides where a \
+                                      provider sends its requests and credentials (a host, an \
+                                      endpoint), when the write would change what it resolves to"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -352,6 +354,12 @@ pub async fn upsert_config(
             }
             .to_string(),
         ));
+    }
+    let write = DestinationChange::Write(&query.value);
+    if let Some(refusal) =
+        destination_change_refusal(Config::global(), &query.key, write, &headers).await
+    {
+        return Err(refusal);
     }
 
     let config = Config::global();
@@ -467,6 +475,123 @@ pub async fn upsert_config(
             format!("Failed to upsert key {}", query.key),
         )),
     }
+}
+
+/// What an HTTP config route is about to do to a key.
+#[derive(Clone, Copy)]
+enum DestinationChange<'a> {
+    Write(&'a Value),
+    Remove { is_secret: bool },
+}
+
+/// Why `/config/upsert` or `/config/remove` refuses to change `key`, or `None`
+/// when it may go ahead.
+///
+/// A key in [`biorouter::providers::destination_keys`] decides where a provider
+/// sends its requests, and with them its saved key or this computer's own
+/// sign-in. A chat on that provider, `GET /config/providers/{name}/models` and
+/// a live `/config/check_provider` all send the credential wherever the key
+/// points, so a caller holding only the daemon secret (which a public chat's
+/// shell can recover) that could move it would decide who receives the key.
+/// Changing one therefore takes the proof of a person, as the capability keys
+/// do (DR-16). Unlike them it does not wait on the privacy master switch: it
+/// protects a credential in every tier, as the secret guard does.
+///
+/// A daemon that holds no user-action key (`biorouter serve`, or the desktop's
+/// fault state) can prove no one, so there the key is changed on the computer
+/// itself. A change that leaves the key resolving to what it resolves to now is
+/// not refused: a settings form re-saves an untouched host beside a new key,
+/// and that moves nothing.
+///
+/// ⚠ This closes the HTTP door only. `config.yaml` itself is still writable by
+/// the agent's shell (DR-14's filesystem deny is deferred), and every sender
+/// above follows the file.
+async fn destination_change_refusal(
+    config: &Config,
+    key: &str,
+    change: DestinationChange<'_>,
+    headers: &http::HeaderMap,
+) -> Option<(StatusCode, String)> {
+    if !biorouter::providers::is_destination_key(key) || is_user_action(headers) {
+        return None;
+    }
+    let defaults = declared_defaults(key).await;
+    (!leaves_destination_unchanged(config, key, change, &defaults)).then(|| {
+        (
+            StatusCode::CONFLICT,
+            format!(
+                "'{key}' decides where a provider sends its requests and the key or sign-in \
+                 they carry, so changing it is the user's decision, and this request carried no \
+                 proof it came from them. Nothing was changed. Change it in the provider's \
+                 settings in the Biorouter app, or with `biorouter configure` on the computer \
+                 running Biorouter."
+            ),
+        )
+    })
+}
+
+/// Every default a registered provider declares for `key` (`None` for one that
+/// declares the key with no default). `AWS_REGION` has two, and they differ.
+async fn declared_defaults(key: &str) -> Vec<Option<String>> {
+    get_providers()
+        .await
+        .into_iter()
+        .flat_map(|(metadata, _)| metadata.config_keys)
+        .filter(|declared| declared.name.eq_ignore_ascii_case(key))
+        .map(|declared| declared.default)
+        .collect()
+}
+
+/// Whether `change` leaves `key` resolving to what it resolves to now. Anything
+/// this cannot read counts as a move.
+///
+/// A write is unchanged when the key already resolves (environment or file) to
+/// that value, or resolves to nothing and the value is the default of every
+/// provider that declares the key. A removal is unchanged when there is nothing
+/// stored where it removes from, or what is stored there is that default.
+fn leaves_destination_unchanged(
+    config: &Config,
+    key: &str,
+    change: DestinationChange<'_>,
+    defaults: &[Option<String>],
+) -> bool {
+    let is_every_default = |value: &Value| {
+        !defaults.is_empty()
+            && defaults
+                .iter()
+                .all(|default| default.as_deref() == Some(setting_text(value).as_str()))
+    };
+    let stored = match change {
+        DestinationChange::Write(value) => {
+            return match config.get_param::<Value>(key) {
+                Ok(current) => setting_text(&current) == setting_text(value),
+                Err(ConfigError::NotFound(_)) => is_every_default(value),
+                Err(_) => false,
+            };
+        }
+        DestinationChange::Remove { is_secret: true } => config.get_secret::<Value>(key),
+        DestinationChange::Remove { is_secret: false } => match config.all_values() {
+            Ok(values) => values
+                .get(key)
+                .cloned()
+                .ok_or_else(|| ConfigError::NotFound(key.to_string())),
+            Err(error) => Err(error),
+        },
+    };
+    match stored {
+        Ok(value) => is_every_default(&value),
+        Err(ConfigError::NotFound(_)) => true,
+        Err(_) => false,
+    }
+}
+
+/// A setting's value as text, so `11543` and `"11543"` compare equal: the
+/// settings form writes a numeric-default key as a number, and an older save
+/// left it quoted.
+fn setting_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
 }
 
 /// Why a value cannot be stored under `key`, for the few keys whose shape the
@@ -636,7 +761,9 @@ fn master_switch_refusal(key: &str) -> String {
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, and a \
                                       delete restores its default, so it requires proof the \
-                                      request came from the user"),
+                                      request came from the user. Also a key that decides where \
+                                      a provider sends its requests and credentials, when \
+                                      something other than its default is stored"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -710,6 +837,16 @@ pub async fn remove_config(
             }
             .to_string(),
         ));
+    }
+    // A delete moves a host too: it hands the key back to its default, or to
+    // whatever the environment holds. See `destination_change_refusal`.
+    let removal = DestinationChange::Remove {
+        is_secret: query.is_secret,
+    };
+    if let Some(refusal) =
+        destination_change_refusal(Config::global(), &query.key, removal, &headers).await
+    {
+        return Err(refusal);
     }
 
     let config = Config::global();
@@ -1215,6 +1352,17 @@ async fn provider_details(
 pub async fn get_provider_models(
     Path(name): Path<String>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
+    // ⚠ For a provider with a live listing this sends its saved key (or this
+    // computer's own sign-in) to the host its settings name, and it asks for no
+    // proof of a person: the model pickers read it on every daemon, `serve`'s
+    // browser included, which can prove no one. That is safe only because where
+    // the key goes is not the caller's to choose here. The route takes no
+    // candidate, and changing a host or endpoint over HTTP takes the proof
+    // (`destination_change_refusal`), so the key goes where every chat on that
+    // provider already sends it. Adding a parameter that names a host reopens
+    // that. ⚠ `config.yaml` itself is still writable by the agent's shell
+    // (DR-14's filesystem deny is deferred); a host written there is followed
+    // here exactly as it is by every chat, and this route adds no reach to it.
     let loaded_provider =
         biorouter::config::declarative_providers::load_provider(name.as_str()).ok();
     // TODO(Douwe): support a get models url for custom providers
@@ -1777,13 +1925,24 @@ pub async fn remove_custom_provider(Path(id): Path<String>) -> Result<Json<Strin
     responses(
         (status = 200, description = "Custom provider updated successfully", body = String),
         (status = 404, description = "Provider not found"),
+        (status = 409, description = "Refused: the update moves the provider to a new URL while \
+                                      keeping its saved key or headers, and the request carried \
+                                      no proof it came from the user"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn update_custom_provider(
     Path(id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
     Json(request): Json<UpdateCustomProviderRequest>,
-) -> Result<Json<String>, StatusCode> {
+) -> Result<Json<String>, (StatusCode, String)> {
+    if !is_user_action(&headers) {
+        let saved = biorouter::config::declarative_providers::load_provider(&id).ok();
+        if let Some(refusal) = custom_provider_move_refusal(saved.as_ref(), &request) {
+            return Err(refusal);
+        }
+    }
     biorouter::config::declarative_providers::update_custom_provider(
         &id,
         &request.engine,
@@ -1793,13 +1952,59 @@ pub async fn update_custom_provider(
         request.models,
         request.supports_streaming,
     )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to update custom provider {id}"),
+        )
+    })?;
 
     if let Err(e) = biorouter::providers::refresh_custom_providers().await {
         tracing::warn!("Failed to refresh custom providers after update: {}", e);
     }
 
     Ok(Json(format!("Updated custom provider: {}", id)))
+}
+
+/// Why an update from a caller that could not prove a person is refused, or
+/// `None`. The update keeps the provider's saved key when `api_key` is empty,
+/// and always keeps its saved headers, which can carry a token too. So moving
+/// its URL would send those to the new one: that needs the proof, or the key
+/// typed in again with no saved headers to go along. `saved` is `None` when the
+/// provider cannot be loaded, which the update itself then reports.
+fn custom_provider_move_refusal(
+    saved: Option<&LoadedProvider>,
+    request: &UpdateCustomProviderRequest,
+) -> Option<(StatusCode, String)> {
+    let saved = saved?;
+    // A provider that is not editable keeps its URL whatever the request says.
+    if !saved.is_editable || saved.config.base_url == request.api_url {
+        return None;
+    }
+    let keeps_headers = saved
+        .config
+        .headers
+        .as_ref()
+        .is_some_and(|headers| !headers.is_empty());
+    // `is_empty`, not a trimmed test: it is the condition the update stores a
+    // new key under, so a key of spaces replaces the saved one.
+    if !request.api_key.is_empty() && !keeps_headers {
+        return None;
+    }
+    let what = if request.api_key.is_empty() {
+        "its saved key"
+    } else {
+        "its saved headers"
+    };
+    Some((
+        StatusCode::CONFLICT,
+        format!(
+            "Moving {} to a new URL would send {what} there. That is the user's decision, and \
+             this request carried no proof it came from them. Nothing was changed. Change it in \
+             the provider's settings in the Biorouter app.",
+            saved.config.display_name
+        ),
+    ))
 }
 
 #[utoipa::path(
@@ -1814,8 +2019,9 @@ pub async fn update_custom_provider(
                                       provider does not declare"),
         (status = 403, description = "`live` or `candidate` from a caller that could not prove a \
                                       person asked, on a daemon that holds a user-action key; or, \
-                                      on one that holds none, a candidate that names a setting \
-                                      without typing the key it would be checked with"),
+                                      on one that holds none, a live check or a candidate that \
+                                      names a setting, without typing the key it would be \
+                                      checked with"),
         (status = 422, description = "With `live` set: the provider rejected the credentials. \
                                       The body is its message"),
     )
@@ -1830,12 +2036,20 @@ pub async fn check_provider(
     }): Json<CheckProviderRequest>,
 ) -> Result<(), (StatusCode, String)> {
     // A live check sends a credential to the provider's host, and a candidate
-    // can name the host. Together they would let a caller holding only the
-    // daemon secret (which a public chat's shell can recover) send a SAVED key
-    // to a host of its choosing, so both need the same proof of a person the
-    // other credential writes do. A daemon holding no user-action key (`serve`)
-    // cannot check one, so there a candidate that names a setting is checked
-    // only with credentials the caller typed (`unproven_candidate_scope`).
+    // can name the host. So both need the proof of a person the other
+    // credential writes need, on a daemon that holds a user-action key. A daemon
+    // holding none (`serve`, or the desktop's fault state) cannot check one, and
+    // there the check is not a sender of saved credentials at all: a live check,
+    // or a candidate that names a setting, runs only with credentials the caller
+    // typed, and every secret it left out is checked as empty
+    // (`unproven_check_scope`).
+    //
+    // ⚠ This fences one door, not the only one. Where a provider sends its
+    // saved key is decided by its host and endpoint settings, and a chat, a
+    // model listing and this check all send it there. Over HTTP those settings
+    // take the same proof (`destination_change_refusal` on `/config/upsert` and
+    // `/config/remove`); written straight into `config.yaml` by a shell they do
+    // not (DR-14's filesystem deny is deferred), and then every sender follows.
     let proof = biorouter_server::auth::user_action_proof(&headers);
     if let Some(refusal) = credential_check_refusal(live, candidate.is_some(), &proof) {
         return Err(refusal);
@@ -1845,16 +2059,14 @@ pub async fn check_provider(
         .into_iter()
         .map(|(metadata, _)| metadata)
         .find(|metadata| metadata.name == provider);
-    let overrides = match candidate {
-        Some(values) => check_overrides(
-            metadata.as_ref(),
-            &provider,
-            values,
-            &proof,
-            secret_resolves_outside_the_candidate,
-        )?,
-        None => HashMap::new(),
-    };
+    let overrides = check_overrides(
+        metadata.as_ref(),
+        &provider,
+        candidate,
+        live,
+        &proof,
+        secret_resolves_outside_the_candidate,
+    )?;
     let has_secret = metadata
         .as_ref()
         .is_some_and(|metadata| metadata.config_keys.iter().any(|key| key.secret));
@@ -1898,21 +2110,24 @@ fn credential_check_refusal(
         })
 }
 
-/// The task-local overrides a check of `values` runs under, or the refusal: the
-/// candidate as [`candidate_overrides`] reads it and, from a caller that could
-/// not prove a person, narrowed by [`unproven_candidate_scope`], with every
-/// secret it left out set to an empty value so none of them is read from the
-/// store under a setting the caller named.
+/// The task-local overrides a check runs under, or the refusal: the candidate
+/// as [`candidate_overrides`] reads it and, from a caller that could not prove a
+/// person, narrowed by [`unproven_check_scope`], with every secret it left out
+/// set to an empty value so none of them is read from the store.
 fn check_overrides(
     metadata: Option<&ProviderMetadata>,
     provider: &str,
-    values: HashMap<String, String>,
+    candidate: Option<HashMap<String, String>>,
+    live: bool,
     proof: &biorouter_server::auth::UserActionProof,
     secret_resolves: impl Fn(&str) -> bool,
 ) -> Result<HashMap<String, String>, (StatusCode, String)> {
-    let mut overrides = candidate_overrides(metadata, provider, values)?;
+    let mut overrides = match candidate {
+        Some(values) => candidate_overrides(metadata, provider, values)?,
+        None => HashMap::new(),
+    };
     if !matches!(proof, biorouter_server::auth::UserActionProof::Proven) {
-        for key in unproven_candidate_scope(metadata, &overrides, secret_resolves)? {
+        for key in unproven_check_scope(metadata, &overrides, live, secret_resolves)? {
             overrides.insert(key, EMPTY_SECRET_OVERRIDE.to_string());
         }
     }
@@ -1922,14 +2137,17 @@ fn check_overrides(
 /// An empty secret, in the JSON string form every secret override takes.
 const EMPTY_SECRET_OVERRIDE: &str = "\"\"";
 
-/// On a daemon that cannot prove a person (no user-action key), a candidate
-/// that names a non-secret setting (a host, an endpoint, a region) is checked
-/// only with credentials the caller typed. Otherwise a caller holding only the
-/// daemon secret could point a provider's host at itself and have the daemon
-/// send it the provider's saved key, or this computer's own sign-in (Azure's
-/// Entra login, Databricks' browser login, Google or AWS credentials), which
-/// neither `/config/upsert` nor a chat reaches for a provider the session is
-/// not bound to.
+/// On a daemon that cannot prove a person (no user-action key), a check that
+/// would sign in with something is run only with credentials the caller typed.
+/// That is every live check of a provider that declares a secret, since the
+/// live call is authenticated, and every check whose candidate names a
+/// non-secret setting (a host, an endpoint, a region), since building the
+/// provider there can already reach for a sign-in.
+///
+/// It keeps this route from sending anything the caller did not type: a saved
+/// key, or this computer's own sign-in (Azure's Entra login, Databricks'
+/// browser login, Google or AWS credentials). It does not decide where a saved
+/// key goes on every other path; see [`check_provider`].
 ///
 /// So it is refused when a required secret the caller left out has a value in
 /// the environment or the store (`secret_resolves`), since that value is what
@@ -1937,32 +2155,37 @@ const EMPTY_SECRET_OVERRIDE: &str = "\"\"";
 /// Otherwise it returns the declared secrets the caller left out, which the
 /// check runs with as empty values. An optional one the caller did not type and
 /// that nothing holds is not asked for: it has nothing to send.
-fn unproven_candidate_scope(
+fn unproven_check_scope(
     metadata: Option<&ProviderMetadata>,
     overrides: &HashMap<String, String>,
+    live: bool,
     secret_resolves: impl Fn(&str) -> bool,
 ) -> Result<Vec<String>, (StatusCode, String)> {
     let Some(metadata) = metadata else {
         return Ok(Vec::new());
     };
-    let names_a_setting = metadata
-        .config_keys
-        .iter()
-        .any(|key| !key.secret && overrides.contains_key(&key.name.to_uppercase()));
-    if !names_a_setting {
-        return Ok(Vec::new());
-    }
     let secrets: Vec<&ConfigKey> = metadata
         .config_keys
         .iter()
         .filter(|key| key.secret)
         .collect();
+    let names_a_setting = metadata
+        .config_keys
+        .iter()
+        .any(|key| !key.secret && overrides.contains_key(&key.name.to_uppercase()));
+    // `check_provider` makes its authenticated call only for a provider that
+    // declares a secret; for any other, `live` builds and sends nothing.
+    let signs_in = live && !secrets.is_empty();
+    if !names_a_setting && !signs_in {
+        return Ok(Vec::new());
+    }
     let left_out: Vec<&ConfigKey> = secrets
         .iter()
         .copied()
         .filter(|key| !overrides.contains_key(&key.name.to_uppercase()))
         .collect();
     let refused = |sentence: String| Err((StatusCode::FORBIDDEN, sentence));
+    let display_name = &metadata.display_name;
 
     let saved: Vec<&str> = left_out
         .iter()
@@ -1970,14 +2193,23 @@ fn unproven_candidate_scope(
         .map(|key| key.name.as_str())
         .collect();
     if !saved.is_empty() {
-        return refused(format!(
-            "Checking a new {} setting would send the saved {} to it. That is the user's \
-             decision, and this daemon cannot confirm the request came from one, so type {} in \
-             with the setting.",
-            metadata.display_name,
+        let (keys, them) = (
             name_list(&saved, "and"),
             if saved.len() == 1 { "it" } else { "them" },
-        ));
+        );
+        return refused(if names_a_setting {
+            format!(
+                "Checking a new {display_name} setting would send the saved {keys} to it. \
+                 That is the user's decision, and this daemon cannot confirm the request came \
+                 from one, so type {them} in with the setting."
+            )
+        } else {
+            format!(
+                "Checking {display_name} live would send the saved {keys} to it. That is the \
+                 user's decision, and this daemon cannot confirm the request came from one, so \
+                 type {them} in to check {them}."
+            )
+        });
     }
 
     let typed_a_secret = secrets.iter().any(|key| {
@@ -1988,9 +2220,8 @@ fn unproven_candidate_scope(
     if !typed_a_secret {
         if secrets.is_empty() {
             return refused(format!(
-                "Checking a new {} setting is the user's decision, and this daemon cannot \
-                 confirm the request came from one.",
-                metadata.display_name
+                "Checking a new {display_name} setting is the user's decision, and this daemon \
+                 cannot confirm the request came from one."
             ));
         }
         // Name the key the provider signs in with: its required secrets, or,
@@ -2006,11 +2237,15 @@ fn unproven_candidate_scope(
         } else {
             name_list(&required, "and")
         };
+        let what = if names_a_setting {
+            format!("a new {display_name} setting from here needs {wanted} typed in with it")
+        } else {
+            format!("{display_name} live from here needs {wanted} typed in")
+        };
         return refused(format!(
-            "Checking a new {} setting from here needs {wanted} typed in with it. Without that \
-             the check would sign in with a saved key or with this computer's own sign-in, which \
-             is the user's decision, and this daemon cannot confirm the request came from one.",
-            metadata.display_name,
+            "Checking {what}. Without that the check would sign in with a saved key or with \
+             this computer's own sign-in, which is the user's decision, and this daemon cannot \
+             confirm the request came from one."
         ));
     }
 
@@ -2431,13 +2666,17 @@ mod tests {
                      saved: &[&str]|
          -> Result<HashMap<String, String>, (StatusCode, String)> {
             let saved: Vec<String> = saved.iter().map(|key| key.to_string()).collect();
+            // Live, as the settings form always asks.
             check_overrides(
                 Some(metadata),
                 &metadata.name,
-                values
-                    .iter()
-                    .map(|(key, value)| (key.to_string(), value.to_string()))
-                    .collect(),
+                Some(
+                    values
+                        .iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect(),
+                ),
+                true,
                 &proof,
                 |key| saved.iter().any(|saved| saved == key),
             )
@@ -2499,13 +2738,28 @@ mod tests {
             "{sentence}"
         );
 
-        // A key alone moves nothing: the saved host is the one it goes to, and
-        // nothing is blanked.
+        // A key alone moves nothing, but a live check still sends only what was
+        // typed: the saved headers are checked empty.
         let overrides = check(
             &openai,
             &[("OPENAI_API_KEY", "sk-typed")],
             NoKeyInstalled,
             &["OPENAI_CUSTOM_HEADERS"],
+        )
+        .unwrap();
+        assert_eq!(overrides["OPENAI_CUSTOM_HEADERS"], EMPTY_SECRET_OVERRIDE);
+        // Built without the live call, it signs in with nothing, so nothing is
+        // blanked.
+        let overrides = check_overrides(
+            Some(&openai),
+            "openai",
+            Some(HashMap::from([(
+                "OPENAI_API_KEY".to_string(),
+                "sk-typed".to_string(),
+            )])),
+            false,
+            &NoKeyInstalled,
+            |key| key == "OPENAI_CUSTOM_HEADERS",
         )
         .unwrap();
         assert!(!overrides.contains_key("OPENAI_CUSTOM_HEADERS"));
@@ -2574,6 +2828,291 @@ mod tests {
         );
     }
 
+    /// Review of W2-PRV-2, round 3. Where no person can be proven, EVERY live
+    /// check is run only with what the caller typed, not only one whose
+    /// candidate names a setting. Without it a live check with no candidate
+    /// sent the saved key to whatever host the configuration named.
+    #[test]
+    fn an_unproven_live_check_sends_only_what_it_typed() {
+        use biorouter::providers::base::Provider;
+        use biorouter_server::auth::UserActionProof::{NoKeyInstalled, Proven};
+        let openai = biorouter::providers::openai::OpenAiProvider::metadata();
+        let run = |metadata: &ProviderMetadata,
+                   candidate: Option<&[(&str, &str)]>,
+                   live: bool,
+                   proof,
+                   saved: &[&str]| {
+            let saved: Vec<String> = saved.iter().map(|key| key.to_string()).collect();
+            check_overrides(
+                Some(metadata),
+                &metadata.name,
+                candidate.map(|values| {
+                    values
+                        .iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect()
+                }),
+                live,
+                &proof,
+                |key| saved.iter().any(|saved| saved == key),
+            )
+        };
+
+        // No candidate, the key saved: refused, and the sentence names it.
+        let (status, sentence) = run(&openai, None, true, NoKeyInstalled, &["OPENAI_API_KEY"])
+            .expect_err("a live check does not send the saved key");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(sentence.contains("the saved OPENAI_API_KEY"), "{sentence}");
+        assert!(!sentence.contains("new OpenAI setting"), "{sentence}");
+        // No candidate and nothing saved, or a key typed empty: refused, since
+        // the check would sign in with nothing the caller typed.
+        for candidate in [None, Some(&[("OPENAI_API_KEY", "  ")][..])] {
+            let (status, sentence) = run(&openai, candidate, true, NoKeyInstalled, &[])
+                .expect_err("a live check needs a typed key");
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(
+                sentence.contains("needs OPENAI_API_KEY typed in"),
+                "{sentence}"
+            );
+        }
+        // A key typed: checked, with every secret it left out empty.
+        let overrides = run(
+            &openai,
+            Some(&[("OPENAI_API_KEY", "sk-typed")]),
+            true,
+            NoKeyInstalled,
+            &["OPENAI_CUSTOM_HEADERS"],
+        )
+        .expect("a typed key is checked");
+        assert_eq!(overrides["OPENAI_CUSTOM_HEADERS"], EMPTY_SECRET_OVERRIDE);
+
+        // A plain construction check stays open, and a person who proved it
+        // asked is checked with the saved values.
+        assert!(
+            run(&openai, None, false, NoKeyInstalled, &["OPENAI_API_KEY"])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(run(&openai, None, true, Proven, &["OPENAI_API_KEY"])
+            .unwrap()
+            .is_empty());
+
+        // Azure signs in with this computer's Entra login when no key is set,
+        // so a live check of it with no key typed is refused too.
+        let azure = biorouter::providers::azure::AzureProvider::metadata();
+        let (status, sentence) = run(&azure, None, true, NoKeyInstalled, &[])
+            .expect_err("Azure's own sign-in does not travel either");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(sentence.contains("AZURE_OPENAI_API_KEY"), "{sentence}");
+
+        // A provider that declares no secret makes no authenticated call, so a
+        // live check of its saved settings sends nothing and stays open.
+        let ollama = biorouter::providers::ollama::OllamaProvider::metadata();
+        assert!(run(&ollama, None, true, NoKeyInstalled, &[])
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Review of W2-PRV-2, round 3, the root cause. A caller holding only the
+    /// daemon secret could move a provider's host with `/config/upsert` and
+    /// then have a chat, the models route or a live check send the saved key
+    /// there. Changing a key that decides where requests go now takes the proof
+    /// of a person; re-saving what it already resolves to does not.
+    #[tokio::test]
+    async fn an_unproven_caller_cannot_move_where_a_provider_sends_its_key() {
+        for key in ["OPENAI_HOST", "VERSA_AZURE_ENDPOINT", "DATABRICKS_HOST"] {
+            assert!(
+                std::env::var(key).is_err(),
+                "{key} is set in this test's environment, which decides what it resolves to; \
+                 unset it to run this test"
+            );
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+        // No proof: an empty header map is never a proven person, whether or
+        // not another test in this binary installed a user-action key.
+        async fn gate(
+            config: &Config,
+            key: &str,
+            change: DestinationChange<'_>,
+        ) -> Option<StatusCode> {
+            destination_change_refusal(config, key, change, &HeaderMap::new())
+                .await
+                .map(|(status, _sentence)| status)
+        }
+        let refused = |key: &'static str, change| gate(&config, key, change);
+        let attacker = Value::from("https://attacker.example");
+        let default = Value::from("https://api.openai.com");
+        let gateway = Value::from("https://gateway.example");
+        let (attacker, default, gateway) = (&attacker, &default, &gateway);
+
+        // Nothing stored: moving it is refused, re-saving the default is not.
+        assert_eq!(
+            refused("OPENAI_HOST", DestinationChange::Write(attacker)).await,
+            Some(StatusCode::CONFLICT)
+        );
+        assert_eq!(
+            refused("openai_host", DestinationChange::Write(attacker)).await,
+            Some(StatusCode::CONFLICT),
+            "a lower-case spelling is a destination key too"
+        );
+        assert_eq!(
+            refused("OPENAI_HOST", DestinationChange::Write(default)).await,
+            None
+        );
+        // An endpoint no provider declares has no default to re-save.
+        assert_eq!(
+            refused("VERSA_AZURE_ENDPOINT", DestinationChange::Write(attacker)).await,
+            Some(StatusCode::CONFLICT)
+        );
+        // A value compares as text, however the form typed it: a numeric-default
+        // key arrives as a number, and an older save left it quoted.
+        assert_eq!(
+            setting_text(&Value::from(11543)),
+            setting_text(&Value::from("11543"))
+        );
+        // Ollama sends no credential; its host is a privacy capability key,
+        // governed with the privacy master switch, not by this gate.
+        assert_eq!(
+            gate(&config, "OLLAMA_HOST", DestinationChange::Write(attacker)).await,
+            None
+        );
+
+        // The user's own host: re-saving it is not a move, changing it is,
+        // and so is removing it, which hands requests back to the default.
+        config.set_param("OPENAI_HOST", gateway.clone()).unwrap();
+        assert_eq!(
+            refused("OPENAI_HOST", DestinationChange::Write(gateway)).await,
+            None
+        );
+        for change in [
+            DestinationChange::Write(attacker),
+            DestinationChange::Write(default),
+            DestinationChange::Remove { is_secret: false },
+        ] {
+            assert_eq!(
+                refused("OPENAI_HOST", change).await,
+                Some(StatusCode::CONFLICT)
+            );
+        }
+        // Stored as the default, a removal lands where it already goes.
+        config.set_param("OPENAI_HOST", default.clone()).unwrap();
+        assert_eq!(
+            refused(
+                "OPENAI_HOST",
+                DestinationChange::Remove { is_secret: false }
+            )
+            .await,
+            None
+        );
+        // Nothing stored where it removes from: nothing moves.
+        assert_eq!(
+            refused("OPENAI_HOST", DestinationChange::Remove { is_secret: true }).await,
+            None
+        );
+        // A host kept in the secret store (Databricks and Snowflake read one
+        // there) is a destination whichever store it is in.
+        config
+            .set_secret("DATABRICKS_HOST", &Value::from("https://dbc.example"))
+            .unwrap();
+        assert_eq!(
+            refused(
+                "DATABRICKS_HOST",
+                DestinationChange::Remove { is_secret: true }
+            )
+            .await,
+            Some(StatusCode::CONFLICT)
+        );
+
+        // Keys that do not decide where requests go are not this gate's.
+        assert_eq!(
+            refused("OPENAI_API_KEY", DestinationChange::Write(attacker)).await,
+            None
+        );
+        assert_eq!(
+            refused(
+                "OPENAI_TIMEOUT",
+                DestinationChange::Remove { is_secret: false }
+            )
+            .await,
+            None
+        );
+    }
+
+    /// Review of W2-PRV-2, round 3. A custom provider keeps its saved key when
+    /// an update leaves the key empty, and always keeps its saved headers, so
+    /// an unproven update that moves its URL would send them there.
+    #[test]
+    fn an_unproven_custom_provider_update_cannot_move_its_saved_key() {
+        use biorouter::config::declarative_providers::DeclarativeProviderConfig;
+        let saved = |headers: Option<HashMap<String, String>>, is_editable| LoadedProvider {
+            config: serde_json::from_value::<DeclarativeProviderConfig>(serde_json::json!({
+                "name": "custom_lab",
+                "engine": "openai",
+                "display_name": "Lab gateway",
+                "api_key_env": "CUSTOM_LAB_API_KEY",
+                "base_url": "https://lab.example/v1",
+                "models": [],
+                "headers": headers,
+            }))
+            .unwrap(),
+            is_editable,
+        };
+        let update = |api_url: &str, api_key: &str| UpdateCustomProviderRequest {
+            engine: "openai_compatible".to_string(),
+            display_name: "Lab gateway".to_string(),
+            api_url: api_url.to_string(),
+            api_key: api_key.to_string(),
+            models: Vec::new(),
+            supports_streaming: None,
+            headers: None,
+        };
+        let plain = saved(None, true);
+        let status = |saved: &LoadedProvider, request| {
+            custom_provider_move_refusal(Some(saved), &request).map(|(status, _)| status)
+        };
+
+        // Moved with the saved key kept: refused, and the sentence says so.
+        let (code, sentence) =
+            custom_provider_move_refusal(Some(&plain), &update("https://attacker.example", ""))
+                .expect("the saved key does not move with the URL");
+        assert_eq!(code, StatusCode::CONFLICT);
+        assert!(sentence.contains("its saved key"), "{sentence}");
+        // Moved with a new key typed: that key replaces the saved one.
+        assert_eq!(
+            status(&plain, update("https://new.example/v1", "sk-typed")),
+            None
+        );
+        // Not moved: renaming or re-listing models moves nothing.
+        assert_eq!(status(&plain, update("https://lab.example/v1", "")), None);
+        // Saved headers travel with every request, so a typed key is not
+        // enough to move them.
+        let with_headers = saved(
+            Some(HashMap::from([(
+                "X-Lab-Token".to_string(),
+                "t".to_string(),
+            )])),
+            true,
+        );
+        assert_eq!(
+            status(&with_headers, update("https://new.example/v1", "sk-typed")),
+            Some(StatusCode::CONFLICT)
+        );
+        // A provider that is not editable keeps its URL whatever is asked.
+        assert_eq!(
+            status(&saved(None, false), update("https://attacker.example", "")),
+            None
+        );
+        // One that cannot be loaded is reported by the update itself.
+        assert!(
+            custom_provider_move_refusal(None, &update("https://attacker.example", "")).is_none()
+        );
+    }
+
     /// Review of W2-PRV-2, round 2. The key a provider is built with under a
     /// candidate is exactly the key typed, whichever of `get_secret` and
     /// `get_secrets` it reads it through. OpenAI and LiteLLM read theirs through
@@ -2617,7 +3156,8 @@ mod tests {
             let overrides = check_overrides(
                 Some(&metadata),
                 provider,
-                values,
+                Some(values),
+                true,
                 &biorouter_server::auth::UserActionProof::NoKeyInstalled,
                 |_| false,
             )

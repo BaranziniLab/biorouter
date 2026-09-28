@@ -17,6 +17,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod coding_agent;
 pub mod databricks;
+pub mod destination_keys;
 pub mod embedding;
 pub mod errors;
 mod factory;
@@ -57,6 +58,7 @@ pub mod xai;
 pub mod xiaomi_mimo;
 pub mod zai;
 
+pub use destination_keys::is_destination_key;
 #[cfg(test)]
 pub(crate) use factory::builtin_provider_metadata;
 pub(crate) use factory::create_from_persisted;

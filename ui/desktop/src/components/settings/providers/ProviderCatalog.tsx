@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import type { View } from '../../../utils/navigationUtils';
 import type { SessionClassification } from '../../../api';
 import { useConfig } from '../../ConfigContext';
+import { userActionHeaders } from '../../../utils/userAction';
 import { Note } from '../../ui/note';
 import { Button } from '../../ui/button';
 import {
@@ -421,6 +422,9 @@ export default function ProviderCatalog({
       await updateCustomProvider({
         path: { id: editingProvider.id },
         body: data,
+        // An update that moves the provider's URL keeps its saved key, so the
+        // daemon asks for the proof that a person made it.
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const providerId = editingProvider.id;
