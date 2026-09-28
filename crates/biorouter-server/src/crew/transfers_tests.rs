@@ -167,6 +167,7 @@ async fn cleanup_selection_uses_receipt_binding_without_requiring_a_live_connect
             blob_id: Some("blob".into()),
             state: "needs_file_selection".into(),
             error: None,
+            pause_reason: None,
             binding: "receipt-binding".into(),
             intent: "intent".into(),
             local_selection: String::new(),
@@ -212,6 +213,7 @@ async fn pending_download_capability_cannot_be_consumed_by_start_or_resume_gate(
         blob_id: Some("pending-blob".into()),
         state: "needs_file_selection".into(),
         error: None,
+        pause_reason: None,
         binding: "pending-binding".into(),
         intent: "pending-intent".into(),
         local_selection: String::new(),
@@ -278,6 +280,7 @@ async fn expired_capability_cannot_be_consumed_and_does_not_receive_a_new_ttl() 
         blob_id: Some("expired-blob".into()),
         state: "needs_file_selection".into(),
         error: None,
+        pause_reason: None,
         binding: "expired-binding".into(),
         intent: "expired-intent".into(),
         local_selection: String::new(),
@@ -339,6 +342,7 @@ async fn discarding_a_pending_capability_releases_a_selection_slot() {
             blob_id: Some("blob".into()),
             state: "needs_file_selection".into(),
             error: None,
+            pause_reason: None,
             binding: "binding".into(),
             intent: "intent".into(),
             local_selection: String::new(),
@@ -432,6 +436,7 @@ async fn completed_replay_helpers_restore_original_receipt_and_target_approval()
             blob_id: Some("blob".into()),
             state: "completed".into(),
             error: None,
+            pause_reason: None,
             binding: "binding".into(),
             intent: "intent".into(),
             local_selection: local_files::selection_identity(&selection).unwrap(),
@@ -508,6 +513,7 @@ async fn launch_returns_starting_receipt_and_reserves_active_before_worker_progr
         blob_id: None,
         state: "needs_file_selection".into(),
         error: Some("stale resume error".into()),
+        pause_reason: Some("server_storage".into()),
         binding: "binding".into(),
         intent: "intent".into(),
         local_selection: String::new(),
@@ -520,6 +526,10 @@ async fn launch_returns_starting_receipt_and_reserves_active_before_worker_progr
     let accepted = service.launch(&mut state, receipt, selection).unwrap();
     assert_eq!(accepted.state, "starting");
     assert!(accepted.error.is_none());
+    assert!(
+        accepted.pause_reason.is_none(),
+        "a resumed transfer is not paused"
+    );
     assert!(state.active.contains_key(id));
     assert_eq!(state.receipts[id].state, "starting");
     assert!(state.receipts[id].error.is_none());
@@ -563,6 +573,7 @@ fn stopped_receipt(direction: Direction, state: &str) -> Receipt {
         blob_id: Some("blob".into()),
         state: state.into(),
         error: None,
+        pause_reason: None,
         binding: "binding".into(),
         intent: "intent".into(),
         local_selection: String::new(),
@@ -611,6 +622,87 @@ fn a_transfer_the_workspace_refused_ends_failed_with_its_reason() {
         &anyhow::anyhow!("Transfer paused"),
     );
     assert_eq!(stopped, "needs_file_selection");
+}
+
+/// T3-BE-14: a transfer the workspace's server could not save (its disk is full, or its storage
+/// failed) is paused, not failed: it keeps its offset, says why in the workspace's own sentence,
+/// and carries `pause_reason: server_storage`, so the app offers Resume as the CLI always could.
+/// Whether the server merely could not write this one file or has stopped saving, the resume is
+/// the same. Any other refusal still fails, with no pause reason.
+#[test]
+fn a_transfer_the_server_could_not_save_is_paused_not_failed() {
+    let refused = |code: &str, message: &str| {
+        anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": code, "message": format!("{code}: {message}")})
+        )
+        .context("Couldn't send the next part")
+    };
+    for (error, sentence) in [
+        (
+            refused("storage_full", "The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again."),
+            "The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again.",
+        ),
+        (
+            refused("storage_failed", "The workspace server could not save a change to disk and has stopped saving changes. Reading still works. Ask the host to check the server's storage and restart Crew."),
+            "The workspace server could not save a change to disk and has stopped saving changes. Reading still works. Ask the host to check the server's storage and restart Crew.",
+        ),
+    ] {
+        for (direction, state) in [
+            (Direction::Upload, "uploading"),
+            (Direction::Upload, "starting"),
+            (Direction::Download, "downloading"),
+        ] {
+            let mut receipt = stopped_receipt(direction, state);
+            receipt.offset = 2;
+            let (stopped, message) = stopped_transfer(&receipt, &error);
+            assert_eq!(stopped, "needs_file_selection", "{error:#}");
+            assert_eq!(message, sentence);
+            assert_eq!(pause_reason(stopped, &error), Some("server_storage"));
+        }
+    }
+    let forbidden = refused("forbidden", "channel unavailable");
+    let (stopped, _) =
+        stopped_transfer(&stopped_receipt(Direction::Upload, "uploading"), &forbidden);
+    assert_eq!(stopped, "failed");
+    assert_eq!(pause_reason(stopped, &forbidden), None);
+    let paused = anyhow::anyhow!("Transfer paused");
+    assert_eq!(pause_reason("needs_file_selection", &paused), None);
+}
+
+/// T3-BE-14: a paused transfer keeps its reason and its offset across a restart, so it is
+/// still offered for resuming, from where it stopped.
+#[tokio::test]
+async fn a_transfer_paused_for_server_storage_stays_resumable_across_a_restart() {
+    let root = private_root();
+    let mut receipt = stopped_receipt(Direction::Upload, "needs_file_selection");
+    receipt.offset = 2;
+    receipt.error = Some("The workspace server is out of disk space.".into());
+    receipt.pause_reason = Some("server_storage".into());
+    let id = receipt.id.clone();
+    let mut receipts = serde_json::Map::new();
+    receipts.insert(id.clone(), serde_json::to_value(&receipt).unwrap());
+    fs::write(
+        root.path().join("receipts.json"),
+        serde_json::to_vec(&receipts).unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(
+        root.path().join("receipts.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let service = TransferService::open(root.path()).unwrap();
+    let state = service.state.lock().await;
+    let reopened = &state.receipts[&id];
+    assert_eq!(reopened.state, "needs_file_selection");
+    assert_eq!(reopened.offset, 2);
+    assert_eq!(reopened.pause_reason.as_deref(), Some("server_storage"));
+    // An older receipt, saved before the field existed, reads as having no reason.
+    let mut older = serde_json::to_value(&receipt).unwrap();
+    older.as_object_mut().unwrap().remove("pause_reason");
+    let older: Receipt = serde_json::from_value(older).unwrap();
+    assert_eq!(older.pause_reason, None);
 }
 
 /// F-1: a refused transfer stays refused, with its reason, when the daemon restarts; it is

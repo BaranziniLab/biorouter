@@ -5620,6 +5620,17 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The code of a refusal the workspace answered, found anywhere in `error`'s chain
+/// (`storage_full`, `forbidden`, ...): `None` when the workspace did not answer with a refusal.
+pub fn workspace_refusal_code(error: &anyhow::Error) -> Option<String> {
+    error.chain().find_map(|link| {
+        let text = link.to_string();
+        let envelope: Value =
+            serde_json::from_str(text.strip_prefix("Crew broker refused request: ")?).ok()?;
+        Some(envelope.get("code")?.as_str()?.to_owned())
+    })
+}
+
 /// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
 /// person (F-1): a known technical text in words, else the broker's own message without its
 /// code, with a capital and a full stop. `None` when the workspace did not answer with a

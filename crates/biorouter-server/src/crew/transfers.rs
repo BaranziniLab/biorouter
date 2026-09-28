@@ -87,6 +87,13 @@ pub struct Receipt {
     /// Why the transfer stopped, for a person; `null` otherwise.
     #[schema(required = true)]
     pub error: Option<String>,
+    /// Why a `needs_file_selection` (paused) transfer stopped, when the daemon has a code for it:
+    /// `server_storage` when the workspace server could not save it (its disk is full, or its
+    /// storage failed). Resume it once the host has freed space: it continues from `offset`
+    /// (T3-BE-14). `null` otherwise; `error` says why in words either way.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub pause_reason: Option<String>,
     binding: String,
     #[serde(default)]
     intent: String,
@@ -537,6 +544,7 @@ impl TransferService {
             blob_id: request.blob_id,
             state: "starting".into(),
             error: None,
+            pause_reason: None,
             binding,
             intent: String::new(),
             local_selection: String::new(),
@@ -709,6 +717,7 @@ impl TransferService {
         let cancel = CancellationToken::new();
         receipt.state = "starting".into();
         receipt.error = None;
+        receipt.pause_reason = None;
         state.active.insert(receipt.id.clone(), cancel.clone());
         state.receipts.insert(receipt.id.clone(), receipt.clone());
         if let Err(error) = self.persist(state) {
@@ -728,6 +737,7 @@ impl TransferService {
                 let (stopped, message) = stopped_transfer(&receipt, &error);
                 receipt.state = stopped.into();
                 receipt.error = Some(message);
+                receipt.pause_reason = pause_reason(stopped, &error).map(str::to_owned);
                 state.receipts.insert(receipt.id.clone(), receipt);
                 let _ = service.persist(&mut state);
             }
@@ -740,12 +750,32 @@ impl TransferService {
 #[path = "transfers_tests.rs"]
 mod transfers_tests;
 
+/// [`Receipt::pause_reason`] for a server that could not save a transfer.
+const SERVER_STORAGE: &str = "server_storage";
+
+/// Whether the workspace refused `error`'s request because its server could not save it: its
+/// disk or quota is full (`storage_full`), or its storage failed (`storage_failed`).
+fn server_storage_refused(error: &anyhow::Error) -> bool {
+    matches!(
+        biorouter::crew::workspace_refusal_code(error).as_deref(),
+        Some("storage_full" | "storage_failed")
+    )
+}
+
+/// [`Receipt::pause_reason`] for a transfer that stopped `stopped` with `error`.
+fn pause_reason(stopped: &str, error: &anyhow::Error) -> Option<&'static str> {
+    (stopped == "needs_file_selection" && server_storage_refused(error)).then_some(SERVER_STORAGE)
+}
+
 /// How a transfer that stopped with `error` ends, and what it says. A download stopped while
-/// publishing is `publication_unconfirmed`. One the workspace itself refused (the person was
-/// removed from the channel, say) is `failed`, with the workspace's reason as a sentence
-/// (F-1): reselecting the file cannot fix that, so it is never offered as the way on. Anything
-/// else (a pause, a dropped connection, a locked vault) is `needs_file_selection`, which a
-/// reselection resumes.
+/// publishing is `publication_unconfirmed`. One the workspace's server could not save
+/// (`storage_full`, `storage_failed`) is `needs_file_selection`, paused with the workspace's
+/// sentence and [`pause_reason`] `server_storage`: once the host frees space it resumes from its
+/// offset, so it is not a failure (T3-BE-14). Any other the workspace itself refused (the
+/// person was removed from the channel, say) is `failed`, with the workspace's reason as a
+/// sentence (F-1): reselecting the file cannot fix that, so it is never offered as the way on.
+/// Anything else (a pause, a dropped connection, a locked vault) is `needs_file_selection`,
+/// which a reselection resumes.
 fn stopped_transfer(receipt: &Receipt, error: &anyhow::Error) -> (&'static str, String) {
     if receipt.direction == Direction::Download
         && matches!(receipt.state.as_str(), "publishing" | "completed")
@@ -756,6 +786,9 @@ fn stopped_transfer(receipt: &Receipt, error: &anyhow::Error) -> (&'static str, 
         );
     }
     if let Some(sentence) = biorouter::crew::refusal_sentence(error) {
+        if server_storage_refused(error) {
+            return ("needs_file_selection", sentence);
+        }
         return ("failed", sentence);
     }
     (
@@ -1251,6 +1284,7 @@ impl TransferService {
             offset: 0,
             state: "preview".into(),
             error: None,
+            pause_reason: None,
             intent: String::new(),
             local_selection: String::new(),
             destination_identity: None,

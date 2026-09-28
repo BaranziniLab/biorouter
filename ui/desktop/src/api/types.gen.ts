@@ -4041,6 +4041,13 @@ export type Receipt = {
     local_selection?: string;
     name: string;
     offset: number;
+    /**
+     * Why a `needs_file_selection` (paused) transfer stopped, when the daemon has a code for it:
+     * `server_storage` when the workspace server could not save it (its disk is full, or its
+     * storage failed). Resume it once the host has freed space: it continues from `offset`
+     * (T3-BE-14). `null` otherwise; `error` says why in words either way.
+     */
+    pause_reason: string | null;
     request_id: string;
     sha256: string;
     size: number;
