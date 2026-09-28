@@ -193,7 +193,8 @@ async fn receipt(api: &Api, id: &str) -> Result<Value> {
     let receipt = api
         .client
         .request("GET", &format!("/crew/transfers/{}", component(id)?), None)
-        .await?;
+        .await
+        .map_err(unknown_transfer)?;
     if let Some(selected) = &api.selected {
         ensure!(
             receipt["connection_id"].as_str() == Some(selected.as_str()),
@@ -201,6 +202,33 @@ async fn receipt(api: &Api, id: &str) -> Result<Value> {
         );
     }
     Ok(receipt)
+}
+
+/// What `files status`, `resume`, `pause`, `forget` and `watch` say for an ID this computer has
+/// no receipt for (CLIDOCS-F6): the daemon's bare "Unknown transfer" says neither whose list
+/// nor what to check.
+pub(super) const UNKNOWN_TRANSFER: &str =
+    "No transfer with that ID on this computer. Run biorouter crew files pending to see them.";
+
+/// The daemon's refusal of a transfer ID it has no receipt for, said as [`UNKNOWN_TRANSFER`];
+/// the refusal stays its source, so JSON keeps the daemon's code. Anything else is left as it is.
+fn unknown_transfer(error: anyhow::Error) -> anyhow::Error {
+    let unknown = error.chain().any(|cause| {
+        super::refusal_message(cause).is_some_and(|message| {
+            message
+                .trim()
+                .trim_end_matches('.')
+                .eq_ignore_ascii_case("unknown transfer")
+        })
+    });
+    if !unknown {
+        return error;
+    }
+    super::Worded {
+        sentence: UNKNOWN_TRANSFER.to_owned(),
+        source: error,
+    }
+    .into()
 }
 
 async fn forget(api: &Api, id: &str, file: Option<&Path>) -> Result<Value> {

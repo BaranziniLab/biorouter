@@ -4395,7 +4395,21 @@ async fn file_command(api: &Api, mut command: FileCommand) -> Result<Reply> {
         *channel = api.your_channel(channel).await?.id;
     }
     let watching = matches!(command, FileCommand::Watch { .. });
+    // CLIDOCS-F10: `forget` is said in the terminal's words; the daemon's "Receipt removed
+    // after authorized partial cleanup…" is its internal account. JSON keeps the daemon's.
+    let forgetting = match &command {
+        FileCommand::Forget { file, .. } => Some(file.is_some()),
+        _ => None,
+    };
     let result = files::handle(api, command).await?;
+    if let Some(partial_deleted) = forgetting {
+        let sentence = if partial_deleted {
+            "Removed from your list, and deleted the partial download. Files already shared stay in the channel."
+        } else {
+            "Removed from your list. Files already shared stay in the channel."
+        };
+        return Ok(api.say(result, vec![sentence.to_owned()]));
+    }
     let names = api.names().await;
     Ok(if watching {
         // The summary sentence ("Transfer Saved."), not one more transfer row.
@@ -7765,6 +7779,79 @@ mod tests {
             panic!("JSON is the manifest")
         };
         assert_eq!(manifest["source_channels"], json!([METHODS, GENERAL]));
+    }
+
+    /// CLIDOCS-F10, CLIDOCS-F6: `files forget` says what it did in the terminal's words, and an
+    /// ID this computer has no receipt for says so and where to look; JSON keeps the daemon's.
+    #[tokio::test]
+    async fn forgetting_and_an_unknown_transfer_are_said_for_a_person() {
+        const TRANSFER: &str = "7ea55000-0000-4000-8000-00000000000d";
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match (method, path) {
+                ("GET", path) if path == format!("/crew/transfers/{TRANSFER}") => Ok(
+                    json!({"id": TRANSFER, "connection_id": CONNECTION, "channel_id": METHODS,
+                        "direction": "upload", "state": "needs_file_selection", "name": "counts.csv"}),
+                ),
+                ("DELETE", path) if path == format!("/crew/transfers/{TRANSFER}") => Ok(json!({
+                    "forgotten": true,
+                    "message": "Receipt removed after authorized partial cleanup. Remote attachments and published downloads are not deleted."
+                })),
+                ("GET", path) if path.starts_with("/crew/transfers/") => Err(refuse(
+                    400,
+                    Some("crew_request_refused"),
+                    "Unknown transfer",
+                )),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Files(FileCommand::Forget {
+                    transfer: TRANSFER.into(),
+                    file: None,
+                }),
+            )
+            .await
+            .expect("forgotten"),
+        );
+        assert_eq!(
+            lines,
+            ["Removed from your list. Files already shared stay in the channel."]
+        );
+        let (api, _) = api_with(OutputFormat::Json, handler);
+        let Reply::Say(value, _) = run(
+            &api,
+            CrewCommand::Files(FileCommand::Forget {
+                transfer: TRANSFER.into(),
+                file: None,
+            }),
+        )
+        .await
+        .expect("forgotten") else {
+            panic!("a sentence");
+        };
+        assert_eq!(value["forgotten"], true, "JSON is the daemon's answer");
+
+        for command in [
+            FileCommand::Status {
+                transfer: "7ea55000-0000-4000-8000-0000000000ff".into(),
+            },
+            FileCommand::Pause {
+                transfer: "7ea55000-0000-4000-8000-0000000000ff".into(),
+            },
+        ] {
+            let (api, _) = api_with(OutputFormat::Text, handler);
+            let error = run(&api, CrewCommand::Files(command))
+                .await
+                .expect_err("unknown");
+            assert_eq!(
+                failure(&error, OutputFormat::Text, "req-1", false).to_string(),
+                files::UNKNOWN_TRANSFER
+            );
+            assert_eq!(error_code(&error).as_deref(), Some("crew_request_refused"));
+        }
     }
 
     /// SF2-N4: `context` for a chat whose access ended says why and the command that grants it

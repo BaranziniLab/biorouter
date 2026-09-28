@@ -1456,7 +1456,7 @@ impl Ctx {
             View::Grants => self.grants(value),
             View::Privacy => self.privacy(value),
             View::Transfers => self.transfers(value),
-            View::Transfer => self.transfer(value),
+            View::Transfer => self.transfer(value, true),
             View::Reference => self.rows(
                 value,
                 "references",
@@ -2260,13 +2260,16 @@ impl Ctx {
         }
         let mut out: Vec<String> = transfers
             .iter()
-            .flat_map(|transfer| self.transfer(transfer))
+            .flat_map(|transfer| self.transfer(transfer, false))
             .collect();
         self.ids_hint(&mut out, "files status, resume, pause and forget");
         out
     }
 
-    fn transfer(&self, transfer: &Value) -> Vec<String> {
+    /// One transfer. `alone` is a single receipt (`files status`), whose resume command names
+    /// its ID: the person just typed it. In a list the ID is there only with `--show-ids`, as
+    /// every other ID is.
+    fn transfer(&self, transfer: &Value, alone: bool) -> Vec<String> {
         let name = text_or(transfer, "name", "Unnamed file");
         let direction = str_field(transfer, "direction").unwrap_or("upload");
         let channel = self.channel(str_field(transfer, "channel_id"));
@@ -2292,7 +2295,25 @@ impl Ctx {
             None => {}
         }
         let mut out = vec![self.with_id(row, "transfer ID", str_field(transfer, "id"))];
-        if let Some(error) = str_field(transfer, "error") {
+        if matches!(state, "paused" | "needs_file_selection") {
+            // CLIDOCS-F10: a pause is a state, not an error. Its reason in the desktop's few
+            // words, then this terminal's way on, which the daemon's "Reselect the original
+            // local file" is not.
+            if let Some(reason) = str_field(transfer, "error").and_then(pause_reason) {
+                out.push(format!("  {reason}"));
+            }
+            let what = if direction == "download" {
+                "the same destination"
+            } else {
+                "the original file"
+            };
+            let id = str_field(transfer, "id")
+                .filter(|_| alone || self.show_ids)
+                .map_or_else(|| "ID".to_owned(), safe_text);
+            out.push(format!(
+                "  Resume with {what}: biorouter crew files resume {id} FILE"
+            ));
+        } else if let Some(error) = str_field(transfer, "error") {
             out.push(format!("  Error: {}", safe_text(error)));
         }
         out.extend(self.detail_ids(transfer, TRANSFER_IDS));
@@ -2801,6 +2822,46 @@ pub(super) fn run_status_word(status: &str) -> String {
         "cancelled" => "Stopped".into(),
         other => sentence_case(other),
     }
+}
+
+/// Why a paused transfer stopped, from the daemon's recovery sentence
+/// (`transfer_recovery_message` in `crates/biorouter-server/src/crew/transfers.rs`), in the
+/// desktop's few words (`PAUSE_REASONS` in `ui/desktop/src/components/crew/state/crewStatus.ts`),
+/// with a full stop. A sentence neither knows is said as it came.
+fn pause_reason(error: &str) -> Option<String> {
+    const REASONS: [(&str, &str); 6] = [
+        ("Transfer paused", "You paused it."),
+        (
+            "Authenticate and reconnect the saved connection",
+            "The connection dropped.",
+        ),
+        (
+            "Unlock the Crew credential vault",
+            "The credential vault is locked.",
+        ),
+        (
+            "Two transfers are active",
+            "Two other transfers were running.",
+        ),
+        (
+            "The Crew connection or privacy policy changed",
+            "The connection’s privacy changed.",
+        ),
+        ("Transfer stopped", "It stopped."),
+    ];
+    let text = error.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(
+        REASONS
+            .iter()
+            .find(|(start, _)| {
+                text.strip_prefix(start)
+                    .is_some_and(|rest| !rest.starts_with(|ch: char| ch.is_alphanumeric()))
+            })
+            .map_or_else(|| safe_text(text), |(_, words)| (*words).to_owned()),
+    )
 }
 
 fn transfer_state_word(state: &str, direction: &str, offset: u64, size: Option<u64>) -> String {
@@ -3983,6 +4044,67 @@ mod tests {
             assert!(ids.contains(id), "{id} missing from:\n{ids}");
         }
         assert_eq!(plain(&json!({"transfers":[]})), "No file transfers.");
+    }
+
+    /// CLIDOCS-F10: a paused transfer is a state with its reason in the desktop's words and
+    /// this terminal's resume command, never an "Error:" with desktop wording. A failed one
+    /// keeps its error.
+    #[test]
+    fn a_paused_transfer_says_why_and_how_to_resume() {
+        let snapshot = alice_snapshot();
+        let mut paused = transfers()["transfers"][0].clone();
+        paused["state"] = json!("needs_file_selection");
+        paused["error"] =
+            json!("Transfer paused. Reselect the original local file or destination to resume.");
+        let text = named(&paused, &snapshot);
+        assert_eq!(
+            text,
+            [
+                "counts.csv · upload to #methods · Paused · 55 B",
+                "  You paused it.",
+                &format!(
+                    "  Resume with the original file: biorouter crew files resume {TRANSFER} FILE"
+                ),
+            ]
+            .join("\n")
+        );
+        assert!(!text.contains("Error"), "{text}");
+        assert!(!text.contains("Reselect"), "{text}");
+        // In a list, the ID is there only with --show-ids, as every other ID is.
+        let listed = named(&json!({"transfers": [paused.clone()]}), &snapshot);
+        assert!(
+            listed.contains("  Resume with the original file: biorouter crew files resume ID FILE"),
+            "{listed}"
+        );
+        assert_no_machine_ids(&listed);
+        // A download resumes with its destination; a reason Crew doesn't know is said as is.
+        let mut download = transfers()["transfers"][1].clone();
+        download["state"] = json!("needs_file_selection");
+        download["error"] = json!("The workspace server ran out of disk space while saving this change, so it may not have been saved.");
+        let text = named(&download, &snapshot);
+        assert!(text.contains("\n  The workspace server ran out of disk space while saving this change, so it may not have been saved.\n"), "{text}");
+        assert!(
+            text.contains("  Resume with the same destination: biorouter crew files resume"),
+            "{text}"
+        );
+        for (error, reason) in [
+            ("Authenticate and reconnect the saved connection in Crew, then reselect the original local file or destination and resume.", "The connection dropped."),
+            ("Unlock the Crew credential vault for this daemon session, then reselect the original local file or destination and resume.", "The credential vault is locked."),
+            ("Two transfers are active; reselect and resume when one finishes", "Two other transfers were running."),
+            ("Transfer stopped. Reselect the original local file or destination to resume. Inspect any unconfirmed publication before retrying.", "It stopped."),
+        ] {
+            assert_eq!(pause_reason(error).as_deref(), Some(reason));
+        }
+        assert_eq!(pause_reason("  "), None);
+        let mut failed = transfers()["transfers"][0].clone();
+        failed["state"] = json!("failed");
+        failed["error"] = json!("You're not in that channel.");
+        let text = named(&failed, &snapshot);
+        assert!(
+            text.ends_with("\n  Error: You're not in that channel."),
+            "{text}"
+        );
+        assert!(!text.contains("Resume"), "{text}");
     }
 
     #[test]
