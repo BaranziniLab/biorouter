@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
@@ -45,10 +47,18 @@ const renderWorkbook = vi.fn(async () => [
   '<html><head></head><body><script>window.bad = true</script><table><tr><td style="color: rgba(255,255,255,0); background-color: rgba(23,59,87,0)">Gene</td></tr></table></body></html>',
 ]);
 const destroyPresentation = vi.fn();
-const renderPresentation = vi.fn(async (_data: ArrayBuffer, container: HTMLElement) => {
-  container.textContent = 'PowerPoint slide';
-  return { destroy: destroyPresentation };
-});
+// The options parameter is declared so the centring test can read
+// `mock.calls[0][2].scrollContainer`; without it the tuple has two entries.
+const renderPresentation = vi.fn(
+  async (
+    _data: ArrayBuffer,
+    container: HTMLElement,
+    _options: { scrollContainer?: HTMLElement | null }
+  ) => {
+    container.textContent = 'PowerPoint slide';
+    return { destroy: destroyPresentation };
+  }
+);
 
 vi.mock('docx-preview', () => ({ renderAsync: renderDocx }));
 // The non-legacy entry point, and `workerPort` rather than `workerSrc` — both
@@ -294,6 +304,71 @@ describe('DocumentPreview', () => {
     });
     view.unmount();
     expect(destroyPresentation).toHaveBeenCalledOnce();
+  });
+
+  // The renderer sizes each slide from the width of the element it renders
+  // into, read as `clientWidth`, which includes padding. When the gutter sat on
+  // that element every slide was as wide as the whole panel: 12px from the left
+  // edge and 12px past the right one, clipped, with 24px of sideways scroll.
+  // jsdom has no layout, so this pins the structure that makes it impossible:
+  // the measured element is unpadded and a separate parent scrolls.
+  it('measures PowerPoint slides against an unpadded element inside a separate scroller', async () => {
+    render(
+      <DocumentPreview file={documentFile('pptx')} resolvedTheme="light" isResizing={false} />
+    );
+    await waitFor(() => expect(renderPresentation).toHaveBeenCalledOnce());
+
+    const [, measured, options] = renderPresentation.mock.calls[0];
+    expect(measured).toHaveClass('artifact-pptx-preview');
+    const utilities = measured.className.split(/\s+/);
+    expect(utilities.filter((name) => /^(p|px|pl|pr|ps|pe)-/.test(name))).toEqual([]);
+    expect(utilities.filter((name) => name.startsWith('overflow-'))).toEqual([]);
+
+    const scroller = options.scrollContainer;
+    expect(scroller).not.toBe(measured);
+    expect(scroller).toBe(measured.parentElement);
+    expect(scroller).toHaveClass('artifact-pptx-scroll', 'artifact-document-scroll');
+  });
+
+  it('reserves the scrollbar gutter on both edges of every native-size document', async () => {
+    const pdf = render(
+      <DocumentPreview file={documentFile('pdf')} resolvedTheme="light" isResizing={false} />
+    );
+    expect(await screen.findByLabelText('preview.pdf PDF preview')).toHaveClass(
+      'artifact-document-scroll'
+    );
+    pdf.unmount();
+
+    const word = render(
+      <DocumentPreview file={documentFile('docx')} resolvedTheme="light" isResizing={false} />
+    );
+    await screen.findByText('Genome report');
+    expect(document.querySelector('.artifact-docx-preview')?.parentElement).toHaveClass(
+      'artifact-document-scroll'
+    );
+    word.unmount();
+  });
+});
+
+/**
+ * The centring itself is asserted at the SOURCE, as `styles/composerFocus.test.ts`
+ * does: jsdom has no layout engine, so no component test can measure the gap on
+ * either side of a page. Measured in the real app when this landed: a PowerPoint
+ * slide sat 12px from the left edge and -12px from the right, now 12/12; with a
+ * classic scrollbar Word sat at 12/22 and PowerPoint at 12/-2, now 22/22 for both.
+ */
+describe('native-size document gutters (authored CSS)', () => {
+  const css = readFileSync(join(__dirname, '../../styles/main.css'), 'utf8');
+  const ruleBody = (selector: string) =>
+    css.match(new RegExp(`(?:^|\\n)${selector.replace(/[.]/g, '\\.')}\\s*\\{([^}]*)\\}`))?.[1];
+
+  it('mirrors a classic scrollbar onto the left edge of every document scroller', () => {
+    expect(ruleBody('.artifact-document-scroll')).toMatch(/scrollbar-gutter:\s*stable both-edges;/);
+  });
+
+  it('puts the deck gutter on the scroller, never on the element the renderer measures', () => {
+    expect(ruleBody('.artifact-pptx-scroll')).toMatch(/padding:\s*16px 12px;/);
+    expect(css).not.toMatch(/\.artifact-pptx-preview[^{,]*\{[^}]*padding/);
   });
 });
 

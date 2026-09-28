@@ -279,7 +279,7 @@ function PdfPreview({ file, isResizing }: Pick<DocumentPreviewProps, 'file' | 'i
     <div
       aria-label={`${file.title} PDF preview`}
       className={cn(
-        'h-full overflow-y-auto bg-background-medium',
+        'artifact-document-scroll h-full overflow-y-auto bg-background-medium',
         isResizing && 'pointer-events-none'
       )}
     >
@@ -365,7 +365,7 @@ function WordPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
   }, [file.data, file.path]);
 
   return (
-    <div className="relative h-full overflow-auto bg-background-medium">
+    <div className="artifact-document-scroll relative h-full overflow-auto bg-background-medium">
       <div ref={containerRef} className="artifact-docx-preview min-h-full" />
       {!rendered && !error && <PreviewStatus message="Rendering Word document" />}
       {error && <PreviewStatus message={error} />}
@@ -537,14 +537,31 @@ function SpreadsheetPreview({
   );
 }
 
+/**
+ * The deck renders into `containerRef` and scrolls in `scrollRef`, and the two
+ * must stay separate elements.
+ *
+ * ⚠ `@aiden0z/pptx-renderer` sizes every slide from its container's
+ * `clientWidth` under `fitMode: 'contain'` — on open, on resize and in its
+ * post-render correction — and `clientWidth` INCLUDES padding. With the gutter
+ * on that same element each slide came out as wide as the whole panel: it
+ * started after the left gutter and ran the right one off the edge, clipped and
+ * scrolling sideways, with the slide labels off centre by the same amount. So
+ * the gutter lives on the scroller (`.artifact-pptx-scroll` in main.css) and
+ * the measured element carries no padding at all, which makes its `clientWidth`
+ * exactly the width a slide may take and lets the library's `margin: 0 auto`
+ * centre it.
+ */
 function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rendered, setRendered] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    const scroller = scrollRef.current;
+    if (!container || !scroller) return;
 
     const abortController = new AbortController();
     let viewer: { destroy: () => void } | null = null;
@@ -556,7 +573,7 @@ function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
       .then(async ({ PptxViewer, RECOMMENDED_ZIP_LIMITS }) => {
         viewer = await PptxViewer.open(file.data.slice(0), container, {
           fitMode: 'contain',
-          scrollContainer: container,
+          scrollContainer: scroller,
           zipLimits: RECOMMENDED_ZIP_LIMITS,
           lazyMedia: true,
           lazySlides: true,
@@ -589,10 +606,15 @@ function PowerPointPreview({ file }: Pick<DocumentPreviewProps, 'file'>) {
   return (
     <div className="relative h-full bg-background-medium">
       <div
-        ref={containerRef}
-        data-rendered={rendered ? 'true' : 'false'}
-        className="artifact-pptx-preview h-full overflow-auto px-3 py-4"
-      />
+        ref={scrollRef}
+        className="artifact-document-scroll artifact-pptx-scroll h-full overflow-auto"
+      >
+        <div
+          ref={containerRef}
+          data-rendered={rendered ? 'true' : 'false'}
+          className="artifact-pptx-preview"
+        />
+      </div>
       {!rendered && !error && <PreviewStatus message="Rendering PowerPoint" />}
       {error && <PreviewStatus message={error} />}
     </div>
