@@ -213,6 +213,27 @@ describe('ApplicationsView', () => {
     expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
   });
 
+  /**
+   * W2-HRD-1: Launch names the app to the main process and nothing else. The
+   * main process mints the app's one-time launch link and hands it to the
+   * browser without putting it on a command line; the renderer neither asks for
+   * a link nor opens a URL itself.
+   */
+  it('launches an app through the main process, naming only the app', async () => {
+    const user = userEvent.setup();
+    const openAppInBrowser = vi.fn().mockResolvedValue(undefined);
+    window.electron = { ...window.electron, openAppInBrowser } as typeof window.electron;
+    renderView();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Launch Cohort Explorer in browser' })
+    );
+
+    await waitFor(() => expect(openAppInBrowser).toHaveBeenCalledWith('cohort-explorer'));
+    expect(window.electron.openExternal).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/launch'))).toBe(false);
+  });
+
   it('shows the shared empty state when nothing has been built', async () => {
     fetchMock.mockResolvedValue(okJson([]));
 

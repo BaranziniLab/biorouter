@@ -350,6 +350,8 @@ type ElectronAPI = {
   deleteTempFile: (filePath: string) => void;
   // Opens only after public-target validation and exact-host native confirmation.
   openExternal: (url: string) => Promise<void>;
+  /** Open a built app in the system browser; main mints and hands over its launch link. */
+  openAppInBrowser: (appId: string) => Promise<void>;
   // Function to serve temp images
   getTempImage: (filePath: string) => Promise<string | null>;
   // Function to read temp image as raw base64 + mimeType for API use
@@ -790,6 +792,8 @@ const electronAPI: ElectronAPI = {
   openExternal: (url: string): Promise<void> => {
     return ipcRenderer.invoke('open-external', url);
   },
+  openAppInBrowser: (appId: string): Promise<void> =>
+    ipcRenderer.invoke('apps:open-in-browser', appId),
   getTempImage: (filePath: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-temp-image', filePath);
   },

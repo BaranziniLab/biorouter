@@ -190,6 +190,7 @@ import {
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
 import { bindManagedAppPreviewBackend } from './utils/managedAppPreviewBackend';
+import { openAppInSystemBrowser } from './utils/appBrowserLaunch';
 import {
   managedAppPreviewScope,
   type ManagedAppPreviewBackend,
@@ -2985,6 +2986,24 @@ ipcMain.handle('open-external', async (event, url: string) => {
   } catch (err) {
     console.error('open-external blocked:', err);
   }
+});
+
+// Applications' "Launch in browser" (W2-HRD-1). The renderer names the app and
+// nothing else: the one-time launch link is minted here, with the secret, and
+// handed to the system browser through a page only this account can read,
+// never on an opener's command line. See `utils/appBrowserLaunch`.
+ipcMain.handle('apps:open-in-browser', async (event, appId: unknown) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+  if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+  if (typeof appId !== 'string') throw new Error('That is not an app name.');
+  await openAppInSystemBrowser({
+    baseUrl,
+    appId,
+    secretKey: getServerSecret(loadSettings()),
+    directory: path.join(app.getPath('userData'), 'app-launch'),
+    openPath: (page) => shell.openPath(page),
+  });
 });
 
 ipcMain.handle('directory-chooser', async () => {
