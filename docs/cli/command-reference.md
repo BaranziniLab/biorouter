@@ -900,18 +900,30 @@ biorouter kb query "what is known about HLA-DRB1*15:01?"
 
 ### apps
 
-List, open, and serve the Biorouter apps built by Agent Drafter. `open` and `serve` reuse a `biorouterd` already listening on the configured port (`BIOROUTER_PORT`, default 3000) or start one for you, then open `http://127.0.0.1:<port>/apps/<id>/` in your browser. Apps open in a real browser; there is no in-terminal rendering.
+List, open, and serve the Biorouter apps built by Agent Drafter. Apps open in a real browser; there is no in-terminal rendering.
 
 **Subcommands:**
 
-- **`list`**: List installed Biorouter apps
-- **`open <ID>`**: Open an app in your default browser
-- **`serve <ID>`**: Serve an app in the foreground until `Ctrl-C`
+- **`list`**: List installed Biorouter apps. `--json` prints them as JSON
+- **`open <ID>`**: Open an app in your default browser. A daemon this command starts keeps running after it returns, so the app stays open
+- **`serve <ID>`**: Serve an app in the foreground until `Ctrl-C`, then stop the daemon it started. When a daemon it can use is already running, it prints a link and returns instead
+
+**Which daemon they use.** Both commands look for a `biorouterd` on the configured port (`BIOROUTER_PORT`, default 3000) and start one when nothing is listening. A daemon only opens an app for a caller holding its secret key, so they use a running daemon only when they know its key: a daemon `apps open` or `apps serve` started (they record its key in a file only your account can read, for as long as it runs), or one whose key `BIOROUTER_SERVER__SECRET_KEY` names. Any other daemon on the port, such as the desktop app's or one you started by hand, is refused with a message saying so; set `BIOROUTER_SERVER__SECRET_KEY` to its key, or set `BIOROUTER_PORT` to a free port so the command starts its own.
+
+**The link opens the app once.** The address is `http://127.0.0.1:<port>/apps/<id>/?t=<token>`. It works once and for five minutes: opening it gives that browser the app, and the plain `http://127.0.0.1:<port>/apps/<id>/` address keeps working in that browser until the daemon stops or the browser is closed. `open` never hands the link to a command line, where other accounts on the machine could read it and use it first. It writes the link into a page only your account can read and opens that page. It also prints the link, for a browser that cannot open the page (a snap packaged browser cannot read hidden folders).
+
+For another link, run `apps open` again. While `apps serve` is running, run `apps open <ID>` (or a second `apps serve <ID>`) in another terminal; it mints a new link on the same daemon. A browser that follows an old or spent link sees a page saying so.
 
 **Usage:**
 
 ```bash
 biorouter apps list
+biorouter apps open cohort-explorer
+
+# Serve in the foreground; open the printed link in a browser
+biorouter apps serve cohort-explorer
+
+# Another link while that serve runs, from a second terminal
 biorouter apps open cohort-explorer
 ```
 
@@ -957,11 +969,11 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 
 - **`--host <HOST>`**: Address to bind. Anything reachable from another machine requires a token. Default is `127.0.0.1`
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
-- **`--token <TOKEN>`**: Use this access token instead of generating a fresh one
+- **`--token <TOKEN>`**: Use this access token instead of generating a fresh one. The flag stays on the command line while `serve` runs, where other accounts on the machine can read it, so `serve` prints a note saying so. To keep a token private, set `BIOROUTER_BROWSER_TOKEN` in the environment instead
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
 - **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
 - **`--computer-use-approval`**: Interactively set a computer-use approval key for the browser session. Requires a terminal
-- **`--open`**: Open a browser once the server is ready
+- **`--open`**: Open a browser once the server is ready. The browser is handed a page only your account can read, which carries the address, and never the address itself: the address holds the access token, and a browser's command line can be read by other accounts on the machine. The page is removed two minutes later, or when `serve` stops
 
 **Usage:**
 
@@ -976,10 +988,10 @@ biorouter serve --port 9000
 biorouter serve --host 0.0.0.0
 
 # Reuse one address across restarts, for a bookmark or a service unit
-biorouter serve --host 0.0.0.0 --token "$(openssl rand -hex 32)"
+BIOROUTER_BROWSER_TOKEN="$(openssl rand -hex 32)" biorouter serve --host 0.0.0.0
 ```
 
-The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and redirects, so the token leaves the address bar; it is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
+The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and answers a short page that moves on to the interface, so the token leaves the address bar. It is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
 > **Note.** A browser session cannot change its model or provider, deliberately — run `biorouter configure` to choose them **before** starting `serve`. [Reaching Biorouter from a browser](../deployment/browser-access.md) explains why, and covers the access token, remote access and troubleshooting.
 
