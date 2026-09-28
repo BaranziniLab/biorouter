@@ -588,14 +588,23 @@ export const refusalCopy = {
   identityMismatch:
     'This server account no longer matches the member it joined as. Remove the old member first, then invite them again.',
   /**
-   * `quota_exceeded: retained audit journal exceeds …`, `quota_exceeded: workspace logical state
-   * exceeds …` and `quota_exceeded: workspace operation quota requires maintenance`, plus the
-   * startup-only `quota_exceeded: journal exceeds …` (`STORAGE_FULL_TEXT` in `refusals.ts`). The
-   * CLI prints this sentence byte for byte (`STORAGE_FULL` in `commands/crew/output.rs`, pinned by
-   * a test that reads this file).
+   * `quota_exceeded: retained audit journal exceeds …` and `quota_exceeded: workspace logical state
+   * exceeds …`, the startup-only `quota_exceeded: journal exceeds …`, and an older broker's
+   * `quota_exceeded: workspace operation quota requires maintenance` (`STORAGE_FULL_TEXT` in
+   * `refusals.ts`). The CLI prints this sentence byte for byte (`STORAGE_FULL` in
+   * `commands/crew/output.rs`, pinned by a test that reads this file).
    */
   storageFull:
     'This workspace has grown past the size Crew supports and cannot take more changes. Ask the host about starting a new workspace.',
+  /**
+   * `quota_exceeded: workspace logical state is full; …` and `quota_exceeded: retained audit
+   * journal is nearly full; …`: the limits that stop ordinary changes a little short of full, so
+   * the host can still remove members and change policy (`commit`'s headroom in `broker.rs`,
+   * `FULL_BUT_HOST_CAN_ADMINISTER_TEXT` in `refusals.ts`). The CLI prints the same sentence
+   * (`FULL_BUT_HOST_CAN_ADMINISTER` in `commands/crew/output.rs`).
+   */
+  fullButHostCanAdminister:
+    'This workspace is full. Reading still works, and the host can still remove members and change its privacy, but nothing else can change. Ask the host about starting a new workspace.',
   /** `rate_limited: too many live challenges`. */
   tooManyAttempts: 'Too many attempts at once. Wait a minute, then try again.',
 } as const;

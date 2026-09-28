@@ -109,9 +109,26 @@ const SENTENCES: [code: string, broker: string, shown: string][] = [
     refusalCopy.storageFull,
   ],
   [
-    'quota_exceeded (operations)',
+    // Only a broker from before per-member shares writes this: a current one evicts from its table
+    // of remembered request IDs instead. It is not read back against `broker.rs` (`LEGACY`).
+    'quota_exceeded (operations, older broker)',
     'quota_exceeded: workspace operation quota requires maintenance',
     refusalCopy.storageFull,
+  ],
+  [
+    'quota_exceeded (state, host headroom left)',
+    'quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported',
+    refusalCopy.fullButHostCanAdminister,
+  ],
+  [
+    'quota_exceeded (journal, host headroom left)',
+    'quota_exceeded: retained audit journal is nearly full; reads remain available and the host can still remove members and change policy; preserve the complete store and use a new workspace',
+    refusalCopy.fullButHostCanAdminister,
+  ],
+  [
+    'quota_exceeded (member state share)',
+    "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.",
+    "You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.",
   ],
   [
     'identity_conflict (member)',
@@ -248,19 +265,50 @@ describe('storage-full fixtures', () => {
     resolve(__dirname, '../../../../../../crates/biorouter-crew/src/broker.rs'),
     'utf8'
   );
-  const storageFull = SENTENCES.filter(([, , shown]) => shown === refusalCopy.storageFull);
+  /** Texts only an older broker writes, which the current source cannot contain. */
+  const LEGACY = new Set(['quota_exceeded (operations, older broker)']);
+  const full = SENTENCES.filter(
+    ([, , shown]) =>
+      shown === refusalCopy.storageFull || shown === refusalCopy.fullButHostCanAdminister
+  );
 
-  it('covers the journal, state-size and operation quotas', () => {
-    expect(storageFull.map(([label]) => label)).toEqual([
+  it('covers the journal and state-size limits, with and without the host’s headroom', () => {
+    expect(full.map(([label]) => label)).toEqual([
       'quota_exceeded (journal, at startup)',
       'quota_exceeded (journal)',
       'quota_exceeded (state)',
-      'quota_exceeded (operations)',
+      'quota_exceeded (operations, older broker)',
+      'quota_exceeded (state, host headroom left)',
+      'quota_exceeded (journal, host headroom left)',
     ]);
   });
 
-  it.each(storageFull)('%s is the broker’s literal text', (_label, text) => {
-    expect(broker).toContain(`"${text}"`);
+  it.each(full.filter(([label]) => !LEGACY.has(label)))(
+    '%s is the broker’s literal text',
+    (_label, text) => {
+      expect(broker).toContain(`"${text}"`);
+    }
+  );
+
+  it.each([...LEGACY])('%s is no longer in the broker', (label) => {
+    const text = full.find(([candidate]) => candidate === label)?.[1];
+    expect(text).toBeTruthy();
+    expect(broker).not.toContain(`"${text}"`);
+  });
+
+  it('matches every quota_exceeded text in the broker that means the workspace is full', () => {
+    // Any new state or journal limit text the broker gains must be worded, not shown raw.
+    const texts = [
+      ...broker.matchAll(
+        /"quota_exceeded: ((?:workspace logical state|retained audit journal|journal) [^"]*)"/g
+      ),
+    ];
+    expect(texts.length).toBeGreaterThan(0);
+    for (const [, sentence] of texts) {
+      expect([refusalCopy.storageFull, refusalCopy.fullButHostCanAdminister]).toContain(
+        refusalText(`quota_exceeded: ${sentence}`)
+      );
+    }
   });
 });
 

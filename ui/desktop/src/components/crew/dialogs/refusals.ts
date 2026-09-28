@@ -98,18 +98,29 @@ const MENTION = /@([A-Za-z0-9._-]*[A-Za-z0-9_-])/;
 
 /**
  * The `quota_exceeded` texts that mean "this workspace is full, and no further change can be made
- * to it" (`refusalCopy.storageFull`). A request can meet three of them, all in `broker.rs`:
- * - the audit journal limit in `commit`: `retained audit journal exceeds 1 GiB; …`;
- * - the state-size limit in `commit`: `workspace logical state exceeds 16 MiB; …`;
- * - the operation quota in `apply_mutation`: `workspace operation quota requires maintenance`
- *   (the table of remembered request IDs is full).
+ * to it" (`refusalCopy.storageFull`). A request can meet two of them, both in `commit` in
+ * `broker.rs`: the audit journal limit (`retained audit journal exceeds 1 GiB; …`) and the
+ * state-size limit (`workspace logical state exceeds 16 MiB; …`).
  *
- * A fourth, `journal exceeds supported replay size of 1 GiB`, is raised by `open_inner` and so only
- * stops the broker starting; no request is ever refused with it, but it means the same and is
- * matched in case a startup failure is ever forwarded.
+ * Two more mean the same and are matched for that reason:
+ * - `journal exceeds supported replay size of 1 GiB`, raised by `open_inner`, only stops the broker
+ *   starting; no request is refused with it, but a startup failure may be forwarded;
+ * - `workspace operation quota requires maintenance`, which a broker from before per-member shares
+ *   wrote once its table of remembered request IDs was full. A current broker evicts from that table
+ *   instead, but a workspace may still run an older one.
  */
 const STORAGE_FULL_TEXT =
   /^(?:(?:retained audit )?journal exceeds|workspace logical state exceeds|workspace operation quota requires maintenance)\b/i;
+
+/**
+ * The `quota_exceeded` texts of the limits that stop ordinary changes a little short of full, so the
+ * host can still remove members and change policy (`commit`'s admin headroom in `broker.rs`):
+ * `workspace logical state is full; …` and `retained audit journal is nearly full; …`
+ * (`refusalCopy.fullButHostCanAdminister`). The CLI matches the same texts
+ * (`FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES` in `commands/crew/output.rs`).
+ */
+const FULL_BUT_HOST_CAN_ADMINISTER_TEXT =
+  /^(?:workspace logical state is full|retained audit journal is nearly full)\b/i;
 
 /**
  * Broker texts written for a program, and the copy deck's words for them. Each is matched on the
@@ -117,7 +128,8 @@ const STORAGE_FULL_TEXT =
  * says something more specific (`identity_conflict` for an invited account, `identity_mismatch`
  * for a renamed one, the waiting-list `quota_exceeded`), and that sentence is kept.
  *
- * `quota_exceeded` is matched on its words, not its form (`STORAGE_FULL_TEXT`). The join quota
+ * `quota_exceeded` is matched on its words, not its form (`STORAGE_FULL_TEXT`,
+ * `FULL_BUT_HOST_CAN_ADMINISTER_TEXT`). The join quota
  * (`broker/join.rs`) means "too many people are waiting", and its person-written sentence is kept,
  * so one sentence for every `quota_exceeded` would be wrong for it. `device_conflict` has only a
  * technical text, so every one is reworded.
@@ -142,6 +154,11 @@ const REWORDED: readonly {
     code: 'quota_exceeded',
     matches: (sentence) => STORAGE_FULL_TEXT.test(sentence),
     words: () => refusalCopy.storageFull,
+  },
+  {
+    code: 'quota_exceeded',
+    matches: (sentence) => FULL_BUT_HOST_CAN_ADMINISTER_TEXT.test(sentence),
+    words: () => refusalCopy.fullButHostCanAdminister,
   },
   {
     code: 'rate_limited',
