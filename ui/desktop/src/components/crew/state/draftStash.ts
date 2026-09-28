@@ -147,6 +147,17 @@ export function stashDraft(
   notifyDrafts();
 }
 
+/**
+ * Write the composer's note about the kept draft of a channel, when one is kept: a refusal of a
+ * post that answered while no Crew screen was open, told when the draft comes back rather than
+ * never. Nothing is kept for a channel that keeps no draft.
+ */
+export function noteKeptDraft(connectionId: string, channelId: string, note: StashedNote): void {
+  const key = draftKey(connectionId, channelId);
+  const entry = drafts.get(key);
+  if (entry) drafts.set(key, { ...entry, note });
+}
+
 /** The kept draft of a channel, if any, without taking it. */
 export function stashedDraft(connectionId: string, channelId: string): StashedDraft | undefined {
   return drafts.get(draftKey(connectionId, channelId));

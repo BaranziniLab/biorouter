@@ -2193,6 +2193,12 @@ describe('a post still on its way when the person moves to another channel (REND
       await openedAgain();
       await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
       expect(crew.isPending('send')).toBe(false);
+      // What the refusal said comes back with the words: it was told nowhere while Crew was shut.
+      expect(crew.error).toMatchObject({
+        message: 'The computer did not answer in time',
+        source: 'composer',
+        destination: `${connection.id}\n${methods.id}`,
+      });
       await act(async () => {
         await crew.send();
       });

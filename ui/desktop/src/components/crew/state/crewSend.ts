@@ -21,6 +21,7 @@ import { channelName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import {
   forgetStashedDraft,
+  noteKeptDraft,
   resetBetweenTests,
   type DraftAttempt,
   type MessageAttempt,
@@ -505,11 +506,19 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
     /**
      * Tell the Crew screen open now about this post: in its composer while it shows the channel
      * the post went to, else in its connection bar, naming that channel. No screen: the words wait
-     * in the kept draft for the person's return.
+     * in the kept draft for the person's return, and what was said about them goes with them, to
+     * be shown when they come back (a refusal while Crew was closed used to be told nowhere).
      */
     const tell = (words: string, code: string | undefined, transport: boolean, lead = true) => {
       const screen = screenToTell(selection);
-      if (!screen) return;
+      if (!screen) {
+        noteKeptDraft(connectionId, channelId, {
+          message: words,
+          ...(code !== undefined ? { code } : {}),
+          ...(transport ? { transport } : {}),
+        });
+        return;
+      }
       const there = screen.selection.current;
       if (there.connectionId === connectionId && there.channelId === channelId) {
         screen.reportError(words, 'composer', code, { destination, transport });
