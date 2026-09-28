@@ -82,6 +82,21 @@ export const connectionBarCopy = {
    * Biorouter reconnects (RES2-N7): said in place of "Live updates stopped" and its Retry, which
    * led only to "Crew couldn't load your saved workspaces". Reconnect is the sidebar notice's.
    */
+  /**
+   * The workspace server has stopped saving changes (its `hello` says so, T3-BE-13, RES2-N2):
+   * reading works, and every change is refused until its host frees space and restarts Crew. Said
+   * before anyone tries to write, rather than "Connected" until someone did. `code` is the server's
+   * reason: `storage_full` (its disk or quota) or `storage_failed` (another storage error).
+   */
+  serverStorage: 'The workspace server has stopped saving changes. Reading still works.',
+  serverStorageHost: (code: string) =>
+    code === 'storage_full'
+      ? 'Free space on the server, then restart Crew there.'
+      : 'Check the server’s storage, then restart Crew there.',
+  serverStorageMember: (code: string, hostName: string | null) =>
+    code === 'storage_full'
+      ? `Ask ${hostName ?? 'your host'} to free space on the server and restart Crew.`
+      : `Ask ${hostName ?? 'your host'} to check the server’s storage and restart Crew.`,
   daemonAway:
     'Biorouter’s background service restarted, so Crew can’t reach your workspaces until Biorouter reconnects.',
   daemonReconnect: 'Reconnect',

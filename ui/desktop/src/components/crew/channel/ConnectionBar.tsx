@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { parseRefusal, refusalText, type RefusalViewer } from '../dialogs/refusals';
+import { buildPeopleDirectory, personLabel } from '../identity';
 import { useJoinContext } from '../onboarding/joinContext';
 import { sshUsername } from '../onboarding/joinText';
 import { serverLabel } from '../sidebar/sidebarView';
@@ -212,6 +213,19 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   // only fail again.
   const daemon = useDaemonConnection();
   const daemonAway = daemon !== 'attached';
+  // The server has stopped saving changes (T3-BE-13): said while the daemon holds it connected,
+  // so "Connected" is never all a person reads while every change is refused (RES2-N2).
+  const serverStorage =
+    !daemonAway && connection?.status === 'connected' ? (connection.server_storage ?? null) : null;
+  // Whom a member asks: the workspace's host as the send failure names them, else the name the
+  // invitation gave.
+  const storageDir = buildPeopleDirectory(
+    serverStorage ? (crew.snapshot ?? crew.lastVerified?.snapshot ?? null) : null
+  );
+  const storageHost =
+    storageDir.host && !storageDir.host.isFormer
+      ? personLabel(storageDir.host, 'authority', storageDir)
+      : (errorContext.hostName ?? null);
   const notMember = crew.status === 'not-joined' || crew.screen === 'join';
   // The workspace ended this computer's or this person's membership: said once, here, with no
   // Retry — on the join screen its card says it instead.
@@ -293,6 +307,16 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           }
         >
           <p>{connectionBarCopy.daemonAway}</p>
+        </Note>
+      )}
+      {serverStorage && (
+        <Note tone="warning" role="status" icon={AlertTriangle} testId="crew-server-storage">
+          <p>
+            {connectionBarCopy.serverStorage}{' '}
+            {errorContext.hosts === true
+              ? connectionBarCopy.serverStorageHost(serverStorage.code)
+              : connectionBarCopy.serverStorageMember(serverStorage.code, storageHost)}
+          </p>
         </Note>
       )}
       {showObservationError && (

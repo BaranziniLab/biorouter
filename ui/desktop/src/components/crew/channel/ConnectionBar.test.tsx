@@ -10,6 +10,7 @@ import { ConnectionBar, actionErrorText, connectErrorText } from './ConnectionBa
 import { connectionBarCopy } from './copy';
 import {
   alice,
+  bob,
   connection,
   currentCrew,
   general,
@@ -169,6 +170,44 @@ describe('ConnectionBar', () => {
     act(() => tell('attached'));
     expect(screen.queryByTestId('crew-daemon-away')).toBeNull();
     expect(screen.getByRole('button', { name: connectionBarCopy.retryName })).toBeInTheDocument();
+  });
+
+  /**
+   * RES2-N2: the bar kept "Connected" from the moment the workspace server stopped saving until
+   * someone tried to write.
+   */
+  it.each([
+    ['storage_full', 'host', connectionBarCopy.serverStorageHost('storage_full')],
+    ['storage_failed', 'host', connectionBarCopy.serverStorageHost('storage_failed')],
+    [
+      'storage_full',
+      'member',
+      connectionBarCopy.serverStorageMember('storage_full', 'Alice Chen (@alice)'),
+    ],
+  ])(
+    'says the workspace server stopped saving (%s), with the %s’s next step',
+    async (code, who, next) => {
+      installDaemon([
+        {
+          ...connection,
+          server_storage: { state: 'storage_failed', code, since: 1_790_000_000 },
+        },
+      ]);
+      // Bob is a member; Alice (UID 1000) hosts.
+      if (who === 'member') installObserver({ snapshot: makeSnapshot({ actor: bob }) });
+      renderCrew(Layout);
+      await verified();
+      const note = await screen.findByTestId('crew-server-storage');
+      expect(note).toHaveTextContent(`${connectionBarCopy.serverStorage} ${next}`);
+      expect(note).not.toHaveTextContent(/ask the host/i);
+    }
+  );
+
+  it('says nothing about saving while the server saves', async () => {
+    installDaemon([{ ...connection, server_storage: null }]);
+    renderCrew(Layout);
+    await verified();
+    expect(screen.queryByTestId('crew-server-storage')).toBeNull();
   });
 
   it('leaves a connection the daemon calls disconnected to its screen: no note, no Retry', async () => {
