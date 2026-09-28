@@ -54,6 +54,112 @@ struct Conversation {
     renderer: TextRenderer,
     continuation_owner_id: String,
     continuation_lease: Option<Zeroizing<String>>,
+    /// What the chat's binding said when it was shown, so a turn's `PrivacyProviderPinned`
+    /// that agrees with it says nothing.
+    binding: ShownBinding,
+    /// "Chat … is ready", held until the turn that follows it reaches the provider (AGT2-N4):
+    /// a start the daemon refuses must not be preceded by it.
+    pending_ready: Option<String>,
+}
+
+/// The provider, model and privacy a chat was shown with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ShownBinding {
+    provider: Option<String>,
+    model: Option<String>,
+    private: bool,
+}
+
+impl ShownBinding {
+    fn of(session: &Value) -> Self {
+        Self {
+            provider: session["provider_name"].as_str().map(str::to_owned),
+            model: session["model_config"]["model_name"]
+                .as_str()
+                .map(str::to_owned),
+            private: session["privacy_tier"].as_str() == Some("private"),
+        }
+    }
+}
+
+/// The daemon's turn error for a turn whose reply stream never opened: nothing reached the
+/// provider, and nothing was submitted to it.
+const START_FAILED: &str = "inference_start_failed";
+
+/// A turn the daemon refused to start before anything reached the provider (AGT2-N4), such as a
+/// Crew chat whose access was removed. Its own sentence is the whole error: "remains available;
+/// no automatic resubmission was attempted" is about a turn that ran, and this one never did.
+#[derive(Debug)]
+struct StartRefused {
+    sentence: String,
+}
+
+impl std::fmt::Display for StartRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.sentence)
+    }
+}
+
+impl std::error::Error for StartRefused {}
+
+/// A turn's `Error` frame as the error the command ends with: a start refused before the turn
+/// reached the provider is its sentence alone ([`StartRefused`]); any other keeps its code.
+fn turn_error(frame: &Value, reached_provider: bool) -> anyhow::Error {
+    let code = frame["code"].as_str().unwrap_or("daemon_error");
+    let error = frame["error"].as_str().unwrap_or("Daemon turn failed");
+    if code == START_FAILED && !reached_provider {
+        return StartRefused {
+            sentence: safe_text(error),
+        }
+        .into();
+    }
+    anyhow::anyhow!("{}: {}", safe_text(code), safe_text(error))
+}
+
+/// What a turn's frame means for the deferred "Chat … is ready" (AGT2-N4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ready {
+    /// The turn reached the provider: the chat is ready, and is said to be.
+    Show,
+    /// The turn ended before it reached the provider: it never was.
+    Drop,
+    /// Nothing yet says either.
+    Wait,
+}
+
+/// [`Ready`] for `frame`, given whether an earlier frame already showed the turn reached the
+/// provider (`reached`). A model's frames (a message, the provider pin sent on every turn that
+/// reaches one, a model change) and a turn that finished show it; an error or a stop before any
+/// of them means the start was refused. `TurnStarted` shows nothing: the daemon sends it before
+/// any work that can fail.
+fn ready_on(frame: &Value, reached: bool) -> Ready {
+    match frame["type"].as_str() {
+        Some("Message" | "PrivacyProviderPinned" | "ModelChange") => Ready::Show,
+        Some("Finish")
+            if !matches!(
+                frame["reason"].as_str(),
+                Some("cancelled" | "canceled" | "stopped" | "orphaned" | "error" | "failed")
+            ) =>
+        {
+            Ready::Show
+        }
+        Some("Error" | "Finish") if !reached => Ready::Drop,
+        _ => Ready::Wait,
+    }
+}
+
+/// The run's error as it is printed: a start the daemon refused is its own sentence, and any
+/// other failure says the session remains and that nothing was resubmitted.
+fn with_session_context(result: Result<()>, session_id: &str) -> Result<()> {
+    match result {
+        Err(error) if error.chain().any(|cause| cause.is::<StartRefused>()) => Err(error),
+        result => result.with_context(|| {
+            format!(
+                "Daemon session {} remains available; no automatic resubmission was attempted",
+                safe_text(session_id)
+            )
+        }),
+    }
 }
 enum TurnEnd {
     Finished,
@@ -80,6 +186,8 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
         renderer: TextRenderer::default(),
         continuation_owner_id: uuid::Uuid::new_v4().to_string(),
         continuation_lease: None,
+        binding: ShownBinding::default(),
+        pending_ready: None,
     };
     conversation.event(&json!({"type":"Session","session_id":conversation.session_id}))?;
     let result = conversation.execute(&options).await;
@@ -92,16 +200,15 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
     conversation.renderer.finish()?;
     if let Err(error) = &result {
         if format != Format::Text {
-            emit_json(&json!({"type":"Error","session_id":conversation.session_id,
-                "error":format!("{error:#}"),"resubmit_automatically":false}))?;
+            let mut frame = json!({"type":"Error","session_id":conversation.session_id,
+                "error":format!("{error:#}"),"resubmit_automatically":false});
+            if error.chain().any(|cause| cause.is::<StartRefused>()) {
+                frame["code"] = json!(START_FAILED);
+            }
+            emit_json(&frame)?;
         }
     }
-    result.with_context(|| {
-        format!(
-            "Daemon session {} remains available; no automatic resubmission was attempted",
-            safe_text(&conversation.session_id)
-        )
-    })
+    with_session_context(result, &conversation.session_id)
 }
 
 fn validate_options(options: &SharedConversationOptions) -> Result<Format> {
@@ -326,7 +433,10 @@ impl Conversation {
                 && state["session"]["model_config"]["model_name"].as_str() == Some(model.as_str()),
                 "The daemon did not confirm the requested provider/model; no prompt was submitted. Inspect this session before continuing");
         }
-        self.show_binding(&state["session"])?;
+        // AGT2-N4: when a turn follows at once, "is ready" waits until it reaches the
+        // provider, so a start the daemon refuses is never preceded by it.
+        let turn_follows = !options.create_only && (options.prompt.is_some() || active.is_some());
+        self.show_binding(&state["session"], turn_follows)?;
         if options.history {
             self.show_history(&state["session"])?;
         }
@@ -417,6 +527,8 @@ impl Conversation {
         let mut active_id = submitted_id;
         let mut sequence = None;
         let mut bound = false;
+        // Whether the turn reached the provider: a model's frame arrived.
+        let mut reached = false;
         loop {
             let frame = tokio::select! {
                 frame = stream.next_event() => frame?,
@@ -440,12 +552,20 @@ impl Conversation {
                 sequence = Some(seq);
             }
             self.event(&frame)?;
+            match ready_on(&frame, reached) {
+                Ready::Show => {
+                    reached = true;
+                    self.show_ready()?;
+                }
+                Ready::Drop => self.pending_ready = None,
+                Ready::Wait => {}
+            }
             match frame["type"].as_str().context("Daemon event has no type")? {
                 "Message" => match self.handle_message(&frame["message"]).await? {
                     Interaction::Continue => {}
                     Interaction::Stop => return self.cancel(&active_id).await,
                 },
-                "Error" => bail!("{}: {}", safe_text(frame["code"].as_str().unwrap_or("daemon_error")), safe_text(frame["error"].as_str().unwrap_or("Daemon turn failed"))),
+                "Error" => return Err(turn_error(&frame, reached)),
                 "Finish" => {
                     self.renderer.finish()?;
                     return match frame["reason"].as_str() {
@@ -454,7 +574,12 @@ impl Conversation {
                     };
                 }
                 "UpdateConversation" => self.notice("The daemon resynchronized the conversation; use history to read the authoritative transcript.")?,
-                "PrivacyProviderPinned" | "ModelChange" => self.notice(&frame.to_string())?,
+                // AGT2-N4, CLIDOCS-F12: sentences in text, never the raw frame.
+                "PrivacyProviderPinned" | "ModelChange" => {
+                    if let Some(notice) = self.binding_change(&frame) {
+                        self.notice(&notice)?;
+                    }
+                }
                 "Ping" | "TurnStarted" | "TurnState" | "Notification" | "ToolCallPending"
                 | "ToolCallsRetracted" | "SteerWaiting" | "MessagesPersisted" => {}
                 kind => bail!("Unsupported daemon event {}; use a compatible client to resume this exact session without new input", safe_text(kind)),
@@ -705,20 +830,36 @@ impl Conversation {
         stderr.flush()?;
         Ok(())
     }
-    fn show_binding(&self, session: &Value) -> Result<()> {
+    /// The chat's binding: the `SessionBinding` event, and on stderr "Chat … is ready" (or the
+    /// binding itself in the JSON formats). With `defer`, the notice waits for
+    /// [`Self::show_ready`], once the turn that follows reaches the provider.
+    fn show_binding(&mut self, session: &Value, defer: bool) -> Result<()> {
         let binding = json!({"type":"SessionBinding","session_id":self.session_id,
             "provider":session["provider_name"],"model":session["model_config"],
             "privacy_tier":session["privacy_tier"]});
         self.event(&binding)?;
+        self.binding = ShownBinding::of(session);
         if !self.quiet {
-            self.notice(&binding_notice(
-                self.format,
-                &self.session_id,
-                session,
-                &binding,
-            ))?;
+            let notice = binding_notice(self.format, &self.session_id, session, &binding);
+            if defer {
+                self.pending_ready = Some(notice);
+            } else {
+                self.notice(&notice)?;
+            }
         }
         Ok(())
+    }
+
+    /// The deferred binding notice, once, now that the turn reached the provider.
+    fn show_ready(&mut self) -> Result<()> {
+        match self.pending_ready.take() {
+            Some(notice) => self.notice(&notice),
+            None => Ok(()),
+        }
+    }
+
+    fn binding_change(&mut self, frame: &Value) -> Option<String> {
+        binding_change(&mut self.binding, self.format, frame)
     }
     fn show_history(&self, session: &Value) -> Result<()> {
         if self.format == Format::StreamJson {
@@ -750,6 +891,41 @@ impl Conversation {
             )?;
         }
         Ok(())
+    }
+}
+
+/// What a turn's `PrivacyProviderPinned` or `ModelChange` frame says for a person (AGT2-N4),
+/// given what the chat was shown with (`shown`, which it updates). The daemon sends the pin on
+/// every turn that reaches a provider, so it is said only when it differs from what was shown:
+/// the chat became private, or runs on another model. The JSON formats keep the frame as it is.
+fn binding_change(shown: &mut ShownBinding, format: Format, frame: &Value) -> Option<String> {
+    if format != Format::Text {
+        return Some(frame.to_string());
+    }
+    let model = frame["model"].as_str().filter(|model| !model.is_empty())?;
+    if frame["type"] == "ModelChange" {
+        let mode = frame["mode"].as_str().filter(|mode| !mode.is_empty());
+        return Some(match mode {
+            Some(mode) => format!("Model changed to {model} in {mode} mode."),
+            None => format!("Model changed to {model}."),
+        });
+    }
+    let pinned = ShownBinding {
+        provider: frame["provider"].as_str().map(str::to_owned),
+        model: Some(model.to_owned()),
+        private: frame["privacy_tier"].as_str() == Some("private"),
+    };
+    let before = std::mem::replace(shown, pinned.clone());
+    let on = match &pinned.provider {
+        Some(provider) => format!("{provider}/{model}"),
+        None => model.to_owned(),
+    };
+    if pinned.private && !before.private {
+        Some(format!("This chat is private now and stays on {on}."))
+    } else if (pinned.provider != before.provider) || (pinned.model != before.model) {
+        Some(format!("This chat now uses {on}."))
+    } else {
+        None
     }
 }
 
@@ -1005,9 +1181,108 @@ fn binding_notice(format: Format, session_id: &str, session: &Value, binding: &V
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_notice, json_terminal_safe, safe_text, sensitive_schema, terminal_control,
-        validate_id, validate_options, validate_prompt, Format, SharedConversationOptions,
+        binding_change, binding_notice, json_terminal_safe, ready_on, safe_text, sensitive_schema,
+        terminal_control, turn_error, validate_id, validate_options, validate_prompt,
+        with_session_context, Format, Ready, SharedConversationOptions, ShownBinding, StartRefused,
     };
+
+    /// AGT2-N4: "Chat … is ready" waits for the turn that follows it to reach the provider,
+    /// and is dropped when the daemon refuses the start first; `TurnStarted`, sent before any
+    /// work that can fail, says neither.
+    #[test]
+    fn the_ready_line_waits_for_the_turn_to_reach_the_provider() {
+        let frame = |kind: &str| serde_json::json!({"type": kind});
+        assert_eq!(ready_on(&frame("TurnStarted"), false), Ready::Wait);
+        assert_eq!(ready_on(&frame("Ping"), false), Ready::Wait);
+        for kind in ["Message", "PrivacyProviderPinned", "ModelChange"] {
+            assert_eq!(ready_on(&frame(kind), false), Ready::Show, "{kind}");
+        }
+        let refused = serde_json::json!({"type": "Error", "code": "inference_start_failed"});
+        assert_eq!(ready_on(&refused, false), Ready::Drop);
+        assert_eq!(ready_on(&refused, true), Ready::Wait, "already shown");
+        let finished = serde_json::json!({"type": "Finish", "reason": "stop"});
+        assert_eq!(ready_on(&finished, false), Ready::Show);
+        let stopped = serde_json::json!({"type": "Finish", "reason": "cancelled"});
+        assert_eq!(ready_on(&stopped, false), Ready::Drop);
+    }
+
+    /// AGT2-N4, CLIDOCS-F12: a pin that agrees with what the chat was shown with says nothing
+    /// (the daemon sends one on every turn); one that makes the chat private, or moves it,
+    /// says so in a sentence. Text never gets the raw frame; the JSON formats keep it.
+    #[test]
+    fn a_privacy_pin_is_a_sentence_only_when_it_changes_something() {
+        let frame = serde_json::json!({"type": "PrivacyProviderPinned", "provider": "versa_azure",
+            "model": "gpt-5.5-2026-04-24", "privacy_tier": "private", "privacy_reason": "mcp:crew",
+            "seq": 2, "turn_id": "turn-3"});
+        let mut shown = ShownBinding {
+            provider: Some("versa_azure".into()),
+            model: Some("gpt-5.5-2026-04-24".into()),
+            private: false,
+        };
+        assert_eq!(
+            binding_change(&mut shown, Format::Text, &frame).as_deref(),
+            Some("This chat is private now and stays on versa_azure/gpt-5.5-2026-04-24.")
+        );
+        // The next turn's pin agrees with what was said.
+        assert_eq!(binding_change(&mut shown, Format::Text, &frame), None);
+        let moved = serde_json::json!({"type": "PrivacyProviderPinned", "provider": "versa_azure",
+            "model": "gpt-5.5-mini", "privacy_tier": "private"});
+        assert_eq!(
+            binding_change(&mut shown, Format::Text, &moved).as_deref(),
+            Some("This chat now uses versa_azure/gpt-5.5-mini.")
+        );
+        for text in [
+            binding_change(&mut ShownBinding::default(), Format::Text, &frame),
+            binding_change(&mut shown, Format::Text, &moved),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(!text.contains('{'), "{text}");
+        }
+        let change =
+            serde_json::json!({"type": "ModelChange", "model": "gpt-5.5-mini", "mode": "worker"});
+        assert_eq!(
+            binding_change(&mut shown, Format::Text, &change).as_deref(),
+            Some("Model changed to gpt-5.5-mini in worker mode.")
+        );
+        for format in [Format::Json, Format::StreamJson] {
+            assert_eq!(
+                binding_change(&mut shown, format, &frame),
+                Some(frame.to_string())
+            );
+        }
+    }
+
+    /// AGT2-N4: a start the daemon refused before anything reached the provider is its own
+    /// sentence, without the code or the "remains available" wrapper; a turn that failed after
+    /// it reached the provider keeps both.
+    #[test]
+    fn a_refused_start_is_the_daemons_sentence_alone() {
+        const REMOVED: &str =
+            "This chat's Crew access was removed. Grant access again to use Crew from this chat.";
+        let frame = serde_json::json!({"type": "Error", "code": "inference_start_failed", "error": REMOVED});
+        let refused = turn_error(&frame, false);
+        assert!(refused.is::<StartRefused>());
+        let shown = with_session_context(Err(refused), "20260928_2").unwrap_err();
+        assert_eq!(format!("{shown:#}"), REMOVED);
+        assert_eq!(format!("{shown:?}"), REMOVED);
+
+        let later = turn_error(&frame, true);
+        assert!(!later.is::<StartRefused>());
+        let failed = serde_json::json!({"type": "Error", "code": "provider_failure", "error": "Authentication failed."});
+        for error in [later, turn_error(&failed, false)] {
+            let shown = format!(
+                "{:#}",
+                with_session_context(Err(error), "20260928_2").unwrap_err()
+            );
+            assert!(
+                shown.starts_with("Daemon session 20260928_2 remains available; no automatic resubmission was attempted: "),
+                "{shown}"
+            );
+        }
+        assert!(with_session_context(Ok(()), "s").is_ok());
+    }
 
     /// AG-F7: text mode says what was created in words; the JSON formats keep the binding.
     #[test]
@@ -1078,6 +1353,8 @@ mod tests {
                 renderer: TextRenderer::default(),
                 continuation_owner_id: "owner-a".into(),
                 continuation_lease: None,
+                binding: Default::default(),
+                pending_ready: None,
             }
         }
 
