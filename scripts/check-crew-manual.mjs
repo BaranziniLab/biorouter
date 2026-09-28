@@ -63,6 +63,14 @@
 //     every provider card, "Commercial" where the tab says Public, mode names
 //     the app does not use, and no SageMaker default. The getting-started
 //     guides and the secret-storage page are held to the same code.
+//   * `design`: the Crew design documents (the UI spec, the broker protocol,
+//     the naming design and the CLI guide) are marked Current and cited from
+//     the code, and wave 2 changed rows each of them pinned (W2-STR-1). The UI
+//     spec's SSH failure table has a row for every connect failure the desktop
+//     words, the protocol names every capability, snapshot and hello field and
+//     storage or delivery code the broker sends, the UI spec quotes the wave-2
+//     strings it pins, the naming design may not say nothing in it is built,
+//     and the CLI guide names the daemon's answers for a lost request.
 //
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
@@ -97,6 +105,13 @@ const CREW_ROUTES = 'crates/biorouter-server/src/routes/crew.rs';
 const SIDEBAR = 'ui/desktop/src/components/BioRouterSidebar/AppSidebar.tsx';
 const BROWSER_ACCESS = 'docs/deployment/browser-access.md';
 const SPEC = 'docs/research/biorouter-crew/ui-redesign-spec.md';
+const NAMING_DESIGN = 'docs/research/biorouter-crew/naming-design.md';
+const PROTOCOL = 'docs/research/biorouter-crew/protocol-contract.md';
+const CLI_GUIDE = 'docs/research/biorouter-crew/cli-guide.md';
+const CONNECT_FAILURE = 'ui/desktop/src/components/crew/state/connectFailure.ts';
+const TIMELINE_COPY = 'ui/desktop/src/components/crew/timeline/copy.ts';
+const ACCESS_COPY = 'ui/desktop/src/components/crew/access/copy.ts';
+const NAMES_RS = 'crates/biorouter-crew/src/names.rs';
 const DROP_ZONE = 'ui/desktop/src/components/crew/files/FileDropZone.tsx';
 const MESSAGE_BODY = 'ui/desktop/src/components/crew/timeline/MessageBody.tsx';
 const FILES_COPY = 'ui/desktop/src/components/crew/files/copy.ts';
@@ -146,6 +161,35 @@ export function rustStrConst(source, name) {
 
 /** Straight and curly apostrophes read alike: the claim is the words, not the glyph. */
 const sameApostrophes = (text) => text.replace(/[’‘]/g, "'");
+
+/**
+ * The single-quoted string a TypeScript copy object gives `path`, such as `newer` or
+ * `removeChannelMember.description`: each segment but the last names a nested object, and the
+ * last a property whose value is a plain string literal. Null when any segment is absent, so a
+ * rule reading it fails instead of passing on a copy object that changed shape.
+ */
+export function tsCopyString(source, path) {
+  let scope = source;
+  const keys = path.split('.');
+  for (const key of keys.slice(0, -1)) {
+    const open = new RegExp(`\\b${key}:\\s*\\{`).exec(scope);
+    if (!open) return null;
+    let depth = 0;
+    let end = -1;
+    for (let i = open.index + open[0].length - 1; i < scope.length; i += 1) {
+      if (scope[i] === '{') depth += 1;
+      else if (scope[i] === '}' && --depth === 0) {
+        end = i;
+        break;
+      }
+    }
+    if (end < 0) return null;
+    scope = scope.slice(open.index, end + 1);
+  }
+  const last = keys[keys.length - 1];
+  const match = new RegExp(`\\b${last}:\\s*'((?:[^'\\\\\\n]|\\\\.)*)'`).exec(scope);
+  return match ? match[1].replace(/\\(['\\])/g, '$1') : null;
+}
 
 const decode = (html) =>
   html
@@ -1075,6 +1119,122 @@ export function checkCrewManual(tree = repoTree()) {
         fail(
           'product-docs',
           `${LANDING}'s SageMaker TGI row does not name its default model ${model}`
+        );
+      }
+    }
+  }
+
+  // ── design ───────────────────────────────────────────────────────────────
+  // The Crew design documents are marked Current and cited from source
+  // comments, so they may not leave out what the code now does. The wave-2
+  // fixes changed rows each of them pinned (W2-STR-1): the UI spec's SSH
+  // failure table had no row for a refused key or a stopped workspace server,
+  // the protocol contract said nothing of presence, the host's usage report or
+  // a storage fault, the naming design said nothing in it was built, and the
+  // CLI guide promised a code on every JSON error. A reviewer trusting such a
+  // row reads the fix as a regression. Each check reads the list it holds the
+  // document to from the code.
+  const designSpec = tree.read(SPEC);
+  const connectFailure = need(CONNECT_FAILURE, 'design');
+  if (designSpec !== null && connectFailure !== null) {
+    const table =
+      /CONNECT_FAILURE_CODES\b[^=]*=\s*\{([\s\S]*?)\n\};/.exec(connectFailure)?.[1] ?? '';
+    const codes = [...table.matchAll(/^\s*(crew_[a-z_]+):/gm)].map((m) => m[1]);
+    if (codes.length < 8) {
+      fail(
+        'design',
+        `found ${codes.length} codes in ${CONNECT_FAILURE}'s CONNECT_FAILURE_CODES; update this reader`
+      );
+    }
+    const section = /### SSH failure classification\n([\s\S]*?)\n#{2,3} /.exec(designSpec)?.[1];
+    if (section === undefined) {
+      fail('design', `${SPEC} has no "### SSH failure classification" section`);
+    } else {
+      const firstCells = markdownBlocks(section)
+        .filter((block) => block.startsWith('|'))
+        .map((row) => row.split('|')[1] || '');
+      for (const code of codes) {
+        if (!firstCells.some((cell) => cell.includes(`\`${code}\``))) {
+          fail('design', `${SPEC}'s SSH failure table has no row for \`${code}\``);
+        }
+      }
+    }
+  }
+  const brokerForDesign = need(BROKER, 'design');
+  const protocol = need(PROTOCOL, 'design');
+  if (brokerForDesign !== null && protocol !== null) {
+    const capabilities = [
+      ...(/fn capabilities\(\)[\s\S]*?\n {4}\}/.exec(brokerForDesign)?.[0] ?? '').matchAll(
+        /"([a-z0-9_]+)"/g
+      ),
+    ].map((m) => m[1]);
+    if (capabilities.length < 6) {
+      fail(
+        'design',
+        `found ${capabilities.length} capabilities in ${BROKER}'s capabilities(); update this reader`
+      );
+    }
+    const fields = [
+      ...new Set(
+        [...brokerForDesign.matchAll(/\b(?:snapshot|hello)\["([a-z_]+)"\] = /g)].map((m) => m[1])
+      ),
+    ];
+    if (!fields.includes('unread') || !fields.includes('state')) {
+      fail(
+        'design',
+        `found no snapshot["unread"] or hello["state"] in ${BROKER}; update this reader`
+      );
+    }
+    const codes = ['not_delivered', 'storage_full', 'storage_failed'].filter((code) =>
+      brokerForDesign.includes(`"${code}"`)
+    );
+    for (const [kind, names] of [
+      ['capability', capabilities],
+      ['field', fields],
+      ['refusal code', codes],
+    ]) {
+      for (const name of names) {
+        // A code span that starts with the name: `usage {state_bytes, …}` names `usage`.
+        if (!new RegExp(`\`${name}(?![a-z0-9_])`).test(protocol)) {
+          fail('design', `${PROTOCOL} never names the ${kind} \`${name}\` that ${BROKER} sends`);
+        }
+      }
+    }
+  }
+  const copyQuotes = [
+    [TIMELINE_COPY, ['newer', 'jumpToFirstUnread', 'mentionsYou']],
+    [ACCESS_COPY, ['fixedOnFirstAccess']],
+    [DIALOGS_COPY, ['removeChannelMember.description']],
+  ];
+  for (const [file, keys] of copyQuotes) {
+    const source = need(file, 'design');
+    if (source === null || designSpec === null) continue;
+    for (const key of keys) {
+      const text = tsCopyString(source, key);
+      if (text === null) {
+        fail('design', `${file} has no string ${key}; update this rule's copy list`);
+      } else if (!sameApostrophes(designSpec).includes(sameApostrophes(text))) {
+        fail('design', `${SPEC} does not quote ${key} from ${file}: "${text}"`);
+      }
+    }
+  }
+  const naming = need(NAMING_DESIGN, 'design');
+  if (
+    naming !== null &&
+    tree.read(NAMES_RS) !== null &&
+    /Nothing in it is built yet/.test(naming)
+  ) {
+    fail('design', `${NAMING_DESIGN} says nothing in it is built, but ${NAMES_RS} ships it`);
+  }
+  const cliGuide = need(CLI_GUIDE, 'design');
+  if (cliGuide !== null && refusalSource !== null) {
+    for (const name of ['OUTCOME_UNKNOWN', 'NOT_SENT']) {
+      const code = rustStrConst(refusalSource, name);
+      if (code === null) fail('design', `${REFUSAL_RS} has no ${name}; update this reader`);
+      else if (!cliGuide.includes(`\`${code}\``)) {
+        fail(
+          'design',
+          `${CLI_GUIDE} never names \`${code}\`, the daemon's answer for a lost request`
         );
       }
     }

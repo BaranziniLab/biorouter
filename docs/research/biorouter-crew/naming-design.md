@@ -1,7 +1,7 @@
 # Crew human-readable identity and naming design
 
 > **What this is.** The design for how BioRouter Crew refers to people, workspaces, teams and channels by memorable names instead of machine IDs, how a person is invited and joins a workspace by `@username` without copying machine strings, and the exact code, compatibility, test and review changes needed, cut into shippable slices.
-> **Status:** Current. Approved design, 2026-09-23, revised after an adversarial security review and a feasibility review of the first draft. Nothing in it is built yet; [implementation status](implementation-status.md) records progress.
+> **Status:** Current. Approved design, 2026-09-23, revised after an adversarial security review and a feasibility review of the first draft, and built: slices S0 through S3a are implemented and joining by invitation is on by default since 2026-09-25, while S4 (discovery and short codes) is deferred. [Implementation status](implementation-status.md) records what was measured. After the merge, the second round of fixes for the 2026-09-27 live QA (wave 2) changed one rule, and its row says *Amended by wave 2*: the CLI prints a display name without Unicode isolates when it is ASCII (F10). Where this design and the code disagree, the code is what shipped.
 > **Audience:** Implementers and reviewers of the broker (`crates/biorouter-crew`), daemon core and routes, CLI and GUI; the independent reviewer who signs off the join slice; the docs keeper.
 
 The first draft of this design (join by host `@username`, workspace discovery, and an 8-digit code computed by the
@@ -80,7 +80,7 @@ review. Every finding of both reviews is answered below; the few that are deferr
 | Chips, avatars, @-mention autocomplete | Display name with `@username` in a tooltip; both on a collision | — |
 | Former member | Label plus ` · former member`, muted | `Bob Lee (@bob) · former member` |
 | ID in no projection | `Unknown member`, with the ID only under Copy ID | — |
-| CLI human output and model-facing text | `"Display name" (@username)`, the display name quoted and wrapped in Unicode isolates (U+2068 … U+2069) | `"Bob Lee" (@bob) · 14:02  The analysis is ready.` |
+| CLI human output and model-facing text | `"Display name" (@username)`, the display name quoted and wrapped in Unicode isolates (U+2068 … U+2069). *Amended by wave 2 (F10):* the CLI adds the isolates only when the display name, once escaped, is not ASCII, as it already did for team and file names. ASCII holds no right-to-left text, and isolates are invisible in a terminal but travel into anything copied, so `"Alice Chen"` failed a search for that very text. Escaping comes first, so a name's own bidirectional controls print as `\u{…}` and cannot make it look ASCII. Model-facing labels were built differently from the start: the daemon's `labels` (`person_label` in `crates/biorouter/src/crew/mod.rs`) are the sanitized `Display name (@username)`, without quotes or isolates | `"Bob Lee" (@bob) · 14:02  The analysis is ready.` |
 
 **Equal names.** A display name is equal to the username when it only repeats it, so the person has not chosen one:
 the same text case-insensitively, or the username with its `@` and `#` removed — the default an SSSD account gets,
@@ -689,7 +689,7 @@ interfaces are edited by hand.
 
 | Slice | Change |
 |---|---|
-| S0/S1a | `output.rs`: type-specific human formatters for messages, members, teams, channels, invites, connections, tasks, grants, privacy and files; names quoted with Unicode isolates; `--show-ids`; golden tests with no UUID or 64-hex string |
+| S0/S1a | `output.rs`: type-specific human formatters for messages, members, teams, channels, invites, connections, tasks, grants, privacy and files; names quoted with Unicode isolates (*amended by wave 2 (F10):* only a name that is not ASCII); `--show-ids`; golden tests with no UUID or 64-hex string |
 | S1b | `args.rs`/`mod.rs`: every object argument accepts a selector resolved through `POST /crew/resolve`; `#` optional; `--connection NAME`; `invites create @bob --team T \| --channel T/c`; `invites accept` implicit when one is pending; `remove-member c @bob [--former]`; `ownership offer c @bob`; `history\|search\|watch c`; `channels mark-read c`; `enroll revoke @bob --confirm @bob` (required without a TTY, since `--approval-key-stdin` consumes stdin; `enroll revoke <ID>` stays prompt-free for scripts, FR16) |
 | S2a | `teams rename T NEW`, `channels rename T/c NEW`, `workspace rename NEW`; create commands echo the stored name |
 | S3a | `connections join-invitation -` (reads the pasted message on stdin), `connections invitation [--for @bob]`, `crew join` (prints the code and waits), `enroll invite @bob [--add-device]`, `enroll pending`, `enroll approve @bob CODE`, `enroll cancel @bob`; the legacy `enroll invite --uid --public-key` and `enroll accept` stay, hidden in help and marked deprecated |

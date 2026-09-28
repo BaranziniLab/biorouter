@@ -16,6 +16,7 @@ import {
   repoTree,
   rustStrConst,
   saysTemplate,
+  tsCopyString,
 } from './check-crew-manual.mjs';
 
 const real = repoTree();
@@ -836,6 +837,153 @@ test('product-docs: the landing and product pages match the provider screens and
     },
     'product-docs',
     /no longer shows Launch on the first run screen only/
+  );
+});
+
+test('tsCopyString reads a nested copy string and says when the path is gone', () => {
+  const source = [
+    'export const copy = {',
+    "  newer: 'Newer messages',",
+    '  removeMember: {',
+    '    title: (who: string) => `Remove ${who}?`,',
+    '    description:',
+    "      'They’ll lose access. It\\'s kept.',",
+    '  },',
+    '};',
+  ].join('\n');
+  assert.equal(tsCopyString(source, 'newer'), 'Newer messages');
+  assert.equal(tsCopyString(source, 'removeMember.description'), "They’ll lose access. It's kept.");
+  assert.equal(tsCopyString(source, 'removeMember.confirm'), null);
+  assert.equal(tsCopyString(source, 'missing.description'), null);
+});
+
+// The Crew design documents as they stood before the wave-2 amendments
+// (W2-STR-1): each mutant puts one pre-amendment row back into the real tree.
+const SPEC_DOC = 'docs/research/biorouter-crew/ui-redesign-spec.md';
+const PROTOCOL_DOC = 'docs/research/biorouter-crew/protocol-contract.md';
+const NAMING_DOC = 'docs/research/biorouter-crew/naming-design.md';
+const CLI_GUIDE_DOC = 'docs/research/biorouter-crew/cli-guide.md';
+
+test('design: the UI spec has a row for every connect failure the desktop words (W2-STR-1, F5, R-7)', () => {
+  const dropRow = (code) => (text) =>
+    text
+      .split('\n')
+      .filter((line) => !line.startsWith(`| \`${code}\` |`))
+      .join('\n');
+  assertCaught({ [SPEC_DOC]: dropRow('crew_ssh_key_refused') }, 'design', /crew_ssh_key_refused/);
+  assertCaught(
+    { [SPEC_DOC]: dropRow('crew_broker_not_running') },
+    'design',
+    /crew_broker_not_running/
+  );
+  // The other direction: a code the desktop learns later needs a row too.
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/state/connectFailure.ts': swap(
+        "  crew_ssh_failed: 'ssh_failed',",
+        "  crew_ssh_failed: 'ssh_failed',\n  crew_ssh_banner_refused: 'ssh_failed',"
+      ),
+    },
+    'design',
+    /crew_ssh_banner_refused/
+  );
+  // A reader that finds nothing fails rather than passing.
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/state/connectFailure.ts': (text) =>
+        text.replaceAll('CONNECT_FAILURE_CODES', 'CONNECT_CODES'),
+    },
+    'design',
+    /update this reader/
+  );
+});
+
+test('design: the protocol contract names what the broker sends (W2-STR-1, M1, M18, R-2, R-3)', () => {
+  assertCaught(
+    { [PROTOCOL_DOC]: (text) => text.replaceAll('`presence_v1`', 'presence') },
+    'design',
+    /capability `presence_v1`/
+  );
+  assertCaught(
+    { [PROTOCOL_DOC]: (text) => text.replaceAll('`online_principal_ids`', 'who is online') },
+    'design',
+    /field `online_principal_ids`/
+  );
+  assertCaught(
+    { [PROTOCOL_DOC]: (text) => text.replaceAll('`usage', '`the usage report') },
+    'design',
+    /field `usage`/
+  );
+  assertCaught(
+    { [PROTOCOL_DOC]: (text) => text.replaceAll('`not_delivered`', 'a refusal') },
+    'design',
+    /refusal code `not_delivered`/
+  );
+  // A capability the broker advertises later is caught from the code's side.
+  assertCaught(
+    {
+      'crates/biorouter-crew/src/broker.rs': swap(
+        '            "presence_v1",\n',
+        '            "presence_v1",\n            "typing_v1",\n'
+      ),
+    },
+    'design',
+    /capability `typing_v1`/
+  );
+});
+
+test('design: the UI spec quotes the wave-2 strings it pins (W2-STR-1, M6, M7, AG-F1, M11)', () => {
+  assertCaught(
+    { [SPEC_DOC]: (text) => text.replaceAll('Jump to first unread', 'Jump to the unread') },
+    'design',
+    /jumpToFirstUnread/
+  );
+  assertCaught(
+    {
+      [SPEC_DOC]: (text) =>
+        text.replaceAll(
+          "The first access fixes this chat's workspace, channel and model.",
+          'Access ends when you revoke it.'
+        ),
+    },
+    'design',
+    /fixedOnFirstAccess/
+  );
+  assertCaught(
+    {
+      [SPEC_DOC]: (text) =>
+        text.replaceAll('You can add them again with Add people.', 'You can invite them again.'),
+    },
+    'design',
+    /removeChannelMember\.description/
+  );
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/timeline/copy.ts': (text) =>
+        text.replace('jumpToFirstUnread:', 'jumpToUnread:'),
+    },
+    'design',
+    /has no string jumpToFirstUnread/
+  );
+});
+
+test('design: the naming design and the CLI guide may not deny what shipped (W2-STR-1, DW-10, R-3)', () => {
+  const statusLine = (text) => text.split('\n').find((line) => line.startsWith('> **Status:**'));
+  assertCaught(
+    {
+      [NAMING_DOC]: (text) =>
+        text.replace(
+          statusLine(text),
+          '> **Status:** Current. Approved design, 2026-09-23. Nothing in it is built yet; [implementation status](implementation-status.md) records progress.'
+        ),
+    },
+    'design',
+    /says nothing in it is built/
+  );
+  assertCaught(
+    { [CLI_GUIDE_DOC]: (text) => text.replaceAll('`crew_outcome_unknown`', 'an unknown outcome') },
+    'design',
+    /crew_outcome_unknown/
   );
 });
 

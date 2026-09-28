@@ -1,7 +1,7 @@
 # Crew UI redesign specification
 
 > **What this is.** The final design for the BioRouter Crew desktop GUI: a clean, Slack-like, layered interface built only from BioRouter's design system. It covers the layout, every screen and control mapped from the current UI, the component and file architecture, progressive disclosure, the full copy deck, identity rules, revoke, privacy, motion, accessibility, theming, the regression-test migration and the acceptance criteria novice reviewers will apply.
-> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). Where this spec and the code disagree, the code is what shipped.
+> **Status:** Current. Approved design, 2026-09-23, now built: every package of [plan §16](implementation-plan.md#work-packages-and-order) is implemented, and [implementation status](implementation-status.md) records what was measured. Three later decisions changed it, and each changed row says so: files can be dragged in or pasted after a native confirmation ([D-DROP](implementation-plan.md#live-qa-round-2-design-changes-2026-09-24)), message bodies render as Markdown ([UI-TIMELINE outcome](implementation-plan.md#work-packages-and-order)), and each file control is named for its file (Q3-13). After the merge, a live QA of the merged build on 2026-09-27 was followed by two rounds of fixes, and the second round (wave 2, committed 2026-09-27) changed more rows. Each of those rows says *Amended by wave 2* and names the QA finding it answers: where the timeline opens, how it pages and what it marks read (M6, M7), unread counts and mentions outside the Crew sidebar (M2), who is online (M18), the SSH failure table and the screens it drives (F5, R-7), the Chat access consent (AG-F1), and the remove-member and remove-connection confirmations (M11, CLI-1). Where this spec and the code disagree, the code is what shipped.
 > **Audience:** Implementers of the Crew GUI (`ui/desktop/src/components/crew/`), the daemon, broker and CLI implementers whose data it shows, reviewers who judge it with a novice walkthrough, and whoever migrates the Crew regression tests.
 
 Crew today is one 2,175-line component (`CrewView.tsx`) that renders a form wearing a page header: a native
@@ -41,6 +41,11 @@ the companion [naming design](naming-design.md).
    every state once a connection is selected, including setup, trust and join screens.
 4. **Teams are collapsible sidebar sections; channels are rows.** Bold means unread. Sidebar sections for
    Invitations, Waiting to join (host) and Agents (running tasks and connected chats) appear only when non-empty.
+   *Amended by wave 2 (M2):* unread also shows outside Crew. The app sidebar's Crew item carries the sum of every
+   connected workspace's unread counts (read from each snapshot every 10 s, `crew/attention/`), the dock or taskbar
+   badge shows it, and a message that arrives while Crew is not in front raises a notification: "{person} mentioned
+   you in #{channel}" for a mention of `@you`, else "{n} new messages in {workspace}", at most one per channel a
+   minute and six a minute in all. A mention of the viewer is drawn as a chip in the timeline.
 5. **The channel name is the channel menu.** `# methods ▾` opens a real `DropdownMenu`; a separate details toggle
    opens the pane. Only real menus carry a chevron.
 6. **The details pane is non-modal.** Channel details (About, Members, Files, Access), Ask my agent and Chat access
@@ -415,6 +420,9 @@ x=0                        240                                                  
 └─────────────────────────────────────────────────┘
 ```
 
+*Amended by wave 2 (AG-F1):* the posting line ends in "'s agent", "Posts in #methods as Alice Chen (@alice)'s
+agent", because a granted chat's posts appear as the person's agent, never as the person.
+
 ## Information architecture
 
 ### The Crew sidebar
@@ -465,11 +473,13 @@ The daemon (connect route) returns a typed `code` with the unchanged message tex
 
 | Code | Cause the daemon detected | Surface | One action |
 |---|---|---|---|
-| `crew_ssh_auth_required` | `Permission denied`, keyboard-interactive needed, or exit 255 with no live master connection | Sign in opens by itself, once per user-initiated Connect, Join or Reconnect | (the sign-in dialog) |
-| `crew_ssh_host_key_unknown` | `Host key verification failed` for a host absent from known_hosts | Tier-3 pane "Can't verify {host} yet" with the offered fingerprint | Try again |
+| `crew_ssh_auth_required` | `Permission denied`, keyboard-interactive needed, or exit 255 with no live master connection. *Amended by wave 2 (F5):* only when the refusal offers a password or keyboard-interactive method | Sign in opens by itself, once per user-initiated Connect, Join or Reconnect | (the sign-in dialog) |
+| `crew_ssh_key_refused` | *Added by wave 2 (F5).* `Permission denied (publickey)` with no method a person could answer, so a password prompt would never appear | Connection bar "{host} refused this computer's SSH key for {user}. Check Your server login in Connection settings."; the offline screen keeps its title and says "It refused this computer's SSH key for {user}. Check Your server login in Connection settings." beside **Connection settings…**. Sign in does not open, and a chat's "Connect in Crew" does not connect again by itself | Connection settings… |
+| `crew_ssh_host_key_unknown` | `Host key verification failed` for a host absent from known_hosts. *Amended by wave 2 (F5):* the error carries `host`, the hop OpenSSH named, and a hop that is not the saved server, such as a jump host, is the host the screens name | Tier-3 pane "Can't verify {host} yet" with the offered fingerprint | Try again |
 | `crew_ssh_host_key_changed` | `REMOTE HOST IDENTIFICATION HAS CHANGED` | Tier-3 danger pane "{host}'s identity changed", old and new fingerprints when known | Copy details for IT (no accept, no removal command) |
 | `crew_ssh_unreachable` | Could not resolve, refused, timed out, no route | Connection bar "Can't reach {host}." | Try again (plus Connection settings… in the note) |
 | `crew_bridge_missing` | Remote command exit 127, or "No such file" for `~/.local/bin/biorouter-crew` | Tier-3 pane "Crew isn't set up for your account on {host}" | Copy a message for the host |
+| `crew_broker_not_running` | *Added by wave 2 (R-7).* SSH worked and the bridge ran, but no workspace server answers on its socket: it was stopped, killed, or the server restarted | Card "Crew isn't running on {server}". The host reads "Start it on the server with this line, then connect:" above the start command in a `CopyField`; a member reads "The workspace server isn't running. Ask {host} to start Crew."; when this computer cannot tell which it is, it says both. The connection bar says the same in one line | Connect to {workspace} |
 | `crew_handoff_failed` | Sign-in succeeded but the bridge did not start | Same pane as `crew_bridge_missing` | Same |
 | `crew_workspace_identity_mismatch` | `hello` signature or workspace ID does not match the pin | Tier-3 danger pane "This isn't the workspace you joined" | Copy details; Connection settings… |
 | `crew_ssh_failed` or no code | Anything else | Connection bar with the daemon's text | Try again |
@@ -504,7 +514,7 @@ old `/host|SSH|key|authentication/i` match is deleted because it sent every SSH 
 | `Restricted` / `Public-safe` | `Badge tone="neutral"` with a tooltip ("Public models can't read it." / "Public models may read it when the workspace allows.") | Static; no padlock (the padlock means privacy tier only) |
 | `Archived` | `Badge tone="neutral"` | Archived channels only |
 | Agent-access chip | ghost `sm` button, `Bot` icon and "{n} chats" (or "{n} tasks" / "{n} agents"); accessible name "{n} chats or agents can post here" | Shown when at least one active grant or running task posts here; opens the Access tab |
-| Member stack | up to three 20px avatars with a 2px ring and −4px overlap, then the count (`tabular-nums`); accessible name "{n} members" | Opens the Members tab |
+| Member stack | up to three 20px avatars with a 2px ring and −4px overlap, then the count (`tabular-nums`); accessible name "{n} members". *Amended by wave 2 (M18):* where the broker reports presence (`online_principal_ids`), online avatars are marked and the name reads "{n} members, {k} online"; the Members tab and the People tab put a small status dot, named "Online", after an online person's name. An older broker sends no field, and then nothing is marked | Opens the Members tab |
 | Details toggle | ghost round `PanelRight`, `aria-pressed`, accessible name "Channel details" | Opens or closes the pane on About |
 
 There is no privacy chip in the header: privacy has one home, the status row, directly above-left.
@@ -523,17 +533,17 @@ menu** (right-click, or Shift+F10 on the focused row): Channel details · Mark a
 
 | Element | Spec |
 |---|---|
-| **Top of history** | With a full page (≥ 200 messages): a sentinel row with a ghost `sm` **Older messages** (pinned). It loads automatically when the sentinel scrolls into view (`IntersectionObserver`, guarded when absent, as in jsdom); the button is the keyboard and test path. `aria-busy="true"` on the log while a page loads. |
+| **Top of history** | With a full page (≥ 200 messages): a sentinel row with a ghost `sm` **Older messages** (pinned). It loads automatically when the sentinel scrolls into view (`IntersectionObserver`, guarded when absent, as in jsdom); the button is the keyboard and test path. `aria-busy="true"` on the log while a page loads. *Amended by wave 2 (M6):* an older page is added above the messages on screen, and the first row the reader could see stays where it was; it no longer replaces the view. The channel's window holds at most 600 messages (`MESSAGE_WINDOW_MAX`, three pages); past that its newest end gives way, and the end of the log then offers **Newer messages**, which adds the next page below and goes back to the live tail once it reaches it. |
 | **Channel intro** | When the start is loaded: `Hash` at 20px, **Welcome to #methods** (pinned, `text-subheading`), one line "Alice Chen (@alice) created this channel.", and for the owner one secondary **Add people**. No second "Ask my agent" here: the composer's button must stay the only control with that name. |
 | **Day divider** | A hairline with a centred `text-supporting` pill on `bg-background-canvas`, `rounded-inner`: Today, Yesterday, Monday, September 22, or September 22, 2025. `position: sticky; top: 8px`. |
-| **New line** | A 1px `--accent-bar` rule with a right-aligned `New` in `text-chip text-text-accent`, drawn before the first message after `snapshot.read_positions[channelId]` (or before the last `unread` messages when no position exists). Computed when the channel opens; fixed until the channel changes. Accent, not danger: unread is live state, not a failure. |
+| **New line** | A 1px `--accent-bar` rule with a right-aligned `New` in `text-chip text-text-accent`, drawn before the first message after `snapshot.read_positions[channelId]` (or before the last `unread` messages when no position exists). Computed when the channel opens; fixed until the channel changes. Accent, not danger: unread is live state, not a failure. *Amended by wave 2 (M7):* a channel with unread messages opens at the New line, not at the newest message, once per channel, when the first unread message is in the window. When more is unread than the window holds, it opens at the newest message as before, marks nothing read, and the pill slot offers **Jump to first unread**, which adds older pages until the first unread message is loaded (or the channel's start is, or the window is full) and puts the reader there. |
 | **Message group** | Head row: 32px avatar (people: circle with initials; agent posts: square with the Bot glyph), author (`PersonName context="header"`), badges, time (`text-supporting tabular-nums`, "10:02 AM"; full date and time in a `Tooltip`). Continuation rows show only the body; the time appears in the 44px gutter on hover and focus. A group breaks on a new author, a gap over 5 minutes, a day divider, the New line, or human versus agent. |
 | **Agent author** | "Alice Chen's agent" (or "Your agent" for mine), `@alice`, `Badge` "Agent". |
 | **Restricted marker** | Shown only when a message's restriction differs from the channel's: a muted "Restricted" after the time with the tooltip "Only private models can read this message." |
 | **Body** | *Amended at build.* Markdown, rendered by the Crew-only renderer in `crew/timeline/MessageBody.tsx`, not the plain text this row first specified; the [UI-TIMELINE outcome](implementation-plan.md#work-packages-and-order) gives its rules. Long bodies fold with `utils/messageClamp.ts`. |
 | **Row actions** | A floating cluster at top-right (28px ghost buttons on the popover surface): **Copy text**, then `⋯` → Copy message ID. Revealed on `:hover` and `:focus-within`; always visible under `@media (hover: none)`. |
 | **Task status row** | A line, not a card (design.md D-17): a 32px agent tile, "Your agent · {status word}" (`text-label`), the task's first line muted beneath, the inline action, a visible **Stop** (`ghost sm text-text-danger`, accessible name "Stop task") only while cancellable, and `⋯` (Copy task ID, Open chat history, Copy error). Anchored after the first message carrying the run's `run_id` (the agent's "Task: …" post), else at the end of the log. Only the owner's runs appear (`state.runs` is owner-scoped). |
-| **Viewing history** | While a history page is shown, a pill 12px above the composer: **Viewing earlier messages** (pinned) and **Jump to latest** (clears the page, then `refresh()`). Observer message frames are still ignored while paging. |
+| **Viewing history** | While a history page is shown, a pill 12px above the composer: **Viewing earlier messages** (pinned) and **Jump to latest** (clears the page, then `refresh()`). Observer message frames are still ignored while paging. *Amended by wave 2 (M6):* "a history page is shown" now means the window no longer reaches the newest message, which happens only once older pages have filled its 600 messages; until then older pages sit above the live tail and no pill shows. The log keeps room at its end for any pill, so a pill never covers the last row. |
 | **Scrolled up, live** | The same pill slot shows **↓ Jump to latest** when new messages arrive below the viewport. |
 
 **Run status words** (`crewStatus.ts`):
@@ -658,7 +668,7 @@ the pane survives a manual refresh (C1, CVT:437-466).
 | `loading` | First `GET /crew/connections` in flight | After a 150ms delay: sidebar skeleton (2 headers, 6 rows) and 4 message blocks | — |
 | `welcome` | No saved connection | First-run empty state (wireframe) | **Join a workspace**; link Host a new workspace |
 | `connecting` | Connect or sign-in in flight, no snapshot | Setup card "Connecting to {host}…" | — |
-| `offline` | Saved `disconnected`, no failure code | `EmptyState` "{workspace} is offline" / "Connect to see your channels." | **Connect to {workspace}** |
+| `offline` | Saved `disconnected`, no failure code | `EmptyState` "{workspace} is offline" / "Connect to see your channels." *Amended by wave 2 (F5, R-7):* after `crew_ssh_key_refused` the description names the refused key and adds **Connection settings…**, and after `crew_broker_not_running` a card "Crew isn't running on {server}" replaces it, as the [SSH failure table](#ssh-failure-classification) says | **Connect to {workspace}** |
 | `sign-in` | Last failure `crew_ssh_auth_required` and the dialog was closed | "Sign in to {host}" / "The server needs your password or a verification code." | **Sign in** |
 | `trust` | A trust code | The tier-3 panes above; the unknown-key pane's help offers **Open a terminal here** (the embedded terminal dock) for comparing and adding the verified key. Crew itself never accepts a key | per pane |
 | `not-set-up` | `crew_bridge_missing` or `crew_handoff_failed` | "Crew isn't set up for your account on {host}" / "It's installed once per account, usually by your host or IT team." A `CopyField` holding a message for the host, and a disclosure **Install it yourself** with the install commands | **Try again** |
@@ -821,7 +831,10 @@ or a test must act on the background. The flows that need that (Ask my agent and
   validation included (C8).
 - Toasts only for results that happen off-screen: "Invitation sent to Bob Lee (@bob)", "Bob Lee (@bob) joined lab",
   "Ownership offered to Bob Lee (@bob)", "lab is now Private for everyone. Agents with access need permission again."
-  Copy never toasts.
+  Copy never toasts. *Amended by wave 2 (M11):* every "Added" confirmation and the "added you" toast name a person
+  with `personLabel(person, 'inline')`, never `@username` alone or a first name, and a channel with its team in front
+  when another of the reader's teams has a channel of that name ("Alice Chen (@alice) added you to Chen Lab /
+  #general"). An addition to a team through its `#general` is announced as the team ("added you to Bench Crew").
 
 **Connection bar** (top of the channel column, under the header): at most one `Note` of each kind, in this order:
 the observation error (Retry); an observer or global action error (Dismiss, a 20px ×); the one highest-priority
@@ -875,7 +888,7 @@ was added to your account on {date}." with **Review** opening Keys and security)
 | S2d token input, **Join workspace**, **Initialize as workspace host**, "Enrollment public key: …" | The join state machine; the token path under **Other ways to join** with the join request in a `CopyField`; Initialize becomes **Create workspace** in the Host dialog | `auth.enroll` / `auth.bootstrap` unchanged; S3a adds `…/join` |
 | S3 "Choose a channel" / "Start your first team", **Create team** | `no-team` and `no-channel` variants | `team.create` / `channel.create` |
 | S4 channel view | The channel view | — |
-| S4 live versus history | Viewing earlier messages pill + Jump to latest | same `messages.history {before, limit:200, latest:true}` |
+| S4 live versus history | Viewing earlier messages pill + Jump to latest. *Amended by wave 2 (M6, M7):* plus **Newer messages** at a window's end and **Jump to first unread** | same `messages.history {before, limit:200, latest:true}`; a newer page asks `{after, limit}` |
 | S4 archived (disabled composer + footer) | Header badge + archived bar | — |
 | S4 owner: header **Invite**, **Channel settings** | Channel menu Add people… and the pane's About and Members tabs | `invitation.create` etc. |
 | S4 ownership offer banner + **Accept ownership** | Note above the composer, same button | same `transfer.accept` |
@@ -924,7 +937,7 @@ was added to your account on {date}." with **Review** opening Keys and security)
 | Breadcrumb `{connection} / {team}` | Removed (the sidebar shows both; the agent pane and unknown-outcome text keep a destination) | — |
 | `<h2># name</h2>` + Archived pill | Band title menu + badges | — |
 | `{n} members · {classification} · SSH @user` | Member stack; classification badge; identity in the You row | — |
-| **Mark read** | Automatic when the newest message has been visible for 1s in a focused window and `unread > 0`, at most once per 5s per channel, no refresh; plus the menu item | `channel.read` |
+| **Mark read** | Automatic when the newest message has been visible for 1s in a focused window and `unread > 0`, at most once per 5s per channel, no refresh; plus the menu item. *Amended by wave 2 (M7):* automatic mark-read goes only up to the newest message that has been on screen for a whole second (two looks a second apart find it), never to the newest message loaded, and nothing is marked while the first unread message is outside the window, because the broker keeps one watermark per channel and a write cannot be taken back | `channel.read` |
 | **Refresh channel** icon | Channel menu **Refresh channel** (pinned) | `refresh()` |
 | History row (**Older messages**, "Viewing earlier messages", **Latest messages**) | Top sentinel **Older messages**, history pill, **Jump to latest** | same |
 | Empty timeline "Welcome to #name" + two sentences | Channel intro (title pinned) | — |
@@ -1355,6 +1368,8 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `msg.copyText` / `msg.copyId` / `msg.more` | Copy text · Copy message ID · More actions |
 | `msg.unknown` / `msg.former` | Unknown member · former member |
 | `history.viewing` / `history.jump` | **Viewing earlier messages** (pinned) · Jump to latest |
+| `log.newer` / `log.loadingNewer` / `history.firstUnread` | *Added by wave 2 (M6, M7); `crew/timeline/copy.ts` is the source.* Newer messages · Loading newer messages… · Jump to first unread |
+| `msg.mentionsYou` | *Added by wave 2 (M2).* mentions you *(read after a row's author and time when its message mentions the viewer's `@username` outside code; the mention is drawn as a chip and the row takes an accent)* |
 | `task.status.*` | Starting… · Working… · Waiting for your approval · Stopping… · Stop not confirmed · Interrupted · Outcome unknown · Done · Couldn't finish · Stopped |
 | `task.*` | Open *(accessible name: Open agent conversation)* · Review · Stop *(accessible name: Stop task)* · Try stopping again · Copy task ID · Open chat history · Copy error |
 | `task.stopConfirm` | Stop your agent? · It stops working on this task. Anything it already did stays done. · Keep running · Stop task |
@@ -1406,7 +1421,8 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `note.manage` | Manage access |
 | `note.revoked` / `note.expired` / `note.grantAgain` | This chat's Crew access was revoked. · This chat's access expired. · Grant again |
 | `access.paneTitle` | Chat access |
-| `access.willBeAble` / `access.read` / `access.post` / `access.expiry` | “{chat}” will be able to · Read #{channel} · Post in #{channel} as {person, authority} · Access ends when you revoke it, or after an hour. |
+| `access.willBeAble` / `access.read` / `access.post` / `access.expiry` | “{chat}” will be able to · Read #{channel} · Post in #{channel} as {person, authority} · Access ends when you revoke it, or after an hour. *Amended by wave 2 (AG-F1):* the post line names the person's agent, "Post in #{channel} as Alice Chen (@alice)'s agent", because that is how the chat's posts appear |
+| `access.consentWorkspace` / `access.consentModel` / `access.fixedOnFirstAccess` | *Added by wave 2 (AG-F1); `crew/access/copy.ts` is the source.* Workspace · Model · The first access fixes this chat's workspace, channel and model. |
 | `access.allow` | **Allow this conversation to read and post here** (pinned) |
 | `access.connected` / `access.backToChat` / `access.openChat` | Connected. · Back to chat · Open chat |
 | `access.revokeButton` | Revoke access |
@@ -1464,7 +1480,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 |---|---|
 | `signIn.title` / `signIn.lead` | Sign in to {host} · Type your password or verification code in the box below. Nothing you type is saved. |
 | `signIn.close` | Close *(accessible name: **Close authentication connection**, pinned)* |
-| `signIn.ended` | **SSH authentication ended (exit {code})** (pinned fragment). Choose Reconnect to check the connection. |
+| `signIn.ended` | **SSH authentication ended (exit {code})** (pinned fragment). Choose Reconnect to check the connection. *Amended by wave 2 (F5):* the window has no Reconnect, so it now ends "Close this window, then choose Connect to try again." |
 | `signIn.inputLost` / `signIn.needsDesktop` | Your input couldn't reach the server. Close this sign-in and try again. · Signing in needs the Biorouter desktop app. |
 | `signIn.help` | Trouble signing in? · Use the same username and password you use for this server. · If your IT team gave you a jump host, add it in Connection settings. · Crew checks servers against this file: |
 | `trust.unknown.*` | Can't verify {host} yet · Crew only connects to servers you've already verified. · Fingerprint the server offered · How do I verify it? · 1. Get {host}'s fingerprint from your IT team or your institution's directory. Check jump hosts too. 2. Compare it using your usual SSH setup, then add the full key to your known-hosts file. A fingerprint alone isn't enough. 3. Come back and choose Try again. · Try again |
@@ -1472,6 +1488,7 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | `trust.workspace.*` | This isn't the workspace you joined · The server answered with a different workspace key. Don't continue until {host person} confirms what changed. · Copy details · Connection settings… |
 | `bar.retry` | Retry *(accessible name: **Retry Crew updates**, pinned)* |
 | `bar.unreachable` | Can't reach {host}. · Try again |
+| `bar.keyRefused` / `bar.brokerStopped*` | *Added by wave 2 (F5, R-7); `crew/channel/copy.ts` is the source.* {host} refused this computer's SSH key for {user}. Check Your server login in Connection settings. · Crew isn't running on {host}. Start it on the server, then connect. *(the host)* · The workspace server isn't running. Ask {host person} to start Crew. *(a member)* · Crew isn't running on {host}. Its host starts it again on the server. *(when this computer cannot tell)* |
 | `bar.vaultLocked` | Your Crew vault is locked. · Unlock |
 | `bar.reconnecting` | Reconnecting to {workspace}… |
 | `bar.newDevice` | A new device was added to your account on {date}. · Review |
@@ -1503,8 +1520,8 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | Institution label (host, irreversible) | `DangerousConfirmDialog`, no phrase (no key confirms) | Set {workspace}'s institution to {id}? | This can't be changed later. Private data can then be used only with models approved for {id}. | Set {id} permanently |
 | Remove from workspace (host) | `DangerousConfirmDialog`, phrase = username, plus a case-sensitive check | Remove {person, authority} from {workspace}? | Removes all of their devices and agent access. Their messages stay in history. | Remove from {workspace} |
 | Archive channel (owner) | `ConfirmationModal` | Archive #{name} for everyone? | Nobody can post in it after this. Its history stays readable. | Archive channel |
-| Remove channel member (owner) | `ConfirmationModal` | Remove {person, authority} from #{name}? | They'll lose access to its messages and files. You can invite them again. | Remove |
-| Remove saved connection | `ConfirmationModal` | Remove {workspace} from this computer? | Chats connected to it lose access. Your messages stay on the server, and you can add it again. | Remove |
+| Remove channel member (owner) | `ConfirmationModal` | Remove {person, authority} from #{name}? | They'll lose access to its messages and files. You can invite them again. *Amended by wave 2 (M11):* "They'll lose access to its messages and files. You can add them again with Add people.", since on a broker that adds directly the way back is Add people, with nothing to accept | Remove |
+| Remove saved connection | `ConfirmationModal` | Remove {workspace} from this computer? | Chats connected to it lose access. Your messages stay on the server, and you can add it again. *Amended by wave 2 (CLI-1):* removing deletes this computer's device key while the person stays a member, so the old invitation cannot bring it back. The description says so: "It disconnects, ends every chat's access through it and deletes this computer's key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. …". A member reads the way back instead: "…ask the host to invite you with Add another device for @{username}." The host removing it from the only computer of theirs the workspace lists gets a `DangerousConfirmDialog` with the workspace name as its phrase: "You host {workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: …", confirmed by **Remove and give up hosting** | Remove |
 | Stop task | `ConfirmationModal` | Stop your agent? | It stops working on this task. Anything it already did stays done. | Stop task |
 | Cancel a pending invitation (host) | inline two-step | Cancel @{username}'s invitation? | — | Cancel invitation / Keep |
 | Revoke chat access | inline two-step | [Chat access and revoke](#chat-access-and-revoke) | — | Revoke / Keep access |
@@ -1646,7 +1663,12 @@ This campaign adds the renderer and fixes the daemon so a failed revoke fails cl
 
 - **No grant:** the consent summary ("“Plot review” will be able to · Read #methods · Post in #methods as Alice Chen
   (@alice)", "Access ends when you revoke it, or after an hour."), Advanced Also read, and **Allow this conversation
-  to read and post here** (pinned).
+  to read and post here** (pinned). *Amended by wave 2 (AG-F1):* the consent now names what the grant binds and as
+  whom it posts. It reads "Post in #methods as Alice Chen (@alice)'s agent", then a **Workspace** line and a
+  **Model** line with the chat's model and its tier chip (as Ask my agent names a model), then "The first access
+  fixes this chat's workspace, channel and model.", because the daemon binds all three for good at the first grant.
+  Before Allow, the pane runs the institution and public-model checks Ask my agent runs, and disables Allow with the
+  reason for a model the workspace would refuse.
 - **After Allow:** the pane switches to Active with "Connected.", a primary **Back to chat** and a quiet destructive
   **Revoke access**. It no longer navigates away by itself, so the person sees where Revoke lives (fixes L10).
 - **Active:** the summary with an Active (or "Expires 4:40 PM") badge, the context channels, **Open chat** and
@@ -1722,7 +1744,9 @@ the shared `main.css` blocks, and every infinite loop declares its static rest s
 so no frame ever shows stale security state mid-tween; unread bold and counts; history pages prepended (scroll
 position anchored); error and warning notes (they appear in place; `role="alert"` announces them); composer
 auto-grow; the terminal; the member stack. Scroll moves only for Jump to latest and Show task in channel
-(`scrollIntoView({behavior: 'smooth'})`, `auto` under reduced motion).
+(`scrollIntoView({behavior: 'smooth'})`, `auto` under reduced motion). *Amended by wave 2 (M6, M7):* "history pages
+prepended" is what ships again (an older page used to replace the view), and opening at the New line and Jump to
+first unread also move the scroll, instantly, without animation.
 
 ## Accessibility
 
@@ -2050,7 +2074,10 @@ search (L19).
    stacking, only `crew-app.css` changes.
 3. **"after an hour"** mirrors `expires_in: 3600`; once RV-D2 reports `expires_at`, the copy reads the real time.
 4. **Automatic mark-read** writes a read position on view; it is gated (focused window, bottom visible for 1s, once per
-   5s per channel) and the menu item remains.
+   5s per channel) and the menu item remains. *Amended by wave 2 (M7):* the risk was real. Opening a channel with more
+   unread messages than one page marked all of them read a second later, the ones never loaded included. The write now
+   goes only up to the newest message that was on screen for the whole second, and none happens while the first unread
+   message is outside the window (see the timeline's New line row).
 5. **The last verified view** re-shows messages the person was already looking at, from the same verified scope, while
    no action is enabled. If a security reviewer prefers, the timeline can show skeletons instead with no other change.
 6. **Dead legacy code** remains compiled after the cutover until the follow-up deletion; nothing routes to it.
