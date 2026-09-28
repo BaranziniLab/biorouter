@@ -142,7 +142,16 @@ fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value
     if let Some((broker_code, _)) = error.chain().find_map(broker_refusal) {
         body["broker_code"] = json!(broker_code);
     }
-    if let Some(detail) = connect_detail(error) {
+    // OpenSSH's words beside a refused connect, or any other refusal's diagnostic `detail`
+    // (the unreadable-registry refusal keeps its parse error there, AGT2-N6): for a script or
+    // support, never in text.
+    let detail = connect_detail(error).or_else(|| {
+        error
+            .chain()
+            .find_map(|cause| refusal_code_and_detail(cause).and_then(|(_, detail)| detail))
+            .map(str::to_owned)
+    });
+    if let Some(detail) = detail {
         body["detail"] = json!(detail);
     }
     // AGT2-N5: the daemon's other machine-readable fields (`actual_mode`, `expected_mode`,
@@ -8472,6 +8481,28 @@ mod tests {
         assert_eq!(body["workspace"], "okafor-lab");
         assert_eq!(body["code"], "crew_institution_mismatch");
         assert_eq!(body["error"], "Said for a person.");
+
+        // AGT2-N6: a refusal's diagnostic detail reaches JSON, and never the sentence.
+        let unreadable: anyhow::Error = DaemonRefusal::for_test(
+            409,
+            json!({
+                "code": "crew_registry_unreadable",
+                "error": "Crew's saved settings can't be read, so nothing was changed. Update Biorouter, then try again.",
+                "detail": "unknown variant `bogus_future_variant`, expected one of `chat`, `task`",
+            }),
+        )
+        .into();
+        let text = safe_lines(&error_text(&unreadable));
+        assert_eq!(
+            text,
+            "Crew's saved settings can't be read, so nothing was changed. Update Biorouter, then try again."
+        );
+        let body = failure_body(&unreadable, &text, "req-1");
+        assert_eq!(body["code"], "crew_registry_unreadable");
+        assert_eq!(
+            body["detail"],
+            "unknown variant `bogus_future_variant`, expected one of `chat`, `task`"
+        );
     }
 
     /// CLI-7: a connect the server refused is said in words with what to run, then the code
