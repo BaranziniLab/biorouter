@@ -315,16 +315,25 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     }
   }, [focusField, advancedOpen, fieldId]);
 
-  // The daemon refused a field: take the person there, opening Advanced for one inside it.
+  // The daemon refused a field: take the person there once, opening Advanced for one inside it.
+  // Once per refusal, so closing Advanced afterwards stays closed.
   const refusedFieldName = refused?.field ?? null;
+  const shownRefusal = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (!refusedFieldName) return;
-    if (refusedFieldName === 'identity_file' || refusedFieldName === 'proxy_jump') {
-      if (!advancedOpen) {
-        setAdvancedOpen(true);
-        return;
-      }
+    if (!refusedFieldName || !saveError) {
+      shownRefusal.current = null;
+      return;
     }
+    const key = `${refusedFieldName}\n${saveError}`;
+    if (shownRefusal.current === key) return;
+    if (
+      (refusedFieldName === 'identity_file' || refusedFieldName === 'proxy_jump') &&
+      !advancedOpen
+    ) {
+      setAdvancedOpen(true);
+      return;
+    }
+    shownRefusal.current = key;
     const node = document.getElementById(fieldId[refusedFieldName]);
     if (node instanceof HTMLInputElement) {
       node.focus();

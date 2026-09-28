@@ -291,9 +291,18 @@ describe('ConnectionSettingsDialog', () => {
     expect(field).toHaveAccessibleDescription(connectionSettingsCopy.jumpHostsInvalid);
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText(/ProxyJump/)).toBeNull();
+    // Advanced stays closed once the person closes it, refusal or not.
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText(connectionSettingsCopy.jumpHosts)).toBeNull()
+    );
+    await act(async () => {});
+    expect(screen.queryByLabelText(connectionSettingsCopy.jumpHosts)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     // Editing the value takes the refusal away.
-    fireEvent.change(field, { target: { value: 'gateway' } });
-    await waitFor(() => expect(field).not.toHaveAttribute('aria-invalid'));
+    const again = await screen.findByLabelText(connectionSettingsCopy.jumpHosts);
+    fireEvent.change(again, { target: { value: 'gateway' } });
+    await waitFor(() => expect(again).not.toHaveAttribute('aria-invalid'));
   });
 
   // SF-F4 (a): "Crew aliases have different institutions; use a separately verified cluster
