@@ -248,12 +248,12 @@ const LAUNCH_PAGE_KEPT: Duration = Duration::from_secs(120);
 /// it, and on this daemon every app's browser surface too. An opener's
 /// arguments are readable by every account on the machine: `ps` on macOS, and
 /// `/proc/<pid>/cmdline` on Linux for as long as a browser that was not already
-/// running stays open. So the opener is handed a page only this account can
-/// read, which sends the browser on (`apps::write_launch_page`,
-/// `apps::open_page_in_browser`), and the daemon
-/// answers the token with a page of its own origin so the cookie survives a
-/// navigation a `file:` page started (`routes::web_ui` in `biorouter-server`).
-/// The address is on the banner, for a browser that cannot read the page.
+/// running stays open. So the browser is handed a page only this account can
+/// read, which sends it on (`apps::write_launch_page`,
+/// `apps::open_page_in_browser`), and the daemon answers the token with a page
+/// of its own origin so the cookie survives a navigation a `file:` page started
+/// (`routes::web_ui` in `biorouter-server`). The address is on the banner, for
+/// a browser that cannot read the page.
 ///
 /// Runs inside the runtime: the page is removed after [`LAUNCH_PAGE_KEPT`] by a
 /// task of its own, and by the caller when `serve` stops, whichever is first.
