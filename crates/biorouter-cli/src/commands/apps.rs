@@ -461,6 +461,7 @@ fn launch_pages_dir() -> PathBuf {
 pub(crate) fn write_launch_page(directory: &Path, launch: &str) -> Result<PathBuf> {
     use std::io::Write;
 
+    tighten_own_folder(directory);
     biorouter::daemon_runtime::private_directory(directory)?;
     remove_stale_launch_pages(directory, std::time::SystemTime::now());
     let target = html_attribute(launch);
@@ -480,6 +481,27 @@ pub(crate) fn write_launch_page(directory: &Path, launch: &str) -> Result<PathBu
     )?;
     page.as_file().sync_all()?;
     Ok(page.into_temp_path().keep()?)
+}
+
+/// Make `directory` 0700 when it is a real folder this account owns and others
+/// can enter, so one loosened folder does not keep every later `apps open` from
+/// opening a browser. A link, or another account's folder, is left for
+/// `private_directory` to refuse.
+fn tighten_own_folder(directory: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let Ok(folder) = std::fs::symlink_metadata(directory) else {
+            return;
+        };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let own = folder.uid() == unsafe { libc::geteuid() };
+        if folder.is_dir() && own && folder.permissions().mode() & 0o077 != 0 {
+            let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
 }
 
 /// Remove the launch pages in `directory` older than [`LAUNCH_PAGE_STALE`].
@@ -981,16 +1003,37 @@ mod tests {
         assert!(error.to_string().contains("no display"), "{error}");
     }
 
-    /// A folder other accounts can enter is not used for a page, and nothing is
-    /// opened: the caller prints the link instead.
+    /// A folder of ours that others can enter is closed to them before a page
+    /// goes in it, rather than left to stop every later `apps open`.
     #[cfg(unix)]
     #[test]
-    fn a_folder_others_can_read_is_refused() {
+    fn a_loose_folder_of_ours_is_tightened_before_a_page_goes_in() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join("app-launch");
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let page = write_launch_page(&dir, &a_launch_link()).unwrap();
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&page).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    /// A folder that is a link is not used for a page, and nothing is opened:
+    /// the caller prints the link instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_is_a_link_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let dir = tmp.path().join("app-launch");
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
         let mut opened = false;
         let result = open_launch_link(&a_launch_link(), &dir, |_| {
             opened = true;
@@ -999,7 +1042,7 @@ mod tests {
         assert!(result.is_err());
         assert!(!opened);
         assert_eq!(
-            fs::read_dir(&dir).unwrap().count(),
+            fs::read_dir(&elsewhere).unwrap().count(),
             0,
             "no page was written"
         );
@@ -1040,7 +1083,7 @@ mod tests {
     #[test]
     fn nothing_but_a_launch_page_reaches_an_opener() {
         let source = include_str!("apps.rs")
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests {")
             .next()
             .unwrap();
         let calls: Vec<&str> = source.split("open::that(").skip(1).collect();

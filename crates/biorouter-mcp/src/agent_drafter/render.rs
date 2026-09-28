@@ -1849,9 +1849,9 @@ mod tests {
         use std::process::Command;
 
         let dir = tempfile::tempdir().unwrap();
-        let Some(bash) = find_usable_bash(dir.path()) else {
-            return;
-        };
+        // Every Unix this ships to has bash; a missing one must fail here, not
+        // pass without checking anything.
+        let bash = find_usable_bash(dir.path()).expect("a usable bash");
         let m = manifest(ArtifactKind::Agentic);
         let files = export(&m, None);
         std::fs::write(
