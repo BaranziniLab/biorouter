@@ -75,3 +75,27 @@ describe('the renderer moves a window to Crew only when a person asks (O-1)', ()
     expect(source).not.toMatch(/setTimeout\([^)]*openCrew|addEventListener\([^)]*openCrew/);
   });
 });
+
+/**
+ * SF-F5: on a chat's access link (`/crew?sessionId=…`), choosing Crew in the app's sidebar sees the
+ * same path, so the sidebar only announces a same-route reset. Nothing in Crew heard it, and the
+ * chat's connect note stayed until the person went Home and back. The controller that owns the
+ * link's chat is the one that listens, and it leaves the link by replacing the location within
+ * Crew: no new navigation to Crew for the census above to count.
+ */
+describe('choosing Crew in the sidebar while Crew is open (SF-F5)', () => {
+  it('is heard by the controller that owns the chat-access link', () => {
+    const source = readFileSync(join(SRC, 'components/crew/state/useCrewController.ts'), 'utf8');
+    expect(source).toMatch(/useSameRouteReset\('\/crew',/);
+    const reset = source.slice(source.indexOf("useSameRouteReset('/crew',"));
+    expect(reset.slice(0, 400)).toMatch(
+      /setSearchParams\(new URLSearchParams\(\), \{ replace: true \}\)/
+    );
+  });
+
+  it('matches the path the sidebar announces', () => {
+    const sidebar = readFileSync(join(SRC, 'components/BioRouterSidebar/AppSidebar.tsx'), 'utf8');
+    expect(sidebar).toMatch(/path: '\/crew'/);
+    expect(sidebar).toMatch(/announceSameRouteReset\(path\)/);
+  });
+});

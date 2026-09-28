@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
@@ -98,7 +99,7 @@ function isNotJoined(status: CrewJoinStatus | null): boolean {
  */
 export function useCrewController(options: CrewControllerOptions = {}): CrewController {
   const { autoOpenSignIn = false, keepLastVerifiedView = false } = options;
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const grantSessionId = searchParams.get('sessionId');
   // A chat's "Connect in Crew" (Q3-08): the connection it asks to connect, and its intent id.
   const location = useLocation();
@@ -418,6 +419,21 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     closeSurfacePane();
     rememberPaneIntent(connectionId, null);
   }, [closeSurfacePane, connectionId]);
+
+  /**
+   * Crew chosen in the app's sidebar while Crew is already open (SF-F5): plain Crew. On a chat's
+   * access link (`/crew?sessionId=…`) the sidebar sees the same path and only announces a reset,
+   * which nothing here heard, so the chat's connect note and its Chat access pane stayed until the
+   * person went Home and back. The link's chat and its one-hop intent (route state) are dropped by
+   * replacing the location, and a Chat access pane it opened closes. A navigation within Crew,
+   * never one to it: the person is already here.
+   */
+  const paneMode = surfaces.ui.pane?.mode;
+  useSameRouteReset('/crew', () => {
+    if (!grantSessionId && location.state == null) return;
+    if (paneMode === 'chat-access') closePane();
+    setSearchParams(new URLSearchParams(), { replace: true });
+  });
 
   // Moves on every connection change, unmount, Disconnect, and connect or Retry the person made:
   // a loss handled before it is over. Also ends the reads that follow the daemon's re-dial, and a
