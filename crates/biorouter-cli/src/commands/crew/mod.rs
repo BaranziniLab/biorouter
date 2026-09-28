@@ -1940,7 +1940,15 @@ async fn connections(api: &Api, command: ConnectionCommand) -> Result<Reply> {
             let connection = api.connection().await?;
             api.show(api.with_effective_privacy(connection).await)
         }
-        ConnectionCommand::Prepare => api.show(prepare(api).await?),
+        // SF-F3: `connections prepare` is the host's first step (`command-line.md`, "Host a
+        // workspace"), so it speaks to the host; `enroll prepare` keeps neutral words.
+        ConnectionCommand::Prepare => Reply::Show(
+            prepare(api).await?,
+            Box::new(
+                api.human(Directory::default())
+                    .with_view(output::View::HostingKey),
+            ),
+        ),
         ConnectionCommand::Save { input } => {
             let body: Value = serde_json::from_str(&read_input(&input)?)
                 .context("Connection input must be a JSON descriptor")?;
@@ -2013,7 +2021,7 @@ async fn join_invitation(api: &Api, args: JoinInvitationArgs) -> Result<Reply> {
         .get("preview")
         .filter(|preview| preview.is_object())
         .context("The daemon did not describe the invitation")?;
-    let summary = invitation_summary(preview);
+    let summary = invitation_summary(preview, args.preparation_id.is_some());
     if args.preview {
         return Ok(api.say(answer.clone(), summary));
     }
@@ -2198,13 +2206,19 @@ fn privacy_badge(mode: Option<&str>, institution: Option<&str>) -> String {
     }
 }
 
-/// What the invitation says and what saving it would do, as the Join screen shows it.
-fn invitation_summary(preview: &Value) -> Vec<String> {
+/// What the invitation says and what saving it would do, as the Join screen shows it. A host
+/// saving their own workspace (`--preparation-id`, what `biorouter-crew start` printed) is not
+/// invited and does not join: it is their workspace, and they host it (SF-F3).
+fn invitation_summary(preview: &Value, hosting: bool) -> Vec<String> {
     let field = |key: &str| preview[key].as_str().filter(|value| !value.is_empty());
     let workspace = field("workspace_label")
         .or_else(|| field("workspace_name"))
         .map_or_else(|| "a workspace".to_owned(), name_text);
-    let mut lines = vec![format!("Invitation to {workspace}")];
+    let mut lines = vec![if hosting {
+        format!("Your workspace {workspace}")
+    } else {
+        format!("Invitation to {workspace}")
+    }];
     let host = field("host_username").map(|host| person_text(host, field("host_display_name")));
     let server = field("server").or_else(|| field("ssh_host")).map(safe_text);
     match (&host, &server) {
@@ -2227,7 +2241,11 @@ fn invitation_summary(preview: &Value) -> Vec<String> {
         ));
     }
     let choice = privacy_badge(field("mode"), field("institution_id"));
-    lines.push(format!("  You'll join as {choice}."));
+    lines.push(if hosting {
+        format!("  You'll host it as {choice}.")
+    } else {
+        format!("  You'll join as {choice}.")
+    });
     if let (Some(workspace_institution), Some(chosen)) =
         (field("workspace_institution_id"), field("institution_id"))
     {
@@ -5358,6 +5376,22 @@ mod tests {
             message(&error),
             "Saving this invitation needs your username on the server (--username), an institution for a Private connection (--institution)."
         );
+    }
+
+    /// SF-F3: a host saving their own workspace reads host words in the preview, not an
+    /// invitation to join; anyone else reads the invitation as before.
+    #[test]
+    fn a_host_saving_their_own_workspace_reads_host_words() {
+        let preview = preview(&[]);
+        let hosting = invitation_summary(&preview["preview"], true);
+        assert_eq!(hosting[0], "Your workspace lab");
+        assert!(hosting.contains(&"  You'll host it as Private · ucsf.".to_owned()));
+        assert!(!hosting
+            .iter()
+            .any(|line| line.contains("Invitation to") || line.contains("You'll join")));
+        let joining = invitation_summary(&preview["preview"], false);
+        assert_eq!(joining[0], "Invitation to lab");
+        assert!(joining.contains(&"  You'll join as Private · ucsf.".to_owned()));
     }
 
     /// CLI-9: the next steps after saving a connection: a host signs in, then sets the

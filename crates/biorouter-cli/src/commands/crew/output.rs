@@ -698,6 +698,9 @@ pub enum View {
     Reference,
     Attachment,
     Workspace,
+    /// A device key a host prepared for their own workspace (`connections prepare`), which
+    /// they pass to `biorouter-crew start`.
+    HostingKey,
     /// A mutation result or anything else: recognized results get a sentence, the rest a
     /// field list with ID-like fields left out.
     Result,
@@ -1333,6 +1336,7 @@ impl Ctx {
                 "workspace ID",
                 str_field(value, "id"),
             )],
+            View::HostingKey => self.prepared(value, true),
             View::Result => self.result(value),
         }
     }
@@ -2213,7 +2217,7 @@ impl Ctx {
             return self.joined(value);
         }
         if has("preparation_id") && has("public_key") {
-            return self.prepared(value);
+            return self.prepared(value, false);
         }
         if has("invitation") && has("uid") && has("expires_at") {
             return self.enrollment_token(value);
@@ -2298,12 +2302,21 @@ impl Ctx {
         out
     }
 
-    fn prepared(&self, value: &Value) -> Vec<String> {
+    /// A prepared device key (SF-F3). A host preparing their own workspace passes it to
+    /// `biorouter-crew start` and its preparation ID to `connections join-invitation`, so they
+    /// are told that, not to give it to "the workspace host", which is themselves. Otherwise the
+    /// words fit either use.
+    fn prepared(&self, value: &Value, hosting: bool) -> Vec<String> {
         let key = str_field(value, "public_key").map_or_else(String::new, safe_text);
-        let mut out = vec![
-            "Device key prepared. Give this public key to the workspace host:".to_owned(),
-            format!("  {key}"),
-        ];
+        let (lead, takes) = if hosting {
+            (
+                "Device key prepared for hosting. Pass it to biorouter-crew start --bootstrap-key on the server:",
+                "connections join-invitation --preparation-id",
+            )
+        } else {
+            ("Device key prepared. Its public key:", "connections save")
+        };
+        let mut out = vec![lead.to_owned(), format!("  {key}")];
         if self.show_ids {
             out.extend(self.detail_ids(
                 value,
@@ -2313,7 +2326,9 @@ impl Ctx {
                 ],
             ));
         } else {
-            out.push("Add --show-ids for the preparation ID that connections save takes.".into());
+            out.push(format!(
+                "Add --show-ids for the preparation ID that {takes} takes."
+            ));
         }
         out
     }
@@ -3982,10 +3997,20 @@ mod tests {
         let text = plain(&prepared);
         assert_eq!(
             text,
-            format!("Device key prepared. Give this public key to the workspace host:\n  {KEY}\nAdd --show-ids for the preparation ID that connections save takes.")
+            format!("Device key prepared. Its public key:\n  {KEY}\nAdd --show-ids for the preparation ID that connections save takes.")
         );
         assert!(!text.contains(CONNECTION) && !text.contains(DEVICE));
         assert!(with_ids(&prepared, &json!({})).contains(CONNECTION));
+        // SF-F3: a host preparing their own workspace is told what to do with it.
+        let hosting = render_text(
+            &prepared,
+            &options(false, Directory::default()).with_view(View::HostingKey),
+        );
+        assert_eq!(
+            hosting,
+            format!("Device key prepared for hosting. Pass it to biorouter-crew start --bootstrap-key on the server:\n  {KEY}\nAdd --show-ids for the preparation ID that connections join-invitation --preparation-id takes.")
+        );
+        assert!(!hosting.contains("workspace host"), "{hosting}");
         let token = "4f".repeat(32);
         let invite =
             json!({"invitation":token,"expires_at":NOW + 3600,"uid":10002,"device_id":DEVICE});
