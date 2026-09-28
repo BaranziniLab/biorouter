@@ -8,6 +8,7 @@ import { ProviderDetails } from '../../../api';
 import { createNavigationHandler } from '../../../utils/navigationUtils';
 import { persistDetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
+import { KEY_STORAGE_NOTICE } from './modal/subcomponents/SecureStorageNotice';
 
 interface ProviderSettingsProps {
   onClose: () => void;
@@ -112,8 +113,8 @@ export default function ProviderSettings({
           </h1>
           <p className="text-sm text-text-muted">
             {isOnboarding
-              ? 'Pick where your models run. API keys are encrypted and stored locally, and you can switch providers any time in settings.'
-              : 'Configure your AI model providers. API keys are encrypted and stored locally.'}
+              ? `Pick where your models run, and switch providers any time in settings. ${KEY_STORAGE_NOTICE}`
+              : `Configure your AI model providers. ${KEY_STORAGE_NOTICE}`}
           </p>
         </div>
 
