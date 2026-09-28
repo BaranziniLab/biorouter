@@ -228,7 +228,7 @@ describe('managed app launch link', () => {
   ])('refuses the answer %s', async (path) => {
     const { launchable } = withSecret();
     await expect(managedAppLaunchUrl(launchable, answer({ path }))).rejects.toThrow(
-      'will not open'
+      'unexpected app address'
     );
   });
 

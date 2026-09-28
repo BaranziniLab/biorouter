@@ -250,10 +250,29 @@ function sourceRevision(entry: Entry): string {
   return `${entry.view.webContents.id}:${entry.revision}`;
 }
 
+/**
+ * The page's address as it is shown outside the view. A managed app's launch
+ * token is left out: the preview briefly commits the daemon's answer to the
+ * launch link (`/apps/<id>/?t=…`) before it moves on to the app, and although
+ * the token is spent by then, it has no business in the toolbar or in what the
+ * agent is shown.
+ */
+function shownUrl(entry: Entry, url: string): string {
+  if (!entry.managed) return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has('t')) return url;
+    parsed.searchParams.delete('t');
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
 function readState(entry: Entry, error: string | null = null): EmbeddedBrowserState {
   const contents = entry.view.webContents;
   return {
-    url: contents.getURL().slice(0, MAX_PAGE_URL_CHARS),
+    url: shownUrl(entry, contents.getURL()).slice(0, MAX_PAGE_URL_CHARS),
     title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
     managedApp: Boolean(entry.managed),
     sourceRevision: sourceRevision(entry),
@@ -601,7 +620,7 @@ export async function readEmbeddedBrowserText(
     )) as { text?: unknown; truncated?: unknown };
     if (revision !== entry.revision || url !== contents.getURL()) continue;
     return {
-      url: url.slice(0, MAX_PAGE_URL_CHARS),
+      url: shownUrl(entry, url).slice(0, MAX_PAGE_URL_CHARS),
       title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
       sourceRevision: sourceRevision(entry),
       text: typeof snapshot?.text === 'string' ? snapshot.text : '',

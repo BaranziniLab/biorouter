@@ -101,7 +101,16 @@ export default function ApplicationsView() {
       await window.electron.openAppInBrowser(app.id);
     } catch (err) {
       console.error('Failed to open app:', err);
-      toastError({ title: app.title, msg: 'Could not open the app in your browser.' });
+      // The main process says why (the app is gone, the daemon is down, no
+      // browser opened); Electron wraps its sentence in an IPC preamble.
+      const reason =
+        err instanceof Error
+          ? err.message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
+          : '';
+      toastError({
+        title: app.title,
+        msg: reason || 'Could not open the app in your browser.',
+      });
     } finally {
       setLaunchingAppId((current) => (current === app.id ? null : current));
     }

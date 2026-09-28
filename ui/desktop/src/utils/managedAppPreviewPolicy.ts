@@ -1,3 +1,5 @@
+import { mintAppLaunchLink } from './appLaunchLink';
+
 export type ManagedAppPreviewBackend = {
   baseUrl: string;
   signal: AbortSignal;
@@ -95,9 +97,6 @@ export function isManagedAppRequest(
   );
 }
 
-/** How long the main process waits for the daemon to mint a launch link. */
-const LAUNCH_TIMEOUT_MS = 15_000;
-
 /**
  * The address the preview opens `scope`'s app at: a launch link the daemon
  * mints for a caller holding its secret (W2-HRD-1).
@@ -122,35 +121,9 @@ export async function managedAppLaunchUrl(
   const { secretKey, signal } = scope.backend;
   if (signal.aborted) throw new Error('The app backend stopped. Reopen the app after it restarts.');
   if (!secretKey) throw new Error('This app cannot be opened here.');
-  const request = new AbortController();
-  const abort = () => request.abort();
-  signal.addEventListener('abort', abort, { once: true });
-  const timer = setTimeout(abort, LAUNCH_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetchImpl(`${scope.origin}${scope.rootPath}launch`, {
-      method: 'POST',
-      headers: { 'X-Secret-Key': secretKey },
-      redirect: 'error',
-      signal: request.signal,
-    });
-  } catch {
-    throw new Error('The app backend did not answer. Try opening the app again.');
-  } finally {
-    clearTimeout(timer);
-    signal.removeEventListener('abort', abort);
-  }
-  if (response.status === 404) throw new Error('This app no longer exists.');
-  if (!response.ok) throw new Error('The app backend would not open this app.');
-  const body = (await response.json().catch(() => null)) as { path?: unknown } | null;
-  const path = body?.path;
-  const expected = new RegExp(`^${scope.rootPath}\\?t=[0-9a-f]{64}$`);
-  if (typeof path !== 'string' || !expected.test(path)) {
-    throw new Error('The app backend answered with an address this preview will not open.');
-  }
-  const url = `${scope.origin}${path}`;
+  const url = await mintAppLaunchLink(scope.origin, scope.appId, secretKey, fetchImpl, signal);
   if (!isManagedAppNavigation(scope, url)) {
-    throw new Error('The app backend answered with an address this preview will not open.');
+    throw new Error('The app backend answered with an unexpected app address.');
   }
   return url;
 }

@@ -201,6 +201,21 @@ describe('managed app preview handoff', () => {
     expect(JSON.stringify(answered.mock.calls)).not.toContain('daemon-secret');
   });
 
+  it('keeps the spent launch token out of the address it reports', async () => {
+    const context = backend();
+    const url = `${context.baseUrl}/apps/queue-workbench/`;
+    const onState = vi.fn();
+    createEmbeddedBrowser(owner, 'token', url, onState, context);
+    await vi.waitFor(() =>
+      expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(launchUrlFor(url))
+    );
+    // The daemon's answer to the link commits before the page moves on.
+    electron.views[0].webContents.emit('did-navigate');
+    const reported = onState.mock.calls.map(([state]) => (state as { url: string }).url);
+    expect(reported[reported.length - 1]).toBe(url);
+    expect(JSON.stringify(reported)).not.toContain(LAUNCH_TOKEN);
+  });
+
   it('loads nothing and says why when the backend will not open the app', async () => {
     vi.stubGlobal(
       'fetch',

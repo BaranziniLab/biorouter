@@ -234,6 +234,31 @@ describe('ApplicationsView', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/launch'))).toBe(false);
   });
 
+  it('says why a launch failed, without the IPC preamble', async () => {
+    const { toastError } = await import('../../toasts');
+    const user = userEvent.setup();
+    const openAppInBrowser = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Error invoking remote method 'apps:open-in-browser': Error: This app no longer exists."
+        )
+      );
+    window.electron = { ...window.electron, openAppInBrowser } as typeof window.electron;
+    renderView();
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Launch Cohort Explorer in browser' })
+    );
+
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith({
+        title: 'Cohort Explorer',
+        msg: 'This app no longer exists.',
+      })
+    );
+  });
+
   it('shows the shared empty state when nothing has been built', async () => {
     fetchMock.mockResolvedValue(okJson([]));
 

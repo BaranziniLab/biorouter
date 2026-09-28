@@ -43,13 +43,15 @@ function daemonBase(baseUrl: string): string {
 /**
  * The one-time launch link for app `appId`, minted by the daemon at `baseUrl`
  * for a caller holding `secretKey`. The answer must be exactly that app's page
- * carrying a token, or nothing is opened.
+ * carrying a token, or nothing is opened. `signal` ends the wait early, as the
+ * timeout does.
  */
 export async function mintAppLaunchLink(
   baseUrl: string,
   appId: string,
   secretKey: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal
 ): Promise<string> {
   if (!APP_ID.test(appId)) throw new Error('That is not an app name.');
   if (!secretKey) throw new Error('This app cannot be opened from here.');
@@ -60,7 +62,9 @@ export async function mintAppLaunchLink(
       method: 'POST',
       headers: { 'X-Secret-Key': secretKey },
       redirect: 'error',
-      signal: AbortSignal.timeout(LAUNCH_TIMEOUT_MS),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(LAUNCH_TIMEOUT_MS)])
+        : AbortSignal.timeout(LAUNCH_TIMEOUT_MS),
     });
   } catch {
     throw new Error('The app backend did not answer. Try opening the app again.');
