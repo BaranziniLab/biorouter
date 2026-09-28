@@ -1315,6 +1315,27 @@ fn save_input(
     }
 }
 
+/// The saved connection pinning this workspace as the one to reuse, or as one to replace: a
+/// connection under another login than `route`'s that never connected (a paste of someone
+/// else's invitation) is not the one to open, and is offered for replacement (W2-DMN-3).
+fn reusable_or_replaceable(
+    matched: Option<Connection>,
+    route: &PlannedRoute,
+) -> (Option<Connection>, Option<Connection>) {
+    match matched {
+        Some(saved)
+            if saved.node_id.is_none()
+                && route
+                    .ssh_target
+                    .as_deref()
+                    .is_some_and(|planned| planned != saved.ssh_target) =>
+        {
+            (None, Some(saved))
+        }
+        other => (other, None),
+    }
+}
+
 fn plan_invitation(
     parsed: &ParsedInvitation,
     overrides: &InvitationOverrides,
@@ -1353,21 +1374,8 @@ fn plan_invitation(
     if mode == ClusterMode::Private && institution_id.is_none() {
         missing.push(InvitationMissing::Institution);
     }
-    let matched = saved_match(connections, invitation)?;
-    // A saved connection under another login that never connected (a paste of someone else's
-    // invitation) is not the one to open: it is offered for replacement instead (W2-DMN-3).
-    let (existing, replaceable) = match matched {
-        Some(saved)
-            if saved.node_id.is_none()
-                && route
-                    .ssh_target
-                    .as_deref()
-                    .is_some_and(|planned| planned != saved.ssh_target) =>
-        {
-            (None, Some(saved))
-        }
-        other => (other, None),
-    };
+    let (existing, replaceable) =
+        reusable_or_replaceable(saved_match(connections, invitation)?, &route);
     let name = planned_name(
         invitation,
         advanced,

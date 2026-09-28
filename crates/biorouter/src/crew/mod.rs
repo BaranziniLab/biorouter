@@ -827,6 +827,24 @@ impl LiveAdmission {
         }
     }
 }
+/// A save refused because `other`, another connection on this computer to the same
+/// workspace, is under another institution than `given` (W2-DMN-9: typed, with both named).
+fn other_institution_refusal(other: &Connection, given: &str) -> anyhow::Error {
+    let theirs = other.institution_id.as_deref().unwrap_or_default();
+    CrewRefusal::new(
+        refusal::INSTITUTION_MISMATCH,
+        format!(
+            "{name} is also saved on this computer for the same workspace, under institution \
+             {theirs}. Connections to one workspace share one institution, so remove {name} \
+             before you use {given} here.",
+            name = other.name,
+        ),
+    )
+    .with("connection", json!(other.name))
+    .with("connection_institution", json!(theirs))
+    .with("institution", json!(given))
+    .into()
+}
 /// Whether saving `input` over `saved` keeps the route to the workspace: the same login,
 /// server, port, key, jump host, socket, owner and pinned workspace. What else may change (the
 /// name, the privacy mode, the institution, the remote folder) does not change where a bridge
@@ -2141,20 +2159,7 @@ impl CrewManager {
                         .as_deref()
                         .is_some_and(|theirs| theirs != given)
             }) {
-                let theirs = other.institution_id.as_deref().unwrap_or_default();
-                return Err(CrewRefusal::new(
-                    refusal::INSTITUTION_MISMATCH,
-                    format!(
-                        "{name} is also saved on this computer for the same workspace, under \
-                         institution {theirs}. Connections to one workspace share one \
-                         institution, so remove {name} before you use {given} here.",
-                        name = other.name,
-                    ),
-                )
-                .with("connection", json!(other.name))
-                .with("connection_institution", json!(theirs))
-                .with("institution", json!(given))
-                .into());
+                return Err(other_institution_refusal(other, given));
             }
         }
         let institution_id = institution::merge(
@@ -3531,19 +3536,9 @@ impl CrewManager {
             &institution_ids,
             admission.workspace_institution_id.as_deref(),
         )?;
-        if let Err(error) =
-            institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)
-        {
-            let workspace = self.workspace_label(id).await;
-            return Err(institution::with_details(error, || {
-                institution::refusal_details(
-                    &provider.get_model_config().model_name,
-                    provider.affiliation(),
-                    Some(workspace),
-                    admission.workspace_institution_id.clone(),
-                )
-            }));
-        }
+        // Admission asked this of the same institutions, with the names a person needs beside
+        // its refusal; this is the check again at the point of use.
+        institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)?;
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
         }
