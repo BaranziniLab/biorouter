@@ -40,8 +40,9 @@
 //! second browser, a bookmark, and a browser that has dropped its cookie.
 //! Decision SD-9 in `docs/deployment/serve-decisions.md` has the reasoning.
 //!
-//! **The cookie gates the document, and authenticates nothing else.** It is not
-//! accepted as authentication on any API route. Accepting it there would make
+//! **The cookie gates the document, and authenticates nothing else** but the
+//! app documents described below. It is not accepted as authentication on any
+//! API route. Accepting it there would make
 //! every API route reachable by a credential the browser attaches automatically,
 //! which is a cross-site request forgery surface the header scheme does not
 //! have. Keeping the cookie's authority to one request is why `check_token`
@@ -55,6 +56,15 @@
 //! public caller there. `SameSite=Strict` keeps the cookie off every cross-site
 //! request, and a forged request still needs the secret, so no CSRF surface
 //! appears. See `docs/deployment/serve-decisions.md` SD-10.
+//!
+//! One admission, and it is documents again rather than the API: the browser
+//! surface of this daemon's Agent Drafter apps (`auth::is_app_browser_get`: an
+//! app's page, bundle, assets and agent socket) accepts this cookie in place of
+//! the per-app access cookie `POST /apps/{id}/launch` hands out (W2-HRD-1). A
+//! browser holding it was handed the daemon secret with the shell, so this grants
+//! nothing it could not already do, and it lets an app opened from the web
+//! interface load without a launch link. Every management route under `/apps`
+//! still takes the secret.
 //!
 //! # Why there is no brute-force throttle here
 //!
@@ -207,10 +217,12 @@ fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// The one reader of [`SESSION_COOKIE`]: the shell below asks it whether to
 /// serve the document, and `auth::served_operator_capability` asks it whether a
 /// request came from that document — which earns a serve daemon's own interface
-/// the operator's tier on the listing and knowledge-base gates, and nothing
-/// else. It is never accepted as authentication on an API route: `check_token`
-/// still demands `X-Secret-Key`, so the cookie can only narrow a caller that
-/// already holds the secret, never admit one that does not.
+/// the operator's tier on the listing and knowledge-base gates; and
+/// `auth::check_token` asks it whether to admit a GET of an app's browser
+/// surface (W2-HRD-1), a document like this one. It is never accepted as
+/// authentication on an API route: `check_token` still demands `X-Secret-Key`
+/// there, so the cookie can only narrow a caller that already holds the secret,
+/// never admit one that does not.
 pub(crate) fn session_cookie(headers: &HeaderMap) -> Option<&str> {
     cookie_value(headers, SESSION_COOKIE)
 }
