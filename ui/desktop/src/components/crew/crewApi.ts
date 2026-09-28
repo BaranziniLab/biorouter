@@ -235,7 +235,8 @@ export class CrewHttpError extends Error {
     public readonly connectionId?: string,
     /**
      * The typed fields a coded refusal carries beside `code` and `error` (W2-DMN-5, W2-DMN-9):
-     * `host`, the SSH hop a connect failure concerns (a jump host's included);
+     * `host`, the SSH hop a connect failure concerns (a jump host's included); `reason`, why an
+     * invitation was refused;
      * `institution_refusal`, who approved the model and whose the workspace is; `actual_mode` and
      * `expected_mode`. Only these keys, each only in its own shape; display only.
      */
@@ -249,6 +250,8 @@ export class CrewHttpError extends Error {
 /** A coded refusal's typed fields ({@link CrewHttpError.fields}), each present only when valid. */
 export interface CrewRefusalFields {
   host?: string;
+  /** Why a `crew_invitation_invalid` refused the paste (`invitation_malformed`, …). */
+  reason?: string;
   institution_refusal?: {
     model?: string;
     approved_for?: string[] | null;
@@ -265,6 +268,8 @@ const HOST_SHAPE = /^[A-Za-z0-9._:[\]%-]{1,255}$/;
 function refusalFieldsOf(body: Record<string, unknown>): CrewRefusalFields {
   const fields: CrewRefusalFields = {};
   if (typeof body.host === 'string' && HOST_SHAPE.test(body.host)) fields.host = body.host;
+  const reason = brokerCodeOf(body.reason);
+  if (reason) fields.reason = reason;
   const mode = (value: unknown) => (value === 'private' || value === 'public' ? value : undefined);
   const actual = mode(body.actual_mode);
   const expected = mode(body.expected_mode);

@@ -26,6 +26,18 @@ export const joinCopy = {
   editInvitation: 'Edit',
   editInvitationLabel: 'Edit the invitation',
   invalid: 'This doesn’t look like a Crew invitation. Ask your host to copy it again.',
+  /** `invitation_malformed`: a Crew invitation, wrapped across lines or cut short in the copy (F1). */
+  malformed:
+    'This invitation is incomplete. It may have been wrapped across lines; paste the whole message again, or ask your host to send it as an attachment.',
+  /** `invitation_unsupported_version`: written by a newer Crew than this Biorouter reads. */
+  newerInvitation:
+    'This invitation needs a newer Biorouter. Update Biorouter, then paste it again.',
+  /**
+   * The invitation is for another account than this computer signs in to the server as (F2): the
+   * login would never work, and the right invitation is the person's own.
+   */
+  loginMismatch: (invitee: string, server: string, configUser: string) =>
+    `This invitation is for @${invitee}, but this computer signs in to ${server} as ${configUser}. Ask your host for your own invitation.`,
   hostedBy: 'Hosted by',
   on: 'on',
   fingerprint: 'Fingerprint',
@@ -167,7 +179,18 @@ export const joinCopy = {
     'This feature needs a newer Biorouter background service. Quit and reopen Biorouter, or enter the workspace details manually under Advanced.',
   /** The invitation names a workspace this computer already has a connection for. */
   existing: (workspace: string) => `You already have ${workspace} on this computer.`,
+  /** After `existing`: where its login is changed, since pasting again changes nothing (F1). */
+  existingLogin:
+    'To sign in with another account, change Your server login in Connection settings.',
+  connectionSettings: 'Connection settings…',
   openExisting: (connection: string) => `Open ${connection}`,
+  /**
+   * A saved connection to the workspace that never joined (someone else's invitation saved by
+   * mistake, F1): joining replaces it.
+   */
+  replaceable: (workspace: string) =>
+    `This computer has a saved connection to ${workspace} that never joined. Joining replaces it.`,
+  replaceSaved: 'Replace the saved connection',
   /** A legacy paste names no server: the login has to come from Advanced. */
   serverMissing: 'This invitation doesn’t name its server. Type your server login here.',
 } as const;

@@ -8,6 +8,7 @@ import { INSTITUTION_ID_PATTERN } from '../identity';
 import { joinCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
 import {
+  invalidInvitationText,
   JoinDialog,
   serverLoginInvalid,
   SSH_LOGIN_PATTERN,
@@ -376,6 +377,33 @@ describe('JoinDialog', () => {
     expect(screen.getByLabelText(joinCopy.invitation)).toHaveAttribute('aria-invalid', 'true');
   });
 
+  // F1: a wrapped or truncated invitation was called "not a Crew invitation".
+  it('calls a damaged invitation damaged, and one from a newer Crew newer', async () => {
+    mocks.previewInvitation.mockRejectedValue(
+      new CrewHttpError(
+        'unreadable',
+        400,
+        CREW_INVITATION_INVALID,
+        undefined,
+        undefined,
+        undefined,
+        {
+          reason: 'invitation_malformed',
+        }
+      )
+    );
+    renderDialog();
+    await paste('brcrew1:!!!!');
+    expect(await screen.findByText(joinCopy.malformed)).toBeInTheDocument();
+    expect(joinCopy.malformed).toBe(
+      'This invitation is incomplete. It may have been wrapped across lines; paste the whole message again, or ask your host to send it as an attachment.'
+    );
+    expect(screen.queryByText(joinCopy.invalid)).toBeNull();
+    expect(invalidInvitationText('invitation_unsupported_version')).toBe(joinCopy.newerInvitation);
+    expect(invalidInvitationText('invitation_not_found')).toBe(joinCopy.invalid);
+    expect(invalidInvitationText(null)).toBe(joinCopy.invalid);
+  });
+
   it('falls back to manual details, with the restart hint, on an older background service', async () => {
     mocks.previewInvitation.mockRejectedValue(new CrewHttpError('Crew request failed (404)', 404));
     renderDialog();
@@ -707,6 +735,72 @@ describe('JoinDialog', () => {
     expect(mocks.saveFromInvitation).not.toHaveBeenCalled();
     expect(crew.updateConnection).not.toHaveBeenCalled();
     expect(crew.removeConnection).not.toHaveBeenCalled();
+  });
+
+  // F1: "Open chen-lab" hid the username and said nothing of where the saved login is changed.
+  it('points a saved connection to Connection settings, where its login is changed', async () => {
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, existing_connection_id: 'conn-old' });
+    const existing = fakeConnection({ id: 'conn-old', name: 'UCSF lab' });
+    const view = renderDialog({ connections: [existing] });
+    await paste();
+    const note = await screen.findByTestId('crew-join-existing');
+    expect(note).toHaveTextContent(joinCopy.existingLogin);
+    fireEvent.click(within(note).getByRole('button', { name: joinCopy.connectionSettings }));
+    const crew = view.crew();
+    expect(crew.closeDialog).toHaveBeenCalled();
+    expect(crew.openDialog).toHaveBeenCalledWith({
+      kind: 'connection-settings',
+      connectionId: 'conn-old',
+    });
+  });
+
+  // F1: a connection saved from someone else's invitation, which never joined, blocked the right
+  // invitation with "Open chen-lab" on a connection that could never work.
+  it('replaces a saved connection that never joined instead of offering to open it', async () => {
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      existing_connection_id: null,
+      replaceable_connection_id: 'conn-wrong',
+    });
+    const wrong = fakeConnection({ id: 'conn-wrong', name: 'lab' });
+    const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+    mocks.saveFromInvitation.mockResolvedValue(saved);
+    mocks.savedConnectionIds.mockResolvedValue(['conn-wrong']);
+    const view = renderDialog({ connections: [wrong] });
+    await paste();
+    expect(await screen.findByTestId('crew-join-replaceable')).toHaveTextContent(
+      joinCopy.replaceable('lab')
+    );
+    expect(screen.queryByRole('button', { name: joinCopy.openExisting('lab') })).toBeNull();
+    // The username field is there to check, as for any join.
+    expect(screen.getByLabelText(joinCopy.username('hpc.ucsf.edu'))).toHaveValue('bob');
+    fireEvent.click(screen.getByRole('button', { name: joinCopy.replaceSaved }));
+    await waitFor(() =>
+      expect(mocks.saveFromInvitation).toHaveBeenCalledWith(MESSAGE, {
+        mode: 'private',
+        institution_id: 'ucsf',
+        username: 'bob',
+        replace: 'conn-wrong',
+      })
+    );
+    await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-new'));
+    // A new connection: what it remembers about its own join is written.
+    expect(readJoinContext('conn-new')).toMatchObject({ joining: true });
+  });
+
+  // F2: Gina pasted Bob's invitation; the dialog prefilled @crew_bob with no hint that this
+  // computer signs in as crew_gina.
+  it('warns before saving someone else’s invitation', async () => {
+    mocks.previewInvitation.mockResolvedValue({
+      ...PREVIEW,
+      invitee_username: 'crew_bob',
+      login_mismatch: { config_user: 'crew_gina', invitee: 'crew_bob' },
+    });
+    renderDialog();
+    await paste();
+    expect(await screen.findByTestId('crew-join-login-mismatch')).toHaveTextContent(
+      'This invitation is for @crew_bob, but this computer signs in to hpc.ucsf.edu as crew_gina. Ask your host for your own invitation.'
+    );
   });
 
   it('offers to open the connection a refused paste concerns', async () => {

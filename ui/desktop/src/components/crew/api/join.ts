@@ -23,6 +23,21 @@ export interface CrewInvitationOverrides {
   mode?: 'private' | 'public';
   institution_id?: string | null;
   advanced?: CrewInvitationAdvanced;
+  /**
+   * A saved connection to the same workspace that never joined, which saving replaces
+   * (W2-DMN-3): the daemon removes it, and its key, and saves this one. Only the id a preview
+   * named as `replaceable_connection_id`.
+   */
+  replace?: string;
+}
+
+/**
+ * The login saving would use is not the invitee's (W2-DMN-3): `config_user` is the User this
+ * computer's SSH settings sign in to the server as, `invitee` the account the invitation is for.
+ */
+export interface CrewLoginMismatch {
+  config_user: string;
+  invitee: string;
 }
 
 /** Join (S3a, 409): this computer already has the workspace, saved with other settings. */
@@ -90,6 +105,17 @@ export interface CrewInvitationPreview {
    * changes nothing) when the settings match, and is refused otherwise: offer to open it instead.
    */
   existing_connection_id: string | null;
+  /**
+   * A saved connection to this workspace that never joined and signs in some other way (someone
+   * else's invitation saved by mistake, F1): saving with `replace` replaces it instead of offering
+   * to open it. Absent from an older daemon.
+   */
+  replaceable_connection_id?: string | null;
+  /**
+   * The invitation is for another account than this computer signs in as (F2, W2-DMN-3), or
+   * absent when they agree or the daemon cannot tell.
+   */
+  login_mismatch?: CrewLoginMismatch | null;
   /** What saving still needs; empty when it can save. */
   missing: CrewInvitationMissing[];
 }
@@ -237,8 +263,30 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
         ? ownerUid
         : null,
     existing_connection_id: optionalText(body.existing_connection_id) ?? null,
+    ...(connectionIdFrom(body.replaceable_connection_id)
+      ? { replaceable_connection_id: connectionIdFrom(body.replaceable_connection_id) }
+      : {}),
+    ...(loginMismatchFrom(body.login_mismatch)
+      ? { login_mismatch: loginMismatchFrom(body.login_mismatch) }
+      : {}),
     missing: missingFrom(body.missing),
   };
+}
+
+/** A connection id as the daemon writes one (a UUID), never a path: it is sent back verbatim. */
+function connectionIdFrom(value: unknown): string | null {
+  const id = optionalText(value);
+  return id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
+}
+
+/** Both names, or nothing: a half-said mismatch is not said. */
+function loginMismatchFrom(value: unknown): CrewLoginMismatch | null {
+  if (!isRecord(value)) return null;
+  const configUser = optionalText(value.config_user);
+  const invitee = optionalText(value.invitee);
+  return configUser && invitee && configUser !== invitee
+    ? { config_user: configUser, invitee }
+    : null;
 }
 
 function invitationBody(invitation: string, overrides: CrewInvitationOverrides, preview: boolean) {
