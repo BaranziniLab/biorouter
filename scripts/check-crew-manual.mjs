@@ -85,7 +85,8 @@
 //     conflict, a disconnected connection and an ended grant (T3-DOC-3). The
 //     troubleshooting and files pages quote what a server that stopped saving,
 //     a restarted background service and a name with hidden characters show
-//     (T3-DOC-6).
+//     (T3-DOC-6). The agents page quotes the Chat access pane's work folder
+//     lines and the work folder switch's help (T3-DOC-5).
 //   * `pause-reasons` also reads a reason kept as its own constant (T3-DOC-6).
 //   * `refusal-codes` also holds every code the command line gives its own
 //     errors, and `ssh-codes` the words a login on this machine gets in place
@@ -946,6 +947,7 @@ export function checkCrewManual(tree = repoTree()) {
   const invitationSource = need(INVITATION_RS, 'app-sentences');
   const onboardingSource = need(ONBOARDING_COPY, 'app-sentences');
   const barSource = need(BAR_COPY, 'app-sentences');
+  const accessSource = need(ACCESS_COPY, 'app-sentences');
   const localFilesSource = need(LOCAL_FILES_RS, 'app-sentences');
   const opening = (texts, opens) =>
     texts.map((text) => text.trim()).filter((text) => opens.test(sameQuotes(text)));
@@ -1052,6 +1054,21 @@ export function checkCrewManual(tree = repoTree()) {
       ),
       source: localFilesSource,
       requiredIn: [MESSAGES_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the Chat access pane's work folder lines in ${ACCESS_COPY}`,
+      opens: /^Reads? and writes? files\b/,
+      templates: opening(tsLiterals(accessSource || ''), /^Reads? and writes? files\b/),
+      source: accessSource,
+      requiredIn: [AGENTS_PAGE],
+    },
+    {
+      name: `the work folder switch's help in ${DIALOGS_COPY}`,
+      opens: /^Commands run with no network\b/,
+      templates: opening(tsLiterals(dialogsSource || ''), /^Commands run with no network\b/),
+      source: dialogsSource,
+      requiredIn: [AGENTS_PAGE],
       requiredWhole: true,
     },
     {

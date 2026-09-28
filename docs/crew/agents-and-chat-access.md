@@ -112,7 +112,7 @@ The chat needs a sent message (otherwise you see "Start the chat first"), no att
 
 1. Type `/crew` alone in the chat's message box and press Enter. Nothing is sent to the model.
 2. Crew opens the first workspace in its list, at the channel you last had open there, with the Chat access pane. If you see "{workspace} is offline", choose **Connect to {workspace}**.
-3. Check the pane. It names the channel, which is always the one Crew shows, the **Workspace**, and the chat's **Model** with its privacy chip, and says the chat posts there as your agent. It also says "The first access fixes this chat’s workspace, channel and model." To change the channel, see [Another channel or workspace](#another-channel-or-workspace). If the workspace will refuse the chat's model, the pane says why, and Allow stays unavailable until you [change the model](#another-channel-or-workspace).
+3. Check the pane. It names the channel, which is always the one Crew shows, the **Workspace**, and the chat's **Model** with its privacy chip, and says the chat posts there as your agent. If your connection has a **Remote work folder** and the model is not public, the chat gets the folder too, and the pane lists it: "Read and write files in /home/bob/project", or "Read and write files, and run commands, in /home/bob/project" when **Let my agent run commands in this folder** is on. It also says "The first access fixes this chat’s workspace, channel and model." To change the channel, see [Another channel or workspace](#another-channel-or-workspace). If the workspace will refuse the chat's model, the pane says why, and Allow stays unavailable until you [change the model](#another-channel-or-workspace).
 4. Optionally open **Advanced** and tick more channels under "Also read".
 5. Choose **Allow “Plot review” to read and post in #methods** (**Allow this conversation to read and post here** when the title is unknown).
 6. The pane shows "Connected." and "Active · ends 4:40 PM". Choose **Back to chat**, and ask for what you need.
@@ -159,7 +159,7 @@ Typing `/crew` in a chat that has access shows a note instead of the pane, with 
 
 ## Work in the remote work folder
 
-If your connection has a **Remote work folder**, set when you join or in **Connection settings…**, a task or chat with a Private model can read and write files there. With **Let my agent run commands in this folder** on, it can also run commands there. A Public model cannot use the folder.
+If your connection has a **Remote work folder**, set when you join or in **Connection settings…**, a task or chat with a Private model can read and write files there. With **Let my agent run commands in this folder** on, it can also run commands there. A Public model cannot use the folder. A chat gets the folder with its channel access, and the Chat access pane lists it before you choose Allow, as the task pane's **Advanced** does for a task.
 
 A command in the work folder runs in a closed space on the server:
 
@@ -167,7 +167,7 @@ A command in the work folder runs in a closed space on the server:
 - It cannot start other processes, so a shell, or a script that runs other programs, fails.
 - It can read only the work folder and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It cannot read `/etc`, so it cannot look up users.
 
-So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
+So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. The switch in **Connection settings…** says so too: "Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there." Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
 
 ## Refusals when you start or allow
 

@@ -1351,6 +1351,32 @@ test('troubleshooting: a server that stopped saving, a restarted background serv
   );
 });
 
+test('agents page: a chat grant includes the work folder, as the Chat access pane says (T3-DOC-5)', () => {
+  // The /crew steps as the live check found them: no word of the folder the chat receives.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          / If your connection has a \*\*Remote work folder\*\* and the model is not public, the chat gets the folder too, and the pane lists it: [^\n]*? is on\./,
+          ''
+        ),
+    },
+    'app-sentences',
+    /does not quote the Chat access pane's work folder lines/
+  );
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          / The switch in \*\*Connection settings…\*\* says so too: "Commands run with no network[^"]*"/,
+          ''
+        ),
+    },
+    'app-sentences',
+    /does not quote the work folder switch's help/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });
