@@ -176,10 +176,41 @@ impl AuthProvider for AzureAuthProvider {
     }
 }
 
+/// W2-PRV-1 — the endpoint older versions filled in by mistake: UCSF's gateway.
+///
+/// Until 2026-09-27 both setup surfaces saved it for anyone who typed only a key
+/// and a deployment (see the `AZURE_OPENAI_ENDPOINT` key below). The default is
+/// gone, but a config that saved it keeps it, and its commercial key and every
+/// transcript keep going to UCSF under a Public label. Nothing is rewritten or
+/// refused, because a UCSF person may rely on the value: the daemon says so once
+/// ([`retired_default_endpoint_warning`]) and the desktop's Azure OpenAI card
+/// says so on its row.
+pub const RETIRED_DEFAULT_ENDPOINT: &str = "https://unified-api.ucsf.edu/general";
+
+/// Whether a saved endpoint is exactly [`RETIRED_DEFAULT_ENDPOINT`] (a trailing
+/// `/` and surrounding whitespace aside).
+pub fn is_retired_default_endpoint(endpoint: &str) -> bool {
+    endpoint.trim().trim_end_matches('/') == RETIRED_DEFAULT_ENDPOINT
+}
+
+/// The one warning logged for it, once per process.
+pub fn retired_default_endpoint_warning() -> String {
+    format!(
+        "AZURE_OPENAI_ENDPOINT is {RETIRED_DEFAULT_ENDPOINT}, UCSF's gateway, which older \
+         versions of Biorouter filled in by mistake, so Azure OpenAI requests (and their key) go \
+         there. Enter your own Azure resource's endpoint in Settings > Models > Azure OpenAI or \
+         with `biorouter configure`, or use Versa API Azure for UCSF."
+    )
+}
+
 impl AzureProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
         let endpoint: String = config.get_param("AZURE_OPENAI_ENDPOINT")?;
+        if is_retired_default_endpoint(&endpoint) {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| tracing::warn!("{}", retired_default_endpoint_warning()));
+        }
         let deployment_name: String = config.get_param("AZURE_OPENAI_DEPLOYMENT_NAME")?;
         let api_version: String = config
             .get_param("AZURE_OPENAI_API_VERSION")
@@ -628,6 +659,34 @@ mod tests {
         );
         // A chat bound before the removal can still name them.
         assert!(AzureProvider::metadata().allows_unlisted_models);
+    }
+
+    /// W2-PRV-1: exactly the retired default is recognised, a trailing slash
+    /// aside; a person's own resource, or another path on the gateway, is not.
+    #[test]
+    fn only_the_retired_default_endpoint_is_flagged() {
+        assert!(is_retired_default_endpoint(RETIRED_DEFAULT_ENDPOINT));
+        assert!(is_retired_default_endpoint(
+            " https://unified-api.ucsf.edu/general/ "
+        ));
+        for other in [
+            "https://my-company.openai.azure.com",
+            "https://unified-api.ucsf.edu/general/awsai",
+            "https://unified-api.ucsf.edu",
+            "",
+        ] {
+            assert!(!is_retired_default_endpoint(other), "{other}");
+        }
+        let warning = retired_default_endpoint_warning();
+        assert!(warning.contains(RETIRED_DEFAULT_ENDPOINT), "{warning}");
+        assert!(warning.contains("Versa API Azure"), "{warning}");
+        // It was the default this card shipped; nothing may ship it again.
+        let endpoint = AzureProvider::metadata()
+            .config_keys
+            .into_iter()
+            .find(|key| key.name == "AZURE_OPENAI_ENDPOINT")
+            .expect("azure_openai declares its endpoint");
+        assert_ne!(endpoint.default.as_deref(), Some(RETIRED_DEFAULT_ENDPOINT));
     }
 
     /// The endpoint is the user's own Azure resource, so the card ships none
