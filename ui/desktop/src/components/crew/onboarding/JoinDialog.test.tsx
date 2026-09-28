@@ -395,8 +395,9 @@ describe('JoinDialog', () => {
     renderDialog();
     await paste('brcrew1:!!!!');
     expect(await screen.findByText(joinCopy.malformed)).toBeInTheDocument();
+    // SC2-N8: a wrapped invitation is read whole, so the sentence no longer blames wrapping.
     expect(joinCopy.malformed).toBe(
-      'This invitation is incomplete. It may have been wrapped across lines; paste the whole message again, or ask your host to send it as an attachment.'
+      'This invitation is incomplete or was changed. Paste the whole message again, or ask your host to send it again.'
     );
     expect(screen.queryByText(joinCopy.invalid)).toBeNull();
     expect(invalidInvitationText('invitation_unsupported_version')).toBe(joinCopy.newerInvitation);

@@ -26,9 +26,13 @@ export const joinCopy = {
   editInvitation: 'Edit',
   editInvitationLabel: 'Edit the invitation',
   invalid: 'This doesn’t look like a Crew invitation. Ask your host to copy it again.',
-  /** `invitation_malformed`: a Crew invitation, wrapped across lines or cut short in the copy (F1). */
+  /**
+   * `invitation_malformed`: a Crew invitation cut short or changed in the copy (F1). Not wrapping:
+   * an invitation wrapped across lines is read whole since W2-BRK-1, so blaming it sent people to
+   * fix what was not broken (SC2-N8).
+   */
   malformed:
-    'This invitation is incomplete. It may have been wrapped across lines; paste the whole message again, or ask your host to send it as an attachment.',
+    'This invitation is incomplete or was changed. Paste the whole message again, or ask your host to send it again.',
   /** `invitation_unsupported_version`: written by a newer Crew than this Biorouter reads. */
   newerInvitation:
     'This invitation needs a newer Biorouter. Update Biorouter, then paste it again.',
@@ -602,11 +606,14 @@ export const emptyCopy = {
    * which a rename does not change.
    */
   brokerStartFolder: 'The last part is the workspace’s folder in ~/.local/share/biorouter-crew.',
-  /** The server refused this computer's key (F5): not a password matter, a login one. */
-  keyRefusedBody: (user: string | null) =>
-    user
-      ? `It refused this computer’s SSH key for ${user}. Check Your server login in Connection settings.`
-      : 'It refused this computer’s SSH key. Check Your server login in Connection settings.',
+  /**
+   * The server refused this computer's key (F5): not a password matter, a login one. Titled for
+   * that and naming the server, as the connection bar does (SC2-N9): under "chen-lab is offline",
+   * "It refused this computer's SSH key" said neither what failed nor what "it" was.
+   */
+  keyRefusedTitle: (server: string) => `Can’t sign in to ${server}`,
+  keyRefusedBody: (server: string, user: string | null) =>
+    `${server} refused this computer’s SSH key${user ? ` for ${user}` : ''}. Check Your server login in Connection settings.`,
   connectionSettings: 'Connection settings…',
   signInTitle: (host: string) => `Sign in to ${host}`,
   signInBody: 'The server needs your password or a verification code.',

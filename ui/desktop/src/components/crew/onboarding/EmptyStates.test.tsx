@@ -151,8 +151,9 @@ describe('connection states', () => {
     });
   });
 
-  // F5: a refused key is a login matter, not a password one.
-  it('says a refused key under the offline title, with Connection settings…', () => {
+  // F5: a refused key is a login matter, not a password one. SC2-N9: titled for that, and naming
+  // the server, as the connection bar does, rather than "offline" over "It refused …".
+  it('says a refused key under a sign-in title naming the server, with Connection settings…', () => {
     const crew = crewWith({
       connection: fakeConnection({
         status: 'disconnected',
@@ -161,7 +162,16 @@ describe('connection states', () => {
       }),
     });
     renderWithCrew(<OfflineState />, crew);
-    expect(screen.getByText(emptyCopy.keyRefusedBody('crew_bob'))).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: emptyCopy.keyRefusedTitle('lab-ubuntu') })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(emptyCopy.keyRefusedBody('lab-ubuntu', 'crew_bob'))
+    ).toBeInTheDocument();
+    expect(emptyCopy.keyRefusedBody('lab-ubuntu', 'crew_bob')).toBe(
+      'lab-ubuntu refused this computer’s SSH key for crew_bob. Check Your server login in Connection settings.'
+    );
+    expect(document.body.textContent).not.toMatch(/is offline|It refused/);
     fireEvent.click(screen.getByRole('button', { name: emptyCopy.connectionSettings }));
     expect(crew.openDialog).toHaveBeenCalledWith({
       kind: 'connection-settings',

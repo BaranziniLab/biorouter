@@ -178,12 +178,13 @@ export function OfflineState() {
   const folder =
     joinContext.workspaceName ?? (connection?.name && hosts ? connection.name : null) ?? null;
   const startLine = brokerStopped && hosts !== false ? brokerStartCommand(folder) : null;
-  const description =
-    cause === 'ssh_key_refused'
-      ? emptyCopy.keyRefusedBody(
-          sshUsername(connection?.ssh_target) ?? joinContext.username ?? null
-        )
-      : emptyCopy.offlineBody;
+  const keyRefused = cause === 'ssh_key_refused';
+  const description = keyRefused
+    ? emptyCopy.keyRefusedBody(
+        server || workspace,
+        sshUsername(connection?.ssh_target) ?? joinContext.username ?? null
+      )
+    : emptyCopy.offlineBody;
 
   const actions = (
     <div className="crew-onboard-offline-actions">
@@ -275,8 +276,12 @@ export function OfflineState() {
   return (
     <SetupScreen>
       <EmptyState
-        icon={Server}
-        title={emptyCopy.offlineTitle(workspace)}
+        icon={keyRefused ? KeyRound : Server}
+        title={
+          keyRefused
+            ? emptyCopy.keyRefusedTitle(server || workspace)
+            : emptyCopy.offlineTitle(workspace)
+        }
         description={description}
         actions={actions}
       />
