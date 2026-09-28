@@ -917,6 +917,90 @@ describe('Joined, not in your teams (Q3-52)', () => {
   });
 });
 
+describe('Storage, for the host (M1, W2-UIW-20)', () => {
+  const MIB = 1024 * 1024;
+  const polite = () => document.querySelector('[data-crew-sidebar-announcer]') as HTMLElement;
+
+  /** The standard budgets with `state` bytes of logical state in use. */
+  function usage(state: number) {
+    return {
+      state_bytes: state,
+      state_limit: 16 * MIB,
+      state_admin_headroom: MIB,
+      journal_bytes: 0,
+      journal_limit: 1024 * MIB,
+      journal_admin_headroom: 16 * MIB,
+    };
+  }
+  function hostAt(state: number | null, extra: Partial<CrewController> = {}) {
+    return makeController({
+      snapshot: makeSnapshot(state === null ? {} : { usage: usage(state) }),
+      ...extra,
+    });
+  }
+  function renderAnnounced(controller: CrewController) {
+    return renderWithCrew(
+      <SidebarAnnouncer>
+        <AttentionSections />
+      </SidebarAnnouncer>,
+      controller
+    );
+  }
+  const storage = () => screen.queryByRole('list', { name: sidebarCopy.section.storage });
+
+  it('tells the host at 80%, with what happens when it is full', () => {
+    renderWithCrew(<AttentionSections />, hostAt(Math.ceil(15 * MIB * 0.82)));
+    const row = within(storage()!).getByRole('listitem');
+    expect(row).toHaveAttribute('data-crew-storage', 'warn');
+    expect(row).toHaveTextContent('Fixture is 82% full.');
+    expect(row).toHaveTextContent(
+      'When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.'
+    );
+  });
+
+  it('says so more urgently at 95%, and plainly once posting has stopped', () => {
+    const view = renderWithCrew(<AttentionSections />, hostAt(Math.ceil(15 * MIB * 0.96)));
+    expect(within(storage()!).getByRole('listitem')).toHaveAttribute('data-crew-storage', 'urgent');
+    expect(storage()).toHaveTextContent('Fixture is 96% full.');
+    view.update(hostAt(15 * MIB + 1));
+    const row = within(storage()!).getByRole('listitem');
+    expect(row).toHaveAttribute('data-crew-storage', 'full');
+    expect(row).toHaveTextContent('Fixture is full.');
+    expect(row).toHaveTextContent(
+      'Only removing people and privacy changes work now; start a new workspace to keep posting.'
+    );
+  });
+
+  it('shows nothing below 80%, to a member, or from a broker that sends no usage', () => {
+    const below = renderWithCrew(<AttentionSections />, hostAt(Math.floor(15 * MIB * 0.79)));
+    expect(below.container).toBeEmptyDOMElement();
+    below.unmount();
+    // A member's snapshot never carries usage; were one to, a member is still not told.
+    const member = renderWithCrew(<AttentionSections />, hostAt(15 * MIB, { isHost: false }));
+    expect(member.container).toBeEmptyDOMElement();
+    member.unmount();
+    const older = renderWithCrew(<AttentionSections />, hostAt(null));
+    expect(older.container).toBeEmptyDOMElement();
+  });
+
+  it('announces crossing 80% and becoming full once each, and nothing on opening', () => {
+    const view = renderAnnounced(hostAt(Math.ceil(15 * MIB * 0.9)));
+    expect(polite()).toHaveTextContent('');
+    view.update(hostAt(Math.ceil(15 * MIB * 0.91)));
+    expect(polite()).toHaveTextContent('');
+    view.update(hostAt(16 * MIB));
+    expect(polite()).toHaveTextContent(
+      'Fixture is full. Only removing people and privacy changes work now.'
+    );
+  });
+
+  it('announces the first crossing of 80%', () => {
+    const view = renderAnnounced(hostAt(MIB));
+    view.update(hostAt(Math.ceil(15 * MIB * 0.8)));
+    expect(polite()).toHaveTextContent('Fixture is 80% full.');
+  });
+});
+
 it('renders nothing when there is nothing to attend to', () => {
   const { container } = renderWithCrew(<AttentionSections />);
   expect(container).toBeEmptyDOMElement();

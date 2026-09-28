@@ -33,6 +33,12 @@ import {
   type JoinedRow,
   type WaitingRow,
 } from './sidebarView';
+import {
+  fullnessNeedsAttention,
+  fullnessRose,
+  workspaceFullness,
+  type WorkspaceFullness,
+} from './workspaceFullness';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy;
@@ -188,6 +194,61 @@ function useJoinedAnnouncements(
   }, [rows, connectionId, workspaceId, dir, announce]);
 }
 
+// ---------------------------------------------------------------------------------------------
+// How full the workspace is, for its host (M1, W2-UIW-20)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Speaks, politely, the workspace crossing 80%, 95% or its limit while Crew is open. The first
+ * verified view of a workspace is the baseline, as for Waiting to join: the row already says how
+ * full it is, so opening Crew reads nothing out.
+ */
+function useFullnessAnnouncements(
+  fullness: WorkspaceFullness | null,
+  connectionId: string,
+  workspaceId: string,
+  workspace: string
+) {
+  const { announce } = useSidebarAnnounce();
+  const seen = useRef<{ key: string; fullness: WorkspaceFullness } | null>(null);
+
+  useEffect(() => {
+    if (!fullness) return;
+    const key = `${connectionId}\u0000${workspaceId}`;
+    const before = seen.current?.key === key ? seen.current.fullness : null;
+    seen.current = { key, fullness };
+    if (!fullnessRose(before, fullness) || !fullnessNeedsAttention(fullness)) return;
+    announce(copy.storage.announce(workspace, fullness.percent, fullness.level === 'full'));
+  }, [fullness, connectionId, workspaceId, workspace, announce]);
+}
+
+/**
+ * The host's warning that the workspace is filling up (M1, W2-UIW-20): "chen-lab is 82% full."
+ * over what happens at the end. Nothing below 80%, nothing for a member, and nothing from an older
+ * broker, which sends no usage. Posting is what stops; removing people and privacy changes keep
+ * working, because the broker keeps headroom for them.
+ */
+function StorageItem({ fullness, workspace }: { fullness: WorkspaceFullness; workspace: string }) {
+  const full = fullness.level === 'full';
+  const pressing = full || fullness.level === 'urgent';
+  return (
+    <li className="flex min-w-0 items-start gap-1.5 px-2 py-1.5" data-crew-storage={fullness.level}>
+      <AlertTriangle
+        className={`mt-0.5 size-3 shrink-0 ${pressing ? 'text-text-danger' : 'text-text-warning'}`}
+        aria-hidden="true"
+      />
+      <div className="crew-sidebar-wrap min-w-0 flex-1">
+        <p className="text-secondary" data-crew-storage-percent="">
+          {full ? copy.storage.full(workspace) : copy.storage.filling(workspace, fullness.percent)}
+        </p>
+        <p className="text-supporting text-text-muted" data-crew-storage-next="">
+          {full ? copy.storage.nowFull : copy.storage.whenFull}
+        </p>
+      </div>
+    </li>
+  );
+}
+
 /** A team the host can add someone to, as the picker names it. */
 interface AddableTeam {
   id: string;
@@ -254,6 +315,13 @@ export function AttentionSections() {
     workspaceId,
     dir
   );
+  // Only the host's snapshot carries usage; `isHost` as well, so a member is never told.
+  const fullness = useMemo(
+    () => (crew.isHost ? workspaceFullness(snapshot?.usage) : null),
+    [crew.isHost, snapshot]
+  );
+  useFullnessAnnouncements(verified ? fullness : null, crew.connectionId, workspaceId, title);
+  const storage = fullnessNeedsAttention(fullness) ? fullness : null;
   // The teams the host may add people to: `team.add_member` lets the host add to any of them where
   // the broker adds directly (`direct_add_v1`); otherwise inviting is the creator's alone (Q2-41).
   const directAdd = directAddSupported(crew.capabilities);
@@ -264,7 +332,8 @@ export function AttentionSections() {
       .filter((section) => directAdd || (me !== undefined && creators.get(section.id) === me))
       .map((section) => ({ id: section.id, name: section.name }));
   }, [snapshot, directAdd]);
-  if (invitations.length === 0 && waiting.length === 0 && joined.length === 0) return null;
+  if (invitations.length === 0 && waiting.length === 0 && joined.length === 0 && !storage)
+    return null;
 
   const letIn = (username: string, describedBy?: string) => (
     <Button
@@ -282,6 +351,11 @@ export function AttentionSections() {
 
   return (
     <>
+      {storage && (
+        <Section label={copy.section.storage} attention="storage">
+          <StorageItem fullness={storage} workspace={title} />
+        </Section>
+      )}
       {invitations.length > 0 && (
         <Section label={copy.section.invitations} attention="invitations">
           {invitations.map((invitation) => (

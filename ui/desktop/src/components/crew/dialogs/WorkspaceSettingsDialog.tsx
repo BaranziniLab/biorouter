@@ -32,6 +32,7 @@ import {
 } from '../identity';
 import { sidebarCopy } from '../sidebar/copy';
 import { useKnownInstitutions } from '../sidebar/sidebarView';
+import { fullnessNeedsAttention, workspaceFullness } from '../sidebar/workspaceFullness';
 import { useFocusReturn } from '../state/focusReturn';
 import { useMenuCopy } from '../timeline/TimelineCopy';
 import { connectionUpdateBody } from '../state/useCrewConnections';
@@ -295,8 +296,11 @@ function Section({
 }
 
 function GeneralTab({ view }: { view: DialogView }) {
-  const { crew, dir, snapshot, server, address } = view;
+  const { crew, dir, snapshot, server, address, workspace } = view;
   const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
+  // How full the workspace is (M1, W2-UIW-20): the host's snapshot alone carries usage, and a
+  // broker too old to send it shows no row. The consequence is said from 80%, in the row.
+  const fullness = dir.viewerIsHost ? workspaceFullness(snapshot?.usage) : null;
   // The server as the person names it (D-ALIAS), with its address beside it to copy: "lab-server ·
   // 52.33.141.141 [Copy]" (QA Q3-39). The name alone where it IS the address. This is the one
   // place outside Connection settings that shows the address (QA Q4-34).
@@ -324,6 +328,29 @@ function GeneralTab({ view }: { view: DialogView }) {
             />
           ) : null}
         </Row>
+        {fullness ? (
+          <Row
+            label={copy.storage}
+            note={
+              fullnessNeedsAttention(fullness) ? (
+                <p
+                  className={`text-supporting ${
+                    fullness.level === 'warn' ? 'text-text-warning' : 'text-text-danger'
+                  }`}
+                  data-crew-settings-storage-note=""
+                >
+                  {fullness.level === 'full'
+                    ? `${sidebarCopy.storage.full(workspace)} ${sidebarCopy.storage.nowFull}`
+                    : `${sidebarCopy.storage.filling(workspace, fullness.percent)} ${sidebarCopy.storage.whenFull}`}
+                </p>
+              ) : undefined
+            }
+          >
+            <span data-crew-settings-storage={fullness.level}>
+              {fullness.level === 'full' ? copy.storageFull : copy.storageUsed(fullness.percent)}
+            </span>
+          </Row>
+        ) : null}
       </div>
       {canRename && snapshot ? (
         <div className="biorouter-settings-control-strip mt-3">

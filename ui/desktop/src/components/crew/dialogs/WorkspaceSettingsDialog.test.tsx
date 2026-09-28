@@ -394,6 +394,53 @@ describe('WorkspaceSettingsDialog', () => {
     expect(older.querySelector('[data-crew-online]')).toBeNull();
   });
 
+  it('tells the host how full the workspace is, and from 80% what happens at the end (W2-UIW-20)', async () => {
+    const MIB = 1024 * 1024;
+    const usage = (state: number) => ({
+      state_bytes: state,
+      state_limit: 16 * MIB,
+      state_admin_headroom: MIB,
+      journal_bytes: 0,
+      journal_limit: 1024 * MIB,
+      journal_admin_headroom: 16 * MIB,
+    });
+    const at = async (state: number, actor = alice) => {
+      const view = renderSettings({}, { snapshot: makeSnapshot({ actor, usage: usage(state) }) });
+      const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+      return { view, dialog };
+    };
+
+    // Below 80%: the number, and no warning.
+    let { view, dialog } = await at(3 * MIB);
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('20% full');
+    expect(dialog.querySelector('[data-crew-settings-storage-note]')).toBeNull();
+    view.unmount();
+
+    ({ view, dialog } = await at(Math.ceil(15 * MIB * 0.82)));
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('82% full');
+    expect(dialog.querySelector('[data-crew-settings-storage-note]')).toHaveTextContent(
+      'lab is 82% full. When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.'
+    );
+    view.unmount();
+
+    ({ view, dialog } = await at(15 * MIB + 1));
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('Full');
+    expect(dialog.querySelector('[data-crew-settings-storage-note]')).toHaveTextContent(
+      'lab is full. Only removing people and privacy changes work now; start a new workspace to keep posting.'
+    );
+    view.unmount();
+
+    // A member is never told, even were their snapshot to carry usage; nor is anyone on a broker
+    // that sends none.
+    ({ view, dialog } = await at(15 * MIB, bob));
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toBeNull();
+    expect(dialog).not.toHaveTextContent('Storage');
+    view.unmount();
+    renderSettings();
+    const older = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(older.querySelector('[data-crew-settings-storage]')).toBeNull();
+  });
+
   it('names its tab list and lets Shift+Tab leave it instead of looping on the tab', async () => {
     const user = userEvent.setup();
     renderSettings({ tab: 'people' });

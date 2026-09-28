@@ -89,6 +89,28 @@ export const sidebarCopy = {
      * a team the host is not in would otherwise be told falsely they are in none.
      */
     joined: 'Joined, not in your teams',
+    /** The host's warning that the workspace is filling up (W2-UIW-20). */
+    storage: 'Storage',
+  },
+
+  /**
+   * How full the workspace is, for its host only (M1, W2-UIW-20): from 80% of the space ordinary
+   * changes may use, with what happens at the end. `workspace` is the workspace as named.
+   * "Removing people and privacy changes" is what the broker keeps its headroom for, and matches
+   * the refusal members then see (`refusalCopy.fullButHostCanAdminister`).
+   */
+  storage: {
+    filling: (workspace: string, percent: number) => `${workspace} is ${percent}% full.`,
+    full: (workspace: string) => `${workspace} is full.`,
+    whenFull:
+      'When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.',
+    nowFull:
+      'Only removing people and privacy changes work now; start a new workspace to keep posting.',
+    /** Spoken once, when the workspace crosses 80%, 95% or its limit while Crew is open. */
+    announce: (workspace: string, percent: number, full: boolean) =>
+      full
+        ? `${workspace} is full. Only removing people and privacy changes work now.`
+        : `${workspace} is ${percent}% full.`,
   },
 
   invitation: {

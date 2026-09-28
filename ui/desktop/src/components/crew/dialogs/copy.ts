@@ -102,6 +102,13 @@ export const workspaceSettingsCopy = {
   server: 'Server',
   /** The Copy button beside the server's address: "Copy server address" (QA Q3-39). */
   serverAddress: 'server address',
+  /**
+   * How full the workspace is, for its host only (M1, W2-UIW-20): of the space ordinary changes
+   * may use, from the fuller of its state and its journal.
+   */
+  storage: 'Storage',
+  storageUsed: (percent: number) => `${percent}% full`,
+  storageFull: 'Full',
   rename: 'Rename…',
   /** The tab list's accessible name (QA T-39). */
   tabsLabel: 'Workspace settings sections',
