@@ -2105,7 +2105,17 @@ impl Config {
         let get_value = |key: &str| -> Result<String, ConfigError> {
             let env_key = key.to_uppercase();
             if use_overrides {
+                // An override is read here as `get_secret` reads it: a JSON
+                // string literal gives up its quotes. `/config/check_provider`
+                // passes a candidate key that way so an all-digit key stays a
+                // string, and returning it raw sent OpenAI and LiteLLM the key
+                // with its quote characters. Text that is not a JSON string
+                // (a bare key, a number) is the key itself, as before.
                 override_lookup(&env_key)
+                    .map(|raw| match Self::parse_env_value(&raw) {
+                        Ok(Value::String(text)) => text,
+                        _ => raw,
+                    })
                     .or_else(|| env::var(&env_key).ok())
                     .ok_or_else(|| ConfigError::NotFound(key.to_string()))
             } else if use_env {

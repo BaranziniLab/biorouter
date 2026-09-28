@@ -14,7 +14,7 @@ use biorouter::config::{Config, ConfigError, ConfigWriteFailure};
 use biorouter::model::ModelConfig;
 use biorouter::privacy::ProviderTier;
 use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
-use biorouter::providers::base::{ProviderAffiliation, ProviderMetadata, ProviderType};
+use biorouter::providers::base::{ConfigKey, ProviderAffiliation, ProviderMetadata, ProviderType};
 use biorouter::providers::create_with_default_model;
 use biorouter::providers::errors::ProviderError;
 use biorouter::providers::pricing::{resolved_provider_model_pricing, ProviderModelPricing};
@@ -1814,8 +1814,8 @@ pub async fn update_custom_provider(
                                       provider does not declare"),
         (status = 403, description = "`live` or `candidate` from a caller that could not prove a \
                                       person asked, on a daemon that holds a user-action key; or, \
-                                      on one that holds none, a candidate that would send a saved \
-                                      secret to a setting it names"),
+                                      on one that holds none, a candidate that names a setting \
+                                      without typing the key it would be checked with"),
         (status = 422, description = "With `live` set: the provider rejected the credentials. \
                                       The body is its message"),
     )
@@ -1834,8 +1834,8 @@ pub async fn check_provider(
     // daemon secret (which a public chat's shell can recover) send a SAVED key
     // to a host of its choosing, so both need the same proof of a person the
     // other credential writes do. A daemon holding no user-action key (`serve`)
-    // cannot check one, so there a candidate may not move a saved secret at all
-    // (`saved_secret_refusal`).
+    // cannot check one, so there a candidate that names a setting is checked
+    // only with credentials the caller typed (`unproven_candidate_scope`).
     let proof = biorouter_server::auth::user_action_proof(&headers);
     if let Some(refusal) = credential_check_refusal(live, candidate.is_some(), &proof) {
         return Err(refusal);
@@ -1846,15 +1846,13 @@ pub async fn check_provider(
         .map(|(metadata, _)| metadata)
         .find(|metadata| metadata.name == provider);
     let overrides = match candidate {
-        Some(values) => {
-            let overrides = candidate_overrides(metadata.as_ref(), &provider, values)?;
-            if !matches!(proof, biorouter_server::auth::UserActionProof::Proven) {
-                if let Some(refusal) = saved_secret_refusal(metadata.as_ref(), &overrides) {
-                    return Err(refusal);
-                }
-            }
-            overrides
-        }
+        Some(values) => check_overrides(
+            metadata.as_ref(),
+            &provider,
+            values,
+            &proof,
+            secret_resolves_outside_the_candidate,
+        )?,
         None => HashMap::new(),
     };
     let has_secret = metadata
@@ -1900,37 +1898,148 @@ fn credential_check_refusal(
         })
 }
 
-/// On a daemon that cannot prove a person (no user-action key), a candidate may
-/// not change where a SAVED secret goes: one naming any non-secret setting (a
-/// host, an endpoint) must also supply every secret the provider declares, so
-/// the check sends only what the caller typed. Otherwise a caller holding only
-/// the daemon secret could point any provider's host at itself and have the
-/// daemon send that provider's saved key there, which neither `/config/upsert`
-/// nor a chat reaches for a provider the session is not bound to.
-fn saved_secret_refusal(
+/// The task-local overrides a check of `values` runs under, or the refusal: the
+/// candidate as [`candidate_overrides`] reads it and, from a caller that could
+/// not prove a person, narrowed by [`unproven_candidate_scope`], with every
+/// secret it left out set to an empty value so none of them is read from the
+/// store under a setting the caller named.
+fn check_overrides(
+    metadata: Option<&ProviderMetadata>,
+    provider: &str,
+    values: HashMap<String, String>,
+    proof: &biorouter_server::auth::UserActionProof,
+    secret_resolves: impl Fn(&str) -> bool,
+) -> Result<HashMap<String, String>, (StatusCode, String)> {
+    let mut overrides = candidate_overrides(metadata, provider, values)?;
+    if !matches!(proof, biorouter_server::auth::UserActionProof::Proven) {
+        for key in unproven_candidate_scope(metadata, &overrides, secret_resolves)? {
+            overrides.insert(key, EMPTY_SECRET_OVERRIDE.to_string());
+        }
+    }
+    Ok(overrides)
+}
+
+/// An empty secret, in the JSON string form every secret override takes.
+const EMPTY_SECRET_OVERRIDE: &str = "\"\"";
+
+/// On a daemon that cannot prove a person (no user-action key), a candidate
+/// that names a non-secret setting (a host, an endpoint, a region) is checked
+/// only with credentials the caller typed. Otherwise a caller holding only the
+/// daemon secret could point a provider's host at itself and have the daemon
+/// send it the provider's saved key, or this computer's own sign-in (Azure's
+/// Entra login, Databricks' browser login, Google or AWS credentials), which
+/// neither `/config/upsert` nor a chat reaches for a provider the session is
+/// not bound to.
+///
+/// So it is refused when a required secret the caller left out has a value in
+/// the environment or the store (`secret_resolves`), since that value is what
+/// the provider would sign in with, and when the caller typed no secret at all.
+/// Otherwise it returns the declared secrets the caller left out, which the
+/// check runs with as empty values. An optional one the caller did not type and
+/// that nothing holds is not asked for: it has nothing to send.
+fn unproven_candidate_scope(
     metadata: Option<&ProviderMetadata>,
     overrides: &HashMap<String, String>,
-) -> Option<(StatusCode, String)> {
-    let metadata = metadata?;
+    secret_resolves: impl Fn(&str) -> bool,
+) -> Result<Vec<String>, (StatusCode, String)> {
+    let Some(metadata) = metadata else {
+        return Ok(Vec::new());
+    };
     let names_a_setting = metadata
         .config_keys
         .iter()
         .any(|key| !key.secret && overrides.contains_key(&key.name.to_uppercase()));
-    let supplies_every_secret = metadata
+    if !names_a_setting {
+        return Ok(Vec::new());
+    }
+    let secrets: Vec<&ConfigKey> = metadata
         .config_keys
         .iter()
         .filter(|key| key.secret)
-        .all(|key| overrides.contains_key(&key.name.to_uppercase()));
-    (names_a_setting && !supplies_every_secret).then(|| {
-        (
-            StatusCode::FORBIDDEN,
-            format!(
-                "Checking a new {} setting with a saved key is the user's decision, and this \
-                 daemon cannot confirm the request came from one. Supply the key as well.",
+        .collect();
+    let left_out: Vec<&ConfigKey> = secrets
+        .iter()
+        .copied()
+        .filter(|key| !overrides.contains_key(&key.name.to_uppercase()))
+        .collect();
+    let refused = |sentence: String| Err((StatusCode::FORBIDDEN, sentence));
+
+    let saved: Vec<&str> = left_out
+        .iter()
+        .filter(|key| key.required && secret_resolves(&key.name))
+        .map(|key| key.name.as_str())
+        .collect();
+    if !saved.is_empty() {
+        return refused(format!(
+            "Checking a new {} setting would send the saved {} to it. That is the user's \
+             decision, and this daemon cannot confirm the request came from one, so type {} in \
+             with the setting.",
+            metadata.display_name,
+            name_list(&saved, "and"),
+            if saved.len() == 1 { "it" } else { "them" },
+        ));
+    }
+
+    let typed_a_secret = secrets.iter().any(|key| {
+        overrides
+            .get(&key.name.to_uppercase())
+            .is_some_and(|value| !secret_override_text(value).trim().is_empty())
+    });
+    if !typed_a_secret {
+        if secrets.is_empty() {
+            return refused(format!(
+                "Checking a new {} setting is the user's decision, and this daemon cannot \
+                 confirm the request came from one.",
                 metadata.display_name
-            ),
-        )
-    })
+            ));
+        }
+        // Name the key the provider signs in with: its required secrets, or,
+        // when none is required (Azure, Databricks), whichever it has.
+        let required: Vec<&str> = secrets
+            .iter()
+            .filter(|key| key.required)
+            .map(|key| key.name.as_str())
+            .collect();
+        let wanted = if required.is_empty() {
+            let any: Vec<&str> = secrets.iter().map(|key| key.name.as_str()).collect();
+            name_list(&any, "or")
+        } else {
+            name_list(&required, "and")
+        };
+        return refused(format!(
+            "Checking a new {} setting from here needs {wanted} typed in with it. Without that \
+             the check would sign in with a saved key or with this computer's own sign-in, which \
+             is the user's decision, and this daemon cannot confirm the request came from one.",
+            metadata.display_name,
+        ));
+    }
+
+    Ok(left_out.iter().map(|key| key.name.to_uppercase()).collect())
+}
+
+/// Whether the check would read a value for secret `key` if the candidate left
+/// it out: one in the environment or the secret store. A store that cannot be
+/// read counts as holding one.
+fn secret_resolves_outside_the_candidate(key: &str) -> bool {
+    !matches!(
+        Config::global().get_secret::<Value>(key),
+        Err(ConfigError::NotFound(_))
+    )
+}
+
+/// A secret override's text: the string inside the JSON literal
+/// [`candidate_overrides`] writes, or the value itself.
+fn secret_override_text(value: &str) -> String {
+    serde_json::from_str::<String>(value).unwrap_or_else(|_| value.to_string())
+}
+
+/// `A`, `A and B`, `A, B and C` (or with `or`).
+fn name_list(names: &[&str], conjunction: &str) -> String {
+    match names {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [rest @ .., last] => format!("{} {conjunction} {last}", rest.join(", ")),
+    }
 }
 
 /// A candidate's values as the task-local overrides the check runs under, or
@@ -1964,6 +2073,9 @@ fn candidate_overrides(
         // true/false, then a number), but a secret is saved as a string. So a
         // secret goes in as a JSON string literal, or an all-digit key would be
         // read as a number and fail to build a provider it would have run.
+        // `Config::get_secret` and `Config::get_secrets` both take the string
+        // back out of the literal, so a provider sees exactly what was typed
+        // whichever of the two it reads its key through.
         let value = if declared.secret {
             serde_json::to_string(&value).unwrap_or(value)
         } else {
@@ -2304,43 +2416,264 @@ mod tests {
         assert!(candidate_overrides(None, "nope", HashMap::new()).is_err());
     }
 
-    /// Review of W2-PRV-2: where no person can be proven, a candidate that moves
-    /// a setting (a host) must bring every secret with it, so no SAVED key goes
-    /// to a host the caller named. And a secret candidate stays a string.
+    /// Review of W2-PRV-2, round 2. Where no person can be proven, a candidate
+    /// that names a setting is checked only with what the caller typed. Built on
+    /// the providers' REAL metadata, because the refusal a browser on
+    /// `biorouter serve` met came from OpenAI's optional second secret.
     #[test]
-    fn an_unproven_candidate_cannot_send_a_saved_key_elsewhere() {
-        use biorouter::providers::base::ConfigKey;
-        let mut metadata = ProviderMetadata::empty();
-        metadata.display_name = "OpenAI".to_string();
-        metadata.config_keys = vec![
-            ConfigKey::new("OPENAI_API_KEY", true, true, None),
-            ConfigKey::new("OPENAI_HOST", true, false, Some("https://api.openai.com")),
+    fn an_unproven_candidate_is_checked_only_with_what_it_typed() {
+        use biorouter::providers::base::Provider;
+        use biorouter_server::auth::UserActionProof::{NoKeyInstalled, Proven};
+        let openai = biorouter::providers::openai::OpenAiProvider::metadata();
+        let check = |metadata: &ProviderMetadata,
+                     values: &[(&str, &str)],
+                     proof,
+                     saved: &[&str]|
+         -> Result<HashMap<String, String>, (StatusCode, String)> {
+            let saved: Vec<String> = saved.iter().map(|key| key.to_string()).collect();
+            check_overrides(
+                Some(metadata),
+                &metadata.name,
+                values
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect(),
+                &proof,
+                |key| saved.iter().any(|saved| saved == key),
+            )
+        };
+        let openai_save = [
+            ("OPENAI_API_KEY", "sk-typed"),
+            ("OPENAI_HOST", "https://api.openai.com"),
+            ("OPENAI_BASE_PATH", "v1/chat/completions"),
         ];
-        let host_only = HashMap::from([(
-            "OPENAI_HOST".to_string(),
-            "https://attacker.example".to_string(),
-        )]);
-        assert_eq!(
-            saved_secret_refusal(Some(&metadata), &host_only).map(|r| r.0),
-            Some(StatusCode::FORBIDDEN)
-        );
-        let with_key = HashMap::from([
-            ("OPENAI_HOST".to_string(), "https://gw.example".to_string()),
-            ("OPENAI_API_KEY".to_string(), "\"sk-typed\"".to_string()),
-        ]);
-        assert!(saved_secret_refusal(Some(&metadata), &with_key).is_none());
-        let key_only = HashMap::from([("OPENAI_API_KEY".to_string(), "\"sk\"".to_string())]);
-        assert!(saved_secret_refusal(Some(&metadata), &key_only).is_none());
 
-        let overrides = candidate_overrides(
-            Some(&metadata),
-            "openai",
-            HashMap::from([("OPENAI_API_KEY".to_string(), "123456".to_string())]),
+        // The failing save: a typed key with the form's required settings, and
+        // no custom headers typed or saved. Not refused, and the headers the
+        // caller left out are checked as empty.
+        let overrides = check(&openai, &openai_save, NoKeyInstalled, &[])
+            .expect("a save that carries its key is checked");
+        assert_eq!(overrides["OPENAI_API_KEY"], "\"sk-typed\"");
+        assert_eq!(overrides["OPENAI_CUSTOM_HEADERS"], EMPTY_SECRET_OVERRIDE);
+
+        // Saved headers (they can carry a token) are not asked for either, and
+        // are not read under the host the caller named.
+        let overrides = check(
+            &openai,
+            &openai_save,
+            NoKeyInstalled,
+            &["OPENAI_CUSTOM_HEADERS"],
+        )
+        .expect("an optional secret is never demanded");
+        assert_eq!(overrides["OPENAI_CUSTOM_HEADERS"], EMPTY_SECRET_OVERRIDE);
+
+        // A host with the saved key left out would send that key there. The
+        // sentence names the key it would send, and only that one.
+        let host_only = [("OPENAI_HOST", "https://attacker.example")];
+        let (status, sentence) = check(&openai, &host_only, NoKeyInstalled, &["OPENAI_API_KEY"])
+            .expect_err("the saved key does not go to a named host");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(sentence.contains("the saved OPENAI_API_KEY"), "{sentence}");
+        assert!(!sentence.contains("OPENAI_CUSTOM_HEADERS"), "{sentence}");
+        let typed_headers_only = [
+            ("OPENAI_HOST", "https://attacker.example"),
+            ("OPENAI_CUSTOM_HEADERS", "X-Team=blue"),
+        ];
+        assert!(
+            check(
+                &openai,
+                &typed_headers_only,
+                NoKeyInstalled,
+                &["OPENAI_API_KEY"]
+            )
+            .is_err(),
+            "typing an optional secret does not let the saved key travel"
+        );
+        // With nothing saved it has nothing to send, and is still refused: a
+        // check with no typed credential would sign in with none of the caller's.
+        let (status, sentence) = check(&openai, &host_only, NoKeyInstalled, &[])
+            .expect_err("a named setting needs a typed key");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            sentence.contains("needs OPENAI_API_KEY typed in"),
+            "{sentence}"
+        );
+
+        // A key alone moves nothing: the saved host is the one it goes to, and
+        // nothing is blanked.
+        let overrides = check(
+            &openai,
+            &[("OPENAI_API_KEY", "sk-typed")],
+            NoKeyInstalled,
+            &["OPENAI_CUSTOM_HEADERS"],
         )
         .unwrap();
-        let read_back: serde_json::Value =
-            serde_json::from_str(&overrides["OPENAI_API_KEY"]).unwrap();
-        assert_eq!(read_back, serde_json::json!("123456"));
+        assert!(!overrides.contains_key("OPENAI_CUSTOM_HEADERS"));
+
+        // A person who proved it asked is checked with the saved values too.
+        let overrides = check(&openai, &host_only, Proven, &["OPENAI_API_KEY"]).unwrap();
+        assert_eq!(overrides.len(), 1);
+
+        // LiteLLM has the same optional second secret.
+        let litellm = biorouter::providers::litellm::LiteLLMProvider::metadata();
+        let overrides = check(
+            &litellm,
+            &[
+                ("LITELLM_API_KEY", "sk-typed"),
+                ("LITELLM_HOST", "https://litellm.example"),
+            ],
+            NoKeyInstalled,
+            &["LITELLM_CUSTOM_HEADERS"],
+        )
+        .expect("a LiteLLM save that carries its key is checked");
+        assert_eq!(overrides["LITELLM_CUSTOM_HEADERS"], EMPTY_SECRET_OVERRIDE);
+
+        // Azure signs in with this computer's Entra login when no key is set:
+        // an endpoint with the key left out, or typed empty, is refused, since
+        // the saved-key rule alone would pass both.
+        let azure = biorouter::providers::azure::AzureProvider::metadata();
+        for key in [None, Some(""), Some("  ")] {
+            let mut values = vec![
+                ("AZURE_OPENAI_ENDPOINT", "https://attacker.example"),
+                ("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt"),
+            ];
+            values.extend(key.map(|key| ("AZURE_OPENAI_API_KEY", key)));
+            assert_eq!(
+                check(&azure, &values, NoKeyInstalled, &[])
+                    .map_err(|r| r.0)
+                    .err(),
+                Some(StatusCode::FORBIDDEN),
+                "key {key:?}"
+            );
+        }
+        assert!(check(
+            &azure,
+            &[
+                ("AZURE_OPENAI_ENDPOINT", "https://my.openai.azure.com"),
+                ("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt"),
+                ("AZURE_OPENAI_API_KEY", "typed"),
+            ],
+            NoKeyInstalled,
+            &[]
+        )
+        .is_ok());
+
+        // A provider with no key to type signs in with this computer's own
+        // credentials, so a setting it names is refused outright.
+        let vertex = biorouter::providers::gcpvertexai::GcpVertexAIProvider::metadata();
+        assert_eq!(
+            check(
+                &vertex,
+                &[("GCP_LOCATION", "attacker.example#")],
+                NoKeyInstalled,
+                &[]
+            )
+            .map_err(|r| r.0)
+            .err(),
+            Some(StatusCode::FORBIDDEN)
+        );
+    }
+
+    /// Review of W2-PRV-2, round 2. The key a provider is built with under a
+    /// candidate is exactly the key typed, whichever of `get_secret` and
+    /// `get_secrets` it reads it through. OpenAI and LiteLLM read theirs through
+    /// `get_secrets`, which returned the JSON literal with its quotes, so a
+    /// correct key went out as `Bearer "sk-..."` and was refused. An all-digit
+    /// key is still a string on both paths.
+    #[tokio::test]
+    async fn a_typed_key_reaches_the_provider_exactly_as_typed() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        async fn sent_under(provider: &str, values: &[(&str, &str)]) -> Vec<wiremock::Request> {
+            let server = MockServer::start().await;
+            Mock::given(any())
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "data": [{ "id": "m" }] })),
+                )
+                .mount(&server)
+                .await;
+            let metadata = get_providers()
+                .await
+                .into_iter()
+                .map(|(metadata, _)| metadata)
+                .find(|metadata| metadata.name == provider)
+                .expect("a registered provider");
+            let host_key = metadata
+                .config_keys
+                .iter()
+                .find(|key| key.name.ends_with("_HOST"))
+                .expect("a host setting")
+                .name
+                .clone();
+            let mut values: HashMap<String, String> = values
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect();
+            values.insert(host_key, server.uri());
+            // The route's own composition, as a `biorouter serve` browser meets
+            // it: the candidate, then the no-key narrowing, nothing saved.
+            let overrides = check_overrides(
+                Some(&metadata),
+                provider,
+                values,
+                &biorouter_server::auth::UserActionProof::NoKeyInstalled,
+                |_| false,
+            )
+            .expect("a candidate that carries its key");
+            biorouter::config::with_config_overrides(overrides, async {
+                let built = create_with_default_model(provider)
+                    .await
+                    .expect("the provider builds from the candidate");
+                let _ = built.fetch_supported_models().await;
+            })
+            .await;
+            server.received_requests().await.unwrap_or_default()
+        }
+
+        fn header(request: &wiremock::Request, name: &str) -> Option<String> {
+            request
+                .headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        }
+
+        for key in ["sk-typed-123", "1234567890"] {
+            let sent = sent_under("openai", &[("OPENAI_API_KEY", key)]).await;
+            assert!(!sent.is_empty(), "OpenAI made no call");
+            for request in &sent {
+                assert_eq!(
+                    header(request, "authorization"),
+                    Some(format!("Bearer {key}"))
+                );
+            }
+
+            let sent = sent_under(
+                "litellm",
+                &[
+                    ("LITELLM_API_KEY", key),
+                    ("LITELLM_CUSTOM_HEADERS", "X-Team: blue"),
+                ],
+            )
+            .await;
+            assert!(!sent.is_empty(), "LiteLLM made no call");
+            for request in &sent {
+                assert_eq!(
+                    header(request, "authorization"),
+                    Some(format!("Bearer {key}"))
+                );
+                assert_eq!(header(request, "x-team"), Some("blue".to_string()));
+            }
+
+            // Anthropic reads its key through `get_secret`.
+            let sent = sent_under("anthropic", &[("ANTHROPIC_API_KEY", key)]).await;
+            assert!(!sent.is_empty(), "Anthropic made no call");
+            for request in &sent {
+                assert_eq!(header(request, "x-api-key"), Some(key.to_string()));
+            }
+        }
     }
 
     /// A stand-in whose model listing answers what each test needs.
