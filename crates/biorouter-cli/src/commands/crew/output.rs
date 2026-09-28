@@ -744,6 +744,8 @@ pub struct Directory {
     channels: BTreeMap<String, ChannelInfo>,
     references: BTreeMap<String, (String, String)>,
     unread: BTreeMap<String, u64>,
+    /// The people the workspace reports online.
+    online: std::collections::BTreeSet<String>,
     /// Why this directory could not read the workspace's names, and which workspace: an ID it
     /// cannot name is then said as that, with its ID, rather than as "this channel" (R-8,
     /// AG-F17).
@@ -808,6 +810,12 @@ impl Directory {
         directory
     }
 
+    /// Whether the workspace reports this person online (`online_principal_ids`, W2-BRK-6).
+    /// Presence is shown only when the broker reports it: an older one names no one.
+    fn online(&self, id: &str) -> bool {
+        self.online.contains(id)
+    }
+
     /// A channel's `#name` for a sentence, or "a channel" when this directory can't name it
     /// (never its ID).
     pub fn channel_label(&self, id: &str) -> String {
@@ -862,6 +870,10 @@ impl Directory {
                     channel.name = name.as_str().map(str::to_owned);
                 }
             }
+        }
+        if let Some(Value::Array(online)) = fields.get("online_principal_ids") {
+            self.online
+                .extend(online.iter().filter_map(Value::as_str).map(str::to_owned));
         }
         if let Some(Value::Object(unread)) = fields.get("unread") {
             for (id, count) in unread {
@@ -1014,6 +1026,26 @@ fn display_text(name: &str) -> String {
     } else {
         format!("\u{2068}{text}\u{2069}")
     }
+}
+
+/// A channel as a sentence names it when another team of the person's may have one of the
+/// same name (M11): `Chen Lab / #general` when another listed team has a channel of that name,
+/// else `#general`. `None` when the directory cannot name the channel.
+pub fn channel_across_teams(directory: &Directory, id: &str) -> Option<String> {
+    let channel = directory.channels.get(id)?;
+    let name = channel.name.as_deref().filter(|name| !name.is_empty())?;
+    let shared = directory.channels.iter().any(|(other, info)| {
+        other != id && info.name.as_deref() == Some(name) && info.team_id != channel.team_id
+    });
+    let team = channel
+        .team_id
+        .as_deref()
+        .and_then(|team| directory.teams.get(team))
+        .filter(|_| shared);
+    Some(match team {
+        Some(team) => format!("{} / {}", display_text(team), channel_name(name)),
+        None => channel_name(name),
+    })
 }
 
 /// `"Bob Lee" (@bob)`, or `@bob` when the display name is the username.
@@ -1455,6 +1487,9 @@ impl Ctx {
         }
         if person.stale {
             row.push_str(" · account no longer valid");
+        }
+        if id.is_some_and(|id| self.dir.online(id)) {
+            row.push_str(" · online");
         }
         row = self.with_id(row, "ID", id);
         if let Some(uid) = person.uid.filter(|_| self.show_ids) {
@@ -3127,6 +3162,23 @@ mod tests {
         );
         assert!(text.contains("\n  Showing 2 of your 5 channels."), "{text}");
         assert!(!text.contains("of your 1 teams"), "{text}");
+    }
+
+    /// M18 with W2-BRK-6: a person the broker reports online says so; a broker that reports no
+    /// presence shows none.
+    #[test]
+    fn members_the_broker_reports_online_say_so() {
+        let mut snapshot = alice_snapshot();
+        snapshot["online_principal_ids"] = json!([BOB]);
+        let people = render_text(
+            &snapshot["principals"],
+            &options(false, Directory::from_snapshot(&snapshot)).with_view(View::Members),
+        );
+        assert_eq!(
+            people,
+            format!("@crew_carol\n{} · you · host\n{} · online", alice(), bob())
+        );
+        assert!(!plain(&alice_snapshot()["principals"]).contains("online"));
     }
 
     #[test]

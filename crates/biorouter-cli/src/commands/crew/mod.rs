@@ -1399,11 +1399,19 @@ fn with_roles(mut people: Value, snapshot: &Value) -> Value {
     let actor = snapshot["actor"]["id"].as_str();
     // An older broker names only the host's UID; one active principal holds it.
     let host = snapshot_host_id(snapshot);
+    // Presence (W2-BRK-6), when the broker reports it; an older one reports none, and nothing
+    // is invented.
+    let online: Option<Vec<&str>> = snapshot["online_principal_ids"]
+        .as_array()
+        .map(|ids| ids.iter().filter_map(Value::as_str).collect());
     if let Some(people) = people.as_array_mut() {
         for person in people.iter_mut().filter(|person| person.is_object()) {
             let id = person["id"].as_str().map(str::to_owned);
             person["is_you"] = json!(id.is_some() && id.as_deref() == actor);
             person["is_host"] = json!(id.is_some() && id == host);
+            if let Some(online) = &online {
+                person["is_online"] = json!(id.as_deref().is_some_and(|id| online.contains(&id)));
+            }
         }
     }
     people
@@ -3297,7 +3305,8 @@ async fn add_member(
         None => add_to_channels(api, who, &username, places).await?,
     };
     let lines = if api.text() {
-        added_lines(api, &username, &added, places).await
+        let team = team.and_then(|_| places.first());
+        added_lines(api, who, &username, team, &added, places).await
     } else {
         Vec::new()
     };
@@ -3476,33 +3485,64 @@ fn channel_add_problems(
     problems
 }
 
-/// "Added. @bob can now see #general and #methods.", or that nothing needed adding.
+/// What a direct add changed (M11), naming the person as every decision about a person does,
+/// `"Carol Nguyen" (@crew_carol)`, and the places so they cannot be mistaken:
+///
+/// - into a team: `Added "Dan Ro" (@dan) to Analysis Lab. They can now see #general.`;
+/// - into channels: `Added "Dan Ro" (@dan) to #methods.`, with the team in front of a channel
+///   whose name another of the person's teams also has: `Chen Lab / #general`, since every team
+///   has a `#general`.
+///
+/// Or that nothing needed adding.
 async fn added_lines(
     api: &Api,
+    who: &Target,
     username: &str,
+    team: Option<&Target>,
     added: &[String],
     places: &[Target],
 ) -> Vec<String> {
-    let handle = format!("@{}", safe_text(username));
-    if added.is_empty() {
-        return vec![format!("{handle} is already in everything you chose.")];
-    }
     let names = api.names().await;
-    let seen: Vec<String> = added
-        .iter()
-        .map(|id| {
-            let known = names.channel_label(id);
-            if known.starts_with('#') {
-                return known;
-            }
+    let person = {
+        let label = output::authority_label(&names, &who.id, api.show_ids);
+        if label.starts_with("Unknown member") {
+            api.with_id(format!("@{}", safe_text(username)), "ID", &who.id)
+        } else {
+            label
+        }
+    };
+    if added.is_empty() {
+        return vec![format!("{person} is already in everything you chose.")];
+    }
+    let place = |id: &String, across_teams: bool| {
+        let known = if across_teams {
+            output::channel_across_teams(&names, id)
+        } else {
+            Some(names.channel_label(id)).filter(|label| label.starts_with('#'))
+        };
+        known.unwrap_or_else(|| {
             places
                 .iter()
                 .find(|target| target.id == *id)
                 .and_then(|target| target.label.as_deref())
-                .map_or(known, name_text)
+                .map_or_else(|| "a channel".to_owned(), name_text)
         })
-        .collect();
-    vec![format!("Added. {handle} can now see {}.", and_list(&seen))]
+    };
+    match team {
+        // The channels a team add gave are all that team's, so it names them once.
+        Some(team) => {
+            let seen: Vec<String> = added.iter().map(|id| place(id, false)).collect();
+            vec![format!(
+                "Added {person} to {}. They can now see {}.",
+                api.label(team, "the team", "team ID"),
+                and_list(&seen)
+            )]
+        }
+        None => {
+            let seen: Vec<String> = added.iter().map(|id| place(id, true)).collect();
+            vec![format!("Added {person} to {}.", and_list(&seen))]
+        }
+    }
 }
 
 async fn remove_member(
@@ -5486,7 +5526,10 @@ mod tests {
             json!({"team_id": TEAM, "principal_id": BOB, "expected_username": "bob",
                    "channel_ids": [METHODS], "idempotency_key": "req-1"})
         );
-        assert_eq!(lines, ["Added. @bob can now see #general and #methods."]);
+        assert_eq!(
+            lines,
+            ["Added \"Bob Lee\" (@bob) to Analysis Lab. They can now see #general and #methods."]
+        );
         let selectors = &fake.resolve_bodies()[0]["selectors"];
         assert!(
             selectors
@@ -5511,7 +5554,54 @@ mod tests {
                 .await
                 .expect("a no-op add"),
         );
-        assert_eq!(lines, ["@bob is already in everything you chose."]);
+        assert_eq!(
+            lines,
+            ["\"Bob Lee\" (@bob) is already in everything you chose."]
+        );
+    }
+
+    /// M11: every team has a `#general`, so a channel added on its own is named with its team
+    /// when another of the person's teams has a channel of that name.
+    #[tokio::test]
+    async fn an_added_channel_names_its_team_when_another_team_shares_its_name() {
+        const OTHER_TEAM: &str = "7ea30000-0000-4000-8000-00000000000e";
+        const OTHER_GENERAL: &str = "c4a77e10-0000-4000-8000-00000000000e";
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            let body_value = body.cloned().unwrap_or_default();
+            match body_value["method"].as_str() {
+                Some("workspace.snapshot") => {
+                    let mut snapshot = snapshot();
+                    snapshot["teams"][0]["members"] = json!([ALICE, BOB]);
+                    snapshot["teams"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(json!({"id": OTHER_TEAM, "name": "Methods Team", "general_channel_id": OTHER_GENERAL, "members": [ALICE]}));
+                    snapshot["channels"].as_array_mut().unwrap().push(
+                        json!({"id": OTHER_GENERAL, "team_id": OTHER_TEAM, "name": "general", "classification": "restricted"}),
+                    );
+                    Ok(snapshot)
+                }
+                Some("channel.add_member") => Ok(json!({
+                    "channel_id": body_value["params"]["channel_id"],
+                    "principal_id": BOB,
+                    "already_member": false,
+                })),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                add_member_command(None, &["analysis-lab/general", "#methods"]),
+            )
+            .await
+            .expect("added"),
+        );
+        assert_eq!(
+            lines,
+            ["Added \"Bob Lee\" (@bob) to Analysis Lab / #general and #methods."]
+        );
     }
 
     /// Without `--team`, each channel is its own `channel.add_member`, each with its own
@@ -5552,7 +5642,7 @@ mod tests {
         assert_eq!(calls[1]["params"]["channel_id"], GENERAL);
         assert_eq!(calls[1]["params"]["idempotency_key"], "req-1:1");
         assert_eq!(calls[1]["request_id"], "req-1:1");
-        assert_eq!(lines, ["Added. @bob can now see #methods."]);
+        assert_eq!(lines, ["Added \"Bob Lee\" (@bob) to #methods."]);
 
         let (api, fake) = api_with(OutputFormat::Text, standard);
         let error = run(&api, add_member_command(None, &[]))
@@ -5752,6 +5842,13 @@ mod tests {
             .collect();
         // Alice hosts, Bob is you, then Carol by name.
         assert_eq!(ids, [ALICE, BOB, CAROL]);
+        // An older broker reports no presence, and none is invented.
+        assert!(people[0].get("is_online").is_none());
+        let mut present = snapshot();
+        present["online_principal_ids"] = json!([BOB]);
+        let marked = with_roles(present["principals"].clone(), &present);
+        assert_eq!(marked[0]["is_online"], false);
+        assert_eq!(marked[1]["is_online"], true);
 
         let (api, _) = api_with(OutputFormat::Text, shuffled);
         let reply = run(
