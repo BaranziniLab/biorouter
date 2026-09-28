@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { useRememberHosting } from '../onboarding/joinContext';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { useMenuCopyItem } from './menuCopy';
@@ -46,6 +47,13 @@ export function WorkspaceSwitcher() {
   const [tipOpen, setTipOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const fingerprintCopy = useMenuCopyItem(setMenuOpen);
+  // Whether this person hosts the workspace, kept for when its server is not running and no view
+  // can say (R-7): the offline screen's start line or whom to ask.
+  useRememberHosting(
+    crew.connectionId,
+    Boolean(crew.snapshot && crew.observedPrivacy?.connectionId === crew.connectionId),
+    crew.isHost
+  );
 
   return (
     <div className="crew-sidebar-band" data-crew-band="switcher">

@@ -29,6 +29,11 @@ export interface CrewConnection {
    * daemon's keepalive then stops re-dialling it, and the renderer never connects it by itself.
    */
   last_error_code?: string;
+  /**
+   * What to call the connection's server on screen (D-ALIAS): the person's own SSH alias for its
+   * address when one maps to it, else the host. Display only; read through `serverLabel`.
+   */
+  server_label?: string;
 }
 // The snapshot is forwarded by the daemon as an untyped value, so these interfaces are written by
 // hand from docs/research/biorouter-crew/naming-design.md. Every field a broker before S1a/S2a does
@@ -227,11 +232,62 @@ export class CrewHttpError extends Error {
      * `crew_connection_exists` / `crew_invitation_conflict` carries, so the person can open it.
      * Read it through `refusalConnectionId`, which asks the code first.
      */
-    public readonly connectionId?: string
+    public readonly connectionId?: string,
+    /**
+     * The typed fields a coded refusal carries beside `code` and `error` (W2-DMN-5, W2-DMN-9):
+     * `host`, the SSH hop a connect failure concerns (a jump host's included);
+     * `institution_refusal`, who approved the model and whose the workspace is; `actual_mode` and
+     * `expected_mode`. Only these keys, each only in its own shape; display only.
+     */
+    public readonly fields: CrewRefusalFields = {}
   ) {
     super(message);
     this.name = 'CrewHttpError';
   }
+}
+
+/** A coded refusal's typed fields ({@link CrewHttpError.fields}), each present only when valid. */
+export interface CrewRefusalFields {
+  host?: string;
+  institution_refusal?: {
+    model?: string;
+    approved_for?: string[] | null;
+    workspace?: string | null;
+    workspace_institution?: string | null;
+  };
+  actual_mode?: 'private' | 'public';
+  expected_mode?: 'private' | 'public';
+}
+
+/** A host as OpenSSH names one: a name, an address or `[address]:port`, and nothing else. */
+const HOST_SHAPE = /^[A-Za-z0-9._:[\]%-]{1,255}$/;
+
+function refusalFieldsOf(body: Record<string, unknown>): CrewRefusalFields {
+  const fields: CrewRefusalFields = {};
+  if (typeof body.host === 'string' && HOST_SHAPE.test(body.host)) fields.host = body.host;
+  const mode = (value: unknown) => (value === 'private' || value === 'public' ? value : undefined);
+  const actual = mode(body.actual_mode);
+  const expected = mode(body.expected_mode);
+  if (actual) fields.actual_mode = actual;
+  if (expected) fields.expected_mode = expected;
+  const refusal = body.institution_refusal;
+  if (typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal)) {
+    const record = refusal as Record<string, unknown>;
+    const text = (value: unknown) =>
+      typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : undefined;
+    const approved = Array.isArray(record.approved_for)
+      ? record.approved_for.filter((item): item is string => typeof item === 'string').slice(0, 16)
+      : record.approved_for === null
+        ? null
+        : undefined;
+    fields.institution_refusal = {
+      model: text(record.model),
+      approved_for: approved,
+      workspace: text(record.workspace) ?? null,
+      workspace_institution: text(record.workspace_institution) ?? null,
+    };
+  }
+  return fields;
 }
 
 /** A broker refusal code as the daemon forwards one: a short snake_case word. */
@@ -257,7 +313,8 @@ function crewHttpErrorFrom(result: unknown, status: number, fallback: string): C
     typeof body.code === 'string' ? body.code : undefined,
     typeof body.detail === 'string' ? body.detail : undefined,
     brokerCodeOf(body.broker_code),
-    connectionIdOf(body.connection_id)
+    connectionIdOf(body.connection_id),
+    refusalFieldsOf(body)
   );
 }
 

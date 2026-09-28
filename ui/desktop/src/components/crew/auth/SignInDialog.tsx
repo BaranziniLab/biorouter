@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import { ModalShell } from '../../ModalShell';
 import CrewAuthentication from '../CrewAuthentication';
-import { connectionServer } from '../identity';
+import { serverLabel } from '../sidebar/sidebarView';
 import { useCrew } from '../state/CrewControllerContext';
 import { openerOf, restoreFocus, SIGN_IN_FOCUS_FALLBACKS } from '../state/focusReturn';
 import { signInCopy } from './copy';
@@ -22,7 +22,8 @@ import { signInCopy } from './copy';
  */
 export function SignInDialog() {
   const { signIn, connection, connectionId, onSignedIn, closeSignIn } = useCrew();
-  const host = connectionServer(connection) || connection?.name || '';
+  // The server by the person's own name for it, as the main area names it (DW-03).
+  const host = serverLabel(connection) || connection?.name || '';
   const open = signIn.open && Boolean(connectionId);
   const opener = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);

@@ -42,6 +42,38 @@ beforeEach(() => {
 });
 
 describe('TrustPane', () => {
+  // DW-03, W2-DMN-5: "Can't verify <destination>" whichever hop failed; a jump host's key is the
+  // jump host's.
+  it('names the hop whose key could not be verified when the daemon says which', () => {
+    const failure = {
+      kind: 'host_key_unknown',
+      message: 'Host key verification failed.',
+      code: 'crew_ssh_host_key_unknown',
+      host: 'jump.example.edu',
+    } as LastConnectFailure;
+    renderPane(failure);
+    expect(
+      screen.getByRole('heading', { name: trustCopy.unknownTitle('jump.example.edu') })
+    ).toBeInTheDocument();
+  });
+
+  it('names the server by the person’s own alias for it otherwise (D-ALIAS)', () => {
+    const crew = makeCrew({
+      connectionId: 'conn-1',
+      connection: { ...fakeConnection({ status: 'disconnected' }), server_label: 'lab-server' },
+      lastConnectFailure: {
+        kind: 'host_key_changed',
+        message: 'Host key verification failed.',
+        code: 'crew_ssh_host_key_changed',
+      },
+      screen: 'trust',
+    });
+    renderWithCrew(<TrustPane />, crew);
+    expect(
+      screen.getByRole('heading', { name: trustCopy.changedTitle('lab-server') })
+    ).toBeInTheDocument();
+  });
+
   it('shows an unknown host key with the fingerprint it offered and Try again', async () => {
     const crew = renderPane({
       kind: 'host_key_unknown',

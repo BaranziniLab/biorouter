@@ -4,8 +4,11 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { parseRefusal, refusalText } from '../dialogs/refusals';
-import { connectionServer } from '../identity';
+import { useJoinContext } from '../onboarding/joinContext';
+import { sshUsername } from '../onboarding/joinText';
+import { serverLabel } from '../sidebar/sidebarView';
 import {
+  connectFailureHost,
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
@@ -40,7 +43,11 @@ function useHeldFor(active: boolean, delayMs: number): boolean {
  * and never a bare `code: ` prefix (a `name_taken: …` reached this bar verbatim once the dialog that
  * caused it had closed, T-08).
  */
-export function actionErrorText(message: string): string {
+export function actionErrorText(message: string, host = ''): string {
+  // The transport's own record of a dropped link never reaches a person (R-4): it says the outcome
+  // is unknown, so the sentence says so too.
+  if (MACHINE_TEXT.test(message) && /Crew SSH failure|child_before_cleanup/.test(message))
+    return connectionBarCopy.linkLost(host);
   const words = refusalText(message);
   const refusal = parseRefusal(words);
   if (!refusal.code) return words;
@@ -62,15 +69,37 @@ const MACHINE_TEXT =
  * any machine-shaped text. Only a failure the daemon answered in a person's words (a missing
  * approval, an outdated background service) keeps them. Never the raw text.
  */
+export interface ConnectErrorContext {
+  /** The hop OpenSSH named, when it is not the server itself (a jump host's key, W2-DMN-5). */
+  failureHost?: string | null;
+  /** The account the saved login signs in as, for a refused key. */
+  user?: string | null;
+  /** Whether this person hosts the workspace; `null` when this computer cannot tell. */
+  hosts?: boolean | null;
+  /** The workspace's host, as a sentence names them, for a member told whom to ask. */
+  hostName?: string | null;
+}
+
 export function connectErrorText(
   kind: ConnectFailureKind | undefined,
   message: string,
-  host: string
+  host: string,
+  context: ConnectErrorContext = {}
 ): string {
   if (kind === 'unreachable') return connectionBarCopy.unreachable(host);
   if (kind === 'auth_required') return connectionBarCopy.signInNeeded(host);
-  if (isTrustFailure(kind)) return connectionBarCopy.cantVerify(host);
+  // A publickey-only refusal is not a password matter (F5): the login or its key is.
+  if (kind === 'ssh_key_refused') return connectionBarCopy.keyRefused(host, context.user ?? null);
+  // The hop whose key could not be verified, which may be a jump host (W2-DMN-5).
+  if (isTrustFailure(kind)) return connectionBarCopy.cantVerify(context.failureHost || host);
   if (isNotSetUpFailure(kind)) return connectionBarCopy.notRunning(host);
+  // A stopped workspace server (R-7): its host starts it; a member asks the host.
+  if (kind === 'broker_not_running')
+    return context.hosts === true
+      ? connectionBarCopy.brokerStoppedHost(host)
+      : context.hosts === false
+        ? connectionBarCopy.brokerStoppedMember(context.hostName ?? null)
+        : connectionBarCopy.brokerStopped(host);
   if ((kind === undefined || kind === 'unknown') && message.trim() && !MACHINE_TEXT.test(message))
     return actionErrorText(message);
   return connectionBarCopy.cantConnect(host);
@@ -165,7 +194,15 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   const barError = error && (errorSlotFor('global') || errorSlotFor('observer')) ? error : null;
   const connectError = barError?.source === 'connect' ? barError : null;
   const actionError = barError && barError.source !== 'connect' ? barError : null;
-  const host = connectionServer(connection) || connection?.name || '';
+  // The server by the person's own name for it, as the main area and the menu name it (DW-03).
+  const host = serverLabel(connection) || connection?.name || '';
+  const joinContext = useJoinContext(connectionId);
+  const errorContext: ConnectErrorContext = {
+    failureHost: connectFailureHost(failure),
+    user: sshUsername(connection?.ssh_target) ?? joinContext.username ?? null,
+    hosts: crew.isHost ? true : (joinContext.hosts ?? null),
+    hostName: joinContext.hostDisplayName ?? joinContext.hostUsername ?? null,
+  };
   const unreachable = failure?.kind === 'unreachable';
   const workspace = workspaceLabel(crew, crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
   const notMember = crew.status === 'not-joined' || crew.screen === 'join';
@@ -277,7 +314,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             </Button>
           }
         >
-          <p>{actionErrorText(actionError.message)}</p>
+          <p>{actionErrorText(actionError.message, host)}</p>
         </Note>
       )}
 
@@ -286,7 +323,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           unreachableNote('alert')
         ) : (
           <Note tone="danger" role="alert" icon={AlertTriangle} action={connectAction}>
-            <p>{connectErrorText(failure?.kind, connectError.message, host)}</p>
+            <p>{connectErrorText(failure?.kind, connectError.message, host, errorContext)}</p>
             {offlineCardShown && settingsLink}
           </Note>
         ))}

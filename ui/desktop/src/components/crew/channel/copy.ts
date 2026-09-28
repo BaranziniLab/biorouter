@@ -69,6 +69,30 @@ export const connectionBarCopy = {
     host ? `Crew couldn’t verify ${host}.` : 'Crew couldn’t verify the server.',
   notRunning: (host: string) =>
     host ? `Crew isn’t running for you on ${host}.` : 'Crew isn’t running for you on the server.',
+  /**
+   * The server refused this computer's SSH key and offered nothing to type (F5, W2-DMN-5): not
+   * "asked you to sign in", which opened a password window that could never help. `user` is the
+   * login's account, or null.
+   */
+  keyRefused: (host: string, user: string | null) =>
+    `${host || 'The server'} refused this computer’s SSH key${user ? ` for ${user}` : ''}. Check Your server login in Connection settings.`,
+  /**
+   * The workspace server is not running: stopped, killed, or the server restarted (R-7). Its host
+   * starts it; a member asks the host. `hostName` names the host, or is null.
+   */
+  brokerStoppedHost: (host: string) =>
+    `Crew isn’t running on ${host || 'the server'}. Start it on the server, then connect.`,
+  brokerStoppedMember: (hostName: string | null) =>
+    `The workspace server isn’t running. Ask ${hostName ?? 'your host'} to start Crew.`,
+  /** The same when this computer cannot tell whether its person hosts the workspace. */
+  brokerStopped: (host: string) =>
+    `Crew isn’t running on ${host || 'the server'}. Its host starts it again on the server.`,
+  /**
+   * An action whose link dropped mid-request (the transport's own record reached the bar, R-4):
+   * whether it reached the workspace is not known.
+   */
+  linkLost: (host: string) =>
+    `The connection to ${host || 'the server'} dropped, so Crew can’t tell whether that went through. Check before you try again.`,
   tryAgain: 'Try again',
   connectionSettings: 'Connection settings…',
   vaultLocked: 'Your Crew vault is locked.',

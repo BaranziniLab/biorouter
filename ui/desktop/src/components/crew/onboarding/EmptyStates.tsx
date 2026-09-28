@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { Hash, Inbox, KeyRound, Server, Users } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
+import { CopyField } from '../../ui/copy-field';
 import { EmptyState } from '../../ui/empty-state';
 import {
   connectionNames,
@@ -12,12 +13,13 @@ import {
 } from '../identity';
 import type { Invitation, Snapshot } from '../crewApi';
 import { serverLabel } from '../sidebar/sidebarView';
-import type { ConnectFailureKind } from '../state/connectFailure';
+import { savedFailureKind, type ConnectFailureKind } from '../state/connectFailure';
 import { useCrew } from '../state/CrewControllerContext';
 import { canFocus, focusIsLost, restoreFocusSoon } from '../state/focusReturn';
 import type { CrewController } from '../state/types';
 import { emptyCopy } from './copy';
-import { attemptTime } from './joinText';
+import { useJoinContext } from './joinContext';
+import { attemptTime, brokerStartCommand, sshUsername } from './joinText';
 import { NameSuggestionNote } from './NameSuggestionNote';
 import { SetupCard, SetupScreen, Spinner } from './parts';
 import { SetupChecklist } from './SetupChecklist';
@@ -134,9 +136,14 @@ export const CONNECTED_FOCUS_TARGETS: readonly string[] = [
 ];
 
 export function OfflineState() {
-  const { connect, isPending, connectionId, lastConnectFailure } = useCrew();
+  const { connect, isPending, connectionId, lastConnectFailure, connection, isHost, openDialog } =
+    useCrew();
   const workspace = useConnectionLabel();
   const server = useServer();
+  const joinContext = useJoinContext(connectionId);
+  // Why it is offline, when this computer knows: the last connect's answer, else the daemon's own
+  // saved code (its keepalive keeps it with the saved error, W2-DMN-5).
+  const cause = lastConnectFailure?.kind ?? savedFailureKind(connection);
   const connectRef = useRef<HTMLButtonElement>(null);
   const pending = isPending('connect');
   const triedId = useId();
@@ -163,53 +170,115 @@ export function OfflineState() {
     if (focusIsLost()) connectRef.current?.focus();
   }, []);
 
+  // A stopped workspace server (R-7): its host gets the line that starts it; a member, whom to ask;
+  // and where this computer cannot tell which it is, both. A refused key (F5): the login to check.
+  const brokerStopped = cause === 'broker_not_running';
+  const hosts = isHost ? true : (joinContext.hosts ?? null);
+  const hostName = joinContext.hostDisplayName ?? joinContext.hostUsername ?? null;
+  const folder =
+    joinContext.workspaceName ?? (connection?.name && hosts ? connection.name : null) ?? null;
+  const startLine = brokerStopped && hosts !== false ? brokerStartCommand(folder) : null;
+  const description =
+    cause === 'ssh_key_refused'
+      ? emptyCopy.keyRefusedBody(
+          sshUsername(connection?.ssh_target) ?? joinContext.username ?? null
+        )
+      : emptyCopy.offlineBody;
+
+  const actions = (
+    <div className="crew-onboard-offline-actions">
+      <Button
+        ref={connectRef}
+        type="button"
+        // Not `disabled` while connecting: a disabled control drops focus to the page.
+        aria-disabled={pending || undefined}
+        // Focus lands back here after a failed attempt: a screen reader hears when it tried.
+        aria-describedby={tried ? triedId : undefined}
+        className="crew-onboard-waiting"
+        onClick={(event) => {
+          if (pending) return;
+          const origin = event.currentTarget;
+          if (connectionId) connectTriedAt.set(connectionId, Date.now());
+          void connect({ userInitiated: true }).then(() => {
+            // Still here (the connect failed and this screen stayed): focus stays on it, and
+            // the line reports the attempt it just made.
+            if (origin.isConnected) {
+              noteAttempt((count) => count + 1);
+              return;
+            }
+            // Connect left with this screen: land on the channel once it opens (Q2-20).
+            restoreFocusSoon(null, CONNECTED_FOCUS_TARGETS);
+            focusOnceMounted(origin, CONNECTED_FOCUS_TARGETS);
+          });
+        }}
+      >
+        {emptyCopy.offlineAction(workspace)}
+      </Button>
+      {cause === 'ssh_key_refused' && connectionId ? (
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-supporting"
+          onClick={() => openDialog({ kind: 'connection-settings', connectionId })}
+        >
+          {emptyCopy.connectionSettings}
+        </Button>
+      ) : null}
+      {tried ? (
+        <p
+          id={triedId}
+          className="text-supporting text-text-muted"
+          data-testid="crew-offline-tried"
+        >
+          {tried}
+          {keepsTrying ? ` ${emptyCopy.keepsTrying}` : null}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  // A card rather than the plain empty state: the host's start line is a command to copy.
+  if (brokerStopped) {
+    return (
+      <SetupScreen>
+        <SetupCard
+          icon={Server}
+          title={emptyCopy.brokerStoppedTitle(server || workspace)}
+          testId="crew-broker-stopped"
+        >
+          <p className="text-body text-text-default">
+            {hosts === true
+              ? emptyCopy.brokerStoppedHost
+              : hosts === false
+                ? emptyCopy.brokerStoppedMember(hostName)
+                : emptyCopy.brokerStoppedUnknown(workspace)}
+          </p>
+          {startLine ? (
+            <>
+              {/* One line, scrolling sideways rather than wrapping mid-path, as the Host
+                  dialog's start commands do. */}
+              <CopyField
+                multiline
+                className="crew-onboard-command"
+                label={emptyCopy.brokerStartLabel}
+                value={startLine}
+              />
+              <p className="text-supporting text-text-muted">{emptyCopy.brokerStartFolder}</p>
+            </>
+          ) : null}
+          {actions}
+        </SetupCard>
+      </SetupScreen>
+    );
+  }
+
   return (
     <SetupScreen>
       <EmptyState
         icon={Server}
         title={emptyCopy.offlineTitle(workspace)}
-        description={emptyCopy.offlineBody}
-        actions={
-          <div className="crew-onboard-offline-actions">
-            <Button
-              ref={connectRef}
-              type="button"
-              // Not `disabled` while connecting: a disabled control drops focus to the page.
-              aria-disabled={pending || undefined}
-              // Focus lands back here after a failed attempt: a screen reader hears when it tried.
-              aria-describedby={tried ? triedId : undefined}
-              className="crew-onboard-waiting"
-              onClick={(event) => {
-                if (pending) return;
-                const origin = event.currentTarget;
-                if (connectionId) connectTriedAt.set(connectionId, Date.now());
-                void connect({ userInitiated: true }).then(() => {
-                  // Still here (the connect failed and this screen stayed): focus stays on it, and
-                  // the line reports the attempt it just made.
-                  if (origin.isConnected) {
-                    noteAttempt((count) => count + 1);
-                    return;
-                  }
-                  // Connect left with this screen: land on the channel once it opens (Q2-20).
-                  restoreFocusSoon(null, CONNECTED_FOCUS_TARGETS);
-                  focusOnceMounted(origin, CONNECTED_FOCUS_TARGETS);
-                });
-              }}
-            >
-              {emptyCopy.offlineAction(workspace)}
-            </Button>
-            {tried ? (
-              <p
-                id={triedId}
-                className="text-supporting text-text-muted"
-                data-testid="crew-offline-tried"
-              >
-                {tried}
-                {keepsTrying ? ` ${emptyCopy.keepsTrying}` : null}
-              </p>
-            ) : null}
-          </div>
-        }
+        description={description}
+        actions={actions}
       />
     </SetupScreen>
   );

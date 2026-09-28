@@ -10,8 +10,9 @@ export const signInCopy = {
   /** Pinned: the close control's accessible name. */
   closeName: 'Close authentication connection',
   /** Pinned fragment: "SSH authentication ended (exit {code})". */
+  /** No Reconnect exists in this window (F5): the way on is Close, then Connect. */
   ended: (code: number | string) =>
-    `SSH authentication ended (exit ${code}). Choose Reconnect to check the connection.`,
+    `SSH authentication ended (exit ${code}). Close this window, then choose Connect to try again.`,
   inputLost: 'Your input couldn’t reach the server. Close this sign-in and try again.',
   needsDesktop: 'Signing in needs the Biorouter desktop app.',
   terminalName: 'SSH authentication',

@@ -25,7 +25,9 @@ import { connectErrorText } from '../channel/ConnectionBar';
 import type { CrewConnection } from '../crewApi';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from '../dialogs/fingerprint';
 import { connectionNames, PersonName, personLabel } from '../identity';
-import { CONNECT_FAILURE_CODES } from '../state/connectFailure';
+import { connectFailureHost, savedFailureKind } from '../state/connectFailure';
+import { useJoinContext } from '../onboarding/joinContext';
+import { sshUsername } from '../onboarding/joinText';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
 import { CONNECTION_STATUS, type ConnectionStatusKey } from '../state/crewStatus';
@@ -183,6 +185,7 @@ export function WorkspaceMenu({
   const ownCopy = useMenuCopyItem(keepOpen);
   const copyItem = fingerprintCopy ?? ownCopy;
   const firstStop = useFirstStopSkipsHeaderCopy();
+  const joinContext = useJoinContext(connectionId);
   if (!connection) return null;
 
   const presentation = status ? CONNECTION_STATUS[status] : null;
@@ -192,17 +195,16 @@ export function WorkspaceMenu({
   const server = serverLabel(connection);
   // Never the transport's words (NEW-1): the daemon's saved `last_error` for an SSH drop is its
   // record ("Crew SSH failure [ssh_eof; …]"), read here by its typed code, or plainly.
-  const savedCode = connection.last_error_code;
+  const errorContext = {
+    failureHost: connectFailureHost(lastConnectFailure),
+    user: sshUsername(connection.ssh_target) ?? joinContext.username ?? null,
+    hosts: isHost ? true : (joinContext.hosts ?? null),
+    hostName: joinContext.hostDisplayName ?? joinContext.hostUsername ?? null,
+  };
   const lastError = lastConnectFailure
-    ? connectErrorText(lastConnectFailure.kind, lastConnectFailure.message, server)
+    ? connectErrorText(lastConnectFailure.kind, lastConnectFailure.message, server, errorContext)
     : connection.last_error
-      ? connectErrorText(
-          savedCode && Object.prototype.hasOwnProperty.call(CONNECT_FAILURE_CODES, savedCode)
-            ? CONNECT_FAILURE_CODES[savedCode]
-            : undefined,
-          connection.last_error,
-          server
-        )
+      ? connectErrorText(savedFailureKind(connection), connection.last_error, server, errorContext)
       : '';
   const me = verified ? dir.me : null;
   const fingerprint =

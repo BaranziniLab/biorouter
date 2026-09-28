@@ -425,6 +425,29 @@ describe('ConnectionBar', () => {
     expect(screen.getAllByText(connectionBarCopy.unreachable('hpc.example.edu'))).toHaveLength(1);
   });
 
+  // F5: a publickey-only refusal read "asked you to sign in" and opened a password window that
+  // could never help. DW-03: the bar named the raw address while the main area named the alias.
+  it('says a refused key in its own words, opens no Sign in, and names the server by its label', async () => {
+    const labelled = { ...connection, server_label: 'lab-ubuntu' };
+    installDaemon([labelled]);
+    renderCrew(Layout);
+    await verified();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [labelled] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError(TRANSPORT_TEXT, 400, 'crew_ssh_key_refused');
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(
+      await screen.findByText(connectionBarCopy.keyRefused('lab-ubuntu', 'alice'))
+    ).toBeInTheDocument();
+    expect(currentCrew().signIn.open).toBe(false);
+    expect(bar()).not.toHaveTextContent(/hpc\.example\.edu|password/);
+  });
+
   it('says any other SSH failure plainly — never the transport’s words — with Try again (NEW-1)', async () => {
     renderCrew(Layout);
     await verified();
@@ -759,6 +782,34 @@ describe('connectErrorText (NEW-1)', () => {
     );
   });
 
+  // F5, R-7 and W2-DMN-5: each cause in one sentence with its one action.
+  it('names a refused key, a stopped workspace server and the hop whose key failed', () => {
+    const refused = connectErrorText('ssh_key_refused', TRANSPORT_TEXT, 'lab-ubuntu', {
+      user: 'crew_bob',
+    });
+    expect(refused).toBe(
+      'lab-ubuntu refused this computer’s SSH key for crew_bob. Check Your server login in Connection settings.'
+    );
+    expect(refused).not.toMatch(/password|sign in/i);
+    expect(
+      connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11', { hosts: true })
+    ).toBe('Crew isn’t running on lab-debian11. Start it on the server, then connect.');
+    expect(
+      connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11', {
+        hosts: false,
+        hostName: 'Frank Okafor',
+      })
+    ).toBe('The workspace server isn’t running. Ask Frank Okafor to start Crew.');
+    expect(connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11')).toBe(
+      connectionBarCopy.brokerStopped('lab-debian11')
+    );
+    expect(
+      connectErrorText('host_key_unknown', TRANSPORT_TEXT, host, {
+        failureHost: 'jump.example.edu',
+      })
+    ).toBe(connectionBarCopy.cantVerify('jump.example.edu'));
+  });
+
   it('never passes machine text through, classified or not', () => {
     for (const kind of [undefined, 'unknown'] as const) {
       expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(
@@ -785,5 +836,15 @@ describe('connectErrorText (NEW-1)', () => {
       connectionBarCopy.cantConnect('')
     );
     expect(connectionBarCopy.cantConnect('')).toBe('Crew can’t connect.');
+  });
+});
+
+describe('actionErrorText (R-4)', () => {
+  it('never shows the transport’s record of a dropped link, and says the outcome is unknown', () => {
+    const text = actionErrorText(TRANSPORT_TEXT, 'lab-server');
+    expect(text).toBe(connectionBarCopy.linkLost('lab-server'));
+    expect(text).not.toMatch(RAW_TRANSPORT);
+    // A broker refusal still reads as its sentence.
+    expect(actionErrorText('forbidden: You can’t do that here.')).toBe('You can’t do that here.');
   });
 });

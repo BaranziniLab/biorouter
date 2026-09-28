@@ -26,7 +26,7 @@ import {
   SignInNeededState,
   useFocusHold,
 } from './EmptyStates';
-import { attemptTime } from './joinText';
+import { attemptTime, brokerStartCommand } from './joinText';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { NotSetUpPane } from './NotSetUpPane';
 import { OnboardingScreen, ONBOARDING_SCREENS } from './OnboardingScreen';
@@ -105,6 +105,69 @@ describe('connection states', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') }));
     expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
+  });
+
+  // R-7: a stopped workspace server read "okafor-lab is offline" to its own host, with nothing
+  // about starting it.
+  describe('a workspace server that is not running (R-7)', () => {
+    const stopped = () =>
+      fakeConnection({ status: 'disconnected', last_error_code: 'crew_broker_not_running' });
+
+    it('gives its host the line that starts it, with Copy, and Connect', () => {
+      updateJoinContext('conn-1', { hosts: true, workspaceName: 'okafor-lab' });
+      renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
+      expect(
+        screen.getByRole('heading', { name: emptyCopy.brokerStoppedTitle('hpc.ucsf.edu') })
+      ).toBeInTheDocument();
+      expect(screen.getByText(emptyCopy.brokerStoppedHost)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          '"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/okafor-lab"'
+        )
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: `Copy ${emptyCopy.brokerStartLabel}` })
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') })).toBeEnabled();
+      expect(document.body.textContent).not.toMatch(/is offline/);
+    });
+
+    it('tells a member whom to ask, with no command', () => {
+      updateJoinContext('conn-1', { hosts: false, hostDisplayName: 'Frank Okafor' });
+      renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
+      expect(screen.getByText(emptyCopy.brokerStoppedMember('Frank Okafor'))).toBeInTheDocument();
+      expect(document.body.textContent).not.toMatch(/biorouter-crew/);
+    });
+
+    it('says both when this computer cannot tell whether its person hosts it', () => {
+      renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
+      expect(screen.getByText(emptyCopy.brokerStoppedUnknown('lab'))).toBeInTheDocument();
+      expect(document.body.textContent).toMatch(/biorouter-crew\/<folder>/);
+    });
+
+    it('never puts a name that is not a workspace name into the line', () => {
+      expect(brokerStartCommand('lab; rm -rf ~')).toContain('biorouter-crew/<folder>"');
+      expect(brokerStartCommand('chen-lab')).toContain('biorouter-crew/chen-lab"');
+    });
+  });
+
+  // F5: a refused key is a login matter, not a password one.
+  it('says a refused key under the offline title, with Connection settings…', () => {
+    const crew = crewWith({
+      connection: fakeConnection({
+        status: 'disconnected',
+        ssh_target: 'crew_bob@lab-ubuntu',
+        last_error_code: 'crew_ssh_key_refused',
+      }),
+    });
+    renderWithCrew(<OfflineState />, crew);
+    expect(screen.getByText(emptyCopy.keyRefusedBody('crew_bob'))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: emptyCopy.connectionSettings }));
+    expect(crew.openDialog).toHaveBeenCalledWith({
+      kind: 'connection-settings',
+      connectionId: 'conn-1',
+    });
+    expect(document.body.textContent).not.toMatch(/password/);
   });
 
   it('names the server by the person’s own SSH alias when the daemon found one (D-ALIAS)', () => {

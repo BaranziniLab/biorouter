@@ -151,6 +151,21 @@ export function hostStartCommands(slug: string, bootstrapKey: string): string {
   ].join('\n');
 }
 
+/** A workspace's folder name as `start` wrote it: the workspace name rule, and nothing else. */
+const WORKSPACE_FOLDER = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
+/**
+ * The line that starts a stopped workspace server again (R-7), as the manual's "After the server
+ * restarts" gives it: no `--name`, which only a new workspace takes. `folder` is the workspace's
+ * folder in `~/.local/share/biorouter-crew` — its first name, which a rename does not change — or
+ * `null` when this computer does not know it, and the line then says where the name goes. Only a
+ * name under the workspace rule becomes command text.
+ */
+export function brokerStartCommand(folder: string | null | undefined): string {
+  const name = typeof folder === 'string' && WORKSPACE_FOLDER.test(folder) ? folder : '<folder>';
+  return `"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/${name}"`;
+}
+
 /**
  * What a host pasted from the terminal after running the start commands, made ready for the
  * daemon to read (T-27). The daemon still parses and validates everything; this only finds the

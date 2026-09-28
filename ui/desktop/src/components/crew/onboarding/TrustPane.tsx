@@ -3,7 +3,9 @@ import { AlertTriangle, Fingerprint as FingerprintIcon } from '../../icons/app-i
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
-import { connectionServer, personFromProjection, personLabel } from '../identity';
+import { personFromProjection, personLabel } from '../identity';
+import { serverLabel } from '../sidebar/sidebarView';
+import { connectFailureHost } from '../state/connectFailure';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import { trustCopy } from './copy';
 import { useJoinContext } from './joinContext';
@@ -39,9 +41,16 @@ export function TrustPane() {
   }
 }
 
+/**
+ * The host a trust pane is about: the hop OpenSSH named when the daemon says which (a jump host's
+ * key is not the destination's, W2-DMN-5), else the server by the person's own name for it, as the
+ * rest of Crew names it (D-ALIAS).
+ */
 function useHost() {
-  const { connection } = useCrew();
-  return connectionServer(connection) || connection?.name || '';
+  const { connection, lastConnectFailure } = useCrew();
+  return (
+    connectFailureHost(lastConnectFailure) || serverLabel(connection) || connection?.name || ''
+  );
 }
 
 function UnknownHostKey() {

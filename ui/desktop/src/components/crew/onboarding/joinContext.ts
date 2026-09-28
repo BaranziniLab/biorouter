@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 
 /**
  * What this computer remembers about a join or a host setup it started, per saved connection.
@@ -20,6 +20,12 @@ export interface JoinContext {
   joining?: boolean;
   /** Set when Host saved this connection; cleared once `auth.bootstrap` succeeded. */
   hostSetup?: boolean;
+  /**
+   * Whether this computer's person hosts the workspace, as the last verified view said. Display
+   * only: while the workspace server is not running there is no view to ask, and this picks the
+   * words — the start line for its host, whom to ask for a member (R-7).
+   */
+  hosts?: boolean;
   /**
    * Whether to offer the server-account name (naming D2: offered, never applied silently). On a
    * read it is DERIVED, never stored: true for every connection — the host after Create and every
@@ -237,4 +243,17 @@ export function resetJoinContextForTests(): void {
   offeredNames.clear();
   derived.clear();
   notify();
+}
+
+/**
+ * Keeps {@link JoinContext.hosts} in step with the verified view: whenever the workspace verifies
+ * this connection, whether its person is the host is written down, so a stopped workspace server
+ * can still be explained in the right words (R-7). Writes only when the answer changed.
+ */
+export function useRememberHosting(connectionId: string, verified: boolean, isHost: boolean): void {
+  useEffect(() => {
+    if (!connectionId || !verified) return;
+    if (readJoinContext(connectionId).hosts === isHost) return;
+    updateJoinContext(connectionId, { hosts: isHost });
+  }, [connectionId, verified, isHost]);
 }

@@ -533,6 +533,10 @@ export const emptyCopy = {
       case 'bridge_missing':
       case 'handoff_failed':
         return `Crew isn’t running for you on ${server}`;
+      case 'ssh_key_refused':
+        return `${server} refused this computer’s SSH key`;
+      case 'broker_not_running':
+        return `Crew isn’t running on ${server}`;
       default:
         return 'It didn’t connect';
     }
@@ -543,6 +547,30 @@ export const emptyCopy = {
    * which nothing retries by itself.
    */
   keepsTrying: 'Crew keeps trying by itself while the network is down.',
+  /**
+   * The workspace server is not running (R-7): stopped, killed, or the server restarted. The host
+   * gets the line that starts it, from the manual's "After the server restarts"; a member is told
+   * whom to ask. `host` names the workspace's host, or is null.
+   */
+  brokerStoppedTitle: (server: string) => `Crew isn’t running on ${server}`,
+  brokerStoppedHost: 'Start it on the server with this line, then connect:',
+  brokerStoppedMember: (host: string | null) =>
+    `The workspace server isn’t running. Ask ${host ?? 'your host'} to start Crew.`,
+  /** When this computer cannot tell whether its person hosts the workspace. */
+  brokerStoppedUnknown: (workspace: string) =>
+    `If you host ${workspace}, start it on the server with this line, then connect. Otherwise, ask your host to start Crew.`,
+  brokerStartLabel: 'start command',
+  /**
+   * Under the line: its last part is the workspace's folder, named by the workspace's first name,
+   * which a rename does not change.
+   */
+  brokerStartFolder: 'The last part is the workspace’s folder in ~/.local/share/biorouter-crew.',
+  /** The server refused this computer's key (F5): not a password matter, a login one. */
+  keyRefusedBody: (user: string | null) =>
+    user
+      ? `It refused this computer’s SSH key for ${user}. Check Your server login in Connection settings.`
+      : 'It refused this computer’s SSH key. Check Your server login in Connection settings.',
+  connectionSettings: 'Connection settings…',
   signInTitle: (host: string) => `Sign in to ${host}`,
   signInBody: 'The server needs your password or a verification code.',
   signInAction: 'Sign in',

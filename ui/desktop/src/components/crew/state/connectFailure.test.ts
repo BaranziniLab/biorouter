@@ -4,6 +4,8 @@ import {
   arrivalConnectDecision,
   CONNECT_FAILURE_CODES,
   classifyConnectFailure,
+  connectFailureHost,
+  savedFailureKind,
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
@@ -20,6 +22,9 @@ const sshText = (status: string) =>
 describe('classifyConnectFailure', () => {
   it.each([
     ['crew_ssh_auth_required', 'auth_required'],
+    // W2-DMN-5: a publickey-only refusal, and a workspace server that is not running.
+    ['crew_ssh_key_refused', 'ssh_key_refused'],
+    ['crew_broker_not_running', 'broker_not_running'],
     ['crew_ssh_host_key_unknown', 'host_key_unknown'],
     ['crew_ssh_host_key_changed', 'host_key_changed'],
     ['crew_ssh_unreachable', 'unreachable'],
@@ -98,6 +103,36 @@ describe('classifyConnectFailure', () => {
     });
   });
 
+  // W2-DMN-5: a jump host's unknown key concerns the jump host, and the daemon now says which hop.
+  it('keeps the hop the daemon names, and only a host-shaped one', () => {
+    const jump = classifyConnectFailure(
+      new CrewHttpError(
+        'Host key verification failed.',
+        400,
+        'crew_ssh_host_key_unknown',
+        undefined,
+        undefined,
+        undefined,
+        { host: 'jump.example.edu' }
+      )
+    );
+    expect(connectFailureHost(jump)).toBe('jump.example.edu');
+    expect(
+      connectFailureHost(classifyConnectFailure(new CrewHttpError('x', 400, 'crew_ssh_failed')))
+    ).toBeNull();
+    expect(connectFailureHost(null)).toBeNull();
+  });
+
+  it('reads a saved connection’s last failure by its typed code', () => {
+    expect(savedFailureKind({ last_error_code: 'crew_broker_not_running' })).toBe(
+      'broker_not_running'
+    );
+    expect(savedFailureKind({ last_error_code: 'crew_ssh_key_refused' })).toBe('ssh_key_refused');
+    expect(savedFailureKind({ last_error_code: 'something_new' })).toBeUndefined();
+    expect(savedFailureKind({ last_error_code: '__proto__' })).toBeUndefined();
+    expect(savedFailureKind(null)).toBeUndefined();
+  });
+
   it('gives a non-Error failure the action fallback text', () => {
     expect(classifyConnectFailure('boom')).toEqual({
       kind: 'unknown',
@@ -152,6 +187,8 @@ describe('arrivalConnectDecision (Q3-08, SECURITY-SENSITIVE)', () => {
     for (const kind of TRUST_FAILURE_KINDS)
       expect(decide({ lastConnectFailure: { kind } })).toBe('skip');
     expect(decide({ lastConnectFailure: { kind: 'auth_required' } })).toBe('skip');
+    // A refused key is refused again until the person changes the login or the key (F5).
+    expect(decide({ lastConnectFailure: { kind: 'ssh_key_refused' } })).toBe('skip');
     expect(decide({ signInPending: true })).toBe('skip');
     expect(
       decide({
@@ -174,6 +211,8 @@ describe('arrivalConnectDecision (Q3-08, SECURITY-SENSITIVE)', () => {
       'unknown',
       'bridge_missing',
       'handoff_failed',
+      // Its host may start it at any moment.
+      'broker_not_running',
     ];
     for (const kind of retryable) expect(decide({ lastConnectFailure: { kind } })).toBe('connect');
   });
