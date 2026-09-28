@@ -416,11 +416,45 @@ launch_url() {{
   LAUNCH_URL="http://127.0.0.1:$PORT$path"
 }}
 
+# The link opens the app for whoever uses it FIRST, and a command line is
+# readable by every account on this machine (`ps`, /proc/<pid>/cmdline) while
+# `open` or `xdg-open` runs. So the link never goes on one: it is written into a
+# page only you can read, which sends the browser on to it, and the opener is
+# handed that page. Pages older than ten minutes hold expired links and are
+# removed here.
+LAUNCH_PAGES="${{XDG_CONFIG_HOME:-$HOME/.config}}/biorouter/app-launcher/open"
+
+launch_page() {{
+  ( umask 077
+    set -C
+    mkdir -p "$LAUNCH_PAGES" && chmod 700 "$LAUNCH_PAGES" || exit 1
+    [ -d "$LAUNCH_PAGES" ] && [ ! -L "$LAUNCH_PAGES" ] && [ -O "$LAUNCH_PAGES" ] || exit 1
+    find "$LAUNCH_PAGES" -type f -name 'launch-*.html' -mmin +10 -exec rm -f {{}} + 2>/dev/null || true
+    name="$(new_secret)"
+    [ "${{#name}}" -eq 64 ] || exit 1
+    page="$LAUNCH_PAGES/launch-${{name:0:32}}.html"
+    printf '%s%s%s%s%s\n' \
+      '<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer><meta http-equiv="refresh" content="0;url=' \
+      "$1" '"><title>Opening Biorouter app</title><p>Opening the app. If nothing happens, <a href="' \
+      "$1" '">open it here</a>. The address works once.</p>' > "$page" || exit 1
+    printf '%s\n' "$page"
+  )
+}}
+
 open_url() {{
   echo "Opening $APP_ID at http://127.0.0.1:$PORT/apps/$APP_ID/"
-  if command -v open >/dev/null 2>&1; then open "$1"
-  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"
-  else echo "Open this address in your browser (it works once): $1"; fi
+  case "$1" in
+    "http://127.0.0.1:$PORT/apps/$APP_ID/?t="*) ;;
+    *) die "not a launch link for $APP_ID; refusing to open it" ;;
+  esac
+  page="$(launch_page "$1")" || page=""
+  if [ -n "$page" ]; then
+    case "$(uname -s)" in
+      Darwin) open "$page" && return 0 ;;
+      *) if command -v xdg-open >/dev/null 2>&1; then xdg-open "$page" && return 0; fi ;;
+    esac
+  fi
+  echo "Open this address in your browser (it works once): $1"
 }}
 
 # ── 5. First-run payload install (full-mode exports only) ─────────────────
@@ -725,7 +759,26 @@ if (-not $LaunchPath -or $LaunchPath -notmatch '^/apps/[A-Za-z0-9_-]+/\?t=[0-9a-
   throw "the daemon on :$Port does not serve '$AppId'."
 }
 Write-Host "Opening $AppId at $Base/apps/$AppId/"
-Start-Process "$Base$LaunchPath"
+# The link opens the app for whoever uses it first, so it never goes on a
+# command line: it is written into a page under your profile, which only you can
+# read, and the page sends the browser on to it. Pages older than ten minutes
+# hold expired links and are removed here.
+$Link = "$Base$LaunchPath"
+$Pages = Join-Path $Cfg "app-launcher\open"
+New-Item -ItemType Directory -Force -Path $Pages | Out-Null
+Get-ChildItem -Path $Pages -Filter "launch-*.html" -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+  Remove-Item -Force -ErrorAction SilentlyContinue
+$Page = Join-Path $Pages ("launch-" + (New-Secret).Substring(0, 32) + ".html")
+$Html = '<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer>' +
+  '<meta http-equiv="refresh" content="0;url=' + $Link + '"><title>Opening Biorouter app</title>' +
+  '<p>Opening the app. If nothing happens, <a href="' + $Link + '">open it here</a>. The address works once.</p>'
+try {
+  Set-Content -LiteralPath $Page -Value $Html -Encoding UTF8
+  Invoke-Item -LiteralPath $Page
+} catch {
+  Write-Host "Open this address in your browser (it works once): $Link"
+}
 "#;
 
 /// The thin `run.bat` wrapper: double-clickable on Windows, it just runs
@@ -1667,14 +1720,35 @@ mod tests {
         // W2-HRD-1: through the one-time launch link, minted with the secret of
         // a daemon the launcher started or was told about.
         assert!(ps1.contains("\"$Base/apps/$AppId/launch\""));
-        assert!(ps1.contains("Start-Process \"$Base$LaunchPath\""));
         assert!(ps1.contains("$env:BIOROUTER_SERVER__SECRET_KEY = $secret"));
-        // ...and it leaves the launcher's environment before the browser starts.
+        // The link opens the app for whoever uses it first, so it never reaches
+        // a command line: the browser is handed a page that forwards to it.
+        assert!(ps1.contains("$Link = \"$Base$LaunchPath\""));
+        assert!(ps1.contains("Invoke-Item -LiteralPath $Page"));
+        for line in ps1.lines() {
+            let opens = [
+                "Start-Process",
+                "Invoke-Item",
+                "Invoke-Expression",
+                "cmd",
+                "explorer",
+            ]
+            .iter()
+            .any(|opener| line.contains(opener));
+            let names_the_link = ["$Link", "$LaunchPath", "?t="]
+                .iter()
+                .any(|link| line.contains(link));
+            assert!(
+                !(opens && names_the_link),
+                "an opener is handed the link: {line}"
+            );
+        }
+        // ...and the secret leaves the launcher's environment before the browser starts.
         let (_, after_spawn) = ps1
             .split_once("$env:BIOROUTER_SERVER__SECRET_KEY = $secret")
             .unwrap();
         let (spawn, _) = after_spawn
-            .split_once("Start-Process \"$Base$LaunchPath\"")
+            .split_once("Invoke-Item -LiteralPath $Page")
             .unwrap();
         assert!(spawn.contains("Remove-Item Env:BIOROUTER_SERVER__SECRET_KEY"));
         // The app id is embedded, not a leftover placeholder.
@@ -1741,6 +1815,100 @@ mod tests {
         // curl that carries it reads the header from stdin.
         assert_eq!(lib.matches("-H @-").count(), 2);
         assert!(!lib.contains("-H \"X-Secret-Key"));
+    }
+
+    /// W2-HRD-1: the launcher never puts the one-time link on a command line,
+    /// where every account on the machine can read it and redeem it before the
+    /// browser does. Runs the real `open_url` with stub `open` and `xdg-open`
+    /// that record their arguments, and checks they were handed a page only this
+    /// account can read, which forwards to the link, and never the link itself.
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_hands_its_opener_a_private_page_and_never_the_link() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let Some(bash) = find_usable_bash(dir.path()) else {
+            return;
+        };
+        let m = manifest(ArtifactKind::Agentic);
+        let files = export(&m, None);
+        std::fs::write(
+            dir.path().join("biorouter-launch.sh"),
+            file(&files, "biorouter-launch.sh"),
+        )
+        .unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("opened.log");
+        for opener in ["open", "xdg-open"] {
+            let stub = bin.join(opener);
+            std::fs::write(
+                &stub,
+                format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n", log.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let config = dir.path().join("config");
+        let token = "cd".repeat(32);
+        let run = |url: &str| {
+            Command::new(&bash)
+                .arg("-c")
+                .arg(format!(
+                    "set -euo pipefail\n. ./biorouter-launch.sh\nPORT=4321\nopen_url '{url}'"
+                ))
+                .current_dir(dir.path())
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("XDG_CONFIG_HOME", &config)
+                .env("HOME", dir.path())
+                .output()
+                .unwrap()
+        };
+
+        let launch = format!("http://127.0.0.1:4321/apps/{}/?t={token}", m.id);
+        let out = run(&launch);
+        assert!(
+            out.status.success(),
+            "open_url failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&out.stdout).contains(&token));
+        let opened = std::fs::read_to_string(&log).expect("an opener ran");
+        let handed: Vec<&str> = opened.lines().collect();
+        assert_eq!(handed.len(), 1, "one argument, the page: {opened}");
+        assert!(
+            !opened.contains("?t=") && !opened.contains(&token),
+            "{opened}"
+        );
+        let page = std::path::Path::new(handed[0]);
+        assert_eq!(
+            page.parent(),
+            Some(config.join("biorouter/app-launcher/open").as_path())
+        );
+        let html = std::fs::read_to_string(page).unwrap();
+        assert!(
+            html.contains(&format!(r#"content="0;url={launch}""#)),
+            "{html}"
+        );
+        assert!(html.contains(&format!(r#"href="{launch}""#)), "{html}");
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(page), 0o600, "the page is this account's alone");
+        assert_eq!(mode(page.parent().unwrap()), 0o700, "and so is its folder");
+
+        // Anything but this app's launch link on this daemon is refused, and no
+        // opener runs.
+        std::fs::remove_file(&log).unwrap();
+        for other in [
+            "http://127.0.0.1:4321/apps/other/?t=00".to_string(),
+            format!("http://127.0.0.1:9999/apps/{}/?t={token}", m.id),
+            "https://example.test/".to_string(),
+        ] {
+            assert!(!run(&other).status.success(), "{other}");
+            assert!(!log.exists(), "{other} reached an opener");
+        }
     }
 
     /// The export tests otherwise only match substrings. This actually *parses*
