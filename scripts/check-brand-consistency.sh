@@ -48,4 +48,17 @@ grep -q "font-family=\"Inter" "$canonical_icon" || {
 grep -q '"productName": "Biorouter"' ui/desktop/package.json
 grep -q "glyph.svg" ui/desktop/src/components/icons/BioRouter.tsx
 
+# The desktop's main process writes the native dialogs, and they spell the brand "Biorouter"
+# (DOCS-6): an approval-secret prompt titled "BioRouter" reads like another app asking for a
+# secret, and the manual quotes these dialogs word for word. A comment or an identifier may keep
+# the old spelling; a quoted string may not.
+native_strings=(ui/desktop/src/main.ts ui/desktop/src/nativeSecretPrompt.ts)
+misspelled="$(grep -nE "['\"\`][^'\"\`]*BioRouter" "${native_strings[@]}" |
+  grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*|/\*)' || true)"
+if [ -n "$misspelled" ]; then
+  echo "Brand drift: a native dialog string spells \"BioRouter\"; write \"Biorouter\":" >&2
+  echo "$misspelled" >&2
+  exit 1
+fi
+
 echo "Biorouter name and canonical logo assets are consistent"
