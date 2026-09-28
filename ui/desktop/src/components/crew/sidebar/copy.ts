@@ -194,6 +194,20 @@ export const sidebarCopy = {
     announce: (person: string) => `${person} isn’t in any of your teams yet.`,
   },
 
+  /**
+   * Under the teams, when the broker listed fewer teams or channels than the viewer is in
+   * (BROKER-2): only in a workspace too large for one listing.
+   */
+  unlisted: (teams: number, channels: number) => {
+    const parts = [
+      teams > 0 ? `${teams} more ${teams === 1 ? 'team' : 'teams'}` : null,
+      channels > 0 ? `${channels} more ${channels === 1 ? 'channel' : 'channels'}` : null,
+    ].filter((part): part is string => part !== null);
+    return `${parts.join(' and ')} you’re in ${
+      teams + channels === 1 ? 'isn’t' : 'aren’t'
+    } listed here, because this workspace is too large to list at once.`;
+  },
+
   team: {
     /** The team header's accessible name. */
     toggleLabel: (team: string, count: number) =>

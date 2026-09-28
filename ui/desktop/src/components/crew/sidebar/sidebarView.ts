@@ -530,6 +530,24 @@ export function teamSections(
 const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
 
 /**
+ * How many of the teams and channels the viewer is in the snapshot leaves out (BROKER-2): a very
+ * large workspace's broker lists only those that fit in one frame, whole, and says in `totals` how
+ * many there are. Zero for both from an older broker, which sends no totals and lists everything.
+ */
+export function unlistedPlaces(snapshot: Pick<Snapshot, 'teams' | 'channels' | 'totals'> | null): {
+  teams: number;
+  channels: number;
+} {
+  const listed = (items: unknown) => (Array.isArray(items) ? items.length : 0);
+  const left = (total: number | undefined, items: unknown) =>
+    total === undefined ? 0 : Math.max(0, total - listed(items));
+  return {
+    teams: left(snapshot?.totals?.teams, snapshot?.teams),
+    channels: left(snapshot?.totals?.channels, snapshot?.channels),
+  };
+}
+
+/**
  * A team's channels in the one order every list uses (M17, F6): its #general first, then by name,
  * case aside. The broker sends them keyed by random IDs, so the order it sends means nothing:
  * #general was drawn fourth, and a new channel landed wherever its ID fell.

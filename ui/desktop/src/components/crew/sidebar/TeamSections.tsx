@@ -5,7 +5,7 @@ import { directAddSupported, liveInvitations } from '../dialogs/people';
 import { personLabel, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
-import { teamSections, useSidebarView } from './sidebarView';
+import { teamSections, unlistedPlaces, useSidebarView } from './sidebarView';
 import { rowKeys, TeamSection, visibleTeamRows, type TeamRole } from './TeamSection';
 import { useCollapsedTeams } from './useCollapsedTeams';
 import { useRovingRows } from './useRovingRows';
@@ -70,6 +70,7 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
   const crew = useCrew();
   const { snapshot, verified, dir } = useSidebarView(crew);
   const sections = useMemo(() => teamSections(snapshot), [snapshot]);
+  const unlisted = useMemo(() => unlistedPlaces(snapshot), [snapshot]);
   const roles = useMemo(() => teamRoles(snapshot, dir), [snapshot, dir]);
   const collapsedTeams = useCollapsedTeams(crew.connectionId);
   const [archivedOpen, setArchivedOpen] = useState<ReadonlySet<string>>(() => new Set());
@@ -136,6 +137,13 @@ export function TeamSections({ renameEnabled = false }: { renameEnabled?: boolea
           onRowFocus={roving.onRowFocus}
         />
       ))}
+      {/* A very large workspace's broker lists only what fits (BROKER-2): say so, rather than
+          let the list read as everything the viewer is in. */}
+      {unlisted.teams + unlisted.channels > 0 ? (
+        <p className="px-2 py-1.5 text-supporting text-text-muted" data-crew-sidebar-unlisted="">
+          {sidebarCopy.unlisted(unlisted.teams, unlisted.channels)}
+        </p>
+      ) : null}
       <div className="crew-sidebar-list" data-crew-row-item="">
         <button
           type="button"

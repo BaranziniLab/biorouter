@@ -175,6 +175,20 @@ export interface Snapshot {
   online_principal_ids?: string[];
   /** How full the workspace's budgets are (W2-BRK-7): the host's snapshot only. */
   usage?: CrewWorkspaceUsage;
+  /**
+   * How many of each section there are, where the broker may list fewer (BROKER-2): a very large
+   * workspace's snapshot carries only the teams and channels that fit in one frame, whole. Absent
+   * from an older broker, which lists everything.
+   */
+  totals?: CrewSnapshotTotals;
+}
+/** The snapshot's section counts; a count the broker did not send, or sent malformed, is absent. */
+export interface CrewSnapshotTotals {
+  teams?: number;
+  channels?: number;
+  invitations?: number;
+  runs?: number;
+  references?: number;
 }
 /**
  * The host's view of the workspace's non-renewable budgets, in bytes. Ordinary changes stop at a
@@ -562,6 +576,16 @@ function validatedPendingJoin(join: PendingJoin): PendingJoin {
   return rest;
 }
 
+function validatedTotals(value: unknown): CrewSnapshotTotals | undefined {
+  if (!isRecord(value)) return undefined;
+  const totals: CrewSnapshotTotals = {};
+  for (const key of ['teams', 'channels', 'invitations', 'runs', 'references'] as const) {
+    const amount = count(value[key]);
+    if (amount !== undefined) totals[key] = amount;
+  }
+  return Object.keys(totals).length > 0 ? totals : undefined;
+}
+
 function stateWithValidatedProjections(frame: Record<string, unknown>): CrewObservation {
   const { labels, capabilities, ...state } = frame;
   const snapshot = { ...(frame.snapshot as Record<string, unknown>) };
@@ -582,6 +606,7 @@ function stateWithValidatedProjections(frame: Record<string, unknown>): CrewObse
   );
   assignOptional(snapshot, 'online_principal_ids', validatedIds(snapshot.online_principal_ids));
   assignOptional(snapshot, 'usage', validatedUsage(snapshot.usage));
+  assignOptional(snapshot, 'totals', validatedTotals(snapshot.totals));
   state.snapshot = snapshot;
   state.runs = (frame.runs as unknown[]).map(validatedRun);
   assignOptional(state, 'labels', validatedLabels(labels));

@@ -187,8 +187,8 @@ describe('observeCrew NDJSON framing', () => {
     }
   });
 
-  // W2-BRK-6 and W2-BRK-7: presence and the host's usage are display projections, kept only in
-  // their own shapes, and absent when an older broker sends neither.
+  // W2-BRK-6, W2-BRK-7 and BROKER-2: presence, the host's usage and the section counts are display
+  // projections, kept only in their own shapes, and absent when an older broker sends none.
   it('keeps who is online and the host’s usage, only in their own shapes', async () => {
     const snapshotWith = (extra: Record<string, unknown>) => ({
       actor: { id: 'actor-1', uid: 1, username: 'alice' },
@@ -228,8 +228,11 @@ describe('observeCrew NDJSON framing', () => {
         journal_limit: 100,
         attachment_bytes: 'lots',
       },
+      totals: { teams: 12, channels: 140, runs: -1, references: 1.5, invitations: 0 },
     });
     expect(kept.online_principal_ids).toEqual(['actor-1', 'person-2']);
+    // BROKER-2's section counts: only whole, non-negative numbers are kept.
+    expect(kept.totals).toEqual({ teams: 12, channels: 140, invitations: 0 });
     expect(kept.usage).toEqual({
       state_bytes: 13_000_000,
       state_limit: 16_777_216,
@@ -241,13 +244,16 @@ describe('observeCrew NDJSON framing', () => {
     const dropped = await received({
       online_principal_ids: 'everyone',
       usage: { state_bytes: -1, state_limit: 10, journal_bytes: 1, journal_limit: 2 },
+      totals: { teams: 'many' },
     });
     expect(dropped).not.toHaveProperty('online_principal_ids');
     expect(dropped).not.toHaveProperty('usage');
+    expect(dropped).not.toHaveProperty('totals');
 
     const older = await received({});
     expect(older).not.toHaveProperty('online_principal_ids');
     expect(older).not.toHaveProperty('usage');
+    expect(older).not.toHaveProperty('totals');
   });
 
   it('cancels the reader when the caller aborts an in-flight observation', async () => {

@@ -185,6 +185,27 @@ describe('team sections', () => {
     expect(teamOrder).toBeLessThan(channelOrder);
   });
 
+  it('says how many teams and channels a very large workspace left out of the list (BROKER-2)', () => {
+    // The fixture lists 2 teams and 5 channels (one archived).
+    const view = renderTeams({ snapshot: makeSnapshot({ totals: { teams: 4, channels: 6 } }) });
+    expect(document.querySelector('[data-crew-sidebar-unlisted]')).toHaveTextContent(
+      '2 more teams and 1 more channel you’re in aren’t listed here, because this workspace is too large to list at once.'
+    );
+    view.unmount();
+
+    const one = renderTeams({ snapshot: makeSnapshot({ totals: { channels: 6 } }) });
+    expect(document.querySelector('[data-crew-sidebar-unlisted]')).toHaveTextContent(
+      '1 more channel you’re in isn’t listed here, because this workspace is too large to list at once.'
+    );
+    one.unmount();
+    // Everything listed, or an older broker that sends no totals: nothing is said.
+    for (const snapshot of [makeSnapshot({ totals: { teams: 2, channels: 5 } }), makeSnapshot()]) {
+      const quiet = renderTeams({ snapshot });
+      expect(document.querySelector('[data-crew-sidebar-unlisted]')).toBeNull();
+      quiet.unmount();
+    }
+  });
+
   it('keeps archived channels under a collapsed "Archived (n)" row', () => {
     renderTeams();
     const archived = screen.getByRole('button', { name: sidebarCopy.channel.archivedGroup(1) });
