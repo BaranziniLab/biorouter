@@ -13,13 +13,22 @@ export const NOTIFICATION_TEXT_MAX_CHARS = 300;
 /** Connection and channel ids, as every Crew IPC validates them. */
 const ID = /^[a-zA-Z0-9_-]{1,128}$/;
 
-/** At most one notification per key per interval. */
+/** At most this many Crew notifications in any one interval, whatever channels they name. */
+export const NOTIFY_MAX_PER_INTERVAL = 6;
+
+/**
+ * At most one notification per key per interval, and at most `maxPerInterval` of any keys: a
+ * busy workspace, or a window that names channel after channel, cannot fill the screen.
+ */
 export class AttentionThrottle {
   private readonly last = new Map<string, number>();
-  constructor(private readonly intervalMs = NOTIFY_INTERVAL_MS) {}
+  constructor(
+    private readonly intervalMs = NOTIFY_INTERVAL_MS,
+    private readonly maxPerInterval = NOTIFY_MAX_PER_INTERVAL
+  ) {}
   allow(key: string, now: number): boolean {
     for (const [known, at] of this.last) if (now - at >= this.intervalMs) this.last.delete(known);
-    if (this.last.has(key)) return false;
+    if (this.last.has(key) || this.last.size >= this.maxPerInterval) return false;
     this.last.set(key, now);
     return true;
   }

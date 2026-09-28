@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   AttentionBadges,
+  AttentionThrottle,
+  NOTIFY_MAX_PER_INTERVAL,
   NOTIFICATION_TEXT_MAX_CHARS,
   attentionNotificationAllowed,
   parseAttentionRequest,
@@ -57,5 +59,15 @@ describe('AttentionBadges', () => {
     expect(badges.set(3, 'many')).toBe(0);
     badges.set(4, 9);
     expect(badges.forget(4)).toBe(0);
+  });
+});
+
+describe('AttentionThrottle across channels', () => {
+  it('lets no more than a handful through a minute, whatever channels they name', () => {
+    const throttle = new AttentionThrottle(60_000);
+    for (let index = 0; index < NOTIFY_MAX_PER_INTERVAL; index += 1)
+      expect(throttle.allow(`conn:${index}`, index)).toBe(true);
+    expect(throttle.allow('conn:another', 100)).toBe(false);
+    expect(throttle.allow('conn:another', 60_000)).toBe(true);
   });
 });
