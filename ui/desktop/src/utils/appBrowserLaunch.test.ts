@@ -4,7 +4,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   LAUNCH_PAGE_STALE_MS,
-  mintAppLaunchLink,
   openAppInSystemBrowser,
   writeAppLaunchPage,
 } from './appBrowserLaunch';
@@ -34,64 +33,6 @@ afterEach(async () => {
 
 const unix = process.platform !== 'win32';
 const mode = async (target: string) => (await fs.stat(target)).mode & 0o777;
-
-describe('mintAppLaunchLink', () => {
-  it('asks the daemon with the secret and answers its one-time link', async () => {
-    const daemon = daemonAnswering({ path: `/apps/cohort-explorer/?t=${token}` });
-    await expect(mintAppLaunchLink(base, 'cohort-explorer', 'daemon-secret', daemon)).resolves.toBe(
-      link
-    );
-    const [url, init] = daemon.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe(`${base}/apps/cohort-explorer/launch`);
-    expect(init).toMatchObject({
-      method: 'POST',
-      headers: { 'X-Secret-Key': 'daemon-secret' },
-      redirect: 'error',
-    });
-  });
-
-  it.each([
-    `/apps/other-app/?t=${token}`,
-    `/apps/cohort-explorer/?t=${token}&next=/sessions`,
-    `/apps/cohort-explorer/?t=${token.slice(4)}`,
-    `/apps/cohort-explorer/?t=${token.toUpperCase()}`,
-    `/apps/cohort-explorer/`,
-    `//evil.test/apps/cohort-explorer/?t=${token}`,
-    null,
-  ])('opens nothing when the daemon answers %s', async (answer) => {
-    await expect(
-      mintAppLaunchLink(base, 'cohort-explorer', 'daemon-secret', daemonAnswering({ path: answer }))
-    ).rejects.toThrow('unexpected app address');
-  });
-
-  it.each(['../sessions', 'a/b', '', 'x'.repeat(129)])(
-    'asks nothing for an app named %j',
-    async (appId) => {
-      const daemon = daemonAnswering({});
-      await expect(mintAppLaunchLink(base, appId, 'daemon-secret', daemon)).rejects.toThrow(
-        'not an app name'
-      );
-      expect(daemon).not.toHaveBeenCalled();
-    }
-  );
-
-  it.each(['http://127.0.0.1:64005/sessions', 'file:///tmp/x', 'http://u:p@127.0.0.1:1'])(
-    'asks nothing of a backend at %s',
-    async (baseUrl) => {
-      const daemon = daemonAnswering({});
-      await expect(
-        mintAppLaunchLink(baseUrl, 'cohort-explorer', 'daemon-secret', daemon)
-      ).rejects.toThrow('no usable address');
-      expect(daemon).not.toHaveBeenCalled();
-    }
-  );
-
-  it('says the app is gone on a 404', async () => {
-    await expect(
-      mintAppLaunchLink(base, 'cohort-explorer', 'daemon-secret', daemonAnswering('', 404))
-    ).rejects.toThrow('no longer exists');
-  });
-});
 
 describe('writeAppLaunchPage', () => {
   it('writes a page only this account can read, which forwards to the link', async () => {

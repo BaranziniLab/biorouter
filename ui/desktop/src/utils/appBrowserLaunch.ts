@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { mintAppLaunchLink } from './appLaunchLink';
 
 /**
  * Opening a built app in the system browser (W2-HRD-1), from the main process.
@@ -20,75 +21,14 @@ import path from 'node:path';
  * `file:` page starts would not carry a `SameSite=Strict` cookie across a
  * redirect.
  *
- * The renderer names only the app. The link is minted here, with the secret,
- * and never crosses into the renderer.
+ * The renderer names only the app. The link is minted here, with the secret
+ * (`appLaunchLink`), and never crosses into the renderer.
  */
-
-/** How long the main process waits for the daemon to mint a launch link. */
-const LAUNCH_TIMEOUT_MS = 15_000;
 
 /** A page this old holds an expired link: the daemon's last five minutes. */
 export const LAUNCH_PAGE_STALE_MS = 10 * 60_000;
 
-const APP_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const LAUNCH_PAGE = /^launch-[0-9a-f]{32}\.html$/;
-
-/** The daemon's origin, from the base URL the main process holds for it. */
-function daemonOrigin(baseUrl: string): string {
-  let url: URL;
-  try {
-    url = new URL(baseUrl);
-  } catch {
-    throw new Error('The app backend has no usable address.');
-  }
-  if (
-    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    (url.pathname !== '/' && url.pathname !== '')
-  ) {
-    throw new Error('The app backend has no usable address.');
-  }
-  return url.origin;
-}
-
-/**
- * The one-time launch link for app `appId`, minted by the daemon at `baseUrl`
- * for a caller holding `secretKey`. The answer must be exactly that app's page
- * carrying a token, or nothing is opened.
- */
-export async function mintAppLaunchLink(
-  baseUrl: string,
-  appId: string,
-  secretKey: string,
-  fetchImpl: typeof fetch = fetch
-): Promise<string> {
-  if (!APP_ID.test(appId)) throw new Error('That is not an app name.');
-  if (!secretKey) throw new Error('This app cannot be opened from here.');
-  const origin = daemonOrigin(baseUrl);
-  let response: Response;
-  try {
-    response = await fetchImpl(`${origin}/apps/${appId}/launch`, {
-      method: 'POST',
-      headers: { 'X-Secret-Key': secretKey },
-      redirect: 'error',
-      signal: AbortSignal.timeout(LAUNCH_TIMEOUT_MS),
-    });
-  } catch {
-    throw new Error('The app backend did not answer. Try opening the app again.');
-  }
-  if (response.status === 404) throw new Error('This app no longer exists.');
-  if (!response.ok) throw new Error('The app backend would not open this app.');
-  const body = (await response.json().catch(() => null)) as { path?: unknown } | null;
-  const linkPath = body?.path;
-  const expected = new RegExp(`^/apps/${appId}/\\?t=[0-9a-f]{64}$`);
-  if (typeof linkPath !== 'string' || !expected.test(linkPath)) {
-    throw new Error('The app backend answered with an unexpected app address.');
-  }
-  return `${origin}${linkPath}`;
-}
 
 function htmlAttribute(value: string): string {
   return value
