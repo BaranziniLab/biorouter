@@ -785,6 +785,140 @@ fn garbage_oversize_and_unknown_versions_are_refused() {
     assert_eq!(invitation::parse(&two), Err(InvitationError::Malformed));
 }
 
+/// `line` with its token (the text after `brcrew1:`) cut every `width` characters and the
+/// pieces joined by `separator`.
+fn wrap_token(line: &str, width: usize, separator: &str) -> String {
+    let body = line.strip_prefix(invitation::PREFIX).unwrap();
+    let pieces: Vec<String> = body
+        .as_bytes()
+        .chunks(width)
+        .map(|chunk| String::from_utf8(chunk.to_vec()).unwrap())
+        .collect();
+    format!("{}{}", invitation::PREFIX, pieces.join(separator))
+}
+
+/// Plain-text mail and ticket tools wrap long lines, so a token the host sent on one line
+/// often arrives on several. Whitespace inside the token is not part of it, and the prose
+/// after the token is not swallowed into it (setup-chen F1).
+#[test]
+fn a_wrapped_invitation_token_still_parses() {
+    let original = sample_invitation();
+    let line = invitation::encode(&original).unwrap();
+    assert!(line.len() > 160, "the sample must be long enough to wrap");
+    let intro = "Join lab on Crew.\nIn Biorouter, open Crew, choose Join a workspace, and paste \
+                 this whole message.\n";
+
+    // A mail client wraps the whole line, `brcrew1:` included, at a fixed column.
+    let hard = |width: usize, separator: &str| {
+        line.as_bytes()
+            .chunks(width)
+            .map(|chunk| String::from_utf8(chunk.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join(separator)
+    };
+    let wrapped = vec![
+        ("hard wrap at 64", hard(64, "\n")),
+        ("hard wrap at 72", hard(72, "\n")),
+        ("hard wrap at 76", hard(76, "\n")),
+        ("indented continuation lines", hard(72, "\n    ")),
+        ("tab-indented continuation lines", hard(72, "\n\t")),
+        ("soft wrap with a space", wrap_token(&line, 70, " ")),
+        ("CRLF wrap", hard(76, "\r\n")),
+        (
+            "brcrew1: alone on its line",
+            format!(
+                "{}\n{}",
+                invitation::PREFIX,
+                line.get(invitation::PREFIX.len()..).unwrap()
+            ),
+        ),
+        (
+            "brcrew1: alone, then a wrapped token",
+            format!(
+                "{}\r\n{}",
+                invitation::PREFIX,
+                wrap_token(&line, 76, "\r\n")
+                    .strip_prefix(invitation::PREFIX)
+                    .unwrap()
+            ),
+        ),
+        (
+            "a zero-width space at each break",
+            wrap_token(&line, 60, "\u{200B}"),
+        ),
+        (
+            "a quoted reply that was re-wrapped",
+            format!("> {}", hard(72, "\n> ")),
+        ),
+    ];
+    for (case, token) in wrapped {
+        for pasted in [
+            token.clone(),
+            format!("{intro}{token}"),
+            format!("{intro}{token}\n"),
+            // Prose right after the token, on the same line and on the next one with no blank
+            // line between, is not part of the token.
+            format!("{intro}{token} IT says the server is up\nThanks Alice"),
+            format!("{intro}{token}\nIT says the server is up\n\nAlice"),
+            format!("{intro}{token}\r\nIT says hi\r\n"),
+            format!("{intro}{token}\n\nbrcrew1 is the prefix"),
+        ] {
+            let parsed = invitation::parse(&pasted);
+            assert_eq!(
+                parsed.map(|parsed| parsed.invitation),
+                Ok(original.clone()),
+                "{case}: {pasted:?}"
+            );
+        }
+    }
+
+    // A wrapped token that lost a piece is still refused as damaged, not guessed at.
+    let body = line.strip_prefix(invitation::PREFIX).unwrap();
+    let damaged = format!(
+        "{}{}\n{}",
+        invitation::PREFIX,
+        body.get(..64).unwrap(),
+        body.get(128..).unwrap()
+    );
+    assert_eq!(invitation::parse(&damaged), Err(InvitationError::Malformed));
+    // A blank line ends the token: the rest after it is not joined in.
+    let split_by_blank = format!(
+        "{}{}\n\n{}",
+        invitation::PREFIX,
+        body.get(..64).unwrap(),
+        body.get(64..).unwrap()
+    );
+    assert_eq!(
+        invitation::parse(&split_by_blank),
+        Err(InvitationError::Malformed)
+    );
+    // So does punctuation: only whitespace separates the pieces of one token.
+    let split_by_comma = format!(
+        "{}{}, {}",
+        invitation::PREFIX,
+        body.get(..64).unwrap(),
+        body.get(64..).unwrap()
+    );
+    assert_eq!(
+        invitation::parse(&split_by_comma),
+        Err(InvitationError::Malformed)
+    );
+    // A wrapped token keeps its own refusals: a newer version is still named as one.
+    let newer = token_for(&json!({"v": 2, "anything": "x".repeat(200)}));
+    assert_eq!(
+        invitation::parse(&wrap_token(&newer, 64, "\n")),
+        Err(InvitationError::UnsupportedVersion)
+    );
+    // And a wrapped token with a bad field names the field.
+    let mut bad = serde_json::to_value(sample_invitation()).unwrap();
+    bad["v"] = json!(1);
+    bad["owner_uid"] = json!(0);
+    assert_eq!(
+        invitation::parse(&wrap_token(&token_for(&bad), 64, "\n")),
+        Err(InvitationError::InvalidField(InvitationField::OwnerUid))
+    );
+}
+
 /// One invalid value per rule, each with the field the refusal must name.
 fn invalid_field_cases() -> Vec<(&'static str, Value, InvitationField)> {
     use InvitationField as F;

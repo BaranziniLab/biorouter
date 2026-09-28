@@ -312,7 +312,7 @@ pub fn parse(text: &str) -> Result<ParsedInvitation, InvitationError> {
         return Err(InvitationError::TooLong);
     }
     if let Some(token) = find_token(text) {
-        return parse_token(token).map(|invitation| ParsedInvitation {
+        return parse_token(&token).map(|invitation| ParsedInvitation {
             source: InvitationSource::Invitation,
             invitation,
         });
@@ -377,17 +377,94 @@ fn check_optional(
     check(value.as_deref().is_none_or(valid), field)
 }
 
-/// The base64url run after the first `brcrew1:` in `text`.
-fn find_token(text: &str) -> Option<&str> {
+/// The longest base64url text a [`MAX_DECODED_BYTES`] invitation encodes to.
+const MAX_TOKEN_CHARS: usize = MAX_DECODED_BYTES.div_ceil(3) * 4;
+
+fn is_token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '=')
+}
+
+/// The token after the first `brcrew1:` in `text`, with any line wrapping taken out.
+///
+/// Mail and ticket tools wrap a long line: at a fixed column, with the next line indented or
+/// quoted (`> `), with a space instead of a newline, or with `brcrew1:` left alone on its line.
+/// So the token is read as the base64url runs that follow the prefix, separated only by
+/// whitespace (and, after a line break, `>` quote marks), up to a blank line or a character that
+/// is neither. Of those, the shortest joined prefix that decodes to a complete JSON object is
+/// the token: no proper prefix of the host's token can decode to one, and a word of prose after
+/// the token is never needed to complete it, so the prose is left out. When no prefix decodes,
+/// the first run is returned, so [`parse_token`] refuses it exactly as it always has.
+fn find_token(text: &str) -> Option<String> {
     let (_, after) = text.split_once(PREFIX)?;
-    let end = after
-        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '=')))
-        .unwrap_or(after.len());
-    after.get(..end)
+    let runs = token_runs(after);
+    let mut joined = String::new();
+    for run in &runs {
+        joined.push_str(run);
+        if joined.len() > MAX_TOKEN_CHARS {
+            break;
+        }
+        if decodes_to_json_object(&joined) {
+            return Some(joined);
+        }
+    }
+    runs.first().map(|run| (*run).to_owned())
+}
+
+/// The base64url runs after the prefix, as [`find_token`] reads them. The first run may be
+/// empty (`brcrew1:` at the end of its line).
+fn token_runs(after: &str) -> Vec<&str> {
+    let mut runs = Vec::new();
+    let mut rest = after;
+    let mut total = 0usize;
+    loop {
+        let end = rest.find(|c: char| !is_token_char(c)).unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        runs.push(run);
+        total += run.len();
+        if tail.is_empty() || total > MAX_TOKEN_CHARS {
+            return runs;
+        }
+        let mut line_breaks = 0usize;
+        let mut gap_end = tail.len();
+        for (index, c) in tail.char_indices() {
+            let separator = if c == '\n' {
+                line_breaks += 1;
+                true
+            } else {
+                c.is_whitespace()
+                    || crate::names::is_default_ignorable(c)
+                    || (c == '>' && line_breaks > 0)
+            };
+            if !separator {
+                gap_end = index;
+                break;
+            }
+        }
+        // A blank line ends the token, and so does anything that is not a separator.
+        if gap_end == 0 || gap_end == tail.len() || line_breaks > 1 {
+            return runs;
+        }
+        let Some(next) = tail.get(gap_end..) else {
+            return runs;
+        };
+        if next.starts_with(|c: char| !is_token_char(c)) {
+            return runs;
+        }
+        rest = next;
+    }
+}
+
+fn decodes_to_json_object(token: &str) -> bool {
+    URL_SAFE_ANY_PADDING
+        .decode(token)
+        .ok()
+        .filter(|bytes| bytes.len() <= MAX_DECODED_BYTES)
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .is_some_and(|value| value.is_object())
 }
 
 fn parse_token(token: &str) -> Result<WorkspaceInvitation, InvitationError> {
-    if token.len() > MAX_DECODED_BYTES.div_ceil(3) * 4 {
+    if token.len() > MAX_TOKEN_CHARS {
         return Err(InvitationError::TooLong);
     }
     let bytes = URL_SAFE_ANY_PADDING
