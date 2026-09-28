@@ -49,14 +49,27 @@ export function visibleFileText(raw: unknown): string {
 const PRIVATE_USE = /^\p{Co}$/u;
 /** A lone surrogate: half of a character, which `Array.from` yields as an element of its own. */
 const LONE_SURROGATE = /^\p{Cs}$/u;
+/**
+ * Every space and dot a name starts with, as one class. `\s` is the set `trim` removes, so taking
+ * the spaces and the dots together leaves nothing that a second pass would take: `. .x` is `x`,
+ * where trimming, stripping the dots and trimming again gave `.x`, and `. .` gave `.`.
+ */
+const LEADING_SPACES_AND_DOTS = /^[\s.]+/u;
 
 /**
  * The default name for the native Save dialog, one the daemon accepts (FILES-F3): the name with
- * every hidden and private-use character and every lone surrogate left out, trimmed, and without a
- * leading dot (the daemon never saves a dot name into the home, so `.Rprofile` is offered as
- * `Rprofile`). `undefined` when nothing usable is left (the main process then offers its own
- * default). The main process runs this same function again on whatever it is sent (`crewSaveName`
- * in `utils/crewSharePath.ts`), so this module must stay free of anything only a renderer has.
+ * every hidden and private-use character and every lone surrogate left out, then every space and
+ * dot it starts with and every space it ends with (the daemon never saves a dot name into the
+ * home, so `.Rprofile` is offered as `Rprofile`, and so is `. .Rprofile`). `undefined` when
+ * nothing usable is left (the main process then offers its own default). The main process runs
+ * this same function again on whatever it is sent (`crewSaveName` in `utils/crewSharePath.ts`),
+ * so this module must stay free of anything only a renderer has.
+ *
+ * The result is a fixed point: running the rule on its own output changes nothing, which is what
+ * lets the main process run it a second time and still propose the renderer's name. It can never
+ * be `.` or `..` either. The last line checks that again on purpose: the Save window opens a
+ * directory it is given as its default, and resolves `.` and `..` against the main process's
+ * working directory, so a name another member chose would pick the folder the window opens in.
  *
  * ⚠ The lone surrogates go in the same per-character filter, before the join, as
  * `utils/untrustedText.ts` requires. Dropping the zero-width character in `a\uDB40\u200B\uDC01b`
@@ -73,8 +86,7 @@ export function saveNameFor(raw: unknown): string | undefined {
         !LONE_SURROGATE.test(character) && !isHidden(character) && !PRIVATE_USE.test(character)
     )
     .join('')
-    .trim()
-    .replace(/^\.+/, '')
-    .trim();
-  return name || undefined;
+    .replace(LEADING_SPACES_AND_DOTS, '')
+    .trimEnd();
+  return name && name !== '.' && name !== '..' ? name : undefined;
 }

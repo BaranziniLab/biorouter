@@ -46,6 +46,18 @@ const SPOOFED = `q3_${RLO}fdp.terminal`;
 const SHOWN = 'q3_�fdp.terminal';
 const SAVED = 'q3_fdp.terminal';
 
+/** A small seeded generator (mulberry32), so a property run is the same run every time. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** Whether `text` holds a character that draws nothing of its own: never drawn as written. */
 const hasHidden = (text: string) =>
   stripHiddenCharacters(text) !== text || /[\p{Zl}\p{Zp}]/u.test(text);
@@ -189,6 +201,12 @@ describe('a file name another member chose', () => {
 });
 
 describe('the two rules (visibleFileText, saveNameFor)', () => {
+  /**
+   * Spaces and dots mixed at the start of a name. Trimming, stripping the dots and trimming again
+   * left `. .x` as `.x` and `. .` as `.`, a dot name the daemon refuses and a directory the Save
+   * window would open.
+   */
+  const DOT_RUNS = ['. .x', '.\u200B .Rprofile', '. .', '.. ..', ' . . .x'];
   const samples = [
     SPOOFED,
     'report\u200B.pdf',
@@ -200,6 +218,7 @@ describe('the two rules (visibleFileText, saveNameFor)', () => {
     'ordinary name (1).csv',
     'naïve résumé.pdf',
     '\u{1F469}\u200D\u{1F4BB} notes.md',
+    ...DOT_RUNS,
   ];
 
   it('shows each hidden character as U+FFFD, and nothing else changes', () => {
@@ -233,6 +252,67 @@ describe('the two rules (visibleFileText, saveNameFor)', () => {
     expect(saveNameFor('..hidden.txt')).toBe('hidden.txt');
     expect(saveNameFor('private\uE000use.csv')).toBe('privateuse.csv');
     expect(saveNameFor('.')).toBeUndefined();
+    expect(saveNameFor('..')).toBeUndefined();
+  });
+
+  it('takes every space and dot a name starts with, however they alternate', () => {
+    expect(saveNameFor('. .x')).toBe('x');
+    expect(saveNameFor('.\u200B .Rprofile')).toBe('Rprofile');
+    expect(saveNameFor(' . . .x')).toBe('x');
+    expect(saveNameFor('.\t.\u00A0.x ')).toBe('x');
+    expect(saveNameFor('. .')).toBeUndefined();
+    expect(saveNameFor('.. ..')).toBeUndefined();
+    expect(saveNameFor(' .\u2028. ')).toBeUndefined();
+    // Only the start: a dot or a space inside the name, or a dot at its end, is the name's own.
+    expect(saveNameFor('x. .y. ')).toBe('x. .y.');
+    for (const sample of DOT_RUNS) {
+      const name = saveNameFor(sample);
+      if (name === undefined) continue;
+      expect(name.startsWith('.'), sample).toBe(false);
+      expect(saveNameFor(name), sample).toBe(name);
+    }
+  });
+
+  it('never offers a dot name, `.` or `..`, and gives back its own output unchanged (property)', () => {
+    // Random names over the characters that interact: spaces, dots, hidden and private-use
+    // characters, whole astral ones and the lone halves of others. Seeded, so a failure repeats.
+    const alphabet = [
+      '.',
+      '.',
+      ' ',
+      '\t',
+      '\u00A0',
+      '\u3000',
+      'x',
+      'é',
+      '\u200B',
+      '\u202E',
+      '\u2066',
+      '\u2028',
+      '\uFEFF',
+      '\n',
+      '\uE000',
+      '\u{E0001}',
+      '\u{1F9EC}',
+      '\uD800',
+      '\uDC00',
+      '\uDB40',
+      '\uDC01',
+    ];
+    const next = seededRandom(0x5eed);
+    for (let run = 0; run < 20000; run += 1) {
+      let sample = '';
+      const length = Math.floor(next() * 9);
+      for (let i = 0; i < length; i += 1) sample += alphabet[Math.floor(next() * alphabet.length)];
+      const name = saveNameFor(sample);
+      if (name === undefined) continue;
+      expect(name.startsWith('.'), JSON.stringify(sample)).toBe(false);
+      expect(name, JSON.stringify(sample)).toBe(name.trim());
+      expect(name === '.' || name === '..', JSON.stringify(sample)).toBe(false);
+      expect(saveNameFor(name), JSON.stringify(sample)).toBe(name);
+      expect(hasHidden(name), JSON.stringify(sample)).toBe(false);
+      expect(/[\p{Cs}\p{Co}]/u.test(name), JSON.stringify(sample)).toBe(false);
+    }
   });
 
   /** Two halves of one character with a hidden character between them, and what they fuse into. */
@@ -265,7 +345,8 @@ describe('the two rules (visibleFileText, saveNameFor)', () => {
     // renderer cannot skip; the two rules must agree on every name.
     const { crewSaveName, CREW_DEFAULT_SAVE_NAME } = await import('../../../utils/crewSharePath');
     const split = SPLIT_SURROGATES.map(([raw]) => raw);
-    for (const sample of [...samples, ...split, '.Rprofile', 'a\uE000b', '\u202E..', ' . x']) {
+    const more = ['.Rprofile', 'a\uE000b', '\u202E..', ' . x', '. .Rprofile', '.\u2066.\u2069 .x'];
+    for (const sample of [...samples, ...split, ...more]) {
       const renderer = saveNameFor(sample);
       expect(crewSaveName(sample)).toBe(renderer ?? CREW_DEFAULT_SAVE_NAME);
       if (renderer) expect(crewSaveName(renderer)).toBe(renderer);

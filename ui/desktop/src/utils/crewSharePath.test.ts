@@ -39,6 +39,7 @@ import {
   type ShareDroppedFileDeps,
   type ShareFs,
 } from './crewSharePath';
+import { saveNameFor } from '../components/crew/files/fileName';
 import { stripHiddenCharacters } from './untrustedText';
 
 const posix = process.platform !== 'win32';
@@ -975,19 +976,100 @@ describe('crewSaveName: a default the daemon accepts (FILES-F3)', () => {
     ['a\uD800\u2066\uDC00b.txt', 'ab.txt'],
     ['dir/a\uDB40\u202E\uDC01b.txt', 'ab.txt'],
     ['\u{1F9EC} genome.fa', '\u{1F9EC} genome.fa'],
+    // Spaces and dots alternating at the start: taken as one run, so no dot is left in front.
+    ['. .x', 'x'],
+    ['.\u200B .Rprofile', 'Rprofile'],
+    [' . . .x', 'x'],
+    ['dir/. .Rprofile', 'Rprofile'],
+    ['.\u00A0.\u3000.x ', 'x'],
+    ['x. .y. ', 'x. .y.'],
   ])('offers %j as %j', (raw, name) => {
     const offered = crewSaveName(raw);
     expect(offered).toBe(name);
     expect(stripHiddenCharacters(offered)).toBe(offered);
     expect(/[\p{Cs}\p{Co}]/u.test(offered)).toBe(false);
+    expect(crewSaveName(offered)).toBe(offered);
   });
 
-  it.each([undefined, null, 7, '', '.', '..', '\u202E', '/', '\uD800', '\uDB40\u200B'])(
-    'falls back to its own name for %j',
-    (raw) => {
-      expect(crewSaveName(raw)).toBe(CREW_DEFAULT_SAVE_NAME);
+  it.each([
+    undefined,
+    null,
+    7,
+    '',
+    '.',
+    '..',
+    '\u202E',
+    '/',
+    '\uD800',
+    '\uDB40\u200B',
+    // Each of these was `.` or `..` after one trim, one dot strip and another trim, and the Save
+    // window opens the directory a `.` or `..` default resolves to.
+    '. .',
+    '.. ..',
+    ' . . ',
+    '.\u200B.',
+    'dir/. ..',
+  ])('falls back to its own name for %j', (raw) => {
+    expect(crewSaveName(raw)).toBe(CREW_DEFAULT_SAVE_NAME);
+  });
+
+  it("never offers a dot name, `.` or `..`, and proposes the renderer's name unchanged (property)", () => {
+    // Random names over the characters that interact: spaces, dots, separators, hidden and
+    // private-use characters, whole astral ones and the lone halves of others. Seeded, so a
+    // failure repeats.
+    const alphabet = [
+      '.',
+      '.',
+      ' ',
+      '\t',
+      '\u00A0',
+      '\u3000',
+      'x',
+      'é',
+      '/',
+      '\\',
+      '\u200B',
+      '\u202E',
+      '\u2066',
+      '\u2028',
+      '\uFEFF',
+      '\n',
+      '\uE000',
+      '\u{E0001}',
+      '\u{1F9EC}',
+      '\uD800',
+      '\uDC00',
+      '\uDB40',
+      '\uDC01',
+    ];
+    let state = 0x5eed;
+    const next = () => {
+      // mulberry32
+      state = (state + 0x6d2b79f5) >>> 0;
+      let value = state;
+      value = Math.imul(value ^ (value >>> 15), value | 1);
+      value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let run = 0; run < 20000; run += 1) {
+      let sample = '';
+      const length = Math.floor(next() * 9);
+      for (let i = 0; i < length; i += 1) sample += alphabet[Math.floor(next() * alphabet.length)];
+      const offered = crewSaveName(sample);
+      const why = JSON.stringify(sample);
+      expect(offered.startsWith('.'), why).toBe(false);
+      expect(offered === '.' || offered === '..', why).toBe(false);
+      expect(offered, why).toBe(offered.trim());
+      expect(path.basename(offered), why).toBe(offered);
+      expect(stripHiddenCharacters(offered), why).toBe(offered);
+      expect(/[\p{Cs}\p{Co}\p{Zl}\p{Zp}]/u.test(offered), why).toBe(false);
+      // A fixed point: the main process running the rule again on the renderer's proposal keeps it.
+      expect(crewSaveName(offered), why).toBe(offered);
+      if (path.basename(sample) === sample) {
+        expect(offered, why).toBe(saveNameFor(sample) ?? CREW_DEFAULT_SAVE_NAME);
+      }
     }
-  );
+  });
 });
 
 describe('parseCrewPickerRequest', () => {

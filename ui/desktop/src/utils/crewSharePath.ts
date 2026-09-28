@@ -759,9 +759,11 @@ export const CREW_DEFAULT_SAVE_NAME = 'crew-download';
  * sent. That rule leaves out every control, format, line or paragraph separator and private-use
  * character (a U+202E in `q3_\u202Efdp.exe` would otherwise make the proposed name read as a PDF),
  * every lone surrogate (removed before the rest are joined, so two halves split by a hidden
- * character cannot fuse into a tag or private-use character) and a leading dot, since the daemon
+ * character cannot fuse into a tag or private-use character) and every space and dot the name
+ * starts with, taken together so `. .Rprofile` cannot come out as `.Rprofile`, since the daemon
  * never saves a dot name into the home. One rule, so the two processes cannot propose different
- * names.
+ * names, and a fixed point, so running it here on the renderer's name leaves that name alone.
+ * `.` and `..` are never offered: the Save window would open the directory they resolve to.
  */
 export function crewSaveName(raw: unknown): string {
   if (typeof raw !== 'string') return CREW_DEFAULT_SAVE_NAME;
