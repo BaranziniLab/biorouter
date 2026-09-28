@@ -103,6 +103,10 @@ describe('mentionsUser agrees with the timeline', () => {
     expect(mentionsUser('@crew_bob', null)).toBe(false);
     expect(mentionsUser(42, 'crew_bob')).toBe(false);
   });
+
+  it('reads the name as the timeline does, trimmed', () => {
+    expect(mentionsUser('hi @crew_bob', ' crew_bob ')).toBe(true);
+  });
 });
 
 describe('attentionNotice', () => {

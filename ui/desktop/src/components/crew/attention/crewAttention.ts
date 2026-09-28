@@ -93,8 +93,9 @@ const MENTION_PROBE_ID = 'crew-attention-mentions-you';
 export function mentionsUser(body: unknown, username: string | null | undefined): boolean {
   if (typeof body !== 'string' || typeof username !== 'string' || !mentionPattern(username))
     return false;
-  // Every mention holds `@username` in some case: most bodies are answered without parsing.
-  if (!body.toLowerCase().includes(`@${username.toLowerCase()}`)) return false;
+  // Every mention holds `@username` in some case (the timeline's pattern trims the name and
+  // matches ASCII case-insensitively): most bodies are answered without parsing.
+  if (!body.toLowerCase().includes(`@${username.trim().toLowerCase()}`)) return false;
   let mentioned = false;
   const probe = () => (tree: BodyNode) => {
     const last = tree.children?.[tree.children.length - 1];
