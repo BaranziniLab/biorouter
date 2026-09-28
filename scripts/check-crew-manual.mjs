@@ -54,6 +54,9 @@
 //     commands go public with no typed confirmation (CLI-10).
 //   * `share-dialog`: the landing page named the Share window by a title
 //     macOS never shows (DW-15).
+//   * `settings-title`: the manual named a "Workspace settings" dialog, which
+//     no screen shows; its title is the workspace's name, "chen-lab settings"
+//     (DW-18).
 //   * `product-docs`: the landing page reads here already, and its providers
 //     and security pages drifted with the Crew ones (W2-DOC-8): keys "not in a
 //     plaintext file" where a keyless machine writes one, a Launch button on
@@ -97,6 +100,7 @@ const SPEC = 'docs/research/biorouter-crew/ui-redesign-spec.md';
 const DROP_ZONE = 'ui/desktop/src/components/crew/files/FileDropZone.tsx';
 const MESSAGE_BODY = 'ui/desktop/src/components/crew/timeline/MessageBody.tsx';
 const FILES_COPY = 'ui/desktop/src/components/crew/files/copy.ts';
+const DIALOGS_COPY = 'ui/desktop/src/components/crew/dialogs/copy.ts';
 const CREW_APP = 'ui/desktop/src/components/crew/CrewApp.tsx';
 const NEEDS_DESKTOP = 'ui/desktop/src/components/crew/CrewNeedsDesktop.tsx';
 const CREW_AUTHENTICATION = 'crates/biorouter-server/src/routes/crew_authentication.rs';
@@ -955,6 +959,32 @@ export function checkCrewManual(tree = repoTree()) {
           fail(
             'share-dialog',
             `${path} does not quote the Share message, such as 'Share "counts.csv" (55 KB) to Crew?'`
+          );
+        }
+      }
+    }
+  }
+
+  // ── settings-title ───────────────────────────────────────────────────────
+  // The workspace's settings dialog is titled with its name (DW-18), so a
+  // reader looking for "Workspace settings" finds nothing on screen.
+  const dialogsCopy = need(DIALOGS_COPY, 'settings-title');
+  if (dialogsCopy !== null) {
+    if (
+      !/workspaceSettingsCopy\s*=\s*\{\s*title:\s*\(workspace: string\) => `\$\{workspace\} settings`/.test(
+        dialogsCopy
+      )
+    ) {
+      fail(
+        'settings-title',
+        `${DIALOGS_COPY}'s workspaceSettingsCopy.title changed; update this rule`
+      );
+    } else {
+      for (const { path, blocks } of surfaces) {
+        for (const block of blocks.filter((b) => /\bWorkspace settings\b/.test(b))) {
+          fail(
+            'settings-title',
+            `${path} names a "Workspace settings" dialog, which is titled "{workspace} settings": ${block.slice(0, 140)}`
           );
         }
       }

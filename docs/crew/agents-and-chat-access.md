@@ -177,7 +177,7 @@ Most refusals say what to do. For these:
 ## See which agents have access
 
 - **Agent access** tab: channel menu > **Agent access**, or the channel header chip ("2 chats", "1 task", "3 agents").
-- **Agent access** in Workspace settings: workspace menu > **Agent access…**.
+- The **Agent access** tab of "{workspace} settings": workspace menu > **Agent access…**.
 - Agents section of the Crew sidebar, while a task runs or a chat has access. A chat row opens its Chat access pane.
 
 "+2" on a row means it reads two more channels. Every row has **Open**. An active chat has **Revoke**, a running task has **Stop**, and an unconfirmed revoke has **Retry**.

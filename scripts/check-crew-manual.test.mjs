@@ -754,6 +754,19 @@ test('share-dialog: the manual quotes the Share message, never the title macOS h
   );
 });
 
+test('settings-title: the settings dialog is named by its title (DW-18)', () => {
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '- The **Agent access** tab of "{workspace} settings": workspace menu > **Agent access…**.',
+        '- **Agent access** in Workspace settings: workspace menu > **Agent access…**.'
+      ),
+    },
+    'settings-title',
+    /agents-and-chat-access\.md names a "Workspace settings" dialog/
+  );
+});
+
 test('product-docs: the landing and product pages match the provider screens and key storage (W2-DOC-8)', () => {
   // The audited key storage promise, back in the secret-storage page.
   assertCaught(
