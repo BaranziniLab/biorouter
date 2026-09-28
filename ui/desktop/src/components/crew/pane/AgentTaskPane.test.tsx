@@ -18,6 +18,7 @@ import {
   type FixtureSnapshot,
 } from '../channel/crewTestHarness';
 import { CrewHttpError } from '../crewApi';
+import { crewActionCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
@@ -288,6 +289,46 @@ describe('AgentTaskPane', () => {
     await user.click(start);
     await waitFor(() => expect(starts).toBe(2));
     expect(requestIds[1]).toBe(requestIds[0]);
+  });
+
+  /**
+   * MSG2-N10: a start that failed on a dropped connection after the person had moved on stayed as a
+   * red bar under Connected, naming neither the task nor its channel, and the task was gone.
+   */
+  it('names the channel of a start that failed after the person moved on, and offers the task there again (MSG2-N10)', async () => {
+    const user = userEvent.setup();
+    let fail: (failure: unknown) => void = () => undefined;
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === `/connections/${connection.id}/runs` && method === 'POST')
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      return {};
+    });
+    renderCrew(Layout);
+    const task = await openAgent(user);
+    fireEvent.change(task, { target: { value: 'Plot the counts' } });
+    await chooseModel(user, 'fixture-model');
+    await user.click(startButton());
+    await waitFor(() => expect(runPosts()).toHaveLength(1));
+
+    // The person moves on while the start is out, and the connection drops under it.
+    act(() => currentCrew().selectChannel(methods.id));
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(methods.id));
+    const reason = 'Biorouter couldn’t reach lab, so nothing was sent.';
+    await act(async () => {
+      fail(new CrewHttpError(reason, 503, 'crew_unavailable'));
+    });
+    await waitFor(() =>
+      expect(currentCrew().error?.message).toBe(crewActionCopy.startFailedIn('#general', reason))
+    );
+    // The link's failure: the connection verifying again takes it away.
+    expect(currentCrew().error).toMatchObject({ source: 'global', transport: true });
+
+    // Back in #general, Ask my agent has the task again.
+    act(() => currentCrew().selectChannel(general.id));
+    expect(await openAgent(user)).toHaveValue('Plot the counts');
   });
 
   it('refuses to start without a model, on the field', async () => {

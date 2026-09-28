@@ -793,6 +793,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     restartObservation,
     resetSurfaces,
     act,
+    reportError,
   });
   // The selection a post's answer is compared with: a post refused after the person moved on is
   // reported where they are, naming its channel (RENDERER-4). Written as the render runs, like

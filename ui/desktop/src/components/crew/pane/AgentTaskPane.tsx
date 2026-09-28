@@ -11,6 +11,7 @@ import type { CrewMessage, ObservedRun } from '../crewApi';
 import { channelName, channelNamesAcrossTeams, teamName } from '../identity';
 import { HISTORY_PAGE_SIZE, reachesChannelStart } from '../timeline/groupMessages';
 import { useCrewErrorSlot } from '../state/CrewControllerContext';
+import { forgetFailedTask, keptFailedTask, viewScopeFrame } from '../state/crewRunStart';
 import type { CrewController } from '../state/types';
 import { agentCopy, LONG_TASK_CHARS, LONG_TASK_LINES, unknownOutcomeCopy } from './copy';
 import { CrewModelPicker, ModelTierMarks } from './CrewModelPicker';
@@ -241,7 +242,22 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const { crew, snapshot, channel, team, verified, workspace } = usePanePresentation();
   const navigate = useNavigate();
   const [seed] = useState(() => crew.draft.body);
-  const [task, setTask] = useState(seed);
+  // A task whose start failed here, after the person had moved on, comes back as the Task
+  // (MSG2-N10): only while the view verifies it under the scope it was started under. Read once as
+  // the pane opens, and forgotten once shown, as a kept draft is.
+  const [kept] = useState(() =>
+    crew.channelId
+      ? keptFailedTask(
+          crew.connectionId,
+          crew.channelId,
+          viewScopeFrame(crew.connectionId, crew.snapshot, crew.observedPrivacy)
+        )
+      : null
+  );
+  const [task, setTask] = useState(kept ?? seed);
+  useEffect(() => {
+    if (kept !== null) forgetFailedTask(crew.connectionId, crew.channelId);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- once, for the task this pane opened with
   const models = useConfiguredModels();
   const [choice, setChoice] = useState<ModelChoice | null>(null);
   const [picking, setPicking] = useState(false);

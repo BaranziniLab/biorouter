@@ -114,6 +114,13 @@ export const crewActionCopy = {
    */
   sendFailedIn: (channel: string, reason: string) =>
     `Couldn’t send your message in ${channel}. ${reason}`,
+  /**
+   * A task start that failed after the person moved to another channel (MSG2-N10): shown in the
+   * connection bar, naming the channel the task was for, whose Ask my agent keeps the task.
+   * `channel` is already `#slug`.
+   */
+  startFailedIn: (channel: string, reason: string) =>
+    `Couldn’t start the task in ${channel}: ${reason} Ask my agent there has your task.`,
   grantPrivacyUnverified:
     'Refresh the workspace to verify connection privacy before granting agent access.',
   sendTransferRecordKept:

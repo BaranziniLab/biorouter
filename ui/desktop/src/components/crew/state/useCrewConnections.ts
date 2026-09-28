@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { crewHttp, type CrewConnection } from '../crewApi';
 import { classifyConnectFailure } from './connectFailure';
+import { forgetConnectionFailedTasks } from './crewRunStart';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
 import { forgetViewMemory } from './viewMemory';
 import type {
@@ -281,14 +282,15 @@ export function wasDisconnectedHere(connectionId: string): boolean {
 }
 
 /**
- * Forget everything kept for a removed connection: drafts, last channel, and the remembered view
- * and pane (`viewMemory`).
+ * Forget everything kept for a removed connection: drafts, failed tasks, last channel, and the
+ * remembered view and pane (`viewMemory`).
  */
 export function forgetConnectionMemory(connectionId: string): void {
   quietReobserves.delete(connectionId);
   verifiedConnections.delete(connectionId);
   disconnectedHere.delete(connectionId);
   forgetConnectionDrafts(connectionId);
+  forgetConnectionFailedTasks(connectionId);
   forgetLastChannel(connectionId);
   forgetViewMemory(connectionId);
 }
