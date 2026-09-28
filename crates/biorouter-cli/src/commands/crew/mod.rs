@@ -813,7 +813,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         CrewCommand::Daemon(_) | CrewCommand::Credentials(_) => {
             bail!("Daemon and credential commands run before connecting")
         }
-        CrewCommand::Status => api.show(api.connections().await?),
+        CrewCommand::Status => api.show(api.connections_with_privacy().await?),
         CrewCommand::Connections(command) => connections(api, command).await?,
         CrewCommand::Auth => {
             let id = api.connection_id().await?;
@@ -987,6 +987,42 @@ impl Api {
 
     async fn connections(&self) -> Result<Value> {
         self.client.request("GET", "/crew/connections", None).await
+    }
+
+    /// The saved connections, each with its effective privacy ([`Self::with_effective_privacy`]).
+    async fn connections_with_privacy(&self) -> Result<Value> {
+        let mut listed = self.connections().await?;
+        if let Some(connections) = listed["connections"].as_array_mut() {
+            for connection in connections.iter_mut() {
+                *connection = self.with_effective_privacy(connection.take()).await;
+            }
+        }
+        Ok(listed)
+    }
+
+    /// `connection` with its effective privacy (SF-F1): `effective_mode` (null when it cannot
+    /// be read), and the workspace's `workspace_mode` and `workspace_name` when read. Privacy is
+    /// Public only when the connection is Public and the workspace allows it, so the workspace
+    /// is asked only about a Public connection, and only while it is connected.
+    async fn with_effective_privacy(&self, connection: Value) -> Value {
+        if connection["mode"].as_str() != Some("public")
+            || connection["status"].as_str() != Some("connected")
+        {
+            return with_privacy_of(connection, None);
+        }
+        let Some(id) = connection["id"].as_str().and_then(|id| component(id).ok()) else {
+            return with_privacy_of(connection, None);
+        };
+        let snapshot = self
+            .client
+            .request(
+                "POST",
+                &format!("/crew/connections/{id}/request"),
+                Some(json!({"method": "workspace.snapshot", "params": {}, "request_id": null})),
+            )
+            .await
+            .ok();
+        with_privacy_of(connection, snapshot.as_ref())
     }
 
     async fn connection(&self) -> Result<Value> {
@@ -1376,6 +1412,26 @@ impl Api {
     }
 }
 
+/// `connection` with `effective_mode` from its own mode and `snapshot`'s workspace (SF-F1), and
+/// `workspace_mode` and `workspace_name` when the snapshot was read.
+fn with_privacy_of(mut connection: Value, snapshot: Option<&Value>) -> Value {
+    if !connection.is_object() {
+        return connection;
+    }
+    let workspace_mode = snapshot.and_then(|snapshot| snapshot["workspace"]["mode"].as_str());
+    connection["effective_mode"] = json!(output::effective_mode(
+        connection["mode"].as_str(),
+        workspace_mode
+    ));
+    if let Some(mode) = workspace_mode {
+        connection["workspace_mode"] = json!(mode);
+    }
+    if let Some(name) = snapshot.and_then(workspace_name_in) {
+        connection["workspace_name"] = json!(name);
+    }
+    connection
+}
+
 /// The host's principal ID: projected by newer brokers, else the active principal holding the
 /// host's UID.
 fn snapshot_host_id(snapshot: &Value) -> Option<String> {
@@ -1662,16 +1718,8 @@ async fn confirm_public(
     typed_consent(workspace, confirm, api.interactive, &lines, no_terminal).await
 }
 
-/// The name a typed confirmation asks for: the workspace's own name, else the saved
-/// connection's (`workspacePhraseFor` on the desktop).
-async fn workspace_phrase(api: &Api, connection: &Value) -> String {
-    match api.snapshot().await {
-        Ok(snapshot) => workspace_name_in(&snapshot),
-        Err(_) => None,
-    }
-    .unwrap_or_else(|| connection_name(connection))
-}
-
+/// The name a typed confirmation asks for: the workspace's own name, else the caller falls
+/// back to the saved connection's (`workspacePhraseFor` on the desktop).
 fn workspace_name_in(snapshot: &Value) -> Option<String> {
     snapshot["workspace"]["name"]
         .as_str()
@@ -1887,8 +1935,11 @@ async fn remove_connection(
 
 async fn connections(api: &Api, command: ConnectionCommand) -> Result<Reply> {
     Ok(match command {
-        ConnectionCommand::List => api.show(api.connections().await?),
-        ConnectionCommand::Show => api.show(api.connection().await?),
+        ConnectionCommand::List => api.show(api.connections_with_privacy().await?),
+        ConnectionCommand::Show => {
+            let connection = api.connection().await?;
+            api.show(api.with_effective_privacy(connection).await)
+        }
         ConnectionCommand::Prepare => api.show(prepare(api).await?),
         ConnectionCommand::Save { input } => {
             let body: Value = serde_json::from_str(&read_input(&input)?)
@@ -4123,15 +4174,29 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
             confirm,
         } => {
             let connection = api.connection().await?;
+            // SF-F1: in a workspace that is Private for everyone, a public connection changes
+            // nothing until the host allows Public, and the person is told so.
+            let snapshot = api.snapshot().await.ok();
+            let workspace_private = snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot["workspace"]["mode"] == "private");
+            let workspace = snapshot
+                .as_ref()
+                .and_then(workspace_name_in)
+                .unwrap_or_else(|| connection_name(&connection));
+            let shown = name_text(&workspace);
             if matches!(mode, PrivacyMode::Public) && connection["mode"].as_str() != Some("public")
             {
-                let workspace = workspace_phrase(api, &connection).await;
-                let shown = name_text(&workspace);
+                let effect = if workspace_private {
+                    format!("Make your {shown} connection public? Nothing changes while {shown} is Private for everyone; if the host allows Public, public models will be able to read public-safe work you can see there. Restricted content stays private.")
+                } else {
+                    format!("Make your {shown} connection public? Public models will be able to read public-safe work you can see here. Restricted content stays private.")
+                };
                 confirm_public(
                     api,
                     &workspace,
                     confirm.as_deref(),
-                    vec![format!("Make your {shown} connection public? Public models will be able to read public-safe work you can see here. Restricted content stays private.")],
+                    vec![effect],
                     format!("Making your {shown} connection public needs its name typed. There is no terminal to ask in, so confirm with --confirm {}.", safe_text(&shell_word(&workspace))),
                 )
                 .await?;
@@ -4160,10 +4225,16 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
             if let Some(institution_id) = institution_id {
                 input.insert("institution_id".into(), json!(institution_id));
             }
-            api.show(
-                api.client
-                    .request("PATCH", &api.path("").await?, Some(Value::Object(input)))
-                    .await?,
+            let saved = api
+                .client
+                .request("PATCH", &api.path("").await?, Some(Value::Object(input)))
+                .await?;
+            let saved = with_privacy_of(saved, snapshot.as_ref());
+            let note = (matches!(mode, PrivacyMode::Public) && workspace_private)
+                .then(|| format!("Nothing changes while {shown} is Private for everyone."));
+            Reply::Show(
+                saved,
+                Box::new(api.human(Directory::default()).with_notes(note)),
             )
         }
         PrivacyCommand::SetWorkspace {
@@ -7294,12 +7365,68 @@ mod tests {
         };
         let (api, fake) = api_with(OutputFormat::Text, handler);
         let error = run(&api, personal(None)).await.expect_err("no terminal");
+        // SF-F1: lab is Private for everyone, so the prompt says nothing changes yet.
+        assert!(
+            message(&error).starts_with("Making your lab connection public needs its name typed."),
+            "{}",
+            message(&error)
+        );
         assert!(
             message(&error).starts_with("Making your lab connection public needs its name typed.")
         );
         assert!(!fake.sent().iter().any(|sent| sent.method == "PATCH"));
-        run(&api, personal(Some("lab"))).await.expect("confirmed");
+        let saved = said(run(&api, personal(Some("lab"))).await.expect("confirmed"));
         assert!(fake.sent().iter().any(|sent| sent.method == "PATCH"));
+        // SF-F1: saved, and said to change nothing while lab is Private for everyone.
+        assert!(
+            saved[0].ends_with("Nothing changes while lab is Private for everyone."),
+            "{saved:?}"
+        );
+    }
+
+    /// SF-F1: `status` and `connections list` ask a connected Public connection's workspace
+    /// for its privacy, and give the effective privacy; a Private one is Private without
+    /// asking, and an offline Public one says its workspace's can't be read.
+    #[tokio::test]
+    async fn connection_lists_give_the_effective_privacy() {
+        let listing = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if method == "GET" && path == "/crew/connections" {
+                return Ok(json!({"connections": [
+                    {"id": CONNECTION, "name": "lab", "ssh_target": "bob@hpc", "status": "connected",
+                     "mode": "public", "institution_id": "ucsf"},
+                    {"id": "c0ffee00-0000-4000-8000-000000000009", "name": "other", "ssh_target": "bob@other",
+                     "status": "disconnected", "mode": "public"},
+                    {"id": "c0ffee00-0000-4000-8000-00000000000a", "name": "clinic", "ssh_target": "bob@clinic",
+                     "status": "connected", "mode": "private", "institution_id": "ucsf"}
+                ]}));
+            }
+            standard(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Json, listing);
+        let Reply::Show(listed, _) = run(&api, CrewCommand::Status).await.expect("status") else {
+            panic!("status shows the list")
+        };
+        let connections = listed["connections"].as_array().unwrap();
+        assert_eq!(connections[0]["effective_mode"], "private");
+        assert_eq!(connections[0]["workspace_mode"], "private");
+        assert_eq!(connections[0]["workspace_name"], "lab");
+        assert_eq!(connections[1]["effective_mode"], Value::Null);
+        assert_eq!(connections[2]["effective_mode"], "private");
+        let asked = fake
+            .broker_calls()
+            .into_iter()
+            .filter(|(method, _)| method == "workspace.snapshot")
+            .count();
+        assert_eq!(
+            asked, 1,
+            "only the connected Public connection's workspace is asked"
+        );
+        let (api, _) = api_with(OutputFormat::Text, listing);
+        let text = said(run(&api, CrewCommand::Status).await.expect("status")).join("\n");
+        assert!(
+            text.contains("lab · bob@hpc · Connected · Private because lab is Private for everyone · your connection: Public"),
+            "{text}"
+        );
     }
 
     #[test]

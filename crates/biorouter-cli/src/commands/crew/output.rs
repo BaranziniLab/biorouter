@@ -1692,7 +1692,17 @@ impl Ctx {
         if let Some(status) = str_field(connection, "status") {
             parts.push(sentence_case(status));
         }
-        parts.push(connection_privacy(connection));
+        parts.push(match Effective::of(connection) {
+            None | Some(Effective::Own) => connection_privacy(connection),
+            Some(Effective::Workspace(workspace)) => {
+                format!(
+                    "Private because {workspace} is Private for everyone · your connection: Public"
+                )
+            }
+            Some(Effective::Unknown) => {
+                "Your connection: Public · workspace privacy unknown while disconnected".to_owned()
+            }
+        });
         let mut out = vec![self.with_id(
             parts.join(" · "),
             "connection ID",
@@ -1726,7 +1736,23 @@ impl Ctx {
         if let Some(epoch) = connection.get("policy_epoch").and_then(Value::as_u64) {
             privacy.push(format!("policy epoch {epoch}"));
         }
-        out.push(format!("  Privacy: {}", privacy.join(" · ")));
+        // SF-F1: the effective privacy comes first, and the connection's own setting is said
+        // as that whenever the two differ or the workspace's cannot be read.
+        match Effective::of(connection) {
+            None | Some(Effective::Own) => {
+                out.push(format!("  Privacy: {}", privacy.join(" · ")));
+            }
+            Some(Effective::Workspace(workspace)) => {
+                out.push(format!(
+                    "  Privacy: Private ({workspace} is Private for everyone)"
+                ));
+                out.push(format!("  Your connection: {}", privacy.join(" · ")));
+            }
+            Some(Effective::Unknown) => {
+                out.push("  Privacy: can't be checked while disconnected".to_owned());
+                out.push(format!("  Your connection: {}", privacy.join(" · ")));
+            }
+        }
         if let Some(root) = str_field(connection, "remote_root") {
             let execution = connection.get("remote_execution").and_then(Value::as_bool);
             let access = if execution == Some(true) {
@@ -2031,7 +2057,22 @@ impl Ctx {
             connection.push(format!("policy epoch {epoch}"));
         }
         let workspace = value.get("workspace").unwrap_or(&Value::Null);
+        // SF-F1: privacy is Public only when the connection is and the workspace allows it.
+        let effective = match (
+            str_field(value, "personal_mode"),
+            str_field(workspace, "mode"),
+        ) {
+            (Some("public"), Some("private")) => format!(
+                "Private ({} is Private for everyone)",
+                str_field(workspace, "name")
+                    .map_or_else(|| "the workspace".to_owned(), display_text)
+            ),
+            (Some("public"), Some("public")) => "Public".to_owned(),
+            (Some("public"), _) => "can't be checked".to_owned(),
+            (own, _) => mode_word(own),
+        };
         let mut out = vec![
+            format!("Privacy: {effective}"),
             self.with_id(
                 format!("Your connection: {}", connection.join(" · ")),
                 "connection ID",
@@ -2595,6 +2636,44 @@ fn connection_privacy(connection: &Value) -> String {
     match str_field(connection, "institution_id") {
         Some(institution) => format!("{mode} ({})", safe_text(institution)),
         None => mode,
+    }
+}
+
+/// A saved connection's effective privacy, as the CLI annotated it (`effective_mode`,
+/// `workspace_mode`, `workspace_name`; SF-F1). `None` for a value it did not annotate.
+enum Effective {
+    /// The connection's own setting is the effective one.
+    Own,
+    /// The connection is Public, but the workspace, named here, is Private for everyone.
+    Workspace(String),
+    /// The connection is Public, and the workspace's setting could not be read.
+    Unknown,
+}
+
+impl Effective {
+    fn of(connection: &Value) -> Option<Self> {
+        let effective = connection.get("effective_mode")?;
+        let own = str_field(connection, "mode");
+        Some(match effective.as_str() {
+            None => Self::Unknown,
+            Some(mode) if Some(mode) == own => Self::Own,
+            Some(_) => Self::Workspace(
+                str_field(connection, "workspace_name")
+                    .map_or_else(|| "the workspace".to_owned(), display_text),
+            ),
+        })
+    }
+}
+
+/// The privacy a connection in `own` mode has in a workspace in `workspace` mode (SF-F1, the
+/// manual's definition): Private when either is, Public only when both allow it, and unknown
+/// when the connection is Public and the workspace's mode could not be read.
+pub fn effective_mode(own: Option<&str>, workspace: Option<&str>) -> Option<&'static str> {
+    match (own, workspace) {
+        (Some("public"), Some("public")) => Some("public"),
+        (Some("public"), Some(_)) => Some("private"),
+        (Some("public"), None) => None,
+        _ => Some("private"),
     }
 }
 
@@ -3425,6 +3504,58 @@ mod tests {
         assert_eq!(plain(&json!({"connections":[]})), "No saved connections.");
     }
 
+    /// SF-F1: every surface gives one answer to effective privacy, Private when the connection
+    /// or the workspace is, and says the connection's own setting as that.
+    #[test]
+    fn a_public_connection_in_a_private_workspace_reads_private_everywhere() {
+        let mut public = connection();
+        public["name"] = json!("okafor-lab");
+        public["mode"] = json!("public");
+        public["institution_id"] = json!("stanford");
+        let mut annotated = public.clone();
+        annotated["effective_mode"] = json!("private");
+        annotated["workspace_mode"] = json!("private");
+        annotated["workspace_name"] = json!("okafor-lab");
+        assert_eq!(
+            plain(&json!({"connections": [annotated.clone()]})),
+            "okafor-lab · crew_bob@34.217.178.174 · Connected · Private because okafor-lab is Private for everyone · your connection: Public"
+        );
+        let show = plain(&annotated);
+        assert!(
+            show.contains("  Privacy: Private (okafor-lab is Private for everyone)\n  Your connection: Public · institution stanford · policy epoch 2"),
+            "{show}"
+        );
+        // Offline, the workspace's setting can't be read, and it says so.
+        let mut offline = public.clone();
+        offline["status"] = json!("disconnected");
+        offline["effective_mode"] = Value::Null;
+        assert!(plain(&json!({"connections": [offline.clone()]})).ends_with(
+            "Disconnected · Your connection: Public · workspace privacy unknown while disconnected"
+        ));
+        assert!(plain(&offline)
+            .contains("  Privacy: can't be checked while disconnected\n  Your connection: Public"));
+        // A Private connection is Private whatever the workspace allows, and reads as before.
+        let mut private = connection();
+        private["effective_mode"] = json!("private");
+        assert_eq!(
+            plain(&json!({"connections": [private]})),
+            "Bob UCSF · crew_bob@34.217.178.174 · Connected · Private (ucsf)"
+        );
+        // privacy show leads with the effective privacy.
+        let mut shown = privacy();
+        shown["personal_mode"] = json!("public");
+        shown["workspace"]["name"] = json!("okafor-lab");
+        assert!(plain(&shown).starts_with(
+            "Privacy: Private (okafor-lab is Private for everyone)\nYour connection: Public"
+        ));
+        assert_eq!(
+            effective_mode(Some("public"), Some("public")),
+            Some("public")
+        );
+        assert_eq!(effective_mode(Some("public"), None), None);
+        assert_eq!(effective_mode(Some("private"), None), Some("private"));
+    }
+
     #[test]
     fn tasks_grants_and_privacy_name_their_channels() {
         let snapshot = alice_snapshot();
@@ -3455,6 +3586,7 @@ mod tests {
         assert_eq!(
             named(&privacy(), &snapshot),
             [
+                "Privacy: Private",
                 "Your connection: Private · institution ucsf · policy epoch 2",
                 "Workspace: Private for everyone · institution ucsf · policy epoch 4",
                 "Channels (1):",
