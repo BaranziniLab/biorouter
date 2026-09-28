@@ -453,6 +453,14 @@ fn stop_notice(error: &ProviderError, retried: u32) -> String {
             "Please retry if you think this is a transient or recoverable \
              error.{retried_clause}"
         )
+    } else if matches!(error, ProviderError::Authentication(_)) {
+        // T3-SH-4: the one fatal error a person can clear, and the chat used to
+        // go on refusing after they had: a provider read its key when the chat
+        // bound it. The agent now rebuilds it after such a refusal, so this
+        // says what to do and that the chat will then work.
+        "Retrying will not help until the key or sign-in is fixed. Once it is, send your \
+         message again: this chat reads the new credentials with its next message."
+            .to_string()
     } else {
         "Retrying will not help: this one returns the same way until its cause changes.".to_string()
     };
@@ -853,6 +861,38 @@ mod tests {
             notice.contains("version 2.1.251 or newer is required."),
             "{notice}"
         );
+    }
+
+    /// T3-SH-4. A refused key is the fatal error a person CAN clear, and the
+    /// notice said only that retrying would not help, while the chat went on
+    /// sending the old key after it was replaced. It now says what to do, and
+    /// that the chat reads the new key with its next message (the agent
+    /// rebuilds its provider after the refusal).
+    #[test]
+    fn a_refused_key_says_how_to_get_the_chat_working_again() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+        let error = ProviderError::Authentication(
+            "Authentication failed. Status: 401. Response: Invalid client id or secret".to_string(),
+        );
+        let ProviderErrorAction::Stop { notice } = tracker.observe_provider_error(&config, &error)
+        else {
+            panic!("a refused key ends the turn");
+        };
+        assert!(notice.contains("Invalid client id or secret"), "{notice}");
+        assert!(
+            notice.contains("Retrying will not help until the key or sign-in is fixed"),
+            "{notice}"
+        );
+        assert!(notice.contains("send your message again"), "{notice}");
+        assert!(!notice.contains("Please retry"), "{notice}");
+        // Every other fatal error keeps its own sentence.
+        let ProviderErrorAction::Stop { notice } = tracker
+            .observe_provider_error(&config, &ProviderError::RequestFailed("400".to_string()))
+        else {
+            panic!("fatal");
+        };
+        assert!(notice.contains("until its cause changes"), "{notice}");
     }
 
     /// The other branch, unchanged: a blip still invites the retry, and still

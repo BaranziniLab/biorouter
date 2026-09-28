@@ -2470,6 +2470,60 @@ fn inline_notice_user_only<S: Into<String>>(text: S) -> Message {
     inline_notice(text).user_only()
 }
 
+/// T3-SH-9 — what the chat says while a failed model call is tried again.
+///
+/// It used to be `Model call failed: {error}. Retrying (1/1)…`, which gave
+/// `…your provider administrator.. Retrying` (the error's own full stop, then
+/// the frame's), and which a clinician read as her message having been
+/// flagged. A content-filter failure is said plainly; any other error keeps
+/// its own words, with one full stop.
+fn provider_retry_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
+    let said = error.to_string();
+    if said.contains("content_filter_error") {
+        return format!(
+            "The provider's content filter interrupted the reply. Trying again ({attempt}/{limit})…"
+        );
+    }
+    if said.contains("(content_filter)") {
+        return format!(
+            "The provider's safety filter stopped the reply. Trying again ({attempt}/{limit})…"
+        );
+    }
+    let reason = said.trim_end().trim_end_matches(['.', '!', '?']).trim_end();
+    format!("The model call failed: {reason}. Trying again ({attempt}/{limit})…")
+}
+
+#[cfg(test)]
+mod provider_retry_notice_tests {
+    use super::*;
+
+    #[test]
+    fn one_full_stop_and_plain_words() {
+        let notice = provider_retry_notice(
+            &ProviderError::ServerError("Server error (502 Bad Gateway): upstream.".to_string()),
+            1,
+            2,
+        );
+        assert_eq!(
+            notice,
+            "The model call failed: Server error: Server error (502 Bad Gateway): upstream. \
+             Trying again (1/2)…"
+        );
+        assert_eq!(
+            provider_retry_notice(
+                &ProviderError::RequestFailed(
+                    "Provider safety filter blocked the response (content_filter). Revise the \
+                     request or contact your provider administrator."
+                        .to_string()
+                ),
+                1,
+                1
+            ),
+            "The provider's safety filter stopped the reply. Trying again (1/1)…"
+        );
+    }
+}
+
 /// The transient "thinking" notice shown while a compaction runs.
 fn thinking_notice<S: Into<String>>(text: S) -> Message {
     Message::assistant().with_system_notification(SystemNotificationType::ThinkingMessage, text)
@@ -3749,6 +3803,17 @@ pub struct Agent {
     /// A tool that is absent from the tool list cannot be called; prose competing
     /// with an available tool loses.
     pub(super) subagent_tool_enabled: AtomicBool,
+    /// T3-SH-4. The last model call this chat made was refused for its
+    /// credentials, so the next turn rebuilds the provider from the row before
+    /// it runs (`rebind_from_row`, the tier check included).
+    ///
+    /// A provider reads its key when it is built, so a chat bound while the key
+    /// was wrong went on sending the wrong key after it was replaced: "Retrying
+    /// will not help" on every turn while a new chat worked. Rebuilding on EVERY
+    /// turn is not the answer: a coding-agent provider carries a live child
+    /// session in the instance, which a rebuild throws away. After a refusal
+    /// there is nothing in it worth keeping.
+    pub(super) credentials_refused: AtomicBool,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
@@ -4856,6 +4921,7 @@ impl Agent {
             sub_workflows: Mutex::new(HashMap::new()),
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
+            credentials_refused: AtomicBool::new(false),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
@@ -9611,7 +9677,11 @@ impl Agent {
             // inside `rebind_from_row`, which is why the flag is threaded into it
             // rather than re-read there.
             if let Some(bound) = self.bound_provider_unchecked().await {
-                if row_names_another_binding(row, bound.as_ref()) {
+                // T3-SH-4: or the last call was refused for its credentials, in
+                // which case the row's own binding is rebuilt so it reads the key
+                // as it is now. Same provider, same model, same tier check.
+                let credentials_refused = self.credentials_refused.swap(false, Ordering::SeqCst);
+                if credentials_refused || row_names_another_binding(row, bound.as_ref()) {
                     match self.rebind_from_row(row, privacy_enforced).await {
                         // Bound to what the row names. The privacy arm below
                         // re-reads the binding, so it judges the NEW one.
@@ -12287,6 +12357,11 @@ impl Agent {
                                 error_type = provider_err.telemetry_type(),
                                 "Provider call failed"
                             );
+                            // T3-SH-4: the next turn rebuilds the provider, so a key
+                            // replaced since is the one it sends.
+                            if matches!(provider_err, ProviderError::Authentication(_)) {
+                                self.credentials_refused.store(true, Ordering::SeqCst);
+                            }
                             // BR-66: a non-context provider error used to end the turn
                             // outright, handing the user a "please retry" string for a
                             // blip the agent could have absorbed itself. Give a
@@ -12311,9 +12386,14 @@ impl Agent {
                                         Some(limit),
                                         None,
                                     );
-                                    yield AgentEvent::Message(
-                                        inline_notice(format!("Model call failed: {provider_err}. Retrying ({attempt}/{limit})…"),)
-                                    );
+                                    // T3-SH-9: transient, like the compaction notice.
+                                    // An inline notice stayed above the answer the
+                                    // retry produced, reading as a failure after a
+                                    // success; a retry that fails too ends the turn
+                                    // with the stop notice, which is kept.
+                                    yield AgentEvent::Message(thinking_notice(
+                                        provider_retry_notice(provider_err, attempt, limit),
+                                    ));
                                     // Model-visible only: the hint is loop plumbing, and
                                     // the user already has the notification above.
                                     messages_to_add.push(
@@ -22537,6 +22617,255 @@ mod gate_b_turn_tests {
             Arc::ptr_eq(&agent.provider().await.unwrap(), &bound),
             "a row that names what is already bound must not rebuild the provider"
         );
+    }
+
+    // ─── T3-SH-4: a key replaced after the chat bound it ────────────────────
+
+    /// A provider built while the key was wrong: every call is refused for its
+    /// credentials, as the UCSF gateway refuses a wrong Versa key.
+    struct RefusedKeyProvider {
+        tier: ProviderTier,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for RefusedKeyProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("refused", "Refused", "", "gpt-5.5", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            "versa_azure"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::Authentication(
+                "Authentication failed. Status: 401 Unauthorized. Response: Invalid client id or secret"
+                    .to_string(),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("gpt-5.5")
+        }
+    }
+
+    fn refused_key() -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(RefusedKeyProvider {
+            tier: ProviderTier::Private,
+            calls: Arc::clone(&calls),
+        });
+        (provider, calls)
+    }
+
+    #[tokio::test]
+    async fn a_chat_refused_for_its_key_reads_the_replaced_key_on_its_next_turn() {
+        // Measured: with a wrong Versa key in place, a chat's turn got the 401;
+        // the key was replaced and the same chat still got "Retrying will not
+        // help" on every turn, while a new chat answered at once. The provider
+        // had read the key when the chat bound it.
+        let (wrong, refusals) = refused_key();
+        let (_dir, agent, s) = agent_on(Arc::clone(&wrong)).await;
+        let sm = manager(&agent);
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(refusals.load(Ordering::SeqCst), 1, "{}", rendered(&events));
+        assert!(
+            rendered(&events).contains("send your message again"),
+            "the refusal says how to get the chat working again:\n{}",
+            rendered(&events)
+        );
+
+        // The key is replaced. What the factory builds from the row now is a
+        // provider that reads it.
+        let (fixed, answers) = counted("versa_azure", "gpt-5.5", ProviderTier::Private);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&fixed));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi again"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (
+                answers.load(Ordering::SeqCst),
+                refusals.load(Ordering::SeqCst)
+            ),
+            (1, 1),
+            "the next turn must run on a provider rebuilt with the new key:\n{}",
+            rendered(&events)
+        );
+        assert!(Arc::ptr_eq(&agent.provider().await.unwrap(), &fixed));
+
+        // And only once: a chat whose calls succeed keeps its instance (a
+        // coding agent's live child session lives in it).
+        let (decoy, _) = counted("versa_azure", "gpt-5.5", ProviderTier::Private);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&decoy));
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("third"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(Arc::ptr_eq(&agent.provider().await.unwrap(), &fixed));
+    }
+
+    #[tokio::test]
+    async fn the_rebuild_after_a_refused_key_still_answers_to_the_privacy_tier() {
+        // The rebuild is a bind, so it cannot move a private chat onto a
+        // provider that resolved public (a repointed endpoint): the tier check
+        // inside `rebind_from_row` refuses it, and the chat keeps its binding.
+        let (wrong, refusals) = refused_key();
+        let (_dir, agent, s) = agent_on(Arc::clone(&wrong)).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &s.id).await;
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(refusals.load(Ordering::SeqCst), 1);
+
+        let (repointed, public_answers) = counted("versa_azure", "gpt-5.5", ProviderTier::Public);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&repointed));
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi again"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            public_answers.load(Ordering::SeqCst),
+            0,
+            "a private chat's transcript must never reach a public provider:\n{}",
+            rendered(&events)
+        );
+        assert!(Arc::ptr_eq(&agent.provider().await.unwrap(), &wrong));
+    }
+
+    // ─── T3-SH-9: a retry that succeeded leaves no failure above its answer ──
+
+    /// Fails once with Azure's content-filter failure, then answers.
+    struct FilteredOnceProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for FilteredOnceProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("filtered", "Filtered", "", "gpt-5.5", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            "versa_azure"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            ProviderTier::Private
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ProviderError::ServerError(
+                    "Provider content filter failed (content_filter_error). Retry the request or \
+                     contact your provider administrator."
+                        .to_string(),
+                ));
+            }
+            Ok((
+                Message::assistant().with_text("the answer"),
+                ProviderUsage::new("gpt-5.5".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("gpt-5.5")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retried_content_filter_failure_is_said_plainly_and_does_not_stay() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(FilteredOnceProvider {
+            calls: Arc::clone(&calls),
+        });
+        let (_dir, agent, s) = agent_on(provider).await;
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "{}", rendered(&events));
+
+        let notices: Vec<(SystemNotificationType, String)> = events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(AgentEvent::Message(message)) => {
+                    Some(message.content.iter().filter_map(|content| match content {
+                        MessageContent::SystemNotification(notice) => {
+                            Some((notice.notification_type.clone(), notice.msg.clone()))
+                        }
+                        _ => None,
+                    }))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let retry = notices
+            .iter()
+            .find(|(_, msg)| msg.contains("Trying again (1/"))
+            .unwrap_or_else(|| panic!("the retry is announced:\n{}", rendered(&events)));
+        assert!(
+            retry
+                .1
+                .starts_with("The provider's content filter interrupted the reply."),
+            "{}",
+            retry.1
+        );
+        assert!(!retry.1.contains(".."), "{}", retry.1);
+        // Transient, like the compaction notice: not a row left above the
+        // answer the retry produced.
+        assert_eq!(retry.0, SystemNotificationType::ThinkingMessage);
+        assert!(
+            !notices
+                .iter()
+                .any(|(kind, _)| *kind == SystemNotificationType::InlineMessage),
+            "{notices:?}"
+        );
+        assert!(rendered(&events).contains("the answer"));
     }
 
     #[tokio::test]

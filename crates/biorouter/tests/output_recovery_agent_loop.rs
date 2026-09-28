@@ -777,7 +777,7 @@ async fn private_provider_error_logging_invalid_request_stops_without_diagnostic
     assert!(!observation
         .visible_text
         .iter()
-        .any(|text| text.contains("Retrying (")));
+        .any(|text| text.contains("Trying again (")));
     assert!(
         has_agent_log_level(&logs, "ERROR"),
         "the real Agent error diagnostic must be captured"
@@ -809,7 +809,7 @@ async fn private_provider_error_logging_retry_keeps_details_out_of_diagnostics()
     assert!(observation
         .visible_text
         .iter()
-        .any(|text| { text.contains("Retrying (1/1)") && text.contains(SENTINEL) }));
+        .any(|text| { text.contains("Trying again (1/1)") && text.contains(SENTINEL) }));
     assert!(observation
         .visible_text
         .iter()
