@@ -1123,6 +1123,49 @@ test('data-paths: every folder Crew writes on a member computer has a row (T3-DO
   );
 });
 
+test('work-folder: the manual says what a command in the work folder cannot do (T3-DOC-5)', () => {
+  // The agents page as the live check found it: no word of the sandbox.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(/## Work in the remote work folder\n[\s\S]*?(?=## Refusals)/, ''),
+    },
+    'work-folder',
+    /agents-and-chat-access\.md does not say that a work-folder command has no network/
+  );
+  assertCaught(
+    {
+      'docs/crew/administration.md': (text) =>
+        text
+          .split('\n')
+          .filter((line) => !line.startsWith('| What one agent command can reach |'))
+          .join('\n'),
+    },
+    'work-folder',
+    /administration\.md does not say that a work-folder command has no other processes/
+  );
+  // The sandbox lets a command open a socket: the manual's "no network" is then wrong.
+  assertCaught(
+    {
+      'crates/biorouter-crew/src/remote.rs': swap(
+        '        libc::SYS_execve,\n',
+        '        libc::SYS_execve,\n        libc::SYS_socket,\n'
+      ),
+    },
+    'work-folder',
+    /says a work-folder command has no network, but .* now allows it/
+  );
+  // A reader that finds no allow list fails instead of passing.
+  assertCaught(
+    {
+      'crates/biorouter-crew/src/remote.rs': (text) =>
+        text.replace('\nfn confine(', '\nfn confine_command('),
+    },
+    'work-folder',
+    /update this reader/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

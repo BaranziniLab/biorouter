@@ -278,6 +278,7 @@ Never edit `journal.jsonl`, because a broker refuses records that fail their che
 | Channels an agent reads | A task: its channel plus 16 more. A chat: 20, including its own. |
 | Broker connections | 256, and 8 per account |
 | One agent command on the server | 60 seconds of CPU, 1 GiB memory, 16 MiB files, 64 open files, 30 seconds of run time (60 at most), 4 at once |
+| What one agent command can reach | Its work folder, and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It has no network, cannot start other processes and cannot read `/etc`, so cluster tools such as `sbatch` and `squeue` do not run. See [Work in the remote work folder](agents-and-chat-access.md#work-in-the-remote-work-folder). |
 | Agent file access in the remote work folder | 256 KiB per read or write, 64 KiB of command output |
 
 The state limit decides capacity. Ordinary changes may use 15 MiB of it, so fewer than 15,360 messages of 1 KiB fit, or 1,920 of 8 KiB. Archiving frees nothing. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". The host can still remove members and change the privacy mode, and anyone can still stop an agent, archive a channel or remove someone from a channel they own. Preserve it and start a new workspace with a new state directory.

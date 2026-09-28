@@ -157,6 +157,18 @@ The first grant fixes the chat's workspace, channel and model permanently, and a
 
 Typing `/crew` in a chat that has access shows a note instead of the pane, with **Manage access** or, after access ends, **Grant again**. Both only open the Chat access pane.
 
+## Work in the remote work folder
+
+If your connection has a **Remote work folder**, set when you join or in **Connection settings…**, a task or chat with a Private model can read and write files there. With **Let my agent run commands in this folder** on, it can also run commands there. A Public model cannot use the folder.
+
+A command in the work folder runs in a closed space on the server:
+
+- It has no network.
+- It cannot start other processes, so a shell, or a script that runs other programs, fails.
+- It can read only the work folder and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It cannot read `/etc`, so it cannot look up users.
+
+So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
+
 ## Refusals when you start or allow
 
 Most refusals say what to do. For these:

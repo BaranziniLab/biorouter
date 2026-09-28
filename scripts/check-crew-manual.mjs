@@ -80,6 +80,9 @@
 //     shows it, and the pages a reader is sent to quote it (T3-DOC-1).
 //   * `data-paths`: "Where Crew keeps its data" has a row for every folder the
 //     code writes on a member computer (T3-DOC-2).
+//   * `work-folder`: while the server's sandbox gives a work-folder command no
+//     network and no other processes, the agents and administration pages say
+//     so, and that cluster tools such as sbatch do not run (T3-DOC-5).
 //
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
@@ -144,6 +147,7 @@ const HOSTING_PAGE = 'docs/crew/hosting-a-workspace.md';
 const CLI_CREW = 'crates/biorouter-cli/src/commands/crew/mod.rs';
 const INVITATION_RS = 'crates/biorouter/src/crew/authentication.rs';
 const ADMINISTRATION = 'docs/crew/administration.md';
+const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
 const CREW_SOURCE_DIRS = [
   'crates/biorouter/src/crew',
@@ -1417,6 +1421,56 @@ export function checkCrewManual(tree = repoTree()) {
           'data-paths',
           `${ADMINISTRATION}'s "Where Crew keeps its data" has no row for ${path}, which Crew writes on each computer`
         );
+      }
+    }
+  }
+
+  // ── work-folder ──────────────────────────────────────────────────────────
+  // A command in the remote work folder runs under `confine` in the server program: Landlock
+  // limits its files, and a seccomp allow list gives it no socket and no fork or clone. The
+  // manual listed its size limits only, so an agent asked to submit a Slurm job spent dozens of
+  // calls finding out that sbatch cannot run there (T3-DOC-5). While the allow list refuses
+  // them, the pages that describe the folder say what a command cannot do.
+  const remote = need(REMOTE_RS, 'work-folder');
+  if (remote !== null) {
+    const confine = /\nfn confine\([\s\S]*?\n\}/.exec(remote)?.[0] ?? '';
+    const allowed = new Set([...confine.matchAll(/libc::SYS_([a-z0-9_]+)/g)].map((m) => m[1]));
+    if (allowed.size < 20) {
+      fail(
+        'work-folder',
+        `found ${allowed.size} system calls in ${REMOTE_RS}'s confine(); update this reader`
+      );
+    } else {
+      const noNetwork = !['socket', 'connect', 'socketpair'].some((call) => allowed.has(call));
+      const noProcesses = !['fork', 'vfork', 'clone', 'clone3'].some((call) => allowed.has(call));
+      const claims = [
+        { holds: noNetwork, what: 'no network', says: /\bno network\b/i },
+        {
+          holds: noProcesses,
+          what: 'no other processes',
+          says: /\bcannot start other processes\b/i,
+        },
+        {
+          holds: noNetwork && noProcesses,
+          what: 'no cluster tools such as sbatch',
+          says: /`sbatch`/,
+        },
+      ];
+      for (const { holds, what, says } of claims) {
+        for (const page of [AGENTS_PAGE, ADMINISTRATION]) {
+          const said = markdownBlocks(tree.read(page) || '').some((block) => says.test(block));
+          if (holds && !said) {
+            fail(
+              'work-folder',
+              `${page} does not say that a work-folder command has ${what}, which ${REMOTE_RS}'s confine() enforces`
+            );
+          } else if (!holds && said) {
+            fail(
+              'work-folder',
+              `${page} says a work-folder command has ${what}, but ${REMOTE_RS}'s confine() now allows it`
+            );
+          }
+        }
       }
     }
   }
