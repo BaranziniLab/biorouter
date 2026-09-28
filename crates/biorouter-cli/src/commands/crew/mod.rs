@@ -4161,6 +4161,21 @@ fn text_input(input: TextInput) -> Result<String> {
     }
 }
 
+/// The code of a message refused here for its size, before anything was sent.
+const MESSAGE_TOO_LONG_CODE: &str = "crew_message_too_long";
+
+/// A message the workspace would refuse for its size is refused here first (MSG2-N7), as a
+/// usage error: the broker takes at most 64 KB of text, and at most twice that once
+/// JSON-escaped (`message.post` in `broker.rs`).
+fn check_message_size(body: &str) -> Result<()> {
+    const MAX: usize = biorouter::crew::source_line::MAX_POSTED_BYTES;
+    let escaped = serde_json::to_string(body)?.len().saturating_sub(2);
+    if body.len() > MAX || escaped > 2 * MAX {
+        return Err(usage(output::MESSAGE_TOO_LONG, MESSAGE_TOO_LONG_CODE));
+    }
+    Ok(())
+}
+
 async fn send_message(api: &Api, args: SendArgs) -> Result<Reply> {
     let body = if args.text.is_none() && args.input.is_none() {
         ensure!(
@@ -4174,6 +4189,7 @@ async fn send_message(api: &Api, args: SendArgs) -> Result<Reply> {
             input: args.input,
         })?
     };
+    check_message_size(&body)?;
     let channel = api.your_channel(&args.channel).await?;
     let result = api
         .broker(
@@ -8446,6 +8462,128 @@ mod tests {
             failure(&error, OutputFormat::Text, "req-1", true).to_string(),
             "The workspace server can't save changes right now. Ask \"Alice Chen\" (@alice) to restart Crew."
         );
+    }
+
+    /// MSG2-N7: a message over the workspace's 64 KB limit is refused before anything is sent,
+    /// as a usage error with the size and what to do instead; the broker's own refusal of one
+    /// is said in the same words.
+    #[tokio::test]
+    async fn a_message_too_long_is_refused_before_it_is_sent() {
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        let error = run(
+            &api,
+            CrewCommand::Send(SendArgs {
+                channel: "methods".into(),
+                text: Some("x".repeat(65_537)),
+                input: None,
+                attachments: Vec::new(),
+                references: Vec::new(),
+            }),
+        )
+        .await
+        .expect_err("too long");
+        assert!(fake.sent().is_empty(), "nothing was sent");
+        let exit = failure(&error, OutputFormat::Text, "req-1", false);
+        assert!(exit.downcast_ref::<NeedsTerminal>().is_some(), "exit 2");
+        assert_eq!(exit.to_string(), output::MESSAGE_TOO_LONG);
+        assert_eq!(error_code(&error).as_deref(), Some(MESSAGE_TOO_LONG_CODE));
+        // Control characters count as the broker counts them, escaped.
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        run(
+            &api,
+            CrewCommand::Send(SendArgs {
+                channel: "methods".into(),
+                text: Some("\u{1}".repeat(30_000)),
+                input: None,
+                attachments: Vec::new(),
+                references: Vec::new(),
+            }),
+        )
+        .await
+        .expect_err("too long escaped");
+        assert!(fake.sent().is_empty());
+        // At the limit, it is posted.
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        run(
+            &api,
+            CrewCommand::Send(SendArgs {
+                channel: "methods".into(),
+                text: Some("x".repeat(65_536)),
+                input: None,
+                attachments: Vec::new(),
+                references: Vec::new(),
+            }),
+        )
+        .await
+        .expect("posted");
+        assert!(fake.broker_call("message.post").is_some());
+        // The broker's refusal of one says the same.
+        let refused = refuse_broker("invalid_params", "invalid_params: message too long");
+        assert_eq!(
+            failure(&refused, OutputFormat::Text, "req-1", false).to_string(),
+            output::MESSAGE_TOO_LONG
+        );
+    }
+
+    /// MSG2-N6: a full workspace tells its host what the host can do, never to "ask the host";
+    /// a member still reads the member's words.
+    #[tokio::test]
+    async fn a_full_workspace_tells_its_host_what_to_do() {
+        let post = || {
+            CrewCommand::Send(SendArgs {
+                channel: "methods".into(),
+                text: Some("hi".into()),
+                input: None,
+                attachments: Vec::new(),
+                references: Vec::new(),
+            })
+        };
+        for (text, host_says) in [
+            (
+                "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported",
+                "This workspace is full. You can still remove members and change its privacy. To keep posting, start a new workspace.",
+            ),
+            (
+                "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported",
+                "This workspace has grown past the size Crew supports and cannot take more changes. To keep posting, start a new workspace.",
+            ),
+        ] {
+            // Alice hosts lab.
+            let (api, _) = api_with(
+                OutputFormat::Text,
+                move |method: &str, path: &str, body: Option<&Value>| match body
+                    .and_then(|body| body["method"].as_str())
+                {
+                    Some("message.post") => Err(refuse_broker("quota_exceeded", text)),
+                    _ => standard(method, path, body),
+                },
+            );
+            let error = run(&api, post()).await.expect_err("full");
+            let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+            assert_eq!(shown, host_says);
+            assert!(!shown.contains("Ask the host"), "{shown}");
+            let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+            assert_eq!(body["broker_code"], "quota_exceeded");
+
+            // Bob is a member.
+            let (api, _) = api_with(
+                OutputFormat::Text,
+                move |method: &str, path: &str, body: Option<&Value>| match body
+                    .and_then(|body| body["method"].as_str())
+                {
+                    Some("message.post") => Err(refuse_broker("quota_exceeded", text)),
+                    Some("workspace.snapshot") => {
+                        let mut snapshot = snapshot();
+                        snapshot["actor"] = json!({"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001});
+                        Ok(snapshot)
+                    }
+                    _ => standard(method, path, body),
+                },
+            );
+            let error = run(&api, post()).await.expect_err("full");
+            let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+            assert!(shown.ends_with("Ask the host about starting a new workspace."), "{shown}");
+        }
     }
 
     /// SF-F4, DW-12: the daemon's typed institution and privacy-mode refusals are said from

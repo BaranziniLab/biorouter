@@ -196,6 +196,47 @@ const FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES: [&str; 2] = [
     "workspace logical state is full",
     "retained audit journal is nearly full",
 ];
+/// [`STORAGE_FULL`] and [`FULL_BUT_HOST_CAN_ADMINISTER`] as the host reads them (MSG2-N6): the
+/// host is the one to ask, so they say what the host can still do.
+const STORAGE_FULL_FOR_HOST: &str = "This workspace has grown past the size Crew supports and cannot take more changes. To keep posting, start a new workspace.";
+const FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST: &str = "This workspace is full. You can still remove members and change its privacy. To keep posting, start a new workspace.";
+
+/// Which "this workspace is full" a `quota_exceeded` refusal is, if it is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Full {
+    /// Nothing more can change ([`STORAGE_FULL`]).
+    Storage,
+    /// Only the host's removals and privacy changes can ([`FULL_BUT_HOST_CAN_ADMINISTER`]).
+    HostCanAdminister,
+}
+
+/// `broker.rs`'s limits that mean "this workspace is full" (the audit journal and state-size
+/// limits in `commit` and the operation quota in `apply_mutation`, which are what a request
+/// meets, plus the journal limit in `open_inner`, which only stops the broker starting). The
+/// join quota's own sentence means "too many people are waiting", and is not one. `message` is
+/// the broker's `code: text` or the text alone.
+fn workspace_full(code: &str, message: &str) -> Option<Full> {
+    if code != "quota_exceeded" {
+        return None;
+    }
+    let message = message.trim();
+    let text = message
+        .split_once(": ")
+        .filter(|(prefix, _)| *prefix == code)
+        .map_or(message, |(_, rest)| rest.trim())
+        .to_ascii_lowercase();
+    if STORAGE_FULL_PREFIXES.iter().any(|p| text.starts_with(p)) {
+        Some(Full::Storage)
+    } else if FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES
+        .iter()
+        .any(|p| text.starts_with(p))
+    {
+        Some(Full::HostCanAdminister)
+    } else {
+        None
+    }
+}
+
 const IDENTITY_CONFLICT_UNNAMED: &str =
     "Another active member already has this username. Remove the old member first.";
 
@@ -301,7 +342,13 @@ const TECHNICAL_TEXTS: &[(&str, &str)] = &[
         "invalid grant",
         "This task's access to the workspace has ended.",
     ),
+    // `message.post`'s size limit (MSG2-N7).
+    ("message too long", MESSAGE_TOO_LONG),
 ];
+
+/// A message over the workspace's size limit, before it is sent or as the broker refuses it
+/// (MSG2-N7). The desktop says "Attach long text as a file"; here that is `files upload`.
+pub const MESSAGE_TOO_LONG: &str = "Messages can be up to 64 KB. Save the text to a file and share it with biorouter crew files upload.";
 
 /// What a refusal can name when the command knows it (DW-11, M20, R-2, FILES-F9): the channel
 /// it acted on, where a shared file came from, whether the person hosts the workspace, and the
@@ -339,7 +386,8 @@ pub enum SharedKind {
 
 /// What `code: message` could name that its text does not ([`placed_refusal`]), or `None`.
 pub fn refusal_subject(code: &str, message: &str) -> Option<RefusalSubject> {
-    if matches!(code, "storage_failed" | "storage_full") {
+    if matches!(code, "storage_failed" | "storage_full") || workspace_full(code, message).is_some()
+    {
         return Some(RefusalSubject::Storage);
     }
     let text = message
@@ -550,20 +598,17 @@ pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -
         }
         ("device_conflict", _) => DEVICE_CONFLICT.to_owned(),
         ("identity_mismatch", _) if !reads_as_sentence(sentence) => IDENTITY_MISMATCH.to_owned(),
-        // `broker.rs`'s limits that mean "this workspace is full": the audit journal and
-        // state-size limits in `commit` and the operation quota in `apply_mutation`, which are
-        // what a request meets, plus the journal limit in `open_inner`, which only stops the
-        // broker starting. The join quota's own sentence means "too many people are waiting" and
-        // is kept. The desktop matches the same texts (`STORAGE_FULL_TEXT` in `refusals.ts`).
-        ("quota_exceeded", _) if STORAGE_FULL_PREFIXES.iter().any(|p| lower.starts_with(p)) => {
-            STORAGE_FULL.to_owned()
-        }
-        ("quota_exceeded", _)
-            if FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES
-                .iter()
-                .any(|p| lower.starts_with(p)) =>
-        {
-            FULL_BUT_HOST_CAN_ADMINISTER.to_owned()
+        // A full workspace ([`workspace_full`]). The desktop matches the same texts
+        // (`STORAGE_FULL_TEXT` in `refusals.ts`). Its host reads what the host can do (MSG2-N6).
+        ("quota_exceeded", _) if workspace_full(code, sentence).is_some() => {
+            let host = place.host == Some(true);
+            match (workspace_full(code, sentence), host) {
+                (Some(Full::Storage), false) => STORAGE_FULL,
+                (Some(Full::Storage), true) => STORAGE_FULL_FOR_HOST,
+                (_, false) => FULL_BUT_HOST_CAN_ADMINISTER,
+                (_, true) => FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST,
+            }
+            .to_owned()
         }
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
         ("already_approved", Some(name)) => already_approved(name),
