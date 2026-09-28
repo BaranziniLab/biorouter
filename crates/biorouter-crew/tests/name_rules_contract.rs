@@ -223,7 +223,7 @@ fn team_names_follow_the_team_rules() {
         validate_team_name("  Analysis   Lab ").as_deref(),
         Ok("Analysis Lab")
     );
-    let refused: [(&str, NameProblem); 14] = [
+    let refused: [(&str, NameProblem); 15] = [
         ("", NameProblem::Empty),
         ("Lab\u{FE0F}", NameProblem::InvisibleCharacter),
         ("Lab\u{202E}", NameProblem::InvisibleCharacter),
@@ -234,7 +234,12 @@ fn team_names_follow_the_team_rules() {
         ("Lab \u{FF03}1", NameProblem::ReservedCharacter),
         ("Lab 🧬", NameProblem::DisallowedCharacter),
         ("Lab!", NameProblem::DisallowedCharacter),
-        ("\u{FF2C}\u{FF41}\u{FF42}", NameProblem::DisallowedCharacter),
+        // Fullwidth letters fold to ASCII, but a fullwidth symbol is still a symbol.
+        ("Lab \u{FF01}", NameProblem::DisallowedCharacter),
+        (
+            "\u{FF2C}\u{FF41}\u{FF42} \u{0410}",
+            NameProblem::MixedScripts,
+        ),
         ("Laq\u{301}b", NameProblem::UnattachedMark),
         ("\u{0410}nalysis", NameProblem::MixedScripts),
         ("- _ .", NameProblem::NoLetterOrDigit),
@@ -247,6 +252,30 @@ fn team_names_follow_the_team_rules() {
         Ok("Café"),
         "a combining accent that composes under NFC is stored composed"
     );
+    // Team names fold fullwidth letters exactly as channel names do, and store the folded form
+    // (setup F9: a fullwidth team name was refused with a sentence saying letters are allowed).
+    for (typed, stored) in [
+        ("\u{FF2C}\u{FF41}\u{FF42}", "Lab"),
+        ("\u{FF21}\u{FF4E}\u{FF41}\u{FF4C}\u{FF59}\u{FF53}\u{FF49}\u{FF53} \u{FF2C}\u{FF41}\u{FF42}", "Analysis Lab"),
+        ("Lab\u{3000}\u{FF12}", "Lab 2"),
+        ("\u{FF08}R\u{FF06}D\u{FF09} Lab", "(R&D) Lab"),
+    ] {
+        assert_eq!(validate_team_name(typed).as_deref(), Ok(stored), "{typed:?}");
+        assert_eq!(
+            canonical_channel_name(typed).map(|_| ()),
+            canonical_channel_name(stored).map(|_| ()),
+            "a team and a channel treat {typed:?} alike"
+        );
+    }
+    assert_eq!(
+        name_key("\u{FF2C}\u{FF41}\u{FF42}"),
+        name_key(&validate_team_name("\u{FF2C}\u{FF41}\u{FF42}").unwrap()),
+        "the folded name keeps the key it collides by"
+    );
+    // A name accepted before the fold is stored exactly as before.
+    for unchanged in ["Analysis Lab", "Équipe Génomique", "日本語 ラボ", "Lab_2.0"] {
+        assert_eq!(validate_team_name(unchanged).as_deref(), Ok(unchanged));
+    }
     assert_eq!(
         problem(validate_team_name(&"a".repeat(65))),
         NameProblem::TooLong

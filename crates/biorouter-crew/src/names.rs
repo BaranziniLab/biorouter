@@ -5,7 +5,7 @@
 //! `docs/research/biorouter-crew/naming-design.md` ("Display-name validation", "Normalization
 //! and keys", "Validation per kind" and "Confusable characters").
 //!
-//! - [`clean`] is the stored form of a display name or team name.
+//! - [`clean`] is the stored form of a display name, and of a team name once NFKC has folded it.
 //! - [`name_key`] and [`skeleton_key`] decide when two names are "the same name"
 //!   ([`names_collide`]: either key equal). Keys are computed, never stored, so a Unicode data
 //!   update never rewrites a journal.
@@ -191,7 +191,7 @@ impl fmt::Display for NameError {
 impl std::error::Error for NameError {}
 
 /// `NFC → trim → collapse runs of White_Space to one U+0020`: the stored form of a display name
-/// or team name.
+/// or (after NFKC) a team name.
 pub fn clean(s: &str) -> String {
     let nfc: String = s.nfc().collect();
     let mut out = String::with_capacity(nfc.len());
@@ -379,14 +379,18 @@ where
 
 /// The team-name rules for create and rename. Returns the cleaned name to store.
 ///
-/// After [`clean`]: 1-64 scalar values and at most 120 bytes; at least one letter or number;
+/// The name is folded with NFKC first, as a channel name is, so fullwidth `Ｌａｂ` is stored as
+/// `Lab` rather than refused: a compatibility character is never `Identifier_Status=Allowed`,
+/// and a name already accepted without the fold is left exactly as it was. Then, after
+/// [`clean`]: 1-64 scalar values and at most 120 bytes; at least one letter or number;
 /// only letters, marks and numbers that Unicode allows in identifiers (UTS #39
 /// `Identifier_Status=Allowed`), the space and `- _ . ' & ( ) +`; no default-ignorable
 /// character; no generic combining mark left uncomposed by NFC; no `@`, `#`, `/` or `:`; a
 /// [`name_key`] that is not UUID-shaped; and at most Highly Restrictive script mixing.
 pub fn validate_team_name(raw: &str) -> Result<String, NameError> {
     let kind = NameKind::Team;
-    let name = clean(raw);
+    let compatible: String = raw.nfkc().collect();
+    let name = clean(&compatible);
     if name.is_empty() {
         return Err(NameError::new(kind, NameProblem::Empty));
     }
