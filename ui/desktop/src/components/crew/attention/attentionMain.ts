@@ -1,8 +1,10 @@
 /**
  * The main process's half of Crew's attention signals (M2): what it accepts from a window, the
  * dock badge across windows, and when a notification is shown. Electron-free and free of any
- * renderer import, so `main.ts` can use it and it is tested without a window.
+ * renderer import, so `main.ts` can use it and it is tested without a window. Its one import,
+ * `utils/untrustedText`, imports nothing.
  */
+import { stripHiddenCharacters } from '../../../utils/untrustedText';
 
 /** At most one notification per channel in this long. */
 export const NOTIFY_INTERVAL_MS = 60_000;
@@ -42,15 +44,22 @@ export interface CrewAttentionRequest {
   channelId: string;
 }
 
-/** Controls, format and separator characters: nothing a notification line may carry. */
-const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}]/gu;
+/**
+ * Private-use characters draw a glyph of some font's choosing. They are neither controls nor
+ * format characters, so {@link stripHiddenCharacters} keeps them; a notification line does not.
+ */
+const PRIVATE_USE = /\p{Co}/gu;
 
+/**
+ * One plain line: line breaks (JavaScript's `\s` includes U+2028 and U+2029, the line and
+ * paragraph separators) become spaces first, so two lines stay two words; then every control and
+ * format character goes through the renderer's one drop set, `stripHiddenCharacters`, and the
+ * private-use characters after it.
+ */
 function line(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  // Line breaks become spaces before the hidden characters go, so two lines stay two words.
-  const text = value
-    .replace(/\s+/g, ' ')
-    .replace(HIDDEN, '')
+  const text = stripHiddenCharacters(value.replace(/\s+/g, ' '))
+    .replace(PRIVATE_USE, '')
     .replace(/<[^>]*>/g, '')
     .replace(/ {2,}/g, ' ')
     .trim();

@@ -1,4 +1,7 @@
+import { createElement } from 'react';
+import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { MessageBody } from '../timeline/MessageBody';
 import {
   ATTENTION_POLL_MS,
   AttentionThrottle,
@@ -50,24 +53,54 @@ describe('unread counts', () => {
   });
 });
 
-describe('mentionsUser', () => {
-  it.each([
+/**
+ * One rule for "mentions you" (W2-SHL-2): every case runs through `mentionsUser` AND through the
+ * timeline's `MessageBody`, and the two must agree with the expected answer. A notification that
+ * says "mentioned you" while the channel marks nothing, or the reverse, fails here.
+ */
+describe('mentionsUser agrees with the timeline', () => {
+  const USERNAME = 'crew_bob';
+  const table: [string, boolean][] = [
     ['@crew_bob can you look?', true],
     ['thanks @Crew_Bob.', true],
     ['(@crew_bob)', true],
+    ['ends with @crew_bob...', true],
+    ['> @crew_bob in a quote', true],
+    ['**@crew_bob** in bold', true],
+    ['```\ncode\n```\n@crew_bob after the block', true],
     ['cc @crew_bobby', false],
+    ['cc @crew_bob-x', false],
+    // A longer name that happens to start with this one (usernames may hold a dot).
+    ['@crew_bob.lee see this', false],
     ['mail crew_bob@lab.org', false],
     ['x@crew_bob', false],
+    ['@@crew_bob', false],
+    // A hidden character against the name makes it another name.
+    ['@crew_bob\u200Bx', false],
+    ['@cre\u200Bw_bob', false],
+    ['\u202E@crew_bob', false],
     ['run `@crew_bob` literally', false],
     ['```\n@crew_bob in a block\n```\nno mention here', false],
-    ['```\ncode\n```\n@crew_bob after the block', true],
+    ['~~~\n@crew_bob in a block\n~~~', false],
+    ['    @crew_bob in an indented block', false],
+    ['[@crew_bob](https://www.ucsf.edu)', false],
+    ['see https://example.org/@crew_bob for it', false],
     ['@crew_alice only', false],
-  ])('%j mentions crew_bob: %s', (body, expected) => {
-    expect(mentionsUser(body, 'crew_bob')).toBe(expected);
+  ];
+
+  it.each(table)('%j mentions crew_bob: %s', (body, expected) => {
+    expect(mentionsUser(body, USERNAME)).toBe(expected);
+    const { container, unmount } = render(
+      createElement(MessageBody, { body, mention: USERNAME, mentionLabelId: 'timeline-mention' })
+    );
+    expect(container.querySelector('#timeline-mention') !== null).toBe(expected);
+    unmount();
   });
 
-  it('never mentions an empty name', () => {
+  it('never mentions an empty or invalid name, or a body that is not text', () => {
     expect(mentionsUser('@ hello', '')).toBe(false);
+    expect(mentionsUser('@crew bob', 'crew bob')).toBe(false);
+    expect(mentionsUser('@crew_bob', null)).toBe(false);
     expect(mentionsUser(42, 'crew_bob')).toBe(false);
   });
 });
@@ -127,10 +160,42 @@ describe('attentionNotice', () => {
     expect(notice.title).toBe('1 new message in w');
   });
 
+  it("never reads the viewer's own words as mentioning them, as the timeline does not", () => {
+    const own = { actor_id: 'p-bob', body: 'note to self @crew_bob' };
+    const notice = (message: { actor_id: string; body: string; run_id?: string }) =>
+      attentionNotice({
+        workspace: 'w',
+        channel: '#c',
+        username: 'crew_bob',
+        viewerId: 'p-bob',
+        added: 1,
+        messages: [message],
+        people: { 'p-bob': { username: 'crew_bob', display_name: 'Bob' } },
+      }).title;
+    expect(notice(own)).toBe('1 new message in w');
+    // Their agent's words may mention them.
+    expect(notice({ ...own, run_id: 'run-1' })).toBe('Bob mentioned you in #c');
+  });
+
+  it('takes the viewer as the timeline does', () => {
+    const names = namesFrom({
+      workspace: { name: 'w' } as never,
+      channels: [],
+      actor: { id: 'p-bob', username: 'crew_bob' } as never,
+    });
+    expect([names.username, names.viewerId]).toEqual(['crew_bob', 'p-bob']);
+    const nameless = namesFrom({
+      workspace: { name: 'w' } as never,
+      channels: [],
+      actor: { username: '' } as never,
+    });
+    expect([nameless.username, nameless.viewerId]).toEqual([null, null]);
+  });
+
   it('shows no hidden character a member put in a name', () => {
     const names = namesFrom({
-      workspace: { name: 'chen‮lab' } as never,
-      channels: [{ id: 'c1', name: 'gen​eral' } as never],
+      workspace: { name: 'chen\u202Elab' } as never,
+      channels: [{ id: 'c1', name: 'gen\u200Beral' } as never],
       actor: { username: 'crew_bob' } as never,
     });
     expect(names.workspace).toBe('chenlab');
@@ -143,7 +208,7 @@ describe('attentionNotice', () => {
         username: 'crew_bob',
         added: 1,
         messages: [{ actor_id: 'p9', body: '@crew_bob' }],
-        people: { p9: { username: 'mallory', display_name: 'Mal‮lory' } },
+        people: { p9: { username: 'mallory', display_name: 'Mal\u202Elory' } },
       }).title
     ).toBe('Mallory mentioned you in #general');
   });
@@ -240,6 +305,30 @@ describe('CrewAttentionWatcher (M2)', () => {
       connectionId: 'conn-1',
       channelId: 'c-general',
     });
+    watcher.stop();
+  });
+
+  it("does not call the viewer's own words a mention of them", async () => {
+    const { deps, watcher, advance } = harness({
+      readSnapshot: vi.fn(async () => ({
+        ...snapshot({ 'c-general': 2 }),
+        actor: { id: 'p-bob', username: 'crew_bob' },
+      })),
+      readLatest: vi.fn(async () => ({
+        messages: [{ actor_id: 'p-bob', body: 'reminder for @crew_bob' }],
+        people: { 'p-bob': { username: 'crew_bob', display_name: 'Bob' } },
+      })),
+    });
+    watcher.start();
+    await flush();
+    deps.readSnapshot.mockImplementation(async () => ({
+      ...snapshot({ 'c-general': 3 }),
+      actor: { id: 'p-bob', username: 'crew_bob' },
+    }));
+    await advance();
+    expect(deps.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '1 new message in chen-lab', body: '#general' })
+    );
     watcher.stop();
   });
 

@@ -1,6 +1,10 @@
+import Markdown from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
+import remarkGfm from 'remark-gfm';
 import type { CrewMessage, CrewMessagePeople, Snapshot } from '../crewApi';
 import { personDisplayName, sanitizeUsername } from '../identity/displayText';
 import { channelName, workspaceName } from '../identity/objectNames';
+import { mentionPattern, rehypeCrewBodyText, type BodyNode } from '../timeline/bodyText';
 import { AttentionThrottle } from './attentionMain';
 
 export { AttentionThrottle, NOTIFY_INTERVAL_MS } from './attentionMain';
@@ -64,44 +68,54 @@ export function unreadRises(
   return rises;
 }
 
-const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
-const INLINE_CODE = /(`+)[^`]*?\1/g;
+/**
+ * The remark plugins `MessageBody` parses a body with (`REMARK_PLUGINS` in
+ * `timeline/MessageBody.tsx`), so a body is read here as the timeline reads it. The agreement table
+ * in `crewAttention.test.ts` renders every case through `MessageBody` as well.
+ */
+const MESSAGE_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 
-/** A body without its code: a mention inside a code block or span is not addressed to anyone. */
-function proseOf(body: string): string {
-  let fence: string | null = null;
-  const lines: string[] = [];
-  for (const line of body.split('\n')) {
-    const marker = FENCE.exec(line)?.[1];
-    if (fence) {
-      if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
-      continue;
-    }
-    if (marker) {
-      fence = marker;
-      continue;
-    }
-    lines.push(line);
-  }
-  return lines.join('\n').replace(INLINE_CODE, ' ');
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+/** The ID the timeline's step gives its "mentions you" label when run from here. */
+const MENTION_PROBE_ID = 'crew-attention-mentions-you';
 
 /**
- * Whether a message body mentions `@username`: case-insensitive, word-bounded (so `@bobby` and
- * `bob@lab.org` do not mention `bob`), and outside code spans and blocks.
+ * Whether the timeline marks `body` as mentioning `@username` (QA M2), decided by the timeline's own
+ * rule rather than a second copy of it: the body is parsed with `MessageBody`'s markdown plugins and
+ * run through `rehypeCrewBodyText`, the step that draws the mention chip, and the answer is whether
+ * that step added its "mentions you" label. So a mention here is exactly one the timeline marks:
+ * any case, a whole name (not `@bobby`, not `@bob.lee`, not `bob@lab.org`), not against a hidden
+ * character (`@bob\u200Bx`), and outside code, code blocks and a link's words. A notification that
+ * says "mentioned you" while the channel marks nothing is the failure this prevents.
+ *
+ * `username` is the viewer's username as the snapshot gives it; one that is not a valid username
+ * mentions nobody, as in the timeline.
  */
-export function mentionsUser(body: unknown, username: string): boolean {
-  if (typeof body !== 'string' || !username) return false;
-  const prose = proseOf(body);
-  const pattern = new RegExp(
-    `(^|[^\\p{L}\\p{N}_.@-])@${escapeRegExp(username)}(?![\\p{L}\\p{N}_-])`,
-    'iu'
-  );
-  return pattern.test(prose);
+export function mentionsUser(body: unknown, username: string | null | undefined): boolean {
+  if (typeof body !== 'string' || typeof username !== 'string' || !mentionPattern(username))
+    return false;
+  // Every mention holds `@username` in some case: most bodies are answered without parsing.
+  if (!body.toLowerCase().includes(`@${username.toLowerCase()}`)) return false;
+  let mentioned = false;
+  const probe = () => (tree: BodyNode) => {
+    const last = tree.children?.[tree.children.length - 1];
+    mentioned = last?.type === 'element' && last.properties?.id === MENTION_PROBE_ID;
+    // Nothing is drawn from here: an empty tree leaves react-markdown nothing to build.
+    tree.children = [];
+  };
+  try {
+    Markdown({
+      children: body,
+      remarkPlugins: MESSAGE_REMARK_PLUGINS,
+      rehypePlugins: [
+        // The step reads and writes only the node fields it declares; the casts are to unified's tree.
+        [rehypeCrewBodyText as never, { mention: username, mentionLabelId: MENTION_PROBE_ID }],
+        probe as never,
+      ],
+    });
+  } catch {
+    return false;
+  }
+  return mentioned;
 }
 
 /** What a notification says. Names only: never a message's text. */
@@ -113,7 +127,9 @@ export interface AttentionNotice {
 /** The workspace and channel names a snapshot gives, made safe to show. */
 export function namesFrom(snapshot: Pick<Snapshot, 'workspace' | 'channels' | 'actor'>): {
   workspace: string;
-  username: string;
+  /** The viewer's username and principal ID, taken as the timeline takes them (`Timeline.tsx`). */
+  username: string | null;
+  viewerId: string | null;
   channel(channelId: string): string;
 } {
   const channels = new Map(
@@ -122,11 +138,29 @@ export function namesFrom(snapshot: Pick<Snapshot, 'workspace' | 'channels' | 'a
       channel,
     ])
   );
+  const actor = snapshot.actor as { id?: unknown; username?: unknown } | undefined;
   return {
     workspace: workspaceName(snapshot.workspace),
-    username: sanitizeUsername(snapshot.actor?.username),
+    username: typeof actor?.username === 'string' && actor.username ? actor.username : null,
+    viewerId: typeof actor?.id === 'string' ? actor.id : null,
     channel: (channelId) => channelName(channels.get(channelId) ?? { id: channelId }),
   };
+}
+
+/** A message as the notice reads it: who posted it, whether their agent did, and its words. */
+export type NoticeMessage = Pick<CrewMessage, 'actor_id' | 'body'> & { run_id?: string };
+
+/**
+ * Whether the timeline marks `message` as mentioning the viewer. Its rule, in `MessageRow.tsx`:
+ * the viewer's own words never mention them, their agent's may (an agent's post carries `run_id`).
+ */
+function mentionsViewer(
+  message: NoticeMessage,
+  username: string | null,
+  viewerId: string | null
+): boolean {
+  if (!message.run_id && viewerId !== null && message.actor_id === viewerId) return false;
+  return mentionsUser(message.body, username);
 }
 
 /**
@@ -137,15 +171,17 @@ export function namesFrom(snapshot: Pick<Snapshot, 'workspace' | 'channels' | 'a
 export function attentionNotice(input: {
   workspace: string;
   channel: string;
-  username: string;
+  username: string | null;
+  /** The viewer's principal ID, so their own words are never read as mentioning them. */
+  viewerId?: string | null;
   added: number;
-  messages: readonly Pick<CrewMessage, 'actor_id' | 'body'>[];
+  messages: readonly NoticeMessage[];
   people?: CrewMessagePeople;
 }): AttentionNotice {
   const recent = input.messages.slice(-Math.max(1, Math.min(input.added, NOTIFY_FETCH_LIMIT)));
   const mention = [...recent]
     .reverse()
-    .find((message) => mentionsUser(message.body, input.username));
+    .find((message) => mentionsViewer(message, input.username, input.viewerId ?? null));
   if (mention) {
     const author = input.people?.[mention.actor_id];
     const username = sanitizeUsername(author?.username);
@@ -214,15 +250,21 @@ function isSnapshot(value: unknown): value is AttentionSnapshot {
   );
 }
 
-function messagesOf(value: unknown): Pick<CrewMessage, 'actor_id' | 'body'>[] {
+function messagesOf(value: unknown): NoticeMessage[] {
   if (!Array.isArray(value)) return [];
-  return value.filter(
-    (message): message is CrewMessage =>
-      Boolean(message) &&
-      typeof message === 'object' &&
-      typeof (message as CrewMessage).actor_id === 'string' &&
-      typeof (message as CrewMessage).body === 'string'
-  );
+  return value
+    .filter(
+      (message): message is CrewMessage =>
+        Boolean(message) &&
+        typeof message === 'object' &&
+        typeof (message as CrewMessage).actor_id === 'string' &&
+        typeof (message as CrewMessage).body === 'string'
+    )
+    .map((message) => ({
+      actor_id: message.actor_id,
+      body: message.body,
+      ...(typeof message.run_id === 'string' && message.run_id ? { run_id: message.run_id } : {}),
+    }));
 }
 
 function peopleOf(value: unknown): CrewMessagePeople | undefined {
@@ -363,6 +405,7 @@ export class CrewAttentionWatcher {
       workspace: names.workspace,
       channel: names.channel(rise.channelId),
       username: names.username,
+      viewerId: names.viewerId,
       added: rise.added,
       messages: messagesOf(latest.messages),
       people: peopleOf(latest.people),

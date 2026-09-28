@@ -24,11 +24,21 @@ describe('parseAttentionRequest', () => {
   it('shows plain one-line text only', () => {
     const parsed = parseAttentionRequest({
       ...valid,
-      title: 'Mal‮lory <b>mentioned</b>\nyou',
+      title: 'Mal\u202Elory <b>mentioned</b>\nyou',
       body: 'x'.repeat(NOTIFICATION_TEXT_MAX_CHARS + 20),
     });
     expect(parsed?.title).toBe('Mallory mentioned you');
     expect(Array.from(parsed?.body ?? '')).toHaveLength(NOTIFICATION_TEXT_MAX_CHARS);
+  });
+
+  it('keeps separators as word breaks and leaves out zero-width and private-use characters', () => {
+    const parsed = parseAttentionRequest({
+      ...valid,
+      title: 'Alice\u2028Chen\u2029mentioned\u200B you\u{E000} in \u{F0000}#general\uFEFF',
+      body: 'chen\u0000-lab',
+    });
+    expect(parsed?.title).toBe('Alice Chen mentioned you in #general');
+    expect(parsed?.body).toBe('chen-lab');
   });
 
   it.each([
