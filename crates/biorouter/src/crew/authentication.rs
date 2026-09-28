@@ -666,6 +666,11 @@ pub struct InvitationOverrides {
     pub institution_id: Option<String>,
     #[serde(default)]
     pub advanced: InvitationAdvanced,
+    /// The saved connection this save replaces: one the preview offered as
+    /// `replaceable_connection_id` (same workspace, another login, never connected). It is
+    /// removed, with its key, and the invitation saved in its place (W2-DMN-3).
+    #[serde(default)]
+    pub replace: Option<String>,
 }
 
 /// The Join screen's Advanced settings. None of them can change the pinned workspace.
@@ -754,8 +759,19 @@ pub struct InvitationPreview {
     pub mode_differs: bool,
     /// The connection name saving would use.
     pub name: String,
-    /// A connection on this computer that already pins this workspace.
+    /// A connection on this computer that already pins this workspace, and is the one to use:
+    /// it signs in as the login saving would use, or it has connected before.
     pub existing_connection_id: Option<String>,
+    /// A connection on this computer that pins this workspace under another login and has
+    /// never connected (someone else's invitation, say). Saving with `replace` set to it
+    /// replaces it; it is never offered as the one to open (W2-DMN-3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaceable_connection_id: Option<String>,
+    /// The invitation names one account, and this computer's SSH settings sign in to the
+    /// server as another (W2-DMN-3). Only when the person typed no username and chose no
+    /// server login of their own, and only a `User` their settings set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_mismatch: Option<LoginMismatch>,
     /// What saving still needs; empty when it can save.
     pub missing: Vec<InvitationMissing>,
     /// Another saved connection reaches the same server under a different institution, in
@@ -768,6 +784,15 @@ pub struct InvitationPreview {
     /// and `ssh_target` stay the invitation's resolved address. See [`super::server_label`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_label: Option<String>,
+}
+
+/// The invitation's account and the one this computer's SSH settings sign in as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct LoginMismatch {
+    /// The `User` the person's SSH settings give for this server.
+    pub config_user: String,
+    /// The account the invitation names.
+    pub invitee: String,
 }
 
 /// The result of [`CrewManager::connection_from_invitation`].
@@ -1132,6 +1157,8 @@ struct InvitationPlan {
     preview: InvitationPreview,
     save: SaveConnection,
     existing: Option<Connection>,
+    /// See [`InvitationPreview::replaceable_connection_id`].
+    replaceable: Option<Connection>,
 }
 
 /// The SSH login and route saving would use.
@@ -1142,9 +1169,13 @@ struct PlannedRoute {
     proxy_jump: Option<String>,
 }
 
+/// The SSH login and route saving would use. `here`: the invitation's server is this machine
+/// ([`super::local_host`]), so the route is `localhost`, with no jump host unless the person
+/// typed one (W2-DMN-2). A login the person chose is theirs either way.
 fn planned_route(
     invitation: &WorkspaceInvitation,
     overrides: &InvitationOverrides,
+    here: bool,
 ) -> Result<PlannedRoute, InvitationRefused> {
     let server = invitation.ssh_host.as_deref();
     let advanced = &overrides.advanced;
@@ -1162,6 +1193,13 @@ fn planned_route(
             "Type a server login from your SSH settings, like hpc or bob@hpc.ucsf.edu.",
         ));
     }
+    // On the server itself, the member signs in to their own account over loopback: the
+    // invitation's address and jump host are for reaching the server from elsewhere.
+    let server = if here && alias.is_none() && server.is_some() {
+        Some("localhost")
+    } else {
+        server
+    };
     let ssh_target = match (alias, &username, server) {
         (Some(alias), _, _) => Some(alias.to_owned()),
         (None, Some(user), Some(host)) => {
@@ -1191,8 +1229,8 @@ fn planned_route(
             Some(route.to_owned())
         }
         // The invitation's hints describe its own server; a login from the person's SSH
-        // settings brings its own port and route.
-        None if alias.is_none() => invitation.proxy_jump.clone(),
+        // settings brings its own port and route, and this machine needs no jump host.
+        None if alias.is_none() && !here => invitation.proxy_jump.clone(),
         None => None,
     };
     let port = match (advanced.port, alias) {
@@ -1281,10 +1319,11 @@ fn plan_invitation(
     parsed: &ParsedInvitation,
     overrides: &InvitationOverrides,
     connections: &[Connection],
+    here: bool,
 ) -> Result<InvitationPlan, InvitationRefused> {
     let invitation = &parsed.invitation;
     let advanced = &overrides.advanced;
-    let route = planned_route(invitation, overrides)?;
+    let route = planned_route(invitation, overrides, here)?;
     if let Some(identity) = &advanced.identity_file {
         if !std::path::Path::new(identity).is_absolute() || identity.contains('\n') {
             return Err(InvitationRefused::choice(
@@ -1314,8 +1353,28 @@ fn plan_invitation(
     if mode == ClusterMode::Private && institution_id.is_none() {
         missing.push(InvitationMissing::Institution);
     }
-    let existing = saved_match(connections, invitation)?;
-    let name = planned_name(invitation, advanced, &route, connections, existing.as_ref())?;
+    let matched = saved_match(connections, invitation)?;
+    // A saved connection under another login that never connected (a paste of someone else's
+    // invitation) is not the one to open: it is offered for replacement instead (W2-DMN-3).
+    let (existing, replaceable) = match matched {
+        Some(saved)
+            if saved.node_id.is_none()
+                && route
+                    .ssh_target
+                    .as_deref()
+                    .is_some_and(|planned| planned != saved.ssh_target) =>
+        {
+            (None, Some(saved))
+        }
+        other => (other, None),
+    };
+    let name = planned_name(
+        invitation,
+        advanced,
+        &route,
+        connections,
+        existing.as_ref().or(replaceable.as_ref()),
+    )?;
     let fingerprint = crew_invitation::workspace_key_fingerprint(&invitation.workspace_public_key)
         .ok_or_else(|| {
             InvitationRefused::new(
@@ -1358,6 +1417,8 @@ fn plan_invitation(
         mode_differs: workspace_mode.is_some_and(|workspace| workspace != mode),
         name,
         existing_connection_id: existing.as_ref().map(|saved| saved.id.clone()),
+        replaceable_connection_id: replaceable.as_ref().map(|saved| saved.id.clone()),
+        login_mismatch: None,
         missing,
         institution_conflict: None,
         server_label: None,
@@ -1366,6 +1427,7 @@ fn plan_invitation(
         preview,
         save,
         existing,
+        replaceable,
     })
 }
 
@@ -1651,6 +1713,87 @@ fn hello_is_stale(hello: &super::BrokerHello, workspace: &Value) -> bool {
 /// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
 /// the same configuration the bridge reads, else the login's own host part and port. `None`
 /// for a login that can't safely be passed to `ssh`.
+/// Whether this computer's SSH settings sign in to the invitation's server as another account
+/// than the one it names (W2-DMN-3): asked only when the login saving would use is the
+/// invitation's own (`{invitee}@{server}`), and answered only for a `User` the person's settings
+/// set for the server, under its address or under their own alias for it
+/// ([`super::server_label`]). OpenSSH's default user (the local account) is not a setting.
+async fn login_mismatch(
+    invitation: &WorkspaceInvitation,
+    overrides: &InvitationOverrides,
+    preview: &InvitationPreview,
+) -> Option<LoginMismatch> {
+    let typed = overrides
+        .username
+        .as_deref()
+        .is_some_and(|typed| !typed.trim().is_empty());
+    let alias = overrides
+        .advanced
+        .ssh_target
+        .as_deref()
+        .is_some_and(|alias| !alias.trim().is_empty());
+    if typed || alias {
+        return None;
+    }
+    let invitee = invitation.invitee_username.as_deref()?;
+    let host = invitation.ssh_host.as_deref()?;
+    let name = preview
+        .server_label
+        .as_deref()
+        .filter(|label| safe_atom(label) && !label.eq_ignore_ascii_case(host));
+    let (name, port) = match name {
+        Some(alias) => (alias, None),
+        None => (host, preview.port),
+    };
+    let config_user = configured_user(name, port).await?;
+    (config_user != invitee).then(|| LoginMismatch {
+        config_user,
+        invitee: invitee.to_owned(),
+    })
+}
+
+/// The `User` the person's SSH settings set for `name`: what `ssh -G` resolves under their
+/// settings, when it differs from what it resolves under none (`-F none`, OpenSSH's own default,
+/// the local account). `None` when nothing sets one, or it can't be read.
+async fn configured_user(name: &str, port: Option<u16>) -> Option<String> {
+    if !safe_atom(name) {
+        return None;
+    }
+    let tail = |mut args: Vec<String>| {
+        if let Some(port) = port {
+            args.extend(["-p".to_owned(), port.to_string()]);
+        }
+        args.push(name.to_owned());
+        args
+    };
+    let mut configured = Vec::new();
+    if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
+        configured.extend([
+            "-F".to_owned(),
+            PathBuf::from(profile)
+                .join("home/.ssh/config")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
+    let user = |settings: HashMap<String, String>| {
+        settings
+            .get("user")
+            .filter(|user| biorouter_crew::valid_username(user))
+            .cloned()
+    };
+    let resolved = tokio::time::timeout(SSH_RESOLVE_TIMEOUT, async {
+        let set = user(resolve_ssh(&tail(configured)).await.ok()?)?;
+        let default = resolve_ssh(&tail(vec!["-F".to_owned(), "none".to_owned()]))
+            .await
+            .ok()
+            .and_then(user);
+        (default.as_deref() != Some(set.as_str())).then_some(set)
+    })
+    .await;
+    resolved.ok().flatten()
+}
+
 pub(super) async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
     if !safe_atom(target) {
         return None;
@@ -1733,19 +1876,43 @@ impl CrewManager {
                 error.to_string(),
             )
         })?;
+        let here = match parsed.invitation.ssh_host.as_deref() {
+            Some(host) => super::local_host::names_this_machine(host).await,
+            None => false,
+        };
         if preview {
-            let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
+            let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
             let mut preview = plan.preview;
             preview.institution_conflict = self.institution_conflict(&preview).await;
             if let Some(target) = preview.ssh_target.as_deref() {
                 preview.server_label = Some(super::server_label(target, preview.port).await);
             }
+            preview.login_mismatch = login_mismatch(&parsed.invitation, &overrides, &preview).await;
             return Ok(InvitationOutcome::Preview(Box::new(preview)));
         }
         let _serial = INVITATION_SAVES.lock().await;
-        let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
+        let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
         if let Some(missing) = plan.preview.missing.first() {
             return Err(missing_refusal(*missing, &plan.preview).into());
+        }
+        if let Some(replaceable) = plan.replaceable {
+            // Replaced only when the person chose it, naming this very connection: a saved
+            // connection that never connected holds no membership, only a key never used.
+            if overrides.replace.as_deref() != Some(replaceable.id.as_str()) {
+                let mut refused = InvitationRefused::new(
+                    InvitationRefusal::AlreadySaved,
+                    format!(
+                        "This computer already has \u{201c}{}\u{201d} for this workspace, signing in as another account, and it has never connected. Replace it with this invitation, or change it in its connection settings.",
+                        super::plain_label(&replaceable.name)
+                    ),
+                );
+                refused.connection_id = Some(replaceable.id.clone());
+                return Err(refused.into());
+            }
+            self.remove(&replaceable.id).await?;
+            return Ok(InvitationOutcome::Saved(Box::new(
+                self.save(plan.save).await?,
+            )));
         }
         if let Some(existing) = plan.existing {
             if same_settings(&existing, &plan.save) {
@@ -1778,6 +1945,7 @@ impl CrewManager {
             .await
             .into_iter()
             .filter(|saved| Some(saved.id.as_str()) != preview.existing_connection_id.as_deref())
+            .filter(|saved| Some(saved.id.as_str()) != preview.replaceable_connection_id.as_deref())
             .filter(|saved| {
                 saved
                     .institution_id
@@ -3327,6 +3495,228 @@ done
         assert_eq!(refused(&error).connection_id(), Some(saved.id.as_str()));
         let restarted = CrewManager::new(profile).unwrap();
         assert_eq!(restarted.list().await.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A fake `ssh -G` whose settings sign in to `hpc.example.org` as `user`, where OpenSSH's
+    /// own default (`-F none`) is `localme`, the local account.
+    #[cfg(unix)]
+    fn write_user_ssh(root: &Path, user: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+[ "$1" = "-G" ] || exit 1
+none=0
+prev=
+for arg; do [ "$prev" = "-F" ] && [ "$arg" = "none" ] && none=1; prev=$arg; done
+for last; do :; done
+host=${{last##*@}}
+if [ "$none" = 0 ] && [ "$host" = "hpc.example.org" ]; then
+  printf 'user %s
+hostname %s
+port 22
+' '{user}' "$host"
+else
+  printf 'user localme
+hostname %s
+port 22
+' "$host"
+fi
+"#
+        );
+        fs::write(bin.join("ssh"), script).unwrap();
+        fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// W2-DMN-2: on the workspace's own server, the join plans the member's own account over
+    /// loopback, with no jump host: the invitation's address and jump host are for reaching the
+    /// server from elsewhere. A jump host or a login the person typed is still theirs.
+    #[test]
+    fn on_the_server_itself_the_route_is_localhost_with_no_jump_host() {
+        let invitation = WorkspaceInvitation {
+            ssh_host: Some("172.31.33.135".into()),
+            proxy_jump: Some("34.213.212.212".into()),
+            ..lab_invitation()
+        };
+        let route = planned_route(&invitation, &InvitationOverrides::default(), true).unwrap();
+        assert_eq!(route.ssh_target.as_deref(), Some("bob@localhost"));
+        assert_eq!(route.proxy_jump, None);
+        let elsewhere = planned_route(&invitation, &InvitationOverrides::default(), false).unwrap();
+        assert_eq!(elsewhere.ssh_target.as_deref(), Some("bob@172.31.33.135"));
+        assert_eq!(elsewhere.proxy_jump.as_deref(), Some("34.213.212.212"));
+        let typed_jump = InvitationOverrides {
+            advanced: InvitationAdvanced {
+                proxy_jump: Some("gateway.example.org".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            planned_route(&invitation, &typed_jump, true)
+                .unwrap()
+                .proxy_jump
+                .as_deref(),
+            Some("gateway.example.org")
+        );
+        let alias = InvitationOverrides {
+            advanced: InvitationAdvanced {
+                ssh_target: Some("hpc".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            planned_route(&invitation, &alias, true)
+                .unwrap()
+                .ssh_target
+                .as_deref(),
+            Some("hpc")
+        );
+    }
+
+    /// W2-DMN-3: an invitation that names another account than the one this computer's SSH
+    /// settings sign in to the server as says so, with both. A username the person typed, or a
+    /// login of their own, is theirs; and OpenSSH's default user is not a setting.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preview_says_when_the_invitation_names_another_account() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("login-mismatch");
+        let _env = isolated_env(&root);
+        write_user_ssh(&root, "crew_gina");
+        let manager = CrewManager::new(root.join("crew")).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        let preview = preview_with(&manager, &message, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            preview.login_mismatch,
+            Some(LoginMismatch {
+                config_user: "crew_gina".into(),
+                invitee: "bob".into(),
+            })
+        );
+        let typed = InvitationOverrides {
+            username: Some("bob".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            preview_with(&manager, &message, typed)
+                .await
+                .unwrap()
+                .login_mismatch,
+            None
+        );
+        // Settings that name the invited account, or none at all: nothing to say.
+        write_user_ssh(&root, "bob");
+        assert_eq!(
+            preview_with(&manager, &message, InvitationOverrides::default())
+                .await
+                .unwrap()
+                .login_mismatch,
+            None
+        );
+        write_user_ssh(&root, "localme");
+        assert_eq!(
+            preview_with(&manager, &message, InvitationOverrides::default())
+                .await
+                .unwrap()
+                .login_mismatch,
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// W2-DMN-3: a saved connection to the workspace under another login that never connected
+    /// (someone else's invitation, pasted first) is not offered as the one to open. The preview
+    /// offers it for replacement; a save replaces it only when asked to, by its ID; and one
+    /// that has connected, or signs in as the planned login, is still the one to open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_never_connected_connection_under_another_login_can_be_replaced() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("replace");
+        let _env = isolated_env(&root);
+        write_user_ssh(&root, "localme");
+        let profile = root.join("crew");
+        let manager = CrewManager::new(profile.clone()).unwrap();
+        let theirs = crew_invitation::message(&WorkspaceInvitation {
+            invitee_username: Some("crew_bob".into()),
+            ..lab_invitation()
+        })
+        .unwrap();
+        let mine = crew_invitation::message(&lab_invitation()).unwrap();
+        let wrong = saved_of(
+            manager
+                .connection_from_invitation(&theirs, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(wrong.ssh_target, "crew_bob@hpc.example.org");
+        assert!(wrong.node_id.is_none(), "it never connected");
+
+        let preview = preview_with(&manager, &mine, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(preview.existing_connection_id, None);
+        assert_eq!(
+            preview.replaceable_connection_id.as_deref(),
+            Some(wrong.id.as_str())
+        );
+        assert_eq!(preview.name, "lab", "its own name, not a second one");
+
+        // Not asked to replace: refused, naming the way on, and nothing changes.
+        let error = manager
+            .connection_from_invitation(&mine, false, InvitationOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(refused(&error).api_code(), "crew_connection_exists");
+        assert!(error.to_string().contains("Replace it"), "{error}");
+        let other_id = InvitationOverrides {
+            replace: Some("some-other-id".into()),
+            ..Default::default()
+        };
+        assert!(manager
+            .connection_from_invitation(&mine, false, other_id)
+            .await
+            .is_err());
+        assert_eq!(manager.list().await.len(), 1);
+
+        // Asked to: the never-connected connection and its key go, and mine is saved.
+        let replace = InvitationOverrides {
+            replace: Some(wrong.id.clone()),
+            ..Default::default()
+        };
+        let saved = saved_of(
+            manager
+                .connection_from_invitation(&mine, false, replace)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(saved.ssh_target, "bob@hpc.example.org");
+        let listed = manager.list().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, saved.id);
+        assert!(manager
+            .read_credential(&format!("device:{}", wrong.id))
+            .is_err());
+
+        // A connection that has connected is the one to open, whatever its login.
+        manager.registry.lock().await.connections[0].node_id = Some("ab".repeat(32));
+        let preview = preview_with(&manager, &theirs, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            preview.existing_connection_id.as_deref(),
+            Some(saved.id.as_str())
+        );
+        assert_eq!(preview.replaceable_connection_id, None);
         let _ = fs::remove_dir_all(root);
     }
 

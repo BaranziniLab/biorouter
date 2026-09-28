@@ -288,6 +288,30 @@ impl SignInTarget {
             },
         }
     }
+    /// Whether the login signs in to this machine over loopback (a member on the workspace's
+    /// own server, W2-DMN-2).
+    fn is_loopback(&self) -> bool {
+        let server = self.server.trim_start_matches('[').trim_end_matches(']');
+        server.eq_ignore_ascii_case("localhost")
+            || server
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
+    /// A loopback sign-in this machine's SSH server refused: the member's own key is not in
+    /// their own `authorized_keys`.
+    fn loopback_key_refused(&self) -> String {
+        format!(
+            "Couldn't sign in as {} on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.",
+            self.user.as_deref().unwrap_or("yourself")
+        )
+    }
+    /// A loopback sign-in refused because `localhost`'s host key is not in `known_hosts`.
+    fn loopback_host_key_unknown(&self) -> String {
+        format!(
+            "{}'s host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.",
+            self.server
+        )
+    }
     /// A sign-in the server answered with a password or verification-code prompt, which an
     /// unattended bridge cannot answer. Nothing was submitted.
     fn needs_person(&self) -> String {
@@ -587,11 +611,21 @@ impl Transport {
             // is said to need one (W2-DMN-5).
             if let Some(target) = &self.sign_in {
                 classified.code = SIGN_IN_REFUSED.into();
-                classified.description = if classified.kind == SshFailureKind::KeyRefused {
+                classified.description = if target.is_loopback() {
+                    target.loopback_key_refused()
+                } else if classified.kind == SshFailureKind::KeyRefused {
                     target.refused()
                 } else {
                     target.needs_person()
                 };
+            }
+        }
+        // W2-DMN-2: signing in to this machine over loopback needs two things a member on the
+        // server may not have yet; the failure names the one that is missing.
+        if classified.kind == SshFailureKind::HostKeyUnknown && !self.answered {
+            if let Some(target) = self.sign_in.as_ref().filter(|target| target.is_loopback()) {
+                classified.code = SIGN_IN_REFUSED.into();
+                classified.description = target.loopback_host_key_unknown();
             }
         }
         anyhow::Error::new(classified)

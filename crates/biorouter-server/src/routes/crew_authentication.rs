@@ -577,6 +577,10 @@ pub struct FromInvitationRequest {
     /// Settings under Advanced. None of them can change the pinned workspace.
     #[serde(default)]
     pub advanced: InvitationAdvanced,
+    /// The preview's `replaceable_connection_id`, to save this invitation in place of that
+    /// connection (same workspace, another login, never connected). It is removed with its key.
+    #[serde(default)]
+    pub replace: Option<String>,
 }
 
 impl FromInvitationRequest {
@@ -586,6 +590,7 @@ impl FromInvitationRequest {
             mode: self.mode,
             institution_id: self.institution_id.take(),
             advanced: std::mem::take(&mut self.advanced),
+            replace: self.replace.take(),
         }
     }
 }

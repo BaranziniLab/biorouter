@@ -18,6 +18,7 @@ pub use host_start::{
     HostStartRefused, HostStartRequest, HostStartState, HostStartStatus, StartOutput,
 };
 mod keepalive;
+mod local_host;
 mod revocation;
 mod server_label;
 pub use server_label::server_label;

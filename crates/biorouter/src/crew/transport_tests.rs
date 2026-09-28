@@ -1245,3 +1245,39 @@ fn a_failure_names_the_hop_it_concerns() {
         assert_eq!(named_host(kind, stderr).as_deref(), host, "{stderr}");
     }
 }
+
+/// W2-DMN-2: a member on the workspace's own server signs in to their own account over
+/// loopback, which needs their key in their own `authorized_keys` and `localhost`'s host key in
+/// `known_hosts`. A failure before the bridge answered names whichever is missing; the kind,
+/// and so the code, is unchanged.
+#[tokio::test]
+async fn a_loopback_sign_in_names_what_this_machine_is_missing() {
+    for (stderr, kind, expected) in [
+        (
+            "crew_iris@localhost: Permission denied (publickey).\r\n",
+            SshFailureKind::KeyRefused,
+            "Couldn't sign in as crew_iris on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.",
+        ),
+        (
+            "No ED25519 host key is known for localhost and you have requested strict checking.\r\nHost key verification failed.\r\n",
+            SshFailureKind::HostKeyUnknown,
+            "localhost's host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.",
+        ),
+    ] {
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fs::write(fixture.path(), stderr).unwrap();
+        let mut transport = spawn_peer(
+            r#"IFS= read -r line; cat "$1" >&2; exit 255"#,
+            Some(fixture.path()),
+        );
+        transport.sign_in = Some(super::SignInTarget::from_login("crew_iris@localhost"));
+        let error = transport
+            .request("hello", request_params(), None, None, Some("hello".into()))
+            .await
+            .expect_err("the sign-in fails");
+        transport.close().await;
+        let failure = error.downcast_ref::<SshFailure>().cloned().unwrap();
+        assert_eq!(failure.kind, kind);
+        assert_eq!(error.to_string(), expected);
+    }
+}
