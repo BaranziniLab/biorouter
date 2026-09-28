@@ -1477,20 +1477,21 @@ impl Broker {
     }
     /// `principal`'s device made a signed request on `conn`.
     fn note_presence(&mut self, conn: &mut Connection, principal: &str) {
-        if conn.principal.as_deref() != Some(principal) {
-            if let Some(previous) = conn.principal.take() {
-                self.release_presence(&previous);
+        let now = Instant::now();
+        if conn.principal.as_deref() == Some(principal) {
+            // The connection is already counted: only the time moves.
+            if let Some(presence) = self.presence.get_mut(principal) {
+                presence.last_request = Some(now);
+                return;
             }
-            self.presence
-                .entry(principal.to_owned())
-                .or_default()
-                .open_connections += 1;
-            conn.principal = Some(principal.to_owned());
         }
-        self.presence
-            .entry(principal.to_owned())
-            .or_default()
-            .last_request = Some(Instant::now());
+        if let Some(previous) = conn.principal.take() {
+            self.release_presence(&previous);
+        }
+        let presence = self.presence.entry(principal.to_owned()).or_default();
+        presence.open_connections += 1;
+        presence.last_request = Some(now);
+        conn.principal = Some(principal.to_owned());
     }
     fn release_presence(&mut self, principal: &str) {
         if let Some(presence) = self.presence.get_mut(principal) {
