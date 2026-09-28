@@ -688,15 +688,31 @@ struct Target {
     username: Option<String>,
 }
 
-/// One resolution from `POST /crew/resolve`, or the sentence explaining why it did not resolve.
-fn target_from(kind: Kind, text: &str, result: &Value) -> std::result::Result<Target, String> {
+/// Why a selector did not resolve: the code a script matches on (the resolver's own), and the
+/// sentence for a person.
+type Unresolved = (&'static str, String);
+
+/// The code of a selector the resolver answered with something this command cannot use.
+const LOOKUP_FAILED: &str = "crew_lookup_failed";
+
+/// One resolution from `POST /crew/resolve`, or why it did not resolve.
+///
+/// A name no channel or team of yours has is said neutrally (M12): "No channel you're in is
+/// called #x." is as true of a typo as of a channel renamed or left, where "You're not in a
+/// channel called #x" read as a membership problem.
+fn target_from(kind: Kind, text: &str, result: &Value) -> std::result::Result<Target, Unresolved> {
     let shown = kind.shown(text);
     match result["status"].as_str() {
         Some("resolved") if result["kind"].as_str() == Some(kind.wire()) => {
             let id = result["id"]
                 .as_str()
                 .and_then(|id| component(id).ok())
-                .ok_or_else(|| format!("Biorouter couldn't look up {shown}."))?;
+                .ok_or_else(|| {
+                    (
+                        LOOKUP_FAILED,
+                        format!("Biorouter couldn't look up {shown}."),
+                    )
+                })?;
             let is_person = matches!(kind, Kind::Person | Kind::FormerPerson);
             Ok(Target {
                 id: id.to_owned(),
@@ -711,15 +727,15 @@ fn target_from(kind: Kind, text: &str, result: &Value) -> std::result::Result<Ta
             let mut message = match kind {
                 Kind::Person => format!("There's no member {shown} in this workspace."),
                 Kind::FormerPerson => format!("There's no former member {shown} here."),
-                Kind::Team => format!("You're not in a team called {shown}."),
-                Kind::Channel => format!("You're not in a channel called {shown}."),
+                Kind::Team => format!("No team you're in is called {shown}."),
+                Kind::Channel => format!("No channel you're in is called {shown}."),
             };
             if let Some(suggestion) = result["did_you_mean"].as_str() {
                 message.push_str(&format!(
                     " Did you mean {suggestion}? Usernames must match exactly."
                 ));
             }
-            Err(message)
+            Err(("unknown_name", message))
         }
         Some("ambiguous_name") => {
             let mut lines = vec![format!("{shown} matches more than one {}:", kind.noun())];
@@ -744,9 +760,12 @@ fn target_from(kind: Kind, text: &str, result: &Value) -> std::result::Result<Ta
                     "Use their ID: biorouter crew workspace show --show-ids.".to_owned()
                 }
             });
-            Err(lines.join("\n"))
+            Err(("ambiguous_name", lines.join("\n")))
         }
-        _ => Err(format!("Biorouter couldn't look up {shown}.")),
+        _ => Err((
+            LOOKUP_FAILED,
+            format!("Biorouter couldn't look up {shown}."),
+        )),
     }
 }
 
@@ -842,7 +861,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
             yes,
         } => remove_member(api, &channel, &member, former, yes).await?,
         CrewCommand::History(args) => {
-            let channel = api.target(Kind::Channel, &args.channel).await?;
+            let channel = api.your_channel(&args.channel).await?;
             let page = api
                 .broker(
                     "messages.history",
@@ -858,7 +877,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
             limit,
             after,
         } => {
-            let channel = api.target(Kind::Channel, &channel).await?;
+            let channel = api.your_channel(&channel).await?;
             let mut params = json!({"channel_id":channel.id,"query":query,"limit":limit});
             if let Some(after) = after {
                 params["after"] = json!(after);
@@ -1262,8 +1281,12 @@ impl Api {
                     Err(problem) => problems.push(problem),
                 }
             }
-            if !problems.is_empty() {
-                bail!("{}", problems.join("\n"));
+            if let Some(&(code, _)) = problems.first() {
+                // DW-10: a code, like every refusal the daemon types, so a script can tell an
+                // unknown name from an ambiguous one without matching the words. The first
+                // problem's code stands for the list.
+                let sentences: Vec<String> = problems.into_iter().map(|(_, text)| text).collect();
+                return Err(restated(sentences.join("\n"), Some(code)));
             }
         }
         targets
@@ -1274,6 +1297,66 @@ impl Api {
 
     async fn target(&self, kind: Kind, text: &str) -> Result<Target> {
         let mut targets = self.resolve(&[(kind, text)]).await?;
+        targets.pop().context("A name was left unresolved")
+    }
+
+    /// [`Self::resolve`] for a command only a member of each channel can run (history, search,
+    /// watch, send, mark-read, files, tasks, grants). A channel given by ID is checked against
+    /// the person's own channels too (AG-F13), so an ID from another workspace, or of a channel
+    /// they left, is refused here, as a name would be, rather than reaching the daemon's
+    /// "refresh" refusal, which no refresh can help.
+    ///
+    /// Only a snapshot that lists every channel of theirs can prove an ID absent: one that
+    /// leaves some out (`totals.channels`) or cannot be read leaves the ID to the broker, which
+    /// authorizes every request either way. Commands a host may run on a channel they are not
+    /// in (archive, rename, remove-member, members add) never come here.
+    async fn resolve_yours(&self, selectors: &[(Kind, &str)]) -> Result<Vec<Target>> {
+        let targets = self.resolve(selectors).await?;
+        let by_id: Vec<usize> = selectors
+            .iter()
+            .enumerate()
+            .filter(|(_, (kind, text))| *kind == Kind::Channel && kind.literal_id(text).is_some())
+            .map(|(index, _)| index)
+            .collect();
+        if by_id.is_empty() {
+            return Ok(targets);
+        }
+        let Ok(snapshot) = self.snapshot().await else {
+            return Ok(targets);
+        };
+        let Some(channels) = snapshot["channels"].as_array() else {
+            return Ok(targets);
+        };
+        let listed: std::collections::HashSet<&str> = channels
+            .iter()
+            .filter_map(|channel| channel["id"].as_str())
+            .collect();
+        let complete = snapshot["totals"]["channels"]
+            .as_u64()
+            .is_none_or(|total| usize::try_from(total).is_ok_and(|total| total <= listed.len()));
+        if !complete {
+            return Ok(targets);
+        }
+        let problems: Vec<String> = by_id
+            .iter()
+            .filter(|&&index| !listed.contains(targets[index].id.as_str()))
+            .map(|&index| {
+                format!(
+                    "No channel you're in has the ID {}.",
+                    safe_text(&targets[index].id)
+                )
+            })
+            .collect();
+        if problems.is_empty() {
+            Ok(targets)
+        } else {
+            Err(restated(problems.join("\n"), Some("unknown_name")))
+        }
+    }
+
+    /// [`Self::target`] for a channel only its members can use ([`Self::resolve_yours`]).
+    async fn your_channel(&self, text: &str) -> Result<Target> {
+        let mut targets = self.resolve_yours(&[(Kind::Channel, text)]).await?;
         targets.pop().context("A name was left unresolved")
     }
 }
@@ -2794,7 +2877,7 @@ async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
 
 /// `channels mark-read CHANNEL [CURSOR]`: up to `cursor`, or to the newest message.
 async fn mark_read(api: &Api, channel: &str, cursor: Option<String>) -> Result<Reply> {
-    let channel = api.target(Kind::Channel, channel).await?;
+    let channel = api.your_channel(channel).await?;
     let label = api.label(&channel, "the channel", "channel ID");
     let cursor = match cursor {
         Some(cursor) => cursor,
@@ -3440,7 +3523,7 @@ async fn send_message(api: &Api, args: SendArgs) -> Result<Reply> {
             input: args.input,
         })?
     };
-    let channel = api.target(Kind::Channel, &args.channel).await?;
+    let channel = api.your_channel(&args.channel).await?;
     let result = api
         .broker(
             "message.post",
@@ -3460,7 +3543,7 @@ async fn send_message(api: &Api, args: SendArgs) -> Result<Reply> {
 }
 
 async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
-    let channel = api.target(Kind::Channel, &args.channel).await?;
+    let channel = api.your_channel(&args.channel).await?;
     let (mut cursor, initial) = watch_start(api, &channel.id, &args).await?;
     let path = api.path("/observe").await?;
     let client = api.client.shared()?;
@@ -3561,7 +3644,7 @@ async fn file_command(api: &Api, mut command: FileCommand) -> Result<Reply> {
     if let FileCommand::Upload { channel, .. } | FileCommand::Reference { channel, .. } =
         &mut command
     {
-        *channel = api.target(Kind::Channel, channel).await?.id;
+        *channel = api.your_channel(channel).await?.id;
     }
     let watching = matches!(command, FileCommand::Watch { .. });
     let result = files::handle(api, command).await?;
@@ -3596,7 +3679,7 @@ async fn tasks(api: &Api, command: TaskCommand) -> Result<Reply> {
                     .iter()
                     .map(|channel| (Kind::Channel, channel.as_str())),
             );
-            let targets = api.resolve(&selectors).await?;
+            let targets = api.resolve_yours(&selectors).await?;
             let (destination, context) = targets
                 .split_first()
                 .context("The task's channel was left unresolved")?;
@@ -3733,7 +3816,7 @@ async fn grants(api: &Api, command: GrantCommand) -> Result<Reply> {
                     .iter()
                     .map(|channel| (Kind::Channel, channel.as_str())),
             );
-            let targets = api.resolve(&selectors).await?;
+            let targets = api.resolve_yours(&selectors).await?;
             let (destination, context) = targets
                 .split_first()
                 .context("The grant's channel was left unresolved")?;
@@ -4397,9 +4480,89 @@ mod tests {
         .expect_err("unknown names are refused");
         assert_eq!(
             message(&error),
-            "You're not in a channel called #raw-data.\nThere's no member @Bob in this workspace. Did you mean @bob? Usernames must match exactly."
+            "No channel you're in is called #raw-data.\nThere's no member @Bob in this workspace. Did you mean @bob? Usernames must match exactly."
         );
         assert!(fake.broker_calls().is_empty());
+        // DW-10: the JSON error carries the resolver's code, as a daemon refusal does.
+        assert_eq!(error_code(&error).as_deref(), Some("unknown_name"));
+        assert_eq!(
+            failure_body(&error, &message(&error), "req-1")["code"],
+            "unknown_name"
+        );
+        let (api, _) = api_with(OutputFormat::Json, standard);
+        let error = run(&api, history("general"))
+            .await
+            .expect_err("two teams have a #general");
+        assert_eq!(error_code(&error).as_deref(), Some("ambiguous_name"));
+        assert!(!failure(&error, OutputFormat::Json, "req-1", false)
+            .to_string()
+            .contains("req-1"));
+    }
+
+    /// AG-F13: a channel ID from another workspace, or of a channel the person left, is refused
+    /// before the daemon is asked, as a name would be. A snapshot that leaves channels out
+    /// cannot prove an ID absent, so it leaves the ID to the broker, and so do commands a host
+    /// may run on a channel they are not in.
+    #[tokio::test]
+    async fn a_channel_id_you_are_not_in_is_refused_like_a_name() {
+        const FOREIGN: &str = "f0e1d2c3-0000-4000-8000-00000000000f";
+        let grant = |context: &str| {
+            CrewCommand::Grants(GrantCommand::Grant {
+                session: SESSION.into(),
+                channel: "methods".into(),
+                context_channels: vec![context.to_owned()],
+            })
+        };
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        let error = run(&api, grant(FOREIGN))
+            .await
+            .expect_err("not one of yours");
+        assert_eq!(
+            message(&error),
+            format!("No channel you're in has the ID {FOREIGN}.")
+        );
+        assert_eq!(error_code(&error).as_deref(), Some("unknown_name"));
+        assert!(
+            !fake.sent().iter().any(|sent| sent.path.ends_with("/grant")),
+            "nothing was asked of the daemon"
+        );
+
+        // An ID of one of their channels goes through.
+        let granting = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/grant") {
+                return Ok(json!({"session_id": SESSION, "run_id": "r"}));
+            }
+            standard(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Text, granting);
+        run(&api, grant(GENERAL)).await.expect("one of theirs");
+        assert!(fake.sent().iter().any(|sent| sent.path.ends_with("/grant")));
+
+        // A snapshot that leaves channels out cannot prove the ID absent.
+        let partial = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                let mut snapshot = snapshot();
+                snapshot["totals"] = json!({"channels": 3});
+                return Ok(snapshot);
+            }
+            granting(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Text, partial);
+        run(&api, grant(FOREIGN)).await.expect("left to the broker");
+        assert!(fake.sent().iter().any(|sent| sent.path.ends_with("/grant")));
+
+        // A host may archive a channel they are not in, by its ID.
+        let (api, fake) = api_with(OutputFormat::Text, standard);
+        run(
+            &api,
+            CrewCommand::Channels(ChannelCommand::Archive {
+                channel: FOREIGN.into(),
+                yes: true,
+            }),
+        )
+        .await
+        .expect("left to the broker");
+        assert!(fake.broker_call("channel.archive").is_some());
     }
 
     #[tokio::test]
