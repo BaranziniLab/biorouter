@@ -35,6 +35,8 @@ mod registry_lock_tests;
 #[path = "scope_binding_tests.rs"]
 mod scope_binding_tests;
 pub use credentials::CredentialStatus;
+pub mod refusal;
+pub use refusal::CrewRefusal;
 mod ssh_policy;
 mod transport;
 use crate::{
@@ -709,6 +711,29 @@ impl LiveAdmission {
         }
     }
 }
+/// The interactive sign-in's `ssh` arguments: a control master that keeps the session open
+/// for the bridge (`-M -N`, ControlPersist 600) over the same hardening every Crew `ssh`
+/// carries.
+///
+/// It is the one Crew `ssh` a person answers, so it passes `BatchMode=no` explicitly: a
+/// `BatchMode yes` in the person's own ssh configuration otherwise suppresses the password
+/// and verification-code prompts, and the Sign in window shows only "Permission denied"
+/// (W2-DMN-4). Every unattended `ssh` (the bridge, probes, host start) keeps `BatchMode=yes`.
+/// A `-o` option reaches only the destination, not a ProxyJump hop, so a jump host that
+/// needs a password stays unpromptable here.
+pub(super) fn sign_in_args(c: &Connection, control: &Path) -> Vec<String> {
+    let mut args = transport::ssh_args(c, control);
+    args.extend([
+        "-M".into(),
+        "-N".into(),
+        "-o".into(),
+        "ControlPersist=600".into(),
+        "-o".into(),
+        "BatchMode=no".into(),
+        c.ssh_target.clone(),
+    ]);
+    args
+}
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
     if let Some(fields) = value.as_object_mut() {
@@ -1090,6 +1115,43 @@ fn hello_nonce() -> String {
 }
 #[cfg(test)]
 pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(None);
+/// What `crew_credential_store_unavailable` says (W2-DMN-1).
+pub const CREDENTIAL_STORE_UNAVAILABLE_TEXT: &str = "This computer has no keyring service Biorouter can use. Run `biorouter crew credentials init` to keep Crew keys in an encrypted vault, then try again.";
+
+/// A keyring error as the refusal a person can act on. A platform store that does not answer
+/// (no Secret Service on a headless Linux node: "The name is not activatable") or refuses
+/// access fails every Crew key the same way, and "try again" never helps; the encrypted vault
+/// does (W2-DMN-1). Crew never falls back to plaintext for a device key. Any other keyring
+/// error keeps its own words.
+fn keyring_failure(error: keyring::Error) -> anyhow::Error {
+    match error {
+        keyring::Error::PlatformFailure(cause) | keyring::Error::NoStorageAccess(cause) => {
+            tracing::warn!(cause = %cause, "Crew can't use this computer's keyring service");
+            anyhow::Error::new(CrewRefusal::new(
+                refusal::CREDENTIAL_STORE_UNAVAILABLE,
+                CREDENTIAL_STORE_UNAVAILABLE_TEXT,
+            ))
+        }
+        other => other.into(),
+    }
+}
+/// Whether the OS keyring answers, by reading an entry Crew never writes. A working keyring
+/// answers "no entry" (or, harmlessly, a value); one with no service behind it fails.
+///
+/// Only a Secret Service can be missing, so macOS and Windows are not asked: a read there can
+/// raise a Keychain prompt for nothing, and their stores are always present.
+fn keyring_answers(probe: Result<keyring::Entry>) -> bool {
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        return true;
+    }
+    let Ok(entry) = probe else {
+        return false;
+    };
+    !matches!(
+        entry.get_password(),
+        Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))
+    )
+}
 fn file_credentials_enabled() -> bool {
     std::env::var("BIOROUTER_DISABLE_KEYRING").as_deref() == Ok("true")
         && std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT")
@@ -1121,13 +1183,14 @@ impl CrewManager {
             .join(hex(&Sha256::digest(id.as_bytes())))
     }
     fn credential_entry(&self, id: &str) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(
+        keyring::Entry::new(
             "org.biorouter.crew",
             &format!(
                 "{}:{id}",
                 hex(&Sha256::digest(self.root.to_string_lossy().as_bytes()))
             ),
-        )?)
+        )
+        .map_err(keyring_failure)
     }
     fn write_credential(&self, id: &str, value: &str) -> Result<()> {
         self.credential_vault
@@ -1154,7 +1217,9 @@ impl CrewManager {
             file.persist(path)?;
             Ok(())
         } else {
-            self.credential_entry(id)?.set_password(value)?;
+            self.credential_entry(id)?
+                .set_password(value)
+                .map_err(keyring_failure)?;
             Ok(())
         }
     }
@@ -1173,7 +1238,7 @@ impl CrewManager {
         } else {
             match self.credential_entry(id)?.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(error) => Err(error.into()),
+                Err(error) => Err(keyring_failure(error)),
             }
         }
     }
@@ -1186,7 +1251,9 @@ impl CrewManager {
         if file_credentials_enabled() {
             Ok(std::fs::read_to_string(self.credential_path(id))?)
         } else {
-            Ok(self.credential_entry(id)?.get_password()?)
+            self.credential_entry(id)?
+                .get_password()
+                .map_err(keyring_failure)
         }
     }
     /// Load the registry under `root`. One that cannot be read no longer fails the manager,
@@ -1264,7 +1331,8 @@ impl CrewManager {
     }
     pub async fn credential_status(&self) -> Result<CredentialStatus> {
         let vault = self.credential_vault.clone();
-        tokio::task::spawn_blocking(move || vault.status()).await?
+        let probe = self.credential_entry("keyring-probe");
+        tokio::task::spawn_blocking(move || vault.status(|| keyring_answers(probe))).await?
     }
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
         // A registry that cannot be read is not an empty one: the identities it names may hold
@@ -2121,14 +2189,7 @@ impl CrewManager {
     }
     pub async fn authentication_plan(&self, id: &str) -> Result<AuthenticationPlan> {
         let c = self.connection(id).await?;
-        let mut args = transport::ssh_args(&c, &self.control_path(id)?);
-        args.extend([
-            "-M".into(),
-            "-N".into(),
-            "-o".into(),
-            "ControlPersist=600".into(),
-            c.ssh_target.clone(),
-        ]);
+        let args = sign_in_args(&c, &self.control_path(id)?);
         ssh_policy::preflight(&args, &c.ssh_target).await?;
         Ok(AuthenticationPlan {
             program: "ssh".into(),
@@ -5280,6 +5341,81 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// W2-DMN-1: a keyring with no service behind it (a headless node: "The name is not
+    /// activatable") or one that refuses access is the typed refusal that names the vault, on
+    /// every Crew key; any other keyring error keeps its own words.
+    #[test]
+    fn a_keyring_with_no_service_is_the_typed_vault_refusal() {
+        for error in [
+            keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
+                "DBus error: The name is not activatable",
+            ))),
+            keyring::Error::NoStorageAccess(Box::new(std::io::Error::other("locked"))),
+        ] {
+            let error = keyring_failure(error);
+            let refused = CrewRefusal::find(&error).expect("typed");
+            assert_eq!(refused.code(), "crew_credential_store_unavailable");
+            assert_eq!(error.to_string(), CREDENTIAL_STORE_UNAVAILABLE_TEXT);
+            assert!(!error.to_string().contains("DBus"));
+        }
+        let other = keyring_failure(keyring::Error::NoEntry);
+        assert!(CrewRefusal::find(&other).is_none());
+    }
+
+    /// W2-DMN-4: a `BatchMode yes` in the person's ssh configuration must not suppress the
+    /// Sign in window's password prompt, so the interactive plan says `BatchMode=no` itself,
+    /// before the destination, where `ssh` reads options. The bridge stays unattended.
+    #[test]
+    fn the_interactive_sign_in_asks_for_prompts_and_the_bridge_never_does() {
+        let connection = Connection {
+            id: "sign-in-plan".into(),
+            node_id: None,
+            name: "sign in plan".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: Some("gate.example.test".into()),
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "sign-in-plan-workspace".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "sign-in-plan-cluster".into(),
+            mode: ClusterMode::Private,
+            institution_id: None,
+            policy_epoch: 1,
+            status: "offline".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        };
+        let args = sign_in_args(&connection, Path::new("/tmp/crew-control"));
+        let batch: Vec<usize> = args
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[0] == "-o" && pair[1].starts_with("BatchMode="))
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(batch.len(), 1, "exactly one BatchMode option: {args:?}");
+        assert_eq!(args[batch[0] + 1], "BatchMode=no");
+        let target = args.iter().position(|arg| arg == "crew@example.test");
+        assert_eq!(
+            target,
+            Some(args.len() - 1),
+            "the destination is last: {args:?}"
+        );
+        assert!(batch[0] < args.len() - 1);
+        for flag in [
+            "-M",
+            "-N",
+            "ControlPersist=600",
+            "StrictHostKeyChecking=yes",
+        ] {
+            assert!(args.iter().any(|arg| arg == flag), "{flag} kept: {args:?}");
+        }
     }
 
     #[tokio::test]

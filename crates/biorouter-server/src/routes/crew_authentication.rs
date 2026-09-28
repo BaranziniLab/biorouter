@@ -34,7 +34,8 @@ use biorouter::crew::authentication::{
     JoinRefused, JoinState, JoinStatus, TerminalEvent,
 };
 use biorouter::crew::{
-    manager, ClusterMode, Connection, CrewManager, SshFailure, WorkspaceIdentityError,
+    manager, ClusterMode, Connection, CrewManager, CrewRefusal, SshFailure,
+    WorkspaceIdentityError,
 };
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
@@ -438,6 +439,11 @@ async fn core_refusal(
     if let Some(refused) = find_cause::<InvitationRefused>(&error) {
         return invitation_refusal(refused);
     }
+    // A refusal the core typed and worded itself, such as a keyring with no service behind
+    // it (W2-DMN-1): "try again" never helps there, so the fixed sentence must not replace it.
+    if let Some(refused) = CrewRefusal::find(&error) {
+        return typed_refusal(refused);
+    }
     if let Some(refused) = find_cause::<JoinRefused>(&error) {
         if let Some(message) = refused.broker_message() {
             // Debug-formatted, so the workspace's words cannot forge a log line.
@@ -500,6 +506,16 @@ async fn core_refusal(
         "Crew admission request failed"
     );
     AdmissionRefusal::new(StatusCode::BAD_REQUEST, REQUEST_REFUSED_CODE, fallback)
+}
+
+/// A [`CrewRefusal`] with its own status, code, sentence and fields. The core wrote every one
+/// of those words itself; none comes from the workspace.
+fn typed_refusal(refused: &CrewRefusal) -> AdmissionRefusal {
+    let status = StatusCode::from_u16(refused.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+    refused.fields().iter().fold(
+        AdmissionRefusal::new(status, refused.code(), refused.message()),
+        |refusal, (key, value)| refusal.with(key, value),
+    )
 }
 
 /// The first cause of `error`, outermost first, that is an `E`.
@@ -1011,6 +1027,36 @@ mod tests {
             for words in ["ZZZZ", "Send it to Alice", "busy", "Crew broker refused"] {
                 assert!(!body.to_string().contains(words), "{words}: {body}");
             }
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// W2-DMN-1: a keyring with no service behind it failed every join as "couldn't read or
+    /// save this invitation. Try again", which never works. The core's typed refusal keeps its
+    /// own code and sentence on every admission route, under a context too.
+    #[tokio::test]
+    async fn a_keyring_with_no_service_says_to_set_up_the_vault() {
+        let (crew, root) = scratch_manager("keyring-unavailable");
+        for fallback in [FROM_INVITATION_FAILED, JOIN_FAILED] {
+            let error = anyhow::Error::new(biorouter::crew::CrewRefusal::new(
+                biorouter::crew::refusal::CREDENTIAL_STORE_UNAVAILABLE,
+                biorouter::crew::CREDENTIAL_STORE_UNAVAILABLE_TEXT,
+            ))
+            .context("Couldn't save this connection's device key");
+            let (status, body) =
+                body_of(core_refusal(&crew, Some("unknown"), error, fallback).await).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(
+                body,
+                json!({
+                    "code": "crew_credential_store_unavailable",
+                    "error": biorouter::crew::CREDENTIAL_STORE_UNAVAILABLE_TEXT,
+                })
+            );
+            assert!(body["error"]
+                .as_str()
+                .unwrap()
+                .contains("biorouter crew credentials init"));
         }
         let _ = std::fs::remove_dir_all(root);
     }

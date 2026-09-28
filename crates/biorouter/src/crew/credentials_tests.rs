@@ -37,7 +37,7 @@ fn vault_initializes_unlocks_locks_and_restarts_without_keyring_fallback() {
             ("BIOROUTER_DISABLE_KEYRING", None::<&str>),
             ("BIOROUTER_DEV_PROFILE_ROOT", None),
         ]);
-        vault.status().unwrap()
+        vault.status(|| true).unwrap()
     };
     assert_eq!(before.backend, "keyring");
     assert!(!before.initialized);
@@ -52,7 +52,7 @@ fn vault_initializes_unlocks_locks_and_restarts_without_keyring_fallback() {
         })
         .unwrap();
     assert_eq!(read_secret(&vault, "crew-token"), "synthetic-secret");
-    assert_eq!(vault.status().unwrap().backend, "encrypted_vault");
+    assert_eq!(vault.status(|| true).unwrap().backend, "encrypted_vault");
 
     vault.lock().unwrap();
     assert!(vault
@@ -64,7 +64,7 @@ fn vault_initializes_unlocks_locks_and_restarts_without_keyring_fallback() {
         .unwrap();
 
     let restarted = CredentialVault::new(root.path().to_path_buf());
-    let status = restarted.status().unwrap();
+    let status = restarted.status(|| true).unwrap();
     assert!(status.initialized && status.locked);
     assert!(restarted
         .read("crew-token", || Ok(Zeroizing::new("fallback".into())))
@@ -100,11 +100,11 @@ fn incomplete_or_legacy_backend_selection_never_falls_back() {
         br#"{"version":1,"backend":"encrypted_vault"}"#,
     )
     .unwrap();
-    assert!(vault.status().is_err());
+    assert!(vault.status(|| true).is_err());
 
     let (root, vault) = new_vault();
     fs::write(root.path().join("credential-vault.json"), b"{}").unwrap();
-    assert!(vault.status().is_err());
+    assert!(vault.status(|| true).is_err());
 
     let (root, vault) = new_vault();
     fs::write(
@@ -113,7 +113,7 @@ fn incomplete_or_legacy_backend_selection_never_falls_back() {
     )
     .unwrap();
     fs::write(root.path().join("credential-vault.json"), b"{}").unwrap();
-    assert!(vault.status().is_err());
+    assert!(vault.status(|| true).is_err());
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn vault_rejects_corruption_profile_mismatch_and_symlinked_files() {
     )
     .unwrap();
     let restarted = CredentialVault::new(root.path().to_path_buf());
-    assert!(restarted.status().is_err());
+    assert!(restarted.status(|| true).is_err());
 
     let (root, vault) = new_vault();
     vault.init(passphrase("passphrase")).unwrap();
@@ -143,7 +143,7 @@ fn vault_rejects_corruption_profile_mismatch_and_symlinked_files() {
     fs::rename(&real_vault, &saved).unwrap();
     symlink(&saved, &real_vault).unwrap();
     assert!(CredentialVault::new(root.path().to_path_buf())
-        .status()
+        .status(|| true)
         .is_err());
 
     let (root, _vault) = new_vault();
@@ -224,7 +224,7 @@ fn concurrent_initialization_has_one_winner_and_one_persisted_backend() {
     assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
     assert!(
         CredentialVault::new(root.path().to_path_buf())
-            .status()
+            .status(|| true)
             .unwrap()
             .initialized
     );
@@ -259,7 +259,7 @@ fn status_names_the_store_the_keys_are_really_in() {
     ];
     {
         let _files = env_lock::lock_env(file_mode);
-        let status = vault.status().unwrap();
+        let status = vault.status(|| true).unwrap();
         assert_eq!(status.backend, "file");
         assert!(!status.initialized && !status.locked);
     }
@@ -269,6 +269,33 @@ fn status_names_the_store_the_keys_are_really_in() {
             ("BIOROUTER_DISABLE_KEYRING", Some("true")),
             ("BIOROUTER_DEV_PROFILE_ROOT", Some("relative/profile")),
         ]);
-        assert_eq!(vault.status().unwrap().backend, "keyring");
+        assert_eq!(vault.status(|| true).unwrap().backend, "keyring");
     }
+}
+
+/// W2-DMN-1: with no vault, the OS keyring is the store, and on a node with no keyring
+/// service status said "keyring" as though it worked. It still says where keys go, and now
+/// also whether that store answers. A vault or the development file store never asks.
+#[test]
+#[serial(crew_credentials)]
+fn status_says_when_the_keyring_does_not_answer() {
+    let (_root, vault) = new_vault();
+    {
+        let _keyring = env_lock::lock_env([
+            ("BIOROUTER_DISABLE_KEYRING", None::<&str>),
+            ("BIOROUTER_DEV_PROFILE_ROOT", None),
+        ]);
+        let missing = vault.status(|| false).unwrap();
+        assert_eq!(missing.backend, "keyring");
+        assert!(!missing.available);
+        assert!(vault.status(|| true).unwrap().available);
+    }
+    vault
+        .init(passphrase("correct horse battery staple"))
+        .unwrap();
+    let status = vault
+        .status(|| panic!("a vault never asks the keyring"))
+        .unwrap();
+    assert_eq!(status.backend, "encrypted_vault");
+    assert!(status.available);
 }

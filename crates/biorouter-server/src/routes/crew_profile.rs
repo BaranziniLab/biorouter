@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use biorouter::crew::{manager, CrewManager, RevocationUnconfirmed, RevokeOutcome};
+use biorouter::crew::{manager, CrewManager, CrewRefusal, RevocationUnconfirmed, RevokeOutcome};
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -66,7 +66,17 @@ impl Refusal {
     }
 }
 impl From<anyhow::Error> for Refusal {
+    /// A refusal the core typed (`biorouter::crew::refusal`) keeps its own status, code and
+    /// fields; every other one is [`REFUSED`] with the error's text.
     fn from(error: anyhow::Error) -> Self {
+        if let Some(refused) = CrewRefusal::find(&error) {
+            let status =
+                StatusCode::from_u16(refused.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+            return refused.fields().iter().fold(
+                Self::new(status, refused.code(), refused.message()),
+                |refusal, (key, value)| refusal.with(key, value.clone()),
+            );
+        }
         Self::new(StatusCode::BAD_REQUEST, REFUSED, error.to_string())
     }
 }

@@ -7,8 +7,9 @@ use axum::{Json, Router};
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::crew::{
-    cancel_host_start, host_start_status, manager, AdmissionLabels, HostStartRefused,
-    HostStartRequest, HostStartStatus, SaveConnection, SshFailure, WorkspaceIdentityError,
+    cancel_host_start, host_start_status, manager, AdmissionLabels, CrewRefusal,
+    HostStartRefused, HostStartRequest, HostStartStatus, SaveConnection, SshFailure,
+    WorkspaceIdentityError,
 };
 use biorouter::model::ModelConfig;
 use biorouter::session::SessionType;
@@ -289,6 +290,9 @@ impl From<anyhow::Error> for CrewRouteError {
     /// writes as `code: sentence`) replaces the transport's JSON envelope as `error`. A context the
     /// daemon added on top keeps its own text.
     fn from(error: anyhow::Error) -> Self {
+        if let Some(refusal) = CrewRefusal::find(&error) {
+            return refusal.into();
+        }
         let Some(refusal) = broker_refusal(&error) else {
             return Self::new(
                 StatusCode::BAD_REQUEST,
@@ -303,6 +307,19 @@ impl From<anyhow::Error> for CrewRouteError {
         };
         Self::new(StatusCode::BAD_REQUEST, "crew_request_refused", text)
             .with("broker_code", refusal.code)
+    }
+}
+
+impl From<&CrewRefusal> for CrewRouteError {
+    /// A refusal the core typed (`biorouter::crew::refusal`): its own status, code, sentence
+    /// and fields.
+    fn from(refusal: &CrewRefusal) -> Self {
+        let status =
+            StatusCode::from_u16(refusal.http_status()).unwrap_or(StatusCode::BAD_REQUEST);
+        refusal.fields().iter().fold(
+            Self::new(status, refusal.code(), refusal.message()),
+            |error, (key, value)| error.with(key, value),
+        )
     }
 }
 
