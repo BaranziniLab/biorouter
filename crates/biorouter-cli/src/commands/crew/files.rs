@@ -1,6 +1,6 @@
 use super::{
     args::FileCommand,
-    output::{component, emit, stream_format},
+    output::{component, emit_with, stream_format, HumanOptions},
     Api,
 };
 use anyhow::{ensure, Context, Result};
@@ -311,7 +311,14 @@ async fn register(
         .to_string())
 }
 
+/// How `files watch` prints each receipt: named from the workspace snapshot, read once, and
+/// with IDs when `--show-ids` asks, as `files status` prints the same receipt (DW-07).
+pub(super) async fn watch_options(api: &Api) -> HumanOptions {
+    api.human(api.names().await)
+}
+
 async fn watch(api: &Api, id: &str) -> Result<Value> {
+    let options = watch_options(api).await;
     let mut previous = Value::Null;
     loop {
         let current = tokio::select! {
@@ -319,7 +326,7 @@ async fn watch(api: &Api, id: &str) -> Result<Value> {
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(json!({"detached":true,"transfer_id":id})); }
         };
         if current != previous {
-            emit(&current, stream_format(api.format))?;
+            emit_with(&current, stream_format(api.format), &options)?;
         }
         if !matches!(
             current["state"].as_str(),

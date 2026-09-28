@@ -737,6 +737,16 @@ pub struct Directory {
     channels: BTreeMap<String, ChannelInfo>,
     references: BTreeMap<String, (String, String)>,
     unread: BTreeMap<String, u64>,
+    /// Why this directory could not read the workspace's names, and which workspace: an ID it
+    /// cannot name is then said as that, with its ID, rather than as "this channel" (R-8,
+    /// AG-F17).
+    unavailable: Option<Unavailable>,
+}
+
+#[derive(Clone, Debug)]
+struct Unavailable {
+    workspace: String,
+    disconnected: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -756,6 +766,34 @@ struct ChannelInfo {
 }
 
 impl Directory {
+    /// No names, because the workspace snapshot could not be read. `workspace` is what the
+    /// person calls the workspace (the saved connection's name, unescaped); `disconnected` says
+    /// the connection is down, which is the usual reason.
+    pub fn names_unavailable(workspace: &str, disconnected: bool) -> Self {
+        Self {
+            unavailable: Some(Unavailable {
+                workspace: workspace.to_owned(),
+                disconnected,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// "a channel in lab (names unavailable while disconnected)", for an ID this directory
+    /// cannot name because the names could not be read.
+    fn unnamed(&self, what: &str) -> Option<String> {
+        let unavailable = self.unavailable.as_ref()?;
+        let why = if unavailable.disconnected {
+            "names unavailable while disconnected"
+        } else {
+            "names unavailable"
+        };
+        Some(format!(
+            "{what} in {} ({why})",
+            display_text(&unavailable.workspace)
+        ))
+    }
+
     #[allow(dead_code)] // The command layer passes a snapshot's names to history and lists.
     pub fn from_snapshot(snapshot: &Value) -> Self {
         let mut directory = Self::default();
@@ -1177,19 +1215,31 @@ impl Ctx {
     }
 
     fn team(&self, id: Option<&str>) -> String {
-        let name = id
-            .and_then(|id| self.dir.teams.get(id))
-            .map_or_else(|| "this team".to_owned(), |name| display_text(name));
-        self.with_id(name, "team ID", id)
+        match id.and_then(|id| self.dir.teams.get(id)) {
+            Some(name) => self.with_id(display_text(name), "team ID", id),
+            None => self.unnamed_id("a team", "this team", "team ID", id),
+        }
     }
 
     fn channel(&self, id: Option<&str>) -> String {
         let name = id
             .and_then(|id| self.dir.channels.get(id))
             .and_then(|channel| channel.name.as_deref())
-            .filter(|name| !name.is_empty())
-            .map_or_else(|| "this channel".to_owned(), channel_name);
-        self.with_id(name, "channel ID", id)
+            .filter(|name| !name.is_empty());
+        match name {
+            Some(name) => self.with_id(channel_name(name), "channel ID", id),
+            None => self.unnamed_id("a channel", "this channel", "channel ID", id),
+        }
+    }
+
+    /// An ID the directory cannot name: `fallback` ("this channel") when the value simply
+    /// does not say, and, when the names could not be read, what it is, where, why, and its
+    /// ID, which is then the only way to tell two rows apart (R-8, AG-F17).
+    fn unnamed_id(&self, what: &str, fallback: &str, label: &str, id: Option<&str>) -> String {
+        match (self.dir.unnamed(what), id) {
+            (Some(unnamed), Some(id)) => format!("{unnamed} [{label} {}]", safe_text(id)),
+            _ => self.with_id(fallback.to_owned(), label, id),
+        }
     }
 
     fn channel_in_team(&self, id: Option<&str>) -> String {
@@ -3327,6 +3377,30 @@ mod tests {
         let nameless = plain(&json!({"messages":[message("m", DAVE, NOW, "hi")],
             "people":{DAVE:{"active":false}}}));
         assert!(nameless.starts_with("Former member · 01:50"), "{nameless}");
+    }
+
+    /// R-8, AG-F17: offline, a row says the names could not be read and shows the ID, the one
+    /// thing that tells two rows apart, instead of pretending with "this channel".
+    #[test]
+    fn rows_say_when_names_are_unavailable_and_show_the_id() {
+        let offline = options(false, Directory::names_unavailable("okafor-lab", true));
+        let grant_rows = render_text(&grants(), &offline);
+        assert_eq!(
+            grant_rows,
+            format!("Chat 20260924_3 → a channel in okafor-lab (names unavailable while disconnected) [channel ID {METHODS}] (also reads a channel in okafor-lab (names unavailable while disconnected) [channel ID {GENERAL}]) · Active · policy epoch 4")
+        );
+        let transfer_rows = render_text(&transfers(), &offline);
+        assert!(
+            transfer_rows.starts_with(&format!("counts.csv · upload to a channel in okafor-lab (names unavailable while disconnected) [channel ID {METHODS}] · Uploading 40%")),
+            "{transfer_rows}"
+        );
+        assert!(!transfer_rows.contains("this channel"), "{transfer_rows}");
+        // For another reason, it says only that the names are unavailable.
+        let unreadable = options(false, Directory::names_unavailable("lab", false));
+        assert!(render_text(&grants(), &unreadable)
+            .contains("a channel in lab (names unavailable) [channel ID"));
+        // A value that simply does not name a channel reads as it did.
+        assert!(plain(&task()).starts_with("Task posting to this channel"));
     }
 
     #[test]

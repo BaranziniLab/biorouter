@@ -1186,15 +1186,24 @@ impl Api {
     }
 
     /// Names for text output: the workspace snapshot, when it can be read. JSON output needs
-    /// none, and a list is still printed (with "Unknown member") when the snapshot fails.
+    /// none. When the snapshot cannot be read, a list is still printed, and every ID it cannot
+    /// name says so, with the workspace and the ID (R-8, AG-F17).
     async fn names(&self) -> Directory {
         if !self.text() {
             return Directory::default();
         }
-        self.snapshot()
-            .await
-            .map(|snapshot| Directory::from_snapshot(&snapshot))
-            .unwrap_or_default()
+        match self.snapshot().await {
+            Ok(snapshot) => Directory::from_snapshot(&snapshot),
+            Err(error) => {
+                let workspace = match self.connection().await {
+                    Ok(connection) => connection_name(&connection),
+                    Err(_) => "this workspace".to_owned(),
+                };
+                let disconnected = refusal(&error).and_then(|refused| refused.code).as_deref()
+                    == Some("crew_not_connected");
+                Directory::names_unavailable(&workspace, disconnected)
+            }
+        }
     }
 
     /// `"Bob Lee" (@bob)`, always both, for a decision about a person; from the snapshot, else
@@ -6032,6 +6041,53 @@ mod tests {
             .expect("json")
             .contains('\n'));
         assert!(failure_json(&lost, "x", "req-1", OutputFormat::Text).is_none());
+    }
+
+    /// DW-07: `files watch` names each receipt's channel as `files status` does, and shows
+    /// its IDs with `--show-ids`.
+    #[tokio::test]
+    async fn files_watch_rows_are_named_like_files_status() {
+        let (mut api, _) = api_with(OutputFormat::Text, standard);
+        api.show_ids = true;
+        let options = files::watch_options(&api).await;
+        let receipt = json!({"id": "t-1", "connection_id": CONNECTION, "channel_id": METHODS,
+            "direction": "download", "state": "downloading", "name": "counts.csv",
+            "size": 10, "offset": 5});
+        let row = output::render_text(&receipt, &options);
+        assert!(
+            row.starts_with(&format!(
+                "counts.csv · download from #methods [channel ID {METHODS}] · Downloading 50%"
+            )),
+            "{row}"
+        );
+        assert!(row.contains("[transfer ID t-1]"), "{row}");
+    }
+
+    /// R-8, AG-F17: offline, `grants list` and `files pending` say the names are unavailable
+    /// and show each channel's ID, rather than "this channel" on every row.
+    #[tokio::test]
+    async fn offline_lists_say_names_are_unavailable() {
+        let offline = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                return Err(refuse(409, Some("crew_not_connected"), "Not connected."));
+            }
+            if path.ends_with("/grants") {
+                return Ok(json!({"grants": [{"session_id": SESSION, "run_id": "r",
+                    "connection_id": CONNECTION, "channel_id": METHODS,
+                    "source_channels": [METHODS], "expired": false}]}));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, offline);
+        let lines = said(
+            run(&api, CrewCommand::Grants(GrantCommand::List))
+                .await
+                .expect("listed offline"),
+        );
+        assert_eq!(
+            lines,
+            [format!("Chat 20260924_2 → a channel in UCSF HPC (names unavailable while disconnected) [channel ID {METHODS}] · Active")]
+        );
     }
 
     /// CLI-6: a watch starts at the newest page by default, after the newest message with
