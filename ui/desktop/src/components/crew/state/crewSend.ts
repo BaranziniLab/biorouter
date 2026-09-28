@@ -23,7 +23,13 @@ import type {
   ObservedPrivacy,
 } from './types';
 
-/** The composer's unsent content, its idempotency attempt and the single-flight flag. */
+/** One `message.post` attempt: the payload it carried and the idempotency key it went with. */
+export interface MessageAttempt {
+  fingerprint: string;
+  key: string;
+}
+
+/** The composer's unsent content, each channel's idempotency attempt and single flight. */
 export interface CrewDraftState {
   body: string;
   setBody: Dispatch<SetStateAction<string>>;
@@ -33,8 +39,15 @@ export interface CrewDraftState {
   setReferences: Dispatch<SetStateAction<DraftReference[]>>;
   contextChannels: string[];
   setContextChannels: Dispatch<SetStateAction<string[]>>;
-  /** The message attempt whose idempotency key a retry of the same payload reuses. */
-  pendingMessage: MutableRefObject<{ fingerprint: string; key: string } | null>;
+  /**
+   * Each destination's ({@link postDestination}) message attempt, whose idempotency key a retry of
+   * the same payload to the same channel reuses. One per destination, like `sendingMessage`,
+   * because posts to two channels can be on their way at once (RENDERER-4): a single slot let a
+   * post in #analysis replace #methods' attempt, so a retry in #methods drew a new key and the
+   * broker posted the same message twice. An entry lasts while the text it was made for can still
+   * be sent again from its channel's composer, and no longer (see {@link createSend}).
+   */
+  pendingMessages: MutableRefObject<Map<string, MessageAttempt>>;
   /**
    * The destinations ({@link postDestination}) with a `message.post` in flight, read and written
    * synchronously: Enter and Send share it, so a channel posts one message at a time. A post in
@@ -46,8 +59,11 @@ export interface CrewDraftState {
   setPosting(destination: string, posting: boolean): void;
   /** The context channels the observer checks against each verified snapshot. */
   selectedSources: MutableRefObject<string[]>;
-  /** Clear the body, attachments, references, context channels and the pending attempt. */
-  clearDraft(): void;
+  /**
+   * Clear the body, attachments, references and context channels, and forget every unanswered
+   * attempt on `connectionId`: that connection's drafts are being thrown away with this one.
+   */
+  clearDraft(connectionId: string): void;
   addAttachment(file: DraftFile): void;
   removeAttachment(id: string): void;
   addReference(reference: DraftReference): void;
@@ -60,7 +76,7 @@ export function useCrewDraft(): CrewDraftState {
   const [attachments, setAttachments] = useState<DraftFile[]>([]);
   const [references, setReferences] = useState<DraftReference[]>([]);
   const [contextChannels, setContextChannels] = useState<string[]>([]);
-  const pendingMessage = useRef<{ fingerprint: string; key: string } | null>(null);
+  const pendingMessages = useRef(new Map<string, MessageAttempt>());
   const sendingMessage = useRef(new Set<string>());
   const [postingTo, setPostingTo] = useState<ReadonlySet<string>>(() => new Set());
   const setPosting = useCallback(
@@ -78,12 +94,14 @@ export function useCrewDraft(): CrewDraftState {
   useEffect(() => {
     selectedSources.current = contextChannels;
   }, [contextChannels]);
-  const clearDraft = useCallback(() => {
+  const clearDraft = useCallback((connectionId: string) => {
     setBody('');
     setAttachments([]);
     setReferences([]);
     setContextChannels([]);
-    pendingMessage.current = null;
+    for (const destination of [...pendingMessages.current.keys()])
+      if (destinationConnection(destination) === connectionId)
+        pendingMessages.current.delete(destination);
   }, []);
   const addAttachment = useCallback(
     (file: DraftFile) =>
@@ -117,7 +135,7 @@ export function useCrewDraft(): CrewDraftState {
     setReferences,
     contextChannels,
     setContextChannels,
-    pendingMessage,
+    pendingMessages,
     sendingMessage,
     postingTo,
     setPosting,
@@ -134,6 +152,11 @@ export function useCrewDraft(): CrewDraftState {
 /** Where a post goes: its connection and channel, as one key. */
 export function postDestination(connectionId: string, channelId: string): string {
   return `${connectionId}\n${channelId}`;
+}
+
+/** The connection a {@link postDestination} key names. */
+function destinationConnection(destination: string): string {
+  return destination.slice(0, destination.indexOf('\n'));
 }
 
 export interface CrewSendContext {
@@ -171,10 +194,20 @@ export interface CrewSendContext {
  * Post the composer's draft to the selected channel.
  *
  * Single flight: a second Enter or Send while a post is in flight does nothing. The send is not
- * optimistic: the draft stays until the broker answers, and a retry of an unchanged payload reuses
- * the same idempotency key, while any change rotates it. Success clears only what was sent and
- * never refreshes the verified workspace. Posting while a history page is shown returns to the
- * live tail.
+ * optimistic: the draft stays until the broker answers, and a retry of an unchanged payload to the
+ * same channel reuses the same idempotency key, while any change rotates it. The attempt belongs to
+ * its channel, so a post elsewhere in between never takes the key away (RENDERER-4). Success
+ * clears only what was sent and never refreshes the verified workspace. Posting while a history
+ * page is shown returns to the live tail.
+ *
+ * The attempt lasts exactly as long as its text can be sent again from a composer. An answer to
+ * the composer that sent it clears the text and the attempt together. An answer after the view
+ * moved on (the person left the channel and came back, or its updates were observed again) changes
+ * nothing in the composer, so the text the person was told is kept is still there, and so is its
+ * key: sending it again is the same message to the broker, never a second one. An answer while the
+ * person is in another channel forgets that channel's kept draft, so the text cannot come back,
+ * and the attempt goes with it: kept, its key would stand in for the next message written there
+ * with the same words, and the broker would take that new message for this one.
  *
  * A post also reads the channel up to the posted message (Q3-10), silently, so the person's own
  * message never sits under the "New" rule. And the transfer records it forgot are re-listed at
@@ -206,7 +239,7 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
     act,
     reportError,
   } = context;
-  const { body, attachments, references, pendingMessage, sendingMessage } = draft;
+  const { body, attachments, references, pendingMessages, sendingMessage } = draft;
   const destination = postDestination(connectionId, channelId);
   /** The person is still in the channel this post went to. */
   const stillHere = () =>
@@ -234,9 +267,10 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
           references: references.map((item) => item.id),
         };
         const fingerprint = JSON.stringify({ connectionId, ...payload });
-        if (pendingMessage.current?.fingerprint !== fingerprint)
-          pendingMessage.current = { fingerprint, key: crypto.randomUUID() };
-        const attempt = pendingMessage.current;
+        const kept = pendingMessages.current.get(destination);
+        const attempt: MessageAttempt =
+          kept?.fingerprint === fingerprint ? kept : { fingerprint, key: crypto.randomUUID() };
+        pendingMessages.current.set(destination, attempt);
         let posted: unknown;
         try {
           posted = await request<unknown>(
@@ -275,8 +309,17 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
         }
         // Sent: no earlier draft kept for this channel may come back over the conversation.
         forgetStashedDraft(connectionId, channelId);
-        if (current !== generation.current) return;
-        if (pendingMessage.current === attempt) pendingMessage.current = null;
+        const retire = () => {
+          if (pendingMessages.current.get(destination) === attempt)
+            pendingMessages.current.delete(destination);
+        };
+        if (current !== generation.current) {
+          // Elsewhere, the text is gone with the kept draft just forgotten: the attempt goes too.
+          // Here again, the composer still holds it, and keeps the key for sending it again.
+          if (!stillHere()) retire();
+          return;
+        }
+        retire();
         if (historyPage.current !== null) {
           historyPage.current = null;
           setHistoryBefore(null);

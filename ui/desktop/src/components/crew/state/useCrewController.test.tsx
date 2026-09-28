@@ -1836,6 +1836,136 @@ describe('a post still on its way when the person moves to another channel (REND
     await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
   });
 
+  /** Every `message.post` so far: where it went and the idempotency key it carried. */
+  function messagePosts() {
+    return mocks.crewRequest.mock.calls
+      .filter(([, method]) => method === 'message.post')
+      .map(
+        ([, , params]) => params as { channel_id: string; body: string; idempotency_key: string }
+      );
+  }
+
+  /** From `sendThenMove`: send in #analysis, then come back to #methods, whose post is still out. */
+  async function postHereThenReturn() {
+    const moved = await sendThenMove();
+    act(() => crew.setBody('for #analysis'));
+    await act(async () => {
+      await crew.send();
+    });
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    // The kept draft is back, and #methods' own post still holds its Send.
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+    expect(crew.isPending('send')).toBe(true);
+    return moved;
+  }
+
+  it('retries #methods’ post under its own key after a post in #analysis', async () => {
+    const { post, sent } = await postHereThenReturn();
+    // The outcome is unknown (the broker may have committed it): the retry must reuse its key.
+    await act(async () => {
+      post.reject(new CrewHttpError('The computer did not answer in time', 504));
+      await sent;
+    });
+    expect(crew.error?.source).toBe('composer');
+    expect(crew.draft.body).toBe('for #methods');
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    expect(posts[2].body).toBe('for #methods');
+    // The same message to the same channel: the broker's deduplication covers the retry.
+    expect(posts[2].idempotency_key).toBe(posts[0].idempotency_key);
+    expect(posts[1].idempotency_key).not.toBe(posts[0].idempotency_key);
+  });
+
+  it('keeps #methods’ key while #analysis’ post is still on its way', async () => {
+    const methodsPost = deferred<unknown>();
+    const analysisPost = deferred<unknown>();
+    let posts = 0;
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method !== 'message.post') return {};
+      posts += 1;
+      if (posts === 1) return methodsPost.promise;
+      if (posts === 2) return analysisPost.promise;
+      return { sequence: `m-${posts}` };
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    act(() => crew.setBody('for #methods'));
+    let methodsSent!: Promise<void>;
+    act(() => {
+      methodsSent = crew.send();
+    });
+    await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    act(() => crew.selectChannel(analysis.id));
+    await opened(analysis.id);
+    act(() => crew.setBody('for #analysis'));
+    let analysisSent!: Promise<void>;
+    act(() => {
+      analysisSent = crew.send();
+    });
+    await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+    await act(async () => {
+      methodsPost.reject(new CrewHttpError('The computer did not answer in time', 504));
+      await methodsSent;
+    });
+    await act(async () => {
+      await crew.send();
+    });
+    const sentPosts = messagePosts();
+    expect(sentPosts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    expect(sentPosts[2].idempotency_key).toBe(sentPosts[0].idempotency_key);
+    await act(async () => {
+      analysisPost.resolve({ sequence: 'm-2' });
+      await analysisSent;
+    });
+  });
+
+  it('keeps #methods’ text and key when the answer comes after the person came back', async () => {
+    const { post, sent } = await postHereThenReturn();
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    // The answer came to a view that has moved on: the composer keeps the text it put back, so
+    // sending it again must be the same message to the broker, not a second one.
+    expect(crew.draft.body).toBe('for #methods');
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    expect(posts[2].idempotency_key).toBe(posts[0].idempotency_key);
+  });
+
+  it('forgets #methods’ attempt when its answer comes while the person is elsewhere', async () => {
+    const { post, sent } = await sendThenMove();
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    // Sent while away: its kept draft is gone, and so is its attempt.
+    expect(crew.draft.body).toBe('');
+    // The same words written again are a new message, under a key the broker will not take for
+    // the first one.
+    act(() => crew.setBody('for #methods'));
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, methods.id]);
+    expect(posts[1].idempotency_key).not.toBe(posts[0].idempotency_key);
+  });
+
   it('still reports a refusal in the composer when the person stayed', async () => {
     mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
       if (method === 'message.post') throw new CrewHttpError('Slow down', 429);

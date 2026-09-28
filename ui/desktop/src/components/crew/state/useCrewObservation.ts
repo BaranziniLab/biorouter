@@ -29,7 +29,7 @@ import {
 } from '../identity';
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
-import type { CrewDraftState } from './crewSend';
+import { postDestination, type CrewDraftState } from './crewSend';
 import { isMembershipEnded } from './connectFailure';
 import {
   forgetConnectionDrafts,
@@ -407,7 +407,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setReferences,
     contextChannels,
     setContextChannels,
-    pendingMessage,
+    pendingMessages,
     selectedSources,
     clearDraft,
   } = draft;
@@ -633,8 +633,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         deferRecoverableToReverification: true,
       });
       if (outcome.clearDraft) {
-        clearDraft();
         // Access or privacy changed: no draft kept for this workspace may come back either.
+        clearDraft(selection.current.connectionId);
         forgetConnectionDrafts(selection.current.connectionId);
       }
       recoveringFrom.current = null;
@@ -860,7 +860,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       forgetRememberedView(connectionId);
       restoredDraft.current = null;
       historyPage.current = null;
-      pendingMessage.current = null;
+      pendingMessages.current.delete(postDestination(connectionId, channelId));
       setMessages([]);
       setMessagesLoaded(false);
       setBody('');
@@ -986,7 +986,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   draftScopeChanged(putBack.scope, frame, channelId, []))
               ) {
                 const hadContent = draftHasContent.current;
-                clearDraft();
+                clearDraft(connectionId);
                 forgetConnectionDrafts(connectionId);
                 if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
@@ -1159,7 +1159,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     clearDraft,
     generation,
     selectedSources,
-    pendingMessage,
+    pendingMessages,
     reportError,
     resetSurfaces,
     onVerifiedFrame,
