@@ -7982,6 +7982,10 @@ export type CrewRequestErrors = {
      */
     403: CrewError;
     /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
+     */
+    409: CrewError;
+    /**
      * `crew_request_invalid`: the body is larger than the route takes
      */
     413: CrewError;
@@ -8066,7 +8070,7 @@ export type CrewStartRunErrors = {
      */
     403: CrewError;
     /**
-     * `crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another
+     * `crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
      */
     409: CrewError;
     /**
@@ -8166,6 +8170,10 @@ export type CrewProfileContextErrors = {
      */
     403: CrewError;
     /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
+     */
+    409: CrewError;
+    /**
      * The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)
      */
     503: CrewError;
@@ -8208,7 +8216,7 @@ export type CrewGrantSessionErrors = {
      */
     403: CrewError;
     /**
-     * `crew_model_fixed`: the chat already has Crew access bound to another model
+     * `crew_model_fixed`: the chat already has Crew access bound to another model; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
      */
     409: CrewError;
     /**
@@ -8698,7 +8706,7 @@ export type CrewResolveErrors = {
      */
     403: CrewError;
     /**
-     * The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`)
+     * The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`); `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
      */
     409: CrewError;
     /**
@@ -8785,6 +8793,10 @@ export type CrewTransferStartErrors = {
      */
     403: CrewError;
     /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add
+     */
+    409: CrewError;
+    /**
      * `crew_request_invalid`: the body is larger than the route takes
      */
     413: CrewError;
@@ -8829,6 +8841,10 @@ export type CrewTransferPreviewErrors = {
      * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
     403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add
+     */
+    409: CrewError;
     /**
      * `crew_request_invalid`: the body is larger than the route takes
      */
@@ -8996,6 +9012,10 @@ export type CrewTransferResumeErrors = {
      * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
     403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add
+     */
+    409: CrewError;
     /**
      * `crew_request_invalid`: the body is larger than the route takes
      */

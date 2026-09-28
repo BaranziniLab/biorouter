@@ -773,7 +773,7 @@ fn transfer_recovery_message(error: &anyhow::Error, publication_unconfirmed: boo
             "Crew credential vault is locked; explicitly unlock it for this daemon session" => {
                 return "Unlock the Crew credential vault for this daemon session, then reselect the original local file or destination and resume.";
             }
-            "Crew connection is disconnected; authenticate and connect in Crew" => {
+            biorouter::crew::refusal::NOT_CONNECTED_TEXT => {
                 return "Authenticate and reconnect the saved connection in Crew, then reselect the original local file or destination and resume.";
             }
             "Connection identity or privacy policy changed; create a new approved transfer"

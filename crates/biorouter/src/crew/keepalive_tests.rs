@@ -1908,6 +1908,37 @@ async fn a_request_while_a_redial_is_owed_is_told_it_is_reconnecting() {
     f.manager.disconnect(CONNECTION_ID).await.unwrap();
 }
 
+/// T3-BE-3: a request on a connection that is down with nothing dialling it again is refused
+/// typed, `crew_not_connected` with `409` and the workspace named, so each client can say it in
+/// its own words. The sentence is unchanged, byte for byte, because older clients still match
+/// it. Nothing is dialled or written for it.
+#[tokio::test]
+async fn a_request_on_a_connection_nobody_is_dialling_is_refused_as_not_connected() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("request-not-connected", &["serve"], quiet()).await;
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_not_connected");
+    assert_eq!(typed.http_status(), 409);
+    assert_eq!(
+        error.to_string(),
+        "Crew connection is disconnected; authenticate and connect in Crew"
+    );
+    assert_eq!(
+        typed.fields(),
+        &[("workspace", json!("keepalive fixture"))],
+        "the workspace as a person calls it"
+    );
+    assert_eq!(spawns(&f.root), 0, "nothing dialled for it");
+    assert!(requests(&f.root).is_empty(), "nothing written for it");
+}
+
 /// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`
 /// and drops the next request, as a relay that resets new sessions would) is never dialled in a
 /// tight loop. The drop a request finds is dialled at once; that dial's membership check breaks

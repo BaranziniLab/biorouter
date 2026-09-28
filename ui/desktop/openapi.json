@@ -3212,6 +3212,16 @@
               }
             }
           },
+          "409": {
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
           "413": {
             "description": "`crew_request_invalid`: the body is larger than the route takes",
             "content": {
@@ -3364,7 +3374,7 @@
             }
           },
           "409": {
-            "description": "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another",
+            "description": "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
             "content": {
               "application/json": {
                 "schema": {
@@ -3544,6 +3554,16 @@
               }
             }
           },
+          "409": {
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
             "content": {
@@ -3627,7 +3647,7 @@
             }
           },
           "409": {
-            "description": "`crew_model_fixed`: the chat already has Crew access bound to another model",
+            "description": "`crew_model_fixed`: the chat already has Crew access bound to another model; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
             "content": {
               "application/json": {
                 "schema": {
@@ -4478,7 +4498,7 @@
             }
           },
           "409": {
-            "description": "The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`)",
+            "description": "The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`); `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
             "content": {
               "application/json": {
                 "schema": {
@@ -4637,6 +4657,16 @@
               }
             }
           },
+          "409": {
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
           "413": {
             "description": "`crew_request_invalid`: the body is larger than the route takes",
             "content": {
@@ -4719,6 +4749,16 @@
           },
           "403": {
             "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add",
             "content": {
               "application/json": {
                 "schema": {
@@ -5017,6 +5057,16 @@
           },
           "403": {
             "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add",
             "content": {
               "application/json": {
                 "schema": {

@@ -156,6 +156,7 @@ pub async fn discard_file(
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add", body = CrewError)
     ),
     tag = "Crew"
@@ -247,6 +248,7 @@ pub struct Resume {
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add", body = CrewError)
     ),
     tag = "Crew"
@@ -323,6 +325,7 @@ pub async fn forget(
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add", body = CrewError)
     ),
     tag = "Crew"

@@ -43,6 +43,15 @@ pub const OUTCOME_UNKNOWN: &str = "crew_outcome_unknown";
 /// `crew_not_sent`: the bridge was lost before anything was written; nothing reached the
 /// workspace (W2-DMN-7).
 pub const NOT_SENT: &str = "crew_not_sent";
+/// `crew_not_connected`: the connection has no bridge and none is being dialled, so a person has
+/// to connect it (and sign in when SSH asks); nothing was sent (T3-BE-3). It used to be a bare
+/// sentence, answered as `400 crew_request_refused`, so no client could word it for itself.
+pub const NOT_CONNECTED: &str = "crew_not_connected";
+
+/// [`NOT_CONNECTED`]'s sentence. Kept byte for byte: the desktop's transport matchers, a chat's
+/// turn error and a transfer's recovery advice all still read it.
+pub const NOT_CONNECTED_TEXT: &str =
+    "Crew connection is disconnected; authenticate and connect in Crew";
 
 /// The sentence a Crew chat's model switch is refused with, and the grant path's refusal of a
 /// different model for a chat that already has access (W2-DMN-10).
@@ -124,6 +133,13 @@ impl CrewRefusal {
         )
         .with("actual_mode", serde_json::json!(actual))
         .with("expected_mode", serde_json::json!(expected))
+    }
+
+    /// [`NOT_CONNECTED`], answered `409`, naming `workspace` as a person calls it.
+    pub(super) fn not_connected(workspace: &str) -> Self {
+        Self::new(NOT_CONNECTED, NOT_CONNECTED_TEXT)
+            .status(409)
+            .with("workspace", serde_json::json!(workspace))
     }
 
     /// [`MODEL_FIXED`], answered `409`.

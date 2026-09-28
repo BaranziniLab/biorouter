@@ -3108,9 +3108,10 @@ impl CrewManager {
             .with("workspace", json!(workspace))
             .into());
         }
-        Err(anyhow::anyhow!(
-            "Crew connection is disconnected; authenticate and connect in Crew"
-        ))
+        // Nothing is dialling it: a person connects it. Typed, so each client can say so in its
+        // own words; the sentence stays the one older clients match (T3-BE-3).
+        let workspace = self.workspace_label(id).await;
+        Err(CrewRefusal::not_connected(&workspace).into())
     }
     pub async fn human_request(
         &self,

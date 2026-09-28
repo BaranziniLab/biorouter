@@ -725,7 +725,7 @@ pub async fn host_start_cancel(
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
-        (status = 409, description = "The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`)", body = CrewError),
+        (status = 409, description = "The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`); `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
         (status = 503, description = "The workspace could not be asked for the snapshot: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it). Nothing changed", body = CrewError)
     ),
     tag = "Crew"
@@ -820,6 +820,7 @@ fn empty_object() -> Value {
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace applied it is not known; retry with `request_id`, its idempotency key, to apply it at most once) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -923,7 +924,7 @@ fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
-        (status = 409, description = "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another", body = CrewError),
+        (status = 409, description = "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -2396,7 +2397,7 @@ pub struct GrantSessionRequest {
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
-        (status = 409, description = "`crew_model_fixed`: the chat already has Crew access bound to another model", body = CrewError),
+        (status = 409, description = "`crew_model_fixed`: the chat already has Crew access bound to another model; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"

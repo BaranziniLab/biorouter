@@ -551,6 +551,10 @@ async fn core_refusal(
     // After the SSH and identity classes, which the join screen acts on by their own codes
     // (a lost request's refusal carries its SSH failure underneath).
     if let Some(refused) = CrewRefusal::find(&error) {
+        // The core's own "not connected" (T3-BE-3) keeps the join screen's words.
+        if refused.code() == biorouter::crew::refusal::NOT_CONNECTED {
+            return not_connected();
+        }
         return typed_refusal(refused);
     }
     if let Some(id) = connection_id {
