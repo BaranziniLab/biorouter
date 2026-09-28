@@ -1613,16 +1613,42 @@ pub fn is_run_id(value: &str) -> bool {
 /// connection that is in `actual`. A GUI's verified mode and a terminal's `--expected-mode`
 /// both reach here, so the refusal names both modes rather than guessing that one changed
 /// (W2-DMN-9). An absent `expected` requires nothing.
-fn require_mode(expected: Option<&Value>, actual: ClusterMode) -> Result<()> {
+/// The privacy in force for a connection in `own` mode to a workspace in `workspace` mode
+/// (T3-BE-5), the manual's definition and what every surface reports as the effective mode:
+/// Private when either is, since a workspace that is Private for everyone restricts every
+/// message whatever the connection's own mode (the broker's `message_restricted`); the
+/// connection's own when the workspace's mode is not known.
+fn effective_mode(own: ClusterMode, workspace: Option<ClusterMode>) -> ClusterMode {
+    if own == ClusterMode::Private || workspace == Some(ClusterMode::Private) {
+        ClusterMode::Private
+    } else {
+        own
+    }
+}
+/// Whether a request that required `expected` may go ahead on a connection in `own` mode to a
+/// workspace in `workspace` mode. It may when `expected` is the privacy in force
+/// ([`effective_mode`], T3-BE-5: `--expected-mode private` from a personal Public connection in
+/// a workspace that is Private for everyone used to be refused, although every surface said
+/// Private), or the connection's own mode, which is what the desktop sends as the mode it last
+/// verified. The one refused is the mismatch that matters: a request that required Private on
+/// a connection that is Public in force, or the reverse; its refusal names the mode in force.
+/// `None` (no expectation) always may. Pass `None` for `workspace` to hold the connection's own
+/// mode alone.
+fn require_mode(
+    expected: Option<&Value>,
+    own: ClusterMode,
+    workspace: Option<ClusterMode>,
+) -> Result<()> {
     let Some(expected) = expected else {
         return Ok(());
     };
     let expected: ClusterMode = serde_json::from_value(expected.clone())
         .map_err(|_| anyhow::anyhow!("A Crew privacy mode is either public or private"))?;
-    if expected == actual {
+    let in_force = effective_mode(own, workspace);
+    if expected == own || expected == in_force {
         return Ok(());
     }
-    Err(CrewRefusal::mode_mismatch(actual, expected).into())
+    Err(CrewRefusal::mode_mismatch(in_force, expected).into())
 }
 pub(super) fn safe_atom(value: &str) -> bool {
     !value.is_empty()
@@ -1775,6 +1801,11 @@ impl CrewManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .cloned()
+    }
+    /// The workspace's own privacy mode, as its last `hello` signed it (v2); `None` when no
+    /// signed `hello` said (not connected, or an older broker).
+    fn signed_workspace_mode(&self, id: &str) -> Option<ClusterMode> {
+        self.broker_hello(id).and_then(|hello| hello.mode)
     }
     /// Whether `connection`'s workspace server has stopped saving changes, as its last verified
     /// `hello` said (T3-BE-13). Only while it is connected: a `hello` from before a drop says
@@ -3325,8 +3356,10 @@ impl CrewManager {
         ensure!(params.is_object(), "Crew params must be an object");
         let c = self.connection(id).await?;
         if method == "run.create" {
+            // The daemon's own check that the connection's mode did not move since admission,
+            // which judged the person's expectation ([`Self::checked_run_admission`]).
             let expected = params.as_object_mut().unwrap().remove("expected_mode");
-            require_mode(expected.as_ref(), c.mode)?;
+            require_mode(expected.as_ref(), c.mode, None)?;
             let expected_epoch = params
                 .as_object_mut()
                 .unwrap()
@@ -3350,7 +3383,13 @@ impl CrewManager {
             }
         }
         if matches!(method, "message.post" | "blob.begin") {
-            require_mode(params.get("personal_mode"), c.mode)?;
+            require_mode(
+                params.get("personal_mode"),
+                c.mode,
+                self.signed_workspace_mode(id),
+            )?;
+            // The workspace combines the connection's own mode with its own; it is always told
+            // the connection's.
             params["personal_mode"] = json!(c.mode);
         }
         if params.get("idempotency_key").is_none() {
@@ -3814,9 +3853,11 @@ impl CrewManager {
     ) -> Result<(institution::Admission, AdmissionLabels)> {
         ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let connection = self.connection(id).await?;
-        if let Some(expected) = policy.expected_mode.filter(|mode| *mode != connection.mode) {
-            return Err(CrewRefusal::mode_mismatch(connection.mode, expected).into());
-        }
+        require_mode(
+            policy.expected_mode.map(|mode| json!(mode)).as_ref(),
+            connection.mode,
+            self.signed_workspace_mode(id),
+        )?;
         ensure!(
             policy
                 .expected_policy_epoch
@@ -7035,6 +7076,156 @@ mod tests {
             );
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-5: an expected mode is compared with the privacy in force as well as the
+    /// connection's own mode. A personal Public connection in a workspace that is Private for
+    /// everyone is Private in force, so a request that required Private goes ahead; one that
+    /// required Public is the connection's own mode, which the desktop sends as the mode it last
+    /// verified, and goes ahead too. The mismatch that matters is still refused, naming the mode
+    /// in force.
+    #[test]
+    fn an_expected_mode_is_judged_against_the_privacy_in_force() {
+        use ClusterMode::{Private, Public};
+        assert_eq!(effective_mode(Public, Some(Private)), Private);
+        assert_eq!(effective_mode(Public, Some(Public)), Public);
+        assert_eq!(effective_mode(Public, None), Public, "not known: its own");
+        assert_eq!(effective_mode(Private, Some(Public)), Private);
+        for (own, workspace, expected, passes) in [
+            (Public, Some(Private), Private, true),
+            (Public, Some(Private), Public, true),
+            (Public, Some(Public), Private, false),
+            (Public, None, Private, false),
+            (Private, Some(Public), Public, false),
+            (Private, None, Private, true),
+        ] {
+            let judged = require_mode(Some(&json!(expected)), own, workspace);
+            assert_eq!(
+                judged.is_ok(),
+                passes,
+                "{own:?} in {workspace:?}, {expected:?}"
+            );
+            if let Err(refused) = judged {
+                let typed = CrewRefusal::find(&refused).expect("typed");
+                assert_eq!(typed.code(), "crew_mode_mismatch");
+                assert_eq!(
+                    typed.fields()[0],
+                    ("actual_mode", json!(effective_mode(own, workspace)))
+                );
+            }
+        }
+        assert!(require_mode(None, Public, Some(Private)).is_ok());
+    }
+
+    /// T3-BE-5, through the manager: the workspace's signed `hello` says it is Private for
+    /// everyone, and a personal Public connection's post that required Private, or a task that
+    /// did, is no longer refused as a mismatch. Before, both read "Your connection is Public,
+    /// but this request required Private." while every surface said Private.
+    #[tokio::test]
+    async fn a_request_that_requires_the_privacy_in_force_is_not_a_mismatch() {
+        let root = fixture_root("mode-in-force");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let connection_id = "mode-in-force-connection";
+        manager.registry.lock().await.connections.push(Connection {
+            id: connection_id.into(),
+            node_id: None,
+            name: "mode in force fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "mode-in-force-workspace".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "mode-in-force-cluster".into(),
+            mode: ClusterMode::Public,
+            institution_id: None,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        });
+        let workspace_mode = |mode: ClusterMode| {
+            manager.brokers.lock().unwrap().insert(
+                connection_id.into(),
+                BrokerHello {
+                    signature_version: 2,
+                    capabilities: vec![],
+                    workspace_name: Some("okafor-lab".into()),
+                    mode: Some(mode),
+                    institution_id: None,
+                    policy_epoch: Some(1),
+                    storage: None,
+                },
+            );
+        };
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("missing-cassette.json")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap();
+        let task = |expected| {
+            manager.begin_run_with_policy(
+                "mode-in-force-session",
+                connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+                RunPolicy {
+                    expected_mode: Some(expected),
+                    ..RunPolicy::default()
+                },
+            )
+        };
+        let code = |error: &anyhow::Error| CrewRefusal::find(error).map(CrewRefusal::code);
+
+        workspace_mode(ClusterMode::Private);
+        for expected in ["private", "public"] {
+            let post = manager
+                .human_request(
+                    connection_id,
+                    "message.post",
+                    json!({"personal_mode": expected}),
+                    None,
+                )
+                .await
+                .expect_err("the fixture has no device key");
+            assert_ne!(
+                code(&post),
+                Some("crew_mode_mismatch"),
+                "{expected}: {post}"
+            );
+        }
+        let admitted = task(ClusterMode::Private)
+            .await
+            .err()
+            .expect("the fixture has no device key");
+        assert_ne!(code(&admitted), Some("crew_mode_mismatch"), "{admitted}");
+
+        // In a workspace that allows Public, the connection is Public in force.
+        workspace_mode(ClusterMode::Public);
+        let post = manager
+            .human_request(
+                connection_id,
+                "message.post",
+                json!({"personal_mode": "private"}),
+                None,
+            )
+            .await
+            .expect_err("a mismatch");
+        assert_eq!(code(&post), Some("crew_mode_mismatch"));
+        assert_eq!(
+            post.to_string(),
+            "Your connection is Public, but this request required Private. Nothing was sent."
+        );
+        let refused = task(ClusterMode::Private).await.err().expect("a mismatch");
+        assert_eq!(code(&refused), Some("crew_mode_mismatch"));
         let _ = fs::remove_dir_all(root);
     }
 
