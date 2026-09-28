@@ -73,10 +73,23 @@ export const CLAMP_EXPAND_MS = 300;
 const LINE_STRUCTURED_MEAN_WIDTH = 80;
 
 /**
- * Which unit the count is stated in. `lines` counts what a log is measured in
- * (lines and bytes); `prose` counts what prose is measured in (words).
+ * Mean characters per word above which a word count says nothing about size.
+ *
+ * Words in running prose average five or six characters, and even a paragraph
+ * full of URLs stays well under this. A message that is long because of its
+ * tokens rather than its words (a sequence, a base64 blob, a minified line,
+ * Chinese or Japanese written without spaces) sits far above it: a 3,019
+ * character line of four "words" read "4 words", and a 32 KB run "1 word"
+ * (QA M20). Such a message is stated by its size instead.
  */
-export type MessageShape = 'lines' | 'prose';
+const LONG_TOKEN_MEAN_WIDTH = 24;
+
+/**
+ * Which unit the count is stated in. `lines` counts what a log is measured in
+ * (lines and bytes); `prose` counts what prose is measured in (words); `size`
+ * is for text whose words are too few or too long to measure it (bytes).
+ */
+export type MessageShape = 'lines' | 'prose' | 'size';
 
 export interface MessageExtent {
   /** Visual lines. A single trailing newline does not add one. */
@@ -124,25 +137,33 @@ function plural(count: number, noun: string): string {
   return count === 1 ? noun : `${noun}s`;
 }
 
+function shapeOf(chars: number, lines: number, words: number): MessageShape {
+  // A single line can never be "structured by its line breaks" — it has none.
+  if (lines > 1 && chars / lines <= LINE_STRUCTURED_MEAN_WIDTH) return 'lines';
+  // Characters per word, whitespace included: an empty message has no words and
+  // no size to speak of, and stays prose.
+  if (chars > 0 && chars / Math.max(words, 1) > LONG_TOKEN_MEAN_WIDTH) return 'size';
+  return 'prose';
+}
+
 export function measureMessageExtent(text: string): MessageExtent {
   const chars = text.length;
   const lines = countLines(text);
-  const meanLineWidth = chars / lines;
+  const words = countWords(text);
 
   return {
     lines,
-    words: countWords(text),
+    words,
     bytes: countBytes(text),
     chars,
-    // A single line can never be "structured by its line breaks" — it has none.
-    shape: lines > 1 && meanLineWidth <= LINE_STRUCTURED_MEAN_WIDTH ? 'lines' : 'prose',
+    shape: shapeOf(chars, lines, words),
     shouldClamp: lines > CLAMP_LINE_THRESHOLD || chars > CLAMP_CHAR_THRESHOLD,
   };
 }
 
 /**
  * The count that rides next to the control — `214 lines · 8.4 KB` for a log,
- * `128 words` for prose.
+ * `128 words` for prose, `32 KB` for text a word count cannot measure.
  *
  * The count is the whole value of the control: it is what tells you whether
  * expanding is worth it. A bare "Show more" does not.
@@ -151,6 +172,7 @@ export function formatMessageExtent(extent: MessageExtent): string {
   if (extent.shape === 'lines') {
     return `${extent.lines} ${plural(extent.lines, 'line')} · ${formatBytes(extent.bytes)}`;
   }
+  if (extent.shape === 'size') return formatBytes(extent.bytes);
   return `${extent.words} ${plural(extent.words, 'word')}`;
 }
 
