@@ -255,6 +255,17 @@ this section is the ledger.
   public. The same change (QA finding F3) makes every window's chip follow the app-wide
   selection live, so no window names a private model while its next new chat would bind a public
   one. See [model selection across windows](../desktop-ui/model-selection-across-windows.md).
+  A chat not yet sent now gets the same "this chat" scope (added 2026-09-28): a pick there is
+  held for that chat and bound to it right after `/agent/start`, before its first message, so
+  picking a model in an unsent tab no longer moves the model every new chat starts on.
+- **§14.8's discoverability tip, in a changed form (added 2026-09-28, after this ledger was
+  written).** In place of a first-run tip shown once, **Switch models** says, whenever a private
+  model is picked for a started public chat and before it is applied: *"After your next message
+  this chat becomes private. Public models can't be used in it again unless you make it public
+  from History."* It is not dismissible and it shows each time that choice is made. In a private
+  chat, a public model's row says why it is unavailable and names History > Make public
+  (`PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP` and `PUBLIC_MODEL_IN_PRIVATE_CHAT` in
+  `ui/desktop/src/components/settings/models/subcomponents/SwitchModelModal.tsx`).
 
 ### Did not ship
 
@@ -2961,6 +2972,10 @@ a private session", not mid-turn.
 One first-run tip the first time a private model is selected — *"Chats on private models stay
 private. Public models can't read them, ever."* — dismissible, shown once. No tour, no banner, no
 persistent nag. The badges carry the rest.
+
+> **Note.** This shipped in a changed form on 2026-09-28: a note in **Switch models** before a
+> private model is applied to a public chat, not a one-time tip. The ledger at the top of this
+> document gives its wording.
 
 ---
 

@@ -754,6 +754,78 @@ test('share-dialog: the manual quotes the Share message, never the title macOS h
   );
 });
 
+test('product-docs: the landing and product pages match the provider screens and key storage (W2-DOC-8)', () => {
+  // The audited key storage promise, back in the secret-storage page.
+  assertCaught(
+    {
+      'docs/security/secret-storage.md': swap(
+        'While the credential store answers, secrets never\ntouch disk in plaintext,',
+        'Secrets never touch disk in plaintext,'
+      ),
+    },
+    'product-docs',
+    /secret-storage\.md promises keys never reach a plaintext file/
+  );
+  // A Launch button on every card.
+  assertCaught(
+    {
+      'docs/getting-started/installation.md': swap(
+        '**Desktop:** to change the model of a chat,',
+        '**Desktop:** Settings > Models > select a provider card > Configure or Launch. To change the model of a chat,'
+      ),
+    },
+    'product-docs',
+    /installation\.md promises a Launch button/
+  );
+  // The "Commercial" group, in a provider page and in the landing page.
+  assertCaught(
+    {
+      'docs/providers/zai-glm.md': swap(
+        'Appears in the one provider list, which has no group headings,',
+        'Appears in the provider list under Commercial,'
+      ),
+    },
+    'product-docs',
+    /zai-glm\.md names a "Commercial" group/
+  );
+  // The old mode names in a table row, whose cells a reader must keep apart.
+  assertCaught(
+    {
+      [LANDING]: swap(
+        '<tr><td>Manual</td><td><code>approve</code></td>',
+        '<tr><td>Manual Approval</td><td><code>approve</code></td>'
+      ),
+    },
+    'product-docs',
+    /names a permission mode as the app does not/
+  );
+  // The SageMaker row without its default.
+  assertCaught(
+    {
+      [LANDING]: swap(
+        '<td><strong>AWS SageMaker TGI</strong></td><td><code>sagemaker-tgi-endpoint</code></td>',
+        '<td><strong>AWS SageMaker TGI</strong></td><td>none</td>'
+      ),
+    },
+    'product-docs',
+    /SageMaker TGI row does not name its default model sagemaker-tgi-endpoint/
+  );
+  // The provider screens stop showing Launch on the first run screen only: the rule says so.
+  assertCaught(
+    {
+      'ui/desktop/src/components/settings/providers/subcomponents/buttons/DefaultCardButtons.tsx': (
+        text
+      ) =>
+        text.replace(
+          'provider.is_configured && isOnboardingPage && (',
+          'provider.is_configured && ('
+        ),
+    },
+    'product-docs',
+    /no longer shows Launch on the first run screen only/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

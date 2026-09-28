@@ -54,6 +54,12 @@
 //     commands go public with no typed confirmation (CLI-10).
 //   * `share-dialog`: the landing page named the Share window by a title
 //     macOS never shows (DW-15).
+//   * `product-docs`: the landing page reads here already, and its providers
+//     and security pages drifted with the Crew ones (W2-DOC-8): keys "not in a
+//     plaintext file" where a keyless machine writes one, a Launch button on
+//     every provider card, "Commercial" where the tab says Public, mode names
+//     the app does not use, and no SageMaker default. The getting-started
+//     guides and the secret-storage page are held to the same code.
 //
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
@@ -106,6 +112,21 @@ const CLI_ARGS = 'crates/biorouter-cli/src/commands/crew/args.rs';
 const ATTENTION = 'ui/desktop/src/components/crew/attention/crewAttention.ts';
 const CREW_STATUS = 'ui/desktop/src/components/crew/state/crewStatus.ts';
 const SHARE_PATH = 'ui/desktop/src/utils/crewSharePath.ts';
+const KEY_NOTICE =
+  'ui/desktop/src/components/settings/providers/modal/subcomponents/SecureStorageNotice.tsx';
+const CARD_BUTTONS =
+  'ui/desktop/src/components/settings/providers/subcomponents/buttons/DefaultCardButtons.tsx';
+const PROVIDER_ORDERING = 'ui/desktop/src/components/settings/providers/providerOrdering.ts';
+const MODE_ITEM = 'ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx';
+const SAGEMAKER = 'crates/biorouter/src/providers/sagemaker_tgi.rs';
+/** The product pages held to the provider and key storage code (W2-DOC-8). */
+const PRODUCT_DOCS = [
+  'docs/getting-started/choosing-a-model-provider.md',
+  'docs/getting-started/installation.md',
+  'docs/security/secret-storage.md',
+  'docs/providers/xiaomi-mimo.md',
+  'docs/providers/zai-glm.md',
+];
 
 /**
  * The value of `pub const <name>: &str = "…";` in Rust source, with the string's
@@ -936,6 +957,95 @@ export function checkCrewManual(tree = repoTree()) {
             `${path} does not quote the Share message, such as 'Share "counts.csv" (55 KB) to Crew?'`
           );
         }
+      }
+    }
+  }
+
+  // ── product-docs ─────────────────────────────────────────────────────────
+  // The landing page as a whole, and the product pages, against the provider
+  // screens and key storage (W2-DOC-8). Each claim is refused only while the
+  // code it contradicts is there.
+  const productPages = [
+    // A space after each cell, so a table row's cells stay words apart.
+    { path: LANDING, blocks: htmlBlocks(landingHtml.replace(/<\/t[dh]>/g, '$& ')) },
+    ...PRODUCT_DOCS.map((path) => ({
+      path,
+      blocks: markdownBlocks(need(path, 'product-docs') || ''),
+    })),
+  ];
+  const refuseEverywhere = (claim, why) => {
+    for (const { path, blocks } of productPages) {
+      for (const block of blocks.filter((b) => claim.test(b))) {
+        fail('product-docs', `${path} ${why}: ${block.slice(0, 140)}`);
+      }
+    }
+  };
+  const keyNotice = need(KEY_NOTICE, 'product-docs');
+  if (keyNotice !== null) {
+    if (
+      !/KEY_STORAGE_NOTICE\s*=\s*\n?\s*"[^"]*when one is available, otherwise in a private file/.test(
+        keyNotice
+      )
+    ) {
+      fail(
+        'product-docs',
+        `${KEY_NOTICE}'s KEY_STORAGE_NOTICE changed; re-read it and update this rule`
+      );
+    } else {
+      refuseEverywhere(
+        /not in a plaintext file|API keys are encrypted|Secrets never touch disk in plaintext|stored securely in the keychain/,
+        'promises keys never reach a plaintext file, but a machine with no credential store writes secrets.yaml'
+      );
+    }
+  }
+  const cardButtons = need(CARD_BUTTONS, 'product-docs');
+  if (cardButtons !== null) {
+    if (!/provider\.is_configured && isOnboardingPage && \(\s*<RocketButton/.test(cardButtons)) {
+      fail(
+        'product-docs',
+        `${CARD_BUTTONS} no longer shows Launch on the first run screen only; update this rule`
+      );
+    } else {
+      refuseEverywhere(
+        /\ba (?:"Launch"|Launch) button to switch\b|\bConfigure or Launch\b/,
+        'promises a Launch button on every provider card, which only the first run screen has'
+      );
+    }
+  }
+  const ordering = need(PROVIDER_ORDERING, 'product-docs');
+  if (ordering !== null) {
+    if (!/tabLabel:\s*'Public'/.test(ordering)) {
+      fail('product-docs', `${PROVIDER_ORDERING} has no 'Public' tab; update this rule`);
+    } else {
+      refuseEverywhere(
+        /\bCommercial Models\b|\bunder Commercial\b|\bgrouped as\b[^.]*\bCommercial\b/,
+        'names a "Commercial" group, where the provider tab is Public'
+      );
+    }
+  }
+  const modeItem = need(MODE_ITEM, 'product-docs');
+  if (modeItem !== null) {
+    if (!/label:\s*'Autonomous'/.test(modeItem) || !/label:\s*'Chat only'/.test(modeItem)) {
+      fail('product-docs', `${MODE_ITEM}'s mode labels changed; update this rule`);
+    } else {
+      refuseEverywhere(
+        /\b(?:Completely Autonomous|Manual Approval|Smart Approval|Chat Only)\b/,
+        'names a permission mode as the app does not (Autonomous, Manual, Smart, Chat only)'
+      );
+    }
+  }
+  const sagemaker = need(SAGEMAKER, 'product-docs');
+  if (sagemaker !== null) {
+    const model = rustStrConst(sagemaker, 'SAGEMAKER_TGI_DEFAULT_MODEL');
+    if (model === null) {
+      fail('product-docs', `${SAGEMAKER} defines no SAGEMAKER_TGI_DEFAULT_MODEL; update this rule`);
+    } else {
+      const row = htmlBlocks(landingHtml).find((b) => /^AWS SageMaker TGI/.test(b)) || '';
+      if (!row.includes(model)) {
+        fail(
+          'product-docs',
+          `${LANDING}'s SageMaker TGI row does not name its default model ${model}`
+        );
       }
     }
   }

@@ -1,7 +1,7 @@
 # Model selection across windows
 
 > **What this is.** The rules that keep the composer's model chip — its name, gauge, cost line and "Private model, UCSF" padlock — equal to what the next turn will actually run on, in every window, and the decision about what a model switch changes.
-> **Status:** Current. Shipped for provider-QA finding F3 (2026-09-10) on top of `main` at `7c96d796`.
+> **Status:** Current. Shipped for provider-QA finding F3 (2026-09-10) on top of `main` at `7c96d796`. The unsent-chat scope and the Crew chat's fixed model were added on 2026-09-28 (W2-PRV-6, W2-PRV-15).
 > **Audience:** developers working on the desktop renderer's model selection, the composer, or privacy tiers.
 
 A chat runs on one of two things, and the chip has to state the right one at the moment a
@@ -16,7 +16,7 @@ with no BAA (business associate agreement). The privacy barrier held: the chat w
 | Fact | Where it lives | What it decides | Who states it |
 |---|---|---|---|
 | **A chat's binding** | the session row (`provider_name`, `model_config`), outranked by the pin a turn reports | what an existing chat's next turn runs on — Gate B rebinds from the row | the chip inside a chat that has one |
-| **The app-wide selection** | `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` in `config.yaml` | what a **new** chat binds — `/agent/start` reads exactly these two keys (`configured_new_session_provider`) and accepts no provider of its own | the chip on Home and in a chat not yet started |
+| **The app-wide selection** | `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` in `config.yaml` | what a **new** chat binds: `/agent/start` reads exactly these two keys (`configured_new_session_provider`) and accepts no provider of its own | the chip on Home, and in a chat not yet started until a model is picked for it |
 
 `privacy/pinnedModel.ts` (`chatBinding`) and `privacy/usePinnedModel.ts` choose between the
 two for a chat. This document is about keeping each one *current* — before F3 the second was
@@ -30,12 +30,22 @@ from onboarding, and every one of them ends in `ModelAndProviderContext.changeMo
 | Opened from | What the switch changes | What the dialog says |
 |---|---|---|
 | a chat that exists | **that chat only** — its session row, through `/agent/update_provider` | "Select a provider and model for this chat." plus an unticked **Also use for new chats** box |
+| a chat not yet started | **that chat only**: the pick is held, the chip names it, and it is bound with the same per-chat `/agent/update_provider` right after `/agent/start` creates the chat, before its first message is sent | the same as for a chat that exists, box included |
 | a chat, with the box ticked | that chat **and** the app-wide selection | the box's hint: new chats in every window will start on it |
-| Home, a chat not yet started, Settings → Models, onboarding | the app-wide selection — the only thing there is to change | "Select the provider and model new chats start on, in every window. Existing chats keep their own model." |
+| a chat with Crew access | nothing: its grant fixes its model | "This chat's model is fixed by its Crew access. Start a new chat to use another model.", with every control that could change it disabled |
+| Home, Settings → Models, onboarding | the app-wide selection, the only thing there is to change | "Select the provider and model new chats start on, in every window. Existing chats keep their own model." |
 
 The success toast names which of the three happened (`switchedModelMessage`), and the chip's
 dropdown, where there is no chat, is headed **Model for new chats** with the line "New chats
 in every window start on this model. Existing chats keep their own."
+
+An unsent chat's held pick is `PendingChatModelContext` (`settings/models/pendingChatModel.ts`),
+which `BaseChat.tsx` provides only while the chat has no session; Home provides none, so its
+chip keeps the new-chats scope. If the per-chat bind after `/agent/start` is refused or fails,
+nothing is sent and the text goes back to the composer (`bindHeldChatModel`), so the first
+message never reaches a model the person did not choose. Until 2026-09-28 an unsent chat had no
+such scope, and a pick in it rewrote the app-wide selection for every window: the scratch-chat
+case §14.3 P4 was meant to close, one step earlier (provider QA W2-PRV-6).
 
 > **Why.** Until 2026-09-11 a switch made in a chat also rewrote the app-wide selection,
 > silently. QA F bound Claude Code in one chat for one check, and the next chat it opened came
@@ -79,7 +89,8 @@ daemon.
 
 Both composers that create a chat — Home (`Hub.tsx`) and a chat not yet started
 (`BaseChat.tsx`) — call `useConfirmNewChatModel` immediately before `createSession`, ahead
-of anything the send consumes. It re-reads the pair and compares it with what the chip
+of anything the send consumes. An unsent chat with a model picked for it skips this look: its
+chip names that model, not the app-wide pair, and the held pick is what gets bound. It re-reads the pair and compares it with what the chip
 showed. On a mismatch it:
 
 1. publishes the fresh pair, so the chip, gauge, cost and padlock change;
@@ -124,6 +135,8 @@ the daemon classifies the chat by what it binds, whatever this check does.
 | `components/privacy/useConfirmNewChatModel.test.tsx` | when the last look refuses and when it must not; both composers call it before `createSession`, pinned at the source |
 | `settings/models/subcomponents/SwitchModelModal.test.tsx` | the dialog's scope copy and the unticked box |
 | `settings/models/bottom_bar/ModelsBottomBar.pinned.test.tsx` | the "Model for new chats" heading where there is no chat |
+| `components/BaseChat.pendingModel.test.ts` | an unsent chat's held pick is bound before its first message, and a refused bind sends nothing |
+| `settings/models/subcomponents/SwitchModelModal.crew.test.tsx` | a Crew chat's fixed model, said up front with its controls disabled |
 
 ```bash
 cd ui/desktop && npx vitest run src/components/ModelAndProviderContext* src/utils/sessionBindingSync*

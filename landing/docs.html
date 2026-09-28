@@ -347,7 +347,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 <p style="font-size:13px;color:var(--text-2);margin-top:4px;">Run <code>biorouter info</code> to print the four paths as they resolve on your machine.</p>
 <div class="info-box" style="margin-top:16px;">
   <h4>Secrets never touch <code>config.yaml</code></h4>
-  <p>API keys and credentials are written to your operating system's credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service), not to any config file. See <strong>Vaulting and security</strong> below for how that works.</p>
+  <p>API keys and credentials are written to your operating system's credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service) when one is available, never to <code>config.yaml</code>. Where no credential store answers, such as a Linux server without a desktop session, they go to <code>secrets.yaml</code> in the config folder, a file only your account can read. See <strong>Vaulting and security</strong> below for how that works.</p>
 </div>
 <p style="font-size:13px;color:var(--text-2);margin-top:4px;">On Windows all three live under one root: <code>%APPDATA%\Block\biorouter\</code>, with <code>config\</code> and <code>data\</code> beneath it. Windows has no separate state directory, so logs sit under <code>data\</code> there. The Electron app state lives separately at <code>~/Library/Application Support/Biorouter/</code> on macOS.</p>
         <div class="doc-next"><span class="lbl">Next</span> <a href="#app" onclick="showDoc('app');return false;">The desktop app &rarr;</a></div>
@@ -697,7 +697,7 @@ biorouter run -t "Summarize ./notes.md in 5 bullets"   # one-shot, headless</cod
 
 <h3>Providers and models</h3>
 
-<p>Provider Configuration is where you connect LLM providers and pick models. Providers are grouped as <strong>Local</strong> (Llama Server, Ollama), <strong>Institutional</strong> (UCSF Versa via Azure and Bedrock), and <strong>Commercial</strong> (Anthropic, OpenAI, Google Gemini, OpenRouter, and more), with Local listed first. A configured provider shows a check. API keys are encrypted and stored in your operating system's credential store, not in a plaintext file. You can also switch model per chat from the composer's model chip; the setting here is the default.</p>
+<p>Provider configuration is where you connect LLM providers and pick models. Open it with <strong>Configure providers</strong> in <strong>Settings &rarr; Models</strong>. Providers sit on three tabs, in this order: <strong>Local</strong> (Llama Server, Ollama), <strong>Institutional</strong> (UCSF Versa via Azure and Bedrock), and <strong>Public</strong> (Claude Code and Codex, then Anthropic, OpenAI, Google Gemini and the rest). A configured provider shows a check. API keys are kept in your system keychain when one is available, otherwise in a private file in Biorouter's settings folder. You can also switch model per chat from the composer's model chip; the setting here is the model new chats start on.</p>
 
 <h3>Permission modes</h3>
 
@@ -1356,7 +1356,7 @@ Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target</code></pre>
-<p>On a host with no desktop keyring, Biorouter falls back to a plaintext <code>~/.config/biorouter/secrets.yaml</code>; <code>BIOROUTER_DISABLE_KEYRING=true</code> forces that behaviour explicitly. Restrict that file to the service account.</p>
+<p>On a host with no desktop keyring, Biorouter falls back to a plaintext <code>~/.config/biorouter/secrets.yaml</code>; <code>BIOROUTER_DISABLE_KEYRING=true</code> forces that behaviour explicitly. Biorouter creates the file readable by the service account only; keep it that way.</p>
 
 <h3>web (deprecated)</h3>
 <p><code>biorouter web</code> is superseded by <code>biorouter serve</code> and is hidden from <code>--help</code>. It served a small chat page written by hand rather than the Biorouter interface, defaulted to port <code>3000</code> (colliding with the daemon), and shared one agent across every chat. It still runs and prints a notice pointing at <code>serve</code>; it will be removed in a later release.</p>
@@ -1464,11 +1464,11 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
       <div class="doc-page" id="doc-providers">
         <span class="doc-eyebrow">Features</span>
 <h1>Providers and models</h1>
-<p class="doc-intro">Biorouter connects local models, models hosted by your institution, and commercial models through one interface, so you can match each task to the right trust boundary and switch whenever you want. Providers are grouped into three tiers. <strong>Local ranks first everywhere</strong> (onboarding, the Settings grid, and <code>biorouter configure</code>) because nothing leaves your machine.</p>
+<p class="doc-intro">Biorouter connects local models, models hosted by your institution, and commercial models through one interface, so you can match each task to the right trust boundary and switch whenever you want. The provider screens have three tabs, <strong>Local</strong>, <strong>Institutional</strong> and <strong>Public</strong>, in that order. <strong>Local ranks first everywhere</strong> because nothing leaves your machine: it is the first tab, and the first entries in <code>biorouter configure</code>, which lists every provider in one list with no group headings.</p>
 
 <div class="info-box">
   <h4>The model picker in the app is the source of truth</h4>
-  <p>Model lineups change constantly, so Biorouter does not ship a fixed list of models. It reads each provider's <strong>live catalog</strong> and shows it in <strong>Settings &rarr; Models</strong> (and via <code>biorouter models list &lt;provider&gt;</code>). Trust the picker for the exact models available to you today.</p>
+  <p>Model lineups change constantly, so Biorouter does not ship a fixed list of models. It reads each provider's <strong>live catalog</strong> and shows it in the model picker, <strong>Switch models</strong> (and via <code>biorouter models list &lt;provider&gt;</code>). Trust the picker for the exact models available to you today.</p>
   <p>What a provider does ship is a <strong>default model</strong>: the one Biorouter selects when you configure that provider without naming a model. Those defaults are listed below. They were last checked against the source code on 2026-09-25.</p>
 </div>
 
@@ -1502,8 +1502,8 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
   <li><strong>Versa API Bedrock</strong> (<code>versa_bedrock</code>) serves the Anthropic models hosted by UCSF through Amazon Bedrock. Default model: <code>us.anthropic.claude-opus-4-8</code>.</li>
 </ul>
 
-<h2>Commercial cloud</h2>
-<p>Direct API access to hosted providers. Paste an API key (or complete the provider's sign in steps) and Biorouter reads that provider's live model catalog. The shipping commercial providers are below. The last two are different: they drive a vendor CLI you have already installed and signed in to, so they take no API key at all.</p>
+<h2>Public: commercial cloud</h2>
+<p>Direct API access to hosted providers, on the <strong>Public</strong> tab. Paste an API key (or complete the provider's sign in steps) and Biorouter reads that provider's live model catalog. The shipping public providers are below. The tab lists Claude Code and Codex first, under "AI agents · your subscription", then Anthropic, OpenAI and Google, then the rest by name. Claude Code and Codex are different: they drive a vendor CLI you have already installed and signed in to, so they take no API key at all.</p>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Provider</th><th>Default model</th><th>Notes</th></tr></thead>
   <tbody>
@@ -1523,7 +1523,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
     <tr><td><strong>z.ai (GLM)</strong></td><td><code>glm-5.3</code></td><td>The GLM model family, through an API compatible with OpenAI's.</td></tr>
     <tr><td><strong>Xiaomi MiMo</strong></td><td><code>mimo-v2.6-flash</code></td><td>Xiaomi's MiMo models, with regional endpoints.</td></tr>
     <tr><td><strong>Tetrate Agent Router</strong></td><td><code>claude-haiku-4-5</code></td><td>A routing service across upstream models (the quickstart path).</td></tr>
-    <tr><td><strong>AWS SageMaker TGI</strong></td><td>none</td><td>Models you deploy on SageMaker endpoints using Text Generation Inference. You name the endpoint, so there is no default model.</td></tr>
+    <tr><td><strong>AWS SageMaker TGI</strong></td><td><code>sagemaker-tgi-endpoint</code></td><td>Models you deploy on SageMaker endpoints using Text Generation Inference. The default is a placeholder: the model is whatever your endpoint serves, and you name the endpoint in <code>SAGEMAKER_ENDPOINT_NAME</code>.</td></tr>
     <tr><td><strong>DeepSeek</strong></td><td><code>deepseek-flash</code></td><td>DeepSeek models, through an API compatible with OpenAI's (<code>DEEPSEEK_API_KEY</code>).</td></tr>
     <tr><td><strong>Groq</strong></td><td><code>openai/gpt-oss-120b</code></td><td>Open weight models served on Groq hardware (<code>GROQ_API_KEY</code>).</td></tr>
     <tr><td><strong>Inception</strong></td><td><code>mercury-2.5</code></td><td>Inception's diffusion language models (<code>INCEPTION_API_KEY</code>).</td></tr>
@@ -1537,7 +1537,7 @@ BIOROUTER_PATH_ROOT="$(mktemp -d)" \
 <p>Where the cell reads <code>none</code> the provider carries no default model, so you choose a model when you configure it. Run <code>biorouter models providers</code> for the current list.</p>
 
 <h2>Adding a provider</h2>
-<p>Providers are managed in <strong>Settings &rarr; Models</strong>. Each card shows its status (configured or not), a Configure button to enter an API key or credentials, and a Launch button to switch to that provider and choose a model. Paste your key, pick a model from the live catalog, and you are ready. Keys are written to your operating system's credential store, not to any config file. From the terminal, run <code>biorouter configure</code> and select "Configure Providers".</p>
+<p>Providers are managed in <strong>Settings &rarr; Models</strong>, behind <strong>Configure providers</strong>. Each row shows its status (configured or not) and a <strong>Configure</strong> button to enter an API key or credentials. Only the first run screen also has <strong>Launch</strong>, which switches to that provider and asks for a model. Paste your key, pick a model from the live catalog, and you are ready. Biorouter checks a new key with the provider before it replaces the saved one. Keys are kept in your system keychain when one is available, otherwise in a private file in Biorouter's settings folder, never in <code>config.yaml</code>. From the terminal, run <code>biorouter configure</code> and select "Configure Providers".</p>
 
 <h2>Switching per session or per workflow</h2>
 <p>Your default provider and model apply until you change them, but you can override the choice without touching that default:</p>
@@ -2674,7 +2674,7 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
 <p>At most <strong>four</strong> children from one parent hold a tab at the same time. Ask for ten in parallel and you get four tabs; the rest run in the background and appear in History nested under their parent. A spawn is never refused for hitting that ceiling, only downgraded to a background run, and the parent is told which children that happened to. The cap counts <em>live</em> children, so a slot frees as each one finishes.</p>
 <p>For a long job, the right way to collect a result is to wait rather than poll: the agent parks until one (or all) of the conversations it names finishes, and a timeout there is not an error: the work keeps running and it can wait again.</p>
 
-<div class="alert alert-warning"><strong>Delegation has its own gate.</strong> The spawn tool is only offered when the session runs in <strong>Completely Autonomous</strong> permission mode (the default) and is not itself a subagent: a child cannot spawn grandchildren. If asking for a subagent produces an ordinary answer instead of a child conversation, the permission mode is the first thing to check. A few narrower conditions apply as well; the repo documentation lists all of them.</div>
+<div class="alert alert-warning"><strong>Delegation has its own gate.</strong> The spawn tool is only offered when the session runs in <strong>Autonomous</strong> permission mode (the default) and is not itself a subagent: a child cannot spawn grandchildren. If asking for a subagent produces an ordinary answer instead of a child conversation, the permission mode is the first thing to check. A few narrower conditions apply as well; the repo documentation lists all of them.</div>
 
 <h3>Looking into another conversation</h3>
 <p>Ask what you are running right now and the agent lists the workspace: each conversation's id and name, whether a turn is in flight, which parent spawned it, the extensions and knowledge bases it has, and, when the desktop app is attached, which window, pane, and tab it sits in. To look <em>inside</em> one, four views are available, and the narrowest one that answers your question is the right choice:</p>
@@ -2728,7 +2728,7 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
       <div class="doc-page" id="doc-vaulting">
         <span class="doc-eyebrow">Internals</span>
 <h1>Vaulting and security</h1>
-<p class="doc-intro">Biorouter is built for sensitive research data, so its security model is layered and explicit. Your secrets live in the operating system's credential store, not in a config file. A permission mode decides how freely the agent may act. An administrator can pin a policy above your own settings. Your choice of provider decides where your data physically goes, and an OS sandbox, which you turn on, can confine what a shell command may touch.</p>
+<p class="doc-intro">Biorouter is built for sensitive research data, so its security model is layered and explicit. Your secrets live in the operating system's credential store when one is available, never in <code>config.yaml</code>. A permission mode decides how freely the agent may act. An administrator can pin a policy above your own settings. Your choice of provider decides where your data physically goes, and an OS sandbox, which you turn on, can confine what a shell command may touch.</p>
 
 <h2>How secrets are vaulted</h2>
 <p>Provider API keys and other secrets are stored in the operating system's native credential store, never written to <code>config.yaml</code> in plain text. Custody stays with the OS, and access is gated by the same mechanisms the rest of the platform uses.</p>
@@ -2777,7 +2777,7 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
 </div>
 <p>Two escape hatches exist when the credential store is unavailable or unwanted:</p>
 <ul>
-  <li><strong><code>BIOROUTER_DISABLE_KEYRING=true</code></strong> stores secrets in plaintext <code>~/.config/biorouter/secrets.yaml</code> instead. Headless Linux (SSH sessions, WSL, or a host with no Secret Service daemon) falls back to this file automatically.</li>
+  <li><strong><code>BIOROUTER_DISABLE_KEYRING=true</code></strong> stores secrets in plaintext <code>~/.config/biorouter/secrets.yaml</code> instead. Headless Linux (SSH sessions, WSL, or a host with no Secret Service daemon) falls back to this file automatically. Biorouter creates it readable and writable by your account only, whatever your umask, and tightens an existing one before it writes. Crew device keys never go there: without a credential store, Crew asks for an encrypted vault instead.</li>
   <li><strong>An environment variable</strong> for a specific key (for example <code>OPENAI_API_KEY</code>) is read directly and always wins over the credential store.</li>
 </ul>
 
@@ -2805,8 +2805,8 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
   <line x1="336" y1="149" x2="470" y2="230" class="l-n" stroke-width="1.8" marker-end="url(#ahP)"/>
 
   <rect x="474" y="20" width="220" height="44" rx="9" class="f-ok s-ok"/><text x="490" y="47" font-size="12.5" font-weight="600" class="t-ok">Autonomous</text><text x="608" y="47" font-size="11" class="t-ok">runs freely</text>
-  <rect x="474" y="84" width="220" height="44" rx="9" class="f-ground s-b"/><text x="490" y="111" font-size="12.5" font-weight="600" class="t-1">Manual approval</text><text x="626" y="111" font-size="11" class="t-3">you confirm</text>
-  <rect x="474" y="144" width="220" height="44" rx="9" class="f-ground s-b"/><text x="490" y="171" font-size="12.5" font-weight="600" class="t-1">Smart approval</text><text x="624" y="171" font-size="11" class="t-3">risk based</text>
+  <rect x="474" y="84" width="220" height="44" rx="9" class="f-ground s-b"/><text x="490" y="111" font-size="12.5" font-weight="600" class="t-1">Manual</text><text x="626" y="111" font-size="11" class="t-3">you confirm</text>
+  <rect x="474" y="144" width="220" height="44" rx="9" class="f-ground s-b"/><text x="490" y="171" font-size="12.5" font-weight="600" class="t-1">Smart</text><text x="624" y="171" font-size="11" class="t-3">risk based</text>
   <rect x="474" y="208" width="220" height="44" rx="9" class="f-danger s-danger"/><text x="490" y="235" font-size="12.5" font-weight="600" class="t-danger">Chat only</text><text x="608" y="235" font-size="11" class="t-danger">no tools</text>
 </svg>
 <figcaption>Every tool call passes through the permission mode, which either runs it, asks you first, judges it by risk, or blocks it.</figcaption>
@@ -2814,16 +2814,16 @@ biorouter schedule remove --schedule-id daily-report</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Mode</th><th><code>/mode</code> value</th><th>What it gates for <code>shell</code>, <code>text_editor</code></th></tr></thead>
   <tbody>
-    <tr><td>Completely Autonomous</td><td><code>auto</code></td><td>Runs shell commands, text editor writes, and computer control with no approval. This is the default.</td></tr>
-    <tr><td>Manual Approval</td><td><code>approve</code></td><td>Prompts before every write tool: shell, text editor write/edit/insert, and computer control. Calls that only read still run.</td></tr>
-    <tr><td>Smart Approval</td><td><code>smart_approve</code></td><td>Judges each call by risk. It approves actions with low risk by itself, and asks your approval for shell, text editor, or computer control calls with higher risk.</td></tr>
-    <tr><td>Chat Only</td><td><code>chat</code></td><td>No tools at all. No shell, no text editor writes, no computer control. Conversation and reasoning only.</td></tr>
+    <tr><td>Autonomous</td><td><code>auto</code></td><td>Runs shell commands, text editor writes, and computer control with no approval. This is the default.</td></tr>
+    <tr><td>Manual</td><td><code>approve</code></td><td>Prompts before every write tool: shell, text editor write/edit/insert, and computer control. Calls that only read still run.</td></tr>
+    <tr><td>Smart</td><td><code>smart_approve</code></td><td>Judges each call by risk. It approves actions with low risk by itself, and asks your approval for shell, text editor, or computer control calls with higher risk.</td></tr>
+    <tr><td>Chat only</td><td><code>chat</code></td><td>No tools at all. No shell, no text editor writes, no computer control. Conversation and reasoning only.</td></tr>
   </tbody>
 </table></div>
 <p>Set a persistent default with <code>biorouter configure</code> (select <em>biorouter settings</em>, then <em>biorouter mode</em>) or in <strong>Settings, Chat, Mode</strong> in the app.</p>
 
 <h2>Managed policy: the administrator tier</h2>
-<p>Permission modes and the user config are owned by the user, so a lab or institutional deployment has no way to enforce a rule the user cannot turn off. The <strong>managed policy tier</strong> adds a trusted layer, owned by an administrator, that wins over user and project config. It can force specific tools to be denied, to require approval, or to be approved in advance, and it can pin mandatory lifecycle hooks. A managed <strong>deny</strong> holds even in Completely Autonomous mode; a blocked call surfaces as <em>"Blocked by your organization's managed policy."</em></p>
+<p>Permission modes and the user config are owned by the user, so a lab or institutional deployment has no way to enforce a rule the user cannot turn off. The <strong>managed policy tier</strong> adds a trusted layer, owned by an administrator, that wins over user and project config. It can force specific tools to be denied, to require approval, or to be approved in advance, and it can pin mandatory lifecycle hooks. A managed <strong>deny</strong> holds even in Autonomous mode; a blocked call surfaces as <em>"Blocked by your organization's managed policy."</em></p>
 <p>The policy is read from a location an administrator owns, which differs by operating system, and Biorouter verifies the file's ownership before trusting it (on Unix it must be owned by <code>root</code> or the current user and not be writable by its group or by everyone). There is no environment variable override, by design.</p>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>OS</th><th>Managed policy path</th></tr></thead>
