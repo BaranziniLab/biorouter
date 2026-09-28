@@ -10,9 +10,10 @@ import type {
 } from './types';
 
 /**
- * Dialogs whose content is drawn from the verified snapshot. A refresh or a lost verification
- * closes them; Join, Host, Connection settings, Keys, Invite people and Let in stay open because
- * they are about the connection or hold a result the person still has to copy.
+ * Dialogs whose content is drawn from the verified snapshot. A refresh (except for the ones that
+ * {@link survivesRefresh}) or a lost verification closes them; Join, Host, Connection settings,
+ * Keys, Invite people and Let in stay open because they are about the connection or hold a result
+ * the person still has to copy.
  */
 export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
   switch (dialog.kind) {
@@ -33,6 +34,18 @@ export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
 }
 
 /**
+ * Snapshot-bound dialogs a refresh leaves open. Workspace settings holds this connection's own
+ * privacy (its Privacy tab), and changing it makes the daemon connect again, which refreshes the
+ * view: closing on that refresh shut the dialog half a second after its own Make private was saved
+ * (SF2-N7). While the view verifies again it draws the last verified copy, as every Crew surface
+ * does through a refresh (`useDialogView`), and it still closes when that copy goes
+ * (`protected-cleared`, a lost channel, another connection).
+ */
+export function survivesRefresh(dialog: DialogIntent): boolean {
+  return dialog.kind === 'workspace-settings';
+}
+
+/**
  * How the new layout's surfaces react when the controller resets them. The details pane survives
  * a refresh (an error shown in it must outlive a manual refresh) and a channel switch, on the same
  * tab, so two channels' members can be compared side by side (QA Q2-33); the agent and chat-access
@@ -45,7 +58,9 @@ export function nextUiAfterReset(ui: CrewUi, reason: SurfaceResetReason): CrewUi
     dialog && !isSnapshotBoundDialog(dialog) ? dialog : null;
   switch (reason) {
     case 'refresh':
-      return ui.dialog && isSnapshotBoundDialog(ui.dialog) ? { ...ui, dialog: null } : ui;
+      return ui.dialog && isSnapshotBoundDialog(ui.dialog) && !survivesRefresh(ui.dialog)
+        ? { ...ui, dialog: null }
+        : ui;
     case 'channel-changed': {
       const pane = ui.pane?.mode === 'details' ? ui.pane : null;
       const dialog = keepDialog(ui.dialog);

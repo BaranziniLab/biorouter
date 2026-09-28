@@ -708,6 +708,40 @@ describe('requests, intents and the composer seams', () => {
     expect(crew.ui).toEqual({ dialog: null, pane: null });
   });
 
+  /** SF2-N7: the reconnect a privacy change causes closed the dialog that made it. */
+  it('keeps Workspace settings open while the view is observed again, and closes it when it is gone', async () => {
+    const sessions = controllableObserver();
+    renderController({ keepLastVerifiedView: true });
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    await waitFor(() => expect(sessions[sessions.length - 1]!.channelId).toBe(channel.id));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    act(() => crew.openDialog({ kind: 'workspace-settings', tab: 'privacy' }));
+
+    // The connection's policy moved: the daemon ends the view, and it is observed again.
+    act(() =>
+      sessions[sessions.length - 1]!.receive({
+        type: 'error',
+        clear: true,
+        code: 'policy_changed',
+        error: 'Room observation ended.',
+      })
+    );
+    expect(crew.reverifying).toBe(true);
+    expect(crew.ui.dialog).toEqual({ kind: 'workspace-settings', tab: 'privacy' });
+    await act(async () => {
+      await crew.refresh();
+    });
+    expect(crew.ui.dialog).toEqual({ kind: 'workspace-settings', tab: 'privacy' });
+
+    // A view that is gone for good takes it with it.
+    await act(async () => {
+      await crew.disconnect();
+    });
+    await waitFor(() => expect(crew.ui.dialog).toBeNull());
+  });
+
   it('grants a chat read-and-post access pinned to the verified epochs, and nothing without a chat', async () => {
     renderController();
     await verifiedChannel();
