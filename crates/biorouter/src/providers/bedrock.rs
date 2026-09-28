@@ -153,13 +153,12 @@ impl BedrockProvider {
         //
         // `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` is this service's variable, per the
         // note above; `AWS_ENDPOINT_URL` is the SDK's cross-service fallback.
+        // Named by service, not by key, so both are keys `destination_keys`
+        // classifies and `/config/upsert` gates.
         let loader = stored.apply(
             loader,
             "BedrockStoredSettings",
-            &[
-                "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
-                crate::providers::aws_stored_settings::ENDPOINT_URL,
-            ],
+            crate::providers::aws_stored_settings::AwsService::BedrockRuntime,
         );
 
         let sdk_config = loader.load().await;

@@ -73,6 +73,8 @@ use crate::config::Config;
 
 /// The generic endpoint override the SDK honours for every service.
 pub const ENDPOINT_URL: &str = "AWS_ENDPOINT_URL";
+const BEDROCK_RUNTIME_ENDPOINT_URL: &str = "AWS_ENDPOINT_URL_BEDROCK_RUNTIME";
+const SAGEMAKER_RUNTIME_ENDPOINT_URL: &str = "AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME";
 
 const ACCESS_KEY_ID: &str = "AWS_ACCESS_KEY_ID";
 const SECRET_ACCESS_KEY: &str = "AWS_SECRET_ACCESS_KEY";
@@ -80,6 +82,56 @@ const SESSION_TOKEN: &str = "AWS_SESSION_TOKEN";
 const BEARER_TOKEN_BEDROCK: &str = "AWS_BEARER_TOKEN_BEDROCK";
 const REGION: &str = "AWS_REGION";
 const PROFILE: &str = "AWS_PROFILE";
+
+/// The stored settings [`StoredAwsSettings::apply`] hands the SDK besides an
+/// endpoint: the profile and the region, which pick the regional host and the
+/// profile's own settings. Each is a destination key
+/// ([`super::destination_keys`]), and a test there says so.
+pub const ROUTING_KEYS: [&str; 2] = [PROFILE, REGION];
+
+/// The stored credentials [`StoredAwsSettings::apply`] hands the SDK. They are
+/// the credential itself, not where it goes; the endpoint and routing keys
+/// decide that.
+pub const CREDENTIAL_KEYS: [&str; 4] = [
+    ACCESS_KEY_ID,
+    SECRET_ACCESS_KEY,
+    SESSION_TOKEN,
+    BEARER_TOKEN_BEDROCK,
+];
+
+/// The AWS service a provider's client talks to, which decides which stored
+/// keys become its endpoint.
+///
+/// A caller names a service rather than passing key names, so every key this
+/// module can turn into an endpoint is one of the constants above. That is what
+/// lets `destination_keys` check them: an endpoint key written as a literal at a
+/// call site was exactly how `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` stayed out of
+/// that list while an unproven `/config/upsert` could set it (W2-PRV-2, round 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AwsService {
+    /// Amazon Bedrock Runtime, the `aws_bedrock` provider.
+    BedrockRuntime,
+    /// Amazon SageMaker Runtime, the `sagemaker_tgi` provider.
+    SageMakerRuntime,
+}
+
+impl AwsService {
+    /// Every service. A variant left out of this list fails
+    /// `every_aws_key_this_module_reads_is_exported` below, because its
+    /// endpoint key would then be read without being listed.
+    pub const ALL: [Self; 2] = [Self::BedrockRuntime, Self::SageMakerRuntime];
+
+    /// The stored keys whose value becomes this service's endpoint, the
+    /// service's own variable ahead of [`ENDPOINT_URL`], so a service-specific
+    /// endpoint beats the global one exactly as it does inside the SDK.
+    #[must_use]
+    pub const fn endpoint_keys(self) -> [&'static str; 2] {
+        match self {
+            Self::BedrockRuntime => [BEDROCK_RUNTIME_ENDPOINT_URL, ENDPOINT_URL],
+            Self::SageMakerRuntime => [SAGEMAKER_RUNTIME_ENDPOINT_URL, ENDPOINT_URL],
+        }
+    }
+}
 
 /// Every `AWS_*` key BioRouter's own stores hold, and nothing from the
 /// environment.
@@ -128,14 +180,15 @@ impl StoredAwsSettings {
     }
 
     /// A stored key's value, or `None` when the store does not hold it.
-    #[must_use]
-    pub fn get(&self, key: &str) -> Option<&str> {
+    ///
+    /// Private on purpose: a key read here from outside this module would be a
+    /// setting `destination_keys` cannot see.
+    fn get(&self, key: &str) -> Option<&str> {
         self.values.get(key).map(String::as_str)
     }
 
-    /// The stored region, for a caller that resolves its own region first.
-    #[must_use]
-    pub fn region(&self) -> Option<&str> {
+    /// The stored region.
+    fn region(&self) -> Option<&str> {
         self.get(REGION)
     }
 
@@ -144,8 +197,7 @@ impl StoredAwsSettings {
     /// A session token alone is not credentials, and neither is an access key id
     /// without its secret: a partial pair falls through to the SDK's own chain
     /// rather than binding the provider to something that cannot sign.
-    #[must_use]
-    pub fn credentials(&self, provider_name: &'static str) -> Option<Credentials> {
+    fn credentials(&self, provider_name: &'static str) -> Option<Credentials> {
         let access_key_id = self.get(ACCESS_KEY_ID)?;
         let secret_access_key = self.get(SECRET_ACCESS_KEY)?;
         Some(Credentials::new(
@@ -157,14 +209,13 @@ impl StoredAwsSettings {
         ))
     }
 
-    /// The first endpoint override the store holds, tried in the order given.
-    ///
-    /// Callers pass their service's own variable ahead of [`ENDPOINT_URL`], so a
-    /// service-specific endpoint beats the global one exactly as it does inside
-    /// the SDK.
-    #[must_use]
-    pub fn endpoint_url(&self, keys: &[&str]) -> Option<&str> {
-        keys.iter().find_map(|key| self.get(key))
+    /// The first endpoint override the store holds for `service`, in the order
+    /// [`AwsService::endpoint_keys`] gives.
+    fn endpoint_url(&self, service: AwsService) -> Option<&str> {
+        service
+            .endpoint_keys()
+            .into_iter()
+            .find_map(|key| self.get(key))
     }
 
     /// Apply everything the store holds to `loader`, and say nothing when it
@@ -178,7 +229,7 @@ impl StoredAwsSettings {
         &self,
         mut loader: aws_config::ConfigLoader,
         provider_name: &'static str,
-        endpoint_keys: &[&str],
+        service: AwsService,
     ) -> aws_config::ConfigLoader {
         if let Some(profile) = self.get(PROFILE) {
             loader = loader.profile_name(profile);
@@ -186,7 +237,7 @@ impl StoredAwsSettings {
         if let Some(region) = self.region() {
             loader = loader.region(aws_config::Region::new(region.to_string()));
         }
-        if let Some(endpoint) = self.endpoint_url(endpoint_keys) {
+        if let Some(endpoint) = self.endpoint_url(service) {
             loader = loader.endpoint_url(endpoint);
         }
         if let Some(credentials) = self.credentials(provider_name) {
@@ -268,20 +319,70 @@ mod tests {
 
     #[test]
     fn a_service_endpoint_beats_the_generic_one() {
-        let keys = ["AWS_ENDPOINT_URL_BEDROCK_RUNTIME", ENDPOINT_URL];
+        let bedrock = AwsService::BedrockRuntime;
         let stored = settings(&[
             (ENDPOINT_URL, "https://generic.example"),
             (
                 "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
                 "https://service.example",
             ),
+            (
+                "AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME",
+                "https://sagemaker.example",
+            ),
         ]);
-        assert_eq!(stored.endpoint_url(&keys), Some("https://service.example"));
         assert_eq!(
-            settings(&[(ENDPOINT_URL, "https://generic.example")]).endpoint_url(&keys),
+            stored.endpoint_url(bedrock),
+            Some("https://service.example")
+        );
+        assert_eq!(
+            stored.endpoint_url(AwsService::SageMakerRuntime),
+            Some("https://sagemaker.example")
+        );
+        assert_eq!(
+            settings(&[(ENDPOINT_URL, "https://generic.example")]).endpoint_url(bedrock),
             Some("https://generic.example")
         );
-        assert_eq!(settings(&[]).endpoint_url(&keys), None);
+        assert_eq!(settings(&[]).endpoint_url(bedrock), None);
+    }
+
+    /// Every `AWS_*` key this module reads is in one of the lists it exports,
+    /// which `destination_keys` classifies. A key read here and listed nowhere
+    /// would decide something about the requests with no gate on its writes,
+    /// which is how the endpoint keys went unclassified (W2-PRV-2, round 4).
+    #[test]
+    fn every_aws_key_this_module_reads_is_exported() {
+        let source = include_str!("aws_stored_settings.rs");
+        let production = source
+            .split(concat!("#[cfg", "(test)]"))
+            .next()
+            .expect("the module has a body");
+        let literal = regex::Regex::new(r#""(AWS_[A-Z0-9_]+)""#).unwrap();
+        let exported: Vec<&str> = ROUTING_KEYS
+            .into_iter()
+            .chain(CREDENTIAL_KEYS)
+            .chain(
+                AwsService::ALL
+                    .into_iter()
+                    .flat_map(AwsService::endpoint_keys),
+            )
+            .collect();
+        let mut seen = 0;
+        for line in production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+        {
+            for caps in literal.captures_iter(line) {
+                seen += 1;
+                assert!(
+                    exported.contains(&&caps[1]),
+                    "{} is read here but is in none of ROUTING_KEYS, CREDENTIAL_KEYS or an \
+                     AwsService's endpoint keys, so nothing classifies it",
+                    &caps[1]
+                );
+            }
+        }
+        assert!(seen >= 9, "the scan found too few keys ({seen})");
     }
 
     /// Secrets are absorbed after config values, so a key held in both resolves
