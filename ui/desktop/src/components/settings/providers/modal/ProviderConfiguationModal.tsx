@@ -9,8 +9,10 @@ import {
 } from '../../../ui/dialog';
 import DefaultProviderSetupForm, {
   ConfigInput,
+  isHostOwnedProviderField,
   providerFieldName,
 } from './subcomponents/forms/DefaultProviderSetupForm';
+import { hostManagedDestinationRequired } from '../../../privacy/hostManagedModelCopy';
 import ProviderSetupActions from './subcomponents/ProviderSetupActions';
 import ProviderLogo from './subcomponents/ProviderLogo';
 import { SecureStorageNotice } from './subcomponents/SecureStorageNotice';
@@ -102,7 +104,12 @@ export default function ProviderConfigurationModal({
         !configValues[parameter.name]?.value &&
         !configValues[parameter.name]?.serverValue
       ) {
-        errors[parameter.name] = `${providerFieldName(provider.name, parameter.name)} is required`;
+        const name = providerFieldName(provider.name, parameter.name);
+        // A browser cannot fill this one in (W2-PRV-2, round 4), so "is
+        // required" would ask for something the field does not allow.
+        errors[parameter.name] = isHostOwnedProviderField(parameter)
+          ? hostManagedDestinationRequired(name)
+          : `${name} is required`;
       }
     });
 

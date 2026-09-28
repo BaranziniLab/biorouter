@@ -5,6 +5,9 @@ import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
 import { configLabels } from '../../../../../../utils/configUtils';
+import { isBrowserSurface } from '../../../../../../utils/surface';
+import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
+import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 
 type ValidationErrors = Record<string, string>;
 
@@ -60,6 +63,9 @@ const PROVIDER_KEY_PLACEHOLDERS: Record<string, Record<string, string>> = {
   },
 };
 
+/** The note every host-owned field points its `aria-describedby` at. */
+const HOST_OWNED_NOTE_ID = 'provider-config-host-owned-note';
+
 const envToPrettyName = (envVar: string) => {
   const wordReplacements: { [w: string]: string } = {
     Api: 'API',
@@ -96,6 +102,17 @@ export function providerFieldName(providerName: string, parameterName: string): 
     parameter_name = parameter_name.slice(providerName.length + 1);
   }
   return envToPrettyName(parameter_name);
+}
+
+/**
+ * W2-PRV-2, round 4. Is this field the host computer's in this renderer? In a
+ * browser served by `biorouter serve`, a setting that decides where the
+ * provider sends its requests and key cannot be changed: the daemon asks for a
+ * proof of a person that a browser can never give. The field shows its value
+ * and is not editable, and the submit handler leaves it out.
+ */
+export function isHostOwnedProviderField(parameter: { name: string; secret?: boolean }): boolean {
+  return !parameter.secret && isBrowserSurface() && isDestinationConfigKey(parameter.name);
 }
 
 export default function DefaultProviderSetupForm({
@@ -205,6 +222,7 @@ export default function DefaultProviderSetupForm({
   const renderParametersList = (parameters: ConfigKey[]) => {
     return parameters.map((parameter) => {
       const fieldId = `provider-config-${parameter.name}`;
+      const hostOwned = isHostOwnedProviderField(parameter);
       const fieldProps = {
         id: fieldId,
         value: getRenderValue(parameter),
@@ -224,6 +242,8 @@ export default function DefaultProviderSetupForm({
             : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
         } bg-background-default placeholder:text-text-muted text-text-default`,
         required: parameter.required,
+        disabled: hostOwned,
+        'aria-describedby': hostOwned ? HOST_OWNED_NOTE_ID : undefined,
       };
 
       return (
@@ -248,6 +268,8 @@ export default function DefaultProviderSetupForm({
     });
   };
 
+  const hasHostOwnedField = parameters.some(isHostOwnedProviderField);
+
   let aboveFoldParameters = parameters.filter((p) => p.required);
   let belowFoldParameters = parameters.filter((p) => !p.required);
   if (aboveFoldParameters.length === 0) {
@@ -261,6 +283,11 @@ export default function DefaultProviderSetupForm({
 
   return (
     <div className="mt-4 space-y-4">
+      {hasHostOwnedField && (
+        <div id={HOST_OWNED_NOTE_ID}>
+          <HostManagedModelNote topic="destination" testId="host-managed-destination-note" />
+        </div>
+      )}
       {aboveFoldParameters.length === 0 && belowFoldParameters.length === 0 ? (
         <div className="text-center text-sm text-text-muted py-2">
           No configuration parameters for this provider.

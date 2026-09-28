@@ -2,6 +2,7 @@ import { checkProvider, type CheckProviderRequest } from '../../../../../../api'
 import { userActionHeaders } from '../../../../../../utils/userAction';
 import { isBrowserSurface } from '../../../../../../utils/surface';
 import { coerceConfigKeyValue } from '../../../configKeyValue';
+import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 
 /**
  * W2-PRV-2 — `/config/check_provider`'s live, pre-save form.
@@ -63,7 +64,18 @@ export const providerConfigSubmitHandler = async (
   },
   configValues: Record<string, string>
 ) => {
-  const parameters = provider.metadata.config_keys || [];
+  const declared = provider.metadata.config_keys || [];
+  // W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
+  // decides where this provider sends its requests and key belongs to the
+  // computer running Biorouter: the daemon refuses to change one without a
+  // proof of a person, which a browser can never send. The form shows such a
+  // field and does not let it be edited, so writing it here could only re-save
+  // what is there or meet that refusal. It is left out; the provider keeps what
+  // the host set, or its built-in default.
+  const hostOwned = (name: string) => isBrowserSurface() && isDestinationConfigKey(name);
+  const parameters = declared.filter(
+    (parameter) => parameter.secret === true || !hostOwned(parameter.name)
+  );
 
   const requiredParams = parameters.filter((param) => param.required);
   if (requiredParams.length === 0 && parameters.length > 0) {

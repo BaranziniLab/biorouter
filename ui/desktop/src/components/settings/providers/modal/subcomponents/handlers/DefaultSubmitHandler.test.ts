@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
 
 vi.mock('../../../../../../api', () => ({
@@ -6,6 +6,7 @@ vi.mock('../../../../../../api', () => ({
 }));
 
 import { providerConfigSubmitHandler } from './DefaultSubmitHandler';
+import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
 
 /**
  * What the daemon must end up writing into `config.yaml`.
@@ -279,5 +280,82 @@ describe('providerConfigSubmitHandler checks a credential before saving it', () 
       candidate: { ANTHROPIC_HOST: 'https://gateway.example' },
     });
     expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
+  });
+});
+
+/**
+ * W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
+ * decides where a provider sends its requests and key is the host computer's:
+ * the daemon refuses to change one without a proof of a person, which a
+ * browser can never send. The form does not let the field be edited, and the
+ * save leaves it out rather than re-saving it or meeting that refusal.
+ */
+describe('providerConfigSubmitHandler in a browser', () => {
+  const openai = {
+    name: 'openai',
+    metadata: {
+      config_keys: [
+        { name: 'OPENAI_API_KEY', required: true, secret: true },
+        { name: 'OPENAI_HOST', required: true, secret: false, default: 'https://api.openai.com' },
+        {
+          name: 'OPENAI_BASE_PATH',
+          required: true,
+          secret: false,
+          default: 'v1/chat/completions',
+        },
+        { name: 'OPENAI_TIMEOUT', required: false, secret: false, default: '600' },
+      ],
+    },
+  } as Parameters<typeof providerConfigSubmitHandler>[1];
+
+  let upsert: Mock<(key: string, value: unknown, isSecret: boolean) => Promise<void>>;
+  let check: Mock;
+
+  beforeEach(async () => {
+    upsert = vi.fn(async () => undefined);
+    check = (await import('../../../../../../api')).checkProvider as unknown as Mock;
+    check.mockReset();
+    check.mockResolvedValue({ data: {} });
+  });
+
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  const values = {
+    OPENAI_API_KEY: 'sk-new',
+    OPENAI_HOST: 'https://api.openai.com',
+    OPENAI_BASE_PATH: 'v1/chat/completions',
+    OPENAI_TIMEOUT: '900',
+  };
+
+  it('saves the key and the other settings, and leaves the host and path to the host computer', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    await providerConfigSubmitHandler(upsert, openai, values);
+
+    const keys = upsert.mock.calls.map((call) => call[0]);
+    expect(keys).toContain('OPENAI_API_KEY');
+    expect(keys).toContain('OPENAI_TIMEOUT');
+    expect(keys).not.toContain('OPENAI_HOST');
+    expect(keys).not.toContain('OPENAI_BASE_PATH');
+    // Nor does the pre-save check name them: the daemon would check them
+    // against nothing the browser may change.
+    expect(check.mock.calls[0][0].body.candidate).toEqual({
+      OPENAI_API_KEY: 'sk-new',
+      OPENAI_TIMEOUT: '900',
+    });
+  });
+
+  it('still saves every setting in the desktop app, which proves a person asked', async () => {
+    await providerConfigSubmitHandler(upsert, openai, values);
+    const keys = upsert.mock.calls.map((call) => call[0]);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        'OPENAI_API_KEY',
+        'OPENAI_HOST',
+        'OPENAI_BASE_PATH',
+        'OPENAI_TIMEOUT',
+      ])
+    );
   });
 });

@@ -1,7 +1,12 @@
 import { cn } from '../../utils';
 import { Note } from '../ui/note';
 import { isBrowserSurface } from '../../utils/surface';
-import { HOST_MANAGED_MODEL_REASON, HOST_MANAGED_MODEL_SHORT } from './hostManagedModelCopy';
+import {
+  HOST_MANAGED_DESTINATION_REASON,
+  HOST_MANAGED_DESTINATION_SHORT,
+  HOST_MANAGED_MODEL_REASON,
+  HOST_MANAGED_MODEL_SHORT,
+} from './hostManagedModelCopy';
 
 /**
  * The inline note that sits beside a provider/model control a browser session
@@ -29,10 +34,23 @@ import { HOST_MANAGED_MODEL_REASON, HOST_MANAGED_MODEL_SHORT } from './hostManag
  */
 export type HostManagedModelNoteVariant = 'note' | 'inset';
 
+/**
+ * What the host owns. `model` is SD-1's provider and model choice.
+ * `destination` is a setting that decides where a provider sends its requests
+ * and key (W2-PRV-2, round 4), which a browser cannot change either.
+ */
+export type HostManagedTopic = 'model' | 'destination';
+
+const COPY: Record<HostManagedTopic, { short: string; reason: string }> = {
+  model: { short: HOST_MANAGED_MODEL_SHORT, reason: HOST_MANAGED_MODEL_REASON },
+  destination: { short: HOST_MANAGED_DESTINATION_SHORT, reason: HOST_MANAGED_DESTINATION_REASON },
+};
+
 export function HostManagedModelNote({
   className,
   short = false,
   variant = 'note',
+  topic = 'model',
   testId = 'host-managed-model-note',
 }: {
   /** Layout only: `mt-*`, `mb-*`, `min-w-0`. The shape belongs to the variant. */
@@ -47,12 +65,14 @@ export function HostManagedModelNote({
    * wrong.
    */
   variant?: HostManagedModelNoteVariant;
+  /** What the host owns; the model by default. */
+  topic?: HostManagedTopic;
   /** Overridden by `ConfigSettings`, which mounts one per frozen config key. */
   testId?: string;
 }) {
   if (!isBrowserSurface()) return null;
 
-  const text = short ? HOST_MANAGED_MODEL_SHORT : HOST_MANAGED_MODEL_REASON;
+  const text = short ? COPY[topic].short : COPY[topic].reason;
 
   if (variant === 'inset') {
     return (

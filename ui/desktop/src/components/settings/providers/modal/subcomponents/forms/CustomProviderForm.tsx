@@ -6,6 +6,8 @@ import { Button } from '../../../../../ui/button';
 import { SecureStorageNotice } from '../SecureStorageNotice';
 import { Checkbox } from '@radix-ui/themes';
 import { UpdateCustomProviderRequest } from '../../../../../../api';
+import { isBrowserSurface } from '../../../../../../utils/surface';
+import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
 
 interface CustomProviderFormProps {
   onSubmit: (data: UpdateCustomProviderRequest) => void;
@@ -32,6 +34,12 @@ export default function CustomProviderForm({
 }: CustomProviderFormProps) {
   /** An edit of a provider whose key is saved: a blank key keeps it. */
   const keepsSavedKey = initialData !== null && hasSavedKey;
+  /**
+   * W2-PRV-2, round 4. In a browser served by `biorouter serve`, the daemon
+   * refuses to move a saved key to a new URL, since nothing there can confirm a
+   * person asked. Typing the key again replaces it, and that is allowed.
+   */
+  const urlNeedsTypedKey = keepsSavedKey && isBrowserSurface();
   const [engine, setEngine] = useState('openai_compatible');
   const [displayName, setDisplayName] = useState('');
   const [apiUrl, setApiUrl] = useState('');
@@ -72,6 +80,9 @@ export default function CustomProviderForm({
     if (!displayName) errors.displayName = 'Display name is required';
     if (!apiUrl) errors.apiUrl = 'API URL is required';
     if (!isLocalModel && !apiKey && !keepsSavedKey) errors.apiKey = 'API key is required';
+    if (urlNeedsTypedKey && !apiKey && apiUrl !== initialData?.api_url) {
+      errors.apiKey = 'Type the key again to move this provider to a new URL.';
+    }
     if (!models) errors.models = 'At least one model is required';
 
     if (Object.keys(errors).length > 0) {
@@ -179,6 +190,11 @@ export default function CustomProviderForm({
             {validationErrors.apiUrl && (
               <p id="api-url-error" className="text-text-danger text-sm mt-1">
                 {validationErrors.apiUrl}
+              </p>
+            )}
+            {urlNeedsTypedKey && (
+              <p data-testid="host-managed-custom-url" className="text-text-muted text-sm mt-1">
+                {HOST_MANAGED_CUSTOM_URL}
               </p>
             )}
           </div>

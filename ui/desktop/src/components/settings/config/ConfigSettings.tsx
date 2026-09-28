@@ -8,8 +8,12 @@ import { Save, RotateCcw, FileText, Loader2, Settings } from '../../icons/app-ic
 import { toastSuccess, toastError } from '../../../toasts';
 import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
 import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
-import { HOST_MANAGED_MODEL_REASON } from '../../privacy/hostManagedModelCopy';
-import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
+import {
+  HOST_MANAGED_DESTINATION_REASON,
+  HOST_MANAGED_MODEL_REASON,
+} from '../../privacy/hostManagedModelCopy';
+import { HostManagedModelNote, type HostManagedTopic } from '../../privacy/HostManagedModelNote';
+import { isDestinationConfigKey } from '../destinationConfigKeys';
 import { MODAL_SIZE } from '../../ModalShell';
 import type { ConfigData, ConfigValue } from '../../../types/config';
 import {
@@ -118,13 +122,22 @@ export default function ConfigSettings() {
    * SD-1, key by key.
    *
    * ⚠ **Not a blanket disable.** This editor renders every non-secret config
-   * key, and a browser-served daemon refuses exactly five of them — the ones
-   * `is_capability_key` names. Greying out the whole page would be wrong about
-   * the great majority of it, so the question is asked per row. See
-   * `utils/surface.ts` for the mirrored list and the drift risk it carries.
+   * key, and a browser-served daemon refuses two kinds of them: the capability
+   * keys `is_capability_key` names (the model), and the keys that decide where
+   * a provider sends its requests and key (W2-PRV-2, round 4:
+   * `destinationConfigKeys.ts`, pinned to the daemon's list by a Rust test).
+   * Greying out the whole page would be wrong about the great majority of it,
+   * so the question is asked per row. See `utils/surface.ts` for the first
+   * list and the drift risk it carries.
    */
   const hostManaged = isBrowserSurface();
-  const isFixedByHost = (key: string) => hostManaged && isHostManagedConfigKey(key);
+  const hostTopic = (key: string): HostManagedTopic | null => {
+    if (!hostManaged) return null;
+    if (isHostManagedConfigKey(key)) return 'model';
+    if (isDestinationConfigKey(key)) return 'destination';
+    return null;
+  };
+  const isFixedByHost = (key: string) => hostTopic(key) !== null;
 
   const handleSave = async (key: string) => {
     if (isFixedByHost(key)) return;
@@ -290,7 +303,8 @@ export default function ConfigSettings() {
                   <p className="text-text-muted">No configuration settings found.</p>
                 ) : (
                   configEntries.map(([key, _value]) => {
-                    const fixedByHost = isFixedByHost(key);
+                    const topic = hostTopic(key);
+                    const fixedByHost = topic !== null;
                     return (
                       <div
                         key={key}
@@ -328,16 +342,17 @@ export default function ConfigSettings() {
                               placeholder={`Enter ${getUiNames(key)}`}
                             />
                           )}
-                          {/* The `fixedByHost &&` guard is load-bearing and stays:
-                              it carries the per-key `isHostManagedConfigKey`
-                              half, which the note itself cannot know. What went
-                              is the hand-copied paragraph inside it — a seventh
-                              implementation of the one sentence
-                              `hostManagedModelCopy.ts` exists to keep in one
-                              place. */}
-                          {fixedByHost && (
+                          {/* The `topic &&` guard is load-bearing and stays: it
+                              carries the per-key half (`isHostManagedConfigKey`
+                              or `isDestinationConfigKey`), which the note itself
+                              cannot know. What went is the hand-copied paragraph
+                              inside it — a seventh implementation of the one
+                              sentence `hostManagedModelCopy.ts` exists to keep
+                              in one place. */}
+                          {topic && (
                             <HostManagedModelNote
                               short
+                              topic={topic}
                               testId={`host-managed-config-${key}`}
                               className="mt-1"
                             />
@@ -354,7 +369,13 @@ export default function ConfigSettings() {
                             !modifiedKeys.has(key) ||
                             saving === key
                           }
-                          title={fixedByHost ? HOST_MANAGED_MODEL_REASON : undefined}
+                          title={
+                            topic === 'model'
+                              ? HOST_MANAGED_MODEL_REASON
+                              : topic === 'destination'
+                                ? HOST_MANAGED_DESTINATION_REASON
+                                : undefined
+                          }
                           variant="ghost"
                           shape="round"
                           aria-label={`Save ${getUiNames(key)}`}

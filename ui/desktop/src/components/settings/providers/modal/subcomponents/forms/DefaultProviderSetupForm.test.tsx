@@ -1,9 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
 import DefaultProviderSetupForm, { type ConfigInput } from './DefaultProviderSetupForm';
 import CustomProviderForm from './CustomProviderForm';
+import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
 
 const mocks = vi.hoisted(() => ({ read: vi.fn() }));
 
@@ -321,6 +322,139 @@ describe('CustomProviderForm for a provider with no key saved', () => {
     );
     const input = container.querySelector('#api-key') as HTMLInputElement;
     expect(input).toHaveAttribute('placeholder', 'Leave blank to keep existing key');
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    expect(onSubmit).toHaveBeenCalled();
+  });
+});
+
+/**
+ * W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
+ * decides where a provider sends its requests and key cannot be changed: the
+ * daemon asks for a proof of a person a browser can never send. The field is
+ * shown, not editable, and the form says where it is changed, before a Save
+ * meets the refusal.
+ */
+describe('DefaultProviderSetupForm in a browser', () => {
+  const openai = {
+    name: 'openai',
+    is_configured: true,
+    provider_type: 'Builtin',
+    metadata: {
+      name: 'openai',
+      display_name: 'OpenAI',
+      description: '',
+      default_model: '',
+      known_models: [],
+      model_doc_link: '',
+      config_keys: [
+        { name: 'OPENAI_API_KEY', required: true, secret: true, default: null },
+        { name: 'OPENAI_HOST', required: true, secret: false, default: 'https://api.openai.com' },
+        { name: 'OPENAI_ORGANIZATION', required: true, secret: false, default: null },
+      ],
+    },
+  } as unknown as ProviderDetails;
+
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('shows the host and endpoint read-only, with the reason', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const { container } = render(<Harness provider={openai} />);
+
+    const host = await screen.findByDisplayValue('https://api.openai.com');
+    expect(host).toBeDisabled();
+    expect(host).toHaveAttribute('aria-describedby', 'provider-config-host-owned-note');
+    const note = screen.getByTestId('host-managed-destination-note');
+    expect(note.textContent).toContain('biorouter configure');
+    // The key and a setting that goes nowhere stay editable.
+    expect(container.querySelector('#provider-config-OPENAI_API_KEY')).toBeEnabled();
+    expect(container.querySelector('#provider-config-OPENAI_ORGANIZATION')).toBeEnabled();
+  });
+
+  it('leaves every field editable in the desktop app', async () => {
+    render(<Harness provider={openai} />);
+    expect(await screen.findByDisplayValue('https://api.openai.com')).toBeEnabled();
+    expect(screen.queryByTestId('host-managed-destination-note')).toBeNull();
+  });
+});
+
+describe('CustomProviderForm in a browser', () => {
+  const lab = {
+    engine: 'openai',
+    display_name: 'Lab gateway',
+    api_url: 'https://lab.example/v1',
+    api_key: '',
+    models: ['lab-model'],
+    supports_streaming: true,
+  };
+
+  // The streaming checkbox is Radix Themes', which measures itself with a
+  // ResizeObserver jsdom does not have.
+  beforeAll(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+  });
+  afterAll(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  function edit(onSubmit: () => void) {
+    return render(
+      <CustomProviderForm
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={lab}
+        isEditable
+        hasSavedKey
+      />
+    );
+  }
+
+  it('asks for the key again before moving a saved key to a new URL', () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const onSubmit = vi.fn();
+    const { container } = edit(onSubmit);
+    expect(screen.getByTestId('host-managed-custom-url')).toBeInTheDocument();
+
+    fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
+      target: { value: 'https://elsewhere.example/v1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByText(/Type the key again/)).toBeInTheDocument();
+
+    fireEvent.change(container.querySelector('#api-key') as HTMLInputElement, {
+      target: { value: 'sk-typed' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it('keeps the saved key for an edit that does not move the URL', () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const onSubmit = vi.fn();
+    edit(onSubmit);
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it('moves the URL with the saved key in the desktop app', () => {
+    const onSubmit = vi.fn();
+    const { container } = edit(onSubmit);
+    expect(screen.queryByTestId('host-managed-custom-url')).toBeNull();
+    fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
+      target: { value: 'https://elsewhere.example/v1' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
     expect(onSubmit).toHaveBeenCalled();
   });
