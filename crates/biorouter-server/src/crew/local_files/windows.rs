@@ -498,6 +498,25 @@ impl DirectoryLease {
         Ok(())
     }
 
+    /// FILES-F8: give the partial `part` the Mark of the Web, a `Zone.Identifier` stream naming
+    /// the Internet zone, so SmartScreen and Office treat the published file as a download.
+    /// The stream moves with the file on rename, so it arrives with the final name. Best
+    /// effort: a volume without alternate data streams (FAT, some network shares) still gets
+    /// the file, and the failure is logged.
+    pub fn mark_as_downloaded(&self, part: &str) {
+        let written = simple_name(part).and_then(|()| {
+            let mut stream = self.path.join(part).into_os_string();
+            stream.push(":Zone.Identifier");
+            std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n").map_err(Into::into)
+        });
+        if let Err(error) = written {
+            tracing::warn!(
+                error = %error,
+                "could not mark a Crew download as downloaded from the internet"
+            );
+        }
+    }
+
     /// The caller retains a writable source handle opened with FILE_SHARE_DELETE.
     /// Directory ACLs exclude untrusted mutation while MoveFileEx needs delete
     /// sharing on the source itself. No-delete sharing remains on every ancestor.

@@ -180,3 +180,99 @@ fn private_file_with_acl_allow_is_rejected_even_when_mode_is_0600() {
     assert!(status.success());
     assert!(validate_file_acl(&fs::File::open(&file).unwrap()).is_err());
 }
+
+/// The value of extended attribute `name` on `path`, when it has one.
+#[cfg(target_os = "macos")]
+fn extended_attribute(path: &Path, name: &str) -> Option<String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = CString::new(name).unwrap();
+    let mut buffer = vec![0u8; 1024];
+    // SAFETY: both strings are NUL-terminated and live for the call, and the buffer's length
+    // is the one passed.
+    let read = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            0,
+            libc::XATTR_NOFOLLOW,
+        )
+    };
+    (read >= 0).then(|| String::from_utf8_lossy(&buffer[..read as usize]).into_owned())
+}
+
+/// FILES-F8: a file received through Crew is written by the daemon, not a browser's download
+/// manager, and carried no quarantine mark, so Gatekeeper never checked an app inside a shared
+/// archive. A published download is marked as a browser would mark it; the daemon's own
+/// receipts are not.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_published_download_is_marked_as_downloaded_and_a_receipt_is_not() {
+    use std::io::Write;
+
+    let root = private_root();
+    let output = private_directory(root.path(), "output");
+    let directory =
+        local_files::ProtectedDirectory::new(open_directory(&output, false).unwrap()).unwrap();
+    let partial = |id: &str, payload: &[u8]| {
+        let part = local_files::part_name(id);
+        let mut file = directory
+            .open_with(
+                &part,
+                local_files::nofollow_options()
+                    .read(true)
+                    .write(true)
+                    .create_new(true),
+            )
+            .unwrap()
+            .into_std();
+        file.write_all(payload).unwrap();
+        (part.to_str().unwrap().to_owned(), file)
+    };
+
+    let (part, file) = partial("0123456789abcdef0123456789abcdef", b"PK\x03\x04archive");
+    directory
+        .publish_selected(
+            &file,
+            &part,
+            "shared-tool.zip",
+            false,
+            &local_files::TargetApproval::Absent,
+        )
+        .unwrap();
+    let mark = extended_attribute(&output.join("shared-tool.zip"), "com.apple.quarantine")
+        .expect("a received file carries the quarantine mark");
+    let fields: Vec<&str> = mark.split(';').collect();
+    assert_eq!(fields.len(), 4, "{mark}");
+    assert_eq!(fields[0], "0081", "{mark}");
+    assert!(
+        u64::from_str_radix(fields[1], 16).is_ok_and(|seconds| seconds > 0),
+        "{mark}"
+    );
+    assert_eq!(fields[2], "Biorouter", "{mark}");
+    assert!(uuid_shaped(fields[3]), "{mark}");
+    // The partial was renamed, not copied: nothing is left under its name.
+    assert!(!output.join(&part).exists());
+
+    let (part, file) = partial("fedcba9876543210fedcba9876543210", b"{}");
+    directory
+        .publish_file(&file, &part, "receipts.json", true)
+        .unwrap();
+    assert_eq!(
+        extended_attribute(&output.join("receipts.json"), "com.apple.quarantine"),
+        None,
+        "the daemon's own receipts are not downloads"
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn uuid_shaped(text: &str) -> bool {
+    let groups: Vec<&str> = text.split('-').collect();
+    groups.iter().map(|group| group.len()).collect::<Vec<_>>() == [8, 4, 4, 4, 12]
+        && groups
+            .iter()
+            .all(|group| group.chars().all(|c| c.is_ascii_hexdigit()))
+}

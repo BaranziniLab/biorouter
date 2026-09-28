@@ -142,6 +142,10 @@ impl ProtectedDirectory {
             )
         }
     }
+    /// Publish a DOWNLOAD: content another person sent. Marked as downloaded from the internet
+    /// first (FILES-F8), so the mark arrives with the final name and a crash between the two
+    /// never leaves an unmarked file under it. [`Self::publish_file`], which writes the
+    /// daemon's own receipts, marks nothing.
     pub fn publish_selected(
         &self,
         file: &File,
@@ -152,6 +156,10 @@ impl ProtectedDirectory {
     ) -> Result<()> {
         let overwrite = overwrite && matches!(target, TargetApproval::Existing(_));
         self.revalidate()?;
+        #[cfg(target_os = "macos")]
+        mark_as_downloaded(file);
+        #[cfg(windows)]
+        self.lease.mark_as_downloaded(temporary);
         #[cfg(windows)]
         return require_publication(self.lease.publish_selected(
             file,
@@ -172,6 +180,54 @@ impl ProtectedDirectory {
                 Some(target),
             )
         }
+    }
+}
+
+/// The extended attribute macOS reads to decide that a file came from the internet.
+#[cfg(target_os = "macos")]
+const QUARANTINE_ATTRIBUTE: &std::ffi::CStr = c"com.apple.quarantine";
+
+/// The quarantine value a download gets: the flags browsers write for a downloaded file, the
+/// time in hexadecimal seconds, this app as the agent, and an event identifier.
+#[cfg(target_os = "macos")]
+fn quarantine_value(now: SystemTime) -> String {
+    let seconds = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    format!(
+        "0081;{seconds:08x};Biorouter;{}",
+        uuid::Uuid::new_v4().to_string().to_uppercase()
+    )
+}
+
+/// FILES-F8: mark a received file as downloaded from the internet, as a browser, Mail or
+/// AirDrop would, so Gatekeeper checks an app inside a shared `.zip` or `.dmg` on first open.
+///
+/// `biorouterd` writes Crew downloads itself, not through a download manager, and it is not
+/// sandboxed and not the bundle's main executable, so macOS adds no mark on its behalf.
+/// Set on the open descriptor, before the rename. Best effort: a volume that refuses extended
+/// attributes still gets the file, and the failure is logged.
+#[cfg(target_os = "macos")]
+fn mark_as_downloaded(file: &File) {
+    use std::os::fd::AsRawFd;
+    let value = quarantine_value(SystemTime::now());
+    // SAFETY: the descriptor is live for the call, and both pointers name buffers that outlive
+    // it with the lengths given.
+    let status = unsafe {
+        libc::fsetxattr(
+            file.as_raw_fd(),
+            QUARANTINE_ATTRIBUTE.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if status != 0 {
+        tracing::warn!(
+            error = %std::io::Error::last_os_error(),
+            "could not mark a Crew download as downloaded from the internet"
+        );
     }
 }
 
