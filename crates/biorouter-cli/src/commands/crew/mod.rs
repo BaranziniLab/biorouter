@@ -866,13 +866,14 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         } => remove_member(api, &channel, &member, former, yes).await?,
         CrewCommand::History(args) => {
             let channel = api.your_channel(&args.channel).await?;
-            let page = api
+            let mut page = api
                 .broker(
                     "messages.history",
                     history_params(&channel.id, &args),
                     false,
                 )
                 .await?;
+            AttachmentNames::default().name_page(api, &mut page).await;
             api.show_with(page, api.names().await)
         }
         CrewCommand::Search {
@@ -886,7 +887,8 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
             if let Some(after) = after {
                 params["after"] = json!(after);
             }
-            let page = api.broker("messages.search", params, false).await?;
+            let mut page = api.broker("messages.search", params, false).await?;
+            AttachmentNames::default().name_page(api, &mut page).await;
             api.show_with(page, api.names().await)
         }
         CrewCommand::Watch(args) => watch(api, args).await?,
@@ -3655,7 +3657,7 @@ async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
     let (mut cursor, initial) = watch_start(api, &channel.id, &args).await?;
     let path = api.path("/observe").await?;
     let client = api.client.shared()?;
-    let mut names = Directory::default();
+    let state = std::sync::Mutex::new(WatchState::default());
     let watched = api.label(&channel, "the channel", "channel ID");
     loop {
         let request = ObserveRequest {
@@ -3667,7 +3669,7 @@ async fn watch(api: &Api, args: WatchArgs) -> Result<Reply> {
             },
         };
         cursor = tokio::select! {
-            result = client.observe(&path, &request, |event| watch_event(api, &mut names, &watched, event)) => result?,
+            result = client.observe(&path, &request, |event| watch_event(api, &state, &watched, event)) => result?,
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(Reply::Streamed); }
         };
     }
@@ -3702,21 +3704,42 @@ async fn watch_start(
     Ok((newest["cursor"].as_str().map(str::to_owned), Initial::All))
 }
 
-fn watch_event(
+/// What `crew watch` carries from frame to frame: the names the last state frame gave, and the
+/// attachments already looked up.
+#[derive(Default)]
+struct WatchState {
+    names: Directory,
+    attachments: AttachmentNames,
+}
+
+async fn watch_event(
     api: &Api,
-    names: &mut Directory,
+    state: &std::sync::Mutex<WatchState>,
     watched: &str,
     event: ObserveEvent,
 ) -> Result<std::ops::ControlFlow<Option<String>>> {
+    let locked = || {
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
     match event {
         // The frame's snapshot names the authors of the messages that follow.
         ObserveEvent::State { snapshot, .. } => {
             if api.text() {
-                *names = Directory::from_snapshot(&snapshot);
+                locked().names = Directory::from_snapshot(&snapshot);
             }
         }
-        ObserveEvent::Messages { messages, .. } => {
-            let options = api.human(names.clone());
+        ObserveEvent::Messages { mut messages, .. } => {
+            // The lookups wait on the daemon, so the state is not held across them.
+            let mut attachments = std::mem::take(&mut locked().attachments);
+            attachments.name_in(api, &mut messages).await;
+            let names = {
+                let mut state = locked();
+                state.attachments = attachments;
+                state.names.clone()
+            };
+            let options = api.human(names);
             for message in messages {
                 emit_with(&message, output::stream_format(api.format), &options)?;
             }
@@ -3734,6 +3757,66 @@ fn watch_event(
         }
     }
     Ok(std::ops::ControlFlow::Continue(()))
+}
+
+/// Each attachment's name, size and type, looked up with `blob.status` (DW-17), so history and
+/// watch can say which file is which: a message carries only its attachments' IDs, and
+/// `files download ID` needs the right one. Each ID is asked about once per command, and at most
+/// [`Self::MOST`] are asked about in all, so a long page never waits long; an attachment past
+/// that, or one the person cannot see, is shown by its ID alone.
+#[derive(Debug, Default)]
+struct AttachmentNames {
+    known: std::collections::HashMap<String, Option<Value>>,
+}
+
+impl AttachmentNames {
+    const MOST: usize = 40;
+
+    /// [`Self::name_in`] for a history or search page's `messages`.
+    async fn name_page(&mut self, api: &Api, page: &mut Value) {
+        if let Some(messages) = page["messages"].as_array_mut() {
+            self.name_in(api, messages).await;
+        }
+    }
+
+    /// Add `attachment_details` ({ID: {name, size, media_type}}) beside each message's
+    /// unchanged `attachments`, for every attachment that could be looked up.
+    async fn name_in(&mut self, api: &Api, messages: &mut [Value]) {
+        for message in messages.iter_mut() {
+            let ids: Vec<String> = message["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            let mut details = serde_json::Map::new();
+            for id in ids {
+                if let Some(found) = self.look_up(api, &id).await {
+                    details.insert(id, found);
+                }
+            }
+            if !details.is_empty() {
+                message["attachment_details"] = Value::Object(details);
+            }
+        }
+    }
+
+    async fn look_up(&mut self, api: &Api, id: &str) -> Option<Value> {
+        if let Some(known) = self.known.get(id) {
+            return known.clone();
+        }
+        if self.known.len() >= Self::MOST || component(id).is_err() {
+            return None;
+        }
+        let found = api
+            .lookup("blob.status", json!({"blob_id": id}))
+            .await
+            .map(|blob| json!({"name": blob["name"], "size": blob["size"], "media_type": blob["media_type"]}))
+            .filter(|details| details["name"].is_string());
+        self.known.insert(id.to_owned(), found.clone());
+        found
+    }
 }
 
 /// Why `crew watch` stopped, for a person (Q2-76): the channel, then the observer's own plain
@@ -6239,6 +6322,81 @@ mod tests {
         assert!(failure_json(&lost, "x", "req-1", OutputFormat::Text).is_none());
     }
 
+    /// DW-17: history names each attachment, in text and in JSON (`attachment_details`, beside
+    /// the unchanged `attachments`), asking about each ID once; `files show ID` says which file
+    /// an ID is.
+    #[tokio::test]
+    async fn history_names_attachments_and_files_show_says_which_file_an_id_is() {
+        const CORRECTED: &str = "a1a1a1a1-0000-4000-8000-000000000001";
+        const ORIGINAL: &str = "a1a1a1a1-0000-4000-8000-000000000002";
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            let body_value = body.cloned().unwrap_or_default();
+            match body_value["method"].as_str() {
+                Some("messages.history") => Ok(json!({"messages": [
+                    {"id": "m1", "channel_id": METHODS, "actor_id": BOB, "body": "Both files.",
+                     "created_at": 0, "attachments": [CORRECTED, ORIGINAL]},
+                    {"id": "m2", "channel_id": METHODS, "actor_id": BOB, "body": "Again.",
+                     "created_at": 0, "attachments": [CORRECTED]}
+                ], "cursor": "m2", "people": {}})),
+                Some("blob.status") => {
+                    let id = body_value["params"]["blob_id"].as_str().unwrap_or_default();
+                    let name = if id == CORRECTED {
+                        "counts-fixed.csv"
+                    } else {
+                        "counts.csv"
+                    };
+                    Ok(
+                        json!({"id": id, "channel_id": METHODS, "owner_id": BOB, "name": name,
+                        "size": 55, "media_type": "text/csv", "complete": true}),
+                    )
+                }
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::Json, handler);
+        let Reply::Show(page, _) = run(&api, history("methods")).await.expect("history") else {
+            panic!("history shows a page")
+        };
+        assert_eq!(
+            page["messages"][0]["attachments"],
+            json!([CORRECTED, ORIGINAL])
+        );
+        assert_eq!(
+            page["messages"][0]["attachment_details"][ORIGINAL],
+            json!({"name": "counts.csv", "size": 55, "media_type": "text/csv"})
+        );
+        let lookups = fake
+            .broker_calls()
+            .into_iter()
+            .filter(|(method, _)| method == "blob.status")
+            .count();
+        assert_eq!(lookups, 2, "each ID is asked about once");
+
+        let (mut api, _) = api_with(OutputFormat::Text, handler);
+        api.show_ids = true;
+        let text = said(run(&api, history("methods")).await.expect("history")).join("\n");
+        assert!(
+            text.contains(&format!("    Attachment: counts-fixed.csv (55 B) [attachment ID {CORRECTED}]\n    Attachment: counts.csv (55 B) [attachment ID {ORIGINAL}]")),
+            "{text}"
+        );
+
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let shown = said(
+            run(
+                &api,
+                CrewCommand::Files(FileCommand::Show {
+                    attachment: ORIGINAL.into(),
+                }),
+            )
+            .await
+            .expect("files show"),
+        );
+        assert_eq!(
+            shown,
+            ["counts.csv · 55 B · text/csv · in #methods · shared by \"Bob Lee\" (@bob)"]
+        );
+    }
+
     /// DW-07: `files watch` names each receipt's channel as `files status` does, and shows
     /// its IDs with `--show-ids`.
     #[tokio::test]
@@ -6341,20 +6499,22 @@ mod tests {
 
     /// CLI-5: a watch the daemon ended prints one error value, the frame and the failure in
     /// one, not a frame followed by a second error object.
-    #[test]
-    fn a_stopped_watch_is_one_error_value() {
+    #[tokio::test]
+    async fn a_stopped_watch_is_one_error_value() {
         let (api, _) = api_with(OutputFormat::StreamJson, standard);
-        let mut names = Directory::default();
+        let state = std::sync::Mutex::new(WatchState::default());
         let error = match watch_event(
             &api,
-            &mut names,
+            &state,
             "#methods",
             ObserveEvent::Error {
                 code: "channel_access_changed".into(),
                 error: "You no longer have access to this channel".into(),
                 clear: true,
             },
-        ) {
+        )
+        .await
+        {
             Ok(_) => panic!("an error frame ends the watch"),
             Err(error) => error,
         };

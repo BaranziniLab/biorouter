@@ -59,6 +59,15 @@ pub(super) async fn handle(api: &Api, command: FileCommand) -> Result<Value> {
             api.broker("reference.get", json!({"reference_id":reference}), false)
                 .await
         }
+        // DW-17: which file an attachment ID is, before downloading it.
+        FileCommand::Show { attachment } => {
+            api.broker(
+                "blob.status",
+                json!({"blob_id": component(&attachment)?}),
+                false,
+            )
+            .await
+        }
     }
 }
 

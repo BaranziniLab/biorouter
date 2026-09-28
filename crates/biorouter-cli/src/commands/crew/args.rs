@@ -656,7 +656,7 @@ pub enum FileCommand {
     },
     /// Download a shared file.
     Download {
-        /// The file's attachment ID.
+        /// The file's attachment ID, which history --show-ids prints beside its name.
         blob: String,
         /// Where to save it.
         #[arg(long)]
@@ -679,6 +679,11 @@ pub enum FileCommand {
     ShowReference {
         /// The reference's ID.
         reference: String,
+    },
+    /// Show a shared file by its attachment ID: its name, size, type and channel.
+    Show {
+        /// The file's attachment ID, which history --show-ids prints beside its name.
+        attachment: String,
     },
 }
 

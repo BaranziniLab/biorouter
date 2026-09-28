@@ -1773,16 +1773,39 @@ impl Ctx {
         out
     }
 
+    /// A message's attachments, each by name and size where the command looked it up
+    /// (`attachment_details`, DW-17), so `files download ID` can be given the right one; any
+    /// it could not look up are counted, as before.
     fn message_extras(&self, message: &Value) -> Vec<String> {
         let mut out = Vec::new();
         let attachments = str_list(message, "attachments");
-        if !attachments.is_empty() {
+        let details = message.get("attachment_details");
+        let (named, unnamed): (Vec<&str>, Vec<&str>) = attachments
+            .iter()
+            .partition(|id| details.and_then(|details| details.get(**id)).is_some());
+        for id in &named {
+            let blob = &details.expect("partitioned on it")[*id];
+            let mut text = format!("Attachment: {}", text_or(blob, "name", "Unnamed file"));
+            if let Some(size) = blob.get("size").and_then(Value::as_u64) {
+                let _ = write!(text, " ({})", human_size(size));
+            }
+            out.push(format!(
+                "    {}",
+                self.with_id(text, "attachment ID", Some(id))
+            ));
+        }
+        if !unnamed.is_empty() {
+            let more = if named.is_empty() { "" } else { "more " };
             let mut line = format!(
                 "    {}",
-                count(attachments.len(), "attachment", "attachments")
+                count(
+                    unnamed.len(),
+                    &format!("{more}attachment"),
+                    &format!("{more}attachments")
+                )
             );
             if self.show_ids {
-                let _ = write!(line, " [attachment IDs {}]", join_safe(&attachments));
+                let _ = write!(line, " [attachment IDs {}]", join_safe(&unnamed));
             }
             out.push(line);
         }
@@ -3013,6 +3036,27 @@ mod tests {
         .join("\n");
         assert_eq!(text, expected);
         assert_no_machine_ids(&text);
+    }
+
+    /// DW-17: an attachment the command looked up is named with its size, beside its ID with
+    /// `--show-ids`; one it could not look up is counted.
+    #[test]
+    fn history_names_each_attachment_it_looked_up() {
+        let mut page = history();
+        page["messages"][3]["attachments"] = json!([BLOB, TRANSFER]);
+        page["messages"][3]["attachment_details"] =
+            json!({BLOB: {"name": "counts.csv", "size": 56_320, "media_type": "text/csv"}});
+        let text = named(&page, &alice_snapshot());
+        assert!(
+            text.contains("    Attachment: counts.csv (55 KB)\n    1 more attachment\n"),
+            "{text}"
+        );
+        assert_no_machine_ids(&text);
+        let ids = with_ids(&page, &alice_snapshot());
+        assert!(
+            ids.contains(&format!("    Attachment: counts.csv (55 KB) [attachment ID {BLOB}]\n    1 more attachment [attachment IDs {TRANSFER}]")),
+            "{ids}"
+        );
     }
 
     #[test]

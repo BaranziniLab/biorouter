@@ -521,14 +521,17 @@ impl CrewClient {
         Ok((response, connection))
     }
 
-    pub async fn observe<F>(
+    /// Follow the daemon's observer at `path`, handing each frame to `on_frame`, which may
+    /// wait (to look up an attachment's name, say) before the next frame is read.
+    pub async fn observe<F, Fut>(
         &self,
         path: &str,
         body: &ObserveRequest,
         on_frame: F,
     ) -> Result<Option<String>>
     where
-        F: FnMut(ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>>,
+        F: FnMut(ObserveEvent) -> Fut,
+        Fut: std::future::Future<Output = Result<std::ops::ControlFlow<Option<String>>>>,
     {
         #[cfg(not(unix))]
         {
@@ -882,12 +885,13 @@ async fn verified_observer_connection(
 }
 
 #[cfg(unix)]
-async fn read_observer_frames<F>(
+async fn read_observer_frames<F, Fut>(
     mut body: hyper::body::Incoming,
     mut on_frame: F,
 ) -> Result<Option<String>>
 where
-    F: FnMut(ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>>,
+    F: FnMut(ObserveEvent) -> Fut,
+    Fut: std::future::Future<Output = Result<std::ops::ControlFlow<Option<String>>>>,
 {
     use http_body_util::BodyExt;
     const MAX_FRAME: usize = 1024 * 1024;
@@ -909,7 +913,7 @@ where
                 let value =
                     serde_json::from_slice(&pending).context("Invalid Crew observer frame")?;
                 pending.clear();
-                if let std::ops::ControlFlow::Break(cursor) = on_frame(value)? {
+                if let std::ops::ControlFlow::Break(cursor) = on_frame(value).await? {
                     return Ok(cursor);
                 }
             }
@@ -1951,11 +1955,11 @@ mod tests {
         let cursor = read_observer_frames(body, |frame| {
             let reconnect = matches!(&frame, ObserveEvent::Reconnect { .. });
             frames.push(frame);
-            if reconnect {
+            std::future::ready(if reconnect {
                 Ok(std::ops::ControlFlow::Break(Some("cursor-2".into())))
             } else {
                 Ok(std::ops::ControlFlow::Continue(()))
-            }
+            })
         })
         .await
         .expect("split NDJSON frames parse");
@@ -1977,17 +1981,21 @@ mod tests {
     #[tokio::test]
     async fn observer_parser_rejects_malformed_and_oversized_framing() {
         let malformed = observer_body(vec![b"{not-json}\n".to_vec()]).await;
-        let error = read_observer_frames(malformed, |_| Ok(std::ops::ControlFlow::Continue(())))
-            .await
-            .expect_err("malformed observer JSON must fail closed");
+        let error = read_observer_frames(malformed, |_| {
+            std::future::ready(Ok(std::ops::ControlFlow::Continue(())))
+        })
+        .await
+        .expect_err("malformed observer JSON must fail closed");
         assert!(error.to_string().contains("Invalid Crew observer frame"));
 
         let mut oversized = vec![b'x'; 1_048_577];
         oversized.push(b'\n');
         let oversized = observer_body(vec![oversized]).await;
-        let error = read_observer_frames(oversized, |_| Ok(std::ops::ControlFlow::Continue(())))
-            .await
-            .expect_err("oversized observer frame must fail closed");
+        let error = read_observer_frames(oversized, |_| {
+            std::future::ready(Ok(std::ops::ControlFlow::Continue(())))
+        })
+        .await
+        .expect_err("oversized observer frame must fail closed");
         assert!(error.to_string().contains("exceeds 1 MiB"));
     }
 
