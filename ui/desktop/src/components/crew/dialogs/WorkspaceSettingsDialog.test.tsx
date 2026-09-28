@@ -404,7 +404,7 @@ describe('WorkspaceSettingsDialog', () => {
       journal_limit: 1024 * MIB,
       journal_admin_headroom: 16 * MIB,
     });
-    const at = async (state: number, actor = alice) => {
+    const at = async (state: number, actor: typeof alice | typeof bob = alice) => {
       const view = renderSettings({}, { snapshot: makeSnapshot({ actor, usage: usage(state) }) });
       const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
       return { view, dialog };
