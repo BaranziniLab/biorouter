@@ -10,7 +10,8 @@
 //!   coupling to the store's internal `Manifest` shape) and print a table, or
 //!   `--json` for machine output.
 //! * `open`  — ensure a daemon is up and open `http://<host>:<port>/apps/<id>/`
-//!   in the default browser.
+//!   in the default browser, through a one-time link that never goes on a
+//!   command line (see [`write_launch_page`]).
 //! * `serve` — ensure a daemon is up, print the URL, and stay in the foreground
 //!   until it is stopped (when it started the daemon) or return immediately with
 //!   a note (when it reused a running one).
@@ -433,6 +434,107 @@ fn is_launch_path(path: &str, id: &str) -> bool {
         })
 }
 
+/// How long a launch page is kept. Its link expired minutes before, so a page
+/// this old opens nothing; it is removed the next time a page is written.
+const LAUNCH_PAGE_STALE: Duration = Duration::from_secs(10 * 60);
+
+/// Where `apps open` writes the pages that hand a launch link to the browser.
+fn launch_pages_dir() -> PathBuf {
+    biorouter::config::paths::Paths::state_dir().join("app-launch")
+}
+
+/// Write `launch` into a page only this account can read, which sends the
+/// browser on to it, and answer that page's path: the only thing an opener is
+/// handed (W2-HRD-1).
+///
+/// ⚠ Never hand the link itself to `open`, `xdg-open` or a browser. Their
+/// arguments are readable by every account on the machine (`ps` on macOS,
+/// `/proc/<pid>/cmdline` on Linux), and the link opens the app for whoever
+/// redeems it FIRST: a co-tenant polling for `?t=` beats a browser that is
+/// still starting, keeps the app's cookie for the daemon's run, and the owner
+/// sees only a refusal. Jupyter hands its token over the same way. The page is
+/// mode 0600 in a 0700 folder this account owns, and names the link twice: a
+/// meta refresh, and a link to click if the refresh does not run. The daemon
+/// answers the link with a page of its own that sets the cookie, because a
+/// `file:` page starting the navigation would keep a redirect from carrying it
+/// (`routes::apps::launch_bounce`).
+pub(crate) fn write_launch_page(directory: &Path, launch: &str) -> Result<PathBuf> {
+    use std::io::Write;
+
+    biorouter::daemon_runtime::private_directory(directory)?;
+    remove_stale_launch_pages(directory, std::time::SystemTime::now());
+    let target = html_attribute(launch);
+    let mut page = tempfile::Builder::new()
+        .prefix("launch-")
+        .suffix(".html")
+        .rand_bytes(16)
+        .tempfile_in(directory)?;
+    writeln!(
+        page,
+        "<!doctype html><meta charset=utf-8>\
+         <meta name=referrer content=no-referrer>\
+         <meta http-equiv=\"refresh\" content=\"0;url={target}\">\
+         <title>Opening Biorouter app</title>\
+         <p>Opening the app. If nothing happens, <a href=\"{target}\">open it here</a>. \
+         The address works once.</p>"
+    )?;
+    page.as_file().sync_all()?;
+    Ok(page.into_temp_path().keep()?)
+}
+
+/// Remove the launch pages in `directory` older than [`LAUNCH_PAGE_STALE`].
+/// Best effort: a page left behind holds an expired link.
+fn remove_stale_launch_pages(directory: &Path, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("launch-") && name.ends_with(".html")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= LAUNCH_PAGE_STALE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `value` escaped for a double-quoted HTML attribute.
+fn html_attribute(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+/// Open the one-time link `launch` in the default browser through a launch page
+/// in `directory`, calling `opener` with the page and never with the link.
+/// Answers what went wrong, for the caller to print the link instead.
+fn open_launch_link(
+    launch: &str,
+    directory: &Path,
+    opener: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let page = write_launch_page(directory, launch)
+        .map_err(|error| anyhow!("could not write the page that opens the app: {error}"))?;
+    opener(&page).map_err(|error| anyhow!("could not open a browser: {error}"))
+}
+
 /// Whether a daemon this command starts is tied to this process's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Supervision {
@@ -576,8 +678,11 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
         }
     }
 
-    if let Err(e) = open::that(&launch) {
-        eprintln!("    {} could not open a browser: {e}", style("!").yellow());
+    // The link itself never reaches an opener's command line: see
+    // `write_launch_page`. The terminal is this account's alone, so the link is
+    // printed there when no browser could be opened.
+    if let Err(e) = open_launch_link(&launch, &launch_pages_dir(), |page| open::that(page)) {
+        eprintln!("    {} {e}", style("!").yellow());
         println!(
             "  {} open this address instead (it works once): {launch}",
             style("·").dim()
@@ -810,6 +915,128 @@ mod tests {
             "/apps/beta/".to_string(),
         ] {
             assert!(!is_launch_path(&path, "beta"), "{path}");
+        }
+    }
+
+    fn a_launch_link() -> String {
+        format!("http://127.0.0.1:3000/apps/beta/?t={}", "ab".repeat(32))
+    }
+
+    /// W2-HRD-1: the opener is handed a page only this account can read, and
+    /// never the link. The link opens the app for whoever redeems it first, and
+    /// an opener's arguments are readable by every account on the machine.
+    #[test]
+    fn the_opener_is_handed_a_private_page_and_never_the_link() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let launch = a_launch_link();
+        let mut handed = Vec::new();
+        open_launch_link(&launch, &dir, |page| {
+            handed.push(page.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(handed.len(), 1);
+        let page = &handed[0];
+        let argument = page.to_string_lossy();
+        assert!(!argument.contains("?t="), "{argument}");
+        assert!(!argument.contains(&"ab".repeat(32)), "{argument}");
+        assert_eq!(page.parent(), Some(dir.as_path()));
+        let html = fs::read_to_string(page).unwrap();
+        assert!(
+            html.contains(&format!("content=\"0;url={launch}\"")),
+            "{html}"
+        );
+        assert!(html.contains(&format!("href=\"{launch}\"")), "{html}");
+        assert!(html.contains("<meta name=referrer content=no-referrer>"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(page), 0o600, "the page is this account's alone");
+            assert_eq!(mode(&dir), 0o700, "and so is its folder");
+        }
+    }
+
+    /// With no browser to open, the caller learns it and prints the link to the
+    /// terminal instead; the page is still this account's alone.
+    #[test]
+    fn a_failed_opener_is_reported_so_the_link_is_printed_instead() {
+        let tmp = TempDir::new().unwrap();
+        let error = open_launch_link(&a_launch_link(), &tmp.path().join("app-launch"), |_| {
+            Err(std::io::Error::other("no display"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("no display"), "{error}");
+    }
+
+    /// A folder other accounts can enter is not used for a page, and nothing is
+    /// opened: the caller prints the link instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_others_can_read_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut opened = false;
+        let result = open_launch_link(&a_launch_link(), &dir, |_| {
+            opened = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!opened);
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "no page was written"
+        );
+    }
+
+    /// Pages whose link has long expired are removed when the next is written;
+    /// other files in the folder, and recent pages, are left alone.
+    #[test]
+    fn expired_launch_pages_are_swept() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let first = write_launch_page(&dir, &a_launch_link()).unwrap();
+        let recent = write_launch_page(&dir, &a_launch_link()).unwrap();
+        let other = dir.join("notes.txt");
+        fs::write(&other, "keep").unwrap();
+        let long_ago = std::time::SystemTime::now() - LAUNCH_PAGE_STALE - Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(&first)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        let next = write_launch_page(&dir, &a_launch_link()).unwrap();
+        assert!(!first.exists(), "an expired page is removed");
+        assert!(recent.exists() && next.exists() && other.exists());
+    }
+
+    #[test]
+    fn a_launch_page_escapes_what_it_quotes() {
+        assert_eq!(
+            html_attribute(r#"a&b"c'd<e>f"#),
+            "a&amp;b&quot;c&#39;d&lt;e&gt;f"
+        );
+    }
+
+    /// A source guard for the property above: the only thing this file ever
+    /// hands `open::that` is a launch page.
+    #[test]
+    fn nothing_but_a_launch_page_reaches_an_opener() {
+        let source = include_str!("apps.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        let calls: Vec<&str> = source.split("open::that(").skip(1).collect();
+        assert!(!calls.is_empty());
+        for call in calls {
+            assert!(call.starts_with("page)"), "open::that({call:.40}");
         }
     }
 
