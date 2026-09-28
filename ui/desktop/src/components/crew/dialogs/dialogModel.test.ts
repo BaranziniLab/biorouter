@@ -14,7 +14,7 @@ import {
   WORKSPACE_NAME_PATTERN,
   workspaceNameProblem,
 } from './nameRules';
-import { firstName, liveInvitations, personMatches } from './people';
+import { channelsSeenAfterTeamAdd, firstName, liveInvitations, personMatches } from './people';
 import {
   approveRefusalText,
   inviteRefusal,
@@ -313,5 +313,24 @@ describe('workspace words', () => {
     expect(fingerprint).toBe('9a2db2e23f1504cd056606553ac049c5e718e8f9ce9233876df1a7a1821af885');
     expect(groupedFingerprint(fingerprint!)).toBe('9A2D B2E2 3F15 04CD');
     expect(await workspaceKeyFingerprint('not-a-key')).toBeNull();
+  });
+});
+
+// M17, F6: "They can now see #general, #random and #methods" followed the broker's ID order.
+describe('channelsSeenAfterTeamAdd', () => {
+  it('names #general first, then the added channels by name', () => {
+    const base = makeSnapshot();
+    const channel = (id: string, name: string) => ({ ...base.channels[0], id, name });
+    const snapshot = makeSnapshot({
+      channels: [
+        channel('c-4c78', 'random'),
+        channel('c-5ee2', 'methods'),
+        ...base.channels,
+        channel('c-0001', 'analysis'),
+      ],
+    });
+    expect(channelsSeenAfterTeamAdd(snapshot, 'team-1', ['c-4c78', 'c-5ee2', 'c-0001'])).toBe(
+      '#general, #analysis, #methods and #random'
+    );
   });
 });

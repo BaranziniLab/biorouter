@@ -132,6 +132,26 @@ describe('AddPeopleDialog and its checklist', () => {
     expect(rowNames(await checklist())).toEqual(['Eve Park (@eve)']);
   });
 
+  // M17: the pickers listed people in principal-ID order, which is random.
+  it('lists people in the one order every people list uses, whatever order the snapshot sends', async () => {
+    const zed = { id: 'person-0zed', uid: 1010, username: 'zed', nickname: 'Zed Adams' };
+    const amy = { id: 'person-zzz', uid: 1011, username: 'amy', nickname: 'Amy Zhou' };
+    const snapshot = makeSnapshot({
+      principals: [zed, ...makeSnapshot().principals, amy],
+      teams: [{ ...makeSnapshot().teams[0], members: [alice.id] }],
+    });
+    renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+      snapshot,
+    });
+    expect(rowNames(await checklist())).toEqual([
+      'Amy Zhou (@amy)',
+      'Bob Lee (@bob)',
+      'Carol Diaz (@carol)',
+      'Dan Wu (@dan)',
+      'Zed Adams (@zed)',
+    ]);
+  });
+
   it('offers a channel only members of its team who are not in the channel', async () => {
     renderWithCrew(
       <AddPeopleDialog target="channel" targetId="channel-general" onClose={vi.fn()} />

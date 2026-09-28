@@ -485,7 +485,10 @@ export interface TeamSectionView {
   archived: ChannelRowView[];
 }
 
-/** Teams in snapshot order, each with its open channels and its archived ones. */
+/**
+ * Teams by name, each with its open channels and its archived ones, #general first and then by
+ * name ({@link channelOrder}); never in the snapshot's order, which is that of random IDs (M17).
+ */
 export function teamSections(
   snapshot: Pick<Snapshot, 'teams' | 'channels' | 'unread'> | null
 ): TeamSectionView[] {
@@ -502,14 +505,32 @@ export function teamSections(
           name: channelSlug(channel),
           unread: unreadCount(snapshot.unread?.[channel.id]),
           archived: channel.archived === true,
-        }));
+        }))
+        .sort(channelOrder(team.general_channel_id));
       return {
         id: team.id,
         name: teamName(team),
         channels: rows.filter((row) => !row.archived),
         archived: rows.filter((row) => row.archived),
       };
-    });
+    })
+    .sort((a, b) => byName(a.name, b.name) || a.id.localeCompare(b.id));
+}
+
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+/**
+ * A team's channels in the one order every list uses (M17, F6): its #general first, then by name,
+ * case aside. The broker sends them keyed by random IDs, so the order it sends means nothing:
+ * #general was drawn fourth, and a new channel landed wherever its ID fell.
+ */
+export function channelOrder(
+  generalChannelId: string | null | undefined
+): (a: { id: string; name: string }, b: { id: string; name: string }) => number {
+  return (a, b) =>
+    Number(b.id === generalChannelId) - Number(a.id === generalChannelId) ||
+    byName(a.name, b.name) ||
+    a.id.localeCompare(b.id);
 }
 
 function unreadCount(value: unknown): number {

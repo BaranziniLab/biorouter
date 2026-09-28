@@ -113,8 +113,10 @@ function invitedTo(
       .filter((invitation) => invitation.kind === kind && invitation.target_id === targetId)
       .map((invitation) => invitation.principal_id)
   );
-  return dir.people.filter(
-    (person) => person.id && ids.has(person.id) && !person.isYou && !person.isFormer
+  return peopleInOrder(
+    dir.people.filter(
+      (person) => person.id && ids.has(person.id) && !person.isYou && !person.isFormer
+    )
   );
 }
 
@@ -132,7 +134,10 @@ export function addPeopleCandidates(
   target: PickerTarget,
   options: { directAdd?: boolean } = {}
 ): PickerCandidates {
-  const everyone = dir.people.filter((person) => !person.isYou && !person.isFormer && person.id);
+  // In the one order every people list uses (M17): the directory's is that of random IDs.
+  const everyone = peopleInOrder(
+    dir.people.filter((person) => !person.isYou && !person.isFormer && person.id)
+  );
   if (!snapshot) return { candidates: [], others: everyone, pending: [], pendingTeam: [] };
   if (target.kind === 'team') {
     const team = snapshot.teams.find((item) => item.id === target.teamId);
@@ -258,7 +263,7 @@ export function directAddResultFrom(value: unknown): DirectAddResult {
 
 /**
  * The channels a person can see after a direct TEAM addition, as `#a and #b`: the team's #general
- * (which comes with the team) and every channel the broker says it added, in that order, once each.
+ * (which comes with the team), then every channel the broker says it added, by name, once each.
  */
 export function channelsSeenAfterTeamAdd(
   snapshot: Snapshot | null | undefined,
@@ -267,12 +272,22 @@ export function channelsSeenAfterTeamAdd(
 ): string {
   const team = snapshot?.teams.find((item) => item.id === teamId);
   const ids = [...(team ? [team.general_channel_id] : []), ...added];
-  const labels: string[] = [];
+  const labels: { id: string; name: string }[] = [];
   for (const id of new Set(ids)) {
     const channel = snapshot?.channels.find((item) => item.id === id);
-    labels.push(channel ? channelName(channel) : id === team?.general_channel_id ? '#general' : '');
+    const name = channel ? channelName(channel) : id === team?.general_channel_id ? '#general' : '';
+    if (name) labels.push({ id, name });
   }
-  return listOf(labels.filter(Boolean));
+  // #general, then by name: the broker's order is that of random IDs (M17).
+  return listOf(
+    labels
+      .sort(
+        (a, b) =>
+          Number(b.id === team?.general_channel_id) - Number(a.id === team?.general_channel_id) ||
+          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      )
+      .map((label) => label.name)
+  );
 }
 
 /** The channel's other active members, who could accept its ownership. */
@@ -284,8 +299,10 @@ export function ownershipCandidates(
   const channel = snapshot?.channels.find((item) => item.id === channelId);
   if (!channel) return [];
   const members = new Set(channel.members);
-  return dir.people.filter(
-    (person) => person.id && !person.isYou && !person.isFormer && members.has(person.id)
+  return peopleInOrder(
+    dir.people.filter(
+      (person) => person.id && !person.isYou && !person.isFormer && members.has(person.id)
+    )
   );
 }
 

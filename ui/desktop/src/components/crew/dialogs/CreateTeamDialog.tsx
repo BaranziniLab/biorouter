@@ -18,7 +18,7 @@ import {
   useDialogError,
 } from './fields';
 import { teamNameProblem } from './nameRules';
-import { directAddResultFrom, directAddSupported } from './people';
+import { directAddResultFrom, directAddSupported, peopleInOrder } from './people';
 import { PersonPicker } from './PersonPicker';
 import { directAddRefusalText, isNameRefusal, nameRefusalText, refusalText } from './refusals';
 import { useDialogView } from './workspace';
@@ -90,7 +90,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
   const inviting = crew.isPending(directAdd ? ADD_KEY : INVITE_KEY);
   // Named as the Joined row names them when they have not chosen a name (F8).
   const candidates = withJoinerNames(
-    dir.people.filter((person) => !person.isYou && !person.isFormer && person.id),
+    peopleInOrder(dir.people.filter((person) => !person.isYou && !person.isFormer && person.id)),
     snapshot?.workspace.id ?? null
   );
 

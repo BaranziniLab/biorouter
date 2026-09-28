@@ -8,7 +8,7 @@ import { ChevronDown } from '../../icons/app-icons';
 import { cn } from '../../../utils';
 import { carriesJoinerName, PersonName, type CrewPerson, type PeopleDirectory } from '../identity';
 import { addPeopleCopy } from './copy';
-import { personMatches } from './people';
+import { peopleInOrder, personMatches } from './people';
 import './dialogs.css';
 
 /**
@@ -74,7 +74,8 @@ export function PersonPicker({
   const [query, setQuery] = React.useState('');
   const valueId = React.useId();
   const chosen = candidates.find((person) => person.id === value) ?? null;
-  const visible = candidates.filter((person) => personMatches(person, query));
+  // The one order every people list uses (M17), whatever order the caller built.
+  const visible = peopleInOrder(candidates.filter((person) => personMatches(person, query)));
 
   const choose = (person: CrewPerson) => {
     onChange(person.id);
@@ -207,7 +208,10 @@ export function PersonChecklist({
   const [query, setQuery] = React.useState('');
   const listId = React.useId();
   const chosen = new Set(selected);
-  const visible = candidates.filter((person) => person.id && personMatches(person, query));
+  // The one order every people list uses (M17), whatever order the caller built.
+  const visible = peopleInOrder(
+    candidates.filter((person) => person.id && personMatches(person, query))
+  );
   const visibleIds = visible.map((person) => person.id as string);
   const allShown = visibleIds.length > 0 && visibleIds.every((id) => chosen.has(id));
   const someShown = visibleIds.some((id) => chosen.has(id));
