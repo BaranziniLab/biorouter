@@ -7,14 +7,17 @@
 //!   for the host's administrative operations.
 //! - BROKER-2: snapshot sections other members can grow (references, invitations, runs, teams
 //!   and channels) and the worker's context manifest and message pages stay within the frame
-//!   limit; a repeat invitation renews rather than adds; a member leaves the channels someone
-//!   else added them to, and the host manages the channels of someone who left the workspace.
+//!   limit, while what a snapshot leaves out still counts in `name_conflict` and
+//!   `former_principals`; a repeat invitation renews rather than adds; a member leaves the
+//!   channels someone else added them to, and the host manages the channels of someone who left
+//!   the workspace.
 //! - BROKER-4: per-member shares of attachments, teams, channels and references, and
 //!   unfinished uploads that expire.
 #![cfg(unix)]
 
 mod support;
 
+use biorouter_crew::names::{name_key, skeleton_key};
 use biorouter_crew::{Quotas, Request, MAX_FRAME};
 use serde_json::{json, Value};
 use support::*;
@@ -1448,6 +1451,114 @@ fn one_members_teams_and_channels_never_push_a_snapshot_past_the_frame_limit() {
         .collect();
     assert!(!protected.is_empty());
     assert!(protected.iter().all(|id| channels.contains(id)));
+}
+
+/// What a snapshot leaves out still counts in what the daemon's name resolver reads beside the
+/// listing: each listed channel's `name_conflict` and the `former_principals` it matches
+/// `former @name` against. Were either computed over the listed channels only, a name whose
+/// namesake was left out would resolve to the listed one, and a person could post to, or remove,
+/// someone other than the one they named.
+#[test]
+fn a_snapshot_that_leaves_channels_out_still_counts_them_in_names_and_former_members() {
+    let Crowded {
+        ws,
+        mut victor,
+        mallory,
+        olivia,
+        mallory_channels,
+        ..
+    } = crowded("places-names");
+    let state = ws.broker.state_json();
+    let named: [&str; 3] = [
+        &mallory.principal_id,
+        &victor.principal_id,
+        &olivia.principal_id,
+    ];
+    // Each of Mallory's channels names one former member no other place names, in place of
+    // someone from the crowd. And in each of her teams, eight of the nine channels besides
+    // `#general` pair up under one name, as a journal written before the name rules can hold.
+    let formers: Vec<String> = mallory_channels.iter().map(|_| uuid()).collect();
+    let mut patches = Vec::new();
+    for (position, (channel, former)) in mallory_channels.iter().zip(&formers).enumerate() {
+        let uid = 90_000 + u32::try_from(position).unwrap();
+        let username = format!("gone{uid}");
+        patches.push(set(
+            &["principals", former],
+            legacy_principal(former, uid, &username, &username, false),
+        ));
+        let mut members: Vec<Value> = state["channels"][channel]["members"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let crowd: Vec<usize> = (0..members.len())
+            .filter(|index| !named.contains(&members[*index].as_str().unwrap()))
+            .collect();
+        members[crowd[position]] = json!(former);
+        patches.push(set(&["channels", channel, "members"], json!(members)));
+        let within_team = position % 10;
+        if (1..=8).contains(&within_team) && within_team % 2 == 0 {
+            let namesake = state["channels"][&mallory_channels[position - 1]]["name"].clone();
+            patches.push(set(&["channels", channel, "name"], namesake));
+        }
+    }
+    let actor = mallory.principal_id.clone();
+    let mut ws = ws.edit_journal(|journal| journal.append(&actor, "test.namesakes", patches));
+
+    let response = ws.call(&mut victor, "workspace.snapshot", json!({}));
+    assert!(frame_len(&response) < MAX_FRAME, "{}", frame_len(&response));
+    let snapshot = ok(response);
+    let state = ws.broker.state_json();
+    let channels = listed(&snapshot, "channels");
+    assert!(
+        mallory_channels.iter().any(|id| !channels.contains(id)),
+        "some of Mallory's channels are left out"
+    );
+    let victors: Vec<(&String, &Value)> = state["channels"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, channel)| {
+            channel["members"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(victor.principal_id))
+        })
+        .collect();
+    let keys = |name: &Value| {
+        let name = name.as_str().unwrap();
+        (name_key(name), skeleton_key(name))
+    };
+    let mut only_namesake_left_out = 0;
+    for channel in snapshot["channels"].as_array().unwrap() {
+        let id = channel["id"].as_str().unwrap();
+        let (key, skeleton) = keys(&channel["name"]);
+        let namesakes: Vec<&String> = victors
+            .iter()
+            .filter(|(other, peer)| {
+                let (other_key, other_skeleton) = keys(&peer["name"]);
+                other.as_str() != id
+                    && peer["team_id"] == channel["team_id"]
+                    && (other_key == key || other_skeleton == skeleton)
+            })
+            .map(|(other, _)| *other)
+            .collect();
+        assert_eq!(
+            channel["name_conflict"],
+            json!(!namesakes.is_empty()),
+            "{id}"
+        );
+        if !namesakes.is_empty() && namesakes.iter().all(|other| !channels.contains(other)) {
+            only_namesake_left_out += 1;
+        }
+    }
+    assert!(
+        only_namesake_left_out > 0,
+        "a listed channel whose only namesake is left out"
+    );
+    let former_principals = listed(&snapshot, "former_principals");
+    for former in &formers {
+        assert!(former_principals.contains(former), "former member {former}");
+    }
 }
 
 #[test]

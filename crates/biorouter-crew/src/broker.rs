@@ -2200,12 +2200,13 @@ impl Broker {
         );
         Ok(snapshot)
     }
-    /// The invitations a snapshot lists, their wires and how many there are in all. An invitee
-    /// no longer sees an invitation once it has expired (it can never be accepted); its inviter
-    /// still does, marked `expired`, until it is pruned. What the invitee can act on comes
-    /// first, taking each inviter's newest in turn so no one inviter can crowd out the rest,
-    /// then the actor's own live and expired invitations, newest first, all within one section
-    /// budget.
+    /// Every invitation the actor sees, the wires of those a snapshot lists, and how many there
+    /// are in all. An invitee no longer sees an invitation once it has expired (it can never be
+    /// accepted); its inviter still does, marked `expired`, until it is pruned. What the invitee
+    /// can act on comes first, taking each inviter's newest in turn so no one inviter can crowd
+    /// out the rest, then the actor's own live and expired invitations, newest first, all within
+    /// one section budget. The full list is returned, not only what is listed, because the
+    /// former members it names are all listed ([`Self::fill_places`]).
     fn snapshot_invitations<'s>(
         s: &'s State,
         index: &PeopleIndex<'_>,
@@ -2240,7 +2241,6 @@ impl Broker {
                 .map(|invitation| Self::invitation_wire(s, index, invitation, now))
                 .collect(),
         );
-        invitations.truncate(wire.len());
         (invitations, wire, total)
     }
     /// The workspace's active members as a snapshot lists them; the host's also marks those
@@ -2264,14 +2264,20 @@ impl Broker {
             .collect()
     }
     /// Fill `snapshot`'s teams and channels, with what hangs off them (`protected_channel_ids`,
-    /// `read_positions`, `unread`) and the former members they name, once everything else is in
-    /// it.
+    /// `read_positions`, `unread`), and the former members the actor's teams, channels and
+    /// invitations name, once everything else is in it.
     ///
-    /// They take the room everything else leaves under the frame limit. Their size is not the
-    /// actor's to choose: any team owner may add any member to their teams and channels without
-    /// asking, and each lists every member, so one member with a full share of teams and
-    /// channels could otherwise push everyone else's snapshot past the limit. What does not fit
-    /// is left out, whole, and counted in `totals`; nothing listed is ever cut short.
+    /// Teams and channels take the room everything else leaves under the frame limit. Their
+    /// size is not the actor's to choose: any team owner may add any member to their teams and
+    /// channels without asking, and each lists every member, so one member with a full share of
+    /// teams and channels could otherwise push everyone else's snapshot past the limit. What
+    /// does not fit is left out, whole, and counted in `totals`; nothing listed is ever cut
+    /// short.
+    ///
+    /// `former_principals` does not shrink with them: it names every former member any of the
+    /// actor's teams, channels or invitations names, listed or not. A resolver matches a former
+    /// member's username against that list, and former members may share a username (only
+    /// active ones may not), so a list short of one would resolve `@name` to the other.
     #[allow(clippy::too_many_arguments)]
     fn fill_places(
         &self,
@@ -2284,16 +2290,17 @@ impl Broker {
         invitations: &[&Invitation],
     ) {
         let s = &self.state;
+        let former_principals = json!(Self::former_principals(
+            s,
+            index,
+            teams,
+            channels,
+            invitations,
+        ));
         let reserved = json_len(&*snapshot)
             .saturating_add(json_len(&req.id))
             .saturating_add(SNAPSHOT_FRAME_MARGIN)
-            .saturating_add(json_len(&Self::former_principals(
-                s,
-                index,
-                teams,
-                channels,
-                invitations,
-            )));
+            .saturating_add(json_len(&former_principals));
         let places = Self::places_within(
             s,
             &actor.id,
@@ -2310,13 +2317,7 @@ impl Broker {
             .collect();
         let (positions, unread) = self.read_state(s, actor, &places.channels);
         snapshot["protected_channel_ids"] = json!(protected_channel_ids);
-        snapshot["former_principals"] = json!(Self::former_principals(
-            s,
-            index,
-            &places.teams,
-            &places.channels,
-            invitations,
-        ));
+        snapshot["former_principals"] = former_principals;
         snapshot["teams"] = Value::Array(places.teams_wire);
         snapshot["channels"] = Value::Array(places.channels_wire);
         snapshot["read_positions"] = json!(positions);
@@ -2344,6 +2345,9 @@ impl Broker {
             Team(usize),
             Channel(usize),
         }
+        // Every team and channel the actor is in, before any is left out, so that each listed
+        // one's `name_conflict` still counts those that are not: a resolver holding only the
+        // listed ones reads it to tell whether a name it found is the only one of its kind.
         let teams_wire = Self::teams_wire(teams);
         let channels_wire = Self::channels_wire(channels);
         let team_cost: Vec<usize> = teams_wire.iter().map(|wire| json_len(wire) + 1).collect();
@@ -2493,8 +2497,9 @@ impl Broker {
         })
     }
     /// Inactive principals referenced by the actor's visible objects: the members, creator,
-    /// owner and pending owner of visible teams and channels, and the invitee and inviter of
-    /// visible invitations. Display only; bounded by team and channel sizes.
+    /// owner and pending owner of the teams and channels the actor is in, and the invitee and
+    /// inviter of the invitations the actor sees, whether or not the snapshot lists them.
+    /// Bounded by the number of former members.
     fn former_principals(
         s: &State,
         index: &PeopleIndex,
@@ -2533,9 +2538,9 @@ impl Broker {
             .collect()
     }
     /// Visible teams with their computed, never stored, name fields: the sanitized
-    /// `display_name`, the `handle` a resolver matches against, `name_conflict` (another team
-    /// **the viewer can see** has the same name) and `name_invalid` (a legacy name the current
-    /// rules refuse).
+    /// `display_name`, the `handle` a resolver matches against, `name_conflict` (another of
+    /// `teams`, every team **the viewer is in**, has the same name, listed or not) and
+    /// `name_invalid` (a legacy name the current rules refuse).
     fn teams_wire(teams: &[&Team]) -> Vec<Value> {
         let keys: Vec<(String, String)> = teams
             .iter()
@@ -2558,8 +2563,9 @@ impl Broker {
             .collect()
     }
     /// Visible channels with the same computed fields as [`Self::teams_wire`]; a conflict is
-    /// another visible channel **in the same team**. A stored name that is not a canonical
-    /// slug (a legacy `Data Analysis`) is `name_invalid`.
+    /// another of `channels`, every channel the viewer is in, **in the same team**, listed or
+    /// not. A stored name that is not a canonical slug (a legacy `Data Analysis`) is
+    /// `name_invalid`.
     fn channels_wire(channels: &[&Channel]) -> Vec<Value> {
         let keys: Vec<(String, String)> = channels
             .iter()
