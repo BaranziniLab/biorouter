@@ -197,6 +197,13 @@ describe('InvitePeopleDialog', () => {
       undefined
     );
     expect(dialog).toHaveTextContent(LINE);
+    // F7: the manual tells hosts to send the server's fingerprint with the invitation, which carries
+    // no host key; the dialog says the same, visibly, under the invitation.
+    expect(
+      within(dialog).getByText(
+        'Also tell Bob the server’s SSH fingerprint, or where to get it from IT, so they can check it the first time they connect.'
+      )
+    ).toBeVisible();
     expect(
       within(dialog).getByRole('button', { name: inviteCopy.installed('Bob') })
     ).toBeInTheDocument();

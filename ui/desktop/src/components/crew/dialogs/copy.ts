@@ -146,6 +146,13 @@ export const inviteCopy = {
   submit: 'Invite',
   invited: 'invited',
   sendInvitation: (first: string) => `Send ${first} this invitation:`,
+  /**
+   * Under the invitation: the invitation carries no host key, so the joiner checks the server's
+   * SSH fingerprint against one the host (or IT) gives them the first time they connect
+   * (`docs/crew/hosting-a-workspace.md`, step 4; F7). Not the workspace fingerprint in the menu.
+   */
+  serverFingerprint: (first: string) =>
+    `Also tell ${first} the server’s SSH fingerprint, or where to get it from IT, so they can check it the first time they connect.`,
   invitationLabel: 'invitation message',
   /**
    * Collapsed under the result: what to do if the joiner's Crew says it isn't set up — in the words

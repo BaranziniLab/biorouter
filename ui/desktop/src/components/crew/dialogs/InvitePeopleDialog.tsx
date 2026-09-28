@@ -188,6 +188,7 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
                 <span>{invitation.text}</span>
               </Note>
             )}
+            <p className="text-supporting text-text-muted">{copy.serverFingerprint(first)}</p>
           </div>
           {/* What to do if the joiner's Crew says it isn't set up: collapsed, in the joiner's own
               words, and handed to whoever runs the server (QA Q4-37). */}
