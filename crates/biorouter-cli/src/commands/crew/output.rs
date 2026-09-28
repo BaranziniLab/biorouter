@@ -2154,20 +2154,30 @@ impl Ctx {
         let stopped = grant.get("expired").and_then(Value::as_bool) == Some(true);
         let expires_at = grant.get("expires_at").and_then(Value::as_i64);
         let now = self.clock.now();
+        // AGT2-N3: a task the person stopped reads Stopped, as its card in the channel does; one
+        // that finished (or whose status the command could not read) reads Ended. The grant
+        // cannot tell them apart, so the command adds the task's status (`task_status`).
+        let task_over = || {
+            if str_field(grant, "task_status") == Some("cancelled") {
+                "Stopped".to_owned()
+            } else {
+                "Ended".to_owned()
+            }
+        };
         if stopped {
             return match str_field(grant, "revocation") {
                 Some("unconfirmed") => {
                     "Stopped on this device; the workspace hasn't confirmed yet".into()
                 }
                 Some("ended_by_workspace") => "Ended: Crew settings changed".into(),
-                _ if task => "Ended".into(),
+                _ if task => task_over(),
                 _ => "Revoked".into(),
             };
         }
         match expires_at {
             Some(at) if at <= now => {
                 if task {
-                    "Ended".into()
+                    task_over()
                 } else {
                     "Expired".into()
                 }
@@ -3954,6 +3964,19 @@ mod tests {
             (
                 json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true}),
                 format!("Task 20260924_3 {base} · Ended · policy epoch 4"),
+            ),
+            // AGT2-N3: a task the person stopped reads Stopped, as its card in the channel does.
+            (
+                json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true, "task_status": "cancelled"}),
+                format!("Task 20260924_3 {base} · Stopped · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true, "task_status": "completed"}),
+                format!("Task 20260924_3 {base} · Ended · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "task", "expires_at": NOW - 60, "task_status": "cancelled"}),
+                format!("Task 20260924_3 {base} · Stopped · policy epoch 4"),
             ),
             (
                 json!({"kind": "task", "expires_at": NOW - 60}),

@@ -4643,10 +4643,11 @@ async fn access_ended(api: &Api, error: anyhow::Error, session: &str) -> anyhow:
 async fn grants(api: &Api, command: GrantCommand) -> Result<Reply> {
     Ok(match command {
         GrantCommand::List => {
-            let grants = api
+            let mut grants = api
                 .client
                 .request("GET", &api.path("/grants").await?, None)
                 .await?;
+            with_task_statuses(api, &mut grants).await;
             api.show_with(grants, api.names().await)
         }
         GrantCommand::Grant {
@@ -4678,6 +4679,48 @@ async fn grants(api: &Api, command: GrantCommand) -> Result<Reply> {
         }
         GrantCommand::Revoke { session } => revoke_grant(api, &session).await?,
     })
+}
+
+/// Each task's grant in `grants` with its task's status from the task list (`task_status`,
+/// AGT2-N3), so a task the person stopped reads Stopped and one that finished reads Ended, as
+/// the channel's card says it: the grant itself cannot tell them apart, since a finished task's
+/// grant is revoked as a stopped one's is. Nothing is added when the task list cannot be read.
+async fn with_task_statuses(api: &Api, grants: &mut Value) {
+    let is_task = |grant: &Value| grant["kind"].as_str() == Some("task");
+    let has_task = ["grants", "replaced_grants"]
+        .iter()
+        .filter_map(|key| grants[*key].as_array())
+        .flatten()
+        .any(is_task);
+    if !has_task {
+        return;
+    }
+    let Ok(path) = api.path("/runs").await else {
+        return;
+    };
+    let Ok(runs) = api.client.request("GET", &path, None).await else {
+        return;
+    };
+    let statuses: std::collections::HashMap<&str, &str> = runs["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|run| Some((run["run_id"].as_str()?, run["status"].as_str()?)))
+        .collect();
+    for key in ["grants", "replaced_grants"] {
+        let Some(list) = grants[key].as_array_mut() else {
+            continue;
+        };
+        for grant in list.iter_mut().filter(|grant| is_task(grant)) {
+            let status = grant["run_id"]
+                .as_str()
+                .and_then(|run| statuses.get(run))
+                .map(|status| (*status).to_owned());
+            if let (Some(status), None) = (status, grant.get("task_status")) {
+                grant["task_status"] = json!(status);
+            }
+        }
+    }
 }
 
 /// `grants revoke`. Success is only the workspace's confirmation (`200` with `revoked: true`
@@ -7788,6 +7831,60 @@ mod tests {
             panic!("JSON is the manifest")
         };
         assert_eq!(manifest["source_channels"], json!([METHODS, GENERAL]));
+    }
+
+    /// AGT2-N3: `grants list` reads each task's status, so a task the person stopped reads
+    /// Stopped and one that finished reads Ended; JSON carries it as `task_status`.
+    #[tokio::test]
+    async fn a_stopped_task_reads_stopped_in_the_grants_list() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/grants") {
+                return Ok(json!({"grants": [
+                    {"session_id": "20260924_4", "run_id": "run-stopped", "kind": "task", "channel_id": METHODS, "source_channels": [METHODS], "expired": true, "revocation": "confirmed"},
+                    {"session_id": "20260924_5", "run_id": "run-done", "kind": "task", "channel_id": METHODS, "source_channels": [METHODS], "expired": true, "revocation": "confirmed"},
+                    {"session_id": SESSION, "run_id": "run-chat", "kind": "chat", "channel_id": METHODS, "source_channels": [METHODS], "expired": true, "revocation": "confirmed"}
+                ], "replaced_grants": []}));
+            }
+            if path.ends_with("/runs") {
+                return Ok(json!({"runs": [
+                    {"run_id": "run-stopped", "status": "cancelled", "session_id": "20260924_4"},
+                    {"run_id": "run-done", "status": "completed", "session_id": "20260924_5"}
+                ]}));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(&api, CrewCommand::Grants(GrantCommand::List))
+                .await
+                .expect("listed"),
+        )
+        .join("\n");
+        assert!(
+            lines.contains("Task 20260924_4 → #methods in Analysis Lab · Stopped"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("Task 20260924_5 → #methods in Analysis Lab · Ended"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("Chat 20260924_2 → #methods in Analysis Lab · Revoked"),
+            "{lines}"
+        );
+        let (api, _) = api_with(OutputFormat::Json, handler);
+        let Reply::Show(value, _) = run(&api, CrewCommand::Grants(GrantCommand::List))
+            .await
+            .expect("listed")
+        else {
+            panic!("a value");
+        };
+        assert_eq!(value["grants"][0]["task_status"], "cancelled");
+        assert_eq!(value["grants"][1]["task_status"], "completed");
+        assert!(
+            value["grants"][2].get("task_status").is_none(),
+            "a chat has no task"
+        );
     }
 
     /// CLIDOCS-F12: an empty list says what it lists, never "No items.".
