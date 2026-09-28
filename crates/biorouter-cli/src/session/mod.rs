@@ -54,6 +54,7 @@ use biorouter::permission::PermissionConfirmation;
 use biorouter::providers::base::Provider;
 use biorouter::utils::safe_truncate;
 pub use builder::{build_session, unconfigured_precondition, SessionBuilderConfig};
+pub(crate) use builder::{model_for_run, owned_model};
 use console::Color;
 
 use anyhow::Result;
