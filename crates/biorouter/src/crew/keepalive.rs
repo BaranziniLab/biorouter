@@ -44,6 +44,17 @@
 //! is never armed for a device whose membership ended ([`MEMBERSHIP_ENDED`]) until a dial
 //! succeeds again.
 //!
+//! **A drop is dialled at once, but the daemon's own dials are spaced (W2-DMN-6).** A heartbeat,
+//! an ended bridge or a request that finds a drop dials again straight away rather than after
+//! the schedule's first gap. A bridge the daemon dialled itself within that first gap
+//! ([`KeepaliveTiming::retry_delays`]`[0]`) that breaks again is not dialled at once, whoever
+//! finds it: it is retired and waits the gaps, as every drop did before, and a request meanwhile
+//! is told the connection is coming back. Otherwise a bridge that breaks right after it
+//! connects (a relay that resets each new session, a remote bridge killed by a signal) would be
+//! dialled, answer `hello`, break on the membership check and be dialled again, as fast as SSH
+//! can connect, for as long as it kept doing so. With the limit, the daemon's own dials of a
+//! connection are at least that first gap apart. A person's Connect is never held back.
+//!
 //! **An ended bridge is noticed within [`KeepaliveTiming::ended_check`] (Q4-08).** Between
 //! ticks the keepalive looks, every few seconds, at whether its bridge's `ssh` has exited. That
 //! is local process state, nothing is sent, and the heartbeat and idle rules are unchanged; it
@@ -337,7 +348,10 @@ impl CrewManager {
     /// Every request over a connection's bridge takes it from here, so a bridge that died
     /// while this computer slept is re-dialled whichever request finds it first; and when that
     /// re-dial fails for a network reason, the retries are armed here too (Q4-01, see
-    /// [`Self::redial_dropped`]), since the keepalive of the bridge it retired has ended.
+    /// [`Self::redial_dropped`]), since the keepalive of the bridge it retired has ended. A
+    /// bridge the daemon dialled itself a moment ago is not dialled again for the request
+    /// ([`Self::dialled_recently`]): it is retired, the retries are armed, and the request is
+    /// told the connection is coming back, with nothing sent (W2-DMN-6).
     pub(super) async fn live_transport(
         &self,
         id: &str,
@@ -365,7 +379,11 @@ impl CrewManager {
                 }
             }
         }
-        self.redial_dropped(id, &transport).await?;
+        if self.dialled_recently(id) {
+            self.redial_after_a_gap(id, &transport).await;
+        } else {
+            self.redial_dropped(id, &transport).await?;
+        }
         self.transport(id).await
     }
 
@@ -390,6 +408,7 @@ impl CrewManager {
             self.retire_locked(id, failed, IDLE_DROPPED).await;
             return Ok(Redial::NotOurs);
         }
+        self.note_own_dial(id);
         match self.connect_locked(id).await {
             Ok(_) => Ok(Redial::Reconnected),
             Err(error) => {
@@ -410,13 +429,21 @@ impl CrewManager {
     /// and its caller was told so. For a network failure the connection is dialled again at
     /// once, as a drop the keepalive finds is, and only a dial that fails waits the growing gaps
     /// (W2-DMN-6). Before, the first try waited the schedule's 20 s, then 60 s, and every send
-    /// meanwhile was told to authenticate although nothing needed signing in.
+    /// meanwhile was told to authenticate although nothing needed signing in. A bridge the
+    /// daemon dialled itself within the first gap waits the gaps instead
+    /// ([`Self::dialled_recently`]), so one that breaks under every first request is never
+    /// dialled in a tight loop.
     pub(super) fn request_bridge_failed(&self, id: &str, error: &anyhow::Error) {
         if !worth_retrying(error) {
             return;
         }
-        tracing::info!(connection = id, error = %error, "Crew bridge failed while carrying a request; dialling again now");
-        self.start_redials(id, true);
+        let now = !self.dialled_recently(id);
+        if now {
+            tracing::info!(connection = id, error = %error, "Crew bridge failed while carrying a request; dialling again now");
+        } else {
+            tracing::info!(connection = id, error = %error, "Crew bridge failed again soon after the daemon dialled it; dialling again after a gap");
+        }
+        self.start_redials(id, now);
     }
 
     /// A person's Connect failed with `error`; the caller still holds the lifecycle guard
@@ -463,6 +490,29 @@ impl CrewManager {
         };
         let token = self.arm_idle_redial(id);
         runtime.spawn(redial_schedule(manager, id.to_owned(), token, now));
+    }
+
+    /// Record that the daemon is dialling `id` by itself now: a re-dial, never a person's
+    /// Connect.
+    fn note_own_dial(&self, id: &str) {
+        self.own_dials
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), std::time::SystemTime::now());
+    }
+
+    /// Whether the daemon dialled `id` by itself less than the first retry gap ago, by the wall
+    /// clock (a monotonic clock stops while this computer sleeps). A drop found now waits the
+    /// gaps rather than being dialled at once (W2-DMN-6). A clock that went back since reads as
+    /// long ago: the dial it allows is recorded, so the next one is limited again.
+    pub(super) fn dialled_recently(&self, id: &str) -> bool {
+        let gap = self.keepalive_timing().retry_delays[0];
+        self.own_dials
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|since| since < gap)
     }
 
     /// Whether `id` is being dialled again by itself: a schedule is armed and no bridge is up.
@@ -557,6 +607,7 @@ impl CrewManager {
         {
             return None;
         }
+        self.note_own_dial(id);
         match self.connect_locked(id).await {
             Ok(_) => Some(Ok(())),
             Err(error) => {
@@ -576,10 +627,35 @@ impl CrewManager {
     /// After the keepalive found `failed` gone (never one whose answer was refused): dial again
     /// now. A dial that connects is followed by a membership check
     /// ([`Self::probe_membership`]); one that fails for a network reason has armed the later
-    /// tries ([`Self::redial_dropped`]).
+    /// tries ([`Self::redial_dropped`]). A bridge the daemon dialled itself a moment ago is not
+    /// dialled at once again ([`Self::dialled_recently`]): it is retired and waits the gaps.
     async fn recover_dropped(&self, id: &str, failed: &Arc<Mutex<transport::Transport>>) {
+        if self.dialled_recently(id) {
+            self.redial_after_a_gap(id, failed).await;
+            return;
+        }
         if let Ok(Redial::Reconnected) = self.redial_dropped(id, failed).await {
             self.probe_membership(id).await;
+        }
+    }
+
+    /// `failed`, a bridge the daemon dialled itself less than the first retry gap ago, has
+    /// gone again: retire it while it is still `id`'s, and arm the retries so the next dial
+    /// comes after the first gap, never at once (W2-DMN-6). Nothing is armed while a sign-in
+    /// is pending, as [`Self::redial_dropped`] arms nothing then.
+    async fn redial_after_a_gap(&self, id: &str, failed: &Arc<Mutex<transport::Transport>>) {
+        let Ok(_lifecycle) = self.connection_guard(id).await else {
+            return;
+        };
+        if !self.retire_locked(id, failed, IDLE_DROPPED).await {
+            return;
+        }
+        tracing::info!(
+            connection = id,
+            "Crew bridge dropped again soon after the daemon dialled it; dialling again after a gap"
+        );
+        if super::authentication::ensure_connect_available(id).is_ok() {
+            self.schedule_redials(id);
         }
     }
 

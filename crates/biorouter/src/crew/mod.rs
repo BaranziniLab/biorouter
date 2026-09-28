@@ -770,6 +770,10 @@ pub struct CrewManager {
     /// each with the token of the attempt that armed it. A person's Connect or Disconnect
     /// (any connect or disconnect) clears it, so a retry never undoes what someone chose.
     idle_redial: StdMutex<HashMap<String, u64>>,
+    /// When the daemon last dialled each connection by itself (a re-dial, never a person's
+    /// Connect), by the wall clock, so a bridge that breaks again right after it is not dialled
+    /// at once a second time (W2-DMN-6); see `keepalive.rs`.
+    own_dials: StdMutex<HashMap<String, std::time::SystemTime>>,
     /// Connections whose device the workspace accepted a person-signed request from in this
     /// process (Q3-12). Only these can have a membership that *ended*: a device the workspace
     /// never knew is one still joining, which keeps its bridge (see `keepalive.rs`).
@@ -1450,6 +1454,7 @@ impl CrewManager {
             this: std::sync::OnceLock::new(),
             keepalive: StdMutex::new(keepalive::KeepaliveTiming::default()),
             idle_redial: StdMutex::new(HashMap::new()),
+            own_dials: StdMutex::new(HashMap::new()),
             members: StdMutex::new(std::collections::HashSet::new()),
             error_codes: StdMutex::new(HashMap::new()),
             run_reads: StdMutex::new(HashMap::new()),

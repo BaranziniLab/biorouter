@@ -1629,6 +1629,117 @@ async fn a_request_while_a_redial_is_owed_is_told_it_is_reconnecting() {
     f.manager.disconnect(CONNECTION_ID).await.unwrap();
 }
 
+/// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`
+/// and drops the next request, as a relay that resets new sessions would) is never dialled in a
+/// tight loop. The drop a request finds is dialled at once; that dial's membership check breaks
+/// the new bridge, and a drop so soon after the daemon's own dial waits the first gap. Before,
+/// every such drop was dialled at once, as fast as SSH could connect, for as long as it went on.
+#[tokio::test]
+async fn a_bridge_that_breaks_after_every_connect_is_never_dialled_in_a_tight_loop() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let plan = [&["drop-after-3"][..], &["drop-after-1"; 60][..]].concat();
+    let f = fixture(
+        "request-flapping",
+        &plan,
+        request_finds(Duration::from_millis(1500)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    // A member: the workspace accepted a signed request, so every dial is followed by a
+    // membership check.
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let root = f.root.clone();
+    // Dialled at once: the daemon had not dialled this connection itself.
+    until(async || spawns(&root) >= 2).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let dialled = spawns(&f.root);
+    // The immediate dial, then one dial per 1.5 s gap at most.
+    assert!((2..=4).contains(&dialled), "{dialled} dials in 2.5 s");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert_eq!(spawns(&f.root), dialled, "nothing after a Disconnect");
+}
+
+/// W2-DMN-6 (review): a request that finds a bridge ended right after the daemon dialled it
+/// does not dial it again at once. The bridge is retired, the retries are armed, and the request
+/// is told the connection is coming back, with nothing sent; the connection comes back after the
+/// first gap.
+#[tokio::test]
+async fn a_request_that_finds_a_fresh_redial_ended_waits_the_gap() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-finds-fresh-redial-ended",
+        &["end-after-1", "end-after-3", "serve"],
+        request_finds(Duration::from_millis(1500)),
+    )
+    .await;
+    connect_then_lose_the_bridge(&f).await;
+    // Finds the connect's bridge ended: the daemon had not dialled, so it dials at once, and
+    // the new bridge carries the request, then ends.
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    assert_eq!(spawns(&f.root), 2);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let asked = requests(&f.root).len();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_reconnecting", "{error}");
+    assert_eq!(spawns(&f.root), 2, "not dialled again at once");
+    assert_eq!(requests(&f.root).len(), asked, "nothing written");
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// W2-DMN-6 (review): the same bound holds for a bridge the keepalive finds ended: one whose
+/// `ssh` exits right after every connect is dialled at once the first time, and after that no
+/// sooner than the first gap after the daemon's last own dial, where it used to be dialled again
+/// at every check for an ended bridge.
+#[tokio::test]
+async fn a_bridge_that_ends_after_every_connect_is_never_dialled_in_a_tight_loop() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "ended-flapping",
+        &["end-after-1"; 60],
+        KeepaliveTiming {
+            ended_check: Duration::from_millis(40),
+            retry_delays: [Duration::from_millis(1500); 3],
+            ..quiet()
+        },
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) >= 2).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let dialled = spawns(&f.root);
+    assert!((2..=4).contains(&dialled), "{dialled} dials in 2.5 s");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert_eq!(spawns(&f.root), dialled, "nothing after a Disconnect");
+}
+
 /// W2-DMN-7: a request that could have changed something, lost with its frame written, is an
 /// unknown outcome with its request ID, never a refusal; and the saved error keeps the alarm.
 #[tokio::test]
