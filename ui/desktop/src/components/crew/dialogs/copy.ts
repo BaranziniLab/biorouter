@@ -1,3 +1,5 @@
+import type { LocalPlatform } from './localPath';
+
 /**
  * The dialogs area's strings (ui-redesign-spec, copy deck "Dialogs and confirmations", "Onboarding,
  * join, host and admit" for invite and let in, and "Error strings").
@@ -38,7 +40,16 @@ export const connectionSettingsCopy = {
   summaryFolder: (path: string) => `folder ${path}`,
   port: 'Port',
   identityFile: 'Identity file',
-  identityFilePlaceholder: '~/.ssh/id_ed25519',
+  /**
+   * A full path in this computer's own shape (W2-UIW-13). It used to be `~/.ssh/id_ed25519`, the
+   * one shape the daemon refuses on every OS.
+   */
+  identityFilePlaceholder: (platform: LocalPlatform) =>
+    platform === 'windows'
+      ? 'C:\\Users\\you\\.ssh\\id_ed25519'
+      : platform === 'mac'
+        ? '/Users/you/.ssh/id_ed25519'
+        : '/home/you/.ssh/id_ed25519',
   jumpHosts: 'Jump hosts',
   jumpHostsPlaceholder: 'gateway.example.edu',
   remoteRoot: 'Remote work folder',
@@ -46,10 +57,16 @@ export const connectionSettingsCopy = {
   remoteRootPattern: 'Use an absolute path that starts with /.',
   /**
    * Under Identity file, typed or refused by the daemon ("Identity file must be an absolute path"):
-   * a path starting with `~` is refused too, since the daemon never expands it (DW-04).
+   * a path starting with `~` is refused too, since the daemon never expands it (DW-04). Worded for
+   * this computer's OS, which is the daemon's (W2-UIW-13): a Windows path starts with a drive
+   * letter, not with /. Without a known OS it names neither.
    */
-  identityFileAbsolute:
-    'Use the key file’s full path, starting with /. A path starting with ~ isn’t accepted.',
+  identityFileAbsolute: (platform: LocalPlatform) =>
+    platform === 'windows'
+      ? 'Use the key file’s full path, such as C:\\Users\\you\\.ssh\\id_ed25519. A path starting with ~ isn’t accepted.'
+      : platform === 'unknown'
+        ? 'Use the key file’s full path. A path starting with ~ isn’t accepted.'
+        : 'Use the key file’s full path, starting with /. A path starting with ~ isn’t accepted.',
   /** The daemon's other field refusals on a save, each under its own field (DW-04). */
   nameLength: 'Use a connection name of 1 to 120 characters.',
   loginInvalid:

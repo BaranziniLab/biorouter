@@ -33,7 +33,19 @@ function save() {
   fireEvent.click(screen.getByRole('button', { name: connectionSettingsCopy.save }));
 }
 
-afterEach(() => vi.restoreAllMocks());
+/** The OS the preload reports, which the dialog judges a local path by (W2-UIW-13). */
+function onPlatform(platform: 'win32' | 'darwin' | 'linux') {
+  Object.defineProperty(window, 'electron', {
+    value: { platform },
+    configurable: true,
+    writable: true,
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(window, 'electron');
+});
 
 describe('ConnectionSettingsDialog', () => {
   it('is titled as an edit, saves with Save connection, and focuses its first field', async () => {
@@ -251,17 +263,98 @@ describe('ConnectionSettingsDialog', () => {
   // DW-04: "Identity file must be an absolute path" rendered only as the dialog's one note, at the
   // end of the scroll body, 140px below the view; the field was not marked, and nothing moved.
   it('says a relative or ~ identity file under its field before sending, and marks it invalid', async () => {
+    onPlatform('linux');
     const { crew } = renderSettings({ identity_file: '/home/alice/.ssh/id_ed25519' });
     const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
     fireEvent.change(field, { target: { value: '~/.ssh/id_ed25519' } });
     expect(field).toHaveAttribute('aria-invalid', 'true');
-    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.identityFileAbsolute);
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.identityFileAbsolute('posix'));
     expect(field).toBeInvalid();
     save();
     expect(crew.updateConnection).not.toHaveBeenCalled();
     fireEvent.change(field, { target: { value: '/home/alice/.ssh/id_rsa' } });
     expect(field).not.toHaveAttribute('aria-invalid');
     expect(field).toBeValid();
+  });
+
+  // W2-UIW-13: the Identity file is a path on THIS computer, and the daemon judges it by this
+  // computer's OS (`Path::is_absolute`). A check by a leading / alone refused every Windows path,
+  // and a Windows person with one saved saw the error on opening and could save nothing at all.
+  it('takes a saved Windows identity file on Windows: no error, and other settings save', async () => {
+    onPlatform('win32');
+    const saved = 'C:\\Users\\alice\\.ssh\\id_ed25519';
+    const { crew } = renderSettings({ identity_file: saved });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).toHaveValue(saved);
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toBeValid();
+    expect(field).not.toHaveAccessibleDescription();
+    fireEvent.change(screen.getByLabelText('Connection name'), {
+      target: { value: 'Imaging core' },
+    });
+    save();
+    await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+    expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({
+      name: 'Imaging core',
+      identity_file: saved,
+    });
+  });
+
+  it('takes a typed Windows path on Windows, drive or share, and says a Windows shape otherwise', async () => {
+    onPlatform('win32');
+    const { crew } = renderSettings({ identity_file: 'C:\\Users\\alice\\.ssh\\id_ed25519' });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).toHaveAttribute(
+      'placeholder',
+      connectionSettingsCopy.identityFilePlaceholder('windows')
+    );
+    for (const accepted of ['C:/Users/alice/.ssh/id_rsa', '\\\\fileserver\\home\\alice\\id']) {
+      fireEvent.change(field, { target: { value: accepted } });
+      expect(field).not.toHaveAttribute('aria-invalid');
+      expect(field).toBeValid();
+    }
+    // Not absolute on Windows, so the daemon there would refuse them.
+    for (const refused of ['/home/alice/.ssh/id_rsa', '~\\.ssh\\id_rsa', 'id_rsa']) {
+      fireEvent.change(field, { target: { value: refused } });
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(field).toHaveAccessibleDescription(
+        connectionSettingsCopy.identityFileAbsolute('windows')
+      );
+      expect(field).toBeInvalid();
+    }
+    expect(connectionSettingsCopy.identityFileAbsolute('windows')).not.toMatch(/starting with \//);
+    save();
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+  });
+
+  it('asks a Mac for a path starting with /, and never suggests a ~ path', async () => {
+    onPlatform('darwin');
+    renderSettings({ identity_file: '/Users/alice/.ssh/id_ed25519' });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).toHaveAttribute('placeholder', '/Users/you/.ssh/id_ed25519');
+    fireEvent.change(field, { target: { value: 'C:\\Users\\alice\\.ssh\\id_rsa' } });
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.identityFileAbsolute('mac'));
+    for (const platform of ['windows', 'mac', 'posix', 'unknown'] as const) {
+      expect(connectionSettingsCopy.identityFilePlaceholder(platform)).not.toMatch(/^~/);
+    }
+  });
+
+  // What the daemon accepted when it was saved is never refused on opening: a rule this side gets
+  // wrong must not lock a person out of every other setting.
+  it('never refuses the saved identity file itself, only what is typed since', async () => {
+    onPlatform('darwin');
+    const saved = 'D:\\keys\\lab';
+    const { crew } = renderSettings({ identity_file: saved });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toBeValid();
+    fireEvent.change(field, { target: { value: 'D:\\keys\\other' } });
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.change(field, { target: { value: ` ${saved} ` } });
+    expect(field).not.toHaveAttribute('aria-invalid');
+    save();
+    await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+    expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({ identity_file: saved });
   });
 
   it('opens Advanced and focuses a hidden identity file the save would send wrong', async () => {

@@ -26,6 +26,7 @@ import {
   useDismissOwnError,
 } from './fields';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from './fingerprint';
+import { isLocalAbsolutePath, localPlatform, type LocalPlatform } from './localPath';
 import { ABSOLUTE_PATH_PATTERN, INSTITUTION_FIELD_PATTERN } from './nameRules';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
 import { useDialogView } from './workspace';
@@ -92,22 +93,43 @@ function portProblem(port: string): boolean {
 /**
  * Identity file's problem, as the daemon judges it (`validate_connection`: an absolute path), or
  * null. A `~` is not expanded by the daemon, so `~/.ssh/id_ed25519` is refused as well (DW-04).
+ *
+ * The path is on THIS computer, so it is judged by this computer's OS (W2-UIW-13): a Windows
+ * `C:\Users\me\.ssh\id_ed25519` is as absolute there as `/Users/me/.ssh/id_ed25519` is on a
+ * Mac. It was once judged by `/` alone, which refused every Windows path and, for a person with one
+ * already saved, blocked saving any other setting from the moment the dialog opened.
+ *
+ * The saved value itself is never refused here: the daemon accepted it on this computer when it
+ * was saved, so a rule this side got wrong can never lock a person out of their own settings. Only
+ * what the person has typed since is judged; the daemon still has the last word on the save.
  */
-function identityProblem(path: string): string | null {
+function identityProblem(
+  path: string,
+  savedPath: string | null | undefined,
+  platform: LocalPlatform
+): string | null {
   const value = path.trim();
-  return value && !value.startsWith('/') ? copy.identityFileAbsolute : null;
+  if (!value || value === (savedPath ?? '').trim()) return null;
+  return isLocalAbsolutePath(value, platform) ? null : copy.identityFileAbsolute(platform);
 }
 
-/** Remote work folder's problem, or null. */
+/**
+ * Remote work folder's problem, or null. The folder is on the Linux server, not on this computer,
+ * so it starts with `/` whatever OS this computer runs.
+ */
 function rootProblem(path: string): string | null {
   const value = path.trim();
   return value && !value.startsWith('/') ? copy.remoteRootPattern : null;
 }
 
 /** The first Advanced field that would be refused, checked while Advanced is closed. */
-function hiddenProblem(form: ConnectionForm): AdvancedField | null {
+function hiddenProblem(
+  form: ConnectionForm,
+  saved: CrewConnection,
+  platform: LocalPlatform
+): AdvancedField | null {
   if (portProblem(form.port)) return 'port';
-  if (identityProblem(form.identity_file)) return 'identity_file';
+  if (identityProblem(form.identity_file, saved.identity_file, platform)) return 'identity_file';
   if (rootProblem(form.remote_root)) return 'remote_root';
   return null;
 }
@@ -121,12 +143,13 @@ function refusedField(
   error: { message: string; code?: string } | null,
   typedInstitution: string,
   workspace: string,
-  workspaceInstitution: string | null
+  workspaceInstitution: string | null,
+  platform: LocalPlatform
 ): { field: RefusedField; text: string } | null {
   if (!error) return null;
   const text = error.message.replace(/^Daemon returned \d+: /, '');
   if (/^Identity file must be/i.test(text))
-    return { field: 'identity_file', text: copy.identityFileAbsolute };
+    return { field: 'identity_file', text: copy.identityFileAbsolute(platform) };
   if (/^Connection name must/i.test(text)) return { field: 'name', text: copy.nameLength };
   if (/^SSH target must/i.test(text)) return { field: 'login', text: copy.loginInvalid };
   if (/^Invalid ProxyJump route/i.test(text))
@@ -240,6 +263,8 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     execution: `${formId}-execution`,
   };
   const [form, setForm] = React.useState<ConnectionForm>(() => formFrom(saved));
+  // The OS a local path is judged by: this computer's, which is the daemon's (W2-UIW-13).
+  const platform = React.useMemo(localPlatform, []);
   const [advancedOpen, setAdvancedOpen] = React.useState(() => advancedInUse(saved));
   const [focusField, setFocusField] = React.useState<AdvancedField | null>(null);
   const [institutionInvalid, setInstitutionInvalid] = React.useState(false);
@@ -295,13 +320,15 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     saveError ? { message: saveError, code: crew.error?.code } : null,
     form.institution.trim(),
     workspace,
-    snapshot?.workspace.institution_id ?? null
+    snapshot?.workspace.institution_id ?? null,
+    platform
   );
   refusedRef.current = refused !== null;
   const refusedHere = (field: RefusedField) => (refused?.field === field ? refused.text : null);
-  const identityError = identityProblem(form.identity_file) ?? refusedHere('identity_file');
+  const typedIdentityProblem = identityProblem(form.identity_file, saved.identity_file, platform);
+  const identityError = typedIdentityProblem ?? refusedHere('identity_file');
   const rootError = rootProblem(form.remote_root);
-  const identityRef = useCustomValidity<HTMLInputElement>(identityProblem(form.identity_file));
+  const identityRef = useCustomValidity<HTMLInputElement>(typedIdentityProblem);
   const rootRef = useCustomValidity<HTMLInputElement>(rootProblem(form.remote_root));
 
   // A hidden field that would fail: open Advanced, then focus the field once it has mounted.
@@ -358,7 +385,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const problem = advancedOpen ? null : hiddenProblem(form);
+    const problem = advancedOpen ? null : hiddenProblem(form, saved, platform);
     if (problem) {
       setAdvancedOpen(true);
       setFocusField(problem);
@@ -532,7 +559,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
                 ref={identityRef}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder={copy.identityFilePlaceholder}
+                placeholder={copy.identityFilePlaceholder(platform)}
                 aria-invalid={identityError ? true : undefined}
                 aria-describedby={identityError ? helpId(ids.identity) : undefined}
                 value={form.identity_file}
