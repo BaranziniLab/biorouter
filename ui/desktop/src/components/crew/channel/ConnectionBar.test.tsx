@@ -132,6 +132,45 @@ describe('ConnectionBar', () => {
     await waitFor(() => expect(bar()).toBeEmptyDOMElement());
   });
 
+  /**
+   * RES2-N7: after the app's background service restarted, "Live updates for okafor-lab stopped"
+   * offered Retry, which could only lead to "Crew couldn't load your saved workspaces".
+   */
+  it('says the background service is gone, with Reconnect, and offers no Retry until it is back', async () => {
+    let tell: (state: 'attached' | 'lost' | 'reconnecting') => void = () => undefined;
+    const reconnectDaemon = vi.fn(async () => true);
+    (window as { electron?: unknown }).electron = {
+      ...(electron as object),
+      getDaemonConnection: vi.fn(async () => 'lost'),
+      onDaemonConnection: (callback: typeof tell) => {
+        tell = callback;
+        return () => undefined;
+      },
+      reconnectDaemon,
+    };
+    renderCrew(Layout);
+    await verified();
+    observationFailure();
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    const away = await screen.findByTestId('crew-daemon-away');
+    expect(away).toHaveTextContent(connectionBarCopy.daemonAway);
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+    expect(bar()).not.toHaveTextContent(crewObservationCopy.updatesStopped('lab'));
+    fireEvent.click(within(away).getByRole('button', { name: connectionBarCopy.daemonReconnect }));
+    expect(reconnectDaemon).toHaveBeenCalledTimes(1);
+    act(() => tell('reconnecting'));
+    expect(
+      within(away).getByRole('button', { name: connectionBarCopy.daemonReconnecting })
+    ).toBeDisabled();
+
+    // Attached again: Retry can reach the workspace now, and is offered.
+    act(() => tell('attached'));
+    expect(screen.queryByTestId('crew-daemon-away')).toBeNull();
+    expect(screen.getByRole('button', { name: connectionBarCopy.retryName })).toBeInTheDocument();
+  });
+
   it('leaves a connection the daemon calls disconnected to its screen: no note, no Retry', async () => {
     // The offline screen offers Connect; a note here would repeat it with a Retry that can only
     // fail the same way (T-09).

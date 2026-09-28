@@ -77,6 +77,15 @@ export const connectionBarCopy = {
    * "asked you to sign in", which opened a password window that could never help. `user` is the
    * login's account, or null.
    */
+  /**
+   * The app lost its background service (it restarted), so no Crew request can reach it until
+   * Biorouter reconnects (RES2-N7): said in place of "Live updates stopped" and its Retry, which
+   * led only to "Crew couldn't load your saved workspaces". Reconnect is the sidebar notice's.
+   */
+  daemonAway:
+    'Biorouter’s background service restarted, so Crew can’t reach your workspaces until Biorouter reconnects.',
+  daemonReconnect: 'Reconnect',
+  daemonReconnecting: 'Reconnecting…',
   keyRefused: (host: string, user: string | null) =>
     `${host || 'The server'} refused this computer’s SSH key${user ? ` for ${user}` : ''}. Check Your server login in Connection settings.`,
   /**

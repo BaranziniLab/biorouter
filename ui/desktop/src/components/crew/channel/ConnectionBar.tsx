@@ -16,6 +16,7 @@ import {
 } from '../state/connectFailure';
 import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
+import { reconnectDaemon, useDaemonConnection } from '../state/daemonConnection';
 import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
@@ -206,13 +207,19 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   };
   const unreachable = failure?.kind === 'unreachable';
   const workspace = workspaceLabel(crew, crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
+  // The app is not attached to its background service (RES2-N7): nothing here can reach a
+  // workspace until it is, so the bar says that, with Reconnect, and offers no Retry that could
+  // only fail again.
+  const daemon = useDaemonConnection();
+  const daemonAway = daemon !== 'attached';
   const notMember = crew.status === 'not-joined' || crew.screen === 'join';
   // The workspace ended this computer's or this person's membership: said once, here, with no
   // Retry — on the join screen its card says it instead.
   const membershipEnded = isMembershipEnded(connection) && !notMember;
   const showObservationError =
-    membershipEnded ||
-    (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected'));
+    !daemonAway &&
+    (membershipEnded ||
+      (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected')));
   const observationText = membershipEnded
     ? crewObservationCopy.noLongerMember(workspace)
     : refreshError;
@@ -265,6 +272,29 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
 
   return (
     <div className={cn('crew-connection-bar', className)} data-testid="crew-connection-bar">
+      {daemonAway && (
+        <Note
+          tone="warning"
+          role="status"
+          icon={AlertTriangle}
+          testId="crew-daemon-away"
+          action={
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={daemon === 'reconnecting'}
+              onClick={reconnectDaemon}
+            >
+              {daemon === 'reconnecting'
+                ? connectionBarCopy.daemonReconnecting
+                : connectionBarCopy.daemonReconnect}
+            </Button>
+          }
+        >
+          <p>{connectionBarCopy.daemonAway}</p>
+        </Note>
+      )}
       {showObservationError && (
         <Note
           tone="warning"
