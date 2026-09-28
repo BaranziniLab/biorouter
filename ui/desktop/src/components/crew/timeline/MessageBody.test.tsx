@@ -250,9 +250,156 @@ describe('markdown', () => {
         'evil.example.net',
       ],
       ['a dot leader for a dot', '[ucsf․edu](https://evil.example.net/login)', 'evil.example.net'],
+      // An address after a scheme names its host with or without a dot the code can see: a
+      // character drawn as a dot, or none at all (round 2 read these as naming nothing).
+      [
+        'a scheme and a host dotted with a Lisu tone letter',
+        '[https://www\u{A4F8}ucsf\u{A4F8}edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a host dotted with a Lisu tone letter',
+        '[www\u{A4F8}ucsf\u{A4F8}edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a host dotted with an Arabic-Indic zero',
+        '[https://ucsf\u{0660}edu/](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a scheme and a one-word host',
+        '[https://ucsf](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a scheme and a one-word host with a path',
+        '[https://intranet/x](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a scheme with no slash',
+        '[https:ucsf](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a scheme glued to a word',
+        '[visit:https://ucsf](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a look-alike colon',
+        '[https\u{02F8}//www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a one-word host between brackets',
+        '[(https://intranet)](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      // A host before a later `:/` is the host: that `:/` is in a path, a query or a fragment.
+      [
+        'an address in the query',
+        '[www.ucsf.edu/login?next=http://intranet](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'an address in the query after a path',
+        '[ucsf.edu/sso?return=https://portal](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a colon and slash in the fragment',
+        '[ucsf.edu/login#:/](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a colon and slash after the host',
+        '[ucsf.edu:/login](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      ['leading slashes', '[//ucsf.edu](https://evil.example.net/login)', 'evil.example.net'],
+      // An image in a link draws its alt text as the link's words (`Image: https://www.ucsf.edu`).
+      [
+        'an image in the link, named by an address',
+        '[![https://www.ucsf.edu](data:x)](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'an image in the link, named by a domain',
+        '[![ucsf.edu](x.png)](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
     ])('names the real host after %s', (_label, body, host) => {
       const { container } = render(<MessageBody body={body} />);
       expect(container.querySelector('.crew-md-link-host')).toHaveTextContent(`(${host})`);
+    });
+
+    it('names the real host in the name of a link around an image', () => {
+      render(
+        <MessageBody body={'[![https://www.ucsf.edu](data:x)](https://evil.example.net/login)'} />
+      );
+      const link = screen.getByRole('link', {
+        name: `${timelineCopy.imageNamed('https://www.ucsf.edu')} (evil.example.net)`,
+      });
+      expect(link).toHaveAttribute('href', 'https://evil.example.net/login');
+    });
+
+    /**
+     * Each of Unicode's confusables of FULL STOP, and the hosts a word names past what the eye
+     * reads as punctuation, straight through the reader: the words as a link's text node holds
+     * them, with no markdown in the way.
+     */
+    it.each([
+      ['https://www\u{A4F8}ucsf\u{A4F8}edu'],
+      ['www\u{A4F8}ucsf\u{A4F8}edu'],
+      ['https://ucsf\u{0660}edu/'],
+      ['ucsf\u{06F0}edu'],
+      ['ucsf\u{0701}edu'],
+      ['ucsf\u{0702}edu'],
+      ['ucsf\u{A60E}edu'],
+      ['ucsf\u{10A50}edu'],
+      ['ucsf\u{1D16D}edu'],
+      ['https://ucsf'],
+      ['HTTPS://INTRANET/x'],
+      ['http:intranet'],
+      ['https://ucsf:8443/x'],
+      ['https:\\intranet'],
+      ['https://[::1]/'],
+      ['https://ucsf.edu,evil.example.org'],
+      ['www.ucsf.edu/login?next=http://intranet'],
+      ['ucsf.edu/sso?return=https://portal'],
+      ['ucsf.edu/login#:/'],
+      ['ucsf.edu:/login'],
+      ['//ucsf.edu'],
+      ['(//ucsf.edu)'],
+      // A colon drawn by a look-alike still reads as a scheme's, and a `//` as an address.
+      ['https\u{02F8}//www.ucsf.edu'],
+      ['https\u{A4FD}//intranet'],
+      ['https\u{2236}/www.ucsf.edu'],
+      ['https;//www.ucsf.edu'],
+      ['https//intranet'],
+    ])('reads %s as naming a host other than evil.example.net', (words) => {
+      expect(mismatchedLinkHost(words, 'https://evil.example.net/login')).toBe('evil.example.net');
+    });
+
+    it.each([
+      [
+        'an address with a redirect in its query',
+        'https://www.ucsf.edu/login?next=https://portal.ucsf.edu/x',
+      ],
+      ['an address in brackets', '(https://www.ucsf.edu)'],
+      ['an address with a port', 'https://www.ucsf.edu:443/x'],
+      ['an address and a full stop', 'https://www.ucsf.edu.'],
+      ['a scheme in capitals', 'HTTPS://WWW.UCSF.EDU/'],
+      ['a word before a colon', 'Note:see the portal'],
+      ['a mail address', 'mailto:bob@ucsf.edu'],
+      ['Arabic-Indic digits', 'السعر ٣٠٥'],
+      ['a length mark in a word', 'kaːt'],
+      ['a path with a double slash', 'https://www.ucsf.edu/a//b'],
+      ['a host, then a double slash', 'www.ucsf.edu//x'],
+    ])('reads %s as naming only the host it opens, or none', (_label, words) => {
+      expect(mismatchedLinkHost(words, 'https://www.ucsf.edu/login')).toBeNull();
     });
 
     // Link words are up to 64 KB somebody else chose, read as each row mounts: every test is
@@ -263,6 +410,13 @@ describe('markdown', () => {
       ['one long label', `${'a'.repeat(64_000)}-`],
       ['a scheme-like run', `${'h'.repeat(64_000)}:`],
       ['addresses', 'ucsf.edu '.repeat(7_000)],
+      ['schemes', 'https://'.repeat(8_000)],
+      ['colons', `${'a:'.repeat(32_000)}/`],
+      ['leading punctuation', `${'('.repeat(64_000)}x`],
+      [
+        'a host with punctuation at its ends',
+        `https://${'('.repeat(32_000)}x${')'.repeat(32_000)}`,
+      ],
     ])('reads 64 KB of %s in bounded time', (_label, words) => {
       const started = performance.now();
       mismatchedLinkHost(words, 'https://www.ucsf.edu/');
@@ -281,6 +435,14 @@ describe('markdown', () => {
       ],
       ['abbreviations and numbers', '[e.g. Fig.2, v1.2, U.S.A.](https://www.ucsf.edu/)'],
       ['the same host, then a line of words', '[www.ucsf.edu\nnews](https://www.ucsf.edu/)'],
+      [
+        'an autolinked address with an address in its query',
+        'https://www.ucsf.edu/login?next=https://portal.ucsf.edu/x',
+      ],
+      ['the same host in brackets', '[(https://www.ucsf.edu)](https://www.ucsf.edu/)'],
+      ['the same host with a port', '[https://www.ucsf.edu:443/x](https://www.ucsf.edu/x)'],
+      ['an image in the link named by its host', '[![www.ucsf.edu](x.png)](https://www.ucsf.edu/)'],
+      ['an image in the link named in words', '[![the lab logo](x.png)](https://www.ucsf.edu/)'],
     ])('adds nothing for %s', (_label, body) => {
       const { container } = render(<MessageBody body={body} />);
       expect(screen.getByRole('link')).toBeInTheDocument();
@@ -430,6 +592,26 @@ describe('hidden characters and direction', () => {
       <MessageBody body={'thanks @cre\u{200B}w_bob and cre\u{200B}w_alice'} />
     );
     expect(hiddenMarks(container)).toEqual(['\\u{200b}', '\\u{200b}']);
+  });
+
+  /**
+   * A zero-width character in an element of its own (emphasis, strike-through, a link's words)
+   * sits between the letters around the element, which draws no box: it is shown where the eye
+   * would otherwise read `@crew_bob`, `bob@lab.org` or `ucsf.edu`.
+   */
+  it.each([
+    ['emphasis', 'hi @crew_b*\u{200B}*ob', 'em'],
+    ['strike-through', 'hi @crew_b~~\u{200B}~~ob', 'del'],
+    ['a link', 'hi @crew_b[\u{2060}](https://a.bc)ob', 'a'],
+    ['emphasis in an email address', 'bob@lab*\u{200B}*.org', 'em'],
+    ['emphasis in a domain', 'visit ucsf*\u{2060}*.edu', 'em'],
+  ])('shows a hidden character wrapped in %s', (_label, body, wrapper) => {
+    const { container } = render(
+      <MessageBody body={body} mention="crew_bob" mentionLabelId="mention-label" />
+    );
+    expect(container.querySelector(`${wrapper} .crew-md-hidden-char`)).not.toBeNull();
+    expect(container.textContent).not.toMatch(/[\u{200B}\u{2060}]/u);
+    expect(container.querySelector('.crew-md-mention')).toBeNull();
   });
 
   it('keeps an emoji joiner sequence whole and a Hebrew paragraph as written', () => {

@@ -191,10 +191,35 @@ function comparableHost(host: string): string {
 const UNDRAWN_BEYOND_DROP_SET = /\p{Default_Ignorable_Code_Point}/gu;
 /** A slash as the eye takes it: the URL parser reads a backslash as one, the others look like one. */
 const SLASH_LOOKALIKE = /[\\\u{FF0F}\u{2044}\u{2215}\u{29F8}]/gu;
-/** A dot as a host name takes it: the URL parser reads these full stops as dots. */
-const DOT_LOOKALIKE = /[\u{3002}\u{FF0E}\u{FF61}\u{2024}\u{FE52}]/gu;
+/**
+ * A dot as the eye takes it in a host name: the full stops the URL parser reads as dots (`。`, `．`,
+ * `｡`, `․`, `﹒`), and the characters Unicode lists as confusable with a full stop, which are drawn
+ * as one (`ꓸ` U+A4F8, the Arabic-Indic zeros U+0660 and U+06F0, the Syriac, Vai and Kharoshthi
+ * full stops, the musical augmentation dot). `www{U+A4F8}ucsf{U+A4F8}edu` reads `www.ucsf.edu`, so
+ * it is read as that name. The augmentation dot is a combining mark, so it stands outside the
+ * class: in one it would read as combined with the character before it.
+ */
+const DOT_LOOKALIKE =
+  /[\u{3002}\u{FF0E}\u{FF61}\u{2024}\u{FE52}\u{A4F8}\u{0660}\u{06F0}\u{0701}\u{0702}\u{A60E}\u{10A50}]|\u{1D16D}/gu;
+/**
+ * A colon as the eye takes it: the characters Unicode lists as confusable with one (`˸` U+02F8,
+ * `ː` U+02D0, `∶` U+2236, `ꓽ` U+A4FD, `꞉` U+A789, the Armenian, Hebrew, Syriac, Runic and Mongolian
+ * marks, the Devanagari and Gujarati visarga, which are combining marks and so stand outside the
+ * class). NFKC has already made the full-width and small colons plain ones. `https˸//www.ucsf.edu`
+ * reads as an address, so its scheme is read as one.
+ */
+const COLON_LOOKALIKE =
+  /[\u{02D0}\u{02F8}\u{0589}\u{05C3}\u{0703}\u{0704}\u{16EC}\u{1803}\u{1809}\u{205A}\u{2236}\u{A4FD}\u{A789}]|\u{0903}|\u{0A83}/gu;
 /** Where an address's host part ends: its path, query or fragment. */
 const AUTHORITY_END = /[/?#]/;
+/** A character of a scheme after its first letter. Never a dot: `ucsf.edu:` is a host. */
+const SCHEME_CHARACTER = /^[A-Za-z0-9+-]$/;
+/** The schemes the URL parser reads a host after with no slash at all (`https:ucsf`). */
+const SLASHLESS_SCHEMES = new Set(['http', 'https']);
+/** What a word holds before its first letter or digit: brackets, quotes, slashes. Anchored. */
+const LEADING_NON_WORD = /^[^\p{L}\p{N}]+/u;
+/** What a host name's ends may be: a letter, a mark or a digit, not the punctuation around it. */
+const HOST_END = /^[\p{L}\p{M}\p{N}]$/u;
 /** A run of what a host name may hold: letters, marks, digits, hyphens and dots. */
 const HOST_RUN = /[^\p{L}\p{M}\p{N}.-]+/u;
 /** One label of a host name. Anchored, so it is tried once per label. */
@@ -238,21 +263,98 @@ function hostsInRun(run: string): string[] {
 }
 
 /**
+ * Where the scheme that ends at `colon` starts, or -1 when the characters before the colon are not
+ * one: a letter, then letters, digits, `+` or `-`, with no dot before it (`ucsf.edu:/login` has a
+ * host before its colon, not a scheme). By a loop, not `[a-z…]*$`, which would rescan every start.
+ */
+function schemeStart(word: string, colon: number): number {
+  let start = colon;
+  while (start > 0 && SCHEME_CHARACTER.test(word[start - 1])) start -= 1;
+  if (start === colon || !/^[A-Za-z]$/.test(word[start])) return -1;
+  return start > 0 && word[start - 1] === '.' ? -1 : start;
+}
+
+/**
+ * Where, in a word, an address starts after a scheme, as `{ scheme, colon }`, or null: a colon
+ * right before the word's first slash (`https://`, `(https://`, `visit:https://`), or its first
+ * colon after `http` or `https`, which need no slash (`https:ucsf`). A colon after the first slash,
+ * question mark or hash sits in a path, a query or a fragment
+ * (`www.ucsf.edu/login?next=http://intranet`), where no address the link is read by starts.
+ */
+function addressStart(word: string, end: number): { scheme: number; colon: number } | null {
+  if (end > 0 && word[end] === '/' && word[end - 1] === ':') {
+    const scheme = schemeStart(word, end - 1);
+    return scheme >= 0 ? { scheme, colon: end - 1 } : null;
+  }
+  const colon = word.indexOf(':');
+  if (colon < 0 || (end >= 0 && colon > end)) return null;
+  const scheme = schemeStart(word, colon);
+  return scheme >= 0 && SLASHLESS_SCHEMES.has(word.slice(scheme, colon).toLowerCase())
+    ? { scheme, colon }
+    : null;
+}
+
+/**
+ * The host an address's authority names, as the eye reads it: after any user name, before any
+ * port, without the punctuation at its ends (`www.ucsf.edu` of `www.ucsf.edu).`); an IPv6 literal
+ * with its brackets. Empty when it names none.
+ */
+function authorityHost(authority: string): string {
+  let host = authority.slice(authority.lastIndexOf('@') + 1);
+  if (host.startsWith('[')) {
+    const close = host.indexOf(']');
+    return close > 0 ? host.slice(0, close + 1) : host;
+  }
+  const port = host.indexOf(':');
+  if (port >= 0) host = host.slice(0, port);
+  // By character, not code unit, so a letter outside the Basic Multilingual Plane at an end stays.
+  const characters = Array.from(host);
+  let start = 0;
+  let end = characters.length;
+  while (start < end && !HOST_END.test(characters[start])) start += 1;
+  while (end > start && !HOST_END.test(characters[end - 1])) end -= 1;
+  return characters.slice(start, end).join('');
+}
+
+/**
  * What a link's words say about where it goes (QA M4): every host they name, and whether an
  * address in them carries a user name (`https://www.ucsf.edu@evil.example.net/`, which names
  * evil.example.net and reads as ucsf.edu).
  *
+ * An address after a scheme, or after a `//`, names its host whatever that host looks like:
+ * `https://intranet`, `https://ucsf` and `https://www{U+A4F8}ucsf{U+A4F8}edu` each name a host,
+ * with or without a dot the code can see, and one the URL parser refuses is a difference, not
+ * nothing. Elsewhere a host is a dotted name (`ucsf.edu`, not `Fig.2` or `e.g.`), since a single
+ * word is not one.
+ *
  * Every address-shaped part counts, wherever it is in the words and whatever surrounds it: a
  * sentence's final period (`ucsf.edu.`), a comma or a bracket (`(https://www.ucsf.edu)`), quotes,
- * other words (`Go to ucsf.edu`, `https://www.ucsf.edu login`), backslashes or look-alike slashes
- * for the scheme's (`https:\\www.ucsf.edu`), full stops the parser takes as dots, and characters
- * that draw nothing. Only the host part of an address is read: `index.html` in a path is not a
- * host. Each word is looked at once, and each test is anchored, so a long link costs no more than
- * its length.
+ * other words (`Go to ucsf.edu`, `https://www.ucsf.edu login`), leading slashes (`//ucsf.edu`),
+ * backslashes or look-alike slashes for the scheme's (`https:\\www.ucsf.edu`), characters drawn as
+ * dots or colons, and characters that draw nothing. Only the host part of an address is read:
+ * `index.html` in a path is not a host, nor is an address in its query
+ * (`ucsf.edu/sso?return=https://portal` names ucsf.edu). Each word is looked at a bounded number of
+ * times, and each test is anchored or a loop, so a long link costs no more than its length.
  */
 function addressesInWords(words: string): { hosts: string[]; userinfo: boolean } {
   const hosts: string[] = [];
   let userinfo = false;
+  const dottedHosts = (part: string) => {
+    for (const run of part.split(HOST_RUN)) hosts.push(...hostsInRun(run));
+  };
+  // The address that starts at `from` in `word`, however many slashes lead it (the parser takes
+  // `https:/x` as `https://x`): its host, whatever it looks like, and any dotted names in it.
+  const address = (word: string, from: number) => {
+    let start = from;
+    while (word[start] === '/') start += 1;
+    const rest = word.slice(start);
+    const restEnd = rest.search(AUTHORITY_END);
+    const authority = restEnd >= 0 ? rest.slice(0, restEnd) : rest;
+    if (authority.includes('@')) userinfo = true;
+    const named = authorityHost(authority);
+    if (named) hosts.push(named);
+    dottedHosts(authority);
+  };
   // A break or a tab still parts two words: made a space before the controls are dropped. Then
   // compatibility forms are read as what they stand for (`ｕｃｓｆ.ｅｄｕ`, `ucsf․edu`), as the URL
   // parser reads them.
@@ -261,18 +363,25 @@ function addressesInWords(words: string): { hosts: string[]; userinfo: boolean }
   )
     .normalize('NFKC')
     .replace(SLASH_LOOKALIKE, '/')
-    .replace(DOT_LOOKALIKE, '.');
-  for (const word of text.split(/\s+/)) {
+    .replace(DOT_LOOKALIKE, '.')
+    .replace(COLON_LOOKALIKE, ':');
+  for (const spaced of text.split(/\s+/)) {
+    // Past its brackets, quotes and slashes (`(https://…`, `//ucsf.edu`).
+    const word = spaced.replace(LEADING_NON_WORD, '');
     if (!word) continue;
-    // After a scheme, however many slashes follow it (the parser takes `https:/x` as `https://x`).
-    const scheme = word.indexOf(':/');
-    let start = scheme >= 0 ? scheme + 1 : 0;
-    while (scheme >= 0 && word[start] === '/') start += 1;
-    const rest = word.slice(start);
-    const end = rest.search(AUTHORITY_END);
-    const authority = end >= 0 ? rest.slice(0, end) : rest;
-    if (scheme >= 0 && authority.includes('@')) userinfo = true;
-    for (const run of authority.split(HOST_RUN)) hosts.push(...hostsInRun(run));
+    const end = word.search(AUTHORITY_END);
+    const start = addressStart(word, end);
+    if (start) {
+      // The words glued before the scheme (`visit:` of `visit:https://…`), then the address.
+      dottedHosts(word.slice(0, start.scheme));
+      address(word, start.colon + 1);
+      continue;
+    }
+    const before = hosts.length;
+    dottedHosts(end >= 0 ? word.slice(0, end) : word);
+    // Nothing before the first slash names a host, and a `//` follows it: an address, as the eye
+    // reads one, whatever stands where its scheme would (`https;//intranet`).
+    if (hosts.length === before && word[end] === '/' && word[end + 1] === '/') address(word, end);
   }
   return { hosts, userinfo };
 }
