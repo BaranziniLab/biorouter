@@ -17,7 +17,12 @@ import {
   useCustomValidity,
   useDialogError,
 } from './fields';
-import { channelSlugPreview, channelSlugProblem } from './nameRules';
+import {
+  channelNameTaken,
+  channelSlugPreview,
+  channelSlugProblem,
+  mixesScripts,
+} from './nameRules';
 import { isNameRefusal, nameRefusalText, refusalText } from './refusals';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
 import { useDialogView } from './workspace';
@@ -65,7 +70,10 @@ export interface CreateChannelDialogProps {
  *
  * - Every open starts clean — name empty, content Restricted — because the dialog's state is its
  *   own and it is mounted per open (L14: the old panel kept the last channel's classification).
- * - The name previews the exact slug the broker will store ("Will be created as #…").
+ * - The name previews the exact slug the broker will store ("Will be created as #…"), folded as the
+ *   broker folds it (full-width letters, case), but never a name it will refuse: not one a channel
+ *   the viewer can see in this team already holds, which is said as the broker says it, and not
+ *   one that mixes writing systems (F9).
  * - Content is visible, not behind Advanced: it cannot be changed after the channel exists.
  * - A taken name is refused in the broker's one wording (S2), and the consequence line says that
  *   the refusal itself tells team members a name exists.
@@ -86,7 +94,13 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   const slug = channelSlugPreview(name);
   // Anything typed at all is judged, so a name of only spaces is "can't be empty" on submit rather
   // than a request the broker refuses.
-  const problem = name ? channelSlugProblem(slug) : null;
+  // A channel this team has that the viewer can see is refused in the broker's own words before a
+  // round trip, rather than previewed as "Will be created as #methods" beside #methods (F9).
+  const taken =
+    slug !== '' && channelNameTaken(snapshot?.channels ?? [], teamId, slug)
+      ? nameRuleCopy.channelTaken
+      : null;
+  const problem = name ? (channelSlugProblem(slug) ?? taken) : null;
   const nameRef = useCustomValidity<HTMLInputElement>(problem);
   const creating = crew.isPending(KEY);
   const placeholder = examplePlaceholder(snapshot?.channels ?? [], teamId);
@@ -120,9 +134,12 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
   // recorded. That record is stale by one keystroke: the form's `onInput` reads `validity` before
   // this keystroke's problem reaches the input (`useCustomValidity` sets it in an effect, after
   // the render), so the keystroke that makes the name valid kept the old message (QA Q3-38).
-  const submittedError = nameId in errors ? channelSlugProblem(slug) : null;
-  const fieldError = nameError ?? submittedError ?? (touched ? problem : null);
-  const helper = slug && !problem ? copy.preview(slug) : undefined;
+  const submittedError = nameId in errors ? (channelSlugProblem(slug) ?? taken) : null;
+  // A taken name is said as soon as it is typed: it is not a half-typed name that may yet be valid.
+  const fieldError = nameError ?? submittedError ?? (touched ? problem : taken);
+  // Never a preview of a name the broker will refuse: one that mixes writing systems (a Cyrillic
+  // `е` in "mеthods") is left to the broker to explain, rather than shown as a new channel (F9).
+  const helper = slug && !problem && !mixesScripts(slug) ? copy.preview(slug) : undefined;
   const consequenceId = `${formId}-consequence`;
   // The preview or the error, then the consequence line — both describe the name (QA T-72).
   const describedBy = [helper || fieldError ? helpId(nameId) : null, consequenceId]

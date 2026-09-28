@@ -7,7 +7,7 @@ import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
 import { nameKey, personLabel, teamName } from '../identity';
 import type { ErrorSource } from '../state/types';
-import { addPeopleCopy, createTeamCopy as copy } from './copy';
+import { addPeopleCopy, createTeamCopy as copy, nameRuleCopy } from './copy';
 import {
   DebouncedAnnouncement,
   ErrorNote,
@@ -199,6 +199,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
 
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'team') : null;
   const fieldError = nameError ?? teamNameProblem(name);
+  const consequenceId = `${formId}-consequence`;
   return (
     <ModalShell
       open
@@ -231,8 +232,9 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             autoComplete="off"
             placeholder={teamExamplePlaceholder(snapshot?.teams ?? [])}
             aria-invalid={fieldError ? true : undefined}
-            // The helper ("Team names are unique in …"), or the error that replaces it.
-            aria-describedby={helpId(nameId)}
+            // The helper ("Team names are unique in …"), or the error that replaces it, then what
+            // a taken name tells people, as Create channel says under its name (F9).
+            aria-describedby={`${helpId(nameId)} ${consequenceId}`}
             value={name}
             onChange={(event) => {
               setName(event.target.value);
@@ -241,6 +243,9 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
           />
         </Field>
         <DebouncedAnnouncement text={fieldError} />
+        <p id={consequenceId} className="text-supporting text-text-muted">
+          {nameRuleCopy.teamConsequence}
+        </p>
         {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
       </form>
     </ModalShell>

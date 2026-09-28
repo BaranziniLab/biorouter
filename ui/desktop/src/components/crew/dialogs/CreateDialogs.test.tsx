@@ -47,6 +47,33 @@ describe('CreateChannelDialog', () => {
     expect(screen.getByText('Will be created as #data-analysis-v2')).toBeInTheDocument();
   });
 
+  // F9: the preview promised names the broker refuses. It shows the folded form of a full-width
+  // name, and nothing for a name that mixes writing systems or that a visible channel holds.
+  it('previews only a name the broker will accept, folded as the broker folds it', async () => {
+    const { crew } = renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+    const name = await screen.findByLabelText('Name');
+
+    fireEvent.change(name, { target: { value: 'ｍｅｔｈｏｄｓ' } });
+    expect(screen.getByText('Will be created as #methods')).toBeInTheDocument();
+
+    // A Cyrillic `е` (U+0435) among Latin letters.
+    fireEvent.change(name, { target: { value: 'm\u0435thods' } });
+    expect(screen.queryByText(/^Will be created as/)).toBeNull();
+    expect(name).toHaveAccessibleDescription(nameRuleCopy.consequence);
+
+    // The team's own #general, in another case and in full-width letters: taken, said at once.
+    for (const typed of ['General', 'ｇｅｎｅｒａｌ']) {
+      fireEvent.change(name, { target: { value: typed } });
+      expect(screen.queryByText(/^Will be created as/)).toBeNull();
+      expect(screen.getByText(nameRuleCopy.channelTaken)).toBeInTheDocument();
+      expect(name).toHaveAttribute('aria-invalid', 'true');
+    }
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+    });
+    expect(requestsFor(crew, 'channel.create')).toEqual([]);
+  });
+
   // QA Q2-31: "e.g. methods" sat beside an existing #methods, reading as a nudge to duplicate it.
   it('gives an example name that is never one the team already has', async () => {
     renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
@@ -149,7 +176,8 @@ describe('CreateChannelDialog', () => {
         throw new CrewHttpError(CHANNEL_TAKEN, 400, 'crew_request_refused');
       },
     });
-    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'general' } });
+    // A name held by a channel the viewer cannot see: only the broker knows it is taken.
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'methods' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
     });
@@ -329,7 +357,11 @@ describe('CreateTeamDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Create team' });
     expect(dialog).toHaveTextContent(createTeamCopy.helper('lab'));
     const name = screen.getByLabelText('Name');
-    expect(name).toHaveAccessibleDescription(createTeamCopy.helper('lab'));
+    // F9: under a team name too, what a taken name tells people, and it describes the field.
+    expect(dialog).toHaveTextContent(nameRuleCopy.teamConsequence);
+    expect(name).toHaveAccessibleDescription(
+      `${createTeamCopy.helper('lab')} ${nameRuleCopy.teamConsequence}`
+    );
     await waitFor(() => expect(name).toHaveFocus());
     fireEvent.change(name, { target: { value: 'Imaging Core' } });
     await act(async () => {

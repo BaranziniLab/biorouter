@@ -345,6 +345,12 @@ export const nameRuleCopy = {
    */
   consequence:
     'Everyone in this team can see whether a name is taken, so don’t put patient or sample IDs in channel names.',
+  /**
+   * The same, under a team name (F9). Team names are unique across the workspace and a taken one is
+   * refused for teams the person is not in, so it tells more than a channel name does.
+   */
+  teamConsequence:
+    'Everyone in this workspace can see whether a team name is taken, so don’t put patient or sample IDs in team names.',
   channelEmpty: 'Channel name can’t be empty.',
   channelTooLong: 'Channel name is too long. Choose a shorter name.',
   channelReserved: 'Channel name can’t contain @, #, / or :.',

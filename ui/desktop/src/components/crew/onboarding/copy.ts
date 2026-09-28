@@ -142,7 +142,8 @@ export const joinCopy = {
   portInvalid: 'Use a port from 1 to 65535.',
   identityFile: 'Identity file',
   identityFileHelper: 'Leave empty to use your SSH config.',
-  jumpHost: 'Jump host',
+  /** The same comma-separated field the Host dialog and Connection settings call Jump hosts (DW-18). */
+  jumpHost: 'Jump hosts',
   connectionName: 'Connection name',
   remoteFolder: 'Remote work folder',
   /** Plain words for an absolute path (Q3-49): what it looks like, then what it allows. */
@@ -406,12 +407,13 @@ export const hostCopy = {
   // still the canonical ID.
   labelTitle: (workspace: string, id: string) => `Mark ${workspace} as a ${id} workspace?`,
   /**
-   * Why it asks again (Q4-47). Step 1's Institution is saved on this computer's connection
+   * Why it asks again (Q4-47). The Host dialog's Institution is saved on this computer's connection
    * (`institution_id` on the saved connection: which models this computer's agent may use there);
    * this writes the workspace's own label with `policy.set`, which every member's agent is held to.
+   * It opens after the Host dialog has closed, so it never names that dialog's steps (F9).
    */
   labelWhy: (workspace: string, institution: string) =>
-    `Step 1 set ${institution} for your connection on this computer. This sets it for ${workspace} itself, for everyone who works there.`,
+    `You set ${institution} as this computer’s institution when you created ${workspace}. Marking ${workspace} sets it for the workspace itself, for everyone who works there.`,
   /** Workspace-free, for the composer's note, whose title names the workspace. */
   labelBody:
     'Agents working here can then use only models approved for that institution. This can’t be undone.',

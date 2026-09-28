@@ -405,6 +405,10 @@ describe('JoinDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     expect(screen.getByLabelText(joinCopy.identityFile)).toBeInTheDocument();
     expect(screen.getByLabelText(joinCopy.port)).toHaveAttribute('placeholder', '22');
+    // DW-18: the same comma-separated field the Host dialog and Connection settings call Jump
+    // hosts, so it is named the same here.
+    expect(screen.getByLabelText('Jump hosts')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Jump host')).toBeNull();
     // The agent's permission is not an SSH setting: it is not in Advanced (Q2-37).
     expect(screen.queryByRole('switch', { name: joinCopy.remoteExecution })).toBeNull();
     expect(screen.queryByLabelText(joinCopy.remoteFolder)).toBeNull();

@@ -5,9 +5,11 @@ import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { makeSnapshot, connection, bob } from './dialogsTestHarness';
 import { enrollmentInviteFrom, legacyTokenFrom, parseJoinRequest } from './joinRequest';
 import {
+  channelNameTaken,
   channelSlugPreview,
   channelSlugProblem,
   INSTITUTION_FIELD_PATTERN,
+  mixesScripts,
   teamNameProblem,
   WORKSPACE_NAME_PATTERN,
   workspaceNameProblem,
@@ -24,6 +26,38 @@ import {
 import { uniqueNamesSupported, workspaceLabelFor, workspacePhraseFor } from './workspace';
 
 describe('name rules', () => {
+  // F9: what the broker's `restriction_level_ok` refuses, judged here only to hide a preview.
+  it.each([
+    ['methods', false],
+    ['m\u0435thods', true],
+    ['\u0430nalysis', true],
+    ['данные', false],
+    ['δεδομένα', false],
+    ['実験-ログ', false],
+    ['lab-実験', false],
+    ['lab-ノート', false],
+    ['lab-연구', false],
+    ['plate-2', false],
+    ['αβ-data', true],
+    ['데이터-データ', true],
+  ])('says whether %j mixes writing systems: %s', (name, mixed) => {
+    expect(mixesScripts(name)).toBe(mixed);
+  });
+
+  it('finds a visible channel in the same team that already holds a name', () => {
+    const channels = [
+      { id: 'c-1', team_id: 't-1', name: 'methods' },
+      { id: 'c-2', team_id: 't-2', name: 'qc' },
+      { id: 'c-3', team_id: 't-1', name: 'Raw Data', handle: 'raw-data' },
+    ];
+    expect(channelNameTaken(channels, 't-1', 'methods')).toBe(true);
+    expect(channelNameTaken(channels, 't-1', channelSlugPreview('ＭＥＴＨＯＤＳ'))).toBe(true);
+    expect(channelNameTaken(channels, 't-1', 'raw_data')).toBe(true);
+    // Another team's channel, and the channel being renamed, do not hold it.
+    expect(channelNameTaken(channels, 't-1', 'qc')).toBe(false);
+    expect(channelNameTaken(channels, 't-1', 'methods', 'c-1')).toBe(false);
+  });
+
   it.each([
     ['methods', 'methods'],
     ['#Methods', 'methods'],

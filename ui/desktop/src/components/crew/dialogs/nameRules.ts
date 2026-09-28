@@ -1,4 +1,4 @@
-import { isMachineIdShaped } from '../identity';
+import { isMachineIdShaped, nameKey } from '../identity';
 import { createTeamCopy, nameRuleCopy } from './copy';
 
 /**
@@ -65,6 +65,115 @@ export function channelSlugProblem(slug: string): string | null {
   if (!LETTER_OR_DIGIT.test(chars[0])) return nameRuleCopy.channelStart;
   if (isMachineIdShaped(slug)) return nameRuleCopy.channelLooksLikeId;
   return null;
+}
+
+/**
+ * The scripts `mixesScripts` can tell apart. A letter in none of them is not judged: this side can
+ * only ever be less strict than the broker, never refuse or hide what it would accept for a
+ * script it does not know.
+ */
+const SCRIPTS = [
+  'Latin',
+  'Cyrillic',
+  'Greek',
+  'Armenian',
+  'Georgian',
+  'Hebrew',
+  'Arabic',
+  'Syriac',
+  'Thaana',
+  'Devanagari',
+  'Bengali',
+  'Gurmukhi',
+  'Gujarati',
+  'Oriya',
+  'Tamil',
+  'Telugu',
+  'Kannada',
+  'Malayalam',
+  'Sinhala',
+  'Thai',
+  'Lao',
+  'Tibetan',
+  'Myanmar',
+  'Khmer',
+  'Mongolian',
+  'Ethiopic',
+  'Cherokee',
+  'Han',
+  'Hiragana',
+  'Katakana',
+  'Bopomofo',
+  'Hangul',
+] as const;
+const SCRIPT_TESTS = SCRIPTS.map(
+  (script) => [script, new RegExp(`^\\p{Script_Extensions=${script}}$`, 'u')] as const
+);
+/** The script sets UTS #39 Highly Restrictive allows together, beside one script alone. */
+const HIGHLY_RESTRICTIVE_SETS: readonly (readonly string[])[] = [
+  ['Latin', 'Han', 'Hiragana', 'Katakana'],
+  ['Latin', 'Han', 'Bopomofo'],
+  ['Latin', 'Han', 'Hangul'],
+];
+
+/**
+ * Whether a name mixes writing systems beyond UTS #39 Highly Restrictive (`mеthods` with a
+ * Cyrillic `е`), as `restriction_level_ok` in `biorouter_crew::names` judges it: the letters and
+ * digits (ASCII punctuation and spaces are not scored) share one script, or all fall in Latin with
+ * Han and Japanese kana, Latin with Han and Bopomofo, or Latin with Han and Hangul. Common and
+ * Inherited characters (digits, most marks) belong to every script.
+ *
+ * Display only: a name this calls mixed is not previewed, and the broker's refusal still decides.
+ */
+export function mixesScripts(name: string): boolean {
+  const sets: Set<string>[] = [];
+  for (const char of name) {
+    if ((char.codePointAt(0) ?? 0) < 0x80 && !/^[A-Za-z0-9]$/.test(char)) continue;
+    const scripts = new Set(
+      SCRIPT_TESTS.filter(([, test]) => test.test(char)).map(([script]) => script)
+    );
+    // Common, Inherited or a script this list does not know: nothing to judge by.
+    if (scripts.size === 0) continue;
+    sets.push(scripts);
+  }
+  if (sets.length < 2) return false;
+  const shared = sets.reduce(
+    (common, scripts) => new Set([...common].filter((script) => scripts.has(script)))
+  );
+  if (shared.size > 0) return false;
+  return !HIGHLY_RESTRICTIVE_SETS.some((allowed) =>
+    sets.every((scripts) => allowed.some((script) => scripts.has(script)))
+  );
+}
+
+/**
+ * Whether a channel this team already has, and the viewer can see, holds a name that collides with
+ * `slug` (`names_collide` in the broker, less its confusable skeleton, which only the broker's
+ * tables can compute). `renaming` is the channel being renamed, which may keep its own name in
+ * another case. A name taken by a channel the viewer cannot see is refused by the broker in the
+ * same words, so saying it early here tells nothing the refusal would not.
+ */
+export function channelNameTaken(
+  channels: readonly {
+    id: string;
+    team_id: string;
+    name?: string | null;
+    handle?: string | null;
+  }[],
+  teamId: string,
+  slug: string,
+  renaming?: string
+): boolean {
+  const key = nameKey(slug);
+  if (!key) return false;
+  return channels.some(
+    (channel) =>
+      channel.team_id === teamId &&
+      channel.id !== renaming &&
+      [channel.handle, channel.name].some(
+        (name) => typeof name === 'string' && name !== '' && nameKey(name) === key
+      )
+  );
 }
 
 /** The one team-name rule worth checking before a round trip: no selector characters. */
