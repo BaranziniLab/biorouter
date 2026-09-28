@@ -121,4 +121,13 @@ export const crewActionCopy = {
   unknownOutcomeGate:
     'Inspect the previous task conversations and remote effects, then acknowledge the inspection before starting another task.',
   restartNeedsInspection: 'Confirm that you inspected the previous task before starting a new one.',
+  /**
+   * A workspace chosen in the workspace menu that the daemon no longer has: removed from this
+   * computer since the menu last read the list, from a terminal or another window (MSG2-N9).
+   * `name` is the name the menu showed.
+   */
+  workspaceRemoved: (name: string) =>
+    name
+      ? `${name} was removed from this computer, so it can’t be opened.`
+      : 'That workspace was removed from this computer, so it can’t be opened.',
 } as const;

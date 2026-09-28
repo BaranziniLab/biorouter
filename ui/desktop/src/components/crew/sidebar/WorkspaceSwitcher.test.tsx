@@ -558,6 +558,18 @@ describe('WorkspaceSwitcher', () => {
     expect(controller.selectConnection).toHaveBeenCalledWith(secondConnection.id);
   });
 
+  /** MSG2-N9: the menu listed what the list held when Crew opened, whatever a terminal did since. */
+  it('reads the saved workspaces again each time it opens', async () => {
+    const reloadConnections = vi.fn();
+    renderWithCrew(<WorkspaceSwitcher />, makeController({ reloadConnections }));
+    expect(reloadConnections).not.toHaveBeenCalled();
+    const { user } = await openMenu();
+    expect(reloadConnections).toHaveBeenCalledTimes(1);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(reloadConnections).toHaveBeenCalledTimes(1);
+  });
+
   it('opens Join and Host from the Add a workspace submenu', async () => {
     const controller = makeController();
     renderWithCrew(<WorkspaceSwitcher />, controller);

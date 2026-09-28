@@ -876,6 +876,28 @@ describe('keeping one live observer', () => {
     expect(crew.connectionId).toBe(connection.id);
   });
 
+  it('says a workspace chosen after it was removed from this computer was removed (MSG2-N9)', async () => {
+    const gone = { ...connection, id: 'conn-2', name: 'bob-cap2' };
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection, gone] };
+      return {};
+    });
+    renderController();
+    await verifiedChannel();
+    await waitFor(() => expect(crew.connections).toHaveLength(2));
+    // Removed from a terminal; the menu still lists it.
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      return {};
+    });
+    act(() => crew.selectConnection(gone.id));
+    await waitFor(() =>
+      expect(crew.error?.message).toBe(crewActionCopy.workspaceRemoved('bob-cap2'))
+    );
+    expect(crew.connectionId).toBe(connection.id);
+    expect(crew.connections.map((item) => item.id)).toEqual([connection.id]);
+  });
+
   it('reads "Updating…" while it observes again by itself, never "Updates unavailable"', async () => {
     renderController({ keepLastVerifiedView: true });
     await verifiedChannel();

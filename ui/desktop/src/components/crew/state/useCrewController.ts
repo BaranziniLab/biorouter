@@ -3,6 +3,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import type * as Api from '../../../api/types.gen';
 import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
+import { connectionNames } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
 import {
@@ -255,6 +256,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     dismissLostDraft,
   } = observation;
 
+  // A workspace chosen after it was removed from this computer (MSG2-N9): said once the selection
+  // the fresh list made instead has settled. Declared after the observation, whose change of
+  // connection dismisses what the bar showed, so it is not dismissed with it.
+  const [removedNotice, setRemovedNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (removedNotice === null) return;
+    setRemovedNotice(null);
+    reportError(crewActionCopy.workspaceRemoved(removedNotice), 'global');
+  }, [removedNotice, reportError]);
+
   useEffect(() => {
     if (!snapshot) return;
     setChannelId((old) =>
@@ -352,6 +363,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setMessagesLoaded(false);
     setConnectionId(id);
     if (id === connectionId) restartObservation();
+    // The menu lists what the last read of the daemon's list held, and a workspace removed since
+    // (from a terminal, or another window) went from the menu without a word once it was chosen
+    // (MSG2-N9). Read the list now; if the chosen one is gone, the read opens another, and Crew says
+    // why once that selection has settled (`removedNotice`).
+    const name = connectionNames(connections).get(id) ?? '';
+    void loadConnections()
+      .then((fresh) => {
+        if (fresh && !fresh.some((item) => item.id === id)) setRemovedNotice(name);
+      })
+      .catch(() => undefined);
   };
   //
   // A deliberate selection also puts the unsent body aside for the channel it was written in
@@ -899,6 +920,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connection,
     connectionsState,
     selectConnection,
+    reloadConnections: () => void loadConnections().catch(() => undefined),
     saveConnection,
     updateConnection,
     removeConnection,

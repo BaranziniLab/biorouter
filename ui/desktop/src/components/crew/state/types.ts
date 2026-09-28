@@ -285,6 +285,12 @@ export interface CrewController {
   /** `loading` until the first `GET /crew/connections` answers; `failed` if it never has. */
   connectionsState: 'loading' | 'loaded' | 'failed';
   selectConnection(id: string): void;
+  /**
+   * Read the saved connections again, in the background: the workspace menu asks as it opens, so
+   * it lists what the daemon has now (MSG2-N9). A failure keeps the list. Absent: the list is read
+   * only by the controller's own schedule.
+   */
+  reloadConnections?(): void;
   /** POST, reload the list and select the saved connection. Throws on failure. */
   saveConnection(input: SaveConnectionInput): Promise<CrewConnection>;
   /** Full-body PATCH (L18) and reload the list. Throws on failure. */
