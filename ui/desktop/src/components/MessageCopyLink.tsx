@@ -3,6 +3,7 @@ import { AlertTriangle, Copy } from './icons/app-icons';
 import { MessageMetaAction } from './MessageMeta';
 import { useTransientValue } from '../hooks/useTransientFlag';
 import { toastError } from '../toasts';
+import { copyToClipboard } from '../utils/clipboard';
 
 interface MessageCopyLinkProps {
   text: string;
@@ -17,7 +18,9 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
   // both be true: the button says exactly one thing at a time.
   const [outcome, markOutcome] = useTransientValue<CopyOutcome>(2000);
 
-  const handleCopy = async () => {
+  const handleCopy = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    // Read before the first await: React clears `currentTarget` once dispatch ends.
+    const host = event.currentTarget.parentElement;
     try {
       if (contentRef?.current) {
         // Clone the DOM node to avoid innerHTML re-serialization
@@ -44,13 +47,12 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
       console.error('Failed to copy text: ', err);
     }
 
-    // Fallback to plain text if the rich copy failed.
-    try {
-      await navigator.clipboard.writeText(text);
+    // Fallback to plain text if the rich copy failed, through the shared path
+    // (utils/clipboard.ts): retried after focusing the window, then copied
+    // through the document's own selection, which no permission handler gates.
+    if (await copyToClipboard(text, host)) {
       markOutcome('copied');
       return;
-    } catch (fallbackErr) {
-      console.error('Failed to copy text (fallback): ', fallbackErr);
     }
 
     // ⚠ Both writes failed, and this is the branch that used to end at a

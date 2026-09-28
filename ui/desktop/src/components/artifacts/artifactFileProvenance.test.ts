@@ -3,6 +3,7 @@ import type { Message } from '../../api';
 import { resolveFileLink } from './artifactFileLinks';
 import {
   filePathLookupBeforeMessage,
+  filePathLookupFromPaths,
   filePathsBeforeMessage,
   referencedFilePaths,
 } from './artifactFileProvenance';
@@ -24,6 +25,33 @@ describe('file-link reliability: provenance boundaries', () => {
       '/prior/report.md',
       '/future/report.md',
     ]);
+  });
+
+  // BioRouterMessage keys its lookup on `filePathsBeforeMessage` and builds it
+  // here, so that it stays the same function while later messages stream. It
+  // must answer exactly what the index-backed lookup answers.
+  it('builds, from the earlier paths alone, the lookup the index answers with', () => {
+    const messages: Message[] = [
+      '/prior/report.md',
+      '/prior/data/table.csv',
+      '/other/report.md',
+      '/future/report.md',
+    ].map((path, index) => ({
+      id: String(index),
+      role: 'assistant',
+      created: index,
+      metadata: { userVisible: true, agentVisible: true },
+      content: [{ type: 'text', text: `Created \`${path}\`.` }],
+    }));
+    for (const at of [0, 1, 2, 3, 4]) {
+      const fromIndex = filePathLookupBeforeMessage(messages, at, 'local', '/work');
+      const fromPaths = filePathLookupFromPaths(
+        filePathsBeforeMessage(messages, at, 'local', '/work')
+      );
+      for (const name of ['report.md', 'table.csv', 'missing.md']) {
+        expect(fromPaths(name)).toEqual(fromIndex(name));
+      }
+    }
   });
 
   it('uses the same source and literal-name parsing for prose provenance', () => {

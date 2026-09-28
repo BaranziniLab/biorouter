@@ -27,6 +27,8 @@ import { withPreviewActivityTracking } from '../../utils/previewActivity';
 import { PREVIEW_SIZE_MESSAGE_TYPE, withPreviewSizeReporting } from '../../utils/previewSize';
 import { sendArtifactAnnotation } from '../../utils/annotationChannel';
 import { artifactFileErrorMessage } from '../../utils/artifactFileErrors';
+import { copyToClipboard } from '../../utils/clipboard';
+import { useTransientValue } from '../../hooks/useTransientFlag';
 import { describeUnsupportedFormat } from '../../utils/formatSupport';
 import { isImageExtension } from '../../utils/imageFormats';
 import {
@@ -37,6 +39,7 @@ import {
   ARTIFACT_PANEL_ATTR,
 } from '../../utils/tabCycle';
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   ChevronRight,
@@ -2427,38 +2430,48 @@ function CodeBlock({
 }
 
 function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timeoutRef = useRef<number | null>(null);
-
-  useEffect(() => () => window.clearTimeout(timeoutRef.current ?? undefined), []);
+  // `failed` is shown, never swallowed: a refused write used to leave the label
+  // alone, so a Copy that copied nothing looked exactly like one that worked.
+  const [outcome, markOutcome] = useTransientValue<'copied' | 'failed'>(1600);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const failed = outcome === 'failed';
 
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          window.clearTimeout(timeoutRef.current ?? undefined);
-          timeoutRef.current = window.setTimeout(() => setCopied(false), 1600);
-        } catch {
-          // Clipboard unavailable (denied permission); leave the label alone.
-        }
+        // The shared path (utils/clipboard.ts): retried, then copied through the
+        // document's own selection, whose hidden textarea goes in the strip.
+        const copied = await copyToClipboard(text, buttonRef.current?.parentElement ?? null);
+        markOutcome(copied ? 'copied' : 'failed');
       }}
+      title={
+        failed
+          ? 'Biorouter could not write to the clipboard. Select the text and copy it with your keyboard.'
+          : undefined
+      }
       // A control inside the status strip: bottom rung of the radius ladder,
       // and the sanctioned dense-control size. `text-label` (14px) does not fit
       // a 34px strip, but `text-supporting` (12px) would render it at metadata
       // size and it would stop looking pressable — so `text-secondary`. The 12px
       // icon is the one a fenced block's Copy carries (MarkdownContent), so the
       // two Copy controls in the panel read as the same control.
-      className="inline-flex items-center gap-1 rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
+      className={cn(
+        'inline-flex items-center gap-1 rounded-inner px-2 py-0.5 text-secondary transition-colors hover:bg-overlay-hover',
+        failed
+          ? 'text-text-warning hover:text-text-warning'
+          : 'text-text-muted hover:text-text-default'
+      )}
     >
-      {copied ? (
+      {outcome === 'copied' ? (
         <Check className="h-3 w-3" aria-hidden="true" />
+      ) : failed ? (
+        <AlertTriangle className="h-3 w-3" aria-hidden="true" />
       ) : (
         <Copy className="h-3 w-3" aria-hidden="true" />
       )}
-      <span>{copied ? 'Copied' : 'Copy'}</span>
+      <span>{outcome === 'copied' ? 'Copied' : failed ? 'Copy failed' : 'Copy'}</span>
     </button>
   );
 }
