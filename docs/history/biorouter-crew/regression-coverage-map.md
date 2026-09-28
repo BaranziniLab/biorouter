@@ -1,7 +1,7 @@
 # Crew invariant coverage map
 
 > **What this is.** The map from Crew's requirement invariants (I01–I24) and parity rows (P01–P10) to the source assertions and recorded executions that cover them, and the gaps each still has; since 2026-09-25 it also maps the regression suites added by the UI redesign and naming campaign.
-> **Status:** Historical record of the coverage at the Crew build's close-out; later regressions are not mapped here. The I01–I24 table is the 2026-09-22 reconciliation with its later annotations; the [resumed-scope suites](#resumed-scope-regression-suites-2026-09-25) section was measured from the closeout gate's logs at `461f7899`.
+> **Status:** Historical record of the coverage at the Crew build's close-out; later regressions are not mapped here. The I01 to I24 table is the 2026-09-22 reconciliation with its later annotations; the [resumed-scope suites](#resumed-scope-regression-suites-2026-09-25) section was measured from the closeout gate's logs at `461f7899`.
 > **Audience:** Implementers adding a regression, and reviewers checking what a change is already pinned by.
 
 Historical reconciliation from September 22, 2026 (current parity checkpoint below): cursor/draft source is committed in `37ac3803`; native per-hop preflight is committed in `bc3e26fb`. The historical `aac5f4ac` GUI daemon `1ce50cb3…`, previous `3145dfc5` Linux broker `a38b34be…` and newly installed broker `4f11d858…` have distinct evidence; retained GUI clients and old owned daemons are now closed. Hosted PR head `3145dfc5` now has 22 successes/one skip across 23 checks, no failures; all newer local commits and observer work are excluded.
