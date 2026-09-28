@@ -117,7 +117,7 @@ describe('cancelUpload (FILES-F7)', () => {
 
   it('pauses a moving upload, waits until it has stopped, then forgets its record', async () => {
     const states = ['uploading', 'pause_requested', 'needs_file_selection'];
-    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+    mocks.crewHttp.mockImplementation(async (_path: string, method = 'GET') => {
       if (method === 'GET') return receipt(states.shift() ?? 'needs_file_selection');
       return {};
     });
