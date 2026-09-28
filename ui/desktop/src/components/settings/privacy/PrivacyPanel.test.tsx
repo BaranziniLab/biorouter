@@ -311,7 +311,9 @@ describe('Settings > Privacy', () => {
       await user.click(screen.getByRole('button', { name: /Turn off privacy tiers/ }));
 
       const strip = await screen.findByTestId('privacy-enforcement-off-strip');
-      await waitFor(() => expect(strip).toHaveTextContent(/turned off in Settings → Privacy/i));
+      await waitFor(() =>
+        expect(strip).toHaveTextContent(/turned off in Settings → App → Privacy/i)
+      );
       expect(strip).not.toHaveTextContent(/outside the app/i);
       expect(strip).toHaveTextContent(PATH);
     });

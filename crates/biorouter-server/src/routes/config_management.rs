@@ -259,7 +259,8 @@ pub struct DetectableProvidersResponse {
                                       'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which \
                                       must be a whole number of at least 1"),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
-                                      switch and may only be written from Settings > Privacy, \
+                                      switch and may only be written from Settings > App > \
+                                      Privacy, \
                                       with its typed confirmation, or (issue #56, DR-27) \
                                       relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system \
                                       authentication that did not happen"),
@@ -598,8 +599,8 @@ const MIXING_POLICY_AUTH_REFUSED: &str =
 fn master_switch_refusal(key: &str) -> String {
     format!(
         "'{key}' is the master privacy switch. It cannot be written or removed as an ordinary \
-         configuration value: change it in Settings > Privacy, which asks the user to type the \
-         confirmation phrase and explains what turning it off exposes."
+         configuration value: change it in Settings > App > Privacy, which asks the user to type \
+         the confirmation phrase and explains what turning it off exposes."
     )
 }
 
@@ -610,7 +611,8 @@ fn master_switch_refusal(key: &str) -> String {
     responses(
         (status = 200, description = "Configuration value removed successfully", body = String),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
-                                      switch and may only be changed from Settings > Privacy, \
+                                      switch and may only be changed from Settings > App > \
+                                      Privacy, \
                                       never removed, and (issue #56, DR-27) \
                                       `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"),
         (status = 404, description = "Configuration key not found"),
@@ -653,8 +655,8 @@ pub async fn remove_config(
             format!(
                 "'{}' is the cross-institution mixing policy and cannot be removed as an \
                  ordinary configuration value: set it to 'open', 'standard' or 'strict' from \
-                 Settings > Privacy, which is the one door that proves a human and asks the \
-                 operating system before it relaxes anything.",
+                 Settings > App > Privacy, which is the one door that proves a human and asks \
+                 the operating system before it relaxes anything.",
                 query.key
             ),
         ));
@@ -2033,6 +2035,16 @@ mod tests {
     use http::HeaderMap;
 
     use super::*;
+
+    /// W2-PRV-8. Privacy is a section of Settings > App, not a tab of its own, so
+    /// a refusal that sends the person to "Settings > Privacy" names a place
+    /// that does not exist.
+    #[test]
+    fn the_master_switch_refusal_names_the_real_place() {
+        let refusal = master_switch_refusal("BIOROUTER_PRIVACY_TIERS");
+        assert!(refusal.contains("Settings > App > Privacy"), "{refusal}");
+        assert!(!refusal.contains("Settings > Privacy"), "{refusal}");
+    }
 
     /// W2-PRV-10. Settings saved `0` when its Max turns field was cleared, and
     /// a stored 0 stopped every new chat before its first model call. The write
