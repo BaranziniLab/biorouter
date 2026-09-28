@@ -82,7 +82,7 @@ The state directory, by default `~/.local/share/biorouter-crew/<workspace name>`
 | Each file belongs to the host, has mode 0600 and one link. | `unsafe_storage: file ownership, mode or links invalid` |
 | One broker per workspace. | `writer_active` |
 
-With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host UID>-<…>/broker.sock` (folder 0711, socket 0666). The broker checks every request and keeps the same path after `/tmp` is cleaned. If another account took that path while `/tmp` was empty, the broker moves to a new one and `start` prints `"socket_changed":true`. Give members the new invitation line, because the old one no longer connects.
+With `--state-dir`, the parent folder must exist. The socket is `/tmp/crew-<host UID>-<…>/broker.sock` (folder 0711, socket 0666). The broker checks every request and keeps the same path after `/tmp` is cleaned. If the folder's permissions changed but still kept other accounts from writing into it, the broker sets them back and keeps the path. If another account took that path while `/tmp` was empty, the broker moves to a new one and `start` prints `"socket_changed":true`. Members need to do nothing: Crew finds the new folder from the old path. If someone's Crew can't connect after a move, they update `~/.local/bin/biorouter-crew` in their server account. Don't send a new invitation line to people who already joined: Crew refuses a line that differs from the workspace it has saved.
 
 ## Plan before you host
 
