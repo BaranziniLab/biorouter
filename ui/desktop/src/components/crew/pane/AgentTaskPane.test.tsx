@@ -17,6 +17,7 @@ import {
   stateFrame,
   type FixtureSnapshot,
 } from '../channel/crewTestHarness';
+import { CrewHttpError } from '../crewApi';
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
@@ -501,16 +502,114 @@ describe('AgentTaskPane', () => {
       expect(screen.queryByText(/gpt-5\.5-2026-04-24/)).toBeNull();
     });
 
-    it('warns when a Public model is chosen for a Restricted channel', async () => {
+    // AG-F4: the amber hint left Start enabled, and then the daemon refused in its own words.
+    it('says before Start that a Private workspace refuses a Public model, and disables Start', async () => {
       const user = userEvent.setup();
       mocks.getProviders.mockResolvedValue([versa, openRouter]);
       renderCrew(Layout);
       await openAgent(user);
-      expect(screen.queryByText(agentCopy.publicHint)).toBeNull();
+      const refusal = agentCopy.publicWorkspace('lab');
+      expect(refusal).toBe(
+        'lab is Private, so a public model can’t read it. Choose a private model.'
+      );
+      expect(screen.queryByText(refusal)).toBeNull();
       await chooseModel(user, 'free-model');
-      expect(screen.getByText(agentCopy.publicHint)).toBeInTheDocument();
+      expect(screen.getByText(refusal)).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+      expect(startButton()).toHaveAccessibleDescription(refusal);
       await chooseModel(user, 'gpt-5.5');
-      expect(screen.queryByText(agentCopy.publicHint)).toBeNull();
+      expect(screen.queryByText(refusal)).toBeNull();
+      expect(startButton()).toBeEnabled();
+    });
+
+    it('says it for a Public-safe channel too when the workspace is Private', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      installObserver({
+        snapshot: makeSnapshot({
+          channels: base.channels.map((item) =>
+            item.id === general.id ? { ...item, classification: 'public_safe' as const } : item
+          ),
+        }),
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      await openAgent(user);
+      await chooseModel(user, 'free-model');
+      expect(screen.getByText(agentCopy.publicWorkspace('lab'))).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+    });
+
+    it('says a Restricted channel refuses a Public model in a Public workspace', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      installDaemon([{ ...connection, mode: 'public' }]);
+      installObserver({
+        snapshot: makeSnapshot({ workspace: { ...base.workspace, mode: 'public' } }),
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      await openAgent(user);
+      await chooseModel(user, 'free-model');
+      expect(screen.getByText(agentCopy.publicRestricted('#general'))).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+    });
+
+    it('leaves Start alone for a Public model where nothing it reads is protected', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      installDaemon([{ ...connection, mode: 'public' }]);
+      installObserver({
+        snapshot: makeSnapshot({
+          workspace: { ...base.workspace, mode: 'public' },
+          channels: base.channels.map((item) => ({
+            ...item,
+            classification: 'public_safe' as const,
+          })),
+        }),
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await chooseModel(user, 'free-model');
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      expect(screen.queryByText(/public model can’t read/)).toBeNull();
+      expect(startButton()).toBeEnabled();
+    });
+
+    it('words an older daemon’s public-model refusal as the pane does', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      // The pane cannot see why: nothing it reads is protected as far as it knows.
+      installDaemon([{ ...connection, mode: 'public' }]);
+      installObserver({
+        snapshot: makeSnapshot({
+          workspace: { ...base.workspace, mode: 'public' },
+          channels: base.channels.map((item) => ({
+            ...item,
+            classification: 'public_safe' as const,
+          })),
+        }),
+      });
+      mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+        if (path === '/connections') return { connections: [{ ...connection, mode: 'public' }] };
+        if (path === `/connections/${connection.id}/runs` && method === 'POST')
+          throw new CrewHttpError(
+            'Daemon returned 400: Private cluster blocks public models',
+            400,
+            'crew_request_refused'
+          );
+        if (path.startsWith('/transfers?')) return { transfers: [] };
+        return method === 'GET' && path.endsWith('/runs') ? { runs: [] } : {};
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await chooseModel(user, 'free-model');
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      fireEvent.click(startButton());
+      expect(await screen.findByText(agentCopy.publicRefused)).toBeInTheDocument();
+      expect(screen.queryByText(/cluster/i)).toBeNull();
     });
   });
 

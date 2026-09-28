@@ -18,11 +18,14 @@ import { newestTaskIn } from './newestTask';
 import {
   fileBaseName,
   isAffiliationRefusal,
+  isPublicModelRefusal,
   knownInstitutions,
   mentionedFileNames,
   modelDisplay,
   modelMismatch,
+  modelRefusalText,
   protectedRunContext,
+  publicModelRefusal,
   runInstitution,
   sameNamedFiles,
   sharedWhen,
@@ -296,11 +299,6 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     channel,
     contextChannels: crew.contextChannels,
   });
-  const readsRestricted =
-    channel?.classification === 'restricted' ||
-    crew.contextChannels.some(
-      (id) => snapshot?.channels.find((item) => item.id === id)?.classification === 'restricted'
-    );
 
   if (!channel) return null;
 
@@ -330,16 +328,31 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
           )
         : agentCopy.institutionUnstated(shown.model, workspace, institution.label)
       : null;
-  // The daemon's refusal in the pane's words: the same sentence when the pane can say who approved
-  // the model, else what it does know.
+  // A public model where the daemon refuses one (AG-F4): said before Start, which it disables, as a
+  // model the institution has not approved is.
+  const publicText = publicModelRefusal({
+    provider: selectedProvider,
+    connection: crew.connection,
+    snapshot,
+    channel,
+    contextChannels: crew.contextChannels,
+    workspace,
+    channelLabel: (item) => channelLabels.get(item.id) ?? channelName(item),
+  });
+  const blockText = mismatchText ?? publicText;
+  // The daemon's refusal in the pane's words: the same sentence the pane says before Start when it
+  // can, else what it does know.
   const errorText =
-    error && isAffiliationRefusal(error.message)
-      ? (mismatchText ??
-        agentCopy.institutionRefused(
-          shown?.model ?? agentCopy.model,
-          institution?.label ?? workspaceInstitutionLabel(crew.connection, snapshot, known)
-        ))
-      : error?.message;
+    (error?.source === 'pane:agent' &&
+      modelRefusalText({
+        error,
+        mismatch: mismatchText,
+        publicText,
+        model: shown?.model ?? agentCopy.model,
+        institution:
+          institution?.label ?? workspaceInstitutionLabel(crew.connection, snapshot, known),
+      })) ||
+    error?.message;
   const lines = task.split('\n').length;
   const longTask = lines > LONG_TASK_LINES || task.length > LONG_TASK_CHARS;
   const hasAdvanced =
@@ -422,7 +435,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     !verified ||
     channel.archived ||
     noModels ||
-    mismatchText !== null;
+    blockText !== null;
 
   return (
     <form ref={form} onSubmit={onSubmit} className={cn('flex min-h-0 flex-1 flex-col', className)}>
@@ -463,7 +476,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                 type="button"
                 variant="secondary"
                 size="sm"
-                disabled={!crew.inspectedPriorRun || pending || mismatchText !== null}
+                disabled={!crew.inspectedPriorRun || pending || blockText !== null}
                 onClick={() => {
                   if (form.current?.reportValidity()) void submit(true);
                 }}
@@ -588,7 +601,10 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
                   setPicking(true);
                   setModelInvalid(false);
                   // A refusal of the model just replaced is no longer about the choice on screen.
-                  if (error?.source === 'pane:agent' && isAffiliationRefusal(error.message)) {
+                  if (
+                    error?.source === 'pane:agent' &&
+                    (isAffiliationRefusal(error) || isPublicModelRefusal(error))
+                  ) {
                     dismissError();
                   }
                 }}
@@ -640,20 +656,15 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             </div>
           </Disclosure>
         )}
-
-        {selectedProvider?.resolved_tier === 'public' && readsRestricted && (
-          <Note tone="warning" icon={AlertTriangle}>
-            <p>{agentCopy.publicHint}</p>
-          </Note>
-        )}
       </div>
 
       <div className="crew-pane-footer flex flex-col gap-2 py-3">
         <p className="text-supporting text-text-muted">{agentCopy.scope(here)}</p>
-        {/* Before Start, which it disables: the pane says what the daemon would refuse (T-47). */}
-        {mismatchText && (
+        {/* Before Start, which it disables: the pane says what the daemon would refuse (T-47), for
+            a model the institution has not approved and a public model alike (AG-F4). */}
+        {blockText && (
           <Note tone="warning" icon={AlertTriangle}>
-            <p id={mismatchId}>{mismatchText}</p>
+            <p id={mismatchId}>{blockText}</p>
           </Note>
         )}
         {/* Before Start, which it does NOT disable: the task names a file nobody shared here, so
@@ -689,7 +700,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             disabled={startDisabled}
             aria-describedby={
               [
-                mismatchText ? mismatchId : null,
+                blockText ? mismatchId : null,
                 unshared.length > 0 ? fileWarningId : null,
                 sameNamed.length > 0 ? sameNameId : null,
               ]

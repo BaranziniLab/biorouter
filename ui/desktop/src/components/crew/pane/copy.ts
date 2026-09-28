@@ -159,7 +159,20 @@ export const agentCopy = {
   alsoRead: 'Also read',
   folderExec: (path: string) => `Can run commands in ${path}`,
   folderRead: (path: string) => `Can read ${path}`,
-  publicHint: 'This model is Public, so it can’t read Restricted channels.',
+  /**
+   * A public model where the daemon refuses one (AG-F4), said before Start, which it disables, and
+   * in place of the daemon's "Private cluster blocks public models" and the other public-model
+   * refusals. The daemon's own words for the same case are these (W2-DMN-9). `workspace` is the
+   * workspace as a sentence names it; `channel` is `#name`.
+   */
+  publicWorkspace: (workspace: string) =>
+    `${workspace} is Private, so a public model can’t read it. Choose a private model.`,
+  publicConnection: (workspace: string) =>
+    `Your connection to ${workspace} is Private, so a public model can’t read it. Choose a private model.`,
+  publicRestricted: (channel: string) =>
+    `${channel} is Restricted, so a public model can’t read it. Choose a private model.`,
+  /** The daemon refused a public model for a reason the pane cannot name. */
+  publicRefused: 'A public model can’t read this Crew context. Choose a private model.',
   /**
    * The model's tier mark, said in the task's words (Q2-67), never the chat badge's "this chat".
    * `privateOnly` holds only where the task's context is protected (a Private workspace or
