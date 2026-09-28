@@ -225,6 +225,34 @@ it('keeps Anthropic API configuration separate from Claude Code setup', async ()
   expect(mocks.status).not.toHaveBeenCalled();
 });
 
+// W2-PRV-13: Llama Server and Ollama declare no secret, and were asked for
+// "API key(s)".
+it('does not ask a provider with no secret for an API key', () => {
+  const llama = {
+    ...provider('claude_code'),
+    name: 'llamacpp',
+    metadata: {
+      ...provider('claude_code').metadata,
+      name: 'llamacpp',
+      display_name: 'Llama Server',
+      config_keys: [
+        {
+          name: 'LLAMACPP_EXTERNAL_HOST',
+          required: false,
+          secret: false,
+          oauth_flow: false,
+          default: null,
+        },
+      ],
+    },
+  } as ProviderDetails;
+  render(<ProviderConfigurationModal provider={llama} onClose={vi.fn()} />);
+  expect(screen.queryByText(/API key\(s\)/)).not.toBeInTheDocument();
+  expect(
+    screen.getByText('Llama Server needs no API key. Adjust how Biorouter reaches it.')
+  ).toBeInTheDocument();
+});
+
 describe.each(['codex', 'claude_code'] as const)(
   '%s readiness after a successful provider check',
   (kind) => {
@@ -347,7 +375,8 @@ it('does not save an Azure OpenAI setup until the user names their own endpoint'
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-  expect(await screen.findByText('AZURE_OPENAI_ENDPOINT is required')).toBeInTheDocument();
+  // W2-PRV-13: the field's name in words, not its env var.
+  expect(await screen.findByText('Azure OpenAI Endpoint is required')).toBeInTheDocument();
   expect(mocks.submit).not.toHaveBeenCalled();
 
   fireEvent.change(screen.getByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/), {

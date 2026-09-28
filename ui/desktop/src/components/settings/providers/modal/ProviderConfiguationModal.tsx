@@ -9,6 +9,7 @@ import {
 } from '../../../ui/dialog';
 import DefaultProviderSetupForm, {
   ConfigInput,
+  providerFieldName,
 } from './subcomponents/forms/DefaultProviderSetupForm';
 import ProviderSetupActions from './subcomponents/ProviderSetupActions';
 import ProviderLogo from './subcomponents/ProviderLogo';
@@ -80,7 +81,11 @@ export default function ProviderConfigurationModal({
       : 'This will permanently delete the current provider configuration.'
     : codingAgentKind
       ? `Use your installed ${provider.metadata.display_name} command-line app and subscription sign-in. No API key is needed here.`
-      : `Add your API key(s) for this provider to integrate into Biorouter`;
+      : // Only a provider that declares a secret has a key to add. Llama Server
+        // and Ollama declare none, and were asked for "API key(s)" (W2-PRV-13).
+        provider.metadata.config_keys.some((key) => key.secret)
+        ? `Add your API key(s) for this provider to integrate into Biorouter`
+        : `${provider.metadata.display_name} needs no API key. Adjust how Biorouter reaches it.`;
 
   const handleSubmitForm = async (e?: React.SyntheticEvent) => {
     e?.preventDefault();
@@ -97,7 +102,7 @@ export default function ProviderConfigurationModal({
         !configValues[parameter.name]?.value &&
         !configValues[parameter.name]?.serverValue
       ) {
-        errors[parameter.name] = `${parameter.name} is required`;
+        errors[parameter.name] = `${providerFieldName(provider.name, parameter.name)} is required`;
       }
     });
 

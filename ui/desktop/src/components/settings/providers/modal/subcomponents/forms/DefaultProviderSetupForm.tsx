@@ -4,6 +4,7 @@ import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
+import { configLabels } from '../../../../../../utils/configUtils';
 
 type ValidationErrors = Record<string, string>;
 
@@ -50,6 +51,13 @@ const PROVIDER_KEY_PLACEHOLDERS: Record<string, Record<string, string>> = {
   azure_openai: {
     AZURE_OPENAI_ENDPOINT: 'https://<your-resource>.openai.azure.com',
   },
+  // A llama-server Biorouter does not manage, which stays private only on this
+  // machine: `llamacpp`'s tier demotes a non-loopback host to Public. The
+  // generic `https://api.example.com` suggested exactly the host that does it
+  // (W2-PRV-13).
+  llamacpp: {
+    LLAMACPP_EXTERNAL_HOST: 'http://127.0.0.1:8080',
+  },
 };
 
 const envToPrettyName = (envVar: string) => {
@@ -67,6 +75,28 @@ const envToPrettyName = (envVar: string) => {
     .join(' ')
     .trim();
 };
+
+/**
+ * A config key's name in words, for its label, its placeholder and its
+ * "is required" error: the curated label in `configUtils` when there is one
+ * ("Llama Server External Host"), else the key's role, else the key itself
+ * without the provider's prefix. The modal's required error used to print the
+ * raw env var ("VERSA_BEDROCK_ACCESS_KEY_ID is required") and the placeholder
+ * fallback was the env var with spaces (W2-PRV-13).
+ */
+export function providerFieldName(providerName: string, parameterName: string): string {
+  if (configLabels[parameterName]) return configLabels[parameterName];
+  const name = parameterName.toLowerCase();
+  if (name.includes('api_key')) return 'API Key';
+  if (name.includes('api_url') || name.includes('host')) return 'API Host';
+  if (name.includes('models')) return 'Models';
+
+  let parameter_name = parameterName.toUpperCase();
+  if (parameter_name.startsWith(providerName.toUpperCase().replace('-', '_'))) {
+    parameter_name = parameter_name.slice(providerName.length + 1);
+  }
+  return envToPrettyName(parameter_name);
+}
 
 export default function DefaultProviderSetupForm({
   configValues,
@@ -141,34 +171,16 @@ export default function DefaultProviderSetupForm({
     if (name.includes('api_url') || name.includes('host')) return 'https://api.example.com';
     if (name.includes('models')) return 'model-a, model-b';
 
-    return parameter.name
-      .replace(/_/g, ' ')
-      .replace(/^./, (str) => str.toUpperCase())
-      .trim();
+    return getFieldName(parameter);
   };
 
   /** The field's name in words — the label's text, and what a reveal toggle is called. */
-  const getFieldName = (parameter: ConfigKey): string => {
-    const name = parameter.name.toLowerCase();
-    if (name.includes('api_key')) return 'API Key';
-    if (name.includes('api_url') || name.includes('host')) return 'API Host';
-    if (name.includes('models')) return 'Models';
+  const getFieldName = (parameter: ConfigKey): string =>
+    providerFieldName(provider.name, parameter.name);
 
-    let parameter_name = parameter.name.toUpperCase();
-    if (parameter_name.startsWith(provider.name.toUpperCase().replace('-', '_'))) {
-      parameter_name = parameter_name.slice(provider.name.length + 1);
-    }
-    return envToPrettyName(parameter_name);
-  };
-
+  // Every field names the config key it writes, the same way: some did and
+  // some did not (a Versa Azure key had no chip, its Bedrock sibling did).
   const getFieldLabel = (parameter: ConfigKey) => {
-    const name = parameter.name.toLowerCase();
-    // The recognised roles are labelled by the role alone; everything else also
-    // names the config key it writes.
-    if (['api_key', 'api_url', 'host', 'models'].some((role) => name.includes(role))) {
-      return getFieldName(parameter);
-    }
-
     return (
       <span>
         <span>{getFieldName(parameter)}</span>
@@ -243,7 +255,9 @@ export default function DefaultProviderSetupForm({
     belowFoldParameters = [];
   }
 
-  const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} options `;
+  const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} ${
+    belowFoldParameters.length === 1 ? 'option' : 'options'
+  } `;
 
   return (
     <div className="mt-4 space-y-4">

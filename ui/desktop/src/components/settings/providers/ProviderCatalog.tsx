@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ProviderCard } from './subcomponents/ProviderCard';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
 import {
@@ -15,6 +15,13 @@ import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import type { View } from '../../../utils/navigationUtils';
 import type { SessionClassification } from '../../../api';
+import { useConfig } from '../../ConfigContext';
+import { Note } from '../../ui/note';
+import { Button } from '../../ui/button';
+import {
+  RETIRED_AZURE_ENDPOINT_NOTICE,
+  isRetiredAzureDefaultEndpoint,
+} from './azureRetiredEndpoint';
 import {
   AI_AGENT_PROVIDER_IDS,
   getOrderedProviderGroups,
@@ -226,6 +233,33 @@ export default function ProviderCatalog({
   chatPrivacyTier,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
+  const { read } = useConfig();
+
+  // W2-PRV-1. A configured Azure OpenAI whose saved endpoint is the one older
+  // versions filled in by mistake (UCSF's gateway) says so on its row. Read only
+  // for a configured row, and never rewritten from here.
+  const azureConfigured = providers.some(
+    (provider) => provider.name === 'azure_openai' && provider.is_configured
+  );
+  const [azureOnRetiredEndpoint, setAzureOnRetiredEndpoint] = useState(false);
+  useEffect(() => {
+    if (!azureConfigured) {
+      setAzureOnRetiredEndpoint(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const endpoint = await read('AZURE_OPENAI_ENDPOINT', false);
+        if (!cancelled) setAzureOnRetiredEndpoint(isRetiredAzureDefaultEndpoint(endpoint));
+      } catch {
+        if (!cancelled) setAzureOnRetiredEndpoint(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [azureConfigured, read, providers]);
 
   const [configuringProvider, setConfiguringProvider] = useState<ProviderDetails | null>(null);
   const [showCustomProviderModal, setShowCustomProviderModal] = useState(false);
@@ -236,6 +270,8 @@ export default function ProviderCatalog({
     id: string;
     config: DeclarativeProviderConfig;
     isEditable: boolean;
+    /** Set up already, so a blank key keeps the saved one (W2-PRV-13). */
+    isConfigured: boolean;
   } | null>(null);
 
   const handleProviderReady = useCallback((providerId: string, model?: string | null) => {
@@ -367,6 +403,7 @@ export default function ProviderCatalog({
             id: provider.name,
             config: result.data.config,
             isEditable: result.data.is_editable,
+            isConfigured: provider.is_configured,
           });
           setShowCustomProviderModal(true);
         }
@@ -464,35 +501,58 @@ export default function ProviderCatalog({
     // status and the guidance for it, which a modal cannot carry and which a
     // settings user needs exactly as much as a first-run user does.
     const expandable = agent !== undefined || setupPanel !== null;
+    const retiredEndpointNotice =
+      provider.name === 'azure_openai' && azureOnRetiredEndpoint ? (
+        <Note
+          tone="warning"
+          role="status"
+          testId="azure-retired-endpoint-notice"
+          className="mx-4 mb-2"
+          action={
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void configureProviderViaModal(provider)}
+            >
+              Configure
+            </Button>
+          }
+        >
+          {RETIRED_AZURE_ENDPOINT_NOTICE}
+        </Note>
+      ) : null;
 
     return (
-      <ProviderCard
-        key={provider.name}
-        provider={provider}
-        onConfigure={() => void configureProviderViaModal(provider)}
-        onLaunch={() => {
-          setSwitchModelProvider(provider.name);
-          setShowSwitchModelModal(true);
-        }}
-        isOnboarding={isOnboarding}
-        expandable={expandable}
-        expanded={expandable && openRow === provider.name}
-        onToggle={() => toggleRow(provider.name)}
-        statusSlot={
-          agent ? (
-            <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
-          ) : undefined
-        }
-      >
-        {agent ? (
-          <div className="space-y-2">
-            <CodingAgentProvenance agent={agent} />
-            <CodingAgentBody agent={agent} controls={agentControls} />
-          </div>
-        ) : (
-          setupPanel
-        )}
-      </ProviderCard>
+      <React.Fragment key={provider.name}>
+        <ProviderCard
+          key={provider.name}
+          provider={provider}
+          onConfigure={() => void configureProviderViaModal(provider)}
+          onLaunch={() => {
+            setSwitchModelProvider(provider.name);
+            setShowSwitchModelModal(true);
+          }}
+          isOnboarding={isOnboarding}
+          expandable={expandable}
+          expanded={expandable && openRow === provider.name}
+          onToggle={() => toggleRow(provider.name)}
+          statusSlot={
+            agent ? (
+              <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
+            ) : undefined
+          }
+        >
+          {agent ? (
+            <div className="space-y-2">
+              <CodingAgentProvenance agent={agent} />
+              <CodingAgentBody agent={agent} controls={agentControls} />
+            </div>
+          ) : (
+            setupPanel
+          )}
+        </ProviderCard>
+        {retiredEndpointNotice}
+      </React.Fragment>
     );
   };
 
@@ -619,8 +679,14 @@ export default function ProviderCatalog({
     supports_streaming: editingProvider.config.supports_streaming ?? true,
   };
   const editable = editingProvider ? editingProvider.isEditable : true;
-  const customModalTitle =
-    (editingProvider ? (editable ? 'Edit' : 'Configure') : 'Add') + '  Provider';
+  // Named, and honest about first-time setup (W2-PRV-13): it read
+  // "Configure  Provider" for every built-in declarative provider, set up or not.
+  const editingName = editingProvider?.config.display_name || 'provider';
+  const customModalTitle = !editingProvider
+    ? 'Add provider'
+    : !editingProvider.isConfigured
+      ? `Set up ${editingName}`
+      : `${editable ? 'Edit' : 'Configure'} ${editingName}`;
 
   return (
     <>
@@ -672,6 +738,7 @@ export default function ProviderCatalog({
           <CustomProviderForm
             initialData={initialData}
             isEditable={editable}
+            hasSavedKey={editingProvider?.isConfigured ?? true}
             onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
             onCancel={handleCloseCustomModal}
           />

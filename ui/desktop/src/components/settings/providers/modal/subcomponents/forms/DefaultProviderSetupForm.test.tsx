@@ -60,8 +60,10 @@ function Harness({ provider = bedrock }: { provider?: ProviderDetails }) {
  * so the same queries run unchanged against the form before the fix, and the
  * assertion that fails there is the one about masking rather than a lookup.
  */
-const SECRET_ACCESS_KEY = 'VERSA BEDROCK SECRET ACCESS KEY';
-const ACCESS_KEY_ID = 'VERSA BEDROCK ACCESS KEY ID';
+// W2-PRV-13: the placeholder is the field's name in words. It was the env var
+// with spaces ('VERSA BEDROCK SECRET ACCESS KEY').
+const SECRET_ACCESS_KEY = 'Secret Access Key';
+const ACCESS_KEY_ID = 'Access Key Id';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -211,5 +213,115 @@ describe('DefaultProviderSetupForm — the Azure OpenAI endpoint is the user’s
     expect(await screen.findByLabelText(/\(AZURE_OPENAI_API_VERSION\)/)).toHaveValue(
       '2025-01-01-preview'
     );
+  });
+});
+
+// W2-PRV-13: human labels, one chip rule, a loopback hint for Llama Server's
+// external host, and "1 option", not "1 options".
+describe('DefaultProviderSetupForm — provider-appropriate copy', () => {
+  const llama = {
+    name: 'llamacpp',
+    is_configured: true,
+    provider_type: 'Builtin',
+    metadata: {
+      name: 'llamacpp',
+      display_name: 'Llama Server',
+      description: '',
+      default_model: '',
+      known_models: [],
+      model_doc_link: '',
+      config_keys: [
+        { name: 'LLAMACPP_EXTERNAL_HOST', required: false, secret: false, default: null },
+      ],
+    },
+  } as unknown as ProviderDetails;
+
+  it('names Llama Server\u2019s external host and suggests this machine for it', async () => {
+    render(<Harness provider={llama} />);
+    const input = await screen.findByLabelText(/Llama Server External Host/);
+    expect(input).toHaveAttribute('placeholder', 'http://127.0.0.1:8080');
+    expect(screen.getByText('(LLAMACPP_EXTERNAL_HOST)')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('https://api.example.com')).toBeNull();
+  });
+
+  it('gives every field its env-var chip, the role-named ones too', async () => {
+    const azure = {
+      ...bedrock,
+      name: 'versa_azure',
+      metadata: {
+        ...bedrock.metadata,
+        name: 'versa_azure',
+        config_keys: [{ name: 'VERSA_AZURE_API_KEY', required: true, secret: true, default: null }],
+      },
+    } as unknown as ProviderDetails;
+    render(<Harness provider={azure} />);
+    expect(await screen.findByText('(VERSA_AZURE_API_KEY)')).toBeInTheDocument();
+  });
+
+  it('counts one option as one option', async () => {
+    const one = {
+      ...bedrock,
+      metadata: {
+        ...bedrock.metadata,
+        config_keys: [
+          bedrock.metadata.config_keys[0],
+          { name: 'AWS_REGION', required: false, secret: false, default: 'us-west-2' },
+        ],
+      },
+    } as unknown as ProviderDetails;
+    render(<Harness provider={one} />);
+    expect(await screen.findByText(/Show 1 option\b/)).toBeInTheDocument();
+    expect(screen.queryByText(/1 options/)).toBeNull();
+  });
+});
+
+// W2-PRV-13: a built-in declarative provider (DeepSeek, Groq, Mistral...) opens
+// in the custom-provider form with its definition filled in whether or not a key
+// was ever saved, and the form read that as "a key is saved".
+describe('CustomProviderForm for a provider with no key saved', () => {
+  const definition = {
+    engine: 'openai',
+    display_name: 'DeepSeek',
+    api_url: 'https://api.deepseek.com',
+    api_key: '',
+    models: ['deepseek-chat'],
+    supports_streaming: true,
+  };
+
+  it('asks for the key, and refuses to save without one', () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={definition}
+        isEditable={false}
+        hasSavedKey={false}
+      />
+    );
+    const input = container.querySelector('#api-key') as HTMLInputElement;
+    expect(input).toHaveAttribute('placeholder', 'Your API key');
+    expect(screen.queryByText(/keep existing key/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByText('API key is required')).toBeInTheDocument();
+  });
+
+  it('still keeps a saved key when one is saved', () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={definition}
+        isEditable={false}
+        hasSavedKey
+      />
+    );
+    const input = container.querySelector('#api-key') as HTMLInputElement;
+    expect(input).toHaveAttribute('placeholder', 'Leave blank to keep existing key');
+    fireEvent.click(screen.getByRole('button', { name: 'Update Provider' }));
+    expect(onSubmit).toHaveBeenCalled();
   });
 });

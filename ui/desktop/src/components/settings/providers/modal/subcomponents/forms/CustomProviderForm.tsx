@@ -12,6 +12,15 @@ interface CustomProviderFormProps {
   onCancel: () => void;
   initialData: UpdateCustomProviderRequest | null;
   isEditable?: boolean;
+  /**
+   * Whether a key is already saved for the provider being edited. Declarative
+   * providers (DeepSeek, Groq, Mistral...) open here with `initialData` whether
+   * or not anyone set them up, and the form used to read that as "a key is
+   * saved": "Leave blank to keep existing key", "Update Provider", and an empty
+   * key accepted as a silent no-op (W2-PRV-13). Defaults to `true` for an edit,
+   * the old reading, so a caller that knows nothing changes nothing.
+   */
+  hasSavedKey?: boolean;
 }
 
 export default function CustomProviderForm({
@@ -19,7 +28,10 @@ export default function CustomProviderForm({
   onCancel,
   initialData,
   isEditable,
+  hasSavedKey = true,
 }: CustomProviderFormProps) {
+  /** An edit of a provider whose key is saved: a blank key keeps it. */
+  const keepsSavedKey = initialData !== null && hasSavedKey;
   const [engine, setEngine] = useState('openai_compatible');
   const [displayName, setDisplayName] = useState('');
   const [apiUrl, setApiUrl] = useState('');
@@ -59,7 +71,7 @@ export default function CustomProviderForm({
     const errors: Record<string, string> = {};
     if (!displayName) errors.displayName = 'Display name is required';
     if (!apiUrl) errors.apiUrl = 'API URL is required';
-    if (!isLocalModel && !apiKey && !initialData) errors.apiKey = 'API key is required';
+    if (!isLocalModel && !apiKey && !keepsSavedKey) errors.apiKey = 'API key is required';
     if (!models) errors.models = 'At least one model is required';
 
     if (Object.keys(errors).length > 0) {
@@ -179,7 +191,7 @@ export default function CustomProviderForm({
           className="flex items-center text-sm font-medium text-text-default mb-2"
         >
           API Key
-          {!isLocalModel && !initialData && <span className="text-text-danger ml-1">*</span>}
+          {!isLocalModel && !keepsSavedKey && <span className="text-text-danger ml-1">*</span>}
         </label>
         {/* The same primitive the built-in providers' form uses for every secret
             parameter, so the two forms mask — and reveal — a key the same way. */}
@@ -188,7 +200,7 @@ export default function CustomProviderForm({
           revealLabel="API Key"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder={initialData ? 'Leave blank to keep existing key' : 'Your API key'}
+          placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
           aria-invalid={!!validationErrors.apiKey}
           aria-describedby={validationErrors.apiKey ? 'api-key-error' : undefined}
           className={validationErrors.apiKey ? 'border-border-danger' : ''}
@@ -257,7 +269,9 @@ export default function CustomProviderForm({
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit">{initialData ? 'Update Provider' : 'Create Provider'}</Button>
+        <Button type="submit">
+          {initialData ? (keepsSavedKey ? 'Update Provider' : 'Save') : 'Create Provider'}
+        </Button>
       </div>
     </form>
   );

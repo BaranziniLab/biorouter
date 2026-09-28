@@ -730,9 +730,10 @@ export const SwitchModelModal = ({
         const activeProviders = providersResponse.filter((provider) => provider.is_configured);
         setActiveProviders(activeProviders);
         // Every usable provider, plus every provider the user set up that cannot
-        // run right now (see `unavailableReasonFor`) — in the daemon's order, so
-        // a disabled row sits where it always sat instead of sinking to the
-        // bottom — then "Use other provider". A provider that is simply not set
+        // run right now (see `unavailableReasonFor`) — in the daemon's order,
+        // which is stable (private first, then by name: `all_metadata_with_types`,
+        // W2-PRV-13), so a disabled row sits where it always sat instead of
+        // sinking to the bottom — then "Use other provider". A provider that is simply not set
         // up stays out, as before.
         const offered = providersResponse
           .filter((provider) => provider.is_configured || provider.unavailable_reason)
