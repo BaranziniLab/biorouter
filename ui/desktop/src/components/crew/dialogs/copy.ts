@@ -254,16 +254,26 @@ export const letInCopy = {
   joined: (who: string, workspace: string) => `${who} joined ${workspace}`,
   /** An older broker: the team is an invitation the person accepts in Crew. */
   addToTeam: (who: string, team: string) => `Invite ${who} to ${team}`,
-  addedToTeam: (who: string) => `Invited. ${who} will see it in Crew and needs to accept.`,
+  /**
+   * The invitation was sent. `who` is the person in the one rule for inline text, "Eve Park (@eve)",
+   * as every Added sentence names people (M11); `first` is the dialog's one name for them after
+   * that, never "they" (QA Q3-36).
+   */
+  addedToTeam: (who: string, first: string) =>
+    `Invited ${who}. ${first} will see it in Crew and needs to accept.`,
+
   /** A broker that adds members directly (`direct_add_v1`). */
   directAddToTeam: (who: string, team: string) => `Add ${who} to ${team}`,
   /** The footer's primary action when there is one team to add them to (QA Q2-03). */
   footerAdd: (team: string) => `Add to ${team}`,
+  /**
+   * A direct team addition landed: `channels` is `#general and #methods` (QA Q2-23, Q3-36). `who`
+   * and `first` as in {@link letInCopy.addedToTeam}.
+   */
+  directAdded: (who: string, team: string, channels: string, first: string) =>
+    `Added ${who} to ${team}. ${first} can now see ${channels}.`,
   /** The same, for an older broker that invites. */
   footerInvite: (team: string) => `Invite to ${team}`,
-  /** A direct team addition landed: `channels` is `#general and #methods` (QA Q2-23, Q3-36). */
-  directAdded: (who: string, team: string, channels: string) =>
-    `Added ${who} to ${team}. ${who} can now see ${channels}.`,
   /**
    * A team's channel choices, whole on screen (QA Q4-38): "Also add to" was half a sentence whose
    * team was named only on the button. The group is named by this visible heading, so what a
@@ -393,8 +403,6 @@ export const addPeopleCopy = {
   cancel: 'Cancel',
   /** An older broker invites: say that it is waiting on the person, never that they are in. */
   sent: (person: string) => `Invited. ${person} will see it in Crew and needs to accept.`,
-  /** A direct addition landed: `channels` is `#general and #methods`. */
-  added: (person: string, channels: string) => `Added. ${person} can now see ${channels}.`,
   alreadyIn: (person: string, place: string) => `${person} is already in ${place}.`,
   /** The checklist (QA Q2-05): everyone it shows, ticked at once. */
   people: 'People',
@@ -560,7 +568,9 @@ export const confirmCopy = {
   },
   removeChannelMember: {
     title: (person: string, channel: string) => `Remove ${person} from ${channel}?`,
-    description: 'They’ll lose access to its messages and files. You can invite them again.',
+    // The way back is Add people, which on a broker that adds directly asks nobody to accept (M11).
+    description:
+      'They’ll lose access to its messages and files. You can add them again with Add people.',
     confirm: 'Remove',
   },
   /**

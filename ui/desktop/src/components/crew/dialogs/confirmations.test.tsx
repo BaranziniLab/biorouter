@@ -172,6 +172,11 @@ describe('CrewConfirmation', () => {
     const removeDialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeChannelMember.title('Bob Lee (@bob)', '#general'),
     });
+    // M11: the way back is Add people, not an invitation to accept.
+    expect(removeDialog).toHaveTextContent(
+      'They’ll lose access to its messages and files. You can add them again with Add people.'
+    );
+    expect(removeDialog).not.toHaveTextContent(/invite them/);
     await act(async () => {
       fireEvent.click(within(removeDialog).getByRole('button', { name: 'Remove' }));
     });

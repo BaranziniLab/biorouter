@@ -27,7 +27,7 @@ import {
   directAddSupported,
   listOf,
   targetMembers,
-  usernameList,
+  peopleList,
   workspaceInvitees,
   type ChannelChoice,
   type DirectAddResult,
@@ -134,6 +134,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
   // Someone who joined without choosing a name is named as the Joined row and the toast name them,
   // "Henry Ito (@crew_henry)", and found by that name (F8).
   const workspaceId = snapshot?.workspace.id ?? null;
+  const named = (people: readonly CrewPerson[]) => withJoinerNames(people, workspaceId);
   const offered = withJoinerNames(
     candidates.filter((person) => !added.has(person.id as string)),
     workspaceId
@@ -175,7 +176,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     );
     const landed = done.filter((outcome) => !already.includes(outcome));
     const names = (list: readonly { person: CrewPerson }[]) =>
-      usernameList(list.map((outcome) => outcome.person));
+      peopleList(list.map((outcome) => outcome.person));
     const parts: string[] = [];
     if (landed.length > 0) {
       if (!directAdd) parts.push(copy.invitedMany(names(landed)));
@@ -202,7 +203,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       reasons.set(outcome.reason, [...(reasons.get(outcome.reason) ?? []), outcome.person]);
     }
     for (const [reason, people] of reasons)
-      parts.push(copy.couldNotAdd(usernameList(people), reason));
+      parts.push(copy.couldNotAdd(peopleList(people), reason));
     return { text: parts.join(' '), failed: reasons.size > 0 };
   };
 
@@ -301,7 +302,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     if (target === 'team') {
       if (!directAdd && pending.length > 0)
         return {
-          text: copy.allInvited(workspace, teamName(team), usernameList(pending)),
+          text: copy.allInvited(workspace, teamName(team), peopleList(named(pending))),
           action: inviteToWorkspace,
         };
       return { text: copy.allInWorkspace(workspace), action: inviteToWorkspace };
@@ -311,7 +312,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       return {
         text:
           !directAdd && pendingTeam.length > 0
-            ? `${copy.noOneInTeam(teamName(team))} ${copy.waitingToAccept(usernameList(pendingTeam))}`
+            ? `${copy.noOneInTeam(teamName(team))} ${copy.waitingToAccept(peopleList(named(pendingTeam)))}`
             : copy.noOneInTeam(teamName(team)),
         action:
           canAddToTeam && team ? (
@@ -331,7 +332,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     return {
       text:
         !directAdd && pending.length > 0
-          ? `${copy.allInTeam(teamName(team))} ${copy.waiting(usernameList(pending))}`
+          ? `${copy.allInTeam(teamName(team))} ${copy.waiting(peopleList(named(pending)))}`
           : copy.allInTeam(teamName(team)),
     };
   }
@@ -452,7 +453,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
             </div>
             {!directAdd && pending.length > 0 ? (
               <p className="text-supporting text-text-muted">
-                {copy.waiting(usernameList(pending))}
+                {copy.waiting(peopleList(named(pending)))}
               </p>
             ) : null}
             {inviteesLine ? (

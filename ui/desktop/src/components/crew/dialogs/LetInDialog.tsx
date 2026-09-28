@@ -4,7 +4,13 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
 import type { Team } from '../crewApi';
-import { displayNameIsUsername, identityCopy, joinerPerson, teamName } from '../identity';
+import {
+  displayNameIsUsername,
+  identityCopy,
+  joinerPerson,
+  personLabel,
+  teamName,
+} from '../identity';
 import type { ErrorSource } from '../state/types';
 import { ChannelChoices } from './AddPeopleDialog';
 import { addPeopleCopy, deviceCodeCopy, letInCopy as copy } from './copy';
@@ -144,6 +150,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const fullName = named?.displayName ?? person.serverName;
   const first = firstName(named ?? person);
   const handle = `@${username}`;
+  // What a team addition's result names them: the one rule for inline text, "Eve Park (@eve)", as
+  // Add people and the joined toast name people (M11), where the rest of the dialog uses `first`.
+  const inlineName = named
+    ? personLabel(named, 'inline', dir)
+    : personLabel(fullName ? { ...person, displayName: fullName } : person, 'inline');
   const approving = crew.isPending(APPROVE_KEY);
   const dismissOwnError = useDismissOwnError(SOURCE);
   const problem = code ? deviceCodeProblem(code) : null;
@@ -305,7 +316,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
               },
               { mutation: true }
             );
-            return copy.addedToTeam(first);
+            return copy.addedToTeam(inlineName, first);
           }
           const result = directAddResultFrom(
             await crew.request(
@@ -320,11 +331,12 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             )
           );
           return result.alreadyMember && result.addedChannels.length === 0
-            ? addPeopleCopy.alreadyIn(first, label)
+            ? addPeopleCopy.alreadyIn(inlineName, label)
             : copy.directAdded(
-                first,
+                inlineName,
                 label,
-                channelsSeenAfterTeamAdd(snapshot, team.id, result.addedChannels)
+                channelsSeenAfterTeamAdd(snapshot, team.id, result.addedChannels),
+                first
               );
         })
         .then((said) => {

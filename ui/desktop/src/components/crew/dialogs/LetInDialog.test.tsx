@@ -351,9 +351,12 @@ describe('LetInDialog', () => {
         },
       ])
     );
-    expect(await screen.findByText(letInCopy.addedToTeam('Eve'))).toBeInTheDocument();
-    expect(letInCopy.addedToTeam('Eve')).toBe(
-      'Invited. Eve will see it in Crew and needs to accept.'
+    expect(
+      await screen.findByText(letInCopy.addedToTeam('Eve Park (@eve)', 'Eve'))
+    ).toBeInTheDocument();
+    // M11: the person in the one rule for inline text, then the dialog's one name for them.
+    expect(letInCopy.addedToTeam('Eve Park (@eve)', 'Eve')).toBe(
+      'Invited Eve Park (@eve). Eve will see it in Crew and needs to accept.'
     );
   });
 
@@ -389,7 +392,9 @@ describe('LetInDialog', () => {
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
     // The result names the team (QA Q2-23).
     expect(
-      await screen.findByText('Added Eve to Analysis Lab. Eve can now see #general and #methods.')
+      await screen.findByText(
+        'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.'
+      )
     ).toBeInTheDocument();
     // Nothing is left to add, so Done is the primary action, and takes the focus.
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
@@ -416,7 +421,7 @@ describe('LetInDialog', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
     });
-    const added = 'Added Eve to Analysis Lab. Eve can now see #general and #methods.';
+    const added = 'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.';
     expect(await screen.findByText(added)).toBeInTheDocument();
 
     // The broker put them in the team, and the next frame (at most 2 s later) says so. The
@@ -701,7 +706,7 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     });
     expect(
       await within(dialog).findByText(
-        'Added Eve to Analysis Lab. Eve can now see #general and #methods.'
+        'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.'
       )
     ).toBeInTheDocument();
     // One name, and never "they" (QA Q3-36).
@@ -782,9 +787,9 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     );
     expect(letInCopy.addAfterJoin('Gina')).toBe('You can add Gina to a team once Gina joins.');
     expect(letInCopy.joined('Gina', 'ito-lab')).toBe('Gina joined ito-lab');
-    expect(letInCopy.directAdded('Gina', 'Ito Group', '#general and #data')).toBe(
-      'Added Gina to Ito Group. Gina can now see #general and #data.'
-    );
+    expect(
+      letInCopy.directAdded('Gina Ito (@gina)', 'Ito Group', '#general and #data', 'Gina')
+    ).toBe('Added Gina Ito (@gina) to Ito Group. Gina can now see #general and #data.');
   });
 });
 
@@ -945,7 +950,9 @@ describe('LetInDialog, round 4 (QA Q4-36, Q4-38)', () => {
       await act(async () => {
         fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
       });
-      await screen.findByText('Added Eve to Analysis Lab. Eve can now see #general and #methods.');
+      await screen.findByText(
+        'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.'
+      );
       expect(
         (dialog.querySelector('[data-crew-let-in-saved]') as HTMLElement).style.minHeight
       ).toBe('');

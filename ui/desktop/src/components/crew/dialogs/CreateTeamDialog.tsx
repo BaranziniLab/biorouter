@@ -145,9 +145,10 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             { mutation: true }
           )
         );
+        // The team as well as its #general: every team has one (M11).
         return result.alreadyMember
           ? addPeopleCopy.alreadyIn(label, team.name)
-          : addPeopleCopy.added(label, team.general);
+          : addPeopleCopy.addedToTeam(label, team.name, team.general);
       })
       .then((said) => {
         if (said === undefined) return;

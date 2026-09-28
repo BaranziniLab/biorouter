@@ -4,6 +4,7 @@ import {
   channelName,
   cleanName,
   nameKey,
+  personLabel,
   personLayout,
   type CrewPerson,
   type PeopleDirectory,
@@ -171,9 +172,14 @@ export function addPeopleCandidates(
   };
 }
 
-/** `@a`, `@a and @b`, `@a, @b and @c`: people named by username, as the copy deck lists them. */
-export function usernameList(people: readonly CrewPerson[]): string {
-  return listOf(people.map((person) => `@${person.username}`));
+/**
+ * `Bob Lee (@bob)`, `Bob Lee (@bob) and @carol`, …: people named by the one rule for inline text,
+ * `personLabel(person, 'inline')` — the display name with `@username`, or `@username` alone when
+ * they are the same — as the joined toast and the Joined row name them (M11). The people are named
+ * as given: pass them already current (from the directory, or `withJoinerNames`).
+ */
+export function peopleList(people: readonly CrewPerson[]): string {
+  return listOf(people.map((person) => personLabel(person, 'inline')));
 }
 
 /** `a`, `a and b`, `a, b and c`. */

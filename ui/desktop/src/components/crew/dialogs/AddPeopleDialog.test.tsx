@@ -228,7 +228,9 @@ describe('AddPeopleDialog and its checklist', () => {
       ])
     );
     expect(
-      await screen.findByText('Invited @carol. They’ll see it in Crew and need to accept.')
+      await screen.findByText(
+        'Invited Carol Diaz (@carol). They’ll see it in Crew and need to accept.'
+      )
     ).toBeInTheDocument();
     expect(toasts.toastSuccess).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
@@ -248,7 +250,7 @@ describe('AddPeopleDialog and its checklist', () => {
       snapshot,
     });
     expect(
-      await screen.findByText(addPeopleCopy.allInvited('lab', 'Analysis Lab', '@dan'))
+      await screen.findByText(addPeopleCopy.allInvited('lab', 'Analysis Lab', 'Dan Wu (@dan)'))
     ).toBeInTheDocument();
     // The host still has somewhere to go.
     fireEvent.click(screen.getByRole('button', { name: addPeopleCopy.inviteToWorkspace('lab') }));
@@ -263,7 +265,7 @@ describe('AddPeopleDialog and its checklist', () => {
       <AddPeopleDialog target="channel" targetId="channel-general" onClose={vi.fn()} />,
       { snapshot }
     );
-    expect(await screen.findByText(addPeopleCopy.waiting('@dan'))).toBeInTheDocument();
+    expect(await screen.findByText(addPeopleCopy.waiting('Dan Wu (@dan)'))).toBeInTheDocument();
     expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
   });
 
@@ -281,7 +283,7 @@ describe('AddPeopleDialog and its checklist', () => {
     );
     expect(
       await screen.findByText(
-        `${addPeopleCopy.noOneInTeam('Analysis Lab')} ${addPeopleCopy.waitingToAccept('@bob and @carol')}`
+        `${addPeopleCopy.noOneInTeam('Analysis Lab')} ${addPeopleCopy.waitingToAccept('Bob Lee (@bob) and Carol Diaz (@carol)')}`
       )
     ).toBeInTheDocument();
     expect(screen.queryByText(addPeopleCopy.noOne('lab'))).toBeNull();
@@ -554,7 +556,9 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     );
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
     expect(
-      await screen.findByText('Added @dan to Analysis Lab. They can now see #general and #methods.')
+      await screen.findByText(
+        'Added Dan Wu (@dan) to Analysis Lab. They can now see #general and #methods.'
+      )
     ).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -574,7 +578,7 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       ])
     );
     expect(
-      await screen.findByText('Added @dan to Analysis Lab. They can now see #general.')
+      await screen.findByText('Added Dan Wu (@dan) to Analysis Lab. They can now see #general.')
     ).toBeInTheDocument();
   });
 
@@ -591,7 +595,7 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
         { channel_id: 'channel-general', principal_id: carol.id, expected_username: 'carol' },
       ])
     );
-    expect(await screen.findByText('Added @carol to #general.')).toBeInTheDocument();
+    expect(await screen.findByText('Added Carol Diaz (@carol) to #general.')).toBeInTheDocument();
   });
 
   it('shows a refusal in words, in the dialog, and adds no one', async () => {
@@ -613,7 +617,7 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     // Its sentence, without the code: written for a person, shown to one.
     expect(
       await screen.findByText(
-        "Couldn’t add @carol: Only the channel's owner or the workspace host can add people to it."
+        "Couldn’t add Carol Diaz (@carol): Only the channel's owner or the workspace host can add people to it."
       )
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('forbidden:');
@@ -651,7 +655,9 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
         expected_username: person.username,
       }))
     );
-    const summary = await screen.findByText('Added @bob, @carol, @dan and @eve to #methods.');
+    const summary = await screen.findByText(
+      'Added Bob Lee (@bob), Carol Diaz (@carol), Dan Wu (@dan) and Eve Park (@eve) to #methods.'
+    );
     expect(summary.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText(/^Added /)).toHaveLength(1);
     expect(onClose).not.toHaveBeenCalled();
@@ -675,8 +681,10 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: addPeopleCopy.selectAll(4) }));
     await add(addPeopleCopy.addMany(4));
     await waitFor(() => expect(requestsFor(crew, 'channel.add_member')).toHaveLength(4));
-    const summary = await screen.findByText(/^Added @bob, @dan and @eve to #methods\. /);
-    expect(summary).toHaveTextContent(/Couldn’t add @carol: /);
+    const summary = await screen.findByText(
+      /^Added Bob Lee \(@bob\), Dan Wu \(@dan\) and Eve Park \(@eve\) to #methods\. /
+    );
+    expect(summary).toHaveTextContent(/Couldn’t add Carol Diaz \(@carol\): /);
     // The one refused stays on the list, ticked, to try again; the others have gone.
     expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
     expect(screen.getByRole('checkbox', { name: /Carol Diaz/ })).toBeChecked();
@@ -699,7 +707,7 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
         { channel_id: 'channel-methods', principal_id: dan.id, expected_username: 'dan' },
       ])
     );
-    expect(await screen.findByText('Added @dan to #methods.')).toBeInTheDocument();
+    expect(await screen.findByText('Added Dan Wu (@dan) to #methods.')).toBeInTheDocument();
     // The Add that had focus is disabled now that no one is ticked: focus moves to the search.
     expect(submit).toBeDisabled();
     await waitFor(() =>

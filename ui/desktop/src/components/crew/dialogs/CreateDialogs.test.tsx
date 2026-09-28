@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
-import { addPeopleCopy, createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
+import { createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
 import { CreateChannelDialog, examplePlaceholder, withoutLeadingHash } from './CreateChannelDialog';
 import { CreateTeamDialog, teamExamplePlaceholder } from './CreateTeamDialog';
 import { CrewDialogs } from './CrewDialogs';
@@ -429,8 +429,9 @@ describe('CreateTeamDialog', () => {
       ])
     );
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
+    // M11: the team as well as its #general (every team has one), as Add people says it.
     expect(toasts.toastSuccess).toHaveBeenCalledWith({
-      msg: addPeopleCopy.added('Bob Lee (@bob)', '#general'),
+      msg: 'Added Bob Lee (@bob) to Imaging Core. They can now see #general.',
     });
     expect(crew.selectTeam).toHaveBeenCalledWith('team-new');
     expect(onClose).toHaveBeenCalled();
