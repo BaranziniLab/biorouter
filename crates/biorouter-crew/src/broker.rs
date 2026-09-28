@@ -510,6 +510,9 @@ fn apply_patch(state: &mut Value, patch: Patch) -> Result<()> {
 #[derive(Default)]
 pub struct Connection {
     challenges: BTreeMap<String, (String, u64)>,
+    /// The person whose signed device last spoke on this connection, for presence. A member's
+    /// bridge holds one connection for as long as their computer is connected.
+    principal: Option<String>,
 }
 impl Connection {
     pub fn new() -> Self {
@@ -542,9 +545,29 @@ pub struct Broker {
     journal_actor_bytes: BTreeMap<String, u64>,
     /// The runs retention removed, so `run.revoke` can still answer their owners.
     removed_runs: RemovedRuns,
+    /// Who is connected, per principal ([`Presence`]). In memory only: never journaled, never
+    /// counted in the state or any quota, and consulted by no authorization.
+    presence: BTreeMap<String, Presence>,
+    /// How long after a person's last signed request they still count as online without a
+    /// connection open.
+    presence_window: Duration,
+    /// The serialized size of the committed state, kept by every commit for the host's
+    /// `usage`.
+    state_bytes: usize,
     #[cfg(feature = "join-by-name")]
     join_runtime: join::Runtime,
 }
+/// One person's presence: when their device last made a signed request, and how many
+/// connections it made them on are still open.
+#[derive(Default)]
+struct Presence {
+    last_request: Option<Instant>,
+    open_connections: usize,
+}
+/// A person counts as online while a connection they signed on is open, and for this long
+/// after their last signed request. The member's daemon heartbeats an idle connection every
+/// 120 s, so this outlasts one missed beat.
+const PRESENCE_WINDOW: Duration = Duration::from_secs(180);
 
 /// Which journal call a test makes fail ([`Broker::inject_journal_fault`]).
 #[cfg(feature = "test-seams")]
@@ -1186,6 +1209,12 @@ impl Broker {
     pub fn set_quotas(&mut self, quotas: Quotas) {
         self.quotas = quotas;
     }
+    /// Count a person as online for `window` after their last signed request instead of
+    /// [`PRESENCE_WINDOW`], so a test need not wait three minutes. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn set_presence_window(&mut self, window: Duration) {
+        self.presence_window = window;
+    }
     /// Make the next journal `call` fail with `errno` (`ENOSPC`, `EIO`, ...), as a full or
     /// failing disk would. Test builds only.
     #[cfg(feature = "test-seams")]
@@ -1276,9 +1305,13 @@ impl Broker {
             quotas: Quotas::STANDARD,
             journal_actor_bytes: actor_bytes,
             removed_runs,
+            presence: BTreeMap::new(),
+            presence_window: PRESENCE_WINDOW,
+            state_bytes: 0,
             #[cfg(feature = "join-by-name")]
             join_runtime: join::Runtime::default(),
         };
+        broker.state_bytes = json_len(&broker.state);
         if sequence == 0 {
             broker.commit(broker.state.clone(), "system", "workspace.initialize")?;
         }
@@ -1360,6 +1393,7 @@ impl Broker {
             return Err(self.stop_saving(written, &error, committed));
         }
         self.state = state;
+        self.state_bytes = size;
         self.checksum = record.checksum;
         *self
             .journal_actor_bytes
@@ -1441,6 +1475,71 @@ impl Broker {
     pub fn workspace(&self) -> &Workspace {
         &self.state.workspace
     }
+    /// `principal`'s device made a signed request on `conn`.
+    fn note_presence(&mut self, conn: &mut Connection, principal: &str) {
+        if conn.principal.as_deref() != Some(principal) {
+            if let Some(previous) = conn.principal.take() {
+                self.release_presence(&previous);
+            }
+            self.presence
+                .entry(principal.to_owned())
+                .or_default()
+                .open_connections += 1;
+            conn.principal = Some(principal.to_owned());
+        }
+        self.presence
+            .entry(principal.to_owned())
+            .or_default()
+            .last_request = Some(Instant::now());
+    }
+    fn release_presence(&mut self, principal: &str) {
+        if let Some(presence) = self.presence.get_mut(principal) {
+            presence.open_connections = presence.open_connections.saturating_sub(1);
+        }
+    }
+    /// `connection` has closed: the person it was signed on for stops counting as connected
+    /// through it. They stay online until [`PRESENCE_WINDOW`] after their last request.
+    pub fn connection_closed(&mut self, connection: &mut Connection) {
+        if let Some(principal) = connection.principal.take() {
+            self.release_presence(&principal);
+        }
+    }
+    /// The active people who are online: a connection they signed on is open, or they made a
+    /// signed request within the presence window.
+    fn online_principal_ids<'s>(&self, s: &'s State) -> Vec<&'s str> {
+        let now = Instant::now();
+        s.principals
+            .values()
+            .filter(|p| p.active)
+            .filter(|p| {
+                self.presence.get(&p.id).is_some_and(|presence| {
+                    presence.open_connections > 0
+                        || presence
+                            .last_request
+                            .is_some_and(|at| now.duration_since(at) <= self.presence_window)
+                })
+            })
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+    /// How full the workspace's non-renewable budgets are, for its host: the logical state,
+    /// the audit journal and the attachment space. Only the host can act on them (a new
+    /// workspace, removals), so only the host's snapshot carries this.
+    fn usage(&self, s: &State) -> Value {
+        let quotas = &self.quotas;
+        json!({
+            "state_bytes": self.state_bytes,
+            "state_limit": quotas.state_bytes,
+            "state_admin_headroom": quotas.state_admin_headroom,
+            "journal_bytes": self.journal.metadata().map(|m| m.len()).unwrap_or_default(),
+            "journal_limit": quotas.journal_bytes,
+            "journal_admin_headroom": quotas.journal_admin_headroom,
+            "attachment_bytes": s.blobs.values().map(|b| b.size).sum::<u64>(),
+            "attachment_limit": WORKSPACE_BLOB_BYTES,
+            "attachments": s.blobs.len(),
+            "attachments_limit": WORKSPACE_BLOBS,
+        })
+    }
     pub fn handle(&mut self, uid: u32, connection: &mut Connection, request: Request) -> Response {
         let result = self.process(uid, connection, &request);
         match result {
@@ -1481,6 +1580,10 @@ impl Broker {
             Admission::Actor(actor) => *actor,
             Admission::Replay(result) => return Ok(result),
         };
+        // A person's signed device, not an agent's grant: presence is about people.
+        if actor.run.is_none() {
+            self.note_presence(conn, &actor.id);
+        }
         if matches!(
             req.method.as_str(),
             "workspace.snapshot"
@@ -1832,6 +1935,7 @@ impl Broker {
             "human_names_v1",
             "unique_names_v1",
             "direct_add_v1",
+            "presence_v1",
         ];
         #[cfg(feature = "join-by-name")]
         capabilities.push("join_by_name_v1");
@@ -2384,7 +2488,10 @@ impl Broker {
         let references = within_budget(references);
         let totals = json!({"invitations": invitations_total, "runs": runs_total, "references": references_total, "teams": teams.len(), "channels": channels.len()});
         let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":[],"actor":actor_wire,"principals":principals,"former_principals":[],"teams":[],"channels":[],"invitations":invitations_wire,"runs":runs,"read_positions":{},"unread":{},"references":references,"totals":totals});
+        // Presence is display only: it is in memory, never journaled, and grants nothing.
+        snapshot["online_principal_ids"] = json!(self.online_principal_ids(s));
         if host {
+            snapshot["usage"] = self.usage(s);
             let refusals: BTreeMap<&str, usize> = self
                 .name_refusals
                 .keys()
@@ -5252,17 +5359,31 @@ fn watch_runtime(socket: PathBuf, bound: (u64, u64), broker: Arc<Mutex<Broker>>)
         }
     });
 }
-fn serve_client(mut stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
+fn serve_client(stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
+    let mut connection = Connection::new();
+    let served = serve_requests(stream, uid, &broker, &mut connection);
+    // However the connection ended, the person it was signed on for is no longer connected
+    // through it.
+    if let Ok(mut broker) = broker.lock() {
+        broker.connection_closed(&mut connection);
+    }
+    served
+}
+fn serve_requests(
+    mut stream: UnixStream,
+    uid: u32,
+    broker: &Mutex<Broker>,
+    connection: &mut Connection,
+) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut connection = Connection::new();
     while let Some(bytes) = read_frame(&mut reader)? {
         let request: Request = serde_json::from_slice(&bytes)?;
         let response = broker
             .lock()
             .map_err(|_| anyhow!("broker unavailable"))?
-            .handle(uid, &mut connection, request);
+            .handle(uid, connection, request);
         let mut bytes = serde_json::to_vec(&response)?;
         if bytes.len() >= MAX_FRAME {
             bytes = serde_json::to_vec(&Response {

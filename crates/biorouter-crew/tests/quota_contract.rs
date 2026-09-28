@@ -1755,3 +1755,73 @@ fn the_host_manages_the_channels_of_someone_who_left_the_workspace() {
         "forbidden: current owner required"
     );
 }
+
+/// M1: the state and journal budgets are finite and only the host can act on them, so the
+/// host's snapshot says how full they are, well before writes stop. Nobody else's does.
+#[test]
+fn the_hosts_snapshot_says_how_full_the_workspace_is_and_a_members_does_not() {
+    let mut ws = Workspace::new("usage");
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let (team, general) = ws.host_team("usage");
+    ws.host_adds_to_team(&mut mallory, &team);
+    let state_size = |ws: &Workspace| serde_json::to_vec(&ws.broker.state_json()).unwrap().len();
+
+    let usage = ws.host_snapshot()["usage"].clone();
+    assert_eq!(usage["state_bytes"], json!(state_size(&ws)));
+    assert_eq!(usage["state_limit"], json!(Quotas::STANDARD.state_bytes));
+    assert_eq!(
+        usage["state_admin_headroom"],
+        json!(Quotas::STANDARD.state_admin_headroom)
+    );
+    assert_eq!(usage["journal_bytes"], json!(ws.journal_bytes().len()));
+    assert_eq!(
+        usage["journal_limit"],
+        json!(Quotas::STANDARD.journal_bytes)
+    );
+    assert_eq!(
+        usage["journal_admin_headroom"],
+        json!(Quotas::STANDARD.journal_admin_headroom)
+    );
+    assert_eq!(usage["attachment_bytes"], json!(0));
+    assert_eq!(usage["attachment_limit"], json!(10u64 * 1024 * 1024 * 1024));
+    assert_eq!(usage["attachments"], json!(0));
+    assert_eq!(usage["attachments_limit"], json!(10_000));
+
+    // It follows every change: a post grows the state and the journal, and an upload's
+    // declared size counts as soon as it begins.
+    ws.call_ok(
+        &mut mallory,
+        "message.post",
+        json!({"channel_id": general, "body": "x".repeat(10_000)}),
+    );
+    ws.call_ok(
+        &mut mallory,
+        "blob.begin",
+        json!({
+            "channel_id": general,
+            "size": 4096,
+            "sha256": digest(b"four kibibytes"),
+            "name": "data.csv",
+            "media_type": "text/csv",
+        }),
+    );
+    let grown = ws.host_snapshot()["usage"].clone();
+    assert_eq!(grown["state_bytes"], json!(state_size(&ws)));
+    assert!(grown["state_bytes"].as_u64() > usage["state_bytes"].as_u64());
+    assert_eq!(grown["journal_bytes"], json!(ws.journal_bytes().len()));
+    assert_eq!(grown["attachment_bytes"], json!(4096));
+    assert_eq!(grown["attachments"], json!(1));
+
+    // A restart measures the state it replayed.
+    let mut ws = ws.reopen();
+    let reopened = ws.host_snapshot()["usage"].clone();
+    assert_eq!(reopened["state_bytes"], json!(state_size(&ws)));
+
+    // A member is told nothing new: only the host can act on it.
+    let snapshot = ws.snapshot(&mut mallory);
+    assert!(
+        snapshot.get("usage").is_none(),
+        "{:?}",
+        snapshot.get("usage")
+    );
+}
