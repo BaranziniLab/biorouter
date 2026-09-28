@@ -5705,8 +5705,7 @@ pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> R
             let info = existing_runtime_descriptor(root)?.ok_or_else(|| anyhow!(NOT_RUNNING))?;
             let socket = PathBuf::from(text(&info, "socket")?);
             let uid = number(&info, "host_uid")? as u32;
-            validate_socket(&socket, uid)?;
-            let mut stream = UnixStream::connect(socket)?;
+            let mut stream = connect_recorded(&info, &socket, uid)?;
             ensure!(peer_uid(&stream)? == uid, "identity_mismatch");
             stream.set_read_timeout(Some(Duration::from_secs(3)))?;
             stream.write_all(
@@ -5935,6 +5934,53 @@ fn read_runtime_descriptor(root: &Path) -> Result<Option<Value>> {
 }
 /// `status` and `stop` for a state directory that has no runtime descriptor.
 const NOT_RUNNING: &str = "not_running: no broker is running from this state directory; start it with biorouter-crew start";
+/// The broker the runtime descriptor `info` records, connected at its `socket` after the
+/// socket's ownership is checked; [`NOT_RUNNING`] when no broker is there any more (T3-BE-2).
+/// A broker stopped with `stop` or SIGTERM, one that was killed, and one whose server rebooted
+/// all leave `runtime.json` behind, and often the socket file too: the process it names is gone,
+/// the socket file is missing, or connecting to it is refused. Each of those used to reach the
+/// host as the raw error ("Connection refused (os error 111)"), for `status` and for a second
+/// `stop` alike. Nothing is removed here: the next `start` reclaims the same runtime path.
+fn connect_recorded(info: &Value, socket: &Path, owner: u32) -> Result<UnixStream> {
+    if recorded_process_gone(info) {
+        bail!(NOT_RUNNING);
+    }
+    let gone = |error: &std::io::Error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        )
+    };
+    if let Err(error) = validate_socket(socket, owner) {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| gone(error))
+        {
+            bail!(NOT_RUNNING);
+        }
+        return Err(error);
+    }
+    match UnixStream::connect(socket) {
+        Ok(stream) => Ok(stream),
+        Err(error) if gone(&error) => bail!(NOT_RUNNING),
+        Err(error) => Err(error.into()),
+    }
+}
+/// Whether the process the runtime descriptor `info` names has exited. Only a definite answer
+/// counts (`ESRCH`); a process another account owns, or a descriptor with no `pid`, is not known
+/// to be gone, and the socket is asked instead.
+fn recorded_process_gone(info: &Value) -> bool {
+    let Some(pid) = info
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| libc::pid_t::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+    else {
+        return false;
+    };
+    let answered = unsafe { libc::kill(pid, 0) };
+    answered == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
 /// `runtime.json` for `status` and `stop`, read without creating anything: `None` when the
 /// state directory or the descriptor is missing, or the descriptor is empty (older `status` and
 /// `stop` created an empty one). The state directory must be private, and the descriptor a
@@ -6057,8 +6103,7 @@ fn stop(root: &Path) -> Result<Value> {
         "forbidden: only host account can stop broker"
     );
     let socket = PathBuf::from(text(&info, "socket")?);
-    validate_socket(&socket, owner)?;
-    let mut stream = UnixStream::connect(&socket)?;
+    let mut stream = connect_recorded(&info, &socket, owner)?;
     let mut cred = std::mem::MaybeUninit::<libc::ucred>::uninit();
     let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     ensure!(

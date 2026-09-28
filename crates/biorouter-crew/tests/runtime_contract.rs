@@ -92,6 +92,76 @@ fn stop_without_a_descriptor_reports_not_running_and_creates_nothing() {
     );
 }
 
+/// A descriptor naming `socket` and `pid`, as a broker that has since stopped left it.
+fn write_stale_descriptor(state: &Path, socket: &Path, pid: u32) {
+    let info = json!({
+        "pid": pid,
+        "socket": socket,
+        "workspace_id": "00000000-0000-4000-8000-000000000000",
+        "host_uid": host_uid(),
+        "protocol": 1,
+        "node_id": NODE,
+    });
+    private_write(
+        &state.join("runtime.json"),
+        &serde_json::to_vec(&info).unwrap(),
+    );
+}
+
+/// The pid of a process that has exited and been reaped.
+fn exited_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+/// `status`, and `stop` where it is supported, for `state`: each must say `not_running` and
+/// leave the descriptor where it is, so the next `start` reclaims the same runtime path.
+fn assert_not_running(state: &Path) {
+    let before = fs::read(state.join("runtime.json")).unwrap();
+    let mut commands = vec!["status"];
+    if cfg!(target_os = "linux") {
+        commands.push("stop");
+    }
+    for command in commands {
+        let error =
+            biorouter_crew::lifecycle(command, state, "", None).expect_err("nothing is running");
+        assert_eq!(
+            error.to_string(),
+            "not_running: no broker is running from this state directory; start it with biorouter-crew start",
+            "{command}"
+        );
+    }
+    assert_eq!(fs::read(state.join("runtime.json")).unwrap(), before);
+}
+
+/// T3-BE-2: a broker that stopped cleanly, was killed, or whose server rebooted leaves its
+/// runtime descriptor behind, and often its socket file. `status` and a second `stop` say
+/// `not_running` for every way that looks: the process it names is gone, the socket file is
+/// missing, or nothing listens on it. They used to print "Connection refused (os error 111)".
+#[test]
+fn status_and_stop_after_a_broker_stopped_report_not_running() {
+    let state = TempRoot::new("status-stopped");
+    let runtime = TempRoot::short();
+    fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o711)).unwrap();
+    let socket = runtime.path().join("broker.sock");
+
+    // The process it names has exited.
+    write_stale_descriptor(state.path(), &socket, exited_pid());
+    assert_not_running(state.path());
+
+    // The process is there (a pid the broker's could have been reused for), the socket is not.
+    write_stale_descriptor(state.path(), &socket, std::process::id());
+    assert_not_running(state.path());
+
+    // The socket file is left, and nothing listens on it: connecting is refused.
+    drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(socket.exists(), "a closed listener leaves its socket file");
+    assert_not_running(state.path());
+}
+
 #[test]
 fn an_empty_descriptor_does_not_block_the_next_start() {
     let mut ws = Workspace::new("empty-descriptor");
