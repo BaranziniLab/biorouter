@@ -142,7 +142,8 @@ describe('a file name another member chose', () => {
     } satisfies CrewBlob);
     mocks.beginTransfer.mockResolvedValue(null);
     render(<AttachmentCard connectionId="connection-1" blobId="blob-1" />);
-    const save = await screen.findByRole('button', { name: 'Save ��' });
+    // Two hidden characters in a row read as one mark (FILES2-N1).
+    const save = await screen.findByRole('button', { name: 'Save �' });
     await userEvent.setup().click(save);
     expect(mocks.beginTransfer.mock.calls[0]?.[0]?.suggestedName).toBeUndefined();
   });
@@ -235,6 +236,25 @@ describe('the two rules (visibleFileText, saveNameFor)', () => {
     // together here: the same file must read the same in the dialog and on its card.
     const { visibleText } = await import('../../../utils/crewSharePath');
     for (const sample of samples) expect(visibleFileText(sample)).toBe(visibleText(sample));
+  });
+
+  /**
+   * FILES2-N1: sixty U+3164 HANGUL FILLER between `q3-report.pdf` and `.exe` drew nothing, and the
+   * card and the Save window showed "q3-report.pdf …". Blank-looking characters are hidden
+   * characters: shown as one U+FFFD however many, and left out of a save name.
+   */
+  it.each([
+    ['U+3164 HANGUL FILLER', '\u3164'],
+    ['U+115F HANGUL CHOSEONG FILLER', '\u115F'],
+    ['U+1160 HANGUL JUNGSEONG FILLER', '\u1160'],
+    ['U+FFA0 HALFWIDTH HANGUL FILLER', '\uFFA0'],
+    ['U+2800 BRAILLE PATTERN BLANK', '\u2800'],
+    ['U+034F COMBINING GRAPHEME JOINER', '\u034F'],
+  ])('reads a run of %s as one visible mark, and saves without it', (_label, blank) => {
+    const raw = `q3-report.pdf${blank.repeat(60)}.exe`;
+    expect(visibleFileText(raw)).toBe('q3-report.pdf\uFFFD.exe');
+    expect(saveNameFor(raw)).toBe('q3-report.pdf.exe');
+    expect(visibleFileText(`a${blank}b`)).toBe('a\uFFFDb');
   });
 
   it('leaves hidden characters out of a save name, and has no name when nothing is left', () => {

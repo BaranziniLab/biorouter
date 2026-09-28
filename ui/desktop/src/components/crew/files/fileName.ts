@@ -25,23 +25,42 @@ import { stripHiddenCharacters } from '../../../utils/untrustedText';
 
 /** U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR: neither a control nor a format character. */
 const LINE_OR_PARAGRAPH_SEPARATOR = /^[\p{Zl}\p{Zp}]$/u;
+/**
+ * Letters and symbols that draw a blank (FILES2-N1): every default-ignorable code point (the
+ * Hangul fillers U+115F, U+1160, U+3164 and U+FFA0 among them, which are letters and so neither
+ * controls nor format characters) and U+2800 BRAILLE PATTERN BLANK. Sixty U+3164 between
+ * `q3-report.pdf` and `.exe` drew nothing, and pushed the real extension off the card's end.
+ */
+const BLANK_LOOKING = /^[\p{Default_Ignorable_Code_Point}\u2800]$/u;
 /** What is left of `White_Space` once controls and separators are gone: the space separators. */
 const WHITE_SPACE_RUN = /\p{White_Space}{2,}/gu;
+/** Two or more hidden characters in a row, once each is U+FFFD: drawn as one, as a space run is. */
+const HIDDEN_RUN = /\uFFFD{2,}/gu;
 
-/** A control, format, line or paragraph separator character: one that draws nothing of its own. */
+/**
+ * A control, format, line or paragraph separator character, or one that draws a blank: one that
+ * shows nothing of its own.
+ */
 function isHidden(character: string): boolean {
-  return stripHiddenCharacters(character) === '' || LINE_OR_PARAGRAPH_SEPARATOR.test(character);
+  return (
+    stripHiddenCharacters(character) === '' ||
+    LINE_OR_PARAGRAPH_SEPARATOR.test(character) ||
+    BLANK_LOOKING.test(character)
+  );
 }
 
 /**
  * A peer-supplied file name, label or path for display: every hidden character (a bidi override
- * or isolate, a zero-width character, a newline, a line separator) becomes U+FFFD, and a run of
- * spaces becomes one space. Anything but a string becomes `''`.
+ * or isolate, a zero-width character, a newline, a line separator, a filler that draws a blank)
+ * becomes U+FFFD, a run of them one U+FFFD, and a run of spaces one space, so no run of either can
+ * push the end of a name, its extension, out of sight (FILES2-N1). Anything but a string becomes
+ * `''`.
  */
 export function visibleFileText(raw: unknown): string {
   if (typeof raw !== 'string') return '';
-  return Array.from(raw, (character) => (isHidden(character) ? '�' : character))
+  return Array.from(raw, (character) => (isHidden(character) ? '\uFFFD' : character))
     .join('')
+    .replace(HIDDEN_RUN, '\uFFFD')
     .replace(WHITE_SPACE_RUN, ' ');
 }
 

@@ -19,6 +19,7 @@ import { postedLabel, useAttachmentWhich, useRegisterAttachment } from './attach
 import { cachedBlob, forgetBlob, rememberBlob } from './blobMetadataCache';
 import { filesCopy } from './copy';
 import { saveNameFor, visibleFileText } from './fileName';
+import { MiddleTruncatedName } from './MiddleTruncatedName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { TransferMenuItems } from './TransferRow';
@@ -262,7 +263,7 @@ export function AttachmentCard({
         <div className="crew-attachment-row">
           <File className="crew-attachment-icon" aria-hidden />
           <span className="crew-attachment-label">
-            <span className="crew-attachment-name">{name}</span>
+            <MiddleTruncatedName name={name} className="crew-attachment-name" />
             {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
           </span>
         </div>
@@ -279,7 +280,7 @@ export function AttachmentCard({
         <span className="crew-attachment-label">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="crew-attachment-name">{name}</span>
+              <MiddleTruncatedName name={name} className="crew-attachment-name" />
             </TooltipTrigger>
             <TooltipContent>{name}</TooltipContent>
           </Tooltip>
