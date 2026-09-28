@@ -84,7 +84,7 @@ The daemon looks names up in your own view of the workspace. An ID works anywher
 - A channel is `methods`, `'#methods'` or `analysis-lab/methods`. Quote a leading `#`, or the shell drops the word. Once you are in two teams, write `analysis-lab/general`.
 - Files, transfers, tasks, chat sessions and remote references take only IDs. `--show-ids` shows them.
 
-Nothing is guessed. An unknown name says so, such as `No channel you're in is called #methods.`, whether you mistyped it, it was renamed or you left it. An ambiguous one lists the matches. A channel ID from another workspace, or of a channel you are not in, gets the same sentence as a name. Nothing is sent, the command exits with `1`, and JSON carries `unknown_name` or `ambiguous_name`.
+Nothing is guessed. An unknown name says so, such as `No channel you're in is called #methods.`, whether you mistyped it, it was renamed or you left it. An ambiguous one lists the matches. A channel ID from another workspace, or of a channel you are not in, is refused the same way, with `No channel you're in has the ID …`, by the commands only a member runs. Nothing is sent, the command exits with `1`, and JSON carries `unknown_name` or `ambiguous_name`.
 
 A rename changes the name you type. After a team is renamed, its old name and handle no longer find it, so use the new name, which `teams list` shows. The same holds for a channel.
 
