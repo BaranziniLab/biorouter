@@ -4531,28 +4531,74 @@ async fn watch_task(api: &Api, id: &str) -> Result<Reply> {
 /// messages the chat can read, oldest first. The daemon's manifest names the channels the chat
 /// reads but not the one it posts in, which the grants list has. JSON is the manifest as it is.
 async fn context(api: &Api, session: &str) -> Result<Reply> {
-    let manifest = api.session_get(session, "context").await?;
+    let manifest = match api.session_get(session, "context").await {
+        Ok(manifest) => manifest,
+        Err(error) => return Err(access_ended(api, error, session).await),
+    };
     if !api.text() {
         return Ok(api.show(manifest));
     }
-    let grants = match api.path("/grants").await {
-        Ok(path) => api.client.request("GET", &path, None).await.ok(),
-        Err(_) => None,
-    };
-    let destination = grants.as_ref().and_then(|grants| {
-        grants["grants"]
-            .as_array()?
-            .iter()
-            .find(|grant| grant["session_id"].as_str() == Some(session))
-            .and_then(|grant| grant["channel_id"].as_str())
-            .map(str::to_owned)
-    });
+    let destination = grant_channel(api, session).await;
     let lines = output::context_lines(
         &manifest,
         destination.as_deref(),
         &api.human(api.names().await),
     );
     Ok(api.say(manifest, lines))
+}
+
+/// The channel `session`'s grant posts in, from the grants list, when it can be read.
+async fn grant_channel(api: &Api, session: &str) -> Option<String> {
+    let path = api.path("/grants").await.ok()?;
+    let grants = api.client.request("GET", &path, None).await.ok()?;
+    grants["grants"]
+        .as_array()?
+        .iter()
+        .find(|grant| grant["session_id"].as_str() == Some(session))
+        .and_then(|grant| grant["channel_id"].as_str())
+        .map(str::to_owned)
+}
+
+/// The daemon's sentence for a grant that ended because Crew's settings changed, which a daemon
+/// before T3-BE-7 sent as `crew_profile_refused`, a code it also gives unrelated refusals.
+const LEGACY_SETTINGS_CHANGED: &str = "Crew settings changed since access was granted";
+
+/// `context` refused because the chat's Crew access ended (SF2-N4): why, and the
+/// `grants grant` that grants it again, with the chat and the channel its grant posted in (by
+/// name when the workspace can be read, else by ID). The daemon says "Grant access again from
+/// Crew", a desktop control. Any other refusal is left as it is; JSON keeps the daemon's code.
+async fn access_ended(api: &Api, error: anyhow::Error, session: &str) -> anyhow::Error {
+    let ended = error.chain().find_map(|cause| {
+        let (code, message) = refusal_code_and_message(cause)?;
+        match code {
+            GRANT_ENDED => Some(refusal_field(cause, "reason") == Some("settings_changed")),
+            "crew_profile_refused" if message.trim().starts_with(LEGACY_SETTINGS_CHANGED) => {
+                Some(true)
+            }
+            _ => None,
+        }
+    });
+    let Some(settings_changed) = ended else {
+        return error;
+    };
+    let channel = match grant_channel(api, session).await {
+        Some(id) => {
+            let label = api.names().await.channel_label(&id);
+            match label.strip_prefix('#') {
+                Some(name) => shell_word(name),
+                None => id,
+            }
+        }
+        None => "CHANNEL".to_owned(),
+    };
+    Worded {
+        sentence: grant_ended_sentence(
+            settings_changed,
+            Some((&shell_word(session), &safe_text(&channel))),
+        ),
+        source: error,
+    }
+    .into()
 }
 
 async fn grants(api: &Api, command: GrantCommand) -> Result<Reply> {
@@ -4727,14 +4773,54 @@ async fn set_personal(
     ))
 }
 
+/// `privacy show` (SF2-N3, CLIDOCS-F5): the privacy in force (`effective_mode`, the rule
+/// `status` uses), the connection's own setting, the workspace's, and each channel's
+/// classification in the channels-list order. While disconnected the connection's own setting
+/// is still printed, and the workspace's is said to be unreadable (`workspace` is `null`, and
+/// `effective_mode` too unless the connection is Private, which is Private whatever the
+/// workspace says).
+async fn privacy_show(api: &Api) -> Result<Reply> {
+    let connection = api.connection().await?;
+    let snapshot = match api.snapshot().await {
+        Ok(snapshot) => Some(snapshot),
+        Err(error) if disconnected(&error) => None,
+        Err(error) => return Err(error),
+    };
+    let workspace = snapshot
+        .as_ref()
+        .map_or(Value::Null, |snapshot| snapshot["workspace"].clone());
+    let mut channels = snapshot
+        .as_ref()
+        .map_or(Value::Null, |snapshot| snapshot["channels"].clone());
+    if let (Some(list), Some(snapshot)) = (channels.as_array_mut(), snapshot.as_ref()) {
+        output::channels_in_order(
+            list,
+            snapshot["teams"].as_array().map_or(&[], Vec::as_slice),
+        );
+    }
+    let effective = output::effective_mode(connection["mode"].as_str(), workspace["mode"].as_str());
+    let value = json!({
+        "connection_id": connection["id"],
+        "personal_mode": connection["mode"],
+        "institution_id": connection["institution_id"],
+        "connection_policy_epoch": connection["policy_epoch"],
+        "effective_mode": effective,
+        "workspace": workspace,
+        "channels": channels,
+    });
+    let directory = snapshot
+        .as_ref()
+        .map(Directory::from_snapshot)
+        .unwrap_or_default();
+    Ok(Reply::Show(
+        value,
+        Box::new(api.human(directory).with_view(output::View::Privacy)),
+    ))
+}
+
 async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
     Ok(match command {
-        PrivacyCommand::Show => {
-            let connection = api.connection().await?;
-            let snapshot = api.snapshot().await?;
-            let value = json!({"connection_id":connection["id"],"personal_mode":connection["mode"],"institution_id":connection["institution_id"],"connection_policy_epoch":connection["policy_epoch"],"workspace":snapshot["workspace"],"channels":snapshot["channels"]});
-            api.show_with(value, Directory::from_snapshot(&snapshot))
-        }
+        PrivacyCommand::Show => privacy_show(api).await?,
         PrivacyCommand::SetPersonal {
             mode,
             institution_id,
@@ -6138,6 +6224,109 @@ mod tests {
         assert!(!invitation_summary(&answer["preview"], false)
             .iter()
             .any(|line| line.contains("this machine")));
+    }
+
+    /// SF2-N3, CLIDOCS-F5, CLIDOCS-F12: `privacy show` says the privacy in force (`effective_mode`
+    /// in JSON), lists channels in the channels-list order, and while disconnected prints the
+    /// connection's own setting and says the workspace's cannot be checked, rather than failing.
+    #[tokio::test]
+    async fn privacy_show_says_the_privacy_in_force_online_and_offline() {
+        let online = |own: &'static str| {
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if (method, path) == ("GET", "/crew/connections") {
+                    return Ok(
+                        json!({"connections": [{"id": CONNECTION, "name": "UCSF HPC", "ssh_target": "bob@hpc", "workspace_id": "w", "status": "connected", "mode": own, "institution_id": "ucsf", "policy_epoch": 2}]}),
+                    );
+                }
+                if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                    let mut snapshot = snapshot();
+                    // The broker lists them in no order a reader expects.
+                    snapshot["channels"] = json!([
+                        {"id": METHODS, "team_id": TEAM, "name": "methods", "classification": "restricted"},
+                        {"id": "c4a77e10-0000-4000-8000-00000000000c", "team_id": TEAM, "name": "random", "classification": "public_safe"},
+                        {"id": GENERAL, "team_id": TEAM, "name": "general", "classification": "restricted"}
+                    ]);
+                    return Ok(snapshot);
+                }
+                standard(method, path, body)
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Json, online("public"));
+        let Reply::Show(value, options) = run(&api, CrewCommand::Privacy(PrivacyCommand::Show))
+            .await
+            .expect("shown")
+        else {
+            panic!("a value");
+        };
+        assert_eq!(
+            value["effective_mode"], "private",
+            "the workspace is Private"
+        );
+        let order: Vec<&str> = value["channels"]
+            .as_array()
+            .expect("channels")
+            .iter()
+            .filter_map(|channel| channel["name"].as_str())
+            .collect();
+        assert_eq!(order, ["general", "methods", "random"]);
+        let text = output::render_text(&value, &options);
+        assert!(
+            text.starts_with("Privacy: Private (lab is Private for everyone)"),
+            "{text}"
+        );
+
+        for (own, effective, first) in [
+            ("private", json!("private"), "Privacy: Private"),
+            (
+                "public",
+                Value::Null,
+                "Privacy: can't be checked while disconnected",
+            ),
+        ] {
+            let offline = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if (method, path) == ("GET", "/crew/connections") {
+                    return Ok(
+                        json!({"connections": [{"id": CONNECTION, "name": "UCSF HPC", "ssh_target": "bob@hpc", "workspace_id": "w", "status": "disconnected", "mode": own, "institution_id": "ucsf", "policy_epoch": 2}]}),
+                    );
+                }
+                if path.ends_with("/request") {
+                    return Err(refuse(409, Some(NOT_CONNECTED), LEGACY_DISCONNECTED));
+                }
+                standard(method, path, body)
+            };
+            let (api, _) = api_with(OutputFormat::Json, offline);
+            let Reply::Show(value, options) = run(&api, CrewCommand::Privacy(PrivacyCommand::Show))
+                .await
+                .expect("shown offline")
+            else {
+                panic!("a value");
+            };
+            assert_eq!(value["effective_mode"], effective, "{own}");
+            assert_eq!(value["personal_mode"], own);
+            assert!(value["workspace"].is_null(), "{value}");
+            let text = output::render_text(&value, &options);
+            assert!(text.starts_with(first), "{own}: {text}");
+            assert!(
+                text.contains("Workspace: can't be checked while disconnected"),
+                "{own}: {text}"
+            );
+            assert!(text.contains("Your connection: "), "{text}");
+        }
+        // An older daemon's untyped refusal is the same fact.
+        let older = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/request") {
+                return Err(refuse(
+                    400,
+                    Some("crew_request_refused"),
+                    LEGACY_DISCONNECTED,
+                ));
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, older);
+        run(&api, CrewCommand::Privacy(PrivacyCommand::Show))
+            .await
+            .expect("shown offline");
     }
 
     /// SC2-N5: a connected connection the host has not let in reads "Not joined yet", in
@@ -7560,6 +7749,78 @@ mod tests {
             panic!("JSON is the manifest")
         };
         assert_eq!(manifest["source_channels"], json!([METHODS, GENERAL]));
+    }
+
+    /// SF2-N4: `context` for a chat whose access ended says why and the command that grants it
+    /// again, naming the chat and its channel, under the daemon's `crew_grant_ended`; an older
+    /// daemon's untyped settings-changed refusal is said the same way.
+    #[tokio::test]
+    async fn context_after_access_ended_says_how_to_grant_it_again() {
+        const SETTINGS_CHANGED: &str =
+            "Crew settings changed since access was granted. Grant access again from Crew.";
+        let ended = |code: &'static str, reason: Option<&'static str>| {
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if path.ends_with(&format!("/sessions/{SESSION}/context")) {
+                    let mut fields = serde_json::Map::new();
+                    if let Some(reason) = reason {
+                        fields.insert("reason".into(), json!(reason));
+                    }
+                    return Err(FakeRefusal {
+                        status: 409,
+                        code: Some(code.into()),
+                        broker_code: None,
+                        institution_refusal: None,
+                        connection_institution: None,
+                        message: SETTINGS_CHANGED.into(),
+                        detail: None,
+                        modes: None,
+                        fields,
+                    }
+                    .into());
+                }
+                if path.ends_with("/grants") {
+                    return Ok(
+                        json!({"grants": [{"session_id": SESSION, "channel_id": METHODS,
+                        "source_channels": [METHODS], "expired": true}]}),
+                    );
+                }
+                standard(method, path, body)
+            }
+        };
+        let context = || CrewCommand::Context {
+            session: SESSION.into(),
+        };
+        for (code, reason, sentence) in [
+            (GRANT_ENDED, Some("settings_changed"), "This chat's Crew access ended because Crew settings changed. Run biorouter crew grants grant 20260924_2 methods to grant it again."),
+            (GRANT_ENDED, Some("ended"), "This chat's Crew access ended. Run biorouter crew grants grant 20260924_2 methods to grant it again."),
+            ("crew_profile_refused", None, "This chat's Crew access ended because Crew settings changed. Run biorouter crew grants grant 20260924_2 methods to grant it again."),
+        ] {
+            let (api, _) = api_with(OutputFormat::Text, ended(code, reason));
+            let error = run(&api, context()).await.expect_err("ended");
+            let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
+            assert_eq!(shown, sentence, "{code} {reason:?}");
+            assert!(!shown.contains("from Crew"), "{shown}");
+            assert_eq!(error_code(&error).as_deref(), Some(code));
+        }
+        // A settings refusal that is not this one keeps its own sentence.
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            |method: &str, path: &str, body: Option<&Value>| {
+                if path.ends_with("/context") {
+                    return Err(refuse(
+                        400,
+                        Some("crew_profile_refused"),
+                        "Crew couldn't read its saved settings.",
+                    ));
+                }
+                standard(method, path, body)
+            },
+        );
+        let error = run(&api, context()).await.expect_err("refused");
+        assert_eq!(
+            failure(&error, OutputFormat::Text, "req-1", false).to_string(),
+            "Crew couldn't read its saved settings."
+        );
     }
 
     /// DW-07: `files watch` names each receipt's channel as `files status` does, and shows

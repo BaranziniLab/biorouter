@@ -2150,6 +2150,8 @@ impl Ctx {
             connection.push(format!("policy epoch {epoch}"));
         }
         let workspace = value.get("workspace").unwrap_or(&Value::Null);
+        // Read only while connected (SF2-N3): a `privacy show` made offline has none.
+        let unread = !workspace.is_object();
         // SF-F1: privacy is Public only when the connection is and the workspace allows it.
         let effective = match (
             str_field(value, "personal_mode"),
@@ -2161,8 +2163,18 @@ impl Ctx {
                     .map_or_else(|| "the workspace".to_owned(), display_text)
             ),
             (Some("public"), Some("public")) => "Public".to_owned(),
+            (Some("public"), _) if unread => "can't be checked while disconnected".to_owned(),
             (Some("public"), _) => "can't be checked".to_owned(),
             (own, _) => mode_word(own),
+        };
+        let workspace_line = if unread {
+            "Workspace: can't be checked while disconnected".to_owned()
+        } else {
+            self.with_id(
+                format!("Workspace: {}", workspace_privacy(workspace)),
+                "workspace ID",
+                str_field(workspace, "id"),
+            )
         };
         let mut out = vec![
             format!("Privacy: {effective}"),
@@ -2171,11 +2183,7 @@ impl Ctx {
                 "connection ID",
                 str_field(value, "connection_id"),
             ),
-            self.with_id(
-                format!("Workspace: {}", workspace_privacy(workspace)),
-                "workspace ID",
-                str_field(workspace, "id"),
-            ),
+            workspace_line,
         ];
         let channels = list_key(value, "channels");
         if !channels.is_empty() {
