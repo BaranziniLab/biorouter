@@ -626,10 +626,11 @@ fn host_administrative_operations_keep_headroom() {
         "enrollment.revoke",
         json!({"principal_id": mallory.principal_id, "expected_username": "mallory"}),
     );
-    ws.host_ok(
-        "policy.set",
-        json!({"mode": "private", "institution_id": "ucsf"}),
-    );
+    // A real change: re-sending the current policy is a no-op that proves nothing here.
+    let epoch = ws.broker.workspace().policy_epoch;
+    let changed = ws.host_ok("policy.set", json!({"mode": "public"}));
+    assert_eq!(changed["mode"], "public");
+    assert_eq!(changed["policy_epoch"], json!(epoch + 1));
     ws.host_ok("workspace.rename", json!({"name": "archive"}));
     // Reading still works.
     ws.host_snapshot();

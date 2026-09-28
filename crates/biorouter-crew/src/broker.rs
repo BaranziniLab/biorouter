@@ -3026,6 +3026,8 @@ impl Broker {
             actor.run.is_none(),
             "forbidden: human host policy decision required"
         );
+        let requested_mode = mode(p, "mode")?;
+        let mut institution = s.workspace.institution_id.clone();
         if let Some(value) = p.get("institution_id") {
             let requested: Option<String> =
                 serde_json::from_value(value.clone()).map_err(|_| {
@@ -3035,9 +3037,16 @@ impl Broker {
                 ensure!(is_canonical_institution_id(institution), "invalid_params: institution_id must be 1..64 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter or digit");
             }
             ensure!(s.workspace.institution_id.is_none() || s.workspace.institution_id == requested, "privacy_denied: workspace institution cannot be cleared or changed; use a new workspace");
-            s.workspace.institution_id = requested;
+            institution = requested;
         }
-        s.workspace.mode = mode(p, "mode")?;
+        // Re-sending the policy the workspace already has changes nothing: the epoch moves,
+        // and every grant ends, only when the mode or the institution really changes. A host
+        // who re-runs a setup step must not silently end every member's agent access.
+        if requested_mode == s.workspace.mode && institution == s.workspace.institution_id {
+            return Ok(json!(s.workspace));
+        }
+        s.workspace.institution_id = institution;
+        s.workspace.mode = requested_mode;
         s.workspace.policy_epoch += 1;
         for run in s.runs.values_mut() {
             run.revoked = true;

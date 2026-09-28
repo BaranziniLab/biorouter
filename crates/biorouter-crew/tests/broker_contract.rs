@@ -591,6 +591,102 @@ fn policy_epoch_invalidates_existing_worker_grant() {
     });
 }
 
+/// SF-F2: re-sending the policy the workspace already has (a host re-running a setup step)
+/// is a no-op. The epoch stays and every grant keeps working; only a real change ends them.
+#[test]
+fn resending_the_current_policy_keeps_every_worker_grant() {
+    let root = temp_root("policy-noop");
+    with_cleanup(&root, || {
+        let (mut broker, mut connection, key) = bootstrap(&root);
+        let mut call = |broker: &mut Broker, id: &str, method: &str, params: Value| {
+            signed(broker, &mut connection, &key, id, method, params)
+        };
+        let labelled = call(
+            &mut broker,
+            "label",
+            "policy.set",
+            json!({"mode":"private", "institution_id":"ucsf", "idempotency_key":"label"}),
+        )
+        .result
+        .unwrap();
+        let epoch = labelled["policy_epoch"].as_u64().unwrap();
+        let team = call(
+            &mut broker,
+            "team",
+            "team.create",
+            json!({"name":"noop", "idempotency_key":"team"}),
+        )
+        .result
+        .unwrap();
+        let channel = team["channel"]["id"].as_str().unwrap().to_owned();
+        let run = call(&mut broker, "run", "run.create", json!({
+            "channel_id": channel, "source_channels": [channel], "provider_policy_id": "private-test",
+            "personal_mode": "private", "public_provider": false, "expires_in": 60, "idempotency_key": "run"
+        }))
+        .result
+        .unwrap();
+        let credential = run["credential"].as_str().unwrap().to_owned();
+        let worker_read = |broker: &mut Broker, connection: &mut Connection, id: &str| {
+            broker
+                .handle(
+                    uid(),
+                    connection,
+                    Request {
+                        version: 1,
+                        id: id.into(),
+                        method: "context.manifest".into(),
+                        params: json!({}),
+                        auth: None,
+                        credential: Some(credential.clone()),
+                    },
+                )
+                .error
+                .map(|error| error.code)
+        };
+        let mut reader = Connection::new();
+        assert_eq!(worker_read(&mut broker, &mut reader, "read-before"), None);
+
+        // The same mode and institution, the same mode with the institution left out, and the
+        // same mode with the institution named again: each a new request, none a change.
+        for (index, params) in [
+            json!({"mode":"private", "institution_id":"ucsf"}),
+            json!({"mode":"private"}),
+            json!({"mode":"private", "institution_id":"ucsf"}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut params = params;
+            params["idempotency_key"] = json!(format!("same-{index}"));
+            let same = call(&mut broker, &format!("same-{index}"), "policy.set", params);
+            let workspace = same.result.expect("an unchanged policy is accepted");
+            assert_eq!(workspace["policy_epoch"], json!(epoch), "{index}");
+            assert_eq!(workspace["mode"], "private");
+            assert_eq!(workspace["institution_id"], "ucsf");
+            assert_eq!(
+                worker_read(&mut broker, &mut reader, &format!("read-{index}")),
+                None,
+                "an unchanged policy ended a grant ({index})"
+            );
+        }
+
+        // A real change still moves the epoch and ends the grant.
+        let changed = call(
+            &mut broker,
+            "change",
+            "policy.set",
+            json!({"mode":"public", "idempotency_key":"change"}),
+        )
+        .result
+        .unwrap();
+        assert_eq!(changed["policy_epoch"], json!(epoch + 1));
+        assert_eq!(
+            worker_read(&mut broker, &mut reader, "read-after").as_deref(),
+            Some("grant_expired")
+        );
+    });
+}
+
 #[test]
 fn idempotency_replays_exact_result_and_rejects_changed_payload() {
     let root = temp_root("idempotency");
