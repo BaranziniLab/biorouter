@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import type * as Api from '../../../api/types.gen';
 import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
+import { CREW_RECONNECTING } from '../api/errors';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { connectionNames } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
@@ -155,6 +156,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   // what the loss is has taken longer than `RECONNECTING_AFTER_MS` (Q4-07): its saved record is
   // being read again, or it is being observed again quietly. Never connected by the renderer.
   const [reconnecting, setReconnecting] = useState<string | null>(null);
+  // A re-dial the daemon said it owes the selected connection (RES2-N5), with when: see below.
+  const [redial, setRedial] = useState<{ connectionId: string; since: number } | null>(null);
   // The connection whose loss is being decided, before "Reconnecting…" may show (Q4-07).
   const [lossPending, setLossPending] = useState<string | null>(null);
   const reconnectingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -185,6 +188,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const onVerifiedFrame = useCallback(
     (id: string) => {
       forgetConnectFailure(id);
+      setRedial((current) => (current?.connectionId === id ? null : current));
       stopReconnectingTimer();
       setReconnecting((current) => (current === id ? null : current));
       setLossPending((current) => (current === id ? null : current));
@@ -255,6 +259,22 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     lostDrafts,
     dismissLostDraft,
   } = observation;
+
+  // The daemon is dialling the selected connection again by itself (RES2-N5): a request was
+  // answered `crew_reconnecting`, the one way it says so. Kept, with when it was first said, until
+  // the connection verifies, the daemon calls it connected, the person connects, or another
+  // connection is selected; the offline screen then shows one state, with that time and Connect.
+  const redialError = actions.error?.code === CREW_RECONNECTING ? actions.error : null;
+  useEffect(() => {
+    if (!redialError || !connectionId) return;
+    setRedial((current) =>
+      current?.connectionId === connectionId ? current : { connectionId, since: Date.now() }
+    );
+  }, [redialError, connectionId]);
+  const redialConnectionStatus = connections.find((item) => item.id === connectionId)?.status;
+  useEffect(() => {
+    if (redialConnectionStatus === 'connected') setRedial(null);
+  }, [redialConnectionStatus]);
 
   // A workspace chosen after it was removed from this computer (MSG2-N9): said once the selection
   // the fresh list made instead has settled. Declared after the observation, whose change of
@@ -598,9 +618,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const connect = async (opts?: { userInitiated?: boolean }) => {
     const target = connectionId;
     if (opts?.userInitiated) {
-      // The person's own connect replaces whatever a loss was waiting for.
+      // The person's own connect replaces whatever a loss was waiting for, and the daemon's re-dial.
       settleLoss();
       setReconnecting(null);
+      setRedial(null);
     }
     const token = lossToken.current;
     const accepted = await lifecycle.connect(opts);
@@ -929,6 +950,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connect,
     disconnect,
     reconnecting: isReconnecting,
+    redialSince: redial?.connectionId === connectionId ? redial.since : null,
     lastConnectFailure: connectFailure,
     reportConnectFailure: (failure: unknown) => {
       connectFailures.record(connectionId, failure);

@@ -596,7 +596,17 @@ export const emptyCopy = {
   brokerStoppedTitle: (server: string) => `Crew isn’t running on ${server}`,
   brokerStoppedHost: 'Start it on the server with this line, then connect:',
   brokerStoppedMember: (host: string | null) =>
-    `The workspace server isn’t running. Ask ${host ?? 'your host'} to start Crew.`,
+    `The workspace server isn’t running. Once ${host ?? 'your host'} starts Crew, this computer connects by itself within a few minutes, or you can connect now.`,
+  /**
+   * The daemon is dialling the connection again by itself (a request was answered
+   * `crew_reconnecting`, RES2-N5): one state for the whole wait, instead of "offline" under a bar
+   * that said "Reconnecting". `time` is when Crew first said so; its re-dials grow from 20 s to
+   * 3 min apart, so "a moment" was not true.
+   */
+  redialTitle: (workspace: string) => `Reconnecting to ${workspace}`,
+  redialBody: (time: string) =>
+    `The connection dropped, and Crew has been dialling it again by itself since ${time}. That can take a few minutes, and nothing reaches the workspace until then. You can connect now instead.`,
+  redialAction: 'Connect now',
   /** When this computer cannot tell whether its person hosts the workspace. */
   brokerStoppedUnknown: (workspace: string) =>
     `If you host ${workspace}, start it on the server with this line, then connect. Otherwise, ask your host to start Crew.`,

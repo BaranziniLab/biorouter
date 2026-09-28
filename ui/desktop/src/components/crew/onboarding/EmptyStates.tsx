@@ -136,8 +136,16 @@ export const CONNECTED_FOCUS_TARGETS: readonly string[] = [
 ];
 
 export function OfflineState() {
-  const { connect, isPending, connectionId, lastConnectFailure, connection, isHost, openDialog } =
-    useCrew();
+  const {
+    connect,
+    isPending,
+    connectionId,
+    lastConnectFailure,
+    connection,
+    isHost,
+    openDialog,
+    redialSince,
+  } = useCrew();
   const workspace = useConnectionLabel();
   const server = useServer();
   const joinContext = useJoinContext(connectionId);
@@ -179,6 +187,8 @@ export function OfflineState() {
     joinContext.workspaceName ?? (connection?.name && hosts ? connection.name : null) ?? null;
   const startLine = brokerStopped && hosts !== false ? brokerStartCommand(folder) : null;
   const keyRefused = cause === 'ssh_key_refused';
+  // The daemon is dialling it again by itself (RES2-N5): one state for the wait, with its time.
+  const redialing = typeof redialSince === 'number' && !keyRefused;
   const description = keyRefused
     ? emptyCopy.keyRefusedBody(
         server || workspace,
@@ -213,7 +223,7 @@ export function OfflineState() {
           });
         }}
       >
-        {emptyCopy.offlineAction(workspace)}
+        {redialing ? emptyCopy.redialAction : emptyCopy.offlineAction(workspace)}
       </Button>
       {cause === 'ssh_key_refused' && connectionId ? (
         <Button
@@ -280,9 +290,11 @@ export function OfflineState() {
         title={
           keyRefused
             ? emptyCopy.keyRefusedTitle(server || workspace)
-            : emptyCopy.offlineTitle(workspace)
+            : redialing
+              ? emptyCopy.redialTitle(workspace)
+              : emptyCopy.offlineTitle(workspace)
         }
-        description={description}
+        description={redialing ? emptyCopy.redialBody(attemptTime(redialSince)) : description}
         actions={actions}
       />
     </SetupScreen>

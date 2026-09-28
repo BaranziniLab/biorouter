@@ -210,6 +210,23 @@ describe('ConnectionBar', () => {
     expect(screen.queryByTestId('crew-server-storage')).toBeNull();
   });
 
+  /** RES2-N5: "Reconnecting … try again in a moment" over a main area that said "offline". */
+  it('leaves the daemon’s re-dial to the offline screen, which says it with its time', async () => {
+    installDaemon([{ ...connection, status: 'disconnected' }]);
+    observationFailure('Crew connection is not connected', 'observation_refused');
+    renderCrew(Layout);
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    act(() =>
+      currentCrew().reportError(
+        'Reconnecting to lab. Nothing was sent; try again in a moment.',
+        'global',
+        'crew_reconnecting'
+      )
+    );
+    await waitFor(() => expect(currentCrew().redialSince).not.toBeNull());
+    expect(bar()).not.toHaveTextContent(/Reconnecting to lab/);
+  });
+
   it('leaves a connection the daemon calls disconnected to its screen: no note, no Retry', async () => {
     // The offline screen offers Connect; a note here would repeat it with a Retry that can only
     // fail the same way (T-09).
@@ -920,7 +937,10 @@ describe('connectErrorText (NEW-1)', () => {
         hosts: false,
         hostName: 'Frank Okafor',
       })
-    ).toBe('The workspace server isn’t running. Ask Frank Okafor to start Crew.');
+    ).toBe(
+      // RES2-N4: not "Ask Frank Okafor to start Crew" for minutes after Frank had.
+      'The workspace server isn’t running. Once Frank Okafor starts Crew, this computer connects by itself within a few minutes, or you can connect now.'
+    );
     expect(connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11')).toBe(
       connectionBarCopy.brokerStopped('lab-debian11')
     );

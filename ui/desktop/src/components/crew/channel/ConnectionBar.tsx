@@ -4,6 +4,7 @@ import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { parseRefusal, refusalText, type RefusalViewer } from '../dialogs/refusals';
+import { CREW_RECONNECTING } from '../api/errors';
 import { buildPeopleDirectory, personLabel } from '../identity';
 import { useJoinContext } from '../onboarding/joinContext';
 import { sshUsername } from '../onboarding/joinText';
@@ -242,6 +243,10 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   // A closed channel's note describes the workspace view it was closed in: on a connection
   // problem screen, or while reconnecting, it is stale and not shown (Q2-19). The selection that
   // moves on dismisses it.
+  // The daemon's "Reconnecting to …; try again in a moment" answer, while the offline screen under
+  // the bar says the same with its time and Connect (RES2-N5): one state, not two that disagree.
+  const redialShownBelow =
+    offlineCardShown && actionError?.code === CREW_RECONNECTING && crew.redialSince != null;
   const staleChannelLoss =
     actionError?.source === 'observer' &&
     actionError.code === CHANNEL_LOST_ERROR_CODE &&
@@ -350,7 +355,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         </Note>
       )}
 
-      {actionError && !staleChannelLoss && (
+      {actionError && !staleChannelLoss && !redialShownBelow && (
         <Note
           tone="danger"
           role="alert"

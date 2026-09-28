@@ -910,6 +910,47 @@ describe('keeping one live observer', () => {
     expect(crew.connectionId).toBe(connection.id);
   });
 
+  /**
+   * RES2-N5: the daemon's "Reconnecting to …" answer was the only word the renderer had that a
+   * re-dial was owed; kept, with when, until the connection is back or the person connects.
+   */
+  it('keeps when the daemon said it is dialling again, until the view verifies or the person connects', async () => {
+    const sessions = controllableObserver();
+    renderController();
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    expect(crew.redialSince).toBeNull();
+
+    const before = Date.now();
+    act(() =>
+      crew.reportError(
+        'Reconnecting to lab. Nothing was sent; try again in a moment.',
+        'global',
+        'crew_reconnecting'
+      )
+    );
+    await waitFor(() => expect(crew.redialSince).not.toBeNull());
+    const since = crew.redialSince!;
+    expect(since).toBeGreaterThanOrEqual(before);
+    // Said again later: the time it was first said stands.
+    act(() => crew.dismissError());
+    act(() => crew.reportError('Reconnecting again.', 'global', 'crew_reconnecting'));
+    expect(crew.redialSince).toBe(since);
+
+    // The connection verifies again: nothing is owed.
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.redialSince).toBeNull());
+
+    // Or the person connects instead.
+    act(() => crew.reportError('Reconnecting.', 'global', 'crew_reconnecting'));
+    await waitFor(() => expect(crew.redialSince).not.toBeNull());
+    await act(async () => {
+      await crew.connect({ userInitiated: true });
+    });
+    expect(crew.redialSince).toBeNull();
+  });
+
   it('says a workspace chosen after it was removed from this computer was removed (MSG2-N9)', async () => {
     const gone = { ...connection, id: 'conn-2', name: 'bob-cap2' };
     mocks.crewHttp.mockImplementation(async (path: string) => {

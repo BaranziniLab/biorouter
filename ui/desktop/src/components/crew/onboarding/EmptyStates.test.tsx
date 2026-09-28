@@ -137,6 +137,12 @@ describe('connection states', () => {
       renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
       expect(screen.getByText(emptyCopy.brokerStoppedMember('Frank Okafor'))).toBeInTheDocument();
       expect(document.body.textContent).not.toMatch(/biorouter-crew/);
+      // RES2-N4: for minutes after the host started it, "Ask Frank Okafor to start Crew" asked
+      // for what was already done. It says Crew connects by itself, and that Connect is there.
+      expect(emptyCopy.brokerStoppedMember('Frank Okafor')).toBe(
+        'The workspace server isn’t running. Once Frank Okafor starts Crew, this computer connects by itself within a few minutes, or you can connect now.'
+      );
+      expect(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') })).toBeEnabled();
     });
 
     it('says both when this computer cannot tell whether its person hosts it', () => {
@@ -149,6 +155,24 @@ describe('connection states', () => {
       expect(brokerStartCommand('lab; rm -rf ~')).toContain('biorouter-crew/<folder>"');
       expect(brokerStartCommand('chen-lab')).toContain('biorouter-crew/chen-lab"');
     });
+  });
+
+  /**
+   * RES2-N5: while the daemon waited 60 or 180 s to dial again, the bar said "Reconnecting to
+   * okafor-lab … try again in a moment" over a main area that said "okafor-lab is offline".
+   */
+  it('says the daemon is dialling again, since when, with Connect now, instead of offline', () => {
+    const since = new Date(2026, 8, 27, 21, 28).getTime();
+    const crew = crewWith({
+      connection: fakeConnection({ status: 'disconnected' }),
+      redialSince: since,
+    });
+    renderWithCrew(<OfflineState />, crew);
+    expect(screen.getByRole('heading', { name: emptyCopy.redialTitle('lab') })).toBeInTheDocument();
+    expect(screen.getByText(emptyCopy.redialBody(attemptTime(since)))).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/is offline/);
+    fireEvent.click(screen.getByRole('button', { name: emptyCopy.redialAction }));
+    expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
   });
 
   // F5: a refused key is a login matter, not a password one. SC2-N9: titled for that, and naming

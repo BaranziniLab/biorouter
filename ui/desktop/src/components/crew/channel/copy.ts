@@ -110,7 +110,7 @@ export const connectionBarCopy = {
   brokerStoppedHost: (host: string) =>
     `Crew isn’t running on ${host || 'the server'}. Start it on the server, then connect.`,
   brokerStoppedMember: (hostName: string | null) =>
-    `The workspace server isn’t running. Ask ${hostName ?? 'your host'} to start Crew.`,
+    `The workspace server isn’t running. Once ${hostName ?? 'your host'} starts Crew, this computer connects by itself within a few minutes, or you can connect now.`,
   /** The same when this computer cannot tell whether its person hosts the workspace. */
   brokerStopped: (host: string) =>
     `Crew isn’t running on ${host || 'the server'}. Its host starts it again on the server.`,

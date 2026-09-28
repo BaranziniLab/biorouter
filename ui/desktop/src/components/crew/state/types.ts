@@ -317,6 +317,13 @@ export interface CrewController {
    * never connects it by itself. Absent: false.
    */
   reconnecting?: boolean;
+  /**
+   * When the daemon first said it is dialling the selected connection again by itself (a request
+   * answered `crew_reconnecting`, W2-DMN-6), in ms since the epoch, while that stands: the main
+   * area then says so, with the time and Connect, rather than "offline" under a bar that says
+   * "Reconnecting" (RES2-N5). Null or absent otherwise.
+   */
+  redialSince?: number | null;
   lastConnectFailure: LastConnectFailure | null;
   /** Classify and record a failure a layout observed (for example sign-in ending with a code). */
   reportConnectFailure(failure: unknown): void;
