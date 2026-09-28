@@ -380,9 +380,9 @@ pub fn mode_mismatch_text(actual: &str, expected: &str) -> String {
 /// The broker's role, archive, provenance and storage refusals in words for a person, naming
 /// what `place` knows. `key` is the refusal's text after its code, lowercase, without a closing
 /// full stop. `None` for any other refusal.
-fn placed_refusal(code: &str, key: &str, place: &RefusalPlace) -> Option<String> {
+fn placed_refusal(code: &str, sentence: &str, key: &str, place: &RefusalPlace) -> Option<String> {
     if matches!(code, "storage_failed" | "storage_full") {
-        return Some(storage_refusal(place));
+        return Some(storage_refusal(code, sentence, place));
     }
     Some(match key {
         // `manager()`'s check is the host's account, not one of its devices.
@@ -412,21 +412,55 @@ fn placed_refusal(code: &str, key: &str, place: &RefusalPlace) -> Option<String>
     })
 }
 
-/// A workspace server that can no longer save (`storage_full` after a full disk or quota,
-/// `storage_failed` after that or any other write fault): every change is refused until the host
-/// restarts Crew, and only the host can (R-2). Reading still works.
-fn storage_refusal(place: &RefusalPlace) -> String {
+/// A workspace server that cannot save a change (R-2, W2-BRK-3): `storage_full` for a full
+/// disk or quota, `storage_failed` for any other write fault. Reading still works, and only the
+/// host can put it right, on the server.
+///
+/// A current broker says what happened in a sentence of its own, and it matters which: the
+/// change was not saved, it may not have been ([`storage_outcome_unknown`]), or nothing more
+/// can be saved until Crew restarts. That sentence is kept, naming the host when this command
+/// could read who they are, and a host is told, on a line of its own, what to run. An older
+/// broker's "restart and recover before further mutations" was written for no one, and is said
+/// plainly instead.
+fn storage_refusal(code: &str, sentence: &str, place: &RefusalPlace) -> String {
     const LEAD: &str = "The workspace server can't save changes right now.";
-    match place.host {
-        Some(true) => format!(
-            "{LEAD} Free space on {}, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir.",
-            place.server.as_deref().unwrap_or("the server")
-        ),
-        _ => format!(
+    let host = place.host == Some(true);
+    let said = if reads_as_sentence(sentence) {
+        match place.host_label.as_deref().filter(|_| !host) {
+            Some(label) => sentence.replacen("Ask the host ", &format!("Ask {label} "), 1),
+            None => sentence.to_owned(),
+        }
+    } else if host {
+        LEAD.to_owned()
+    } else {
+        format!(
             "{LEAD} Ask {} to restart Crew.",
             place.host_label.as_deref().unwrap_or("the host")
-        ),
+        )
+    };
+    if !host {
+        return said;
     }
+    let server = place.server.as_deref().unwrap_or("the server");
+    let first = match code {
+        "storage_full" => format!("Free space on {server}"),
+        _ if reads_as_sentence(sentence) => format!("Check the storage on {server}"),
+        // An older broker said storage_failed for a full disk too.
+        _ => format!("Free space on {server} if it is full"),
+    };
+    format!(
+        "{said}\nYou host this workspace. {first}, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+    )
+}
+
+/// Whether a storage refusal says the change may have been saved after all (the broker's
+/// "…so it may not have been saved."): an outcome that is not known, so the one safe retry,
+/// the same request ID, is offered. The broker has no code of its own for it.
+pub fn storage_outcome_unknown(code: &str, message: &str) -> bool {
+    matches!(code, "storage_failed" | "storage_full")
+        && message
+            .to_ascii_lowercase()
+            .contains("may not have been saved")
 }
 
 /// What a refusal that carried only its code says (`stale_cursor`, with no text of its own).
@@ -496,7 +530,7 @@ pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -
         .map_or(message, |(_, rest)| rest.trim());
     let lower = sentence.to_ascii_lowercase();
     let key = lower.trim().trim_end_matches(['.', '!', '?']);
-    if let Some(placed) = placed_refusal(code, key, place) {
+    if let Some(placed) = placed_refusal(code, sentence, key, place) {
         return placed;
     }
     let shown = match (code, username_in(sentence)) {
@@ -600,6 +634,14 @@ pub fn connect_failure_text(code: &str) -> Option<&'static str> {
     Some(match code {
         "crew_ssh_auth_required" => {
             "The server wants your password or a verification code. Run biorouter crew auth to sign in."
+        }
+        // W2-DMN-5: a publickey-only refusal is a login matter, not a password one.
+        "crew_ssh_key_refused" => {
+            "The server refused this computer's SSH key. Check the server login and key file of the saved connection (biorouter crew connections show), then connect again."
+        }
+        // W2-DMN-5, R-7: the server answered, but the workspace server on it is not running.
+        "crew_broker_not_running" => {
+            "Crew isn't running on the server. If you host this workspace, start it there as the manual's After the server restarts shows, then connect again. Otherwise, ask your host to start Crew."
         }
         "crew_ssh_host_key_unknown" => {
             "Crew can't verify the server yet: its host key isn't in your known hosts file. Get the server's fingerprint from your IT team, compare it, add the full key to your known hosts file, then connect again."
@@ -1703,9 +1745,10 @@ impl Ctx {
                     "Private because {workspace} is Private for everyone · your connection: Public"
                 )
             }
-            Some(Effective::Unknown) => {
-                "Your connection: Public · workspace privacy unknown while disconnected".to_owned()
-            }
+            Some(Effective::Unknown) => format!(
+                "Your connection: Public · workspace privacy unknown {}",
+                unchecked_because(connection)
+            ),
         });
         let mut out = vec![self.with_id(
             parts.join(" · "),
@@ -1751,7 +1794,10 @@ impl Ctx {
                 out.push(format!("  Your connection: {}", privacy.join(" · ")));
             }
             Some(Effective::Unknown) => {
-                out.push("  Privacy: can't be checked while disconnected".to_owned());
+                out.push(format!(
+                    "  Privacy: can't be checked {}",
+                    unchecked_because(connection)
+                ));
                 out.push(format!("  Your connection: {}", privacy.join(" · ")));
             }
         }
@@ -2693,6 +2739,16 @@ impl Effective {
     }
 }
 
+/// Why a Public connection's workspace privacy was not read: it is disconnected, or the
+/// workspace did not answer in time.
+fn unchecked_because(connection: &Value) -> &'static str {
+    if str_field(connection, "status") == Some("connected") {
+        "right now"
+    } else {
+        "while disconnected"
+    }
+}
+
 /// The privacy a connection in `own` mode has in a workspace in `workspace` mode (SF-F1, the
 /// manual's definition): Private when either is, Public only when both allow it, and unknown
 /// when the connection is Public and the workspace's mode could not be read.
@@ -3553,6 +3609,10 @@ mod tests {
             show.contains("  Privacy: Private (okafor-lab is Private for everyone)\n  Your connection: Public · institution stanford · policy epoch 2"),
             "{show}"
         );
+        // Connected but unanswered, it says it can't be checked right now.
+        let mut unanswered = public.clone();
+        unanswered["effective_mode"] = Value::Null;
+        assert!(plain(&unanswered).contains("  Privacy: can't be checked right now\n"));
         // Offline, the workspace's setting can't be read, and it says so.
         let mut offline = public.clone();
         offline["status"] = json!("disconnected");
@@ -4311,7 +4371,8 @@ mod tests {
             "forbidden: reference provenance cannot be dropped",
             "That remote reference was shared in another channel. Share it there, or add it again here.",
         ),
-        // R-2: the host's action, never "restart and recover" to someone who cannot restart.
+        // R-2: never "restart and recover" to someone who cannot restart. An older broker's
+        // technical text is said plainly; a current broker's own sentence is kept.
         (
             "storage_failed",
             "storage_failed: restart and recover before further mutations",
@@ -4319,8 +4380,13 @@ mod tests {
         ),
         (
             "storage_full",
-            "storage_full: The workspace server is out of disk space.",
-            "The workspace server can't save changes right now. Ask the host to restart Crew.",
+            "storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.",
+            "The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.",
+        ),
+        (
+            "storage_failed",
+            "storage_failed: The workspace server could not confirm this change was saved to disk, so it may not have been saved. Reading still works. Ask the host to check the server's storage and restart Crew.",
+            "The workspace server could not confirm this change was saved to disk, so it may not have been saved. Reading still works. Ask the host to check the server's storage and restart Crew.",
         ),
         (
             "unauthorized",
@@ -4375,6 +4441,31 @@ mod tests {
             "the broker writes {legacy} again: it is no longer legacy"
         );
         assert_eq!(broker_refusal_text("quota_exceeded", &legacy), STORAGE_FULL);
+    }
+
+    /// The broker's storage sentences the CLI keeps, and the words it reads an unknown outcome
+    /// from, are the broker's own: if they drift, this says so.
+    #[test]
+    fn each_storage_sentence_fixture_is_the_brokers_literal_text() {
+        const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
+        let current: Vec<&str> = BROKER_REFUSALS
+            .iter()
+            .filter(|(code, broker, _)| {
+                matches!(*code, "storage_full" | "storage_failed") && !broker.contains("recover")
+            })
+            .map(|(_, broker, _)| *broker)
+            .collect();
+        assert_eq!(current.len(), 2, "{current:#?}");
+        for text in current {
+            assert!(
+                BROKER.contains(&format!("\"{text}\"")),
+                "{text} is not a literal in broker.rs"
+            );
+        }
+        assert!(
+            BROKER.contains("so it may not have been saved."),
+            "the broker no longer says an outcome is unknown this way"
+        );
     }
 
     /// A reworded text the broker never writes is a check that can never fire, so the role,
@@ -4439,20 +4530,39 @@ mod tests {
             said("storage_failed", "storage_failed: restart and recover before further mutations", &place),
             "The workspace server can't save changes right now. Ask \"Alice Chen\" (@alice) to restart Crew."
         );
+        const FULL: &str = "storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+        assert_eq!(
+            said("storage_full", FULL, &place),
+            "The workspace server is out of disk space, so this change was not saved. Reading still works. Ask \"Alice Chen\" (@alice) to free space on the server and restart Crew."
+        );
         let host = RefusalPlace {
             host: Some(true),
             ..place.clone()
         };
-        let text = said(
-            "storage_full",
-            "storage_full: No space left on device.",
+        let text = said("storage_full", FULL, &host);
+        assert_eq!(
+            text,
+            "The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.\nYou host this workspace. Free space on hpc.ucsf.edu, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+        );
+        let old = said(
+            "storage_failed",
+            "storage_failed: restart and recover before further mutations",
             &host,
         );
         assert_eq!(
-            text,
-            "The workspace server can't save changes right now. Free space on hpc.ucsf.edu, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+            old,
+            "The workspace server can't save changes right now.\nYou host this workspace. Free space on hpc.ucsf.edu if it is full, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
         );
-        assert!(!text.to_ascii_lowercase().contains("recover"), "{text}");
+        assert!(!old.to_ascii_lowercase().contains("recover"), "{old}");
+        assert!(storage_outcome_unknown(
+            "storage_full",
+            "storage_full: The workspace server ran out of disk space while saving this change, so it may not have been saved."
+        ));
+        assert!(!storage_outcome_unknown("storage_full", FULL));
+        assert!(!storage_outcome_unknown(
+            "forbidden",
+            "may not have been saved"
+        ));
         // Only the texts it rewords take the place: another refusal is unchanged.
         assert_eq!(
             said("forbidden", "forbidden: channel unavailable", &place),

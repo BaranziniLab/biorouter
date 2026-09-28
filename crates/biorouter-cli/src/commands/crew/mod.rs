@@ -467,6 +467,9 @@ fn error_code(error: &anyhow::Error) -> Option<String> {
 const OUTCOME_UNKNOWN: &str = "crew_outcome_unknown";
 /// The daemon's code for a request it never wrote to the workspace.
 const NOT_SENT: &str = "crew_not_sent";
+/// The daemon's code for a request it did not send because it is dialling a broken bridge
+/// again (W2-DMN-6): nothing was sent, and the same command works in a moment.
+const RECONNECTING: &str = "crew_reconnecting";
 
 /// Whether the change may have landed although the command failed (R-3), so the one safe retry,
 /// the same request ID, is offered. A refusal is a definite answer: nothing changed. So is a
@@ -480,11 +483,19 @@ fn outcome_uncertain(error: &anyhow::Error) -> bool {
     {
         return false;
     }
+    // The broker says it could not tell whether a change was saved (W2-BRK-3).
+    if error
+        .chain()
+        .find_map(broker_refusal)
+        .is_some_and(|(code, message)| output::storage_outcome_unknown(code, message))
+    {
+        return true;
+    }
     match refusal(error) {
         None => true,
         Some(refused) => match refused.code.as_deref() {
             Some(OUTCOME_UNKNOWN) => true,
-            Some(NOT_SENT) => false,
+            Some(NOT_SENT | RECONNECTING) => false,
             _ => refused.status >= 500,
         },
     }
@@ -517,6 +528,12 @@ fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> 
             Some((actual, expected)) => Some(output::mode_mismatch_text(actual, expected)),
             None => own(),
         },
+        // The daemon's other typed refusals (W2-DMN-6, 9, 10) are written for a person.
+        RECONNECTING
+        | "crew_public_model_refused"
+        | "crew_channel_not_in_workspace"
+        | "crew_model_fixed"
+        | "crew_credential_store_unavailable" => own(),
         _ => None,
     }
 }
@@ -1013,15 +1030,19 @@ impl Api {
         let Some(id) = connection["id"].as_str().and_then(|id| component(id).ok()) else {
             return with_privacy_of(connection, None);
         };
-        let snapshot = self
-            .client
-            .request(
+        // A listing must not wait on a workspace that is slow to answer: after a few seconds
+        // its privacy reads as not checked, as it does offline.
+        let snapshot = tokio::time::timeout(
+            Duration::from_secs(10),
+            self.client.request(
                 "POST",
                 &format!("/crew/connections/{id}/request"),
                 Some(json!({"method": "workspace.snapshot", "params": {}, "request_id": null})),
-            )
-            .await
-            .ok();
+            ),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
         with_privacy_of(connection, snapshot.as_ref())
     }
 
@@ -4193,8 +4214,12 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
         } => {
             let connection = api.connection().await?;
             // SF-F1: in a workspace that is Private for everyone, a public connection changes
-            // nothing until the host allows Public, and the person is told so.
-            let snapshot = api.snapshot().await.ok();
+            // nothing until the host allows Public, and the person is told so. Going Private
+            // waits on nothing it does not need.
+            let snapshot = match mode {
+                PrivacyMode::Public => api.snapshot().await.ok(),
+                PrivacyMode::Private => None,
+            };
             let workspace_private = snapshot
                 .as_ref()
                 .is_some_and(|snapshot| snapshot["workspace"]["mode"] == "private");
@@ -6813,6 +6838,8 @@ mod tests {
 
         for code in [
             "crew_ssh_auth_required",
+            "crew_ssh_key_refused",
+            "crew_broker_not_running",
             "crew_ssh_host_key_unknown",
             "crew_ssh_host_key_changed",
             "crew_ssh_unreachable",
@@ -6945,7 +6972,21 @@ mod tests {
         // Alice hosts lab (her UID is the host's), on the server her login names.
         let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
         assert!(
-            shown.starts_with("The workspace server can't save changes right now. Free space on hpc, then restart Crew there"),
+            shown.starts_with("The workspace server can't save changes right now.\nYou host this workspace. Free space on hpc if it is full, then restart Crew there"),
+            "{shown}"
+        );
+        assert!(!shown.contains("--request-id"), "a refusal: {shown}");
+
+        // W2-BRK-3: a change that may have been saved offers the one safe retry.
+        const MAYBE: &str = "storage_full: The workspace server ran out of disk space while saving this change, so it may not have been saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing("message.post", "storage_full", MAYBE),
+        );
+        let error = run(&api, post()).await.expect_err("maybe saved");
+        let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+        assert!(
+            shown.ends_with("Retry safely with --request-id req-1"),
             "{shown}"
         );
 
@@ -7606,6 +7647,24 @@ mod tests {
         assert_eq!(
             failure(&not_sent, OutputFormat::Text, "req-1", true).to_string(),
             "Nothing was sent; run it again."
+        );
+        // Nor did one it held back while dialling a broken bridge again (W2-DMN-6).
+        const RECONNECTING_TEXT: &str =
+            "Reconnecting to lab. Nothing was sent; try again in a moment.";
+        let reconnecting = refuse(503, Some("crew_reconnecting"), RECONNECTING_TEXT);
+        assert_eq!(
+            failure(&reconnecting, OutputFormat::Text, "req-1", true).to_string(),
+            RECONNECTING_TEXT
+        );
+        // The daemon's other typed refusals are its own sentence, without "Daemon returned".
+        let fixed = refuse(
+            409,
+            Some("crew_model_fixed"),
+            "This chat's model is fixed by its Crew access. Start a new chat to use another model.",
+        );
+        assert_eq!(
+            failure(&fixed, OutputFormat::Text, "req-1", true).to_string(),
+            "This chat's model is fixed by its Crew access. Start a new chat to use another model."
         );
         // M16: nor did one the connection here handed back unsent, though it carried the ID.
         let unsent: anyhow::Error = crate::daemon_client::NotSent::for_test().into();
