@@ -1,4 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -123,6 +133,68 @@ describe('isSensitivePreviewPath', () => {
     expect(isSensitivePreviewPath(path.join(home, 'project', 'out.csv'))).toBe(false);
     expect(isSensitivePreviewPath(path.join(os.tmpdir(), 'scratch.txt'))).toBe(false);
     expect(isSensitivePreviewPath('/tmp/qa/hi.txt')).toBe(false);
+  });
+});
+
+/**
+ * AG-F6: the temp-tree exemption ran before the home-folder deny, so with HOME
+ * under `/tmp`, `$TMPDIR` or `/var/folders` every credential folder in it was
+ * "scratch" and previewable in every mode. The QA stage's profiles live under
+ * `/private/tmp`, and the panel opened `~/.ssh/config` in full.
+ */
+describe('isSensitivePreviewPath with HOME inside a temp tree', () => {
+  let tempHome: string;
+  let homedir: MockInstance<typeof os.homedir>;
+  const credentialPaths = [
+    ['.ssh', 'config'],
+    ['.ssh', 'id_ed25519'],
+    ['.aws', 'credentials'],
+    ['Library', 'Keychains', 'x'],
+    ['.gnupg', 'pubring.kbx'],
+  ];
+
+  beforeEach(() => {
+    // The temp dir as the OS spells it (on macOS `/var/folders/...`, a link to
+    // `/private/var/folders/...`), so both the given and canonical homes are
+    // exercised.
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-home-'));
+    for (const parts of credentialPaths) {
+      fs.mkdirSync(path.join(tempHome, ...parts.slice(0, -1)), { recursive: true });
+      fs.writeFileSync(path.join(tempHome, ...parts), 'not a real credential');
+    }
+    homedir = vi.spyOn(os, 'homedir').mockReturnValue(tempHome);
+  });
+
+  afterEach(() => {
+    homedir.mockRestore();
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  it('denies the credential folders in normal and Fully-Automatic mode', () => {
+    for (const home of [tempHome, fs.realpathSync(tempHome)]) {
+      for (const parts of credentialPaths) {
+        const candidate = path.join(home, ...parts);
+        expect(isSensitivePreviewPath(candidate), candidate).toBe(true);
+        for (const fullyAutomatic of [false, true]) {
+          expect(
+            isFilePathAllowedForPreview(candidate, [home, os.tmpdir(), '/tmp'], {
+              fullyAutomatic,
+            }),
+            `${candidate} (fullyAutomatic: ${fullyAutomatic})`
+          ).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('keeps the rest of that home, and the temp tree, previewable', () => {
+    const notes = path.join(tempHome, 'notes.txt');
+    fs.writeFileSync(notes, 'hello');
+    expect(isSensitivePreviewPath(notes)).toBe(false);
+    expect(
+      isFilePathAllowedForPreview(notes, [tempHome, os.tmpdir()], { fullyAutomatic: false })
+    ).toBe(true);
+    expect(isSensitivePreviewPath(path.join(os.tmpdir(), 'scratch.txt'))).toBe(false);
   });
 });
 

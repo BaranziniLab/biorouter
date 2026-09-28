@@ -119,26 +119,52 @@ function isTempPreviewPath(canonicalLower: string): boolean {
   );
 }
 
+/** `p` resolved and lowercased with `/` separators, but NOT canonicalized: the
+ *  spelling the caller used, so a home named through a link still matches. */
+function spelledPath(p: string): string {
+  return path.resolve(p).toLowerCase().split(path.sep).join('/');
+}
+
+/** Whether `candidate` (in comparison form) lies in one of the credential and
+ *  persistence folders below `home` (in the same form). */
+function isSensitiveHomeSubpath(candidate: string, home: string): boolean {
+  if (!home || home === '/' || !(candidate === home || candidate.startsWith(home + '/'))) {
+    return false;
+  }
+  const rel = candidate === home ? '' : candidate.slice(home.length + 1);
+  return SENSITIVE_HOME_SUBPATHS.some((sub) => rel === sub || rel.startsWith(sub + '/'));
+}
+
 /**
  * Whether previewing `candidate` would expose an extremely-sensitive location
  * (system directory, SSH keys, keychains, launchd, cloud creds, browser
  * credential stores). Denied in EVERY mode. Symlink-aware: the path is
  * canonicalized first so a symlink cannot dodge the check.
+ *
+ * ⚠ The home-folder deny runs BEFORE the temp-tree exemption, and is asked of
+ * the canonical home and of HOME as given. The exemption used to come first,
+ * so with HOME under `/tmp`, `$TMPDIR` or `/var/folders` (a test profile, a
+ * container, a CI runner) every `~/.ssh`, `~/.aws` and `~/Library/Keychains`
+ * path was "temp scratch" and previewable in every mode (AG-F6). A credential
+ * folder is one wherever the home happens to live.
  */
 export function isSensitivePreviewPath(candidate: string): boolean {
   const canonical = comparisonPath(candidate);
+  const spelled = spelledPath(candidate);
+  const homeGiven = os.homedir();
+  if (homeGiven) {
+    const homes = [comparisonPath(homeGiven), spelledPath(homeGiven)];
+    for (const home of homes) {
+      if (isSensitiveHomeSubpath(canonical, home) || isSensitiveHomeSubpath(spelled, home)) {
+        return true;
+      }
+    }
+  }
+
   if (isTempPreviewPath(canonical)) return false;
 
   for (const prefix of [...SENSITIVE_ABSOLUTE_PREFIXES, ...windowsSensitivePrefixes()]) {
     if (canonical === prefix || canonical.startsWith(prefix + '/')) return true;
-  }
-
-  const home = comparisonPath(os.homedir());
-  if (home && (canonical === home || canonical.startsWith(home + '/'))) {
-    const rel = canonical === home ? '' : canonical.slice(home.length + 1);
-    for (const sub of SENSITIVE_HOME_SUBPATHS) {
-      if (rel === sub || rel.startsWith(sub + '/')) return true;
-    }
   }
   return false;
 }
