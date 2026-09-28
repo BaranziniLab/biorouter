@@ -240,6 +240,10 @@ function ChannelTimeline({
   const backlogComplete = historyBefore === null ? view.backlogComplete : undefined;
   const dir = usePeopleDirectory(snapshot, labels, view.people ?? null);
   const viewerId = typeof snapshot.actor?.id === 'string' ? snapshot.actor.id : null;
+  const viewerUsername =
+    typeof snapshot.actor?.username === 'string' && snapshot.actor.username
+      ? snapshot.actor.username
+      : null;
   const slug = channelSlug(channel);
   const scroller = useRef<ScrollAreaHandle>(null);
   const loadKey = historyBefore ?? 'live';
@@ -597,6 +601,7 @@ function ChannelTimeline({
     () => ({
       dir,
       viewerId,
+      viewerUsername,
       readOnly,
       renderAttachments,
       ownAgentChats,
@@ -610,6 +615,7 @@ function ChannelTimeline({
     [
       dir,
       viewerId,
+      viewerUsername,
       readOnly,
       renderAttachments,
       ownAgentChats,

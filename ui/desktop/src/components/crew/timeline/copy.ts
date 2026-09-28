@@ -102,6 +102,24 @@ export const timelineCopy = {
   linkNotOpenedEmail: 'Biorouter doesn’t open email links. Copy the address into your email app.',
   linkNotOpenedPrivate:
     'Biorouter opens only public web addresses in your browser. Copy this one to open it yourself.',
+  /**
+   * A link whose words look like an address on another host (QA M4): the host it really opens,
+   * drawn after the words and read with them. `host` is the target's host name.
+   */
+  linkRealHost: (host: string) => `(${host})`,
+  /** The same host, in the link's accessible name: what the words say, then where it goes. */
+  linkGoesTo: (words: string, host: string) => `${words}, opens ${host}`,
+
+  /**
+   * A character that draws nothing, or reorders what follows it, shown as its escape (QA M3,
+   * SEC-9): the escape's tooltip. `codePoint` is `U+202E`.
+   */
+  hiddenCharacter: (codePoint: string) => `Hidden character ${codePoint}`,
+  /**
+   * A message that mentions the viewer (QA M2): read after its author and time as the row's name,
+   * so a list of messages says which ones are addressed to you.
+   */
+  mentionsYou: 'mentions you',
 
   /** Pinned. */
   viewingEarlier: 'Viewing earlier messages',

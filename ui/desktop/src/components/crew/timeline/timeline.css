@@ -192,6 +192,17 @@
   animation: biorouter-tool-enter 160ms var(--ease-out) both;
 }
 
+/* A message that mentions you (QA M2): an accent edge and a faint wash, from
+   the mention chip its body marks. A background image, not a colour, so the
+   hover and focus fills above still show through it. */
+.crew-message-row:has(.crew-md-mention[data-mention='you']) {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--accent-bar) 8%, transparent),
+    color-mix(in srgb, var(--accent-bar) 8%, transparent)
+  );
+  box-shadow: inset 2px 0 0 var(--accent-bar);
+}
+
 .crew-message-gutter {
   display: flex;
   align-items: flex-start;
@@ -409,6 +420,31 @@
   flex-shrink: 0;
 }
 
+/* A mention of you inside a message (QA M2). */
+.crew-md-mention {
+  padding: 0 2px;
+  border-radius: var(--radius-inner);
+  background-color: color-mix(in srgb, var(--accent-bar) 16%, transparent);
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+/* A character that draws nothing or reorders the words after it, shown as its
+   escape (QA M3, SEC-9): mono, muted and boxed, so it reads as a marker and
+   never as part of the words. */
+.crew-md-hidden-char {
+  display: inline-block;
+  margin-inline: 1px;
+  padding: 0 3px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-inner);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: normal;
+  unicode-bidi: isolate;
+}
+
 .crew-md-code-inline {
   padding: 1px 4px;
   border-radius: var(--radius-inner);
@@ -556,7 +592,8 @@
   padding: 11px 16px;
   border: 0;
   border-block-start: 1px solid var(--border-subtle);
-  text-align: left;
+  /* Each cell is `dir="auto"`: a right-to-left cell starts at its right edge. */
+  text-align: start;
   vertical-align: top;
   /* Never inherit the body's `overflow-wrap: anywhere`: it split "Sample" into
      "Sampl / e" once the pane narrowed the column. A table that is too wide

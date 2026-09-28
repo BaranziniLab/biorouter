@@ -645,6 +645,75 @@ describe('the log', () => {
   });
 });
 
+/**
+ * QA M2: a message that mentions you read like any other. QA M3: an agent's tool updates and a
+ * message's Copy are the two places a body's text reaches the screen or the clipboard without the
+ * markdown step.
+ */
+describe('mentions and hidden characters in rows', () => {
+  it('names a row that mentions the viewer, and no other row', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 'to-you', body: 'Hey @Alice, the plate is ready.' }),
+          message({ id: 'other', actor_id: ID.carol, body: 'Thanks @bob.' }),
+          message({ id: 'yours', actor_id: ID.alice, body: 'Noting this for @alice.' }),
+          message({ id: 'in-code', body: 'Try `@alice`.', at: new Date(2026, 8, 22, 10, 30) }),
+        ],
+      })
+    );
+    const named = screen
+      .getAllByRole('group')
+      .filter((row) => row.hasAttribute('data-crew-row'))
+      .map((row) => /mentions you$/.test(row.getAttribute('aria-labelledby') ? nameOf(row) : ''));
+    expect(named).toEqual([true, false, false, false]);
+    expect(screen.getAllByText('@Alice')[0]).toHaveClass('crew-md-mention');
+  });
+
+  it('shows the hidden characters of an agent’s tool update', async () => {
+    const { container } = renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 't', actor_id: ID.alice, run_id: ID.run, body: 'Task: List the files' }),
+          message({
+            id: 'trace',
+            actor_id: ID.alice,
+            run_id: ID.run,
+            body: 'Requested remote.execute: ls \u{202E}txt.exe',
+          }),
+          message({ actor_id: ID.alice, run_id: ID.run, body: 'Listed.' }),
+        ],
+      })
+    );
+    await userEvent
+      .setup(pointerAnywhere)
+      .click(screen.getByRole('button', { name: timelineCopy.showDetails }));
+    const line = container.querySelector('.crew-trace-line') as HTMLElement;
+    expect(line).toHaveAttribute('dir', 'auto');
+    expect(line.textContent).toBe('Requested remote.execute: ls \\u{202e}txt.exe');
+  });
+
+  it('copies the bytes that were sent, not what is drawn', async () => {
+    const body = 'invoice_\u{202E}gnp.exe for @cre\u{200B}w_alice';
+    renderWithController(<Timeline />, makeController({ messages: [message({ body })] }));
+    const user = userEvent.setup(pointerAnywhere);
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText');
+    await user.click(screen.getByRole('button', { name: /^Copy text of Bob Lee’s message/ }));
+    expect(writeText).toHaveBeenCalledWith(body);
+  });
+});
+
+/** The accessible name of an element labelled by `aria-labelledby`, as the tree computes it. */
+function nameOf(element: HTMLElement): string {
+  return (element.getAttribute('aria-labelledby') ?? '')
+    .split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
+    .filter(Boolean)
+    .join(' ');
+}
+
 describe('copying', () => {
   it('hands its consumers one copy action for its whole life', () => {
     // A new action on every render re-rendered every row's actions on every

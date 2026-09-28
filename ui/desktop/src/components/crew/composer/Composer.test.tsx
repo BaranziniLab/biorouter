@@ -102,6 +102,11 @@ describe('Crew composer', () => {
     expect(input).not.toBeDisabled();
   });
 
+  it('lays out what is typed in its own direction, so Hebrew runs right to left (QA M13)', () => {
+    renderComposer();
+    expect(screen.getByLabelText('Message #general')).toHaveAttribute('dir', 'auto');
+  });
+
   describe('keys', () => {
     it('does not send or prevent Shift+Enter, so it inserts a newline', () => {
       const send = vi.fn(async () => undefined);

@@ -266,6 +266,144 @@ describe('markdown', () => {
   });
 });
 
+/**
+ * QA M3, M13 and SEC-9: every other Crew surface already neutralises a bidi override and a
+ * zero-width character, and message bodies were the one raw surface left. Escapes are braced so
+ * this file never holds the characters it tests.
+ */
+describe('hidden characters and direction', () => {
+  const hiddenMarks = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('.crew-md-hidden-char')).map((node) => node.textContent);
+
+  it('shows a right-to-left override as its escape instead of reversing the words', () => {
+    const { container } = render(
+      <MessageBody body={'Please open invoice_\u{202E}gnp.exe and dangling \u{202E}override'} />
+    );
+    expect(hiddenMarks(container)).toEqual(['\\u{202e}', '\\u{202e}']);
+    // No live override is left anywhere in what is drawn.
+    expect(container.textContent).not.toMatch(/[\u{202A}-\u{202E}\u{2066}-\u{2069}]/u);
+    expect(container).toHaveTextContent('invoice_\\u{202e}gnp.exe');
+    const mark = container.querySelector('.crew-md-hidden-char');
+    expect(mark).toHaveAttribute('title', timelineCopy.hiddenCharacter('U+202E'));
+    expect(mark).toHaveAttribute('dir', 'ltr');
+  });
+
+  it('shows a zero-width character that would make one handle look like another', () => {
+    const { container } = render(
+      <MessageBody body={'thanks @cre\u{200B}w_bob and cre\u{200B}w_alice'} />
+    );
+    expect(hiddenMarks(container)).toEqual(['\\u{200b}', '\\u{200b}']);
+  });
+
+  it('keeps an emoji joiner sequence whole and a Hebrew paragraph as written', () => {
+    const scientist = '\u{1F469}\u{1F3FD}\u{200D}\u{1F52C}';
+    const hebrew = 'שלום לכולם, הפגישה בשעה 3.';
+    const { container } = render(<MessageBody body={`${scientist} done\n\n${hebrew}`} />);
+    expect(container.querySelector('.crew-md-hidden-char')).toBeNull();
+    expect(container.textContent).toContain(scientist);
+    expect(container.textContent).toContain(hebrew);
+  });
+
+  it('lays out each block in its own direction, not one direction for the whole message', () => {
+    const { container } = render(
+      <MessageBody
+        body={[
+          'English first.',
+          'שלום לכולם.',
+          '# כותרת',
+          '- פריט',
+          '> ציטוט',
+          '| עמודה |\n| --- |\n| תא |',
+        ].join('\n\n')}
+      />
+    );
+    for (const selector of [
+      '.crew-md-p',
+      '.crew-md-heading',
+      '.crew-md-item',
+      '.crew-md-quote',
+      'th',
+      'td',
+    ]) {
+      expect(container.querySelector(selector), selector).toHaveAttribute('dir', 'auto');
+    }
+    // Only the blocks carry a direction: the wrapper would take the first paragraph's for all.
+    expect(container.querySelector('.crew-md')).not.toHaveAttribute('dir');
+    expect(container.querySelector('.crew-message-body')).not.toHaveAttribute('dir');
+  });
+
+  it('draws a code block’s hidden characters, and Copy code still copies the bytes sent', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText');
+    const code = 'if user == "admin\u{202E} \u{2066}// check\u{2069}\u{2066}":';
+    const { container } = render(<MessageBody body={`\`\`\`py\n${code}\n\`\`\``} />);
+    const pre = container.querySelector('pre') as HTMLElement;
+    expect(pre.textContent).not.toMatch(/[\u{202A}-\u{202E}\u{2066}-\u{2069}]/u);
+    expect(pre.querySelectorAll('.crew-md-hidden-char')).toHaveLength(4);
+    await user.click(screen.getByRole('button', { name: timelineCopy.copyCode }));
+    expect(writeText).toHaveBeenCalledWith(code);
+  });
+
+  it('names a table region with the escapes, never the raw controls', () => {
+    const { container } = render(<MessageBody body={'| a\u{202E}b |\n| --- |\n| 1 |'} />);
+    expect(container.querySelector('th')?.textContent).toBe('a\\u{202e}b');
+  });
+});
+
+/** QA M2: a message that mentions you looked like any other unread message. */
+describe('a mention of the viewer', () => {
+  const chips = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll('.crew-md-mention')).map((node) => node.textContent);
+  const label = (container: HTMLElement) => container.querySelector('#mention-label');
+
+  it('marks @username in prose, in any case, and adds the row’s hidden label', () => {
+    const { container } = render(
+      <MessageBody
+        body={'@crew_bob can you check? cc @CREW_BOB.'}
+        mention="crew_bob"
+        mentionLabelId="mention-label"
+      />
+    );
+    expect(chips(container)).toEqual(['@crew_bob', '@CREW_BOB']);
+    expect(container.querySelector('.crew-md-mention')).toHaveAttribute('data-mention', 'you');
+    expect(label(container)).toHaveTextContent(timelineCopy.mentionsYou);
+    expect(label(container)).not.toBeVisible();
+  });
+
+  it('does not mark a mention inside code, a code block or a link’s words', () => {
+    const { container } = render(
+      <MessageBody
+        body={
+          'Run `notify @crew_bob` then\n\n```\n@crew_bob\n```\n\n[@crew_bob](https://www.ucsf.edu)'
+        }
+        mention="crew_bob"
+        mentionLabelId="mention-label"
+      />
+    );
+    expect(chips(container)).toEqual([]);
+    expect(label(container)).toBeNull();
+  });
+
+  it('does not mark someone else, a longer name, an address or a spoofed name', () => {
+    const { container } = render(
+      <MessageBody
+        body={
+          '@crew_alice and @crew_bobby and @crew_bob.lee wrote to crew@crew_bob.org about @cre\u{200B}w_bob and @crew_bob\u{200B}x'
+        }
+        mention="crew_bob"
+        mentionLabelId="mention-label"
+      />
+    );
+    expect(chips(container)).toEqual([]);
+    expect(label(container)).toBeNull();
+  });
+
+  it('marks nothing without a username', () => {
+    const { container } = render(<MessageBody body={'@crew_bob'} />);
+    expect(chips(container)).toEqual([]);
+  });
+});
+
 describe('the long-message fold', () => {
   it('folds a long body behind Show more with its size, and unfolds it', async () => {
     const body = 'word '.repeat(Math.ceil(CLAMP_CHAR_THRESHOLD / 5) + 20).trim();

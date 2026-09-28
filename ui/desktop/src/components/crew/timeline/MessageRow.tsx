@@ -16,7 +16,7 @@ import { identityCopy, PersonName, personLabel } from '../identity';
 import type { CrewMessage } from '../crewApi';
 import { timelineCopy } from './copy';
 import type { TimelineGroup, TimelineMessageEntry, TimelineTraceEntry } from './groupMessages';
-import { MessageBody } from './MessageBody';
+import { MessageBody, VisibleText } from './MessageBody';
 import type { PendingPost } from './pendingPost';
 import { CopyForSupport, CopyIconButton, useMenuCopy, useTimelineCopy } from './TimelineCopy';
 import { useTimeline, type OwnAgentChat } from './TimelineContext';
@@ -38,6 +38,11 @@ import { fullDateTime, gutterTime, isoTime, shortTime } from './timelineTime';
  * author's name sits in the head row above it. Its actions carry the same two
  * in their names. Every time carries its full date for assistive technology;
  * the date is otherwise only in the day divider and a hover tooltip.
+ *
+ * A message that mentions the viewer (QA M2) also carries "mentions you" in
+ * that name, from the hidden label its body adds when it marks a mention, and
+ * the row's accent comes from the same mark (`timeline.css`). A message the
+ * viewer wrote themselves is never marked.
  */
 
 const SPOKEN_DATE = new Intl.DateTimeFormat('en-US', {
@@ -290,12 +295,16 @@ export function MessageRow({
   entry: TimelineMessageEntry;
   ids: GroupLabelIds;
 }) {
-  const { activeRow, setActiveRow, renderAttachments, arriving } = useTimeline();
+  const { activeRow, setActiveRow, renderAttachments, arriving, viewerId, viewerUsername } =
+    useTimeline();
   const { message } = entry;
   const active = activeRow === entry.key;
   const tabIndex = active ? 0 : -1;
   const ownTime = useId();
+  const mentionLabel = useId();
   const timeId = entry.head ? ids.time : ownTime;
+  // Your own words never mention you; your agent's may.
+  const mention = !group.agent && group.authorId === viewerId ? null : viewerUsername;
   const who = useAuthorLabel(group);
   // Two rows of one author in one minute would read the same: each says which of them it is.
   const when = entry.sameMinute
@@ -308,7 +317,7 @@ export function MessageRow({
   return (
     <div
       role="group"
-      aria-labelledby={`${ids.author} ${timeId}`}
+      aria-labelledby={`${ids.author} ${timeId} ${mentionLabel}`}
       className="crew-message-row"
       data-crew-row=""
       data-head={entry.head ? 'true' : undefined}
@@ -339,7 +348,7 @@ export function MessageRow({
         ) : (
           entry.restrictedMarker && <RestrictedMarker />
         )}
-        <MessageBody body={message.body} />
+        <MessageBody body={message.body} mention={mention} mentionLabelId={mentionLabel} />
         {renderAttachments?.(message, { active })}
       </div>
     </div>
@@ -394,8 +403,12 @@ export function TraceRow({
         >
           <ul className="crew-trace-list">
             {entry.messages.map((message) => (
-              <li key={message.id} className="crew-trace-line text-supporting text-text-muted">
-                {message.body}
+              <li
+                key={message.id}
+                className="crew-trace-line text-supporting text-text-muted"
+                dir="auto"
+              >
+                <VisibleText text={message.body} />
               </li>
             ))}
           </ul>

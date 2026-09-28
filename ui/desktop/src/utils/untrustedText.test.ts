@@ -2,10 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  revealHiddenCharacters,
   sanitizeArtifactTitle,
   sanitizeUntrustedLabel,
   stripHiddenCharacters,
   UNTRUSTED_LABEL_MAX_CHARS,
+  type RevealedSegment,
 } from './untrustedText';
 
 /**
@@ -79,6 +81,77 @@ describe('sanitizeArtifactTitle', () => {
     expect(sanitizeArtifactTitle('\u{202E}\n')).toBe('Artifact');
     expect(sanitizeArtifactTitle('', '\u{200B}')).toBe('Artifact');
     expect(sanitizeArtifactTitle(' ', 'Figure')).toBe('Figure');
+  });
+});
+
+/**
+ * A message body another person wrote, drawn with what could make it read as something else made
+ * visible (QA M3, SEC-9), and nothing that legitimate text needs taken away.
+ */
+describe('revealHiddenCharacters', () => {
+  /** The segments as text, each hidden character as `[escape]`. */
+  const shown = (segments: RevealedSegment[]) =>
+    segments.map((part) => (part.kind === 'text' ? part.text : `[${part.escape}]`)).join('');
+  /** What a copy of the segments gives back: the raw characters. */
+  const raw = (segments: RevealedSegment[]) =>
+    segments.map((part) => (part.kind === 'text' ? part.text : part.raw)).join('');
+
+  it('shows a right-to-left override as its escape, as the command line prints it', () => {
+    const segments = revealHiddenCharacters('invoice_\u{202E}gnp.exe and more');
+    expect(segments).toEqual([
+      { kind: 'text', text: 'invoice_' },
+      { kind: 'hidden', raw: '\u{202E}', escape: '\\u{202e}', codePoint: 'U+202E' },
+      { kind: 'text', text: 'gnp.exe and more' },
+    ]);
+  });
+
+  it.each([
+    ['every embedding, override and isolate', 'a\u{202A}b\u{202B}c\u{202C}d\u{202D}e', 4],
+    ['the isolates', '\u{2066}x\u{2067}y\u{2068}z\u{2069}', 4],
+    ['control characters other than a tab or a break', 'bell\u{7}back\u{8}esc\u{1B}c1\u{9B}', 4],
+    ['a tag character outside a flag', 'a\u{E0041}\u{E0042}b', 2],
+    ['a zero-width space inside a handle', 'hi @cre\u{200B}w_bob', 1],
+    ['a zero-width space inside a bare username', 'cre\u{200B}w_bob said', 1],
+    ['a word joiner inside an address', 'see https://www.ucsf\u{2060}.edu/login', 1],
+    ['a byte-order mark on a domain', 'open ucsf.edu\u{FEFF} now', 1],
+  ])('shows %s', (_label, value, count) => {
+    const segments = revealHiddenCharacters(value);
+    expect(segments.filter((part) => part.kind === 'hidden')).toHaveLength(count);
+    expect(raw(segments)).toBe(value);
+  });
+
+  it.each([
+    ['a Hebrew paragraph', 'שלום לכולם, הפגישה בשעה 3.'],
+    ['right-to-left marks', 'x\u{200F}y\u{200E}z\u{61C}'],
+    [
+      'an emoji joiner sequence',
+      'scientist \u{1F469}\u{1F3FD}\u{200D}\u{1F52C} and family \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}',
+    ],
+    ['a zero-width non-joiner in Persian', 'می\u{200C}خواهم'],
+    ['a zero-width space between Thai words', 'สวัสดี\u{200B}ครับ'],
+    ['a subdivision flag', 'go \u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}!'],
+    ['tabs, newlines and a soft hyphen', 'a\tb\nc\r\nd\u{AD}e'],
+  ])('leaves %s alone', (_label, value) => {
+    expect(revealHiddenCharacters(value)).toEqual([{ kind: 'text', text: value }]);
+  });
+
+  it('keeps every raw character for a copy, whatever it shows', () => {
+    const value = '\u{202E}a\u{200B}@b\u{FEFF}c\u{E0041}\u{2066}';
+    const segments = revealHiddenCharacters(value);
+    expect(raw(segments)).toBe(value);
+    expect(shown(segments)).toBe('[\\u{202e}]a[\\u{200b}]@b[\\u{feff}]c[\\u{e0041}][\\u{2066}]');
+  });
+
+  it('never splits a surrogate pair', () => {
+    expect(revealHiddenCharacters('\u{1F600}\u{202E}\u{1F600}')).toEqual([
+      { kind: 'text', text: '\u{1F600}' },
+      { kind: 'hidden', raw: '\u{202E}', escape: '\\u{202e}', codePoint: 'U+202E' },
+      { kind: 'text', text: '\u{1F600}' },
+    ]);
+  });
+
+  it('returns nothing for nothing', () => {
+    expect(revealHiddenCharacters('')).toEqual([]);
   });
 });
 

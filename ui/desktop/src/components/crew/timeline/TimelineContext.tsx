@@ -39,6 +39,8 @@ export interface TimelineContextValue {
   dir: PeopleDirectory;
   /** The viewer's principal ID: their agent is "Your agent". A key, never rendered. */
   viewerId: string | null;
+  /** The viewer's username: a message that mentions `@{it}` is marked (QA M2). */
+  viewerUsername: string | null;
   /** Presentation only (the last verified view during re-verification): nothing acts. */
   readOnly: boolean;
   /** Attachments and server paths under a body; the files area renders them. */

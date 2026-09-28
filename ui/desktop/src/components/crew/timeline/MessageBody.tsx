@@ -14,6 +14,8 @@ import remarkGfm from 'remark-gfm';
 import { Button } from '../../ui/button';
 import { ChevronDown, ChevronUp, Image as ImageIcon } from '../../icons/app-icons';
 import { CLAMP_MAX_HEIGHT_PX, describeMessageLength } from '../../../utils/messageClamp';
+import { revealHiddenCharacters } from '../../../utils/untrustedText';
+import { bodyNodeText, rehypeCrewBodyText } from './bodyText';
 import { timelineCopy } from './copy';
 import { CopyIconButton } from './TimelineCopy';
 
@@ -48,6 +50,14 @@ import { CopyIconButton } from './TimelineCopy';
  *   decision for a terminal, not a click.
  * - **Headings are bold lines, not `<h1>`–`<h6>`**: a message's `# Title` must
  *   not become a heading of the page, beside the channel's own `<h1>`.
+ * - **Nothing hidden reorders or disguises the words** (QA M3, SEC-9): a bidi
+ *   override, an isolate, a control character or a zero-width character inside a
+ *   name is drawn as its escape (`bodyText.ts`), and a copy still gives the bytes
+ *   that were sent.
+ * - **Each block takes its own direction** (QA M13): paragraphs, list items,
+ *   quotes and table cells are `dir="auto"`, so a Hebrew paragraph is laid out
+ *   right to left beside an English one. Code stays left to right.
+ * - **A mention of the viewer is marked** (QA M2): see `bodyText.ts`.
  *
  * A long body folds by the chat's rule (`utils/messageClamp.ts`): above ten
  * lines or 600 characters, behind "Show more" with its size stated.
@@ -189,11 +199,30 @@ interface HastLike {
   children?: unknown[];
 }
 
-function hastText(node: unknown): string {
-  if (!node || typeof node !== 'object') return '';
-  const current = node as HastLike;
-  if (current.type === 'text' && typeof current.value === 'string') return current.value;
-  return Array.isArray(current.children) ? current.children.map(hastText).join('') : '';
+/**
+ * Words another person wrote, drawn with their hidden characters as escapes (`bodyText.ts`): for
+ * text that does not go through the markdown step, a code block's and an agent's tool updates.
+ */
+export function VisibleText({ text }: { text: string }) {
+  return (
+    <>
+      {revealHiddenCharacters(text).map((segment, index) =>
+        segment.kind === 'text' ? (
+          segment.text
+        ) : (
+          <span
+            key={index}
+            className="crew-md-hidden-char"
+            dir="ltr"
+            title={timelineCopy.hiddenCharacter(segment.codePoint)}
+            data-hidden-char={segment.codePoint}
+          >
+            {segment.escape}
+          </span>
+        )
+      )}
+    </>
+  );
 }
 
 function codeChild(node: unknown): HastLike | null {
@@ -283,7 +312,10 @@ function CodeBlock({ text, language }: { text: string; language: string }) {
         className="crew-md-code-body"
         {...scrollRegion(overflow, timelineCopy.codeRegion(language))}
       >
-        <code>{text}</code>
+        {/* Drawn with its hidden characters shown; Copy code hands out `text`, the raw bytes. */}
+        <code>
+          <VisibleText text={text} />
+        </code>
       </pre>
     </div>
   );
@@ -296,7 +328,7 @@ function headerCells(node: unknown): string[] {
     if (!current || typeof current !== 'object') return;
     const element = current as HastLike;
     if (element.type === 'element' && element.tagName === 'th') {
-      const text = hastText(element).replace(/\s+/g, ' ').trim();
+      const text = bodyNodeText(element).replace(/\s+/g, ' ').trim();
       if (text) cells.push(text);
       return;
     }
@@ -317,17 +349,25 @@ function TableScroll({ node, children }: { node: unknown; children?: ReactNode }
 }
 
 function Heading({ children }: { children?: ReactNode }) {
-  return <p className="crew-md-heading">{children}</p>;
+  return (
+    <p className="crew-md-heading" dir="auto">
+      {children}
+    </p>
+  );
 }
 
 const COMPONENTS: Components = {
-  p: ({ children }) => <p className="crew-md-p">{children}</p>,
+  p: ({ children }) => (
+    <p className="crew-md-p" dir="auto">
+      {children}
+    </p>
+  ),
   a: ({ href, children, node }) => {
     const safe = safeExternalHref(href);
     if (!safe) return <span className="crew-md-unlinked">{children}</span>;
     if (!openableHref(safe))
       return (
-        <UnopenedLink href={safe} text={hastText(node)}>
+        <UnopenedLink href={safe} text={bodyNodeText(node, true)}>
           {children}
         </UnopenedLink>
       );
@@ -379,7 +419,12 @@ const COMPONENTS: Components = {
   },
   pre: ({ node }) => {
     const code = codeChild(node);
-    return <CodeBlock text={hastText(code).replace(/\n$/, '')} language={fenceLanguage(code)} />;
+    return (
+      <CodeBlock
+        text={bodyNodeText(code, true).replace(/\n$/, '')}
+        language={fenceLanguage(code)}
+      />
+    );
   },
   code: ({ children }) => <code className="crew-md-code-inline">{children}</code>,
   h1: Heading,
@@ -402,7 +447,11 @@ const COMPONENTS: Components = {
       {children}
     </ol>
   ),
-  li: ({ children }) => <li className="crew-md-item">{children}</li>,
+  li: ({ children }) => (
+    <li className="crew-md-item" dir="auto">
+      {children}
+    </li>
+  ),
   input: ({ checked }) => (
     <input
       type="checkbox"
@@ -412,27 +461,49 @@ const COMPONENTS: Components = {
       readOnly
     />
   ),
-  blockquote: ({ children }) => <blockquote className="crew-md-quote">{children}</blockquote>,
+  blockquote: ({ children }) => (
+    <blockquote className="crew-md-quote" dir="auto">
+      {children}
+    </blockquote>
+  ),
   hr: () => <hr className="crew-md-rule" />,
   table: ({ node, children }) => <TableScroll node={node}>{children}</TableScroll>,
   th: ({ children, style }) => (
-    <th className="crew-md-cell" data-head="true" style={style}>
+    <th className="crew-md-cell" data-head="true" dir="auto" style={style}>
       {children}
     </th>
   ),
   td: ({ children, style }) => (
-    <td className="crew-md-cell" style={style}>
+    <td className="crew-md-cell" dir="auto" style={style}>
       {children}
     </td>
   ),
 };
 
-/** The markdown alone, unfolded. Memoized on the text: a timeline re-renders often. */
-export const CrewMarkdown = memo(function CrewMarkdown({ text }: { text: string }) {
+export interface CrewMarkdownProps {
+  text: string;
+  /** The viewer's username, whose `@mentions` are marked; absent or null marks none. */
+  mention?: string | null;
+  /** The ID of the hidden "mentions you" label the row names itself by, when it wants one. */
+  mentionLabelId?: string | null;
+}
+
+/** The markdown alone, unfolded. Memoized on its props: a timeline re-renders often. */
+export const CrewMarkdown = memo(function CrewMarkdown({
+  text,
+  mention = null,
+  mentionLabelId = null,
+}: CrewMarkdownProps) {
+  const rehypePlugins = useMemo<NonNullable<Options['rehypePlugins']>>(
+    // The step reads and writes only the node fields it declares; the cast is to unified's tree.
+    () => [[rehypeCrewBodyText as never, { mention, mentionLabelId }]],
+    [mention, mentionLabelId]
+  );
   return (
     <div className="crew-md text-body text-text-default">
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={rehypePlugins}
         urlTransform={urlTransform}
         components={COMPONENTS}
       >
@@ -447,7 +518,15 @@ export const CrewMarkdown = memo(function CrewMarkdown({ text }: { text: string 
  * states the size, because the size is what tells you whether to expand; the
  * cut is faded with a mask, so it reads right on any ground (a hovered row).
  */
-export function MessageBody({ body }: { body: string }) {
+export function MessageBody({
+  body,
+  mention = null,
+  mentionLabelId = null,
+}: {
+  body: string;
+  mention?: string | null;
+  mentionLabelId?: string | null;
+}) {
   const text = typeof body === 'string' ? body : '';
   const { shouldClamp, label } = useMemo(() => describeMessageLength(text), [text]);
   const [open, setOpen] = useState(false);
@@ -465,7 +544,7 @@ export function MessageBody({ body }: { body: string }) {
         data-clamped={clamped ? 'true' : undefined}
         style={style}
       >
-        <CrewMarkdown text={text} />
+        <CrewMarkdown text={text} mention={mention} mentionLabelId={mentionLabelId} />
       </div>
       {shouldClamp && (
         <div className="crew-message-fold">

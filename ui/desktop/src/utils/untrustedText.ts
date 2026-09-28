@@ -62,3 +62,142 @@ export function sanitizeUntrustedLabel(
 export function sanitizeArtifactTitle(title: string, fallback = 'Artifact'): string {
   return sanitizeUntrustedLabel(title) || sanitizeUntrustedLabel(fallback) || 'Artifact';
 }
+
+// ---------------------------------------------------------------------------------------------
+// Text shown as written, with its hidden characters made visible
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * One piece of a text split by {@link revealHiddenCharacters}: words to draw as they are, or one
+ * hidden character to draw as its escape.
+ */
+export type RevealedSegment =
+  | { kind: 'text'; text: string }
+  | {
+      kind: 'hidden';
+      /** The character itself, for whatever copies the text: a copy keeps the raw bytes. */
+      raw: string;
+      /** What is drawn in its place: `\u{202e}`, the command line's escape for it. */
+      escape: string;
+      /** `U+202E`, for a tooltip or an accessible name. */
+      codePoint: string;
+    };
+
+/**
+ * The explicit embeddings, overrides and isolates (`U+202A..U+202E`, `U+2066..U+2069`): each
+ * reorders what follows it, so a message could read `invoice_exe.png` while it holds
+ * `invoice_{U+202E}gnp.exe`. Never legitimate in a message somebody else wrote; the marks
+ * `U+200E`, `U+200F` and `U+061C` that right-to-left text does use are not among them.
+ */
+const DIRECTION_CONTROL = /^[\u{202A}-\u{202E}\u{2066}-\u{2069}]$/u;
+/** A control character (C0, DEL, C1): drawn as nothing, or as a box, unless it is a tab or a break. */
+const CONTROL = /^\p{Cc}$/u;
+const LAID_OUT_CONTROLS = new Set(['\t', '\n', '\r']);
+/**
+ * Zero-width characters that make one name look like another (`cre{U+200B}w_bob`). Thai, Khmer
+ * and Lao use `U+200B` between words, so it is shown only where it can spoof something: see
+ * {@link zeroWidthSpoofs}. `U+200C` and `U+200D`, the joiners Persian and every emoji sequence
+ * depend on, are never touched.
+ */
+const ZERO_WIDTH = /^[\u{200B}\u{2060}\u{FEFF}]$/u;
+/** The Unicode tag block, invisible outside a subdivision flag (England, Scotland, Wales). */
+const TAG = /^[\u{E0000}-\u{E007F}]$/u;
+const BLACK_FLAG = '\u{1F3F4}';
+const CANCEL_TAG = '\u{E007F}';
+/** Whitespace that separates tokens. Not JavaScript's `\s`, which counts `U+FEFF` as a space. */
+const TOKEN_BREAK =
+  /^[\t\n\v\f\r \u{00A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}]$/u;
+/** A character a handle, address or file name is written in. */
+const ASCII_WORD = /^[A-Za-z0-9_.@:/-]$/;
+
+function escapeOf(character: string): string {
+  return `\\u{${(character.codePointAt(0) ?? 0).toString(16)}}`;
+}
+
+function codePointOf(character: string): string {
+  return `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`;
+}
+
+/** A token that names somebody or somewhere: `@crew_bob`, `bob@lab.org`, a URL, a domain. */
+function namesSomething(token: string): boolean {
+  return (
+    token.includes('@') ||
+    token.includes('://') ||
+    /(?:^|[^\p{L}\p{N}])www\./iu.test(token) ||
+    /[\p{L}\p{N}-]\.\p{L}{2,}/u.test(token)
+  );
+}
+
+/**
+ * Whether a zero-width character at `index` of `characters` can make one name look like another:
+ * inside a token that names somebody or somewhere, or beside a letter of a handle, an address or
+ * a file name.
+ */
+function zeroWidthSpoofs(characters: readonly string[], index: number, token: string): boolean {
+  if (namesSomething(token)) return true;
+  const before = characters[index - 1] ?? '';
+  const after = characters[index + 1] ?? '';
+  return ASCII_WORD.test(before) || ASCII_WORD.test(after);
+}
+
+/** The whitespace-separated token around `index`, with its zero-width characters left out. */
+function tokenAround(characters: readonly string[], index: number): string {
+  let start = index;
+  while (start > 0 && !TOKEN_BREAK.test(characters[start - 1])) start -= 1;
+  let end = index;
+  while (end < characters.length - 1 && !TOKEN_BREAK.test(characters[end + 1])) end += 1;
+  return characters
+    .slice(start, end + 1)
+    .filter((character) => !ZERO_WIDTH.test(character))
+    .join('');
+}
+
+/** Whether the tag character at `index` belongs to a subdivision flag: the black flag, tags, a cancel tag. */
+function inFlagSequence(characters: readonly string[], index: number): boolean {
+  let start = index;
+  while (start > 0 && TAG.test(characters[start - 1])) start -= 1;
+  if (characters[start - 1] !== BLACK_FLAG) return false;
+  let end = index;
+  while (end < characters.length - 1 && TAG.test(characters[end + 1])) end += 1;
+  return characters[end] === CANCEL_TAG;
+}
+
+/**
+ * Another person's text, split so that what could make it read as something else is drawn
+ * visibly (QA M3, SEC-9): the direction controls, the invisible control characters, the tag
+ * block outside a flag, and a zero-width character where it can spoof a name. Each becomes a
+ * `hidden` segment carrying its escape (`\u{202e}`, as `biorouter crew` prints it) and the raw
+ * character, so a surface that draws the escape can still copy the bytes that were sent.
+ *
+ * Unlike {@link stripHiddenCharacters}, nothing is removed and most format characters stay: the
+ * zero-width joiners (every emoji sequence), the direction marks right-to-left text uses, the soft
+ * hyphen, and a zero-width space between Thai words. For display only; it never changes what is
+ * stored or sent.
+ */
+export function revealHiddenCharacters(value: string): RevealedSegment[] {
+  const characters = Array.from(value);
+  const segments: RevealedSegment[] = [];
+  let text = '';
+  characters.forEach((character, index) => {
+    const hidden =
+      DIRECTION_CONTROL.test(character) ||
+      (CONTROL.test(character) && !LAID_OUT_CONTROLS.has(character)) ||
+      (TAG.test(character) && !inFlagSequence(characters, index)) ||
+      (ZERO_WIDTH.test(character) &&
+        zeroWidthSpoofs(characters, index, tokenAround(characters, index)));
+    if (!hidden) {
+      text += character;
+      return;
+    }
+    if (text) segments.push({ kind: 'text', text });
+    text = '';
+    segments.push({
+      kind: 'hidden',
+      raw: character,
+      escape: escapeOf(character),
+      codePoint: codePointOf(character),
+    });
+  });
+  if (text) segments.push({ kind: 'text', text });
+  return segments;
+}

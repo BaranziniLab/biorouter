@@ -559,6 +559,8 @@ function ComposerCard({
         aria-label={composerCopy.label(name)}
         placeholder={composerCopy.placeholder(name)}
         rows={1}
+        // Laid out in the direction of what is typed (QA M13): Hebrew or Arabic runs right to left.
+        dir="auto"
         value={body}
         // Read-only, not disabled, while the post is in flight: focus stays here, and nothing
         // typed now can be wiped by the success that clears what was sent.
