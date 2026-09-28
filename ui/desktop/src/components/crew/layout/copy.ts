@@ -34,6 +34,11 @@ export const layoutCopy = {
   channelAdded: (person: string, channel: string) => `${person} added you to ${channel}`,
   /** The same for a team, which brings its #general: `team` is the team's name (M11). */
   teamAdded: (person: string, team: string) => `${person} added you to ${team}`,
+  /**
+   * A channel or team the viewer is in was renamed elsewhere (M12): `before` and `after` as the
+   * sidebar names them, `#name` (or `Team / #name`) for a channel, the team's name for a team.
+   */
+  renamed: (before: string, after: string) => `${before} is now ${after}`,
 
   ownership: {
     /** `owner` is `personLabel(…, 'authority')`; `channel` is `#name`. */

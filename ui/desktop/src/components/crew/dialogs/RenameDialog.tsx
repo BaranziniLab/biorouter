@@ -2,9 +2,16 @@ import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
-import { channelSlug, isMachineIdShaped, sanitizeDisplayText, teamName } from '../identity';
+import {
+  channelSlug,
+  isMachineIdShaped,
+  nameKey,
+  sanitizeDisplayText,
+  teamName,
+} from '../identity';
+import { forgetOwnRename, noteOwnRename } from '../layout/useChannelAddedToast';
 import type { ErrorSource } from '../state/types';
-import { renameCopy as copy } from './copy';
+import { nameRuleCopy, renameCopy as copy } from './copy';
 import {
   AdornedInput,
   ErrorNote,
@@ -14,13 +21,14 @@ import {
   useDialogError,
 } from './fields';
 import {
+  channelNameTaken,
   channelSlugPreview,
   channelSlugProblem,
+  mixesScripts,
   teamNameProblem,
   WORKSPACE_NAME_PATTERN,
   workspaceNameProblem,
 } from './nameRules';
-import { createChannelCopy } from './copy';
 import { isNameRefusal, nameRefusalText, refusalText } from './refusals';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
 import { useDialogView } from './workspace';
@@ -37,6 +45,10 @@ export interface RenameDialogProps {
  * Rename a team, a channel or the workspace (naming slice S2). Offered only where the broker
  * speaks the unique-name rules; a rename keeps the object's ID, so history, invitations and grants
  * are unaffected. A taken name is refused in the broker's one wording.
+ *
+ * Under the name, once it changes (M12): "Will be renamed to #slug" for a channel, and a team's new
+ * command-line name ("CLI name: bench-crew"), since the old one stops working there. Other members
+ * hear of the rename once (`useChannelAddedToast`).
  */
 export function RenameDialog({ target, targetId, onClose }: RenameDialogProps) {
   const { crew, snapshot } = useDialogView();
@@ -70,10 +82,19 @@ export function RenameDialog({ target, targetId, onClose }: RenameDialogProps) {
   useCloseWhenMissing(missing, onClose);
 
   const slug = target === 'channel' ? channelSlugPreview(name) : '';
+  // Another channel of this team the viewer can see holds the name: said before a round trip, in
+  // the broker's words, as Create channel does. The channel itself may keep its name in another case.
+  const taken =
+    target === 'channel' &&
+    channel &&
+    slug !== '' &&
+    channelNameTaken(snapshot?.channels ?? [], channel.team_id, slug, channel.id)
+      ? nameRuleCopy.channelTaken
+      : null;
   const problem = !name.trim()
     ? null
     : target === 'channel'
-      ? channelSlugProblem(slug)
+      ? (channelSlugProblem(slug) ?? taken)
       : target === 'team'
         ? teamNameProblem(name)
         : workspaceNameProblem(name.trim());
@@ -95,18 +116,35 @@ export function RenameDialog({ target, targetId, onClose }: RenameDialogProps) {
         : target === 'channel'
           ? { channel_id: targetId, name: slug }
           : { name: name.trim() };
+    // The person renames it here: the rename notice other members get is not for them. Marked
+    // first, since the new name can reach the sidebar before the request answers.
+    const own = target !== 'workspace';
+    if (own) noteOwnRename(targetId);
     void crew
       .act(SOURCE, key, async () => {
         await crew.mutate(method, params);
         return true as const;
       })
-      .then((done) => done === true && onClose());
+      .then((done) => {
+        if (done === true) onClose();
+        else if (own) forgetOwnRename(targetId);
+      });
   };
 
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, target) : null;
-  const fieldError = nameError ?? (touched ? problem : null);
+  const fieldError = nameError ?? (touched ? problem : taken);
+  // What the rename will store, only once it changes anything (M12): a channel's slug, unless the
+  // broker would refuse it for mixing writing systems, and a team's new command-line name.
   const helper =
-    target === 'channel' && slug && !problem ? createChannelCopy.preview(slug) : undefined;
+    target === 'channel'
+      ? slug && !problem && channel && slug !== channelSlug(channel) && !mixesScripts(slug)
+        ? copy.previewChannel(slug)
+        : undefined
+      : target === 'team' && team && !problem && name.trim()
+        ? nameKey(name) !== nameKey(team.handle ?? team.name)
+          ? copy.previewTeamHandle(nameKey(name))
+          : undefined
+        : undefined;
   const title =
     target === 'team'
       ? copy.titleTeam

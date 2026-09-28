@@ -15,6 +15,7 @@ import {
   type ScriptedDaemon,
 } from '../integration/harness';
 import { layoutCopy } from './copy';
+import { forgetOwnRenames, noteOwnRename } from './useChannelAddedToast';
 
 const toasts = vi.hoisted(() => ({ toastSuccess: vi.fn() }));
 vi.mock('../../../toasts', async () => {
@@ -207,6 +208,46 @@ describe('the person hears when someone adds them to a channel (Q2-63)', () => {
         msg: layoutCopy.channelAdded('Alice Chen (@alice)', 'Imaging Core / #methods'),
       })
     );
+  });
+
+  // M12: a rename overwrote the name and nobody was told; the old name then failed in the CLI.
+  it('says once that a channel or team they are in was renamed, but not to whoever renamed it', async () => {
+    forgetOwnRenames();
+    const daemon = installDaemon({ snapshot: richSnapshot({ actor: bob }) });
+    renderCrew();
+    await channelReady();
+    const base = richSnapshot({ actor: bob });
+    daemon.state.snapshot = richSnapshot({
+      actor: bob,
+      teams: [{ ...base.teams[0], name: 'Analysis Group' }],
+      channels: [{ ...general, name: 'lobby' }, methods],
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: layoutCopy.renamed('#general', '#lobby'),
+      })
+    );
+    expect(toasts.toastSuccess).toHaveBeenCalledWith({
+      msg: layoutCopy.renamed('Analysis Lab', 'Analysis Group'),
+    });
+    expect(layoutCopy.renamed('#general', '#lobby')).toBe('#general is now #lobby');
+    // #methods, which Bob is not in, is never announced; each rename once.
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
+    act(() => daemon.emit(stateFrame(daemon)));
+    await act(async () => {});
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
+
+    // Renamed on this computer: the person who did it is not told again.
+    noteOwnRename(general.id);
+    daemon.state.snapshot = richSnapshot({
+      actor: bob,
+      teams: [{ ...base.teams[0], name: 'Analysis Group' }],
+      channels: [{ ...general, name: 'front-desk' }, methods],
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await act(async () => {});
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
   });
 
   it('says nothing for a channel they made themselves', async () => {

@@ -467,6 +467,16 @@ export const renameCopy = {
   titleChannel: 'Rename channel',
   titleWorkspace: 'Rename workspace',
   name: 'Name',
+  /**
+   * The slug a channel rename stores, once the name differs from the current one (M12). Never
+   * Create channel's "Will be created as", which a rename read before anything was typed.
+   */
+  previewChannel: (slug: string) => `Will be renamed to #${slug}`,
+  /**
+   * A team's new command-line name (its handle, `team_handle` in the broker), once it changes: the
+   * old one stops working in the CLI (M12).
+   */
+  previewTeamHandle: (handle: string) => `CLI name: ${handle}`,
   submit: 'Rename',
   cancel: 'Cancel',
 } as const;

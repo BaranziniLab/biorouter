@@ -513,8 +513,13 @@ describe('RenameDialog', () => {
     expect(await screen.findByRole('dialog', { name: 'Rename channel' })).toBeInTheDocument();
     const name = screen.getByLabelText('Name');
     expect(name).toHaveValue('general');
+    // M12: nothing is previewed until the name changes, and never "Will be created as".
+    expect(screen.queryByText(/^Will be/)).toBeNull();
+    fireEvent.change(name, { target: { value: 'General' } });
+    expect(screen.queryByText(/^Will be/)).toBeNull();
     fireEvent.change(name, { target: { value: 'Lab Notes' } });
-    expect(screen.getByText('Will be created as #lab-notes')).toBeInTheDocument();
+    expect(screen.getByText('Will be renamed to #lab-notes')).toBeInTheDocument();
+    expect(screen.queryByText(/Will be created/)).toBeNull();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     });
@@ -528,7 +533,12 @@ describe('RenameDialog', () => {
     const team = renderWithCrew(<RenameDialog target="team" targetId="team-1" onClose={vi.fn()} />);
     const teamName = await screen.findByLabelText('Name');
     expect(teamName).toHaveValue('Analysis Lab');
+    expect(screen.queryByText(/^CLI name/)).toBeNull();
+    fireEvent.change(teamName, { target: { value: 'analysis-lab' } });
+    expect(screen.queryByText(/^CLI name/)).toBeNull();
     fireEvent.change(teamName, { target: { value: 'Analysis Group' } });
+    // M12: the old handle stops working in the CLI, so the new one is shown.
+    expect(screen.getByText('CLI name: analysis-group')).toBeInTheDocument();
     await act(async () => {
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Rename' }));
     });

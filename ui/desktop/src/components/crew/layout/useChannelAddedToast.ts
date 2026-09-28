@@ -16,6 +16,44 @@ interface Seen {
   workspaceId: string;
   channels: ReadonlySet<string>;
   teams: ReadonlySet<string>;
+  /**
+   * Each member channel's own name (`#name`) and its label in a sentence (with its team where two
+   * teams share the name), and each member team's name (M12).
+   */
+  channelNames: ReadonlyMap<string, { own: string; label: string }>;
+  teamNames: ReadonlyMap<string, string>;
+}
+
+/**
+ * The teams and channels being renamed on this computer, by ID, with when: the person who renames
+ * one is not told of it again (M12). Marked before the request, since the new name can arrive in a
+ * state frame before the request answers, and forgotten when it fails, when the notice it stands
+ * for is skipped, or after {@link OWN_RENAME_MS}. Module state, as the rename dialog and this hook
+ * are mounted separately; display only.
+ */
+const ownRenames = new Map<string, number>();
+const OWN_RENAME_MS = 60_000;
+
+/** The rename dialog is about to rename `id`. */
+export function noteOwnRename(id: string): void {
+  ownRenames.set(id, Date.now());
+}
+
+/** The rename of `id` failed; a later rename by someone else is announced again. */
+export function forgetOwnRename(id: string): void {
+  ownRenames.delete(id);
+}
+
+/** Whether the viewer renamed `id` here just now, which then no longer counts. */
+function takeOwnRename(id: string): boolean {
+  const at = ownRenames.get(id);
+  ownRenames.delete(id);
+  return at !== undefined && Date.now() - at <= OWN_RENAME_MS;
+}
+
+/** Tests only. */
+export function forgetOwnRenames(): void {
+  ownRenames.clear();
 }
 
 /** The channels the viewer is in now: listed to them, not archived, and naming them a member. */
@@ -46,6 +84,10 @@ function adderOf(channel: Channel, viewer: string): string | null {
 }
 
 /**
+ * Also, once per rename, "#history-qa is now #plate-history" or "Bench QA is now Bench Crew" for a
+ * channel or team the viewer is in, renamed elsewhere (M12): the broker only overwrites the name,
+ * and the old one then stops resolving in the CLI, with nothing to say why.
+ *
  * "Alice Chen (@alice) added you to #methods" (Q2-63; ui-redesign-spec, "Where errors render":
  * toasts only for results that happen off-screen). Someone adds you to a channel while you are
  * elsewhere; the channel just appears in the sidebar, which nobody notices. So you hear about it
@@ -77,11 +119,21 @@ export function useChannelAddedToast(): void {
     const current = memberChannels(verified);
     const teams = memberTeams(verified);
     const before = seen.current;
+    const places = channelNamesAcrossTeams(verified.channels, verified.teams);
+    const channelNames = new Map(
+      current.map((channel) => {
+        const own = channelName(channel);
+        return [channel.id, { own, label: places.get(channel.id) ?? own }];
+      })
+    );
+    const teamNames = new Map(teams.map((team) => [team.id, teamName(team)]));
     seen.current = {
       connectionId,
       workspaceId: verified.workspace.id,
       channels: new Set(current.map((channel) => channel.id)),
       teams: new Set(teams.map((team) => team.id)),
+      channelNames,
+      teamNames,
     };
     if (
       !before ||
@@ -89,6 +141,19 @@ export function useChannelAddedToast(): void {
       before.workspaceId !== verified.workspace.id
     )
       return;
+    // Renamed while the viewer was a member, and not by this computer: said once (M12). A team's
+    // old name also stops working in the CLI, and the sidebar just shows the new one.
+    for (const [id, name] of teamNames) {
+      const was = before.teamNames.get(id);
+      if (was !== undefined && was !== name && !takeOwnRename(id))
+        toastSuccess({ msg: layoutCopy.renamed(was, name) });
+    }
+    for (const [id, name] of channelNames) {
+      const was = before.channelNames.get(id);
+      // Only its own name: a team renamed around it, or a namesake elsewhere, changes its label.
+      if (was !== undefined && was.own !== name.own && !takeOwnRename(id))
+        toastSuccess({ msg: layoutCopy.renamed(was.label, name.label) });
+    }
     const viewer = verified.actor.id;
     const added = current.filter(
       (channel) => !before.channels.has(channel.id) && channel.created_by !== viewer
@@ -109,7 +174,6 @@ export function useChannelAddedToast(): void {
       announcedTeams.add(team.id);
       toastSuccess({ msg: layoutCopy.teamAdded(who(adder), teamName(team)) });
     }
-    const places = channelNamesAcrossTeams(verified.channels, verified.teams);
     for (const channel of added) {
       // Said once, with its team.
       if (announcedTeams.has(channel.team_id)) continue;
