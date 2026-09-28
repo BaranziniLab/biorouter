@@ -8,6 +8,8 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
+import type * as Api from '../../../api/types.gen';
+import { wireOf } from '../api/parse';
 import { crewHttp, CrewHttpError, type Channel, type ObservedRun, type Snapshot } from '../crewApi';
 import { channelName, teamName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
@@ -223,7 +225,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
       model,
       context_channels: [channelId, ...contextChannels],
       posting_grant: true,
-    };
+    } satisfies Api.StartRunRequest;
     const fingerprint = JSON.stringify({ connectionId, ...payload });
     if (deliberateRestart || pendingRun.current?.fingerprint !== fingerprint) {
       pendingRun.current = { fingerprint, key: crypto.randomUUID() };
@@ -268,10 +270,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     setInspectedPriorRun(false);
     resetSurfaces('run-started');
     if (clearBody) setBody('');
-    const runId =
-      started !== null && typeof started === 'object'
-        ? (started as { run_id?: unknown }).run_id
-        : undefined;
+    const runId = wireOf<Api.RunView>(started)?.run_id;
     awaitStartedRun(connectionId, observed, typeof runId === 'string' && runId ? runId : null);
     return true;
   };

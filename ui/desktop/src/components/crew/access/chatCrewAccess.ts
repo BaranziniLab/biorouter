@@ -5,7 +5,8 @@ import {
   sessionGrantState,
   type CrewSessionGrant,
 } from '../api/grants';
-import { isRecord, optionalText } from '../api/parse';
+import type * as Api from '../../../api/types.gen';
+import { optionalText, wireOf } from '../api/parse';
 import { CrewHttpError, crewHttp } from '../crewApi';
 import { sanitizeDisplayText } from '../identity';
 import {
@@ -212,9 +213,11 @@ interface SavedConnection {
 }
 
 function savedConnections(result: unknown): SavedConnection[] {
-  const rows = isRecord(result) && Array.isArray(result.connections) ? result.connections : [];
-  return rows.flatMap((row): SavedConnection[] => {
-    if (!isRecord(row)) return [];
+  const listed = wireOf<Api.CrewConnectionList>(result)?.connections;
+  const rows: unknown[] = Array.isArray(listed) ? listed : [];
+  return rows.flatMap((wire): SavedConnection[] => {
+    const row = wireOf<Api.CrewConnectionView>(wire);
+    if (!row) return [];
     const id = optionalText(row.id);
     if (!id) return [];
     const connection: SavedConnection = { id, name: sanitizeDisplayText(row.name) };

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import type * as Api from '../../../api/types.gen';
 import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
@@ -754,7 +755,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         expected_workspace_policy_epoch: snapshot.workspace.policy_epoch,
         channel_id: channelId,
         context_channels: [channelId, ...contextChannels],
-      }
+      } satisfies Api.GrantSessionRequest
     );
   };
 

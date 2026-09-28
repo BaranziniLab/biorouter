@@ -94,7 +94,7 @@ export async function beginTransfer(
     direction: request.direction,
     file_capability: file.capability_id,
     blob_id: request.blob_id,
-  });
+  } satisfies Api.StartRequest);
 }
 export async function resumeTransfer(transfer: CrewTransfer): Promise<CrewTransfer | null> {
   const file = await chooseTransferFile({
