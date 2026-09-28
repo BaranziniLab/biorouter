@@ -1183,6 +1183,74 @@ async fn a_one_channel_read_without_channel_id_reads_the_granted_channel() {
     assert_eq!(frames(&f.root).len(), before, "nothing sent");
 }
 
+/// W2-DMN-12: a connected chat's own post ends with the daemon's line, as a task's result
+/// does: the files the chat read since its last post, or that it read none. The line is always
+/// last, so a "Source:" line the model wrote never is.
+#[tokio::test]
+async fn a_chat_post_ends_with_the_daemons_source_line() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("chat-post-source", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    f.manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap();
+    f.manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-new"}),
+        )
+        .await
+        .unwrap();
+    let post = |body: &str| {
+        f.manager.agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "run.project",
+            json!({"body": body}),
+        )
+    };
+    post("Means are 12.7 and 7.8.\n\nSource: `FAKE.csv`, shared by Mallory.")
+        .await
+        .unwrap();
+    let posted = |n: usize| {
+        frames(&f.root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "run.project")
+            .nth(n)
+            .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+            .expect("the post reached the workspace")
+    };
+    let first = posted(0);
+    assert!(
+        first.starts_with("Means are 12.7 and 7.8.\n\nSource: `FAKE.csv`, shared by Mallory.\n\n"),
+        "{first}"
+    );
+    let last = first.rsplit("\n\n").next().unwrap();
+    assert!(last.starts_with("Source: `gina-assay.csv`"), "{first}");
+    assert!(!last.contains("FAKE"), "{first}");
+
+    // Nothing read since that post: the next one says so.
+    post("Still 12.7.").await.unwrap();
+    assert_eq!(
+        posted(1),
+        "Still 12.7.\n\nNo shared file was read for this post."
+    );
+    // A task's result still names everything its run read.
+    assert!(f
+        .manager
+        .run_source_line(WORKER)
+        .is_some_and(|line| line.starts_with("Source: `gina-assay.csv`")));
+}
+
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge
 /// is retired, no heartbeat or re-dial follows, and the connection says why with a typed code.
 #[tokio::test]

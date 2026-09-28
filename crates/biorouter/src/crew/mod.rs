@@ -36,6 +36,7 @@ mod registry_lock_tests;
 mod scope_binding_tests;
 pub use credentials::CredentialStatus;
 pub mod refusal;
+pub mod source_line;
 pub use institution::{refusal_details as institution_refusal_details, AFFILIATION_REFUSAL};
 pub use refusal::CrewRefusal;
 mod ssh_policy;
@@ -4222,7 +4223,26 @@ impl CrewManager {
             let mut params = params;
             ensure!(params.is_object(), "Crew params must be an object");
             params["status"] = json!("progress");
-            return self.worker_request(session, method, params).await;
+            // W2-DMN-12: an agent's own post ends with the daemon's line, as a task's result
+            // does, built from what the chat read since its last post. It is always last, so a
+            // "Source:" line the model wrote is never the last thing in the post.
+            let posted_with_line = match params.get("body").and_then(Value::as_str) {
+                Some(body) => {
+                    let line = self.chat_post_source_line(session).await;
+                    params["body"] = json!(source_line::with_source_line(
+                        body.to_owned(),
+                        line,
+                        source_line::NO_FILE_READ_FOR_POST,
+                    ));
+                    true
+                }
+                None => false,
+            };
+            let answer = self.worker_request(session, method, params).await?;
+            if posted_with_line {
+                self.mark_reads_posted(session);
+            }
+            return Ok(answer);
         }
         if method == "remote.attach" {
             return self.attach_remote(session, params).await;
@@ -4252,10 +4272,15 @@ impl CrewManager {
 /// line is true whatever the model writes. Display only: it grants and checks nothing.
 ///
 /// Cleared when a run is admitted, so a reused chat ID never lists an earlier task's files.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct RunReads {
     /// Each file a `blob.read` returned, in the order first read, once each.
     files: Vec<ReadFile>,
+    /// How many of `files` a post of the chat's own already named (W2-DMN-12): a chat post's
+    /// line names what the chat read since its last post. A task's result names them all.
+    posted_files: usize,
+    /// The files [`Self::unlisted`] held when the chat last posted.
+    posted_unlisted: HashSet<String>,
     /// Files read after [`MAX_READ_FILES`] were listed, so the line can say how many it leaves
     /// out instead of dropping them silently.
     unlisted: HashSet<String>,
@@ -4740,6 +4765,29 @@ impl RunReads {
     /// now ([`Self::source_line_at`]).
     fn source_line(&self) -> Option<String> {
         self.source_line_at(&chrono::Local::now())
+    }
+
+    /// These reads as they stand for the chat's next post: only the files read since its last
+    /// one (W2-DMN-12). Everything that names them (people, times, copies) is kept whole.
+    fn since_last_post(&self) -> Self {
+        let mut since = self.clone();
+        since.files = self
+            .files
+            .get(self.posted_files.min(self.files.len())..)
+            .unwrap_or_default()
+            .to_vec();
+        since.unlisted = self
+            .unlisted
+            .difference(&self.posted_unlisted)
+            .cloned()
+            .collect();
+        since
+    }
+
+    /// Everything read so far has been named by a post of the chat's own.
+    fn mark_posted(&mut self) {
+        self.posted_files = self.files.len();
+        self.posted_unlisted = self.unlisted.clone();
     }
 
     /// The line a task's posted result ends with, in Markdown, written at `now` (whose time
@@ -5251,6 +5299,41 @@ impl CrewManager {
         };
         self.name_attachments(session, &unnamed).await;
         self.run_source_line(session)
+    }
+
+    /// The line a connected chat's post ends with: the files it read since its last post, named
+    /// as [`Self::posted_source_line`] names a task's (W2-DMN-12). `None` when it read none.
+    async fn chat_post_source_line(&self, session: &str) -> Option<String> {
+        let unnamed = {
+            let reads = self
+                .run_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let since = reads.get(session)?.since_last_post();
+            if since.files.is_empty() && since.unlisted.is_empty() {
+                return None;
+            }
+            since.unnamed_newest_first(MAX_POSTING_LOOKUPS)
+        };
+        self.name_attachments(session, &unnamed).await;
+        self.run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)?
+            .since_last_post()
+            .source_line()
+    }
+
+    /// The chat's post went out: its line named what was read up to now.
+    fn mark_reads_posted(&self, session: &str) {
+        if let Some(reads) = self
+            .run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(session)
+        {
+            reads.mark_posted();
+        }
     }
 
     /// Drop what this chat's Crew requests read: its result was posted, or its grant ended.
