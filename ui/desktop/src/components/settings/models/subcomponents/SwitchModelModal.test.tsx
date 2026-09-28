@@ -322,7 +322,7 @@ describe('SwitchModelModal — what the switch changes', () => {
     expect(mocks.changeModel).toHaveBeenCalledWith(
       's-1',
       expect.objectContaining({ name: 'gpt-5.5-2026-04-24', provider: 'versa_azure' }),
-      { alsoForNewChats: false }
+      expect.objectContaining({ alsoForNewChats: false })
     );
   });
 
@@ -335,7 +335,7 @@ describe('SwitchModelModal — what the switch changes', () => {
     expect(mocks.changeModel).toHaveBeenCalledWith(
       's-1',
       expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
-      { alsoForNewChats: true }
+      expect.objectContaining({ alsoForNewChats: true })
     );
   });
 
@@ -355,7 +355,72 @@ describe('SwitchModelModal — what the switch changes', () => {
     await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
     expect(mocks.changeModel).toHaveBeenCalledWith(
       null,
-      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' })
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
+      expect.objectContaining({ onRefusal: expect.any(Function) })
     );
+  });
+
+  /**
+   * W2-PRV-6. A chat that has not been sent yet is a chat: the dialog offers the
+   * started-chat scope and holds the pick for it, instead of rewriting the model
+   * every new chat starts on.
+   */
+  const renderUnsent = (onChooseForUnsentChat: ReturnType<typeof vi.fn>) =>
+    render(
+      <SwitchModelModal
+        sessionId={null}
+        onChooseForUnsentChat={onChooseForUnsentChat}
+        onClose={vi.fn()}
+        setView={vi.fn()}
+        initialProvider="versa_azure"
+        initialModel="gpt-5.5-2026-04-24"
+      />
+    );
+
+  it('in an unsent chat, says it is for this chat and holds the pick for it', async () => {
+    const choose = vi.fn();
+    renderUnsent(choose);
+
+    expect(screen.getByText(SWITCH_SCOPE_THIS_CHAT)).toBeInTheDocument();
+    expect(screen.queryByText(SWITCH_SCOPE_NEW_CHATS)).toBeNull();
+    const box = screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) });
+    expect(box).not.toBeChecked();
+
+    await settle();
+    fireEvent.click(await confirm());
+
+    await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+    expect(choose).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24', provider: 'versa_azure' })
+    );
+    // Nothing app-wide moved.
+    expect(mocks.changeModel).not.toHaveBeenCalled();
+  });
+
+  it('in an unsent chat, a ticked box also sets the model new chats start on', async () => {
+    const choose = vi.fn();
+    renderUnsent(choose);
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) }));
+    await settle();
+    fireEvent.click(await confirm());
+
+    await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+    expect(mocks.changeModel).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
+      expect.objectContaining({ onRefusal: expect.any(Function) })
+    );
+  });
+
+  it('in an unsent chat, holds nothing when the new-chats default could not be set', async () => {
+    mocks.changeModel.mockResolvedValue(false);
+    const choose = vi.fn();
+    renderUnsent(choose);
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) }));
+    await settle();
+    fireEvent.click(await confirm());
+
+    expect(await screen.findByTestId('switch-model-submit-error')).toBeInTheDocument();
+    expect(choose).not.toHaveBeenCalled();
   });
 });

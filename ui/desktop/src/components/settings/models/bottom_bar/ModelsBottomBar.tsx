@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { NO_MODEL_CHIP_LABEL, hasNoModelConfigured } from '../../../composerNoProvider';
 import { SwitchModelModal } from '../subcomponents/SwitchModelModal';
+import { usePendingChatModel } from '../pendingChatModel';
 import { LeadWorkerSettings } from '../subcomponents/LeadWorkerSettings';
 import { View } from '../../../../utils/navigationUtils';
 import {
@@ -54,7 +55,7 @@ export const CHAT_KEEPS_ITS_MODEL_NOTE =
 
 /**
  * F3 — the heading and line this chip's dropdown carries where there is no chat
- * yet (Home, a chat not started).
+ * yet (Home; an unsent chat is a chat, see `pendingChatModel.ts`).
  *
  * There the chip names the APP-WIDE selection — the pair `/agent/start` will
  * bind — and switching from it changes that pair for every window. "Current
@@ -131,6 +132,14 @@ export default function ModelsBottomBar({
     getCurrentProviderDisplayName,
   } = useModelAndProvider();
   const { read, getProviders } = useConfig();
+  /**
+   * W2-PRV-6. A chat that has not been sent yet is still a chat: its switch
+   * holds a model for it (see `pendingChatModel.ts`) instead of rewriting the
+   * model every new chat starts on. Home provides no such chat and keeps its
+   * explicit new-chats scope.
+   */
+  const pendingChat = usePendingChatModel();
+  const unsentChat = !sessionId && pendingChat !== null;
   const [displayProvider, setDisplayProvider] = useState<string | null>(null);
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
@@ -596,13 +605,13 @@ export default function ModelsBottomBar({
         <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
           <div className="border-b border-border-subtle px-3 py-2.5">
             <div className="text-sm font-medium text-text-default">
-              {sessionId ? 'Current model' : NEW_CHATS_MODEL_HEADING}
+              {sessionId || unsentChat ? 'Current model' : NEW_CHATS_MODEL_HEADING}
             </div>
             <div className="mt-0.5 text-supporting leading-4 text-text-muted">
               {shownModelName}
               {shownProviderName && ` · ${shownProviderName}`}
             </div>
-            {!sessionId && (
+            {!sessionId && !unsentChat && (
               <div
                 data-testid="new-chats-model-note"
                 className="mt-1 text-[11px] leading-4 text-text-muted"
@@ -754,6 +763,7 @@ export default function ModelsBottomBar({
           initialProvider={effectiveModel?.provider}
           initialModel={effectiveModel?.model}
           setView={setView}
+          onChooseForUnsentChat={unsentChat ? pendingChat?.choose : undefined}
           onClose={() => setIsAddModelModalOpen(false)}
         />
       ) : null}

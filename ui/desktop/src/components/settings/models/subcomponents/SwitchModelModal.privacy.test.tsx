@@ -359,7 +359,7 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
         subtext: 'Codex',
       },
       // Opened from a chat, the box is offered and starts unticked.
-      { alsoForNewChats: false }
+      expect.objectContaining({ alsoForNewChats: false })
     );
   });
 

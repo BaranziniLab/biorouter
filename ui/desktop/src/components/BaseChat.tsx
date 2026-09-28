@@ -40,6 +40,9 @@ import { useCrewResendHold } from './crew/access/crewResendHold';
 import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
+import { useModelAndProvider, type ChangeModelOptions } from './ModelAndProviderContext';
+import { PendingChatModelContext } from './settings/models/pendingChatModel';
+import type Model from './settings/models/modelInterface';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -837,6 +840,23 @@ export function collectArtifactsFromMessages(
  * that promises the message and the signal that keeps it in one expression.
  * Exported so it can be unit-tested without Electron.
  */
+/**
+ * W2-PRV-6 — bind a chat created from an unsent tab to the model picked for it
+ * there, before its first message is sent. Resolves `true` when the chat may
+ * receive the message: nothing was held (it runs the app-wide selection
+ * `/agent/start` bound), or the per-chat bind landed. `false` when the bind was
+ * refused or failed; `changeModel` has said why, and the message must not go to
+ * a model the person did not choose.
+ */
+export async function bindHeldChatModel(
+  sessionId: string,
+  held: Model | null,
+  changeModel: (sessionId: string, model: Model, options?: ChangeModelOptions) => Promise<boolean>
+): Promise<boolean> {
+  if (!held) return true;
+  return changeModel(sessionId, held, { quiet: true });
+}
+
 export function handleCreateSessionError(err: unknown): false {
   toastError(startChatFailureNotice(err, { kept: true }));
   return false;
@@ -1306,6 +1326,19 @@ function BaseChatContent({
   // pre-session createSession below; once a session exists DirSwitcher
   // persists directly via updateWorkingDir and this value is never consulted.
   const [pendingWorkingDir, setPendingWorkingDir] = useState<string | null>(null);
+  // W2-PRV-6 — the model picked for this chat before it was sent. Held here,
+  // shown by the chip as this chat's model, and bound to the chat by the
+  // pre-session submit below, right after `/agent/start` creates it. A pick in
+  // an unsent chat used to rewrite the model every new chat starts on.
+  const [pendingChatModel, setPendingChatModel] = useState<Model | null>(null);
+  const { changeModel } = useModelAndProvider();
+  useEffect(() => {
+    if (sessionId) setPendingChatModel(null);
+  }, [sessionId]);
+  const pendingChatModelScope = useMemo(
+    () => (sessionId ? null : { choose: setPendingChatModel }),
+    [sessionId]
+  );
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
@@ -1777,10 +1810,15 @@ function BaseChatContent({
     if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
       const effortScope = draftReasoningScope(reasoningDraftKey);
       const submittedEffort = getReasoningEffort(effortScope);
+      // W2-PRV-6 — a model picked for this chat before it was sent. The chip
+      // names it, so it (not the app-wide selection) is what this chat runs on.
+      const chosenModel = pendingChatModel;
       // F3. `/agent/start` binds whatever the app-wide selection is NOW, and the
       // composer's chip is this window's copy of it. A refusal here has already
       // put the fresh model on screen; resolving `false` hands the text back.
-      if (!(await confirmNewChatModel())) return false;
+      // Not asked when this chat has a model of its own: the chip names that
+      // one, and it is bound below before anything is sent.
+      if (!chosenModel && !(await confirmNewChatModel())) return false;
       setIsCreatingSession(true);
       try {
         // #39 — honour the directory picked in the composer before the
@@ -1791,6 +1829,15 @@ function BaseChatContent({
             allExtensions: extensionsList,
           }
         );
+        // The chat's own model, through the same per-chat bind a started chat's
+        // switch uses (user proof included), BEFORE the first message goes
+        // anywhere. A refused or failed bind sends nothing: the message would
+        // otherwise reach a model the person did not choose. `changeModel` has
+        // already said why; `false` hands the text back.
+        if (!(await bindHeldChatModel(newSession.id, chosenModel, changeModel))) {
+          setIsCreatingSession(false);
+          return false;
+        }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
         navigateWithViewTransition(
           navigate,
@@ -2345,56 +2392,63 @@ function BaseChatContent({
         <PinnedModelNote session={session} reportedByTurn={pinnedModel} className="mx-3 mb-2" />
         <ChatCrewAccessBar access={crewAccess} chatTitle={session?.name} className="mx-3 mb-2" />
         {sessionId && agentReady && <CopilotControl key={sessionId} sessionId={sessionId} />}
-        <ChatInput
-          sessionId={sessionId}
-          // The chat stream's own copy of the row, which the reply stream keeps
-          // current from turn START. `ChatInput` still reads the tier itself for
-          // the callers that thread nothing; this is the fresher of the two.
-          sessionRowPrivacyTier={session?.id === sessionId ? session?.privacy_tier : undefined}
-          effectiveModel={effectiveModel}
-          handleSubmit={handleFormSubmit}
-          chatState={chatState}
-          setChatState={setChatState}
-          onStop={stopStreaming}
-          onAbandonContinuation={abandonContinuation}
-          submissionBlocked={
-            pendingContinuation?.ownership === 'foreign' ||
-            pendingContinuation?.ownership === 'settling' ||
-            crewAccess.blocksComposer
-          }
-          onSteer={heldSteer}
-          commandHistory={commandHistory}
-          initialValue={initialPrompt}
-          draftKey={inputDraftKey}
-          reasoningDraftKey={reasoningDraftKey}
-          setView={setView}
-          totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
-          accumulatedInputTokens={
-            tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
-          }
-          accumulatedOutputTokens={
-            tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
-          }
-          droppedFiles={droppedFiles}
-          onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-          messagesLength={messages.length}
-          workingDirLocked={workingDirLocked}
-          disableAnimation={disableAnimation}
-          sessionCosts={sessionCosts}
-          modelCostRows={modelRows}
-          workflow={workflow}
-          workflowAccepted={!hasNotAcceptedWorkflow}
-          initialPrompt={initialPrompt}
-          toolCount={toolCount || 0}
-          supportsVisionOverride={session ? (sessionSupportsVision ?? false) : undefined}
-          supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
-          // #39 — capture a pre-session directory choice so the first message
-          // creates the session in it. Before the customChatInputProps spread,
-          // so callers can still override.
-          onWorkingDirChange={setPendingWorkingDir}
-          autoFocus={autoFocusComposer}
-          {...customChatInputProps}
-        />
+        <PendingChatModelContext.Provider value={pendingChatModelScope}>
+          <ChatInput
+            sessionId={sessionId}
+            // The chat stream's own copy of the row, which the reply stream keeps
+            // current from turn START. `ChatInput` still reads the tier itself for
+            // the callers that thread nothing; this is the fresher of the two.
+            sessionRowPrivacyTier={session?.id === sessionId ? session?.privacy_tier : undefined}
+            effectiveModel={
+              effectiveModel ??
+              (!sessionId && pendingChatModel
+                ? { provider: pendingChatModel.provider, model: pendingChatModel.name }
+                : undefined)
+            }
+            handleSubmit={handleFormSubmit}
+            chatState={chatState}
+            setChatState={setChatState}
+            onStop={stopStreaming}
+            onAbandonContinuation={abandonContinuation}
+            submissionBlocked={
+              pendingContinuation?.ownership === 'foreign' ||
+              pendingContinuation?.ownership === 'settling' ||
+              crewAccess.blocksComposer
+            }
+            onSteer={heldSteer}
+            commandHistory={commandHistory}
+            initialValue={initialPrompt}
+            draftKey={inputDraftKey}
+            reasoningDraftKey={reasoningDraftKey}
+            setView={setView}
+            totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
+            accumulatedInputTokens={
+              tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
+            }
+            accumulatedOutputTokens={
+              tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
+            }
+            droppedFiles={droppedFiles}
+            onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
+            messagesLength={messages.length}
+            workingDirLocked={workingDirLocked}
+            disableAnimation={disableAnimation}
+            sessionCosts={sessionCosts}
+            modelCostRows={modelRows}
+            workflow={workflow}
+            workflowAccepted={!hasNotAcceptedWorkflow}
+            initialPrompt={initialPrompt}
+            toolCount={toolCount || 0}
+            supportsVisionOverride={session ? (sessionSupportsVision ?? false) : undefined}
+            supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
+            // #39 — capture a pre-session directory choice so the first message
+            // creates the session in it. Before the customChatInputProps spread,
+            // so callers can still override.
+            onWorkingDirChange={setPendingWorkingDir}
+            autoFocus={autoFocusComposer}
+            {...customChatInputProps}
+          />
+        </PendingChatModelContext.Provider>
       </SubagentComposerSlot>
     </div>
   );

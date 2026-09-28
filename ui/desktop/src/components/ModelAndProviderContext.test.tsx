@@ -648,6 +648,72 @@ describe('ModelAndProviderProvider user-proof refusal', () => {
   });
 });
 
+/**
+ * W2-PRV-15. A Crew chat's model is fixed by its grant, and the daemon refuses
+ * a switch with 409 `{code: 'crew_model_fixed', error}` (W2-DMN-10). It used to
+ * arrive as a 500 toast titled "<provider>/<model> failed", which the dialog
+ * then followed with "...then try again".
+ */
+describe('ModelAndProviderProvider Crew fixed-model refusal', () => {
+  const crewModelFixed409 = {
+    code: 'crew_model_fixed',
+    error: "This chat's model is fixed by its Crew access. Start a new chat to use another model.",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+    mocks.updateAgentProvider.mockImplementation(clientRejecting(crewModelFixed409));
+  });
+
+  it('hands the sentence to a caller that shows it in place, with no toast', async () => {
+    const onRefusal = vi.fn();
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness options={{ onRefusal, alsoForNewChats: true }} />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(onRefusal).toHaveBeenCalledWith(crewModelFixed409.error);
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // Refused before anything moved: not even the app-wide default it was also asked for.
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+  });
+
+  it('otherwise toasts the sentence, never as a provider failure', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "This chat's model can't change",
+        msg: crewModelFixed409.error,
+        scope: 'screen',
+      })
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('failed') })
+    );
+  });
+});
+
 // A null provider/model means two different things — "not read yet" and
 // "nothing is configured" — and consumers were sending users to Settings on
 // the first. The status says which.
