@@ -699,9 +699,13 @@ const SHARE_METHODS: [&str; 8] = [
 const MEMBER_STATE_QUOTA: &str = "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.";
 const MEMBER_JOURNAL_QUOTA: &str = "quota_exceeded: You have made as many changes as one member's share of this workspace's audit journal allows. Reading still works; ask the workspace host about starting a new workspace.";
 /// A snapshot's invitations, runs and references are each capped at this many serialized
-/// bytes, so what other members do can never push a snapshot past the frame limit. The full
-/// counts are in `totals`.
+/// bytes, and its teams and channels take what the rest leaves under the frame limit less
+/// [`SNAPSHOT_FRAME_MARGIN`], so what other members do can never push a snapshot past the frame
+/// limit. The full counts are in `totals`.
 const SNAPSHOT_SECTION_BYTES: usize = 64 * 1024;
+/// What a snapshot leaves unused of the frame: the response around it (`{"id":…,"result":…}`
+/// and its newline) and room to spare.
+const SNAPSHOT_FRAME_MARGIN: usize = 1024;
 /// A worker's `context.manifest` carries at most this many serialized bytes of messages.
 const CONTEXT_MANIFEST_BYTES: usize = 640 * 1024;
 /// A worker's `messages.history` or `messages.search` page carries at most this many
@@ -1418,23 +1422,7 @@ impl Broker {
             canonical(&req.params)
         ]))?);
         if let Some(saved) = self.state.dedupe.get(&key) {
-            if let Some(channel) = req.params.get("channel_id").and_then(Value::as_str) {
-                // The host may add people to a channel it is not in (direct add), so its
-                // retry of that add is re-authorized as the host, not as a member.
-                let host_add = req.method == "channel.add_member"
-                    && self.manager(&self.state, &actor.id).is_ok();
-                if !host_add {
-                    self.channel(&self.state, &actor.id, channel, false)?;
-                }
-            }
-            if let Some(blob_id) = req.params.get("blob_id").and_then(Value::as_str) {
-                let blob = self
-                    .state
-                    .blobs
-                    .get(blob_id)
-                    .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(&self.state, actor, blob)?;
-            }
+            self.recheck_replay(actor, req)?;
             ensure!(
                 saved.digest == fingerprint,
                 "conflict: idempotency key reused with different request"
@@ -1538,6 +1526,32 @@ impl Broker {
             let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
         }
         Ok(result)
+    }
+    /// A retried mutation's cached result is returned only while the actor may still reach
+    /// what it names: the channel (as a member) and the attachment.
+    fn recheck_replay(&self, actor: &Actor, req: &Request) -> Result<()> {
+        if let Some(channel) = req.params.get("channel_id").and_then(Value::as_str) {
+            // The host may add people to a channel it is not in (direct add), so its retry of
+            // that add is re-authorized as the host, not as a member. Likewise a member's retry
+            // of leaving a channel (they are no longer in it, and the result is the one they
+            // were given), and the host's of acting on a channel whose owner left the workspace.
+            let host_add =
+                req.method == "channel.add_member" && self.manager(&self.state, &actor.id).is_ok();
+            let outside = Self::is_leave(req, &actor.id)
+                || self.stewards_orphaned_channel(&self.state, actor, req);
+            if !host_add && !outside {
+                self.channel(&self.state, &actor.id, channel, false)?;
+            }
+        }
+        if let Some(blob_id) = req.params.get("blob_id").and_then(Value::as_str) {
+            let blob = self
+                .state
+                .blobs
+                .get(blob_id)
+                .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+            self.blob_authorized(&self.state, actor, blob)?;
+        }
+        Ok(())
     }
     fn hello(&self, req: &Request) -> Result<Value> {
         let secret: [u8; 32] = hex::decode(&self.state.workspace_signing_key)?
@@ -2114,13 +2128,8 @@ impl Broker {
             _ => Ok(result),
         }
     }
-    fn read_workspace_snapshot(&self, actor: &Actor, _req: &Request) -> Result<Value> {
+    fn read_workspace_snapshot(&self, actor: &Actor, req: &Request) -> Result<Value> {
         let s = &self.state;
-        let protected_channel_ids: Vec<&str> = Self::protected_channel_ids(s)
-            .into_iter()
-            .filter(|channel| self.channel(s, &actor.id, channel, false).is_ok())
-            .collect();
-        let (positions, unread) = self.read_state(s, actor);
         let host = self.manager(s, &actor.id).is_ok();
         let now = now();
         let index = PeopleIndex::new(s);
@@ -2134,63 +2143,12 @@ impl Broker {
             .values()
             .filter(|c| c.members.contains(&actor.id))
             .collect();
-        // An invitee no longer sees an invitation once it has expired (it can never be
-        // accepted); its inviter still does, marked `expired`, until it is pruned. What the
-        // invitee can act on comes first, taking each inviter's newest in turn so no one
-        // inviter can crowd out the rest, then the actor's own live and expired invitations,
-        // newest first, all within one section budget.
-        let mut invitations: Vec<&Invitation> = s
-            .invitations
-            .values()
-            .filter(|i| {
-                i.inviter_id == actor.id || (i.principal_id == actor.id && i.expires_at >= now)
-            })
-            .collect();
-        invitations.sort_by_key(|i| {
-            (
-                i.principal_id != actor.id,
-                i.expires_at < now,
-                std::cmp::Reverse(i.expires_at),
-            )
-        });
-        let received = invitations
-            .iter()
-            .take_while(|i| i.principal_id == actor.id)
-            .count();
-        let sent = invitations.split_off(received);
-        let mut invitations = in_turns(invitations, |i| i.inviter_id.as_str());
-        invitations.extend(sent);
-        let invitations_total = invitations.len();
-        let invitations_wire = within_budget(
-            invitations
-                .iter()
-                .map(|invitation| Self::invitation_wire(s, &index, invitation, now))
-                .collect(),
-        );
-        invitations.truncate(invitations_wire.len());
+        let (invitations, invitations_wire, invitations_total) =
+            Self::snapshot_invitations(s, &index, &actor.id, now);
         let mut workspace = json!(s.workspace);
         workspace["host_principal_id"] = json!(host_principal_id(s));
-        let stale = if host {
-            self.stale_principals(s)
-        } else {
-            BTreeSet::new()
-        };
-        let principals: Vec<Value> = s
-            .principals
-            .values()
-            .filter(|p| p.active)
-            .map(|p| {
-                let mut wire = index.principal_wire(p);
-                if stale.contains(p.id.as_str()) {
-                    wire["account_stale"] = json!(true);
-                }
-                wire
-            })
-            .collect();
-        let former_principals = Self::former_principals(s, &index, &teams, &channels, &invitations);
+        let principals = self.snapshot_principals(s, &index, host);
         let actor_wire = Self::actor_wire(s, &index, &actor.id);
-        let teams_wire = Self::teams_wire(&teams);
-        let channels_wire = Self::channels_wire(&channels);
         // The actor's live runs only (a revoked, expired or superseded run grants nothing),
         // newest first.
         let mut runs: Vec<&Run> = s
@@ -2216,8 +2174,8 @@ impl Broker {
         references.extend(in_turns(others, |r| r.owner_id.as_str()));
         let references_total = references.len();
         let references = within_budget(references);
-        let totals = json!({"invitations": invitations_total, "runs": runs_total, "references": references_total});
-        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":protected_channel_ids,"actor":actor_wire,"principals":principals,"former_principals":former_principals,"teams":teams_wire,"channels":channels_wire,"invitations":invitations_wire,"runs":runs,"read_positions":positions,"unread":unread,"references":references,"totals":totals});
+        let totals = json!({"invitations": invitations_total, "runs": runs_total, "references": references_total, "teams": teams.len(), "channels": channels.len()});
+        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":[],"actor":actor_wire,"principals":principals,"former_principals":[],"teams":[],"channels":[],"invitations":invitations_wire,"runs":runs,"read_positions":{},"unread":{},"references":references,"totals":totals});
         if host {
             let refusals: BTreeMap<&str, usize> = self
                 .name_refusals
@@ -2231,22 +2189,265 @@ impl Broker {
                 snapshot["pending_joins"] = join::project_for_manager(self, s);
             }
         }
+        self.fill_places(
+            &mut snapshot,
+            actor,
+            req,
+            &index,
+            &teams,
+            &channels,
+            &invitations,
+        );
         Ok(snapshot)
     }
-    /// Per visible channel, the actor's read watermark (as an opaque message token) and the
+    /// The invitations a snapshot lists, their wires and how many there are in all. An invitee
+    /// no longer sees an invitation once it has expired (it can never be accepted); its inviter
+    /// still does, marked `expired`, until it is pruned. What the invitee can act on comes
+    /// first, taking each inviter's newest in turn so no one inviter can crowd out the rest,
+    /// then the actor's own live and expired invitations, newest first, all within one section
+    /// budget.
+    fn snapshot_invitations<'s>(
+        s: &'s State,
+        index: &PeopleIndex<'_>,
+        actor_id: &str,
+        now: u64,
+    ) -> (Vec<&'s Invitation>, Vec<Value>, usize) {
+        let mut invitations: Vec<&Invitation> = s
+            .invitations
+            .values()
+            .filter(|i| {
+                i.inviter_id == actor_id || (i.principal_id == actor_id && i.expires_at >= now)
+            })
+            .collect();
+        invitations.sort_by_key(|i| {
+            (
+                i.principal_id != actor_id,
+                i.expires_at < now,
+                std::cmp::Reverse(i.expires_at),
+            )
+        });
+        let received = invitations
+            .iter()
+            .take_while(|i| i.principal_id == actor_id)
+            .count();
+        let sent = invitations.split_off(received);
+        let mut invitations = in_turns(invitations, |i| i.inviter_id.as_str());
+        invitations.extend(sent);
+        let total = invitations.len();
+        let wire = within_budget(
+            invitations
+                .iter()
+                .map(|invitation| Self::invitation_wire(s, index, invitation, now))
+                .collect(),
+        );
+        invitations.truncate(wire.len());
+        (invitations, wire, total)
+    }
+    /// The workspace's active members as a snapshot lists them; the host's also marks those
+    /// whose account no longer matches ([`Self::stale_principals`]).
+    fn snapshot_principals(&self, s: &State, index: &PeopleIndex<'_>, host: bool) -> Vec<Value> {
+        let stale = if host {
+            self.stale_principals(s)
+        } else {
+            BTreeSet::new()
+        };
+        s.principals
+            .values()
+            .filter(|p| p.active)
+            .map(|p| {
+                let mut wire = index.principal_wire(p);
+                if stale.contains(p.id.as_str()) {
+                    wire["account_stale"] = json!(true);
+                }
+                wire
+            })
+            .collect()
+    }
+    /// Fill `snapshot`'s teams and channels, with what hangs off them (`protected_channel_ids`,
+    /// `read_positions`, `unread`) and the former members they name, once everything else is in
+    /// it.
+    ///
+    /// They take the room everything else leaves under the frame limit. Their size is not the
+    /// actor's to choose: any team owner may add any member to their teams and channels without
+    /// asking, and each lists every member, so one member with a full share of teams and
+    /// channels could otherwise push everyone else's snapshot past the limit. What does not fit
+    /// is left out, whole, and counted in `totals`; nothing listed is ever cut short.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_places(
+        &self,
+        snapshot: &mut Value,
+        actor: &Actor,
+        req: &Request,
+        index: &PeopleIndex<'_>,
+        teams: &[&Team],
+        channels: &[&Channel],
+        invitations: &[&Invitation],
+    ) {
+        let s = &self.state;
+        let reserved = json_len(&*snapshot)
+            .saturating_add(json_len(&req.id))
+            .saturating_add(SNAPSHOT_FRAME_MARGIN)
+            .saturating_add(json_len(&Self::former_principals(
+                s,
+                index,
+                teams,
+                channels,
+                invitations,
+            )));
+        let places = Self::places_within(
+            s,
+            &actor.id,
+            teams,
+            channels,
+            MAX_FRAME.saturating_sub(reserved),
+        );
+        let protected = Self::protected_channel_ids(s);
+        let protected_channel_ids: Vec<&str> = places
+            .channels
+            .iter()
+            .map(|channel| channel.id.as_str())
+            .filter(|channel| protected.contains(channel))
+            .collect();
+        let (positions, unread) = self.read_state(s, actor, &places.channels);
+        snapshot["protected_channel_ids"] = json!(protected_channel_ids);
+        snapshot["former_principals"] = json!(Self::former_principals(
+            s,
+            index,
+            &places.teams,
+            &places.channels,
+            invitations,
+        ));
+        snapshot["teams"] = Value::Array(places.teams_wire);
+        snapshot["channels"] = Value::Array(places.channels_wire);
+        snapshot["read_positions"] = json!(positions);
+        snapshot["unread"] = json!(unread);
+    }
+    /// Of the teams and channels the actor is in, those that fit in `room` serialized bytes,
+    /// with their wires, each in state order. Nothing is cut short: a team or channel is listed
+    /// whole or left out.
+    ///
+    /// Who gets the room first: what the actor created (their teams) or owns (their channels),
+    /// then the host's, then every other owner's, taking turns so that no one owner can crowd
+    /// the rest out; within a turn a team comes before a channel. A channel comes with its team
+    /// when the actor is in that team, so it can be shown where it belongs. Something that does
+    /// not fit is skipped and what follows is still tried, so one large team or channel never
+    /// stops the smaller ones after it.
+    fn places_within<'s>(
+        s: &'s State,
+        actor_id: &str,
+        teams: &[&'s Team],
+        channels: &[&'s Channel],
+        room: usize,
+    ) -> Places<'s> {
+        #[derive(Clone, Copy)]
+        enum Place {
+            Team(usize),
+            Channel(usize),
+        }
+        let teams_wire = Self::teams_wire(teams);
+        let channels_wire = Self::channels_wire(channels);
+        let team_cost: Vec<usize> = teams_wire.iter().map(|wire| json_len(wire) + 1).collect();
+        // A channel also has its `read_positions` entry (an opaque message token, or null), its
+        // `unread` count and perhaps its `protected_channel_ids` entry, each keyed by its ID.
+        let channel_cost: Vec<usize> = channels
+            .iter()
+            .zip(&channels_wire)
+            .map(|(channel, wire)| json_len(wire) + 1 + 3 * (json_len(&channel.id) + 2) + 96)
+            .collect();
+        let team_of: BTreeMap<&str, usize> = teams
+            .iter()
+            .enumerate()
+            .map(|(position, team)| (team.id.as_str(), position))
+            .collect();
+        let host = host_principal_id(s);
+        let owner = |place: &Place| -> &'s str {
+            match *place {
+                Place::Team(position) => teams[position].created_by.as_str(),
+                Place::Channel(position) => channels[position].owner_id.as_str(),
+            }
+        };
+        let rank = |place: &Place| {
+            let owner = owner(place);
+            if owner == actor_id {
+                0
+            } else if Some(owner) == host {
+                1
+            } else {
+                2
+            }
+        };
+        // Teams first, so the stable sort keeps a team ahead of a channel of the same rank,
+        // and each owner's own turns do too.
+        let mut order: Vec<Place> = (0..teams.len())
+            .map(Place::Team)
+            .chain((0..channels.len()).map(Place::Channel))
+            .collect();
+        order.sort_by_key(rank);
+        let others = order.split_off(
+            order
+                .iter()
+                .position(|place| rank(place) == 2)
+                .unwrap_or(order.len()),
+        );
+        order.extend(in_turns(others, owner));
+        let mut room = room;
+        let mut kept_teams = vec![false; teams.len()];
+        let mut kept_channels = vec![false; channels.len()];
+        for place in order {
+            match place {
+                Place::Team(position) => {
+                    if !kept_teams[position] && team_cost[position] <= room {
+                        room -= team_cost[position];
+                        kept_teams[position] = true;
+                    }
+                }
+                Place::Channel(position) => {
+                    let team = team_of
+                        .get(channels[position].team_id.as_str())
+                        .copied()
+                        .filter(|team| !kept_teams[*team]);
+                    let cost = channel_cost[position] + team.map_or(0, |team| team_cost[team]);
+                    if cost <= room {
+                        room -= cost;
+                        kept_channels[position] = true;
+                        if let Some(team) = team {
+                            kept_teams[team] = true;
+                        }
+                    }
+                }
+            }
+        }
+        let mut places = Places {
+            teams: Vec::new(),
+            teams_wire: Vec::new(),
+            channels: Vec::new(),
+            channels_wire: Vec::new(),
+        };
+        for ((team, wire), kept) in teams.iter().zip(teams_wire).zip(kept_teams) {
+            if kept {
+                places.teams.push(*team);
+                places.teams_wire.push(wire);
+            }
+        }
+        for ((channel, wire), kept) in channels.iter().zip(channels_wire).zip(kept_channels) {
+            if kept {
+                places.channels.push(*channel);
+                places.channels_wire.push(wire);
+            }
+        }
+        places
+    }
+    /// Per listed channel, the actor's read watermark (as an opaque message token) and the
     /// number of unread messages from others.
     fn read_state(
         &self,
         s: &State,
         actor: &Actor,
+        channels: &[&Channel],
     ) -> (BTreeMap<String, Value>, BTreeMap<String, usize>) {
         let mut positions = BTreeMap::new();
         let mut unread = BTreeMap::new();
-        for channel in s
-            .channels
-            .values()
-            .filter(|c| c.members.contains(&actor.id))
-        {
+        for channel in channels {
             let sequence = *s
                 .read_positions
                 .get(&format!("{}:{}", actor.id, channel.id))
@@ -3319,13 +3520,40 @@ impl Broker {
         );
         Ok(target.id.clone())
     }
+    /// `channel.archive`, `channel.transfer` and `membership.revoke`: the channel's current
+    /// owner archives it, offers it to another member, or removes a member.
+    ///
+    /// Two others may remove. A member leaves a channel they do not own by removing themselves
+    /// ([`Self::is_leave`]), archived or not: a team owner may add any member to their channels
+    /// without asking, and leaving is how that member undoes it. And a channel whose owner is no
+    /// longer an active member of the workspace has nobody left to manage it, so the host
+    /// archives it or removes its members, from outside it too
+    /// ([`Self::stewards_orphaned_channel`]). Nobody removes a channel's owner, the host never
+    /// overrides an owner who is still a member, and only the owner transfers.
     fn mutate_channel_archive(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
+        let method = req.method.as_str();
         let channel = text(p, "channel_id")?;
-        let c = self.channel(s, who, channel, true)?;
-        ensure!(c.owner_id == *who, "forbidden: current owner required");
-        match req.method.as_str() {
+        let stewarding = self.stewards_orphaned_channel(s, actor, req);
+        let c = if stewarding {
+            s.channels
+                .get(channel)
+                .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?
+        } else {
+            self.channel(s, who, channel, false)?
+        };
+        let owner = c.owner_id == *who;
+        let leaving = !owner && Self::is_leave(req, who);
+        ensure!(
+            leaving || !c.archived,
+            "channel_archived: channel is read-only"
+        );
+        ensure!(
+            owner || leaving || stewarding,
+            "forbidden: current owner required"
+        );
+        match method {
             "channel.transfer" => {
                 let successor = text(p, "successor_id")?;
                 // The successor must still be an active principal: an offboarded member's ID
@@ -3340,13 +3568,16 @@ impl Broker {
             }
             "membership.revoke" => {
                 let target = text(p, "principal_id")?;
-                ensure!(target != who, "forbidden: transfer before owner removal");
+                ensure!(
+                    target != c.owner_id,
+                    "forbidden: transfer before owner removal"
+                );
                 check_expected_username(s, p, target)?;
             }
             _ => {}
         }
         let c = s.channels.get_mut(channel).expect("authorized channel");
-        match req.method.as_str() {
+        match method {
             "channel.archive" => c.archived = true,
             "channel.transfer" => {
                 c.pending_owner = Some(text(p, "successor_id")?.into());
@@ -3359,9 +3590,45 @@ impl Broker {
                 }
             }
         }
-        s.invitations.retain(|_, i| i.target_id != channel);
+        let result = json!(c);
+        if method == "membership.revoke" && !owner {
+            // Someone who leaves, or whom the host removes, loses only their own invitations
+            // to the channel: nobody else's pending invitation is theirs to cancel.
+            let target = text(p, "principal_id")?;
+            s.invitations
+                .retain(|_, i| i.target_id != channel || i.principal_id != target);
+        } else {
+            s.invitations.retain(|_, i| i.target_id != channel);
+        }
         s.workspace.policy_epoch += 1;
-        Ok(json!(c))
+        Ok(result)
+    }
+    /// Whether `req` removes the actor from a channel: `membership.revoke` naming the actor's
+    /// own principal. For anyone but the channel's owner that is leaving it.
+    fn is_leave(req: &Request, actor_id: &str) -> bool {
+        req.method == "membership.revoke"
+            && req.params.get("principal_id").and_then(Value::as_str) == Some(actor_id)
+    }
+    /// Whether `actor` is the host, as a person, archiving (`channel.archive`) or removing a
+    /// member from (`membership.revoke`) a channel whose owner is no longer an active member of
+    /// the workspace, and so can act on it without being in it. An offboarded owner's channels
+    /// would otherwise stay as they are for good, with every member someone added to them.
+    fn stewards_orphaned_channel(&self, s: &State, actor: &Actor, req: &Request) -> bool {
+        matches!(req.method.as_str(), "channel.archive" | "membership.revoke")
+            && actor.run.is_none()
+            && self.manager(s, &actor.id).is_ok()
+            && req
+                .params
+                .get("channel_id")
+                .and_then(Value::as_str)
+                .and_then(|channel| s.channels.get(channel))
+                .is_some_and(|channel| {
+                    channel.owner_id != actor.id
+                        && !s
+                            .principals
+                            .get(&channel.owner_id)
+                            .is_some_and(|owner| owner.active)
+                })
     }
     fn mutate_transfer_accept(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
@@ -4137,6 +4404,14 @@ fn check_expected_username(s: &State, params: &Value, principal_id: &str) -> Res
         TARGET_MISMATCH
     );
     Ok(())
+}
+
+/// The teams and channels a snapshot lists ([`Broker::places_within`]), with their wires.
+struct Places<'s> {
+    teams: Vec<&'s Team>,
+    teams_wire: Vec<Value>,
+    channels: Vec<&'s Channel>,
+    channels_wire: Vec<Value>,
 }
 
 /// Display names for one projection. The username keys of every principal (active or

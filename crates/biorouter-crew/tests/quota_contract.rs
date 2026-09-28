@@ -5,9 +5,10 @@
 //! - BROKER-1: per-member shares of the state and journal, bounded free-text fields (escaped
 //!   size included), an idempotency cache that ages out and is bounded per member, and headroom
 //!   for the host's administrative operations.
-//! - BROKER-2: snapshot sections other members can grow (references, invitations, runs) and
-//!   the worker's context manifest and message pages stay within the frame limit; a repeat
-//!   invitation renews rather than adds.
+//! - BROKER-2: snapshot sections other members can grow (references, invitations, runs, teams
+//!   and channels) and the worker's context manifest and message pages stay within the frame
+//!   limit; a repeat invitation renews rather than adds; a member leaves the channels someone
+//!   else added them to, and the host manages the channels of someone who left the workspace.
 //! - BROKER-4: per-member shares of attachments, teams, channels and references, and
 //!   unfinished uploads that expire.
 #![cfg(unix)]
@@ -1239,4 +1240,406 @@ fn a_revoked_or_expired_run_leaves_the_snapshot() {
         .collect();
     assert_eq!(runs, vec![&live]);
     assert_eq!(snapshot["totals"]["runs"], 1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// BROKER-2: one member's teams and channels, and how the people they added get out of them
+// ---------------------------------------------------------------------------------------------
+
+const OLIVIA: u32 = 71_003;
+/// Everyone else in the crowded workspace: enough that a team or channel listing them all
+/// takes about 12 KB, so one member's full share of teams and channels is more than a frame.
+const CROWD: u32 = 300;
+
+/// A workspace where Mallory, a member and not the host, has created her whole share of teams
+/// and channels and added everyone to every one of them, as direct add lets any team owner do
+/// without asking. Victor is also in the host's team, a team of his own and Olivia's.
+struct Crowded {
+    ws: Workspace,
+    mallory: Member,
+    victor: Member,
+    olivia: Member,
+    mallory_teams: Vec<String>,
+    /// Each of Mallory's teams' `#general`, then its nine other channels.
+    mallory_channels: Vec<String>,
+    /// The teams Victor is in that are not Mallory's: the host's, his own and Olivia's.
+    other_teams: Vec<String>,
+    /// Their `#general` channels, in the same order.
+    other_channels: Vec<String>,
+}
+
+fn crowded(label: &str) -> Crowded {
+    let mut ws = Workspace::new(label);
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let mut victor = ws.enroll(VICTOR, "victor", 22);
+    let mut olivia = ws.enroll(OLIVIA, "olivia", 23);
+    let (host_team, host_general) = ws.host_team("lab");
+    ws.host_ok(
+        "team.add_member",
+        json!({"team_id": host_team, "principal_id": victor.principal_id, "expected_username": "victor"}),
+    );
+    let (victor_team, victor_general) = ws.create_team(&mut victor, "victor-notes");
+    let (olivia_team, olivia_general) = ws.create_team(&mut olivia, "olivia-team");
+    ws.call_ok(
+        &mut olivia,
+        "team.add_member",
+        json!({"team_id": olivia_team, "principal_id": victor.principal_id, "expected_username": "victor"}),
+    );
+    let mut mallory_teams = Vec::new();
+    let mut mallory_channels = Vec::new();
+    for team_index in 0..Quotas::STANDARD.member_teams {
+        let (team, general) = ws.create_team(&mut mallory, &format!("crowd-{team_index}"));
+        mallory_channels.push(general);
+        for channel_index in 0..9 {
+            let channel = ws.call_ok(
+                &mut mallory,
+                "channel.create",
+                json!({"team_id": team, "name": format!("c{team_index}-{channel_index}")}),
+            );
+            mallory_channels.push(channel["id"].as_str().unwrap().to_owned());
+        }
+        mallory_teams.push(team);
+    }
+    assert_eq!(mallory_channels.len(), Quotas::STANDARD.member_channels);
+    // What direct add would record for 300 more people, written straight into the journal:
+    // thousands of real adds would take minutes, and direct_add_contract covers the adds.
+    let crowd: Vec<(String, u32)> = (0..CROWD).map(|index| (uuid(), 80_000 + index)).collect();
+    let mut everyone: Vec<String> = crowd.iter().map(|(id, _)| id.clone()).collect();
+    everyone.extend([
+        mallory.principal_id.clone(),
+        victor.principal_id.clone(),
+        olivia.principal_id.clone(),
+    ]);
+    everyone.sort();
+    let actor = mallory.principal_id.clone();
+    let ws = ws.edit_journal(|journal| {
+        journal.append(
+            "system",
+            "test.crowd",
+            crowd
+                .iter()
+                .map(|(id, uid)| {
+                    let name = format!("crowd{uid}");
+                    set(
+                        &["principals", id],
+                        legacy_principal(id, *uid, &name, &name, true),
+                    )
+                })
+                .collect(),
+        );
+        let places = mallory_teams
+            .iter()
+            .map(|team| ("teams", team))
+            .chain(mallory_channels.iter().map(|channel| ("channels", channel)));
+        journal.append(
+            &actor,
+            "team.add_member",
+            places
+                .map(|(section, id)| set(&[section, id, "members"], json!(everyone)))
+                .collect(),
+        );
+    });
+    Crowded {
+        ws,
+        mallory,
+        victor,
+        olivia,
+        mallory_teams,
+        mallory_channels,
+        other_teams: vec![host_team, victor_team, olivia_team],
+        other_channels: vec![host_general, victor_general, olivia_general],
+    }
+}
+
+/// The `id`s a snapshot section lists.
+fn listed(snapshot: &Value, section: &str) -> Vec<String> {
+    snapshot[section]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn one_members_teams_and_channels_never_push_a_snapshot_past_the_frame_limit() {
+    let Crowded {
+        mut ws,
+        mut victor,
+        mallory_teams,
+        mallory_channels,
+        other_teams,
+        other_channels,
+        ..
+    } = crowded("places-bound");
+    let state = ws.broker.state_json();
+    let size = |value: &Value| serde_json::to_vec(value).unwrap().len();
+    let mallorys: usize = mallory_teams
+        .iter()
+        .map(|team| size(&state["teams"][team]))
+        .chain(
+            mallory_channels
+                .iter()
+                .map(|channel| size(&state["channels"][channel])),
+        )
+        .sum();
+    assert!(
+        mallorys > MAX_FRAME,
+        "unbounded, Mallory's teams and channels alone list {mallorys} bytes"
+    );
+
+    let response = ws.call(&mut victor, "workspace.snapshot", json!({}));
+    assert!(frame_len(&response) < MAX_FRAME, "{}", frame_len(&response));
+    let snapshot = ok(response);
+    let (teams, channels) = (listed(&snapshot, "teams"), listed(&snapshot, "channels"));
+    assert_eq!(
+        snapshot["totals"]["teams"],
+        mallory_teams.len() + other_teams.len()
+    );
+    assert_eq!(
+        snapshot["totals"]["channels"],
+        mallory_channels.len() + other_channels.len()
+    );
+    assert!(
+        channels.len() < mallory_channels.len(),
+        "some of Mallory's channels are left out"
+    );
+    // The host's, Victor's own and Olivia's are all there: the host and Victor himself come
+    // first, and Olivia takes turns with Mallory.
+    for id in &other_teams {
+        assert!(teams.contains(id), "team {id}");
+    }
+    for id in &other_channels {
+        assert!(channels.contains(id), "channel {id}");
+    }
+    assert!(
+        mallory_channels.iter().any(|id| channels.contains(id)),
+        "Mallory takes her turns too"
+    );
+    // Nothing listed is cut short, and a channel comes with its team.
+    for team in snapshot["teams"].as_array().unwrap() {
+        let id = team["id"].as_str().unwrap();
+        assert_eq!(team["members"], state["teams"][id]["members"], "{id}");
+    }
+    for channel in snapshot["channels"].as_array().unwrap() {
+        let id = channel["id"].as_str().unwrap();
+        assert_eq!(channel["members"], state["channels"][id]["members"], "{id}");
+        let team = channel["team_id"].as_str().unwrap().to_owned();
+        assert!(teams.contains(&team), "{id} without its team");
+    }
+    // What hangs off a channel is there exactly for the channels listed.
+    let mut expected = channels.clone();
+    expected.sort();
+    for section in ["read_positions", "unread"] {
+        let mut keys: Vec<String> = snapshot[section]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        assert_eq!(keys, expected, "{section}");
+    }
+    let protected: Vec<String> = snapshot["protected_channel_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect();
+    assert!(!protected.is_empty());
+    assert!(protected.iter().all(|id| channels.contains(id)));
+}
+
+#[test]
+fn a_member_leaves_the_channels_someone_else_added_them_to() {
+    let Crowded {
+        mut ws,
+        mut mallory,
+        mut victor,
+        mut olivia,
+        mallory_teams,
+        mallory_channels,
+        other_teams,
+        other_channels,
+        ..
+    } = crowded("places-leave");
+    let (victor_id, olivia_id) = (victor.principal_id.clone(), olivia.principal_id.clone());
+    // An archived channel too.
+    ws.call_ok(
+        &mut mallory,
+        "channel.archive",
+        json!({"channel_id": mallory_channels[1]}),
+    );
+    let leave = json!({
+        "channel_id": mallory_channels[0],
+        "principal_id": victor_id,
+        "expected_username": "victor",
+        "idempotency_key": "leave-general",
+    });
+    let left = ws.call_ok(&mut victor, "membership.revoke", leave.clone());
+    // A retry of the leave returns what the leave returned, though he is no longer in it.
+    assert_eq!(ws.call_ok(&mut victor, "membership.revoke", leave), left);
+    for channel in &mallory_channels[1..] {
+        ws.call_ok(
+            &mut victor,
+            "membership.revoke",
+            json!({"channel_id": channel, "principal_id": victor_id}),
+        );
+    }
+    let snapshot = ws.snapshot(&mut victor);
+    assert_eq!(snapshot["totals"]["channels"], other_channels.len());
+    assert_eq!(listed(&snapshot, "channels").len(), other_channels.len());
+    // Leaving the channels leaves him in Mallory's teams, which now fit.
+    assert_eq!(snapshot["totals"]["teams"], mallory_teams.len() + 3);
+    assert_eq!(listed(&snapshot, "teams").len(), mallory_teams.len() + 3);
+    let (code, _) = refused(ws.call(
+        &mut victor,
+        "messages.history",
+        json!({"channel_id": mallory_channels[2]}),
+    ));
+    assert_eq!(code, "forbidden");
+
+    // Leaving is only ever oneself, and an owner transfers before leaving.
+    let olivia_general = &other_channels[2];
+    assert_eq!(
+        refused(ws.call(
+            &mut victor,
+            "membership.revoke",
+            json!({"channel_id": olivia_general, "principal_id": olivia_id}),
+        ))
+        .1,
+        "forbidden: current owner required"
+    );
+    assert_eq!(
+        refused(ws.call(
+            &mut olivia,
+            "membership.revoke",
+            json!({"channel_id": olivia_general, "principal_id": olivia_id}),
+        ))
+        .1,
+        "forbidden: transfer before owner removal"
+    );
+
+    // Leaving takes back only the leaver's own invitations to the channel.
+    let olivia_team = &other_teams[2];
+    ws.call_ok(
+        &mut olivia,
+        "team.add_member",
+        json!({"team_id": olivia_team, "principal_id": mallory.principal_id, "expected_username": "mallory"}),
+    );
+    let notes = ws.call_ok(
+        &mut olivia,
+        "channel.create",
+        json!({"team_id": olivia_team, "name": "notes"}),
+    )["id"]
+        .clone();
+    ws.call_ok(
+        &mut olivia,
+        "channel.add_member",
+        json!({"channel_id": notes, "principal_id": victor_id, "expected_username": "victor"}),
+    );
+    let invitation = ws.call_ok(
+        &mut olivia,
+        "invitation.create",
+        json!({"kind": "channel", "target_id": notes, "principal_id": mallory.principal_id}),
+    )["id"]
+        .clone();
+    ws.call_ok(
+        &mut victor,
+        "membership.revoke",
+        json!({"channel_id": notes, "principal_id": victor_id}),
+    );
+    ws.call_ok(
+        &mut mallory,
+        "invitation.accept",
+        json!({"invitation_id": invitation}),
+    );
+    let members = &ws.broker.state_json()["channels"][notes.as_str().unwrap()]["members"];
+    assert!(members
+        .as_array()
+        .unwrap()
+        .contains(&json!(mallory.principal_id)));
+}
+
+#[test]
+fn the_host_manages_the_channels_of_someone_who_left_the_workspace() {
+    let Crowded {
+        mut ws,
+        mallory,
+        mut victor,
+        mallory_channels,
+        other_channels,
+        ..
+    } = crowded("places-steward");
+    let (archive, remove) = (&mallory_channels[1], &mallory_channels[2]);
+    let remove_victor = json!({
+        "channel_id": remove,
+        "principal_id": victor.principal_id,
+        "expected_username": "victor",
+        "idempotency_key": "host-removes-victor",
+    });
+    // While Mallory is a member her channels are hers, and the host is not in them.
+    assert_eq!(
+        refused(ws.host_call("channel.archive", json!({"channel_id": archive}))).1,
+        "forbidden: channel unavailable"
+    );
+    assert_eq!(
+        refused(ws.host_call("membership.revoke", remove_victor.clone())).1,
+        "forbidden: channel unavailable"
+    );
+
+    // Once she has left the workspace nobody else could ever manage them, so the host does.
+    ws.offboard(&mallory.principal_id);
+    assert_eq!(
+        ws.host_ok("channel.archive", json!({"channel_id": archive}))["archived"],
+        true
+    );
+    let removed = ws.host_ok("membership.revoke", remove_victor.clone());
+    assert_eq!(ws.host_ok("membership.revoke", remove_victor), removed);
+    assert_eq!(
+        ws.snapshot(&mut victor)["totals"]["channels"],
+        mallory_channels.len() - 1 + other_channels.len()
+    );
+    // Never her own membership, never a transfer, nothing more on an archived channel, and no
+    // other member steps in.
+    assert_eq!(
+        refused(ws.host_call(
+            "membership.revoke",
+            json!({"channel_id": remove, "principal_id": mallory.principal_id}),
+        ))
+        .1,
+        "forbidden: transfer before owner removal"
+    );
+    assert_eq!(
+        refused(ws.host_call(
+            "channel.transfer",
+            json!({"channel_id": remove, "successor_id": victor.principal_id}),
+        ))
+        .1,
+        "forbidden: channel unavailable"
+    );
+    assert_eq!(
+        refused(ws.host_call(
+            "membership.revoke",
+            json!({"channel_id": archive, "principal_id": victor.principal_id}),
+        ))
+        .0,
+        "channel_archived"
+    );
+    let crowd = ws.broker.state_json()["channels"][&mallory_channels[3]]["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|id| *id != &json!(victor.principal_id) && *id != &json!(mallory.principal_id))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        refused(ws.call(
+            &mut victor,
+            "membership.revoke",
+            json!({"channel_id": mallory_channels[3], "principal_id": crowd}),
+        ))
+        .1,
+        "forbidden: current owner required"
+    );
 }
