@@ -1303,10 +1303,10 @@ biorouter serve --open</code></pre>
   <tbody>
     <tr><td><code>--host &lt;ADDR&gt;</code></td><td>string</td><td><code>127.0.0.1</code></td><td>Address to bind. Anything reachable from another machine requires a token.</td></tr>
     <tr><td><code>-p, --port &lt;PORT&gt;</code></td><td>integer</td><td><code>8765</code></td><td>Port to listen on. Deliberately not <code>3000</code>, which is the daemon's own default.</td></tr>
-    <tr><td><code>--token &lt;TOKEN&gt;</code></td><td>string</td><td>new random token per launch</td><td>Use a fixed token instead of a generated one. The flag stays on the command line while the server runs, where other accounts on the machine can read it; a service unit should set <code>BIOROUTER_BROWSER_TOKEN</code> in its environment file instead.</td></tr>
+    <tr><td><code>--token &lt;TOKEN&gt;</code></td><td>string</td><td>new random token per launch</td><td>Use a fixed token instead of a generated one, for a service unit or a script.</td></tr>
     <tr><td><code>--no-token</code></td><td>flag</td><td>off</td><td>Serve with no access token. Refused for any bind address other than loopback, and cannot be combined with <code>--token</code>.</td></tr>
     <tr><td><code>--web-dir &lt;DIR&gt;</code></td><td>path</td><td>found automatically</td><td>Directory holding the built interface. The error names every location it tried.</td></tr>
-    <tr><td><code>--open</code></td><td>flag</td><td>off</td><td>Open a browser once the server is ready, through a page only your account can read, so the address and its token never appear on a command line.</td></tr>
+    <tr><td><code>--open</code></td><td>flag</td><td>off</td><td>Open a browser once the server is ready.</td></tr>
     <tr><td><code>--computer-use-approval</code></td><td>flag</td><td>off</td><td>Interactively set a separate Biorouter Copilot approval key of at least 16 characters. Only its SHA-256 digest reaches the daemon, and the key itself is never saved. Requires an interactive terminal, and it is the only way a browser session can approve a Biorouter Copilot task.</td></tr>
   </tbody>
 </table></div>
@@ -1348,10 +1348,9 @@ After=network-online.target
 [Service]
 User=biorouter
 Environment=BIOROUTER_DISABLE_KEYRING=true
-# BIOROUTER_BROWSER_TOKEN=... , mode 0600, owned by the service account.
-# Not --token on ExecStart: a command line is readable by every account on the host.
+# BIOROUTER_TOKEN=... , mode 0600, owned by the service account
 EnvironmentFile=/etc/biorouter/serve.env
-ExecStart=/usr/bin/biorouter serve --host 0.0.0.0 --port 8765
+ExecStart=/usr/bin/biorouter serve --host 0.0.0.0 --port 8765 --token ${BIOROUTER_TOKEN}
 Restart=on-failure
 
 [Install]
@@ -1372,7 +1371,7 @@ biorouterd agent</code></pre>
     <tr><td><code>BIOROUTER_HOST</code></td><td><code>127.0.0.1</code></td><td>Address the daemon binds.</td></tr>
     <tr><td><code>BIOROUTER_SERVER__SECRET_KEY</code></td><td>random per run</td><td>Auth key required on requests. If unset, the daemon generates a random key for the process and logs a warning. The nested key uses the <code>__</code> separator. In <code>just debug-server</code> mode this is <code>test</code>.</td></tr>
     <tr><td><code>BIOROUTER_SERVE_UI</code></td><td>unset</td><td>Directory holding the built interface. When set, the daemon serves it at <code>/</code> in addition to its API, which is how <code>biorouter serve</code> reaches a browser. Unset, the daemon serves only its API, which is what the desktop app wants, since Electron loads the interface itself.</td></tr>
-    <tr><td><code>BIOROUTER_BROWSER_TOKEN</code></td><td>unset</td><td>The token a browser must present once to receive a session cookie. <code>biorouter serve</code> uses it when it is set, and otherwise generates one for each launch. Set it in a service's environment file to keep one address across restarts.</td></tr>
+    <tr><td><code>BIOROUTER_BROWSER_TOKEN</code></td><td>unset</td><td>The token a browser must present once to receive a session cookie. <code>biorouter serve</code> generates and passes this; set it directly only if you are running the daemon yourself.</td></tr>
   </tbody>
 </table></div>
 <p>On start the daemon publishes its base URL as <code>BIOROUTER_APP_BASE_URL</code> so tools running inside the daemon process can emit absolute <code>http://host:port/apps/&lt;id&gt;/</code> links. CORS is restricted to local origins. The daemon also exposes the same bundled MCP servers via <code>biorouterd mcp &lt;server&gt;</code>.</p>

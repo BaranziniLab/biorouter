@@ -608,20 +608,12 @@ jobs:
 
           # The token is exchanged for a cookie and leaves the address bar. It is
           # not consumed (SD-9 in docs/deployment/serve-decisions.md): the
-          # readiness loop above has already redeemed it. The answer is a page of
-          # the daemon's own origin that moves on to /, not a 303: a redirect
-          # drops a SameSite=Strict cookie on a navigation that `serve --open`'s
-          # file: page started (routes::web_ui::exchange_bounce).
-          curl -s -o "$RUNNER_TEMP/bounce.html" -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
-          grep -qi '^HTTP/1.1 200' "$RUNNER_TEMP/h" || fail 'the token exchange did not answer its page'
+          # readiness loop above has already redeemed it.
+          curl -s -o /dev/null -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
+          grep -qi '^HTTP/1.1 303' "$RUNNER_TEMP/h" || fail 'no redirect after the token exchange'
           grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'
           grep -qi 'HttpOnly' "$RUNNER_TEMP/h" || fail 'the session cookie is readable from script'
           grep -qi 'SameSite=Strict' "$RUNNER_TEMP/h" || fail 'the session cookie is sent cross-site'
-          grep -qi 'cache-control: no-store' "$RUNNER_TEMP/h" || fail 'the exchange page is cacheable'
-          grep -qi 'referrer-policy: no-referrer' "$RUNNER_TEMP/h" || fail 'the exchange page leaks its address'
-          grep -q 'http-equiv="refresh" content="0;url=/"' "$RUNNER_TEMP/bounce.html" \
-            || fail 'the exchange page does not move on to the interface'
-          ! grep -q citoken "$RUNNER_TEMP/bounce.html" || fail 'the exchange page carries the token'
 
           # With the cookie, the shell and its runtime configuration.
           curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/ > "$RUNNER_TEMP/shell.html"

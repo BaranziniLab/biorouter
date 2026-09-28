@@ -227,12 +227,9 @@ biorouter apps serve <id>        # ensure a daemon is up; print the URL; stay fo
 
 Daemon management is minimal: it health-checks `BIOROUTER_PORT` (default 3000) via
 the auth-exempt `GET /status`, reuses a running daemon whose secret it knows (one
-`apps open` or `apps serve` started and recorded, or one `BIOROUTER_SERVER__SECRET_KEY`
-names), else spawns `biorouterd agent` with a secret of its own, and opens the app's
-one-time launch link, which works once and for five minutes. While `apps serve` holds
-its daemon in the foreground, an `apps open` in another terminal mints the next link;
-`serve` removes its record when it stops the daemon. In-terminal rendering of an app
-is out of scope.
+`apps open` started, or one `BIOROUTER_SERVER__SECRET_KEY` names), else spawns
+`biorouterd agent` with a secret of its own, and opens the app's one-time launch
+link. In-terminal rendering of an app is out of scope.
 
 ## Testing story
 

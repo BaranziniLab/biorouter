@@ -1263,6 +1263,52 @@ async fn a_chat_post_ends_with_the_daemons_source_line() {
         .is_some_and(|line| line.starts_with("Source: `gina-assay.csv`")));
 }
 
+/// W2-DMN-12 (review): a file the chat reads again after a post that named it is read since
+/// that post, so the next post names it again. The line used to say "No shared file was read
+/// for this post." here, because a file was listed (and counted as posted) only once.
+#[tokio::test]
+async fn a_file_read_again_after_a_post_is_named_by_the_next_post() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("chat-post-reread", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    call("context.manifest", json!({})).await.unwrap();
+    let read = || call("blob.read", json!({"blob_id": "blob-new"}));
+    let post = |body: &str| call("run.project", json!({"body": body}));
+    let last_paragraph = |n: usize| {
+        let body = frames(&f.root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "run.project")
+            .nth(n)
+            .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+            .expect("the post reached the workspace");
+        body.rsplit("\n\n").next().unwrap().to_owned()
+    };
+    read().await.unwrap();
+    post("Means are 12.7 and 7.8.").await.unwrap();
+    assert!(
+        last_paragraph(0).starts_with("Source: `gina-assay.csv`"),
+        "{}",
+        last_paragraph(0)
+    );
+    read().await.unwrap();
+    post("Checked again: still 12.7.").await.unwrap();
+    assert!(
+        last_paragraph(1).starts_with("Source: `gina-assay.csv`"),
+        "a file read again is named again: {}",
+        last_paragraph(1)
+    );
+    post("Nothing new.").await.unwrap();
+    assert_eq!(last_paragraph(2), "No shared file was read for this post.");
+}
+
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge
 /// is retired, no heartbeat or re-dial follows, and the connection says why with a typed code.
 #[tokio::test]

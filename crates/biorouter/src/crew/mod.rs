@@ -4227,21 +4227,21 @@ impl CrewManager {
             // W2-DMN-12: an agent's own post ends with the daemon's line, as a task's result
             // does, built from what the chat read since its last post. It is always last, so a
             // "Source:" line the model wrote is never the last thing in the post.
-            let posted_with_line = match params.get("body").and_then(Value::as_str) {
+            let line_mark = match params.get("body").and_then(Value::as_str) {
                 Some(body) => {
-                    let line = self.chat_post_source_line(session).await;
+                    let (line, mark) = self.chat_post_source_line(session).await;
                     params["body"] = json!(source_line::with_source_line(
                         body.to_owned(),
                         line,
                         source_line::NO_FILE_READ_FOR_POST,
                     ));
-                    true
+                    Some(mark)
                 }
-                None => false,
+                None => None,
             };
             let answer = self.worker_request(session, method, params).await?;
-            if posted_with_line {
-                self.mark_reads_posted(session);
+            if let Some(mark) = line_mark {
+                self.mark_reads_posted(session, mark);
             }
             return Ok(answer);
         }
@@ -4277,14 +4277,16 @@ impl CrewManager {
 struct RunReads {
     /// Each file a `blob.read` returned, in the order first read, once each.
     files: Vec<ReadFile>,
-    /// How many of `files` a post of the chat's own already named (W2-DMN-12): a chat post's
-    /// line names what the chat read since its last post. A task's result names them all.
-    posted_files: usize,
-    /// The files [`Self::unlisted`] held when the chat last posted.
-    posted_unlisted: HashSet<String>,
     /// Files read after [`MAX_READ_FILES`] were listed, so the line can say how many it leaves
     /// out instead of dropping them silently.
     unlisted: HashSet<String>,
+    /// The [`ReadMark`] of the latest read of each file in [`Self::files`] and
+    /// [`Self::unlisted`]: a file read again is read again since the chat's last post, though
+    /// it is listed once (W2-DMN-12).
+    read_at: HashMap<String, ReadMark>,
+    /// The mark the chat's last post of its own was built at: its line named every read up to
+    /// it. A chat post's line names what the chat read after it; a task's result names all.
+    posted_through: ReadMark,
     /// A person label (D13) for each principal a message read named: the broker's `people`
     /// map beside `messages.history`, `messages.search` and `context.manifest`.
     people: HashMap<String, String>,
@@ -4306,6 +4308,25 @@ struct RunReads {
     /// and the look-ups made before a result is posted). A copy the run did not read counts
     /// here, which is how the line knows a newer one was left unread.
     named: HashMap<String, ReadFile>,
+}
+
+/// Where a `blob.read` falls among every read this process recorded: later reads have larger
+/// marks, whichever chat made them. One counter for all chats, so a mark taken before a chat's
+/// reads were forgotten (a new grant) never covers a read made after.
+type ReadMark = u64;
+
+/// The last [`ReadMark`] given out; the next read gets one more.
+static READ_MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A mark for a read being recorded now.
+fn next_read_mark() -> ReadMark {
+    READ_MARKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+/// The mark of the latest read recorded so far. Taken under `run_reads`' lock, where every
+/// read is recorded, it covers exactly the reads that lock has seen.
+fn current_read_mark() -> ReadMark {
+    READ_MARKS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// One file a run read or the workspace named: the broker's own `blob` fields, never the
@@ -4685,20 +4706,26 @@ impl RunReads {
         Some(file)
     }
 
-    /// Record the file a successful `blob.read` returned, once.
+    /// Record the file a successful `blob.read` returned: listed once, and marked as read now
+    /// every time, so a read after the chat's last post is named by its next one even when an
+    /// earlier post named the same file (W2-DMN-12).
     fn note_file(&mut self, read: &Value) {
         let Some(file) = self.note_blob(&read["blob"], true) else {
             return;
         };
-        if self.files.iter().any(|known| known.id == file.id) {
+        let mark = next_read_mark();
+        if self.was_read(&file.id) {
+            self.read_at.insert(file.id, mark);
             return;
         }
         if self.files.len() >= MAX_READ_FILES {
             if self.unlisted.len() < MAX_READ_ATTACHMENTS {
+                self.read_at.insert(file.id.clone(), mark);
                 self.unlisted.insert(file.id);
             }
             return;
         }
+        self.read_at.insert(file.id.clone(), mark);
         self.files.push(file);
     }
 
@@ -4769,26 +4796,25 @@ impl RunReads {
     }
 
     /// These reads as they stand for the chat's next post: only the files read since its last
-    /// one (W2-DMN-12). Everything that names them (people, times, copies) is kept whole.
+    /// one (W2-DMN-12), a file read again included. Everything that names them (people, times,
+    /// copies) is kept whole.
     fn since_last_post(&self) -> Self {
         let mut since = self.clone();
-        since.files = self
-            .files
-            .get(self.posted_files.min(self.files.len())..)
-            .unwrap_or_default()
-            .to_vec();
-        since.unlisted = self
-            .unlisted
-            .difference(&self.posted_unlisted)
-            .cloned()
-            .collect();
+        let read_since = |id: &str| {
+            self.read_at
+                .get(id)
+                .is_some_and(|&mark| mark > self.posted_through)
+        };
+        since.files.retain(|file| read_since(&file.id));
+        since.unlisted.retain(|id| read_since(id));
         since
     }
 
-    /// Everything read so far has been named by a post of the chat's own.
-    fn mark_posted(&mut self) {
-        self.posted_files = self.files.len();
-        self.posted_unlisted = self.unlisted.clone();
+    /// A post of the chat's own went out with a line built at `mark`: every read up to it has
+    /// been named. A read recorded after the line was built (another tool call of the same
+    /// batch, while the post was on its way) is left for the next post.
+    fn mark_posted(&mut self, mark: ReadMark) {
+        self.posted_through = self.posted_through.max(mark);
     }
 
     /// The line a task's posted result ends with, in Markdown, written at `now` (whose time
@@ -5303,37 +5329,46 @@ impl CrewManager {
     }
 
     /// The line a connected chat's post ends with: the files it read since its last post, named
-    /// as [`Self::posted_source_line`] names a task's (W2-DMN-12). `None` when it read none.
-    async fn chat_post_source_line(&self, session: &str) -> Option<String> {
+    /// as [`Self::posted_source_line`] names a task's (W2-DMN-12), or `None` when it read none;
+    /// and the mark the line was built at, for [`Self::mark_reads_posted`] once the post went
+    /// out. The line and its mark are taken in one hold of the lock every read is recorded
+    /// under, so the mark covers exactly the reads the line names.
+    async fn chat_post_source_line(&self, session: &str) -> (Option<String>, ReadMark) {
         let unnamed = {
             let reads = self
                 .run_reads
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let since = reads.get(session)?.since_last_post();
+            let mark = current_read_mark();
+            let Some(since) = reads.get(session).map(RunReads::since_last_post) else {
+                return (None, mark);
+            };
             if since.files.is_empty() && since.unlisted.is_empty() {
-                return None;
+                return (None, mark);
             }
             since.unnamed_newest_first(MAX_POSTING_LOOKUPS)
         };
         self.name_attachments(session, &unnamed).await;
-        self.run_reads
+        let reads = self
+            .run_reads
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(session)?
-            .since_last_post()
-            .source_line()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let line = reads
+            .get(session)
+            .and_then(|reads| reads.since_last_post().source_line());
+        (line, current_read_mark())
     }
 
-    /// The chat's post went out: its line named what was read up to now.
-    fn mark_reads_posted(&self, session: &str) {
+    /// The chat's post went out with a line built at `mark`: it named every read up to there,
+    /// and none after.
+    fn mark_reads_posted(&self, session: &str, mark: ReadMark) {
         if let Some(reads) = self
             .run_reads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_mut(session)
         {
-            reads.mark_posted();
+            reads.mark_posted(mark);
         }
     }
 
@@ -5831,6 +5866,51 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// W2-DMN-12 (review): through the manager, a `blob.read` that lands after a chat post's
+    /// line was built and before the post is marked (another tool call of the same batch runs
+    /// meanwhile) is named by the next post; and a file read again after a post is named again.
+    #[tokio::test]
+    async fn a_read_while_a_chat_post_is_on_its_way_is_named_by_the_next_post() {
+        let root = fixture_root("chat-post-race");
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let read = |id: &str, name: &str| {
+            json!({"blob": {"id": id, "name": name, "owner_id": "p-gina"}, "offset": 0,
+                "data_hex": "", "next_offset": 0, "complete": true})
+        };
+        let (line, mark) = manager.chat_post_source_line("chat").await;
+        assert_eq!(line, None, "nothing read yet");
+        manager.mark_reads_posted("chat", mark);
+
+        manager.note_blob_read("chat", &read("b1", "assay.csv"));
+        let (line, mark) = manager.chat_post_source_line("chat").await;
+        assert_eq!(line.as_deref(), Some("Source: `assay.csv`."));
+        manager.note_blob_read("chat", &read("b2", "plate.csv"));
+        manager.mark_reads_posted("chat", mark);
+
+        let (line, mark) = manager.chat_post_source_line("chat").await;
+        assert_eq!(line.as_deref(), Some("Source: `plate.csv`."));
+        manager.mark_reads_posted("chat", mark);
+        assert_eq!(manager.chat_post_source_line("chat").await.0, None);
+
+        manager.note_blob_read("chat", &read("b1", "assay.csv"));
+        assert_eq!(
+            manager.chat_post_source_line("chat").await.0.as_deref(),
+            Some("Source: `assay.csv`.")
+        );
+
+        // A mark taken before the chat's reads were forgotten (a new grant) never covers a read
+        // made after.
+        let (_, stale) = manager.chat_post_source_line("chat").await;
+        manager.forget_run_reads("chat");
+        manager.note_blob_read("chat", &read("b3", "counts.tsv"));
+        manager.mark_reads_posted("chat", stale);
+        assert_eq!(
+            manager.chat_post_source_line("chat").await.0.as_deref(),
+            Some("Source: `counts.tsv`.")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     /// W2-DMN-7: a request's lost bridge is typed by where it was lost, with the SSH failure
@@ -9352,6 +9432,49 @@ mod provenance_tests {
 
     fn status(id: &str, name: &str, owner: &str) -> serde_json::Value {
         json!({"id": id, "name": name, "owner_id": owner, "complete": true})
+    }
+
+    /// W2-DMN-12 (review): a chat post's line names what was read since the chat's last post,
+    /// by when each file was last read: a file read again after a post is named again (it is
+    /// still listed once), and a read made after a line was built, while its post was on the
+    /// way, is left for the next post rather than marked as named by a line that did not name
+    /// it.
+    #[test]
+    fn a_chat_post_names_every_read_since_the_last_one_and_no_read_after_its_line() {
+        let mut reads = RunReads::default();
+        reads.note_context(&page(json!([message(10, "b1")])), NewestFirst);
+        reads.note_file(&read("b1", "gina-assay.csv", "p-gina"));
+        let built = super::current_read_mark();
+        let gina = "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).";
+        assert_eq!(reads.since_last_post().source_line().as_deref(), Some(gina));
+        reads.mark_posted(built);
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        reads.note_file(&read("b1", "gina-assay.csv", "p-gina"));
+        assert_eq!(reads.since_last_post().source_line().as_deref(), Some(gina));
+        assert_eq!(reads.files.len(), 1, "still listed once");
+
+        let built = super::current_read_mark();
+        reads.note_file(&read("b2", "plate.csv", "p-dave"));
+        reads.mark_posted(built);
+        let next = reads
+            .since_last_post()
+            .source_line()
+            .expect("plate.csv is unnamed");
+        assert!(next.starts_with("Source: `plate.csv`"), "{next}");
+        assert!(!next.contains("gina-assay"), "{next}");
+        // A task's result still names every file its run read.
+        let all = reads.source_line().unwrap();
+        assert!(
+            all.contains("gina-assay.csv") && all.contains("plate.csv"),
+            "{all}"
+        );
+
+        // An older mark never takes back what a newer one covered.
+        let newest = super::current_read_mark();
+        reads.mark_posted(newest);
+        reads.mark_posted(built);
+        assert_eq!(reads.since_last_post().source_line(), None);
     }
 
     #[test]

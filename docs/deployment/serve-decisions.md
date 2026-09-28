@@ -445,10 +445,8 @@ had without breaking what the product promises:
   client unfurling it, would spend a single-use link before anyone clicked it.
 
 What the exchange is for is keeping the token out of browser history and out of the `Referer` of
-everything the page loads afterwards, and the exchange does that whether or not the token is
-consumed. (It answered with a redirect until 2026-09-28 and now answers a page that moves on to
-`/`, so that its `SameSite=Strict` cookie survives a navigation `serve --open` starts from a file;
-this record is unchanged by that.)
+everything the page loads afterwards, and the redirect does that whether or not the token is
+consumed.
 
 **Displaced alternatives.**
 
