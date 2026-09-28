@@ -1784,11 +1784,14 @@ async fn configured_user(name: &str, port: Option<u16>) -> Option<String> {
     };
     let resolved = tokio::time::timeout(SSH_RESOLVE_TIMEOUT, async {
         let set = user(resolve_ssh(&tail(configured)).await.ok()?)?;
-        let default = resolve_ssh(&tail(vec!["-F".to_owned(), "none".to_owned()]))
-            .await
-            .ok()
-            .and_then(user);
-        (default.as_deref() != Some(set.as_str())).then_some(set)
+        // An ssh that can't read settings from none can't say what the default is, and a
+        // warning then might be about the local account: nothing is said.
+        let default = user(
+            resolve_ssh(&tail(vec!["-F".to_owned(), "none".to_owned()]))
+                .await
+                .ok()?,
+        )?;
+        (default != set).then_some(set)
     })
     .await;
     resolved.ok().flatten()
@@ -1877,7 +1880,7 @@ impl CrewManager {
             )
         })?;
         let here = match parsed.invitation.ssh_host.as_deref() {
-            Some(host) => super::local_host::names_this_machine(host).await,
+            Some(host) => super::local_host::names_this_machine(host),
             None => false,
         };
         if preview {

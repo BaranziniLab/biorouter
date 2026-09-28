@@ -7,16 +7,13 @@
 //! Knowing the server is this machine, the join plans `localhost` with no jump host instead.
 //!
 //! Only this machine's own names and addresses count: `localhost`, a loopback address, an
-//! address on one of its interfaces, and its host name. A name is resolved only to compare its
-//! addresses with those.
+//! address on one of its interfaces, and its host name. A name is never looked up: resolving a
+//! name a pasted invitation chose would be a network request made before the person decided
+//! anything.
 use std::net::IpAddr;
-use std::time::Duration;
-
-/// How long a server name may take to resolve before it is taken as not this machine.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Whether `host` (a name or an address, possibly `[bracketed]`) is this machine.
-pub(super) async fn names_this_machine(host: &str) -> bool {
+pub(super) fn names_this_machine(host: &str) -> bool {
     let host = host
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
@@ -27,17 +24,7 @@ pub(super) async fn names_this_machine(host: &str) -> bool {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return is_this_machine_address(ip);
     }
-    if host.eq_ignore_ascii_case("localhost") || is_this_machines_name(host) {
-        return true;
-    }
-    let resolved = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 22))).await;
-    match resolved {
-        Ok(Ok(addresses)) => {
-            let addresses: Vec<IpAddr> = addresses.map(|address| address.ip()).collect();
-            !addresses.is_empty() && addresses.into_iter().all(is_this_machine_address)
-        }
-        _ => false,
-    }
+    host.eq_ignore_ascii_case("localhost") || is_this_machines_name(host)
 }
 
 /// Whether `ip` is a loopback address or one of this machine's interface addresses.
@@ -123,21 +110,21 @@ fn interface_addresses() -> Vec<IpAddr> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn this_machine_is_recognized_by_its_own_names_and_addresses() {
+    #[test]
+    fn this_machine_is_recognized_by_its_own_names_and_addresses() {
         for own in ["localhost", "127.0.0.1", "::1", "[::1]", "127.0.0.2"] {
-            assert!(names_this_machine(own).await, "{own}");
+            assert!(names_this_machine(own), "{own}");
         }
         if let Some(name) = host_name() {
-            assert!(names_this_machine(&name).await, "{name}");
+            assert!(names_this_machine(&name), "{name}");
         }
         #[cfg(unix)]
         for address in interface_addresses() {
             assert!(is_this_machine_address(address), "{address}");
         }
         // Documentation addresses are never assigned to a real interface.
-        for other in ["192.0.2.10", "2001:db8::1", "", "[]"] {
-            assert!(!names_this_machine(other).await, "{other}");
+        for other in ["192.0.2.10", "2001:db8::1", "", "[]", "hpc.example.invalid"] {
+            assert!(!names_this_machine(other), "{other}");
         }
     }
 }
