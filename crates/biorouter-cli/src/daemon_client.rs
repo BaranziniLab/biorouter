@@ -2232,6 +2232,24 @@ mod tests {
         }
     }
 
+    /// W2-CLI-14: the route's body for a request the daemon never sent (`lost_request`) keeps
+    /// its code and its sentence, which the crew commands then print as they are.
+    #[test]
+    fn a_request_the_daemon_never_sent_keeps_its_code_and_sentence() {
+        const SENTENCE: &str = "Couldn't sign in to hpc as bob: the server refused this computer's SSH key. Nothing was sent.";
+        let refusal = daemon_refusal(
+            503,
+            Some(&serde_json::json!({
+                "code": "crew_not_sent",
+                "error": SENTENCE,
+                "ssh_code": "crew_ssh_key_refused",
+            })),
+            "fallback",
+        );
+        assert_eq!(refusal.kind.as_deref(), Some("crew_not_sent"));
+        assert_eq!(refusal.message(), SENTENCE);
+    }
+
     #[test]
     fn daemon_refusals_keep_the_daemons_exact_sentence() {
         let refusal = daemon_refusal(

@@ -505,6 +505,11 @@ fn outcome_uncertain(error: &anyhow::Error) -> bool {
 /// daemon could not confirm (the retry line follows it), a request it never sent, and the
 /// model's institution and privacy-mode refusals (W2-DMN-9), said from their details, naming
 /// both sides. Any other institution refusal is the daemon's own sentence ([`is_model_refusal`]).
+///
+/// A request the daemon never sent ([`NOT_SENT`]) is its own sentence too (W2-DMN-7). Each one
+/// says why nothing was sent, and whether trying again can help: a server that could not be
+/// reached may answer later, but an SSH key the server refused is refused every time, so a
+/// fixed "run it again" would give advice that cannot work and drop the cause.
 fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> {
     let (code, message) = refusal_code_and_message(cause)?;
     let own = || {
@@ -513,7 +518,7 @@ fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> 
             .map(str::to_owned)
     };
     match code {
-        NOT_SENT => Some("Nothing was sent; run it again.".to_owned()),
+        NOT_SENT => Some(own().unwrap_or_else(|| "Nothing was sent; run it again.".to_owned())),
         OUTCOME_UNKNOWN => Some(own().unwrap_or_else(|| {
             "Crew couldn't confirm whether this reached the workspace. Check the channel before you retry."
                 .to_owned()
@@ -7262,6 +7267,80 @@ mod tests {
         assert!(!is_model_refusal(SENTENCE, Some("stanford")));
     }
 
+    /// W2-CLI-14: a request the daemon never sent is said in the daemon's own sentence, which
+    /// names the cause and whether trying again can help, in text and in JSON's `error`, under
+    /// the code `crew_not_sent` and with no retry line. These are `lost_request`'s sentences in
+    /// `crates/biorouter/src/crew/mod.rs`, for workspace lab and `bob@hpc`.
+    #[tokio::test]
+    async fn a_request_the_daemon_never_sent_keeps_the_daemons_sentence() {
+        const SIGN_IN_REFUSED: &str = "Couldn't sign in to hpc as bob: the server refused this computer's SSH key. Nothing was sent.";
+        const SERVER_UNREACHABLE: &str =
+            "lab's server couldn't be reached, so nothing was sent. Try again once Crew reconnects.";
+        const DROPPED: &str =
+            "The connection to lab dropped before it answered. Nothing changed; try again.";
+        const UNREACHABLE: &str = "Biorouter couldn't reach lab, so nothing was sent.";
+        for sentence in [SIGN_IN_REFUSED, SERVER_UNREACHABLE, DROPPED, UNREACHABLE] {
+            let (api, fake) = api_with(
+                OutputFormat::Text,
+                move |method: &str, path: &str, body: Option<&Value>| {
+                    if body.and_then(|body| body["method"].as_str()) == Some("message.post") {
+                        return Err(FakeRefusal {
+                            status: 503,
+                            code: Some(NOT_SENT.into()),
+                            broker_code: None,
+                            institution_refusal: None,
+                            connection_institution: None,
+                            message: sentence.into(),
+                            detail: None,
+                            modes: None,
+                        }
+                        .into());
+                    }
+                    standard(method, path, body)
+                },
+            );
+            let error = run(
+                &api,
+                CrewCommand::Send(SendArgs {
+                    channel: "methods".into(),
+                    text: Some("hi".into()),
+                    input: None,
+                    attachments: Vec::new(),
+                    references: Vec::new(),
+                }),
+            )
+            .await
+            .expect_err(sentence);
+            assert!(
+                fake.broker_calls()
+                    .iter()
+                    .any(|(method, _)| method == "message.post"),
+                "the post reached the daemon"
+            );
+            // The post carried the request ID, so a retry line would be offered if the daemon's
+            // answer were uncertain. It is not: nothing was sent.
+            let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+            assert_eq!(shown, sentence);
+            assert!(!shown.contains("--request-id"), "{shown}");
+            let line = failure_json(
+                &error,
+                &safe_lines(&error_text(&error)),
+                "req-1",
+                OutputFormat::Json,
+            )
+            .expect("JSON output");
+            let body: Value = serde_json::from_str(&line).expect("one JSON value");
+            assert_eq!(body["error"], sentence);
+            assert_eq!(body["code"], NOT_SENT);
+        }
+        // A key the server refuses is refused every time: nothing tells the person to run the
+        // same command again.
+        let refused = refuse(503, Some(NOT_SENT), SIGN_IN_REFUSED);
+        let shown = failure(&refused, OutputFormat::Text, "req-1", true).to_string();
+        assert!(shown.contains("refused this computer's SSH key"), "{shown}");
+        assert!(!shown.contains("run it again"), "{shown}");
+    }
+
     #[test]
     fn a_broker_refusal_keeps_terminal_controls_escaped() {
         let error = refuse_broker(
@@ -7821,8 +7900,10 @@ mod tests {
                 "crew_outcome_unknown"
             );
         }
-        // A request the daemon never sent is a definite answer: no retry ID, and it says so.
-        let not_sent = refuse(503, Some("crew_not_sent"), "Nothing was sent.");
+        // A request the daemon never sent is a definite answer: no retry ID, and it says so in
+        // the daemon's own words (a_request_the_daemon_never_sent_keeps_the_daemons_sentence),
+        // or, from a daemon that sent none, in these.
+        let not_sent = refuse(503, Some("crew_not_sent"), " ");
         assert_eq!(
             failure(&not_sent, OutputFormat::Text, "req-1", true).to_string(),
             "Nothing was sent; run it again."
