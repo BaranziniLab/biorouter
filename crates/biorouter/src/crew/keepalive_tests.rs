@@ -120,7 +120,11 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// run credential) as a run the workspace no longer honors (`grant_expired`), and
 /// `channel-gone` as a channel the person is no longer in (`forbidden: channel unavailable`);
 /// `refuse-revoke` refuses `run.revoke` as a run the workspace does not know; `auth` and
-/// `unreachable` fail before any request, as OpenSSH does. `run.create` answers
+/// `unreachable` fail before any request, as OpenSSH does; `broker-stopped` fails before any
+/// request as the bridge does when its workspace server is not running (`Error: No such file
+/// or directory (os error 2)`, exit 1: SSH worked); `broker-lost-after-N` answers N requests and
+/// then, at the next, exits as the bridge does when its server went away under it (`Error:
+/// broker_unavailable: …`, exit 1). `run.create` answers
 /// [`REGRANTED_RUN`], and `workspace.snapshot` answers [`grant_snapshot`] once a test has created
 /// `grant-snapshot` under the root ([`allow_grants`]); every other test's probes get the generic
 /// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
@@ -188,6 +192,9 @@ case "$plan" in
   unreachable)
     printf '%s\n' 'ssh: connect to host example.test port 22: Connection refused' >&2
     exit 255 ;;
+  broker-stopped)
+    printf '%s\n' 'Error: No such file or directory (os error 2)' >&2
+    exit 1 ;;
 esac
 answered=0
 signed=0
@@ -195,6 +202,11 @@ while IFS= read -r line; do
   printf '%s %s\n' "$n" "$line" >> "$root/requests.log"
   case "$plan" in
     *drop-after-*) [ "$answered" -ge "${{plan##*drop-after-}}" ] && exit 0 ;;
+    broker-lost-after-*)
+      if [ "$answered" -ge "${{plan##*broker-lost-after-}}" ]; then
+        printf '%s\n' 'Error: broker_unavailable: the workspace server closed the connection; reconnect to continue' >&2
+        exit 1
+      fi ;;
   esac
   answered=$((answered+1))
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -1856,6 +1868,105 @@ async fn an_ended_bridge_is_noticed_between_ticks() {
     f.manager.connect(CONNECTION_ID).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(spawns(&f.root), 1);
+}
+
+/// The typed code beside the connection's saved error, as `GET /crew/connections` serves it.
+async fn error_code(manager: &CrewManager) -> Option<&'static str> {
+    let c = manager.connection(CONNECTION_ID).await.unwrap();
+    manager.last_error_code(&c)
+}
+
+/// W2-DMN-5 (review): a workspace server that stopped (restarted, or its computer rebooted) is
+/// its state for now, not a reason to give up. The heartbeat that finds the bridge's server gone
+/// dials again; that dial and the next meet no server yet (after a reboot SSH answers before
+/// Biorouter is open on the host), and the connection comes back by itself on the schedule once
+/// the server does. While it is down it says why, with its code.
+#[tokio::test]
+async fn a_workspace_server_that_restarts_is_reconnected_by_itself() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "broker-restart",
+        &[
+            "broker-lost-after-1",
+            "broker-stopped",
+            "broker-stopped",
+            "serve",
+        ],
+        fast(Duration::from_millis(300)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = Arc::clone(&f.manager);
+    until(async || error_code(&manager).await == Some("crew_broker_not_running")).await;
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+    assert!(
+        !f.manager.idle_redial.lock().unwrap().is_empty(),
+        "the retries are armed"
+    );
+    let root = f.root.clone();
+    until(async || spawns(&root) == 4 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    assert_eq!(error_code(&f.manager).await, None);
+}
+
+/// W2-DMN-5 (review): the same for a bridge whose server goes away under a request, and for a
+/// person's Connect that meets no server: both keep trying by themselves, so nobody has to press
+/// Connect again once the workspace server is back. The request itself is never sent again.
+#[tokio::test]
+async fn a_request_or_connect_that_meets_no_workspace_server_keeps_trying() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "broker-lost-request",
+        &["broker-lost-after-1", "broker-stopped", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let lost = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let failure = lost
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        .expect("the SSH failure stays underneath");
+    assert_eq!(failure.kind, SshFailureKind::BrokerNotRunning);
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .any(|(_, method)| method == "workspace.snapshot"),
+        "never sent, and never sent again"
+    );
+    drop(f);
+
+    let f = fixture(
+        "broker-stopped-connect",
+        &["broker-stopped", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    let refused = f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    let failure = refused
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        .expect("an SSH failure");
+    assert_eq!(failure.kind, SshFailureKind::BrokerNotRunning);
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
 }
 
 #[test]

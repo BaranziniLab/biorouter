@@ -22,12 +22,13 @@
 //!   re-dial fails with that classified reason, the connection reads disconnected with it, and
 //!   Sign in is the person's to open. A re-dial never follows a person's Disconnect (or an edit
 //!   or removal), never runs while a sign-in is pending, and a failure that is not about the
-//!   network (sign-in, host key, a missing bridge, a workspace that no longer verifies) is
-//!   final. A network failure is tried again [`KeepaliveTiming::retry_delays`] times, with
-//!   growing gaps, and then every [`KeepaliveTiming::late_retry_every`] for up to
-//!   [`KeepaliveTiming::late_retry_for`] (Q3-11: a network that came back after the quick
-//!   retries left the connection down until someone pressed Connect). The connection shows
-//!   the real reason all the while.
+//!   network or the workspace server's being down (sign-in, a refused key, a host key, a
+//!   missing bridge, a workspace that no longer verifies) is final. A network failure, or a
+//!   workspace server that is not running (it restarted, or its computer rebooted), is tried
+//!   again [`KeepaliveTiming::retry_delays`] times, with growing gaps, and then every
+//!   [`KeepaliveTiming::late_retry_every`] for up to [`KeepaliveTiming::late_retry_for`]
+//!   (Q3-11: a network that came back after the quick retries left the connection down until
+//!   someone pressed Connect). The connection shows the real reason all the while.
 //!
 //! **The retries are armed whoever finds the drop (Q4-01).** The schedule
 //! ([`CrewManager::schedule_redials`]) used to be armed only by the keepalive's own re-dial, so a
@@ -216,9 +217,14 @@ pub(super) fn membership_refused(error: &anyhow::Error) -> bool {
             ))
 }
 
-/// Whether a re-dial that failed with `error` may be tried again later: only a network
-/// failure. Anything that needs a person (sign-in, a host key) or that says the workspace is
-/// not the one pinned is final, and is left showing.
+/// Whether a re-dial that failed with `error` may be tried again later: a network failure, or
+/// a workspace server that is not running (its computer rebooted, or it was stopped or
+/// restarted), which is the server's state for now and says nothing about this computer's
+/// sign-in or the workspace's identity. After a reboot, SSH answers before the host reopens
+/// Biorouter, so the first dial that gets through meets no server: were that final, every
+/// member would stay offline until someone pressed Connect. Anything that needs a person
+/// (sign-in, a refused key, a host key, a missing bridge) or that says the workspace is not the
+/// one pinned is final, and is left showing.
 pub(super) fn worth_retrying(error: &anyhow::Error) -> bool {
     if error
         .chain()
@@ -232,7 +238,9 @@ pub(super) fn worth_retrying(error: &anyhow::Error) -> bool {
         .is_some_and(|failure| {
             matches!(
                 failure.kind,
-                SshFailureKind::Unreachable | SshFailureKind::Other
+                SshFailureKind::Unreachable
+                    | SshFailureKind::BrokerNotRunning
+                    | SshFailureKind::Other
             ) && failure.code != "ssh_sign_in_refused"
         })
 }
