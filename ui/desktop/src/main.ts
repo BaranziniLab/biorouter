@@ -1460,9 +1460,33 @@ const applyCrewAttentionBadge = (count: number) => {
 let sharedDaemonLink: SharedDaemonLink | undefined;
 const wiredDaemonLinks = new WeakSet<SharedDaemonLink>();
 
+/**
+ * T3-SH-10. The window a main-process prompt belongs to: the focused one, else the first one
+ * on screen. `undefined` only when none is showing.
+ *
+ * ⚠ A prompt with NO parent is an app-modal alert, and on macOS `showMessageBox` runs it on the
+ * main thread's modal loop: every window stops painting and answering until someone finds it
+ * (MainThreadWatchdog measured 74 s and 42 s for the reattach prompt below, and CDP could not
+ * even list targets). Given a window it is a sheet on that window, and the app keeps running.
+ * A hidden window is never the parent: a sheet on it would be a prompt nobody can see.
+ */
+function promptParentWindow(): BrowserWindow | undefined {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused && !focused.isDestroyed()) return focused;
+  return BrowserWindow.getAllWindows().find(
+    (window) => !window.isDestroyed() && window.isVisible()
+  );
+}
+
+/** `dialog.showMessageBox` as a sheet on {@link promptParentWindow} whenever there is one. */
+function showWindowPrompt(options: Electron.MessageBoxOptions) {
+  const parent = promptParentWindow();
+  return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+}
+
 const daemonReattach = createDaemonReattachController({
   ask: async () => {
-    const { response } = await dialog.showMessageBox({
+    const { response } = await showWindowPrompt({
       type: 'warning',
       title: 'Background service restarted',
       message: "Biorouter's background service restarted. Reconnect?",
@@ -1476,7 +1500,7 @@ const daemonReattach = createDaemonReattachController({
     return response === 0 ? 'reconnect' : response === 1 ? 'restart' : 'later';
   },
   reportFailure: async (message) => {
-    const { response } = await dialog.showMessageBox({
+    const { response } = await showWindowPrompt({
       type: 'error',
       title: 'Could not reconnect',
       message: "Biorouter couldn't reconnect to its background service.",
