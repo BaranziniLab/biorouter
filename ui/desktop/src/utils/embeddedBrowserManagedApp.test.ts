@@ -1,5 +1,5 @@
 import type { BrowserWindow, Session } from 'electron';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const electron = vi.hoisted(() => {
   const events = () => {
@@ -136,9 +136,32 @@ const lifetimes: AbortController[] = [];
 function backend() {
   const lifetime = new AbortController();
   lifetimes.push(lifetime);
-  return { baseUrl: 'http://127.0.0.1:64005', signal: lifetime.signal };
+  return { baseUrl: 'http://127.0.0.1:64005', signal: lifetime.signal, secretKey: 'daemon-secret' };
 }
+
+/** The launch token the stand-in daemon mints (W2-HRD-1). */
+const LAUNCH_TOKEN = 'cd'.repeat(32);
+/** The address the preview opens `appUrl`'s app at: its launch link. */
+function launchUrlFor(appUrl: string): string {
+  const url = new URL(appUrl);
+  return `${url.origin}${url.pathname}?t=${LAUNCH_TOKEN}`;
+}
+/** A daemon that mints a launch link for whichever app it is asked about. */
+function launchingDaemon() {
+  return vi.fn(async (url: string) => {
+    const app = /\/apps\/([A-Za-z0-9_-]+)\/launch$/.exec(url)?.[1];
+    return {
+      ok: Boolean(app),
+      status: app ? 200 : 404,
+      json: async () => ({ path: `/apps/${app}/?t=${LAUNCH_TOKEN}` }),
+    } as Response;
+  });
+}
+beforeEach(() => {
+  vi.stubGlobal('fetch', launchingDaemon());
+});
 afterEach(() => {
+  vi.unstubAllGlobals();
   new Function('window', `window[Symbol.for('biorouter.preview.activity.v1')]?.dispose()`)(window);
   document.body.replaceChildren();
   for (const lifetime of lifetimes.splice(0)) lifetime.abort();
@@ -148,6 +171,48 @@ afterEach(() => {
 });
 
 describe('managed app preview handoff', () => {
+  it('opens the app through a launch link its backend mints for the main process', async () => {
+    const context = backend();
+    const url = `${context.baseUrl}/apps/queue-workbench/`;
+    createEmbeddedBrowser(owner, 'launch', url, vi.fn(), context);
+    await vi.waitFor(() =>
+      expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(launchUrlFor(url))
+    );
+    const daemon = vi.mocked(fetch);
+    expect(daemon).toHaveBeenCalledOnce();
+    const [asked, init] = daemon.mock.calls[0] as unknown as [string, RequestInit];
+    expect(asked).toBe(`${context.baseUrl}/apps/queue-workbench/launch`);
+    expect(init).toMatchObject({ method: 'POST', headers: { 'X-Secret-Key': 'daemon-secret' } });
+    // The secret goes to the daemon from the main process and never onto the
+    // page's own requests.
+    const sendHeaders = (
+      electron.views[0].options.webPreferences.session.webRequest
+        .onBeforeSendHeaders as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0][1] as (
+      details: { requestHeaders: Record<string, string> },
+      callback: (response: { cancel: boolean; requestHeaders?: Record<string, string> }) => void
+    ) => void;
+    const answered = vi.fn();
+    sendHeaders({ requestHeaders: { Accept: 'text/html' } }, answered);
+    expect(JSON.stringify(answered.mock.calls)).not.toContain('daemon-secret');
+  });
+
+  it('loads nothing and says why when the backend will not open the app', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }) as Response)
+    );
+    const context = backend();
+    const onState = vi.fn();
+    createEmbeddedBrowser(owner, 'gone', `${context.baseUrl}/apps/removed-app/`, onState, context);
+    await vi.waitFor(() =>
+      expect(onState).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'This app no longer exists.' })
+      )
+    );
+    expect(electron.views[0].webContents.loadURL).not.toHaveBeenCalled();
+  });
+
   it('reports main-owned managed provenance and refreshes the same view only when idle', async () => {
     const context = backend();
     const state = createEmbeddedBrowser(
@@ -250,7 +315,9 @@ describe('managed app preview handoff', () => {
     // The extra argument is main-process-owned context, never a renderer flag.
     const state = createEmbeddedBrowser(owner, 'queue-preview', url, vi.fn(), context);
     expect(state).not.toBeNull();
-    await vi.waitFor(() => expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(url));
+    await vi.waitFor(() =>
+      expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(launchUrlFor(url))
+    );
 
     const previewSession = electron.views[0].options.webPreferences.session;
     expect(previewSession).not.toBe(electron.sessions.get('persist:biorouter-embedded-browser'));
@@ -395,7 +462,7 @@ describe('managed app preview handoff', () => {
       const url = `${context.baseUrl}/apps/${id}/?client_id=synthetic`;
       createEmbeddedBrowser(owner, 'auth-name', url, vi.fn(), context);
       await vi.waitFor(() =>
-        expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(url)
+        expect(electron.views[0].webContents.loadURL).toHaveBeenCalledWith(launchUrlFor(url))
       );
       expect(navigateEmbeddedBrowser(owner, 'auth-name', url)).toBe(true);
       const contents = electron.views[0].webContents as {

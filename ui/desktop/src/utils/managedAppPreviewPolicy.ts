@@ -1,6 +1,12 @@
 export type ManagedAppPreviewBackend = {
   baseUrl: string;
   signal: AbortSignal;
+  /**
+   * The daemon secret, held in the main process only. It is sent once per
+   * preview, to ask the daemon for the app's launch link
+   * (`managedAppLaunchUrl`), and never to the page or on its requests.
+   */
+  secretKey?: string;
 };
 
 export type ManagedAppPreviewScope = {
@@ -87,6 +93,64 @@ export function isManagedAppRequest(
     tail === 'runstate' ||
     /^(?:dist|assets)\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(tail)
   );
+}
+
+/** How long the main process waits for the daemon to mint a launch link. */
+const LAUNCH_TIMEOUT_MS = 15_000;
+
+/**
+ * The address the preview opens `scope`'s app at: a launch link the daemon
+ * mints for a caller holding its secret (W2-HRD-1).
+ *
+ * An app's page, bundle and agent socket are served only to a browser holding
+ * that app's access cookie (or the secret, which a page cannot send). Opening
+ * the link once redeems its single-use token for the cookie inside this
+ * preview's own session, and the daemon redirects to the page without the
+ * token; reloads and the agent socket then carry the cookie. The link replaces
+ * the address the preview was asked for, so a query or fragment on that
+ * address is not kept.
+ *
+ * The answer is checked before it is used: it must be this app's page, on this
+ * backend's origin, carrying a token and nothing else.
+ */
+export async function managedAppLaunchUrl(
+  scope: ManagedAppPreviewScope,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const { secretKey, signal } = scope.backend;
+  if (signal.aborted) throw new Error('The app backend stopped. Reopen the app after it restarts.');
+  if (!secretKey) throw new Error('This app cannot be opened here.');
+  const request = new AbortController();
+  const abort = () => request.abort();
+  signal.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, LAUNCH_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetchImpl(`${scope.origin}${scope.rootPath}launch`, {
+      method: 'POST',
+      headers: { 'X-Secret-Key': secretKey },
+      redirect: 'error',
+      signal: request.signal,
+    });
+  } catch {
+    throw new Error('The app backend did not answer. Try opening the app again.');
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', abort);
+  }
+  if (response.status === 404) throw new Error('This app no longer exists.');
+  if (!response.ok) throw new Error('The app backend would not open this app.');
+  const body = (await response.json().catch(() => null)) as { path?: unknown } | null;
+  const path = body?.path;
+  const expected = new RegExp(`^${scope.rootPath}\\?t=[0-9a-f]{64}$`);
+  if (typeof path !== 'string' || !expected.test(path)) {
+    throw new Error('The app backend answered with an address this preview will not open.');
+  }
+  const url = `${scope.origin}${path}`;
+  if (!isManagedAppNavigation(scope, url)) {
+    throw new Error('The app backend answered with an address this preview will not open.');
+  }
+  return url;
 }
 
 // An additional policy intersects with (never replaces) the server's CSP.

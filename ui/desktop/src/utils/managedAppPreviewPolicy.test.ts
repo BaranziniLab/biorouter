@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   isManagedAppNavigation,
   isManagedAppRequest,
+  managedAppLaunchUrl,
   managedAppPreviewScope,
 } from './managedAppPreviewPolicy';
 
@@ -171,5 +172,82 @@ describe('managed app default-deny requests', () => {
         resourceType: 'xhr',
       })
     ).toBe(false);
+  });
+});
+
+/**
+ * W2-HRD-1: the daemon serves an app's page only to a browser holding that app's
+ * access cookie, so the preview asks for a launch link with the secret, and
+ * opens it only if it is exactly this app's page with a token.
+ */
+describe('managed app launch link', () => {
+  const token = 'ab'.repeat(32);
+  const secret = 'daemon-secret';
+  const withSecret = () => {
+    const lifetime = new AbortController();
+    const launchable = managedAppPreviewScope(`${origin}/apps/queue-workbench/`, {
+      baseUrl: origin,
+      signal: lifetime.signal,
+      secretKey: secret,
+    })!;
+    return { lifetime, launchable };
+  };
+  const answer = (body: unknown, status = 200) =>
+    vi.fn(
+      async () =>
+        ({
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => body,
+        }) as Response
+    );
+
+  it('asks the backend with its secret and opens exactly the page it mints', async () => {
+    const { launchable } = withSecret();
+    const fetchImpl = answer({ path: `/apps/queue-workbench/?t=${token}` });
+    await expect(managedAppLaunchUrl(launchable, fetchImpl)).resolves.toBe(
+      `${origin}/apps/queue-workbench/?t=${token}`
+    );
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${origin}/apps/queue-workbench/launch`);
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({ 'X-Secret-Key': secret });
+    expect(init.redirect).toBe('error');
+  });
+
+  it.each([
+    `/apps/other-app/?t=${token}`,
+    `/apps/queue-workbench/?t=${token}&next=/sessions`,
+    `/apps/queue-workbench/?t=${token.toUpperCase()}`,
+    `/apps/queue-workbench/?t=${token.slice(2)}`,
+    `/apps/queue-workbench/agent?t=${token}`,
+    `//evil.test/apps/queue-workbench/?t=${token}`,
+    `/sessions`,
+    42,
+  ])('refuses the answer %s', async (path) => {
+    const { launchable } = withSecret();
+    await expect(managedAppLaunchUrl(launchable, answer({ path }))).rejects.toThrow(
+      'will not open'
+    );
+  });
+
+  it('says when the app is gone or the backend refuses', async () => {
+    const { launchable } = withSecret();
+    await expect(managedAppLaunchUrl(launchable, answer('no such app', 404))).rejects.toThrow(
+      'This app no longer exists.'
+    );
+    await expect(managedAppLaunchUrl(launchable, answer('', 401))).rejects.toThrow(
+      'would not open this app'
+    );
+  });
+
+  it('asks nothing without a secret or once the backend is gone', async () => {
+    const fetchImpl = answer({ path: `/apps/queue-workbench/?t=${token}` });
+    await expect(managedAppLaunchUrl(scope, fetchImpl)).rejects.toThrow('cannot be opened');
+    const { lifetime, launchable } = withSecret();
+    lifetime.abort();
+    await expect(managedAppLaunchUrl(launchable, fetchImpl)).rejects.toThrow('backend stopped');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

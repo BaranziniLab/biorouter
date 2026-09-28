@@ -98,6 +98,34 @@ export function appUrl(id: string, baseUrl = configuredBaseUrl()): string {
   return `${baseUrl}/apps/${encodeURIComponent(id)}/`;
 }
 
+/**
+ * The address a browser opens an app at (W2-HRD-1).
+ *
+ * The daemon serves an app's page only to a browser holding that app's access
+ * cookie, so a bare `appUrl` answers 401 in a browser that has never opened it.
+ * This asks the daemon, with the secret, for a launch link: opening it once sets
+ * the cookie and lands on the page. The link works once and for a few minutes,
+ * so ask for a new one each time.
+ */
+export async function appLaunchUrl(id: string, baseUrl = configuredBaseUrl()): Promise<string> {
+  const res = await fetch(`${baseUrl}/apps/${encodeURIComponent(id)}/launch`, {
+    method: 'POST',
+    headers: await secretHeader(),
+  });
+  await requireOk(res);
+  const body = (await res.json().catch(() => null)) as { path?: unknown } | null;
+  const path = body?.path;
+  const page = `/apps/${encodeURIComponent(id)}/`;
+  if (
+    typeof path !== 'string' ||
+    !path.startsWith(page) ||
+    !/^\?t=[0-9a-f]{64}$/.test(path.slice(page.length))
+  ) {
+    throw new Error('The backend answered with an unexpected app address.');
+  }
+  return `${baseUrl}${path}`;
+}
+
 export async function secretHeader(): Promise<Record<string, string>> {
   try {
     const key = await window.electron.getSecretKey();

@@ -23,7 +23,7 @@ import { toastSuccess, toastError } from '../../toasts';
 import { PageHeader } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
 import {
-  appUrl,
+  appLaunchUrl,
   buildExportUrl,
   configuredBaseUrl,
   deleteAgentDrafterApp,
@@ -101,7 +101,7 @@ export default function ApplicationsView() {
     }
     setLaunchingAppId(app.id);
     try {
-      await window.electron.openExternal(appUrl(app.id, baseUrl));
+      await window.electron.openExternal(await appLaunchUrl(app.id, baseUrl));
     } catch (err) {
       console.error('Failed to open app:', err);
       toastError({ title: app.title, msg: 'Could not open the app in your browser.' });

@@ -14,6 +14,7 @@ import { validateExternalBrowserTarget } from './externalBrowserNavigation';
 import { isNavigableEmbeddedUrl } from './permissionPolicy';
 import {
   isManagedAppNavigation,
+  managedAppLaunchUrl,
   managedAppPreviewScope,
   type ManagedAppPreviewBackend,
 } from './managedAppPreviewPolicy';
@@ -410,6 +411,21 @@ export function createEmbeddedBrowser(
       if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
         if (!managed && isAuthenticationNavigation(initialUrl)) {
           entry.requestAuthenticationConfirmation(initialUrl);
+        } else if (managed) {
+          // An app's page is served only to a browser holding its access cookie
+          // (W2-HRD-1), so the preview opens the launch link that sets it.
+          void managedAppLaunchUrl(managed.scope).then(
+            (url) => {
+              if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
+                void contents.loadURL(url);
+              }
+            },
+            (error: unknown) => {
+              if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
+                push(error instanceof Error ? error.message : 'This app could not be opened.');
+              }
+            }
+          );
         } else {
           void contents.loadURL(initialUrl);
         }

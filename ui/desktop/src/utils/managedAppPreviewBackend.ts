@@ -7,7 +7,8 @@ const revokedBackends = new WeakSet<BiorouterdResult['process']>();
 /** Main-process provenance; a renderer-provided URL cannot mint this grant. */
 export function bindManagedAppPreviewBackend(
   result: BiorouterdResult,
-  owner: BrowserWindow
+  owner: BrowserWindow,
+  secretKey?: string
 ): ManagedAppPreviewBackend | undefined {
   if (!result.managed) return undefined;
   const controller = new AbortController();
@@ -34,5 +35,5 @@ export function bindManagedAppPreviewBackend(
   ) {
     revoke();
   }
-  return { baseUrl: result.baseUrl, signal: controller.signal };
+  return { baseUrl: result.baseUrl, signal: controller.signal, secretKey };
 }

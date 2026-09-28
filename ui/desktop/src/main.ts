@@ -1762,7 +1762,11 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
-  const managedPreviewBackend = bindManagedAppPreviewBackend(biorouterdResult, mainWindow);
+  const managedPreviewBackend = bindManagedAppPreviewBackend(
+    biorouterdResult,
+    mainWindow,
+    serverSecret
+  );
   if (managedPreviewBackend) managedAppPreviewBackends.set(mainWindow.id, managedPreviewBackend);
   // With a shared daemon the backend is app-lifetime (killed only in
   // startBiorouterd's own `will-quit` sweep), so windows must NOT ref-count it —
