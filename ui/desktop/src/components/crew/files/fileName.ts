@@ -52,7 +52,8 @@ const PRIVATE_USE = /^\p{Co}$/u;
  * every hidden and private-use character left out, trimmed, and without a leading dot (the daemon
  * never saves a dot name into the home, so `.Rprofile` is offered as `Rprofile`). `undefined`
  * when nothing usable is left (the main process then offers its own default). The main process
- * applies the same rule again to whatever it is sent (`crewSaveName` in `utils/crewSharePath.ts`).
+ * runs this same function again on whatever it is sent (`crewSaveName` in `utils/crewSharePath.ts`),
+ * so this module must stay free of anything only a renderer has.
  */
 export function saveNameFor(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;

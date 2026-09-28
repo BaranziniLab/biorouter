@@ -869,7 +869,7 @@ describe('crewFileRefusal: the codes that say what to change (W2-HRD-4, DW-12)',
   });
 
   it('makes a hidden character in the chosen name visible', () => {
-    expect(crewFileRefusal({ code: CREW_FILE_NAME_HIDDEN }, 'download', '.a‮b')).toBe(
+    expect(crewFileRefusal({ code: CREW_FILE_NAME_HIDDEN }, 'download', '.a\u202Eb')).toBe(
       crewShareCopy.nameHidden('.a�b')
     );
   });
@@ -945,7 +945,7 @@ describe('daemonRefusalSentence', () => {
     expect(
       daemonRefusalSentence({ code: 'crew_transfer_refused', error: 'Symlinks are refused' })
     ).toBe('Symlinks are refused');
-    expect(daemonRefusalSentence({ error: 'two\nlines ‮flip' })).toBe('two�lines �flip');
+    expect(daemonRefusalSentence({ error: 'two\nlines \u202Eflip' })).toBe('two�lines �flip');
     const long = daemonRefusalSentence({ error: 'x'.repeat(DAEMON_SENTENCE_MAX_CHARS + 50) });
     expect(Array.from(long ?? '')).toHaveLength(DAEMON_SENTENCE_MAX_CHARS);
     expect(long?.endsWith('…')).toBe(true);
@@ -962,8 +962,8 @@ describe('crewSaveName: a default the daemon accepts (FILES-F3)', () => {
     ['.Rprofile', 'Rprofile'],
     ['..hidden.txt', 'hidden.txt'],
     [' . gitignore', 'gitignore'],
-    ['invoice‮fdp.sh', 'invoicefdp.sh'],
-    ['line break.txt', 'linebreak.txt'],
+    ['invoice\u202Efdp.sh', 'invoicefdp.sh'],
+    ['line\u2028break.txt', 'linebreak.txt'],
     ['privateuse.csv', 'privateuse.csv'],
     ['../../etc/passwd', 'passwd'],
     ['two\nlines.txt', 'twolines.txt'],
@@ -971,7 +971,7 @@ describe('crewSaveName: a default the daemon accepts (FILES-F3)', () => {
     expect(crewSaveName(raw)).toBe(name);
   });
 
-  it.each([undefined, null, 7, '', '.', '..', '‮', '/'])(
+  it.each([undefined, null, 7, '', '.', '..', '\u202E', '/'])(
     'falls back to its own name for %j',
     (raw) => {
       expect(crewSaveName(raw)).toBe(CREW_DEFAULT_SAVE_NAME);
@@ -1227,14 +1227,14 @@ describe('selectCrewTransferFile: the secure picker, with stubbed native windows
   });
 
   it('shows the cleanup name made visible, and finds the file by its own name', async () => {
-    const deps = picker([{ ok: true, body: { capability_id: 'cap-3', name: 'a‮b.csv' } }], {
+    const deps = picker([{ ok: true, body: { capability_id: 'cap-3', name: 'a\u202Eb.csv' } }], {
       showOpenDialog: vi.fn(async () => ({
         canceled: false,
         filePaths: ['/Users/henry/Downloads'],
       })),
     });
     await selectCrewTransferFile(
-      { ...download, purpose: 'cleanup', transferId: 'tr-1', suggestedName: 'a‮b.csv' },
+      { ...download, purpose: 'cleanup', transferId: 'tr-1', suggestedName: 'a\u202Eb.csv' },
       deps
     );
     expect(deps.showOpenDialog.mock.calls[0][0].title).toBe(
@@ -1244,7 +1244,7 @@ describe('selectCrewTransferFile: the secure picker, with stubbed native windows
       'Remove the temporary download for a�b.csv?'
     );
     expect((deps.crewFiles.mock.calls[0][2] as { path: string }).path).toBe(
-      '/Users/henry/Downloads/a‮b.csv'
+      '/Users/henry/Downloads/a\u202Eb.csv'
     );
   });
 });

@@ -43,6 +43,7 @@ import nodeFs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import type { MessageBoxOptions, OpenDialogOptions, SaveDialogOptions } from 'electron';
+import { saveNameFor } from '../components/crew/files/fileName';
 import { formatBytes } from '../components/crew/files/formatBytes';
 import { sanitizeDisplayText } from '../components/crew/identity/displayText';
 import { stripHiddenCharacters } from './untrustedText';
@@ -751,26 +752,18 @@ export async function holdCrewSheet<T>(
 /** The Save window's default name when nothing usable is left of the file's own. */
 export const CREW_DEFAULT_SAVE_NAME = 'crew-download';
 
-/** A character the Save window's default name leaves out: a control, format, separator or private-use one. */
-const UNSAVED_CHARACTER = /^[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}]$/u;
-
 /**
  * The default name the Save window proposes for a file another member named, so it is one the
- * daemon accepts (FILES-F3): the last path segment only; every control, format, line or paragraph
- * separator and private-use character left out (a U+202E in `q3_\u202Efdp.exe` would otherwise
- * make the proposed name read as a PDF); and no leading dot, since the daemon never saves a dot
- * name into the home. `fileName.ts`'s `saveNameFor` applies the same rule in the renderer, and
- * `peerFileNames.test.tsx` holds the two together.
+ * daemon accepts (FILES-F3): the last path segment only, then the renderer's own rule,
+ * `saveNameFor` in `components/crew/files/fileName.ts`, run again here on whatever the renderer
+ * sent. That rule leaves out every control, format, line or paragraph separator and private-use
+ * character (a U+202E in `q3_\u202Efdp.exe` would otherwise make the proposed name read as a PDF)
+ * and a leading dot, since the daemon never saves a dot name into the home. One rule, so the two
+ * processes cannot propose different names.
  */
 export function crewSaveName(raw: unknown): string {
   if (typeof raw !== 'string') return CREW_DEFAULT_SAVE_NAME;
-  const name = Array.from(path.basename(raw))
-    .filter((character) => !UNSAVED_CHARACTER.test(character))
-    .join('')
-    .trim()
-    .replace(/^\.+/, '')
-    .trim();
-  return name || CREW_DEFAULT_SAVE_NAME;
+  return saveNameFor(path.basename(raw)) ?? CREW_DEFAULT_SAVE_NAME;
 }
 
 /** What the main process accepts over `crew:select-transfer-file`, after validation. */
