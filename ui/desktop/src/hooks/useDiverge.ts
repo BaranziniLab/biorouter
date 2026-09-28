@@ -58,7 +58,11 @@ export function useDiverge(): UseDivergeResult {
       truncateAfterId?: string
     ): Promise<string | null> => {
       if (!sessionId) {
-        toastError({ title: 'Diverge failed', msg: 'No open chat to diverge from.' });
+        toastError({
+          title: 'Diverge failed',
+          msg: 'No open chat to diverge from.',
+          scope: 'screen',
+        });
         return null;
       }
       try {
@@ -111,6 +115,8 @@ export function useDiverge(): UseDivergeResult {
             title: PRIVATE_COPY_TOAST_TITLE,
             msg: PRIVATE_COPY_TOAST_MSG,
             traceback: String(err),
+            // About this chat: it goes when the person leaves it (W2-PRV-16).
+            scope: 'screen',
           });
           return null;
         }
@@ -125,6 +131,7 @@ export function useDiverge(): UseDivergeResult {
               : typeof err === 'string' && err.trim()
                 ? err
                 : 'Could not diverge this chat.',
+          scope: 'screen',
         });
         return null;
       }

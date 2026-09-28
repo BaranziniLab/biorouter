@@ -266,7 +266,47 @@ const commonToastOptions: ToastOptions = {
 const dedupeKey = (kind: string, title?: string, msg?: string) =>
   `${kind}:${title ?? ''}:${msg ?? ''}`;
 
+/**
+ * WHERE A TOAST BELONGS. Most toasts report something about the whole app (an
+ * extension failed to load, an update is ready), and those stay until they are
+ * read — errors never expire. A few report something about the screen the
+ * person is on: a model switch in this chat was refused, this chat could not be
+ * diverged, this composer's message was not sent. Those are raised with
+ * `scope: 'screen'` and dismissed when the person leaves that screen
+ * (`dismissScreenToasts`, called by App on every navigation).
+ *
+ * Without this, "errors persist" also meant "errors follow you": a "Diverge
+ * failed" from one chat sat for minutes over the Crew details pane's primary
+ * buttons on another screen (W2-PRV-16), because nothing ever dismissed it but
+ * its own ×.
+ */
+export type ToastScope = 'app' | 'screen';
+
+const screenToastIds = new Set<string | number>();
+
+function remember(scope: ToastScope | undefined, id: string | number): string | number {
+  if (scope === 'screen') screenToastIds.add(id);
+  return id;
+}
+
+/** Dismiss every toast raised with `scope: 'screen'`. App calls it on navigation. */
+export function dismissScreenToasts(): void {
+  for (const id of screenToastIds) toast.dismiss(id);
+  screenToastIds.clear();
+}
+
 type ToastSuccessProps = { title?: string; msg?: string; toastOptions?: ToastOptions };
+
+type ToastWarningProps = ToastSuccessProps & {
+  /** See {@link ToastScope}. Defaults to `'app'`. */
+  scope?: ToastScope;
+  /**
+   * Clamp the body to three lines, as every toast does by default. A warning
+   * whose whole point is its sentence (a refused send saying where the message
+   * went) passes `false`, or the reader is left with "Your…".
+   */
+  clampMessage?: boolean;
+};
 
 export function toastSuccess({ title, msg, toastOptions = {} }: ToastSuccessProps) {
   return toast.success(
@@ -297,17 +337,31 @@ export function toastInfo({ title, msg, toastOptions = {} }: ToastSuccessProps) 
   );
 }
 
-export function toastWarning({ title, msg, toastOptions = {} }: ToastSuccessProps) {
-  return toast.warning(
-    <NotificationContent status="warning" title={title} message={msg} clampMessage />,
-    {
-      ...commonToastOptions,
-      icon: false,
-      role: TOAST_ROLE_ASSERTIVE,
-      autoClose: TOAST_AUTO_CLOSE_MS,
-      toastId: dedupeKey('warning', title, msg),
-      ...toastOptions,
-    }
+export function toastWarning({
+  title,
+  msg,
+  toastOptions = {},
+  scope,
+  clampMessage = true,
+}: ToastWarningProps) {
+  return remember(
+    scope,
+    toast.warning(
+      <NotificationContent
+        status="warning"
+        title={title}
+        message={msg}
+        clampMessage={clampMessage}
+      />,
+      {
+        ...commonToastOptions,
+        icon: false,
+        role: TOAST_ROLE_ASSERTIVE,
+        autoClose: TOAST_AUTO_CLOSE_MS,
+        toastId: dedupeKey('warning', title, msg),
+        ...toastOptions,
+      }
+    )
   );
 }
 
@@ -339,6 +393,8 @@ type ToastErrorProps = {
    * took away another chat's "The chat store was busy".
    */
   dedupeScope?: string;
+  /** See {@link ToastScope}. Defaults to `'app'`, which persists until dismissed. */
+  scope?: ToastScope;
 };
 
 function ToastErrorContent({
@@ -414,29 +470,37 @@ export function toastError({
   recoverHints,
   debugFailure,
   dedupeScope,
+  scope,
 }: ToastErrorProps) {
   // An error toast carries actions whenever there is something to copy or a
   // recovery path to offer — and a toast with actions is not click-to-dismiss,
   // because the click that misses the button must not destroy the button.
   const hasActions = Boolean(traceback || recoverHints || debugFailure);
-  return toast.error(
-    <ToastErrorContent
-      title={title}
-      msg={msg}
-      traceback={traceback}
-      recoverHints={recoverHints}
-      debugFailure={debugFailure}
-    />,
-    {
-      ...commonToastOptions,
-      icon: false,
-      role: TOAST_ROLE_ASSERTIVE,
-      // Errors persist. A failure that expires unread is a failure that was
-      // never reported.
-      autoClose: false,
-      closeOnClick: !hasActions,
-      toastId: dedupeKey(dedupeScope === undefined ? 'error' : `error[${dedupeScope}]`, title, msg),
-    }
+  return remember(
+    scope,
+    toast.error(
+      <ToastErrorContent
+        title={title}
+        msg={msg}
+        traceback={traceback}
+        recoverHints={recoverHints}
+        debugFailure={debugFailure}
+      />,
+      {
+        ...commonToastOptions,
+        icon: false,
+        role: TOAST_ROLE_ASSERTIVE,
+        // Errors persist. A failure that expires unread is a failure that was
+        // never reported.
+        autoClose: false,
+        closeOnClick: !hasActions,
+        toastId: dedupeKey(
+          dedupeScope === undefined ? 'error' : `error[${dedupeScope}]`,
+          title,
+          msg
+        ),
+      }
+    )
   );
 }
 

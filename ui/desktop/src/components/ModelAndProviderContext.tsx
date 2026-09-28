@@ -424,6 +424,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         title: 'Llama Server warm-up failed',
         msg: errorMessage(error),
         traceback: errorMessage(error),
+        scope: 'screen',
       });
       dialog.resolve(false);
       setLlamaWarmupDialog(null);
@@ -559,6 +560,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             title: `Can't switch this chat to ${model.alias ?? modelName}`,
             msg: privacyBarrierMessage(barrier),
             traceback: privacyBarrierMessage(barrier),
+            scope: 'screen',
           });
           return false;
         }
@@ -574,13 +576,18 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             title: NO_USER_PROOF_TOAST_TITLE,
             msg: NO_USER_PROOF_TOAST_MSG,
             traceback: errorMessage(error),
+            scope: 'screen',
           });
           return false;
         }
+        // A switch's failure is about the screen it was made on (W2-PRV-16):
+        // it goes when the person leaves, instead of lingering over another
+        // screen's controls.
         toastError({
           title: `${providerName}/${modelName} failed`,
           msg: `${error}`,
           traceback: error instanceof Error ? error.message : String(error),
+          scope: 'screen',
         });
         return false;
       }

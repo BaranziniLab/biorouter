@@ -27,6 +27,7 @@ vi.mock('react-toastify', () => ({
 }));
 
 import {
+  dismissScreenToasts,
   toastError,
   toastInfo,
   toastLoading,
@@ -162,5 +163,49 @@ describe('which toasts interrupt a screen reader', () => {
     const loaded = [{ name: 'developer', status: 'success' as const }];
     toastService.extensionLoading(loaded, 1, true);
     expect(mocks.update.mock.calls[1][1]).toMatchObject({ type: 'success', role: 'status' });
+  });
+});
+
+// W2-PRV-16: "errors persist" also meant "errors follow you". A toast about the
+// screen it was raised on is dismissed when that screen goes; an app-level
+// toast, error or not, is left alone.
+describe('screen-scoped toasts', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { toast } = await import('react-toastify');
+    (toast.dismiss as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it('dismisses only the toasts raised for the screen being left', async () => {
+    const { toast } = await import('react-toastify');
+    mocks.error.mockReturnValueOnce('screen-error').mockReturnValueOnce('app-error');
+    mocks.warning.mockReturnValueOnce('screen-warning');
+
+    toastError({ title: 'Diverge failed', msg: 'boom', scope: 'screen' });
+    toastError({ title: 'Extension failed', msg: 'boom' });
+    toastWarning({ title: 'Message not sent', msg: 'long', scope: 'screen' });
+
+    dismissScreenToasts();
+    const dismissed = (toast.dismiss as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(dismissed).toEqual(['screen-error', 'screen-warning']);
+
+    // Once dismissed, they are forgotten: the next screen change dismisses nothing.
+    dismissScreenToasts();
+    expect(toast.dismiss).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps errors persistent whatever their scope', () => {
+    toastError({ title: 'Diverge failed', msg: 'boom', scope: 'screen' });
+    expect(mocks.error.mock.calls[0][1]).toMatchObject({ autoClose: false });
+  });
+
+  it('lets a warning show its whole sentence', () => {
+    toastWarning({ title: 'Message not sent', msg: 'a long sentence', clampMessage: false });
+    const body = mocks.warning.mock.calls[0][0] as { props: { clampMessage?: boolean } };
+    expect(body.props.clampMessage).toBe(false);
+
+    toastWarning({ title: 'Careful', msg: 'short' });
+    const clamped = mocks.warning.mock.calls[1][0] as { props: { clampMessage?: boolean } };
+    expect(clamped.props.clampMessage).toBe(true);
   });
 });

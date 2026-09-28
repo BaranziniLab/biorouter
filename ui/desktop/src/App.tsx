@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { IpcRendererEvent } from 'electron';
 import {
   HashRouter,
@@ -61,7 +61,7 @@ import { View, ViewOptions } from './utils/navigationUtils';
 import { useNavigation } from './hooks/useNavigation';
 import { errorMessage } from './utils/conversionUtils';
 import { startChatFailureNotice } from './utils/startChatFailure';
-import { toastError } from './toasts';
+import { dismissScreenToasts, toastError } from './toasts';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { deliverLauncherMessage } from './utils/launcherMessage';
 import { ChatStreamProvider } from './hooks/chatStreamStore';
@@ -387,6 +387,19 @@ export function AppInner() {
 
   const navigate = useNavigate();
   const setView = useNavigation();
+
+  // W2-PRV-16. A toast about the screen the person was on (a refused model
+  // switch, a failed diverge, an unsent message) goes when they leave it,
+  // instead of following them over another screen's controls. App-level
+  // toasts, errors included, are untouched: see `ToastScope` in toasts.tsx.
+  const { pathname, search } = useLocation();
+  const screen = `${pathname}${search}`;
+  const shownScreen = useRef(screen);
+  useEffect(() => {
+    if (shownScreen.current === screen) return;
+    shownScreen.current = screen;
+    dismissScreenToasts();
+  }, [screen]);
 
   const [chat, setChat] = useState<ChatType>({
     sessionId: '',
