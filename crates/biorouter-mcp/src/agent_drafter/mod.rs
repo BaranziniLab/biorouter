@@ -2698,8 +2698,8 @@ impl AgentDrafterServer {
         let mut content = vec![Content::resource_link(link).with_audience(vec![Role::User])];
         content.push(
             Content::text(format!(
-                "App '{}' is ready. Open it in your browser: {}\n(The desktop GUI shows a click-only preview link; in the CLI open the URL above with a running biorouterd.)",
-                manifest.id, browser_url
+                "App '{}' is ready at {}\n(The desktop GUI shows a click-only preview link that opens it. The address alone answers \"Open this app from Biorouter\" in a browser that has not opened it that way; in a terminal, run `biorouter apps open {}`.)",
+                manifest.id, browser_url, manifest.id
             ))
             .with_audience(vec![Role::Assistant]),
         );
