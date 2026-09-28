@@ -1,4 +1,4 @@
-import { revealHiddenCharacters, type RevealedSegment } from '../../../utils/untrustedText';
+import { revealHiddenCharactersAcross, type RevealedSegment } from '../../../utils/untrustedText';
 import { timelineCopy } from './copy';
 
 /**
@@ -16,6 +16,12 @@ import { timelineCopy } from './copy';
  *    word, outside code and link text, becomes a `crew-md-mention` chip. When the body holds one,
  *    a hidden "mentions you" span with `mentionLabelId` is added at its end, which the row names
  *    itself by (`aria-labelledby`), and the row's stylesheet gives the row its accent.
+ *
+ * Both are judged on what is drawn side by side, not one parsed text node at a time. Emphasis,
+ * strike-through, inline code and a link's words sit on the line with no gap around them, so the
+ * words of a paragraph, a list item, a heading or a table cell are read as one text: a zero-width
+ * space wrapped in its own `*…*` inside `@crew_b*…*ob` has `b` and `o` for neighbours, as the eye
+ * has, and is shown. Judged alone, its node held nothing else and it drew as `@crew_bob`.
  *
  * Raw HTML, which this surface draws as the characters typed, is text here like any other.
  *
@@ -59,15 +65,9 @@ export function mentionPattern(username: string | null): RegExp | null {
 /**
  * Where `@username` stands as a whole mention in `text`: not inside an address (`bob@lab.org`),
  * not the start of a longer name (`@crew_bobby`, `@crew_bob.lee`), and not against a hidden
- * character (`hiddenBefore`/`hiddenAfter` say one sits just before or after `text`), which would
- * make the name another one.
+ * character (`hidden[i]` is 1 for each code unit of one), which would make the name another one.
  */
-function mentionRanges(
-  text: string,
-  pattern: RegExp,
-  hiddenBefore: boolean,
-  hiddenAfter: boolean
-): [number, number][] {
+function mentionRanges(text: string, pattern: RegExp, hidden: Uint8Array): [number, number][] {
   const ranges: [number, number][] = [];
   pattern.lastIndex = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
@@ -77,12 +77,13 @@ function mentionRanges(
     const after = text[end];
     const next = text[end + 1];
     const boundedBefore =
-      before === undefined ? !hiddenBefore : !USERNAME_CHARACTER.test(before) && before !== '@';
+      before === undefined ||
+      (hidden[start - 1] === 0 && !USERNAME_CHARACTER.test(before) && before !== '@');
     const boundedAfter =
-      after === undefined
-        ? !hiddenAfter
-        : !USERNAME_END_CHARACTER.test(after) &&
-          !(after === '.' && next !== undefined && USERNAME_END_CHARACTER.test(next));
+      after === undefined ||
+      (hidden[end] === 0 &&
+        !USERNAME_END_CHARACTER.test(after) &&
+        !(after === '.' && next !== undefined && USERNAME_END_CHARACTER.test(next)));
     if (boundedBefore && boundedAfter) ranges.push([start, end]);
   }
   return ranges;
@@ -119,47 +120,177 @@ function mentionNode(value: string): BodyNode {
   };
 }
 
-/** One text node's replacement: its words, its hidden characters, and its mentions. */
-function transformText(
-  value: string,
-  pattern: RegExp | null,
-  marking: boolean
-): { nodes: BodyNode[]; mentioned: boolean } {
-  const segments = revealHiddenCharacters(value);
-  const nodes: BodyNode[] = [];
-  let mentioned = false;
-  segments.forEach((segment, index) => {
-    if (segment.kind === 'hidden') {
-      nodes.push(hiddenCharacterNode(segment));
-      return;
-    }
-    const ranges =
-      pattern && marking
-        ? mentionRanges(
-            segment.text,
-            pattern,
-            segments[index - 1]?.kind === 'hidden',
-            segments[index + 1]?.kind === 'hidden'
-          )
-        : [];
-    let at = 0;
-    for (const [start, end] of ranges) {
-      if (start > at) nodes.push(textNode(segment.text.slice(at, start)));
-      nodes.push(mentionNode(segment.text.slice(start, end)));
-      mentioned = true;
-      at = end;
-    }
-    if (at < segment.text.length) nodes.push(textNode(segment.text.slice(at)));
-  });
-  return { nodes, mentioned };
-}
-
 /** Elements whose text is never a mention: code, and a link's words. */
 const NO_MENTION = new Set(['code', 'a']);
 
 /**
- * Rewrite the tree's text nodes in place, and say whether a mention was marked. `pre` is skipped:
- * a code block draws and copies its own text.
+ * Elements laid out as blocks of their own (everything `remark-gfm` and `mdast-util-to-hast` emit
+ * that is not inline): the words inside one are read apart from the words outside it. Every other
+ * element is inline and drawn on the line beside its neighbours with no box: `em`, `strong`,
+ * `del`, `code`, `a`, `sup`, `span`.
+ */
+const BLOCK = new Set([
+  'blockquote',
+  'div',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'hr',
+  'li',
+  'ol',
+  'p',
+  'pre',
+  'section',
+  'table',
+  'tbody',
+  'td',
+  'tfoot',
+  'th',
+  'thead',
+  'tr',
+  'ul',
+]);
+/** Elements drawn as one thing on the line, with no words of their own: an image, a task box. */
+const OBJECT = new Set(['img', 'input']);
+/** What stands for such an element in the text read around it: U+FFFC, the object replacement. */
+const OBJECT_CHARACTER = '\u{FFFC}';
+
+/**
+ * One piece of a block's words: a text or raw node (`node`), whose mentions are marked when
+ * `marking`; or, with no node, what is drawn between two of them (a line break, an image).
+ */
+interface Piece {
+  text: string;
+  node?: BodyNode;
+  marking: boolean;
+}
+
+/**
+ * The tree's words, gathered into runs: each run is the words of one block, in order, down through
+ * every inline element. A block element ends the run around it and starts its own. `pre` is
+ * skipped: a code block draws and copies its own text.
+ */
+function gatherRuns(tree: BodyNode): Piece[][] {
+  const runs: Piece[][] = [[]];
+  const endRun = () => {
+    if (runs[runs.length - 1].length > 0) runs.push([]);
+  };
+  const visit = (node: BodyNode, marking: boolean) => {
+    if (!Array.isArray(node.children)) return;
+    for (const child of node.children) {
+      const run = runs[runs.length - 1];
+      if ((child.type === 'text' || child.type === 'raw') && typeof child.value === 'string') {
+        run.push({ text: child.value, node: child, marking });
+        continue;
+      }
+      if (child.type !== 'element') continue;
+      const tag = child.tagName ?? '';
+      const inner = marking && !NO_MENTION.has(tag);
+      if (tag === 'br') run.push({ text: '\n', marking: false });
+      else if (OBJECT.has(tag)) run.push({ text: OBJECT_CHARACTER, marking: false });
+      else if (BLOCK.has(tag)) {
+        endRun();
+        if (tag !== 'pre') visit(child, inner);
+        endRun();
+      } else visit(child, inner);
+    }
+  };
+  visit(tree, true);
+  return runs.filter((run) => run.some((piece) => piece.node));
+}
+
+/**
+ * One run's replacement nodes, by the node each replaces, and whether a mention was marked. The
+ * hidden characters are found across the whole run, and so are the mentions: a mention is marked
+ * when it lies inside one node where mentions are marked, and its neighbours in the run, inside
+ * that node or not, leave it a whole name.
+ */
+function rewriteRun(
+  run: Piece[],
+  pattern: RegExp | null,
+  replacements: Map<BodyNode, BodyNode[]>
+): boolean {
+  const revealed = revealHiddenCharactersAcross(run.map((piece) => piece.text));
+  // The run as drawn, with where each piece starts and a flag on every code unit of a hidden one.
+  const starts: number[] = [];
+  let flat = '';
+  const hiddenAt: number[] = [];
+  revealed.forEach((segments) => {
+    starts.push(flat.length);
+    for (const segment of segments) {
+      if (segment.kind === 'hidden') {
+        for (let unit = 0; unit < segment.raw.length; unit += 1) hiddenAt.push(flat.length + unit);
+        flat += segment.raw;
+      } else flat += segment.text;
+    }
+  });
+  starts.push(flat.length);
+  const hidden = new Uint8Array(flat.length);
+  for (const unit of hiddenAt) hidden[unit] = 1;
+  const mentions = pattern ? mentionRanges(flat, pattern, hidden) : [];
+
+  let mentioned = false;
+  // Each mention is taken once, in run order: a piece keeps those that lie wholly inside it.
+  let nextMention = 0;
+  run.forEach((piece, index) => {
+    const start = starts[index];
+    const end = starts[index + 1];
+    const own: [number, number][] = [];
+    while (nextMention < mentions.length && mentions[nextMention][0] < end) {
+      const [from, to] = mentions[nextMention];
+      if (piece.marking && from >= start && to <= end) own.push([from, to]);
+      nextMention += 1;
+    }
+    if (!piece.node) return;
+    const nodes: BodyNode[] = [];
+    let offset = start;
+    let ownIndex = 0;
+    for (const segment of revealed[index]) {
+      if (segment.kind === 'hidden') {
+        nodes.push(hiddenCharacterNode(segment));
+        offset += segment.raw.length;
+        continue;
+      }
+      const to = offset + segment.text.length;
+      let at = offset;
+      // A mention holds no hidden character, so each lies inside one of these text segments.
+      while (ownIndex < own.length && own[ownIndex][1] <= to) {
+        const [mentionStart, mentionEnd] = own[ownIndex];
+        if (mentionStart > at) nodes.push(textNode(flat.slice(at, mentionStart)));
+        nodes.push(mentionNode(flat.slice(mentionStart, mentionEnd)));
+        mentioned = true;
+        at = mentionEnd;
+        ownIndex += 1;
+      }
+      if (at < to) nodes.push(textNode(flat.slice(at, to)));
+      offset = to;
+    }
+    replacements.set(piece.node, nodes);
+  });
+  return mentioned;
+}
+
+/** Put each replaced node's replacement in its place, anywhere in the tree. */
+function replaceNodes(node: BodyNode, replacements: Map<BodyNode, BodyNode[]>): void {
+  if (!Array.isArray(node.children)) return;
+  const next: BodyNode[] = [];
+  for (const child of node.children) {
+    const replacement = replacements.get(child);
+    if (replacement) {
+      next.push(...replacement);
+      continue;
+    }
+    replaceNodes(child, replacements);
+    next.push(child);
+  }
+  node.children = next;
+}
+
+/**
+ * Rewrite the tree's words in place, and say whether a mention was marked.
  *
  * Raw HTML is text too, and is rewritten here as text. With `allowDangerousHtml`, an HTML block, an
  * inline tag (attributes and all) or a comment reaches this step as a `raw` node, and react-markdown
@@ -168,24 +299,11 @@ const NO_MENTION = new Set(['code', 'a']);
  * raw node is replaced by the same text nodes and escapes as any other text, and react-markdown
  * finds no raw node left to convert.
  */
-function transformChildren(node: BodyNode, pattern: RegExp | null, marking: boolean): boolean {
-  if (!Array.isArray(node.children)) return false;
+function rewriteTree(tree: BodyNode, pattern: RegExp | null): boolean {
+  const replacements = new Map<BodyNode, BodyNode[]>();
   let mentioned = false;
-  const next: BodyNode[] = [];
-  for (const child of node.children) {
-    if ((child.type === 'text' || child.type === 'raw') && typeof child.value === 'string') {
-      const replaced = transformText(child.value, pattern, marking);
-      if (replaced.mentioned) mentioned = true;
-      next.push(...replaced.nodes);
-      continue;
-    }
-    if (child.type === 'element' && child.tagName !== 'pre') {
-      const inner = marking && !NO_MENTION.has(child.tagName ?? '');
-      if (transformChildren(child, pattern, inner)) mentioned = true;
-    }
-    next.push(child);
-  }
-  node.children = next;
+  for (const run of gatherRuns(tree)) if (rewriteRun(run, pattern, replacements)) mentioned = true;
+  replaceNodes(tree, replacements);
   return mentioned;
 }
 
@@ -196,7 +314,7 @@ function transformChildren(node: BodyNode, pattern: RegExp | null, marking: bool
 export function rehypeCrewBodyText(options: BodyTextOptions) {
   const pattern = mentionPattern(options.mention);
   return (tree: BodyNode) => {
-    const mentioned = transformChildren(tree, pattern, true);
+    const mentioned = rewriteTree(tree, pattern);
     if (mentioned && options.mentionLabelId && Array.isArray(tree.children)) {
       tree.children.push({
         type: 'element',
@@ -209,15 +327,22 @@ export function rehypeCrewBodyText(options: BodyTextOptions) {
 }
 
 /**
- * The text of a hast node. `raw`: a hidden character's own character, for what reads the words
- * back (a link's words, compared with its address); otherwise its escape, for what names something
- * on screen (a table's region), so no raw direction control reaches an accessible name.
+ * The text of a hast node. `raw`: the words as they were written, for what reads them back (a
+ * link's words, compared with its address): a hidden character's own character, and an image's
+ * alt text as words of their own, since the image draws it (`Image: https://www.ucsf.edu`) and the
+ * alt is a property no text node holds. Otherwise a hidden character's escape and no alt, for what
+ * names something on screen (a table's region), so no raw direction control reaches an accessible
+ * name.
  */
 export function bodyNodeText(node: unknown, raw = false): string {
   if (!node || typeof node !== 'object') return '';
   const current = node as BodyNode;
   if (current.type === 'text' && typeof current.value === 'string') return current.value;
   if (raw && typeof current.data?.crewRaw === 'string') return current.data.crewRaw;
+  if (raw && current.type === 'element' && current.tagName === 'img') {
+    const alt = current.properties?.alt;
+    return typeof alt === 'string' && alt ? ` ${alt} ` : '';
+  }
   return Array.isArray(current.children)
     ? current.children.map((child) => bodyNodeText(child, raw)).join('')
     : '';

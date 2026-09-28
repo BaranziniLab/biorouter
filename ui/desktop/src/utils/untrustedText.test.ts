@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   revealHiddenCharacters,
+  revealHiddenCharactersAcross,
   sanitizeArtifactTitle,
   sanitizeUntrustedLabel,
   stripHiddenCharacters,
@@ -262,6 +263,60 @@ describe('revealHiddenCharacters', () => {
       expect(segments.some((part) => part.kind === kind)).toBe(true);
       expect(elapsed).toBeLessThan(750);
     });
+  });
+});
+
+/**
+ * Pieces a renderer draws side by side (a paragraph cut by emphasis or a link) are judged as the
+ * one text the eye reads, not one at a time: `@crew_b*{U+200B}*ob` puts a zero-width space in a
+ * piece of its own, where it had no neighbour and no token.
+ */
+describe('revealHiddenCharactersAcross', () => {
+  const hiddenPerPiece = (texts: string[]) =>
+    revealHiddenCharactersAcross(texts).map((segments) =>
+      segments.filter((segment) => segment.kind === 'hidden').map((segment) => segment.raw)
+    );
+
+  it.each([
+    ['a handle', ['hi @crew_b', '\u{200B}', 'ob']],
+    ['an email address', ['bob@lab', '\u{200B}', '.org']],
+    ['a domain', ['visit ucsf', '\u{2060}', '.edu']],
+    [
+      'a handle, with the characters on both sides in their own pieces',
+      ['@crew_', 'b', '\u{200B}', 'o', 'b'],
+    ],
+  ])('shows a hidden character alone in its piece inside %s', (_label, texts) => {
+    const hidden = hiddenPerPiece(texts);
+    expect(hidden.flat()).toHaveLength(1);
+    expect(hidden[texts.findIndex((text) => /^[\u{200B}\u{2060}]$/u.test(text))]).toHaveLength(1);
+  });
+
+  it('reads a direction mark with the right-to-left letters of another piece', () => {
+    expect(hiddenPerPiece(['שלום', '\u{200F}.'])).toEqual([[], []]);
+    expect(hiddenPerPiece(['file', '\u{200F}.txt'])).toEqual([[], ['\u{200F}']]);
+  });
+
+  it('keeps an emoji joiner sequence split across pieces', () => {
+    expect(hiddenPerPiece(['\u{1F469}', '\u{200D}\u{1F52C}']).flat()).toEqual([]);
+  });
+
+  it('never joins two lone surrogates of two pieces into a character neither draws', () => {
+    // Joined, these would be U+E0067, a tag character, and drawn as its escape. The third piece
+    // holds a hidden character, so the whole rule runs rather than the plain-text shortcut.
+    const segments = revealHiddenCharactersAcross(['a\uDB40', '\uDC67b', ' x\u{200B}y']);
+    expect(segments.slice(0, 2)).toEqual([
+      [{ kind: 'text', text: 'a\uDB40' }],
+      [{ kind: 'text', text: '\uDC67b' }],
+    ]);
+    expect(segments[2].filter((segment) => segment.kind === 'hidden')).toHaveLength(1);
+  });
+
+  it('gives each piece back unchanged when nothing is hidden, and an empty piece nothing', () => {
+    expect(revealHiddenCharactersAcross(['one ', '', 'two'])).toEqual([
+      [{ kind: 'text', text: 'one ' }],
+      [],
+      [{ kind: 'text', text: 'two' }],
+    ]);
   });
 });
 

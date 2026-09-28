@@ -218,13 +218,13 @@ function partOfEmoji(
 /**
  * Another person's text, split so that what could make it read as something else is drawn
  * visibly (QA M3, SEC-9): the direction controls, a direction mark in text with no right-to-left
- * letter or between two Latin letters or digits, the control characters, the tag block outside a flag, and any other invisible character
- * (a default-ignorable code point or a format character) where it can spoof a name or hide text:
- * beside a letter of a handle, an address or a file name (skipping other hidden characters to find
- * it), anywhere in a token that names somebody or somewhere, or next to another invisible character
- * outside an emoji. Each becomes a `hidden` segment carrying its escape (`\u{202e}`, as
- * `biorouter crew` prints it) and the raw character, so a surface that draws the escape can still
- * copy the bytes that were sent.
+ * letter or between two Latin letters or digits, the control characters, the tag block outside a
+ * flag, and any other invisible character (a default-ignorable code point or a format character)
+ * where it can spoof a name or hide text: beside a letter of a handle, an address or a file name
+ * (skipping other hidden characters to find it), anywhere in a token that names somebody or
+ * somewhere, or next to another invisible character outside an emoji. Each becomes a `hidden`
+ * segment carrying its escape (`\u{202e}`, as `biorouter crew` prints it) and the raw character, so
+ * a surface that draws the escape can still copy the bytes that were sent.
  *
  * Unlike {@link stripHiddenCharacters}, nothing is removed and what legitimate text needs stays:
  * the joiners and variation selectors of emoji and keycaps, the variation selectors of Han
@@ -234,16 +234,79 @@ function partOfEmoji(
  *
  * One pass over the text, whatever it holds: each character is classified once, the nearest drawn
  * character on each side, each tag run and each run of invisible characters are found in one sweep
- * apiece, and a token's name test runs once per token. A message is up to 64 KB of somebody else's choosing, and this
- * runs on the renderer's main thread as every row mounts.
+ * apiece, and a token's name test runs once per token. A message is up to 64 KB of somebody else's
+ * choosing, and this runs on the renderer's main thread as every row mounts.
  */
 export function revealHiddenCharacters(value: string): RevealedSegment[] {
-  if (!value) return [];
-  if (!MAYBE_HIDDEN.test(value)) return [{ kind: 'text', text: value }];
-  const characters = Array.from(value);
+  return revealHiddenCharactersAcross([value])[0];
+}
+
+/**
+ * Several texts drawn one after another on a line, split as {@link revealHiddenCharacters} splits
+ * one text, and judged as that one text: a character's nearest drawn neighbours, its token and its
+ * run are read across the edges between them. Returns one list of segments per text.
+ *
+ * This is for text a renderer splits into pieces that are drawn with nothing between them: a
+ * markdown paragraph whose words are cut by emphasis or a link. Judged a piece at a time, a
+ * zero-width space in a piece of its own had no neighbour and no token to name anything, so
+ * `@crew_b*{U+200B}*ob` drew as `@crew_bob` with nothing shown. What the caller draws between two
+ * pieces it passes as a piece of its own (a line break as `\n`), and ignores that piece's segments.
+ *
+ * Each text is split into characters on its own, so a lone surrogate at the end of one is never
+ * joined to one at the start of the next into a character neither piece draws.
+ */
+export function revealHiddenCharactersAcross(texts: readonly string[]): RevealedSegment[][] {
+  if (!texts.some((text) => MAYBE_HIDDEN.test(text)))
+    return texts.map((text) => (text ? [{ kind: 'text', text }] : []));
+  const characters: string[] = [];
+  const starts: number[] = [];
+  for (const text of texts) {
+    starts.push(characters.length);
+    for (const character of text) characters.push(character);
+  }
+  starts.push(characters.length);
+  const rightToLeft = texts.some((text) => RIGHT_TO_LEFT_LETTER.test(text));
+  const shown = hiddenCharacterFlags(characters, rightToLeft);
+  return texts.map((_text, piece) =>
+    segmentsOf(characters, shown, starts[piece], starts[piece + 1])
+  );
+}
+
+/** The characters from `start` to `end`, as segments: runs drawn as they are, and hidden ones. */
+function segmentsOf(
+  characters: readonly string[],
+  shown: Uint8Array,
+  start: number,
+  end: number
+): RevealedSegment[] {
+  const segments: RevealedSegment[] = [];
+  let text = '';
+  for (let index = start; index < end; index += 1) {
+    const character = characters[index];
+    if (shown[index] === 0) {
+      text += character;
+      continue;
+    }
+    if (text) segments.push({ kind: 'text', text });
+    text = '';
+    segments.push({
+      kind: 'hidden',
+      raw: character,
+      escape: escapeOf(character),
+      codePoint: codePointOf(character),
+    });
+  }
+  if (text) segments.push({ kind: 'text', text });
+  return segments;
+}
+
+/**
+ * For each character, 1 when it is drawn as its escape: the rule {@link revealHiddenCharacters}
+ * states. `rightToLeft`: whether the text holds a letter of a right-to-left script.
+ */
+function hiddenCharacterFlags(characters: readonly string[], rightToLeft: boolean): Uint8Array {
   const count = characters.length;
   const kinds = characters.map(kindOf);
-  const rightToLeft = RIGHT_TO_LEFT_LETTER.test(value);
 
   // The nearest drawn character before and after each position (hidden ones are looked through).
   const before = new Int32Array(count);
@@ -350,23 +413,7 @@ export function revealHiddenCharacters(value: string): RevealedSegment[] {
     }
   };
 
-  const segments: RevealedSegment[] = [];
-  let text = '';
-  for (let index = 0; index < count; index += 1) {
-    const character = characters[index];
-    if (!shows(index)) {
-      text += character;
-      continue;
-    }
-    if (text) segments.push({ kind: 'text', text });
-    text = '';
-    segments.push({
-      kind: 'hidden',
-      raw: character,
-      escape: escapeOf(character),
-      codePoint: codePointOf(character),
-    });
-  }
-  if (text) segments.push({ kind: 'text', text });
-  return segments;
+  const shown = new Uint8Array(count);
+  for (let index = 0; index < count; index += 1) if (shows(index)) shown[index] = 1;
+  return shown;
 }
