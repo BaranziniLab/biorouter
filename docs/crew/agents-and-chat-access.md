@@ -20,7 +20,7 @@ Workspaces and connections start Private, so you usually need a model approved f
 2. A Private connection has an institution, set in **Connection settings…**.
 3. The model is approved for that institution, or is local.
 
-Crew checks the first two when you choose the start or Allow button. A model is approved when its provider carries your institution, and you cannot approve one yourself. To add such a provider, open **Settings** > **Models** > **Configure providers**, then the **Institutional** tab.
+Crew checks the model before you start or allow. **Ask my agent** and the Chat access pane say why a model will be refused, such as "chen-lab is Private, so a public model can’t read it. Choose a private model.", and keep their start or Allow button unavailable. Crew checks the first two conditions when you choose the button. A model is approved when its provider carries your institution, and you cannot approve one yourself. To add such a provider, open **Settings** > **Models** > **Configure providers**, then the **Institutional** tab.
 
 ## Start a task with Ask my agent
 
@@ -49,7 +49,7 @@ If the pane reads "No models are set up.", choose **Open Settings** and add one.
 | "Private · UCSF" | Approved for the institution named |
 | "Private · On this machine" | Local, accepted everywhere |
 | "Private · No stated institution" | Refused when the task needs a Private model |
-| "Public" | Refused for Restricted channels and for Private workspaces or connections. With a remote work folder it can run, but cannot use the folder. |
+| "Public" | Refused for Restricted channels and for Private workspaces or connections, and the pane says which before you start. With a remote work folder it can run, but cannot use the folder. |
 | "Not approved for UCSF" | Crew will not start with it |
 
 Claude Code and Codex appear in the list but are always refused.
@@ -112,7 +112,7 @@ The chat needs a sent message (otherwise you see "Start the chat first"), no att
 
 1. Type `/crew` alone in the chat's message box and press Enter. Nothing is sent to the model.
 2. Crew opens the first workspace in its list, at the channel you last had open there, with the Chat access pane. If you see "{workspace} is offline", choose **Connect to {workspace}**.
-3. Check the channel in the pane. It is always the channel Crew shows. To change it, see [Another channel or workspace](#another-channel-or-workspace).
+3. Check the pane. It names the channel, which is always the one Crew shows, the **Workspace**, and the chat's **Model** with its privacy chip, and says the chat posts there as your agent. It also says "The first access fixes this chat’s workspace, channel and model." To change the channel, see [Another channel or workspace](#another-channel-or-workspace). If the workspace will refuse the chat's model, the pane says why, and Allow stays unavailable until you [change the model](#another-channel-or-workspace).
 4. Optionally open **Advanced** and tick more channels under "Also read".
 5. Choose **Allow “Plot review” to read and post in #methods** (**Allow this conversation to read and post here** when the title is unknown).
 6. The pane shows "Connected." and "Active · ends 4:40 PM". Choose **Back to chat**, and ask for what you need.
@@ -137,11 +137,15 @@ A "Crew · #methods" chip above the chat's message box opens its Chat access pan
 
 The chat can read and search its channels (the 200 most recent messages at once), read shared files, and post in its one channel. With a Private model it can use the **Remote work folder**, and run commands there when **Let my agent run commands in this folder** is on.
 
-It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
+Each post the chat makes ends with a line from Crew, not the model, naming the shared files the chat read since its last post, such as ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).``, or "No shared file was read for this post." That line is always last, so a "Source:" line the model wrote itself sits above it. Trust Crew's line.
+
+The chat sees its channels' messages much as you do, with posts by an agent marked as that person's agent's. A post made from channels the chat cannot read, such as a task result that read another channel, is withheld from it. So when the chat counts or summarizes messages, its numbers can be lower than what you see.
+
+It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked and points you to **Revoke access**. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
 
 ### A chat's fixed channel and model
 
-The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. For other work:
+The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. In such a chat, **Switch models** says "This chat's model is fixed by its Crew access. Start a new chat to use another model." and offers no other model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. Exporting the chat and creating a workflow from it are refused too, with a sentence that says why. For other work:
 
 1. Start a new chat.
 2. Send it a message.
@@ -160,13 +164,15 @@ Most refusals say what to do. For these:
 | Message contains | What to do |
 |---|---|
 | "isn’t approved for", "public model", "Public models" | Choose a Private model approved for the institution, or a local model. |
+| "This connection is for {institution}, but {workspace} belongs to {institution}." | Your connection's institution differs from the workspace's. Set the workspace's in **Connection settings…**. |
 | "external tools" | Choose a provider other than Claude Code or Codex. |
 | "Task must contain between 1 and 32768 bytes." | Shorten the task. Share long data as a file. |
 | "Refresh the workspace to verify connection privacy" | Wait for "Connected" in the status row, or choose **Connect to {workspace}**. |
-| "Crew workspace policy changed", "Crew context channel is unavailable" | Choose the channel name at the top, then **Refresh channel**. |
+| "Crew workspace policy changed", "couldn't confirm that channel" | The workspace changed since Crew last read it. In the app, choose the channel name at the top, then **Refresh channel**. From a terminal, run the command again. |
+| "That channel isn't in {workspace}." | The channel ID belongs to another workspace, or to no channel. From a terminal, use the channel's name, or an ID from `biorouter crew channels list --show-ids`. |
 | "Confirm this workspace's institution", "Set this private SSH connection's institution" | See [Before you start](#before-you-start). |
 | "managed hooks", "managed policy could not be loaded" | Contact your administrator. |
-| "saved on this device", "another institution's context", "retains its original connection", "remains bound" | Move the work to a new chat, as in [A chat's fixed channel and model](#a-chats-fixed-channel-and-model). |
+| "model is fixed by its Crew access", "already has Crew access to another channel", "saved on this device", "another institution's context", "cannot be rebound to a public model" | Move the work to a new chat, as in [A chat's fixed channel and model](#a-chats-fixed-channel-and-model). |
 
 ## See which agents have access
 
@@ -196,7 +202,7 @@ Revoking stops the whole chat on this computer at once, then asks the workspace 
 
 You see "Access revoked.", and the chat shows the note in [After access ends](#after-access-ends).
 
-"Stopped on this device" means the workspace was unreachable. The chat is already stopped here. Crew keeps asking the workspace, even after a restart, and shows "Confirmed. The workspace has stopped this chat’s access too." when it answers. **Retry** asks at once.
+"Stopped on this device" means the workspace was unreachable. The chat is already stopped here. Crew keeps asking the workspace, even after a restart, and shows "Confirmed. The workspace has stopped this chat’s access too." when it answers. **Retry** asks at once. If the workspace still cannot be reached, it says "Still can’t reach {workspace} · checked just now. Connect to confirm it now.", with **Connect** where the screen has one. In the chat, one note names the workspace, with **Retry** and **Start a new chat**.
 
 "Not revoked. This chat can still read and post." is followed by Crew's reason. Revoke again, or revoke from the workspace the chat is connected to.
 

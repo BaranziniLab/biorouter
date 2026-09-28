@@ -1,7 +1,7 @@
 # Hosting a workspace
 
 > **What this is.** The host's tasks as numbered steps: starting Crew on the lab server, creating the workspace, letting people in, and managing it afterwards.
-> **Status:** Current. Checked against the Crew code on 2026-09-25.
+> **Status:** Current. Checked against the Crew code on 2026-09-28.
 > **Audience:** The lab member who hosts a Crew workspace, including people who have never used SSH or a terminal.
 
 A Crew workspace runs in the host's account on a Linux server. Braces mark a name Crew fills in, such as {workspace}, {server}, or {first}, the first name of the person you invite.
@@ -177,12 +177,12 @@ Each person first needs Crew in their own server account ([Install Crew in your 
 1. Open the workspace menu and choose **Invite people to {workspace}…**.
 2. In **Username**, type the person's login on the server, such as `crew_jack`, not their name.
 3. Choose **Invite**, and check that the result names the right person.
-4. Choose **Copy** under "Send {first} this invitation:". Send the message by email or chat, with the server's `SHA256:` fingerprint, which each person checks once ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)).
+4. Choose **Copy** under "Send {first} this invitation:". Send the message by email or chat. As the note under it says, also tell the person the server's SSH fingerprint, which starts with `SHA256:`, or where to get it from IT. Each person checks it once ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). It is not the workspace fingerprint in your workspace menu.
 5. Choose **Invite another**, or **Done**. The person appears under "Waiting to join" in the sidebar, marked "invited".
 
 An invitation is for one person and expires after 24 hours. Inviting the person again replaces it. The message holds no secret.
 
-To add another computer for an existing member, turn on **Add another device for @{name}** and choose **Invite**.
+To add another computer for an existing member, turn on **Add another device for @{name}** and choose **Invite**. If you invite a member without it, Crew says "@{name} is already in {workspace}. To add this computer of theirs, Add another device for @{name} is now on: choose Invite again."
 
 If the person sees "Crew isn’t set up" and the server already has a copy in `/usr/bin`, which does not count, send them or IT the lines under **If {first} sees “Crew isn’t set up”**. They run in the person's own account. Then the person chooses **Try again**.
 
@@ -194,7 +194,7 @@ When the person joins, their Biorouter shows a code of 16 letters and numbers, s
 2. Paste the code into **Code from {first}**. Use only a code that came from that person.
 3. Choose **Let {first} in**. The dialog shows "Code saved".
 4. Wait for "{first} joined {workspace}", which appears when their computer checks in.
-5. Under **Channels in {team}**, tick channels, and choose **Add to {team}**. The dialog shows "Added {first} to {team}." A person in no team sees no channels.
+5. Under **Channels in {team}**, tick channels, and choose **Add to {team}**. As the dialog says, the person can then read everything already posted in those channels, files included. The dialog shows, for example, "Added Bob Lee (@bob) to {team}. Bob can now see #general and #methods." A person in no team sees no channels.
 
 "Code saved" does not mean the person has joined. The fingerprint in the dialog is not the code. The code field accepts dashes, spaces and lowercase, reads I and L as 1 and O as 0, and refuses U.
 
@@ -236,11 +236,15 @@ The team dialog lists only people not in the team yet. To add someone already in
 
 ## Manage the workspace
 
-In the workspace menu, **People…**, **Privacy…** and **Agent access…** open Workspace settings once the connection is verified. Several changes below end every agent's access ([Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access)).
+In the workspace menu, **People…**, **Privacy…** and **Agent access…** open the settings dialog, titled with the workspace's name, such as "chen-lab settings", once the connection is verified. Its tabs are **General**, **People**, **Privacy** and **Agent access**. Several changes below end every agent's access ([Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access)).
+
+### Watch how full the workspace is
+
+The **Storage** row on the **General** tab shows you, and only you, how full the workspace is, such as "64% full". From 80%, the Crew sidebar also shows a **Storage** row such as "chen-lab is 82% full." When it is full, only removing people and privacy changes still work, and a new workspace is the way to keep posting. See [Workspace limits](administration.md#workspace-limits).
 
 ### Rename the workspace
 
-1. In Workspace settings, open **General** and choose **Rename…**.
+1. In "{workspace} settings", open **General** and choose **Rename…**.
 2. Type the new name in lowercase letters, numbers and dashes, up to 40 characters.
 3. Choose **Rename**. The dialog closes, and the new name appears at the top of the sidebar.
 
@@ -274,7 +278,7 @@ See [Privacy and security](privacy-and-security.md#change-the-workspaces-privacy
 
 You cannot hand the host role to someone else, or be removed. You cannot transfer, rename or archive another person's channel. You cannot start, stop or approve another person's agent, act as them, or see their password, codes or device keys.
 
-> **Warning.** Only your own computers can act as host, through their device keys. Never remove the workspace from your only computer, because nothing can restore the host controls.
+> **Warning.** Only your own computers can act as host, through their device keys. Never remove the workspace from your only computer, because nothing can restore the host controls. If you try, Crew says "You host {workspace}, and no other computer of yours can act as its host." and asks you to type the workspace's name before **Remove and give up hosting**.
 
 To add a second computer:
 
@@ -286,7 +290,7 @@ The second computer opens the workspace and can act as host too.
 
 ## After the server restarts
 
-Crew does not start by itself, and members see "{workspace} is offline". If you have not used a terminal, ask IT to do this as your account.
+Crew does not start by itself, and members see "Crew isn’t running on {server}". Your own Biorouter shows the same screen with the start line from step 4, with the workspace's folder filled in, and **Copy**. If you have not used a terminal, ask IT to do this as your account.
 
 1. Open Terminal (press Command and Space, type Terminal, and press Return), and sign in with `ssh` and your server login.
 2. Run `ls "$HOME/.local/share/biorouter-crew"`. It lists one folder per workspace, under the workspace's original name, such as `wong-lab`.
@@ -302,8 +306,8 @@ Crew does not start by itself, and members see "{workspace} is offline". If you 
    "$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/$NAME"
    ```
 
-5. `"state":"running"` in the output means Crew is running. For `"state":"starting"`, wait a few seconds, then run the line again with `status` in place of `start`.
-6. Tell members to choose **Connect to {workspace}**, and do the same in your own Biorouter.
+5. `"state":"running"` in the output means Crew is running. For `"state":"starting"`, wait a few seconds, then run the line again with `status` in place of `start`. `status` also prints `"state":"running"` once Crew answers.
+6. Members' Crew tries again by itself every few minutes for an hour, so it reconnects soon after Crew runs. Anyone who sees the workspace offline, you included, can choose **Connect to {workspace}** to connect at once.
 
 The status row under the workspace name reads "Connected" again. Starting again keeps the workspace, its members, keys and history. To stop Crew, see [Stop the broker](administration.md#stop-the-broker).
 

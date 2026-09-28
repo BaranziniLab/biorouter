@@ -48,9 +48,11 @@ Each workspace is tied to one machine. The broker reads `/etc/machine-id`, or `/
 ### SSH requirements
 
 - Each member needs an SSH login to the machine running the broker, because other nodes cannot reach its socket. If your server name reaches several login nodes, give members that node's name and have them compare `ssh hpc.example.edu hostname` with the host's.
-- Crew uses each member's own OpenSSH client and settings, and connects only to hosts already in `~/.ssh/known_hosts`. Give members the host key fingerprints of the server and every jump host.
+- A member who uses `biorouter crew` on that machine itself, such as a login node, still connects over SSH, to their own account there. They need their own key in their own `~/.ssh/authorized_keys` and the machine's host key in `~/.ssh/known_hosts` for `localhost`, and no jump host. [Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server) gives the steps. Such a node often has no keyring service, so they also need the encrypted vault ([Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault)).
+- Crew uses each member's own OpenSSH client and settings, and connects only to hosts already in `~/.ssh/known_hosts`. Give members the host key fingerprints of the server and every jump host, or add them to the members' known hosts files yourself.
 - Jump hosts must use `ProxyJump`, with at most 16 hosts in a route. A custom `ProxyCommand` or `GSSAPIDelegateCredentials yes` is refused.
-- Crew adds the first five settings below to its server connection. Each jump host needs the whole stanza in the member's SSH settings, before broader defaults, beside your `HostName`, `User`, `Port` and `IdentityFile` lines. A missing one gives `Crew SSH host <host> requires <setting>; …`.
+- Crew signs in without prompts (`BatchMode yes`) except in its Sign in window and `biorouter crew auth`, which turn `BatchMode` off for the server. That option does not reach a jump host, so a jump host that asks for a password or a code must not match a `BatchMode yes` setting in the member's SSH settings, or it can never ask.
+- Crew adds the first five settings below to its server connection. Each jump host needs the whole stanza in the member's SSH settings, before broader defaults, beside your `HostName`, `User`, `Port` and `IdentityFile` lines. A missing one gives `Crew SSH host <host> (the jump host on this connection's route) requires <setting>; …`.
 
   ```text
   Host crew-gateway
@@ -68,6 +70,7 @@ Each workspace is tied to one machine. The broker reads `/etc/machine-id`, or `/
       ControlPersist no
   ```
 
+- Because `StrictHostKeyChecking yes` is set for each jump host, a member's `ssh -J` never asks about a jump host whose key is not known yet. It stops with `No ED25519 host key is known for crew-gateway and you have requested strict checking.` Have each member verify a jump host directly first, with `ssh -o StrictHostKeyChecking=ask crew-gateway`, comparing the fingerprint you gave them, or add the key to their known hosts file. Then `ssh -J` asks about the server. [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer) walks a member through it.
 - Joining a workspace gives nobody SSH access.
 
 ### Storage requirements
@@ -127,7 +130,7 @@ In step 2 of the Host dialog, **Start it for me** runs the start commands over S
 - `"state":"starting"`: no answer within 15 seconds. Wait, then run `status`.
 - `start_failed`: the broker stopped. The last log line names the cause.
 
-`status` checks that the broker answers as the same account and workspace.
+`status` checks that the broker answers as the same account and workspace, and prints one line of JSON with `"state":"running"` and the workspace's `name`. If the broker has stopped saving changes, `status` fails instead, with the cause and the commands to run (see [Server storage full or failing](#server-storage-full-or-failing)).
 
 ### After a server restart
 
@@ -141,6 +144,24 @@ Nothing restarts the broker when the server boots. The host starts it again with
 
 Only the host can stop it. `stop` confirms the process behind the socket is this broker, sends SIGTERM, waits up to 5 seconds and prints `"stopped":true`. After `"stopped":false`, check that the process is gone before you start again. Data is kept, and members see the workspace as offline.
 
+### Server storage full or failing
+
+When the disk that holds the state directory fills up, the host's disk quota runs out, or a write to it fails, the broker stops saving changes. It has to: a journal written past a fault could not be trusted. Reading still works, and the broker does not recover by itself.
+
+- A member's post fails with "The workspace server can’t save messages right now. Ask {host} to restart Crew." In a terminal, the sentence says whether the change was saved, such as `The workspace server is out of disk space, so this change was not saved.` Its code is `storage_full` for a full disk or quota, and `storage_failed` for any other write fault.
+- The host reads "The workspace server can’t save messages right now. Restart Crew on the server, then send again.", and a terminal adds the commands to run.
+- `broker.log` in the state directory gets one line with the time, the operating system's error and the commands.
+- `status` fails with a line such as `storage_full: Crew on this server stopped saving changes at <time> because the disk is full. Reading still works.`, followed by the commands.
+
+A shared file the broker cannot write is refused the same way, but the broker keeps saving other changes, and the same upload can be sent again once there is space.
+
+To recover, as the host:
+
+1. Free space on that disk, or ask IT to raise your quota. For `storage_failed`, ask IT to check the disk.
+2. Stop the broker as in [Stop the broker](#stop-the-broker), and check for `"stopped":true`.
+3. Start it with `"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/chen-lab"`. The `start` line prints `"state":"running"`, and the broker repairs the end of its journal as it starts.
+4. Members' Crew reconnects by itself, and anyone who sees the workspace offline can choose **Connect to chen-lab**. Anyone whose change said it "may not have been saved" checks the channel before sending it again.
+
 ## How identity works
 
 - The broker checks every request: the member is active, uses the UID they joined with, and that UID keeps its username. If not, the command line shows `Account enrollment changed.` and `biorouter crew members` shows `account no longer valid`. Usernames are unique among active members, ignoring case and lookalike letters.
@@ -151,12 +172,27 @@ Only the host can stop it. `stop` confirms the process behind the socket is this
 
 The host's account, programs running as it and the server's administrators can read everything the workspace stores, including Restricted channels. SSH encryption alone does not make a deployment HIPAA compliant. Your institution decides endpoint approval and access review.
 
+## What other accounts can see
+
+Crew keeps messages, files, member lists and channel names behind each member's device key. Any account that can sign in to the server, member or not, can still learn this much:
+
+| What | How |
+|---|---|
+| The workspace's name | The host's `biorouter-crew serve` process shows `--name` or the state directory's path, and the state folder under the host's home has the same name. |
+| Who is connected to which workspace, and when | While a member's computer is connected, `biorouter-crew bridge` runs under the member's username with `--socket`, `--owner-uid` and `--workspace-id` on its command line. `ps` lists it for every account. |
+| The workspace's ID, name, privacy mode, institution, policy epoch and key fingerprint, and whether it has stopped saving changes | The broker's socket is mode 0666, because each member's bridge reaches it from their own account, and its `hello` answers any local account with these. |
+
+To hide other accounts' processes, mount `/proc` with `hidepid=2` on a shared server, for example with `mount -o remount,hidepid=2 /proc` and the same option in `/etc/fstab`. Check first that your monitoring tools still work, since they may need a group given with `gid=`. Nothing hides the `hello` answer, so keep patient, sample and study identifiers out of workspace names.
+
+On member computers, each Biorouter background service listens on a TCP port on the loopback address. On a shared Linux machine another account can reach that port, but every request except `/status` needs the service's secret or a short lived key it issued, and `/status` answers only `ok`.
+
 ## Member computers
 
 - Each member needs the Biorouter app or command line, and the OpenSSH client.
 - On macOS and Linux, the app and command line share one background service per profile, which keeps running after the app closes. The command line needs `biorouterd` beside `biorouter`. On Windows it cannot use the service: `Shared Crew daemon IPC is unavailable on this platform`.
 - A [managed policy](../security/managed-policy.md) with a hook under `hooks` or `allow_project_hooks: true`, or one that does not parse, blocks agent tasks and chat access with "Crew is unavailable with required managed hooks…" or "…the managed policy could not be loaded…". Messages and files still work.
 - Each person also keeps an approval secret. See [Getting started](getting-started.md).
+- Crew keeps device keys in the system keyring, and never in a plain file. A Linux computer with no keyring service (Secret Service), such as a login node reached only over SSH, needs `biorouter crew credentials init` before its first workspace. See [Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault).
 
 ## Where Crew keeps its data
 
@@ -233,7 +269,8 @@ Never edit `journal.jsonl`, because a broker refuses records that fail their che
 | Messages | 100,000 |
 | Records kept for retries | One day each, the newest 512 per person and 100,000 in all. Older ones are dropped, never refused. |
 | Teams, channels | 100, 1,000 |
-| Shared files | 1 GiB each, 10 GiB total, 10,000 files. An upload with no progress for a day is removed. |
+| Shared files | 1 GiB each, 10 GiB total, 10,000 files. |
+| Unfinished uploads | Each holds its full declared size of the shared file space, and of its member's share, from the moment it starts. One with no progress for a day is removed, with its partial file. Cancelling it on the member's computer does not remove it sooner. |
 | Remote references | 10,000 |
 | One member's share (the host has none) | 4 MiB of workspace state, 256 MiB of journal, 10 teams, 100 channels, 2.5 GiB and 2,500 shared files, 2,500 remote references, 100 waiting invitations |
 | Channels an agent reads | A task: its channel plus 16 more. A chat: 20, including its own. |
@@ -244,6 +281,8 @@ Never edit `journal.jsonl`, because a broker refuses records that fail their che
 The state limit decides capacity. Ordinary changes may use 15 MiB of it, so fewer than 15,360 messages of 1 KiB fit, or 1,920 of 8 KiB. Archiving frees nothing. At a limit, reading works and changes are refused with "This workspace has grown past the size Crew supports…". The host can still remove members and change the privacy mode, and anyone can still stop an agent, archive a channel or remove someone from a channel they own. Preserve it and start a new workspace with a new state directory.
 
 A member who reaches their share sees "You have used your share of this workspace's storage" (or its journal, files, teams, channels, references or invitations). Everyone else keeps working, and reading still works for them too.
+
+The host is warned before the workspace fills. From 80% of the space ordinary changes may use, in the state or the journal, whichever is fuller, the host's Crew sidebar shows a **Storage** row such as "chen-lab is 82% full." with what happens when it is full. The **General** tab of "chen-lab settings" always shows the host how full it is, with the same sentence from 80%. At the limit the row reads "chen-lab is full." Members are not told. A server with an older `biorouter-crew` sends no figures, and nothing is shown.
 
 Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 
@@ -259,6 +298,7 @@ Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 | `not_running: …` | No broker is running from this state directory. Run `start`. |
 | `journal_corrupt: checksum mismatch` | Change nothing. After an upgrade, roll back and use a release build. |
 | `quota_exceeded: journal exceeds supported replay size of 1 GiB` | Preserve the workspace and start a new one. |
+| `storage_full: Crew on this server stopped saving changes…` or `storage_failed: …` from `status` | See [Server storage full or failing](#server-storage-full-or-failing). |
 | `ssh -G refused the native configuration; …` | Run `ssh -G <host>` on the member's computer to see the error. |
 
 ## Related documentation

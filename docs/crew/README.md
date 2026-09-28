@@ -46,13 +46,13 @@ Crew then says the person can now see the team's channels. See [Hosting a worksp
 | [Getting started](getting-started.md) | What you need, the first screen, the Crew view, and a glossary. |
 | [Hosting a workspace](hosting-a-workspace.md) | Creating a workspace, inviting and letting people in, and keeping Crew running. |
 | [Joining a workspace](joining-a-workspace.md) | The invitation, your code, waiting for your host, and fixing a failed join. |
-| [Teams, channels and people](teams-channels-and-people.md) | Teams, channels, adding and removing people, channel owners, archiving, and display names. |
-| [Messages and files](messages-and-files.md) | Messages, unread counts, drafts, files up to 1 GB, and server paths. |
+| [Teams, channels and people](teams-channels-and-people.md) | Teams, channels, adding and removing people, who is online, channel owners, archiving, and display names. |
+| [Messages and files](messages-and-files.md) | Messages, mentions, unread counts and notifications, drafts, files up to 1 GB, and server paths. |
 | [Agents and chat access](agents-and-chat-access.md) | Asking your agent for tasks, connecting a Biorouter chat with `/crew`, and ending access. |
-| [Privacy and security](privacy-and-security.md) | **Private** and **Public**, institutions, **Restricted** and **Public-safe** channels, keys, fingerprints, and what others, including the host, can see. |
+| [Privacy and security](privacy-and-security.md) | **Private** and **Public**, institutions, **Restricted** and **Public-safe** channels, keys, fingerprints, and what others, including the host and other accounts on the server, can see. |
 | [Connections and troubleshooting](connections-and-troubleshooting.md) | Connection statuses, signing in, checking the server's identity, and error messages. |
 | [Command line](command-line.md) | The `biorouter crew` commands for terminals and scripts. |
-| [Administration](administration.md) | Server requirements, installing `biorouter-crew`, where Crew keeps data, limits, upgrades and backups. |
+| [Administration](administration.md) | Server requirements, installing `biorouter-crew`, what other accounts can see, a full disk, where Crew keeps data, limits, upgrades and backups. |
 
 ## Related documentation
 

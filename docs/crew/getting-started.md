@@ -1,7 +1,7 @@
 # Getting started with Crew
 
 > **What this is.** The first page of the Crew user manual: what you need, the approval secret, the first screen, the parts of the Crew view, and the terms the manual uses.
-> **Status:** Current. Checked against the Crew code on 2026-09-25.
+> **Status:** Current. Checked against the Crew code on 2026-09-28.
 > **Audience:** Lab members who are new to Crew, including people who have never used SSH or a terminal.
 
 Crew is the part of the Biorouter desktop app where your lab chats, shares files and runs AI agents. Open it from **Crew** in the Biorouter sidebar, below **New chat**. As in Slack, a workspace holds channels where you post messages and files. Teams group channels, and agents read and post in a channel when you allow it. You see only the channels you are in. To get into another one, ask its owner. The host can also add you, but only to a team or channel the host is in.
@@ -29,7 +29,7 @@ When the server asks for a password or a code, the Sign in window opens. Type it
 
 ### Jump hosts
 
-Use a jump host, a server you pass through to reach the lab server, only if IT gives you one. Type it under **Advanced** in the Join or Host dialog, with commas between several, or later in **Connection settings…** in the workspace menu. IT must also add its settings to `~/.ssh/config` (see [SSH requirements](administration.md#ssh-requirements)). Without them, or with a custom `ProxyCommand` or `GSSAPIDelegateCredentials yes`, Crew does not connect and shows a sentence that starts "Crew SSH host". Send that sentence to IT.
+Use a jump host, a server you pass through to reach the lab server, only if IT gives you one. Type it under **Advanced** in the Join or Host dialog, in **Jump hosts**, with commas between several, or later in **Connection settings…** in the workspace menu. IT must also add its settings to `~/.ssh/config` (see [SSH requirements](administration.md#ssh-requirements)). Without them, or with a custom `ProxyCommand` or `GSSAPIDelegateCredentials yes`, Crew does not connect and shows a sentence that starts "Crew SSH host" and names the jump host. Send that sentence to IT. Those settings also make SSH check the jump host strictly, so verify it on its own before your first connection (step 3 of [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)).
 
 ## The approval secret
 
@@ -63,17 +63,17 @@ After that, the main area shows what to do next. [What each status means](connec
 
 | Part | What it does |
 |---|---|
-| Workspace name | Opens the workspace menu: **People…**, **Privacy…** and **Agent access…** (Workspace settings), **Create team…**, the host's **Invite people to {workspace}…**, the [connection tools](connections-and-troubleshooting.md#connection-tools-in-the-workspace-menu), **Switch workspace** and **Add a workspace**. |
+| Workspace name | Opens the workspace menu: **People…**, **Privacy…** and **Agent access…** (tabs of the "{workspace} settings" dialog), **Create team…**, the host's **Invite people to {workspace}…**, the [connection tools](connections-and-troubleshooting.md#connection-tools-in-the-workspace-menu), **Switch workspace** and **Add a workspace**. |
 | Status row | One word for your connection, such as "Connected" or "Offline" ([What each status means](connections-and-troubleshooting.md#what-each-status-means)). **Sign-in needed** is a button. The [privacy chip](#the-privacy-chip) sits at its right. |
 | "Invitations", "Waiting to join", "Joined, not in your teams" | Invitations for you (**Join**). For the host, people to let in (**Let in…**) or add to a team (**Add to a team…**). |
-| Teams and channels | Bold names have unread messages. A pencil marks unsent text ([Find your way around the sidebar](teams-channels-and-people.md#find-your-way-around-the-sidebar)). |
+| Teams and channels | Bold names with a count have unread messages. A pencil marks unsent text, and the count takes its place while the channel has unread messages ([Find your way around the sidebar](teams-channels-and-people.md#find-your-way-around-the-sidebar)). |
 | Agents | Your unfinished tasks and chats with access. "Needs you" marks a task that waits for your approval ([See which agents have access](agents-and-chat-access.md#see-which-agents-have-access)). |
 | You row | **Edit profile…**, **Copy my username** and **Keys and security…**, which lists your devices and where your keys are stored. Only a new Crew profile can use an [encrypted vault](privacy-and-security.md#use-an-encrypted-vault) instead of the system keychain. |
 | Channel header | The channel name opens the channel menu. A "Restricted" or "Public-safe" badge follows. **Channel details** opens the **About**, **Members**, **Files** and **Agent access** tabs. |
 | Connection bar | Under the channel header. It shows a problem with **Retry**, **Try again** or **Dismiss**, a locked vault with **Unlock**, or a new device with **Review** ([Messages and what to do](connections-and-troubleshooting.md#messages-and-what-to-do)). |
 | Message box | Enter sends. Shift+Enter adds a line. **Attach** adds a file of up to 1 GB or a server path, shared when you press Send. **Ask my agent** starts a task everyone in the channel sees ([Messages and files](messages-and-files.md)). |
 
-Outside Crew, a chat with access shows a **Crew · #{channel}** chip. Choose it to manage that access.
+Outside Crew, the **Crew** item in the app sidebar shows how many unread messages you have, and new messages raise a system notification ([Unread messages](messages-and-files.md#unread-messages)). A chat with access shows a **Crew · #{channel}** chip. Choose it to manage that access.
 
 ### The privacy chip
 
@@ -105,6 +105,7 @@ If support staff ask for an ID, **Copy for support** in the menu of that person,
 | Invitation | The host's message that lets you join. It is valid for 24 hours. |
 | Jump host | A server you pass through to reach the lab server. See [Jump hosts](#jump-hosts). |
 | Known hosts file | The list of servers SSH trusts on this computer, usually `~/.ssh/known_hosts`. Crew connects only to a server listed there. |
+| Online | A person whose computer is connected to the workspace now, or made a request in the last three minutes. A dot after the name marks them in member lists. |
 | Restricted, Public-safe | Channel labels. Only private models read "Restricted". Public models may read "Public-safe" when the workspace allows. Neither limits who is in the channel. |
 | System keychain | Your computer's own password store, such as the macOS Keychain. Crew keeps your keys there unless you set up a vault. |
 | Task | One job you give your agent with **Ask my agent**. Everyone in the channel sees it. |

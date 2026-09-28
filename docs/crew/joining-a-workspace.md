@@ -26,23 +26,27 @@ Crew connects only to a server whose key is in your known hosts file, `~/.ssh/kn
 
 1. Get the server fingerprint. It starts with `SHA256:`. Your host may have sent it with the invitation. If not, ask IT. If IT gave you a jump host (a server you pass through first), ask IT for its fingerprint too. A server fingerprint is neither the workspace fingerprint nor your code.
 2. Open a terminal. On a Mac, press Command and Space, type Terminal, and press Return. Crew's "Can’t verify" screen also offers **How do I verify it?**, then **Open a terminal here**.
-3. Type `ssh bob@lab.example.edu` with your username and server, and press Enter.
+3. If IT gave you a jump host, verify it on its own first. Type `ssh -o StrictHostKeyChecking=ask gateway.ucsf.edu` with the jump host's name, and follow steps 5 to 8 for it. IT's settings for a jump host make SSH check it strictly, so without this step SSH never asks about it and stops with "No ED25519 host key is known for gateway.ucsf.edu and you have requested strict checking." If IT added the jump host's key for you, skip this step.
+4. Type `ssh bob@lab.example.edu` with your username and server, and press Enter.
    - For a port other than 22, add `-p` and the port: `ssh -p 2222 bob@lab.example.edu`.
    - For a jump host, add `-J` and its name: `ssh -J gateway.ucsf.edu bob@lab.example.edu`.
    - If you do not know the server or its port, paste the invitation in the Join dialog (steps 1 to 3 of [Join from the Biorouter app](#join-from-the-biorouter-app)). The server is the name after "on" in the summary. Choose **Advanced**: the grey number in **Port** is the port. Choose **Cancel**. Nothing is saved.
-4. Read the answer:
-   - "Are you sure you want to continue connecting", after a `SHA256:` value: go to step 5.
+5. Read the answer:
+   - "Are you sure you want to continue connecting", after a `SHA256:` value: go to step 6.
    - A password prompt, or the server's prompt, such as `bob@lab:~$`: the server is already verified. Press Ctrl+C at a password prompt, or type `exit` at the server's prompt.
+   - "No … host key is known for … and you have requested strict checking": that host is a jump host you have not verified. Do step 3 for it.
    - "Could not resolve hostname": check the spelling of the server name, or ask IT.
    - "timed out" or "Connection refused": connect to your VPN (the app that connects you to your institution's network), check the port, and try again.
    - "Permission denied": ask IT which login or key to use.
-   - "REMOTE HOST IDENTIFICATION HAS CHANGED": stop, and send the whole message to IT. When IT confirms the change, remove the old key (step 2 of [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity)), and start again at step 3.
-5. Compare the `SHA256:` value with the one you got for that host, character by character. With `-J`, SSH asks about the jump host first, then the server. If a value differs, type `no` and tell IT.
-6. If it matches, type `yes` and press Enter. SSH prints "Permanently added … to the list of known hosts." If SSH then asks about the next host, repeat step 5.
-7. Sign in with your password or code. The terminal does not show a password. Then type `exit`.
-8. In Crew, choose **Try again**, or join as below.
+   - "REMOTE HOST IDENTIFICATION HAS CHANGED": stop, and send the whole message to IT. When IT confirms the change, remove the old key (step 2 of [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity)), and start again at step 4.
+6. Compare the `SHA256:` value with the one you got for that host, character by character. If a value differs, type `no` and tell IT.
+7. If it matches, type `yes` and press Enter. SSH prints "Permanently added … to the list of known hosts." If SSH then asks about the next host, repeat step 6.
+8. Sign in with your password or code. The terminal does not show a password. Then type `exit`. For a jump host checked in step 3, type `exit` and go on to step 4.
+9. In Crew, choose **Try again**, or join as below.
 
 Typing `yes` is the step Crew's help calls adding "the full key". Crew may then ask for your password again.
+
+If Crew's "Can’t verify" screen names your jump host rather than the server, the jump host is the one to verify: do step 3 for it.
 
 ### Install Crew in your server account
 
@@ -60,12 +64,12 @@ The invitation is a message with a line that starts `brcrew1:`. It holds no secr
 2. Choose **Crew** in the left sidebar, then **Join a workspace**. If you already have a workspace, choose its name at the top of the Crew sidebar, then **Add a workspace** and **Join a workspace…**.
 3. Paste the whole message into **Invitation from your host**. The box folds to "Invitation read", and a summary appears. **Edit** reopens the box.
 4. Check that the summary names the right workspace and host, for example "Hosted by Alice Chen (@alice) on lab.example.edu". If not, choose **Cancel**.
-5. Check **Your username on lab.example.edu**. It is your server login, not your Slack name or email.
+5. Check **Your username on lab.example.edu**. It is your server login, not your Slack name or email. If the invitation was made for another account than the one this computer signs in as, a note says so, such as "This invitation is for @crew_bob, but this computer signs in to lab.example.edu as bob. Ask your host for your own invitation." Ask your host for an invitation to your own username.
 6. If Crew asks you to "Choose which AI models may work here", ask your host, then [choose](#which-ai-can-read-the-workspace).
 7. Leave **Your agent on lab.example.edu** and **Advanced** alone unless your host or IT said otherwise.
 8. Choose **Join chen-lab**. If the server asks for a password, see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server).
 
-The card with your code appears. Crew finishes the join later without asking again. If a message appears instead, see [When joining does not work](#when-joining-does-not-work). To join from a terminal instead, see [Join a workspace](command-line.md#join-a-workspace).
+The card with your code appears. Crew finishes the join later without asking again. If a message appears instead, see [When joining does not work](#when-joining-does-not-work). To join from a terminal instead, see [Join a workspace](command-line.md#join-a-workspace). To join from a terminal on the server that runs the workspace, see [Join from the workspace's own server](command-line.md#join-from-the-workspaces-own-server).
 
 ### Check the invitation fingerprint
 
@@ -79,7 +83,7 @@ To change it:
 
 1. Choose **Advanced**, then **Change which AI can read chen-lab…**.
 2. Choose **Private** or **Public**. For Private, type your institution's short ID, such as `ucsf`, in **Institution**. It must match your host's, so ask your host if you do not know it.
-3. Choose **Done**. The choice folds into one line, such as "Which AI can read chen-lab: private, ucsf-approved models only".
+3. Choose **Done**. The choice folds into one line, such as "Which AI can read chen-lab: private, UCSF-approved models only". The line uses the name your model provider publishes for the institution, such as "UCSF", when one of your models names it, and otherwise the short ID you typed. Always type the short ID, such as `ucsf`, in **Institution**.
 
 ### Your agent on the server
 
@@ -94,7 +98,7 @@ Use **Advanced** only with settings from IT. It opens by itself when the invitat
 | **Server login** | A login from IT in place of `bob@lab.example.edu`, or a short name (alias) for the server from your SSH settings file, `~/.ssh/config`. |
 | **Port** | A port other than the invitation's. |
 | **Identity file** | The full path of an SSH key file, starting with /. |
-| **Jump host** | Gateway servers from IT, separated by commas. Each needs [settings in your SSH settings file](getting-started.md#jump-hosts). |
+| **Jump hosts** | Gateway servers from IT, separated by commas. Each needs [settings in your SSH settings file](getting-started.md#jump-hosts). |
 | **Connection name** | Your name for this workspace on this computer. |
 | **Enter workspace details manually** | Use only if your host asks. It takes **Your server login** and four values your host copies from the `status` line the start commands printed: **Socket path**, **Workspace ID**, **Host user ID** and **Workspace key**. |
 
@@ -142,9 +146,12 @@ When your host enters it, the workspace opens on the new computer.
 
 | Message | What to do |
 |---|---|
-| "This doesn’t look like a Crew invitation…" | Paste the whole message. If that fails, ask your host to copy it again, or update Biorouter. |
+| "This doesn’t look like a Crew invitation…" | Paste the whole message. If that fails, ask your host to copy it again. |
+| "This invitation is incomplete…" | Email or chat may have wrapped the `brcrew1:` line or cut it short. Paste the whole message again, or ask your host to send it as an attachment. |
+| "This invitation needs a newer Biorouter…" | Update Biorouter, then paste it again. |
 | "This feature needs a newer Biorouter background service…" | Follow [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service), then paste again. |
-| "You already have chen-lab on this computer." | Choose **Open chen-lab**. |
+| "You already have chen-lab on this computer." | Choose **Open chen-lab**. To sign in with another account, choose **Connection settings…** and change **Your server login**. Pasting again changes nothing. |
+| "This computer has a saved connection to chen-lab that never joined. Joining replaces it." | The saved connection came from an invitation that could not work here, such as someone else's. Choose **Replace the saved connection** to join with this invitation. |
 | "This invitation doesn't match “chen-lab”…" | Do not join. Ask for a new invitation and compare the fingerprint. |
 | "This invitation doesn’t name its server…" | Type your server login, such as `bob@lab.example.edu`, in **Server login**. Ask IT if you do not know it. |
 
@@ -169,7 +176,9 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | "lab.example.edu’s identity changed" | Do not connect. Send IT the text from **Copy details for IT**, then follow [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity). |
 | "This isn’t the workspace you joined" | Send your host the text from **Copy details**, and wait. |
 | "Crew isn’t set up for your account on lab.example.edu" | See [Install Crew in your server account](#install-crew-in-your-server-account). |
-| "It didn’t connect" | Choose **Connect to chen-lab** again. If it repeats, ask your host. Crew may have stopped on the server, or the server name may reach a different machine each time. |
+| "lab.example.edu refused this computer’s SSH key" | The server takes no password here, so signing in cannot help. Check **Your server login** in **Connection settings…**, and ask IT which login and key to use. |
+| "Crew isn’t running on lab.example.edu" | The workspace stopped on the server, for example after it restarted. Ask your host to start Crew. Crew connects by itself once it runs. |
+| "It didn’t connect" | Choose **Connect to chen-lab** again. If it repeats, ask your host. The server name may reach a different machine each time. |
 | "You already use this server for {other workspace}…" | One computer uses a server for one institution only. Ask your host. |
 
 ### Problems while you wait
@@ -177,7 +186,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | Message | What to do |
 |---|---|
 | "The code Alice entered doesn’t match this computer…" | Send the same code again. |
-| "You’re not in chen-lab yet" | Send your host the "message to your host" text. If `bob` is wrong, fix **Your server login** in **Connection settings…** and connect again. |
+| "You’re not in chen-lab yet" | Send your host the "message to your host" text. If `bob` is wrong, fix **Your server login** in **Connection settings…** and connect again. The card also says "If you were in chen-lab before, ask Alice Chen (@alice) to use Add another device for @bob." Do that if you were a member before, for example if you removed chen-lab from this computer. |
 | "This invitation expired…" | Ask your host to invite you again. The card returns with the same code. |
 | "Crew isn’t connected to chen-lab…" | Choose **Reconnect**. |
 | "Crew couldn’t check your invitation…" | Wait. If it continues, quit and reopen Biorouter. |

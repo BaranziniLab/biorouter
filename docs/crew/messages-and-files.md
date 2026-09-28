@@ -21,15 +21,30 @@ The message box at the bottom of a channel holds the paperclip button (tooltip "
 
 If sending fails, a red note above the box starts with "Couldn’t send." and gives the reason. Your
 text and files stay. Fix the cause and press Send again. An unchanged message is never posted twice.
+The note stays with its draft: if you move to another channel, it comes back with the draft. If the
+workspace refuses a message after you moved on, the connection bar says "Couldn’t send your message
+in #methods." with the reason.
 
-If the reason mentions connection privacy, such as "Refresh the workspace to verify connection
-privacy before sending.", wait until the status row reads "Connected", then press Send again. If it
-shows another word, such as "Offline", see
-[Connections and troubleshooting](connections-and-troubleshooting.md).
+| Reason | What to do |
+|---|---|
+| "Messages can be up to 64 KB. Attach long text as a file." | Shorten the message, or attach the text as a file. |
+| "Refresh the workspace to verify connection privacy before sending." | Wait until the status row reads "Connected", then press Send again. If it shows another word, such as "Offline", see [Connections and troubleshooting](connections-and-troubleshooting.md). |
+| "Nothing was sent. Check the connection, then send again." | Crew lost the connection before the message left. Send again once the status row reads "Connected". |
+| "The workspace server can’t save messages right now." | The server's disk is full or failing. Ask the host, who sees what to do in [Administration](administration.md#server-storage-full-or-failing). |
+| "This workspace is full…", "This workspace has grown past the size Crew supports…" or "You have used your share of this workspace's…" | The workspace reached a limit. Reading still works. Ask the host ([Workspace limits](administration.md#workspace-limits)). |
+| "…was shared in #raw-data. Share it there, or upload it again here." | A file or server path from another channel cannot be posted here. Remove it, then upload it again or share the path again. |
+| "This channel is archived, so nothing more can be posted in it." | Copy your text and post it elsewhere. |
+
+If the connection breaks just after you press Send, Crew cannot tell at once whether the message
+arrived. The note reads "Checking whether your message reached the channel…" while Crew reads the
+channel again. Then it reads "Your message was sent." and the draft goes, or "Couldn’t confirm this
+was sent. Check the channel, then send again." and the draft stays. A resent draft is never posted
+twice.
 
 A message holds at most 64 KB of text. Attach a long log as a file instead. Nobody can edit
-or delete a posted message. There are no threads, reactions or pins. Typing `@bob` does not notify
-Bob. Only a terminal can search a channel: see
+or delete a posted message. There are no threads, reactions or pins. Typing `@bob` mentions Bob:
+Bob sees the message marked for him and may get a notification (see
+[Unread messages](#unread-messages)). Only a terminal can search a channel: see
 [Post and read messages](command-line.md#post-and-read-messages).
 
 ## Format a message
@@ -42,8 +57,18 @@ Crew reads Markdown. The box shows what you type, and the formatting appears onc
 - Only public `http` and `https` addresses become links. They open in your browser after you
   confirm. An email address, or an address on a private network such as `localhost`,
   `10.0.0.5` or `wiki.internal`, shows as text with the address beside it, for you to copy.
+- When a link's words look like an address on another site, the site it really opens follows
+  them in parentheses, such as "lab.example.edu (example.net)".
 - An image shows as a link such as "Image: gel". Crew never loads the picture.
 - HTML shows as typed.
+- A character that draws nothing or reorders the text after it, such as a zero width space or a
+  direction override, shows as its code, such as `\u{202e}`. Point at it to read "Hidden
+  character U+202E". **Copy text** still copies what the author typed.
+- Each paragraph, list item and table cell follows the direction of its own first letters, so
+  Arabic, Hebrew or Persian reads right to left.
+- A mention of you, such as `@bob` when you are Bob, shows as a highlighted chip, and the message
+  gets a colored mark. Your own messages never mark you, and a mention inside code or in a link's
+  words does not count.
 
 ## Read a channel
 
@@ -53,8 +78,11 @@ Crew reads Markdown. The box shows what you type, and the formatting appears onc
   [Privacy and security](privacy-and-security.md).
 - Agent messages carry an "Agent" badge. When your chat posted one, choose the chat's title to
   open it. **Show details** opens an agent's step updates.
-- Crew loads the newest 200 messages. Scroll up to **Older messages** to load more. While you read
-  older messages, new ones stay hidden until you choose **Jump to latest**.
+- Crew loads the newest 200 messages. Scroll up to the top to load 200 older ones, which appear
+  above the ones you were reading without moving your place. Crew keeps up to 600 messages loaded.
+- Past 600, the newest messages give way. A bar then reads "Viewing earlier messages" with
+  **Jump to latest**, and **Newer messages** at the bottom of the list loads the next 200. New
+  messages stay hidden until you reach the newest again.
 - If others post while you are scrolled up, a button such as "3 new messages" goes to the newest
   message.
 
@@ -65,15 +93,26 @@ and last loaded message. Tab on a message reaches its buttons and file cards.
 
 ## Unread messages
 
-Crew sends no system notifications or sounds. A channel with unread messages shows its name in
-bold, with a count, in the Crew sidebar, so open Crew to check.
+A channel with unread messages shows its name in bold, with a count, in the Crew sidebar. The
+**Crew** item in the app sidebar shows how many unread messages all your connected workspaces hold,
+and on a Mac the Dock icon shows the same number. Crew checks every 10 seconds.
 
-- A line or day band labeled "New" marks the first unread message. It stays until you leave the
-  channel or post there.
-- Crew marks a channel read once its newest message has been in view for one second in the active
-  window, but never while you read older messages.
+While you are not looking at Crew, new messages also raise a system notification, such as "3 new
+messages in chen-lab", or "Alice Chen mentioned you in #general" when one of them mentions you.
+Choosing it opens Crew on that channel. A notification never shows the message's text. Crew shows
+at most one a minute for each channel, and six a minute in all. Your computer's notification
+settings for Biorouter decide whether they appear and make a sound.
+
+- A channel with unread messages opens at the first of them, where a line or day band labeled
+  "New" marks it. The line stays until you leave the channel or post there.
+- When more is unread than Crew loaded, the channel opens at the newest message and marks nothing
+  read. **Jump to first unread** loads older messages until the first unread one is in view.
+- Crew marks messages read once they have been in view for one second in the active window, up to
+  the newest message you have seen, never while you read older messages.
 - To mark it read yourself, choose the channel name in the header, or right click the open channel
   in the sidebar (Shift+F10), then choose **Mark as read**.
+- Reading a channel with `biorouter crew history` or `watch` leaves it unread. See
+  [Post and read messages](command-line.md#post-and-read-messages).
 
 ## Copy a message
 
@@ -88,18 +127,26 @@ asks.
 When you switch channel, team or workspace, or leave Crew, the text in the message box is kept. It
 is back when you return.
 
-- A pencil in the sidebar marks a channel that holds a draft.
+- A pencil in the sidebar marks a channel that holds a draft. While the channel also has unread
+  messages, the unread count shows in the pencil's place, and the pencil comes back once you read
+  them. A screen reader hears ", draft" after the channel's name either way.
 - Only text is kept. An attached file waits in the **Files** tab under "Uploaded, not sent".
 - Drafts are kept in memory only, so quitting Biorouter discards them.
 - Crew clears a draft, and says so, when the workspace's or your connection's privacy or
-  institution changes, or when you lose access to the channel.
+  institution changes.
+- When you lose access to a channel that held your draft, a note above the message box says
+  "#methods held your unsent draft, which can’t be sent there now. Copy it before you close this
+  note." Choose **Copy draft**, then **Dismiss**. The draft is gone once you dismiss the note.
 
 ## Share a file from your computer
 
 - The upload starts when you confirm the file. Others see the file only after you press Send.
 - A file joins your message once its upload finishes. Text sent before then goes alone.
 - Each file can be up to 1 GB. Add several files one after another.
-- Crew cannot delete an upload, even one you remove from your message. Check the file first.
+- Crew cannot delete a finished upload, even one you remove from your message. Check the file
+  first.
+- An upload you cancel before it finishes leaves the part already sent on the server for up to a
+  day. Until then it counts toward the workspace's file space at the file's full size.
 - If you upload the wrong file, do not press Send. The copy stays on the server, where the host's
   server account and the server administrators can read it, so tell your host.
 
@@ -118,12 +165,17 @@ is back when you return.
 
 While a file uploads:
 
-- A "Paused" or "Failed" chip has a play button. Hover over "Failed" for the reason. Choose play
-  and select the same file.
+- A "Paused" chip has a play button. Hover over it for the reason, such as "You paused it" or
+  "The connection dropped". Choose play and select the same file.
+- A "Failed" chip means the workspace refused the upload, and resuming cannot fix it. Hover over
+  it for the reason.
 - A note under the chip says when a file with the same name or contents is already in the channel.
   If you send a corrected file under the same name, agents use yours.
-- The × on a chip takes the file out of your message. A file you remove, or one that finishes after
-  you leave the channel, waits in the **Files** tab.
+- The × on an uploading chip is **Cancel upload**. Crew asks first, because the part already sent
+  stays on the server for up to a day. At "Cancel uploading counts.csv?", choose **Cancel upload**,
+  or **Keep uploading** (**Keep it** for a paused upload).
+- The × on a finished file's chip takes the file out of your message. A file you remove, or one
+  that finishes after you leave the channel, waits in the **Files** tab.
 - After "The upload couldn’t start." or "The daemon refused this file selection…", check that you
   can open the file and that it is 1 GB or smaller, then try again.
 - After "Connection privacy changed" or a note that asks you to refresh the workspace, wait until
@@ -135,7 +187,7 @@ A refused file shows a red note above the box. Its × closes the note.
 
 | Refused | What to do |
 |---|---|
-| Several files at once | Crew takes the first. Add the others one at a time. |
+| Several files at once | Crew takes the first, and the note names it: "Crew shares one file at a time. Only counts.csv was added." Add the others one at a time. |
 | A folder | Zip it, or share its files one by one. |
 | Over 1 GB | Share a [server path](#share-a-path-on-the-lab-server), or split the file. |
 | A picture not saved as a file | Save it as a file first. |
@@ -144,8 +196,11 @@ A refused file shows a red note above the box. Its × closes the note.
 | A file that moved, changed or cannot be read | Check that you can open it, then add it again. |
 | A credential file, such as `id_rsa` or `.env` | Do not share it. |
 
-The credential check covers every way a file arrives, and can refuse a file after you choose
-**Share**. [Privacy and security](privacy-and-security.md) lists what it refuses.
+The credential check runs however a file arrives (the paperclip, a drag, a paste or a terminal),
+and can refuse a file after you choose **Share**. It checks the file's name, and reads the file's
+first and last 64 KB, so a key added to the end of a large file is caught. A credential in the
+middle of a file larger than 128 KB is beyond it, so check large files yourself.
+[Privacy and security](privacy-and-security.md) lists what it refuses.
 
 ## Open and save a shared file
 
@@ -161,8 +216,22 @@ shows a PNG, JPEG, GIF or WebP picture. **More actions** (⋯) holds the downloa
 4. A bar on the card shows "Downloading 42%". When the bar goes away, the file is saved.
 
 Crew checks each download before it saves it. If the check fails, the card gives the reason, and
-**Resume…** tries again. Crew never saves into credential or settings folders. "That channel isn't
-available to you…" means you are no longer in the channel, or it was archived.
+**Resume…** tries again. The save window suggests a name Crew accepts. A saved file is marked as
+downloaded from the internet, so macOS or Windows checks an app inside it before it opens, as for a
+browser download.
+
+If Crew refuses where you chose to save, it says what to change:
+
+| Message | What to do |
+|---|---|
+| "…starts with a dot, which Crew doesn't save into your home." | Choose a name without the leading dot. |
+| "Choose a folder owned by your account that other accounts can't change." | Save into a folder of your own, such as Downloads. |
+| "Crew won't save into a credential or settings location. Choose another folder." | Choose another folder. |
+| "That is a folder. Give a file name…" | Choose a file name, not a folder. |
+| "…is a program, and Crew won't replace one. Choose another name." | Choose another name. |
+| "A file named … already exists. Replace it, or choose another name." | Choose **Replace** in the save window, or another name. |
+
+"You're not in that channel." means you were removed from the channel.
 
 ## The Files tab
 
@@ -188,14 +257,17 @@ A transfer is one upload or download on this computer.
 - To resume, choose the play button on the chip, or **Resume…** on the card or row. Select the same
   file, or for a download the same folder and name.
 - **Remove from list** deletes only this computer's record. For an unfinished download, choose the
-  folder you saved into, then **Remove temporary file**. The row leaves the list.
+  folder you saved into, then **Remove temporary file**. The row leaves the list. For an unfinished
+  upload, the part already sent stays on the server for up to a day.
+- A transfer you pause, resume or remove with `biorouter crew` shows its new state here within a
+  few seconds, or when you bring the window back to the front.
 
 ### Transfer states
 
 | State | Meaning | What to do |
 |---|---|---|
-| "Paused" | You paused it, or the background service stopped (a computer restart, or quitting Biorouter on Windows). | Resume it. |
-| "Failed" | An error stopped it. The reason shows under the row. | Resume or remove it. |
+| "Paused" | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running" or "The connection’s privacy changed". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. |
+| "Failed" | The workspace refused it. The reason shows under the row. Resuming cannot fix it. | Remove it. Upload or save again once the cause is fixed. |
 | "Not confirmed" | It stopped at the end, so Crew cannot tell whether it finished. | Upload or save again, then remove the old row. |
 
 ## Share a path on the lab server

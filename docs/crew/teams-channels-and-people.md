@@ -21,11 +21,15 @@ The host runs the workspace and has a "Host" badge. Like everyone else, the host
 
 ## Find your way around the sidebar
 
+- Teams are listed by name. In each team, `#general` comes first, then the other channels by name.
 - Choose a team's name to collapse or expand it. A collapsed team still shows the open channel.
 - Point at a team for **+** (new channel) and **⋯** (team menu).
-- A bold channel name with a count, up to "99+", has unread messages. A pencil marks an unsent message. See [Unread messages](messages-and-files.md#unread-messages).
+- A bold channel name with a count, up to "99+", has unread messages. A pencil marks an unsent message, and while the channel has unread messages the count shows in its place. See [Unread messages](messages-and-files.md#unread-messages).
 - **Archived ({n})** under a team shows its archived channels.
 - The sidebar lists only your channels, with no channel browser. Under a team you did not create, it says "Other channels in {team} appear once someone adds you." Ask the channel's owner, or the host if the host is in that channel.
+- In a very large workspace, a line under the teams, such as "2 more teams and 1 more channel you’re in aren’t listed here, because this workspace is too large to list at once.", says that the sidebar cannot list all of yours.
+
+When you open a team with no channel remembered, Crew opens its `#general`.
 - Right click a channel for **Mark as read** (open channel only), **Copy channel name** and **Copy channel ID**, which support staff may ask for.
 
 ### Use the keyboard in the sidebar
@@ -48,7 +52,7 @@ The team's `#general` channel opens, and you own it.
 
 ### Team name rules
 
-A team name has up to 64 letters, numbers, spaces and `- _ . ' & ( ) +`, including a letter or number. It must be unique in the workspace, including teams you cannot see. Differences in capitals, spaces, dashes, dots, underscores or lookalike letters do not count, so "Analysis Lab" and "analysis-lab" are one name.
+A team name has up to 64 letters, numbers, spaces and `- _ . ' & ( ) +`, including a letter or number. It must be unique in the workspace, including teams you cannot see. Differences in capitals, spaces, dashes, dots, underscores, full width letters or lookalike letters do not count, so "Analysis Lab" and "analysis-lab" are one name.
 
 A refusal says what to change. After ten taken names in ten minutes, Crew says "Too many name attempts. Try again later." Wait up to ten minutes.
 
@@ -57,6 +61,10 @@ A refusal says what to change. After ten taken names in ten minutes, Crew says "
 ### See who is in a team
 
 Point at the team, choose **⋯**, then **Members of {team}…**. Under the list you see **Add people to {team}…**, or a line naming who can add people. For the whole workspace, choose the workspace name, then **People…**.
+
+### See who is online
+
+A small dot after a person's name in the **Members** tab and in **People…** means they are online: their computer is connected to the workspace now, or made a request in the last three minutes. Point at the dot, or use a screen reader, to hear "Online". The member pictures in the channel header mark online people too, and read out, for example, "2 members, 1 online". Everyone in the workspace sees who is online. A server with an older `biorouter-crew` reports nobody, and then no dot appears. An agent working for someone does not make that person online.
 
 ## Create and manage channels
 
@@ -86,7 +94,7 @@ The channel name opens the channel menu. It has **Mark as read**, **Refresh chan
 | Tab | What it holds |
 |---|---|
 | **About** | Name, who can read it, owner, creator and team. The owner also sees **Rename…**, **Transfer ownership…** and **Archive channel…**. |
-| **Members** | The channel's members, not the team's. A person's **⋯** menu has **Copy username**, and for the owner **Make owner…** and **Remove from #{channel}…**. |
+| **Members** | The channel's members, not the team's, with a dot after each person who is online. A person's **⋯** menu has **Copy username**, and for the owner **Make owner…** and **Remove from #{channel}…**. |
 | **Files**, **Agent access** | Shared files, and your own chats and tasks that can post here. |
 
 ### Rename a team or channel
@@ -94,9 +102,12 @@ The channel name opens the channel menu. It has **Mark as read**, **Refresh chan
 Only the owner can rename, and not an archived channel.
 
 1. Choose **Rename team…** in the team's **⋯** menu, or **Rename…** in the channel menu.
-2. Type the new name and choose **Rename**. The new name appears in the sidebar.
+2. Type the new name. For a channel, "Will be renamed to #{name}" shows the name Crew saves. For a team, "CLI name: {handle}" shows the name `biorouter crew` commands will take.
+3. Choose **Rename**. The new name appears in the sidebar.
 
 History, files and members stay, and the old name is free at once. If the item is missing, you are not the owner.
+
+Every member of the renamed team or channel sees a notice once, such as "#history-qa is now #plate-history". After a rename, the old name no longer works in `biorouter crew` commands or scripts: use the new one, or the ID.
 
 ### Hand a channel to someone else
 
@@ -120,6 +131,8 @@ The channel moves under **Archived ({n})** with an "Archived" badge. Its members
 
 You can add only people who have joined the workspace. The host invites new people: see [Invite people](hosting-a-workspace.md#invite-people). Adding is immediate. A person added to a team also joins its `#general`. A channel takes only members of its team.
 
+A person you add can read everything already posted in the channel, files included, and the dialog says so before you choose **Add**. Someone removed and added again also sees what was posted while they were out. Move anything the person should not read to another channel before you add them.
+
 ### Add people to a team
 
 1. As the team owner, or as the host if you are in the team, point at the team, choose **⋯**, then **Add people to {team}…**.
@@ -127,7 +140,7 @@ You can add only people who have joined the workspace. The host invites new peop
 3. Under **Also add to**, tick channels. `#general` "comes with the team", and channels you own start ticked.
 4. Choose **Add**, or **Add {n} people**.
 
-A summary appears, such as "Added @ana and @raj to {team}. They can now see #general and #methods." Choose **Done**. If a ticked channel is refused for a person, that person is added to nothing, and the summary says why. Others are still added.
+A summary appears, such as "Added Ana Ruiz (@ana) and Raj Patel (@raj) to {team}. They can now see #general and #methods." Choose **Done**. If a ticked channel is refused for a person, that person is added to nothing, and the summary says why. Others are still added.
 
 ### Add people to a channel
 
@@ -141,7 +154,7 @@ If the dialog says "No one else is in {team} yet.", add people to the team first
 
 ### When someone adds you
 
-The channel appears in your sidebar, and a notice such as "@alice added you to #methods" names its owner. The channel opens with "Welcome to #{channel}" and "Ask {host} to add you to other channels." The host can add you only to channels the host is in. For any other channel, ask its owner.
+The channel appears in your sidebar, and a notice such as "Alice Chen (@alice) added you to #methods" names who added you. When you are added to a team, the notice names the team, such as "Alice Chen (@alice) added you to Analysis Lab". You can read everything already posted there. The channel opens with "Welcome to #{channel}" and "Ask {host} to add you to other channels." The host can add you only to channels the host is in. For any other channel, ask its owner.
 
 ### Remove someone from a channel
 
