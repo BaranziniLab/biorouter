@@ -1072,6 +1072,46 @@ pub fn device_text(device: &Value, options: &HumanOptions) -> String {
     Ctx::new(options.directory.clone(), options.show_ids, options.clock).device_row(device)
 }
 
+/// A chat's Crew access for a person (AG-F7): `Access: #methods · also reads #general`, then
+/// the messages it can read, oldest first (the manifest lists them newest first).
+/// `destination` is the channel the chat posts in, when the grants list says; without it the
+/// line names every channel the chat reads.
+pub fn context_lines(
+    manifest: &Value,
+    destination: Option<&str>,
+    options: &HumanOptions,
+) -> Vec<String> {
+    let mut directory = options.directory.clone();
+    directory.absorb(manifest);
+    let ctx = Ctx::new(directory, options.show_ids, options.clock);
+    let sources = str_list(manifest, "source_channels");
+    let others: Vec<String> = sources
+        .iter()
+        .filter(|source| Some(**source) != destination)
+        .map(|source| ctx.channel_in_team(Some(source)))
+        .collect();
+    let mut out = vec![match destination {
+        Some(destination) if others.is_empty() => {
+            format!("Access: {}", ctx.channel_in_team(Some(destination)))
+        }
+        Some(destination) => format!(
+            "Access: {} · also reads {}",
+            ctx.channel_in_team(Some(destination)),
+            others.join(", ")
+        ),
+        None if others.is_empty() => "Access: no channels".to_owned(),
+        None => format!("Access: reads {}", others.join(", ")),
+    }];
+    let messages = list_key(manifest, "messages");
+    if messages.is_empty() {
+        out.push("No messages.".into());
+    }
+    for message in messages.iter().rev() {
+        out.extend(ctx.message(message));
+    }
+    out
+}
+
 /// Render `value` as text for a person.
 pub fn render_text(value: &Value, options: &HumanOptions) -> String {
     let mut directory = options.directory.clone();
@@ -3057,6 +3097,36 @@ mod tests {
             ids.contains(&format!("    Attachment: counts.csv (55 KB) [attachment ID {BLOB}]\n    1 more attachment [attachment IDs {TRANSFER}]")),
             "{ids}"
         );
+    }
+
+    /// AG-F7: `crew context` shows the grant's scope, then the messages oldest first.
+    #[test]
+    fn a_chats_context_shows_its_access_then_its_messages_oldest_first() {
+        let mut manifest = json!({"run_id": RUN, "policy_epoch": 4,
+            "source_channels": [METHODS, GENERAL], "restricted": true,
+            "people": {BOB: {"username": "crew_bob", "display_name": "Bob Lee"}},
+            "channel_names": {METHODS: "methods", GENERAL: "general"}});
+        manifest["messages"] = json!([
+            message("m-2", BOB, NOW, "Second."),
+            message("m-1", BOB, NOW - 60, "First."),
+        ]);
+        let lines = context_lines(
+            &manifest,
+            Some(METHODS),
+            &options(false, Directory::default()),
+        );
+        assert_eq!(lines[0], "Access: #methods · also reads #general");
+        let first = lines
+            .iter()
+            .position(|line| line.ends_with("First."))
+            .unwrap();
+        let second = lines
+            .iter()
+            .position(|line| line.ends_with("Second."))
+            .unwrap();
+        assert!(first < second, "{lines:?}");
+        let unknown = context_lines(&manifest, None, &options(false, Directory::default()));
+        assert_eq!(unknown[0], "Access: reads #methods, #general");
     }
 
     #[test]

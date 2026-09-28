@@ -167,7 +167,8 @@ pub enum CrewCommand {
     Watch(WatchArgs),
     /// Post as your own authenticated workspace identity.
     Send(SendArgs),
-    /// Show the channels an existing chat grant may read and post in.
+    /// Show a chat's Crew access: the channel it posts in, the channels it also reads, then
+    /// their recent messages, oldest first.
     Context {
         /// The chat's session ID.
         session: String,

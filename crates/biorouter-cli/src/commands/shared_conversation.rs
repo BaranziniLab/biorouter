@@ -711,7 +711,12 @@ impl Conversation {
             "privacy_tier":session["privacy_tier"]});
         self.event(&binding)?;
         if !self.quiet {
-            self.notice(&binding.to_string())?;
+            self.notice(&binding_notice(
+                self.format,
+                &self.session_id,
+                session,
+                &binding,
+            ))?;
         }
         Ok(())
     }
@@ -975,12 +980,56 @@ async fn terminal_input(
     Ok(None)
 }
 
+/// What the conversation says on stderr once it knows its chat (AG-F7): in text, a sentence
+/// naming the chat, its provider and model; in JSON formats, the binding itself, as before.
+/// Text mode printed the raw `SessionBinding` JSON.
+fn binding_notice(format: Format, session_id: &str, session: &Value, binding: &Value) -> String {
+    if format != Format::Text {
+        return binding.to_string();
+    }
+    let provider = session["provider_name"]
+        .as_str()
+        .filter(|provider| !provider.is_empty());
+    let model = session["model_config"]["model_name"]
+        .as_str()
+        .filter(|model| !model.is_empty());
+    match (provider, model) {
+        (Some(provider), Some(model)) => {
+            format!("Chat {session_id} is ready ({provider}/{model}).")
+        }
+        (Some(provider), None) => format!("Chat {session_id} is ready ({provider})."),
+        _ => format!("Chat {session_id} is ready."),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        json_terminal_safe, safe_text, sensitive_schema, terminal_control, validate_id,
-        validate_options, validate_prompt, Format, SharedConversationOptions,
+        binding_notice, json_terminal_safe, safe_text, sensitive_schema, terminal_control,
+        validate_id, validate_options, validate_prompt, Format, SharedConversationOptions,
     };
+
+    /// AG-F7: text mode says what was created in words; the JSON formats keep the binding.
+    #[test]
+    fn the_binding_is_a_sentence_in_text_and_json_otherwise() {
+        let session = serde_json::json!({"provider_name": "versa_azure",
+            "model_config": {"model_name": "gpt-5.5"}, "privacy_tier": "private"});
+        let binding = serde_json::json!({"type": "SessionBinding", "session_id": "20260927_1"});
+        assert_eq!(
+            binding_notice(Format::Text, "20260927_1", &session, &binding),
+            "Chat 20260927_1 is ready (versa_azure/gpt-5.5)."
+        );
+        for format in [Format::Json, Format::StreamJson] {
+            assert_eq!(
+                binding_notice(format, "20260927_1", &session, &binding),
+                binding.to_string()
+            );
+        }
+        assert_eq!(
+            binding_notice(Format::Text, "s", &serde_json::json!({}), &binding),
+            "Chat s is ready."
+        );
+    }
     use std::path::PathBuf;
 
     fn options() -> SharedConversationOptions {

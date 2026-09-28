@@ -893,7 +893,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
         }
         CrewCommand::Watch(args) => watch(api, args).await?,
         CrewCommand::Send(args) => send_message(api, args).await?,
-        CrewCommand::Context { session } => api.show(api.session_get(&session, "context").await?),
+        CrewCommand::Context { session } => context(api, &session).await?,
         CrewCommand::Files(command) => file_command(api, command).await?,
         CrewCommand::Tasks(command) => tasks(api, command).await?,
         CrewCommand::Grants(command) => grants(api, command).await?,
@@ -3986,6 +3986,34 @@ async fn watch_task(api: &Api, id: &str) -> Result<Reply> {
     }
 }
 
+/// `crew context SESSION` (AG-F7): what the help promises, the grant's scope first, then the
+/// messages the chat can read, oldest first. The daemon's manifest names the channels the chat
+/// reads but not the one it posts in, which the grants list has. JSON is the manifest as it is.
+async fn context(api: &Api, session: &str) -> Result<Reply> {
+    let manifest = api.session_get(session, "context").await?;
+    if !api.text() {
+        return Ok(api.show(manifest));
+    }
+    let grants = match api.path("/grants").await {
+        Ok(path) => api.client.request("GET", &path, None).await.ok(),
+        Err(_) => None,
+    };
+    let destination = grants.as_ref().and_then(|grants| {
+        grants["grants"]
+            .as_array()?
+            .iter()
+            .find(|grant| grant["session_id"].as_str() == Some(session))
+            .and_then(|grant| grant["channel_id"].as_str())
+            .map(str::to_owned)
+    });
+    let lines = output::context_lines(
+        &manifest,
+        destination.as_deref(),
+        &api.human(api.names().await),
+    );
+    Ok(api.say(manifest, lines))
+}
+
 async fn grants(api: &Api, command: GrantCommand) -> Result<Reply> {
     Ok(match command {
         GrantCommand::List => {
@@ -6395,6 +6423,42 @@ mod tests {
             shown,
             ["counts.csv · 55 B · text/csv · in #methods · shared by \"Bob Lee\" (@bob)"]
         );
+    }
+
+    /// AG-F7: `crew context` leads with the grant's scope in text, taking the channel it posts
+    /// in from the grants list, and prints the manifest as it is in JSON.
+    #[tokio::test]
+    async fn crew_context_leads_with_the_grants_scope() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with(&format!("/sessions/{SESSION}/context")) {
+                return Ok(json!({"run_id": "r", "source_channels": [METHODS, GENERAL],
+                    "messages": [], "people": {}, "channel_names": {}}));
+            }
+            if path.ends_with("/grants") {
+                return Ok(
+                    json!({"grants": [{"session_id": SESSION, "channel_id": METHODS,
+                    "source_channels": [METHODS, GENERAL], "expired": false}]}),
+                );
+            }
+            standard(method, path, body)
+        };
+        let command = || CrewCommand::Context {
+            session: SESSION.into(),
+        };
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(run(&api, command()).await.expect("context"));
+        assert_eq!(
+            lines,
+            [
+                "Access: #methods in Analysis Lab · also reads #general in Analysis Lab",
+                "No messages."
+            ]
+        );
+        let (api, _) = api_with(OutputFormat::Json, handler);
+        let Reply::Show(manifest, _) = run(&api, command()).await.expect("context") else {
+            panic!("JSON is the manifest")
+        };
+        assert_eq!(manifest["source_channels"], json!([METHODS, GENERAL]));
     }
 
     /// DW-07: `files watch` names each receipt's channel as `files status` does, and shows
