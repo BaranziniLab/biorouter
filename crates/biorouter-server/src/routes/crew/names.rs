@@ -421,6 +421,12 @@ struct Named<'a> {
     /// The broker projected a handle the daemon's own name rules disagree with (their Unicode
     /// tables differ), so a match cannot be trusted.
     uncertain: bool,
+    /// The broker's `name_conflict` is not `false`: another of the caller's teams (for a
+    /// channel, another of the caller's channels in the same team) has the same name. The broker
+    /// counts every one of them, including those a size-bound snapshot leaves out. Consulted
+    /// only when the snapshot lists fewer than `totals` counts ([`Directory::teams_partial`],
+    /// [`Directory::channels_partial`]); a listing that is whole shows every namesake itself.
+    conflict: bool,
     team_id: Option<&'a str>,
     archived: bool,
 }
@@ -442,9 +448,22 @@ fn named<'a>(entry: &'a Value, label: impl Fn(&str) -> String) -> Option<Named<'
         uncertain: projected.as_ref().is_some_and(|handle| *handle != local),
         handle: projected.unwrap_or_else(|| local.clone()),
         local,
+        conflict: entry["name_conflict"].as_bool() != Some(false),
         team_id: entry["team_id"].as_str(),
         archived: entry["archived"].as_bool() == Some(true),
     })
+}
+
+/// Whether the snapshot lists fewer of `section` (`teams` or `channels`) than it says the caller
+/// is in. The broker leaves whole teams and channels out when they would not fit in one frame
+/// and counts them all in `totals`; a broker that sends no count for the section never leaves
+/// any out. A count that is not a number is read as a partial list.
+fn lists_fewer(snapshot: &Value, section: &str) -> bool {
+    let listed = snapshot[section].as_array().map_or(0, Vec::len);
+    let listed = u64::try_from(listed).unwrap_or(u64::MAX);
+    snapshot["totals"]
+        .get(section)
+        .is_some_and(|total| total.as_u64().is_none_or(|total| total > listed))
 }
 
 /// What the resolver consults: the caller's own snapshot, read once per request.
@@ -452,6 +471,14 @@ struct Directory<'a> {
     people: Vec<Person<'a>>,
     teams: Vec<Named<'a>>,
     channels: Vec<Named<'a>>,
+    /// The snapshot leaves some of the caller's teams out ([`lists_fewer`]), so a team missing
+    /// from `teams` may share a listed team's name. Team names are unique in a workspace, so
+    /// only a listed team whose `name_conflict` says otherwise is in doubt.
+    teams_partial: bool,
+    /// The snapshot leaves some of the caller's channels out, so a channel missing from
+    /// `channels` may share a listed channel's name. A channel's `name_conflict` counts only its
+    /// own team, so an unqualified channel name never resolves from a partial list.
+    channels_partial: bool,
 }
 
 impl<'a> Directory<'a> {
@@ -469,6 +496,8 @@ impl<'a> Directory<'a> {
                     })
                 })
                 .collect(),
+            teams_partial: lists_fewer(snapshot, "teams"),
+            channels_partial: lists_fewer(snapshot, "channels"),
         }
     }
 
@@ -504,12 +533,13 @@ impl<'a> Directory<'a> {
                     return self.resolve_id(kind, raw, text);
                 }
                 let key = name_key(text);
-                let found = self
+                let found: Vec<&Named> = self
                     .teams
                     .iter()
                     .filter(|team| team.matches(&key))
                     .collect();
-                self.decide(kind, raw, found, false)
+                let unlisted = self.teams_partial && found.iter().any(|team| team.conflict);
+                self.decide(kind, raw, found, false, unlisted)
             }
             SelectorKind::Channel => {
                 let text = text.strip_prefix('#').unwrap_or(text);
@@ -569,6 +599,11 @@ impl<'a> Directory<'a> {
     }
 
     /// `methods` among all the caller's channels, or `analysis-lab/methods` among one team's.
+    ///
+    /// When the snapshot leaves some teams or channels out, a match is trusted only where the
+    /// broker's counts rule out a namesake among them: never for an unqualified name, because a
+    /// channel's `name_conflict` counts only its own team; for `team/channel`, when exactly one
+    /// team has that name and neither it nor the channel is marked `name_conflict`.
     fn resolve_channel(&self, raw: &str, text: &str) -> Resolution {
         let kind = SelectorKind::Channel;
         let (teams, channel) = match text.split_once('/') {
@@ -584,7 +619,7 @@ impl<'a> Directory<'a> {
             None => (None, text),
         };
         let key = name_key(channel);
-        let found = self
+        let found: Vec<&Named> = self
             .channels
             .iter()
             .filter(|candidate| {
@@ -597,29 +632,44 @@ impl<'a> Directory<'a> {
         let team_uncertain = teams
             .as_ref()
             .is_some_and(|teams| teams.iter().any(|team| team.uncertain));
-        self.decide(kind, raw, found, team_uncertain)
+        let unlisted = match &teams {
+            None => self.channels_partial,
+            Some(teams) => {
+                (self.teams_partial && teams.iter().any(|team| team.conflict))
+                    || (self.channels_partial
+                        && (teams.len() > 1 || found.iter().any(|channel| channel.conflict)))
+            }
+        };
+        self.decide(kind, raw, found, team_uncertain, unlisted)
     }
 
-    /// One trustworthy match resolves; none is unknown; anything else is ambiguous.
+    /// One trustworthy match resolves; none is unknown; anything else is ambiguous. `unlisted`
+    /// says a team or channel the snapshot leaves out may match too, so even one match is
+    /// ambiguous, and the candidates end with a line saying so.
     fn decide(
         &self,
         kind: SelectorKind,
         raw: &str,
         found: Vec<&Named>,
         uncertain: bool,
+        unlisted: bool,
     ) -> Resolution {
         match found.as_slice() {
             [] => unknown(kind, raw, None),
-            [one] if !one.uncertain && !uncertain => {
+            [one] if !one.uncertain && !uncertain && !unlisted => {
                 resolved(kind, raw, one.id, Some(self.label(kind, one)), None)
             }
-            many => ambiguous(
-                kind,
-                raw,
-                many.iter()
+            many => {
+                let candidates = many
+                    .iter()
                     .map(|entry| self.qualified_label(kind, entry))
-                    .collect(),
-            ),
+                    .collect();
+                if unlisted {
+                    ambiguous_beyond_listing(kind, raw, candidates)
+                } else {
+                    ambiguous(kind, raw, candidates)
+                }
+            }
         }
     }
 
@@ -676,12 +726,16 @@ impl<'a> Directory<'a> {
     }
 
     /// A team's name; a channel's `#slug`, qualified by its team when another visible team has a
-    /// channel of the same name.
+    /// channel of the same name, or when the snapshot leaves channels out and so cannot show
+    /// that none does.
     fn label(&self, kind: SelectorKind, entry: &Named) -> String {
         if kind == SelectorKind::Channel {
-            let shared = self.channels.iter().any(|other| {
-                other.id != entry.id && other.team_id != entry.team_id && other.local == entry.local
-            });
+            let shared = self.channels_partial
+                || self.channels.iter().any(|other| {
+                    other.id != entry.id
+                        && other.team_id != entry.team_id
+                        && other.local == entry.local
+                });
             if shared {
                 return self.qualified_label(kind, entry);
             }
@@ -809,6 +863,24 @@ fn ambiguous(kind: SelectorKind, raw: &str, candidates: Vec<String>) -> Resoluti
         kind,
         text: raw.to_owned(),
         candidates: distinct(candidates),
+    }
+}
+
+/// The last candidate of [`ambiguous_beyond_listing`].
+const BEYOND_LISTING: &str =
+    "Possibly others: you're in more teams and channels than Biorouter can list at once";
+
+/// [`ambiguous`] when a team or channel the snapshot leaves out may match too: the listed
+/// candidates, then a last line saying there may be others. It names nothing the caller was not
+/// shown, and what it says, that the caller is in more than one snapshot can list, is in their
+/// own snapshot's `totals`.
+fn ambiguous_beyond_listing(kind: SelectorKind, raw: &str, candidates: Vec<String>) -> Resolution {
+    let mut candidates = distinct(candidates);
+    candidates.push(BEYOND_LISTING.to_owned());
+    Resolution::AmbiguousName {
+        kind,
+        text: raw.to_owned(),
+        candidates,
     }
 }
 

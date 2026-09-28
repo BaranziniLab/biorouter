@@ -286,6 +286,235 @@ fn candidates_come_only_from_the_callers_snapshot() {
         .all(|label| label.ends_with("#general") && !label.contains(LAB_GENERAL)));
 }
 
+/// The last candidate when something a snapshot leaves out may match too.
+const BEYOND: &str =
+    "Possibly others: you're in more teams and channels than Biorouter can list at once";
+
+/// Alice's snapshot as the broker sends it when her teams and channels do not all fit in one
+/// frame: whole channels are left out, here Imaging Core's `#general`, and `totals` still counts
+/// every one. Each listed channel's `name_conflict` counts the channels left out too.
+fn partial_channels() -> Value {
+    let mut snapshot = snapshot();
+    snapshot["channels"] = json!([
+        {"id": METHODS, "team_id": LAB, "name": "methods", "handle": "methods", "archived": false, "name_conflict": false},
+        {"id": LAB_GENERAL, "team_id": LAB, "name": "general", "handle": "general", "archived": false, "name_conflict": false},
+        {"id": RAW_DATA, "team_id": IMAGING, "name": "raw-data", "handle": "raw-data", "archived": true, "name_conflict": false},
+    ]);
+    snapshot["totals"] =
+        json!({"invitations": 0, "runs": 0, "references": 0, "teams": 2, "channels": 4});
+    snapshot
+}
+
+#[test]
+fn a_partial_snapshot_never_resolves_a_channel_name_to_the_one_it_happens_to_list() {
+    let snapshot = partial_channels();
+    // Imaging Core's `#general` is left out, so `general` must not become Analysis Lab's: the
+    // person may mean the other one, and a post would reach a different audience.
+    for text in ["general", "#general", "\"#general\""] {
+        for kind in [None, Some(SelectorKind::Channel)] {
+            assert_eq!(
+                candidates(&resolve_one(&snapshot, kind, text)),
+                vec!["Analysis Lab / #general", BEYOND],
+                "{kind:?} {text}"
+            );
+        }
+    }
+    // Nor does a name only one listed channel has: another team's channel of that name may be
+    // among those left out, and a channel's `name_conflict` counts only its own team.
+    assert_eq!(
+        candidates(&resolve_one(&snapshot, None, "methods")),
+        vec!["Analysis Lab / #methods", BEYOND]
+    );
+    // The candidates are labels only.
+    let wire = serde_json::to_value(resolve_one(&snapshot, None, "general")).unwrap();
+    assert_eq!(wire["status"], "ambiguous_name");
+    assert!(wire.get("id").is_none(), "{wire}");
+    assert!(!wire.to_string().contains(LAB_GENERAL), "{wire}");
+    // What matches nothing listed is unknown, as ever, and lists nothing.
+    assert_unknown(&resolve_one(&snapshot, None, "#nonexistent"), None);
+    assert_unknown(
+        &resolve_one(
+            &snapshot,
+            Some(SelectorKind::Channel),
+            "imaging-core/general",
+        ),
+        None,
+    );
+}
+
+#[test]
+fn a_listing_is_partial_only_when_its_count_says_so() {
+    let partial = partial_channels();
+    let general = |snapshot: &Value| resolve_one(snapshot, None, "general");
+    // With no count for the section, as a broker that never leaves one out sends it, the list is
+    // whole and `general` names the one channel it lists.
+    let mut whole = partial.clone();
+    whole.as_object_mut().unwrap().remove("totals");
+    assert_eq!(resolved_id(&general(&whole)), LAB_GENERAL);
+    whole["totals"] = json!({"invitations": 0, "runs": 0, "references": 0});
+    assert_eq!(resolved_id(&general(&whole)), LAB_GENERAL);
+    // A count that matches what is listed.
+    whole["totals"] = json!({"teams": 2, "channels": 3});
+    assert_eq!(resolved_id(&general(&whole)), LAB_GENERAL);
+    match general(&whole) {
+        Resolution::Resolved { label, .. } => assert_eq!(label.as_deref(), Some("#general")),
+        other => panic!("{other:?}"),
+    }
+    // A count that is not a number is read as a partial list.
+    for total in [json!("4"), json!(-1), json!(null), json!(3.5)] {
+        whole["totals"]["channels"] = total.clone();
+        assert_eq!(
+            candidates(&general(&whole)),
+            vec!["Analysis Lab / #general", BEYOND],
+            "{total}"
+        );
+    }
+    // A partial teams listing alone does not stop a channel name that no listed channel shares.
+    let mut teams_only = snapshot();
+    teams_only["teams"].as_array_mut().unwrap().pop();
+    teams_only["totals"] = json!({"teams": 2, "channels": 4});
+    assert_eq!(
+        resolved_id(&resolve_one(&teams_only, None, "methods")),
+        METHODS
+    );
+    assert_eq!(
+        candidates(&resolve_one(&teams_only, None, "general")),
+        vec!["Analysis Lab / #general", "Another team / #general"]
+    );
+}
+
+#[test]
+fn a_team_and_channel_pair_still_resolves_from_a_partial_snapshot() {
+    let snapshot = partial_channels();
+    // Team names are unique in a workspace and channel names within a team, and neither listed
+    // object is marked `name_conflict`, so nothing left out can share the pair.
+    for (text, expected, label) in [
+        (
+            "analysis-lab/general",
+            LAB_GENERAL,
+            "Analysis Lab / #general",
+        ),
+        (
+            "\"Analysis Lab\"/#general",
+            LAB_GENERAL,
+            "Analysis Lab / #general",
+        ),
+        ("analysis-lab/methods", METHODS, "Analysis Lab / #methods"),
+        // A resolved channel is always labelled with its team, since the listing cannot show
+        // that no other team has a channel of that name.
+        (METHODS, METHODS, "Analysis Lab / #methods"),
+        (RAW_DATA, RAW_DATA, "Imaging Core / #raw-data · archived"),
+    ] {
+        match resolve_one(&snapshot, Some(SelectorKind::Channel), text) {
+            Resolution::Resolved { id, label: got, .. } => {
+                assert_eq!(id, expected, "{text}");
+                assert_eq!(got.as_deref(), Some(label), "{text}");
+            }
+            other => panic!("{text}: {other:?}"),
+        }
+    }
+    // A legacy journal can hold two channels of one name in one team. The broker marks the
+    // listed one, whether or not its namesake is listed, and a mark is never guessed past; nor is
+    // a broker that says nothing either way.
+    let mut marked = snapshot.clone();
+    marked["channels"][1]["name_conflict"] = json!(true);
+    let mut unsaid = snapshot.clone();
+    unsaid["channels"][1]
+        .as_object_mut()
+        .unwrap()
+        .remove("name_conflict");
+    for snapshot in [&marked, &unsaid] {
+        assert_eq!(
+            candidates(&resolve_one(
+                snapshot,
+                Some(SelectorKind::Channel),
+                "analysis-lab/general"
+            )),
+            vec!["Analysis Lab / #general", BEYOND]
+        );
+    }
+    // Two listed teams of one name (legacy): the channel left out may be the other team's.
+    let mut twin_teams = snapshot.clone();
+    twin_teams["teams"] = json!([
+        {"id": LAB, "name": "Lab", "handle": "lab", "name_conflict": true},
+        {"id": IMAGING, "name": "lab", "handle": "lab", "name_conflict": true},
+    ]);
+    assert_eq!(
+        candidates(&resolve_one(
+            &twin_teams,
+            Some(SelectorKind::Channel),
+            "lab/general"
+        )),
+        vec!["Lab / #general", BEYOND]
+    );
+}
+
+#[test]
+fn a_team_name_resolves_from_a_partial_snapshot_only_when_no_namesake_can_be_left_out() {
+    // Imaging Core is left out of Alice's teams.
+    let mut alice = snapshot();
+    alice["teams"] = json!([
+        {"id": LAB, "name": "Analysis Lab", "handle": "analysis-lab", "display_name": "Analysis Lab", "name_conflict": false},
+    ]);
+    alice["totals"] = json!({"teams": 2, "channels": 4});
+    // Team names are unique in a workspace, and Analysis Lab's `name_conflict` counts the team
+    // left out too, so the name is its alone.
+    assert_eq!(
+        resolved_id(&resolve_one(
+            &alice,
+            Some(SelectorKind::Team),
+            "analysis-lab"
+        )),
+        LAB
+    );
+    assert_eq!(
+        resolved_id(&resolve_one(
+            &alice,
+            Some(SelectorKind::Channel),
+            "analysis-lab/general"
+        )),
+        LAB_GENERAL
+    );
+    // A legacy journal can hold two teams of one name, and the one left out may be the one
+    // meant. The broker marks the listed one; a broker that says nothing is not trusted either.
+    let mut marked = alice.clone();
+    marked["teams"][0]["name_conflict"] = json!(true);
+    let mut unsaid = alice.clone();
+    unsaid["teams"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("name_conflict");
+    for listing in [&marked, &unsaid] {
+        assert_eq!(
+            candidates(&resolve_one(
+                listing,
+                Some(SelectorKind::Team),
+                "Analysis Lab"
+            )),
+            vec!["Analysis Lab", BEYOND]
+        );
+        assert_eq!(
+            candidates(&resolve_one(
+                listing,
+                Some(SelectorKind::Channel),
+                "analysis-lab/general"
+            )),
+            vec!["Analysis Lab / #general", BEYOND]
+        );
+    }
+    // A whole listing shows every namesake itself, so the mark alone changes nothing there.
+    let mut whole = snapshot();
+    whole["teams"][0]["name_conflict"] = json!(true);
+    assert_eq!(
+        resolved_id(&resolve_one(
+            &whole,
+            Some(SelectorKind::Team),
+            "analysis-lab"
+        )),
+        LAB
+    );
+}
+
 #[test]
 fn uuid_shaped_text_is_always_an_id() {
     let mut snapshot = snapshot();
