@@ -20,6 +20,7 @@ A word in braces stands for a name that Crew fills in. For example, "Connect to 
 | "Not set up on this server" | See [Crew missing from your server account](#crew-missing-from-your-server-account). |
 | "Not joined yet" | Your host has not let you in yet. See [Joining a workspace](joining-a-workspace.md). |
 | "Offline" | You are not connected. This follows a computer restart, **Disconnect**, a saved change to your server login, port, identity file or jump hosts in **Connection settings…**, or a dropped connection. After a drop, Crew [reconnects by itself](#automatic-reconnection). Otherwise, choose **Connect to {workspace}**. |
+| "Connected" with "The workspace server has stopped saving changes. Reading still works." | The server's disk is full or failing. You can read, but posts, uploads and other changes are refused. See [A server that stopped saving](#a-server-that-stopped-saving). |
 | "Can’t connect" | The last attempt failed. The main area says why, such as "Crew isn’t running on {server}" or "{server} refused this computer’s SSH key". See [Messages and what to do](#messages-and-what-to-do). |
 
 ## Connect and disconnect
@@ -149,6 +150,15 @@ To remove a workspace, choose **Remove {workspace} from this computer…**, then
 
 If you are the host, read [Limits of the host role](hosting-a-workspace.md#limits-of-the-host-role) before you remove a workspace.
 
+## A server that stopped saving
+
+When the lab server's disk is full or failing, the workspace keeps running but saves no more changes. The status row still reads "Connected", and the connection bar says "The workspace server has stopped saving changes. Reading still works." Reading channels and files works. Posts, uploads and other changes are refused, and an upload that was running pauses with "The workspace server couldn’t save it".
+
+- If you host the workspace, the bar adds "Free space on the server, then restart Crew there." Follow [Server storage full or failing](administration.md#server-storage-full-or-failing). The workspace saves changes again only after the restart.
+- Otherwise, the bar names your host, such as "Ask Alice Chen to free space on the server and restart Crew." Nothing you do on your computer helps. Once the host restarts Crew, Crew connects again by itself, and you can resume paused uploads.
+
+From a terminal, `biorouter crew status` and `connections show` print the same sentence, and for the host what to run on the server.
+
 ## Messages and what to do
 
 For messages on the join screen, see [Problems while you wait](joining-a-workspace.md#problems-while-you-wait).
@@ -180,6 +190,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 
 | Message | What to do |
 |---|---|
+| "Biorouter’s background service restarted, so Crew can’t reach your workspaces until Biorouter reconnects." with **Reconnect** | Choose **Reconnect**, the same button as the notice in the app's sidebar, then type the approval secret of the service that runs now, or set a new one if none runs. Crew then loads your workspaces again. |
 | "Live updates keep stopping…" or "…couldn’t confirm the request came from you." | Choose **Retry**. If it repeats, quit and reopen Biorouter. |
 | "Your access to {workspace} changed." | Choose **Retry**. If it repeats, ask your host. |
 | "You no longer have access to {channel}…" | Ask the channel owner if you need access again. |

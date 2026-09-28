@@ -82,7 +82,11 @@
 //     to the end of a sentence, since each conflict has its own way out
 //     (T3-DOC-4). The command-line page quotes the command line's own
 //     sentences for a missing --connection, an over-long message, a join
-//     conflict, a disconnected connection and an ended grant (T3-DOC-3).
+//     conflict, a disconnected connection and an ended grant (T3-DOC-3). The
+//     troubleshooting and files pages quote what a server that stopped saving,
+//     a restarted background service and a name with hidden characters show
+//     (T3-DOC-6).
+//   * `pause-reasons` also reads a reason kept as its own constant (T3-DOC-6).
 //   * `refusal-codes` also holds every code the command line gives its own
 //     errors, and `ssh-codes` the words a login on this machine gets in place
 //     of the advice to ask IT (T3-DOC-3).
@@ -163,6 +167,8 @@ const INVITATION_RS = 'crates/biorouter/src/crew/authentication.rs';
 const ADMINISTRATION = 'docs/crew/administration.md';
 const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
 const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
+const BAR_COPY = 'ui/desktop/src/components/crew/channel/copy.ts';
+const LOCAL_FILES_RS = 'crates/biorouter-server/src/crew/local_files.rs';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
 const CREW_SOURCE_DIRS = [
@@ -939,6 +945,8 @@ export function checkCrewManual(tree = repoTree()) {
   const coreForApp = need(CREW_CORE, 'app-sentences');
   const invitationSource = need(INVITATION_RS, 'app-sentences');
   const onboardingSource = need(ONBOARDING_COPY, 'app-sentences');
+  const barSource = need(BAR_COPY, 'app-sentences');
+  const localFilesSource = need(LOCAL_FILES_RS, 'app-sentences');
   const opening = (texts, opens) =>
     texts.map((text) => text.trim()).filter((text) => opens.test(sameQuotes(text)));
   const cliLiterals = CLI_SOURCES.flatMap((path) => rustLiterals(tree.read(path) || ''));
@@ -991,6 +999,7 @@ export function checkCrewManual(tree = repoTree()) {
       ['the refusal of a message over 64 KB', /^Messages can be up to\b/],
       ['the ended grant sentences', /^This chat's Crew access ended\b/],
       ['the disconnected sentence', /^\S+ is disconnected\. Run\b/],
+      ['host line for a server that stopped saving', /^You host this workspace\. /],
     ].map(([what, opens]) => ({
       name: `the command line's ${what} in ${CLI_SOURCES.join(', ')}`,
       opens,
@@ -1000,6 +1009,51 @@ export function checkCrewManual(tree = repoTree()) {
       requiredWhole: true,
       onlyIn: [COMMAND_LINE],
     })),
+    {
+      name: `the stopped-saving sentence in ${BAR_COPY} and ${CLI_OUTPUT}`,
+      opens: /^The workspace server has stopped saving\b/,
+      templates: opening(
+        [...tsLiterals(barSource || ''), ...cliLiterals],
+        /^The workspace server has stopped saving\b/
+      ),
+      source: barSource,
+      requiredIn: [TROUBLESHOOTING],
+      requiredWhole: true,
+    },
+    {
+      name: `the stopped-saving next steps in ${BAR_COPY}`,
+      opens:
+        /^(?:Free space on the server|Check the server's storage|Ask .+ to (?:free space|check the server's storage))\b/,
+      templates: opening(
+        tsLiterals(barSource || ''),
+        /^(?:Free space on the server|Check the server's storage|Ask .+ to (?:free space|check the server's storage))\b/
+      ),
+      source: barSource,
+      requiredIn: [TROUBLESHOOTING],
+      notIn: [COMMAND_LINE],
+    },
+    {
+      name: `the background-service note in ${BAR_COPY}`,
+      opens: /^Biorouter's background service restarted, so\b/,
+      templates: opening(
+        tsLiterals(barSource || ''),
+        /^Biorouter's background service restarted, so\b/
+      ),
+      source: barSource,
+      requiredIn: [TROUBLESHOOTING],
+      requiredWhole: true,
+    },
+    {
+      name: `the hidden-character refusal in ${LOCAL_FILES_RS}`,
+      opens: /^"[^"]*" has an invisible or formatting character\b/,
+      templates: opening(
+        rustLiterals(localFilesSource || ''),
+        /^"[^"]*" has an invisible or formatting character\b/
+      ),
+      source: localFilesSource,
+      requiredIn: [MESSAGES_PAGE],
+      requiredWhole: true,
+    },
     {
       name: `the damaged-invitation note in ${ONBOARDING_COPY}`,
       opens: /^This invitation is incomplete\b/,
@@ -1164,7 +1218,14 @@ export function checkCrewManual(tree = repoTree()) {
   const crewStatus = need(CREW_STATUS, 'pause-reasons');
   if (crewStatus !== null) {
     const table = /PAUSE_REASONS[^=]*=\s*\[([\s\S]*?)\n\];/.exec(crewStatus)?.[1] ?? '';
-    const reasons = [...table.matchAll(/,\s*'([^']+)'\s*\]/g)].map((m) => sameQuotes(m[1]));
+    // The table's reasons, and each reason kept as its own constant, such as the one a transfer
+    // the workspace server could not save shows (T3-DOC-6).
+    const reasons = [
+      ...[...table.matchAll(/,\s*'([^']+)'\s*\]/g)].map((m) => m[1]),
+      ...[...crewStatus.matchAll(/export const [A-Z_]*PAUSE_REASON = '([^']+)';/g)].map(
+        (m) => m[1]
+      ),
+    ].map(sameQuotes);
     if (reasons.length < 3) {
       fail(
         'pause-reasons',

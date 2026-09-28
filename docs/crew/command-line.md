@@ -170,6 +170,7 @@ When the invitation names this machine, by its name or one of its addresses, Cre
 ## Sign in and stay connected
 
 - `status` or `connections list` prints one line per connection, such as `lab · bob@hpc.example.edu · Connected · Private (ucsf)`, plus the last error. The privacy is the one in force: a Public connection to a workspace that is Private for everyone reads `Private because lab is Private for everyone · your connection: Public`. `connections show` details one.
+- When the workspace server has stopped saving changes, `status` and `connections show` add ``The workspace server has stopped saving changes. Reading still works.`` The host also gets what to run on the server, such as ``You host this workspace. Free space on hpc, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir.`` See [Server storage full or failing](administration.md#server-storage-full-or-failing).
 - `auth` signs in inside your terminal and connects.
 - `connect` connects without prompts. If the server wants a password or code, it fails with `The server wants your password or a verification code. Run biorouter crew auth to sign in.`
 - `disconnect` closes the connection until you connect again.

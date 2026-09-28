@@ -528,6 +528,7 @@ const AGENTS = 'docs/crew/agents-and-chat-access.md';
 const MESSAGES = 'docs/crew/messages-and-files.md';
 const PRIVACY = 'docs/crew/privacy-and-security.md';
 const LANDING = 'landing/docs.html';
+const CLI_OUTPUT_RS = 'crates/biorouter-cli/src/commands/crew/output.rs';
 
 test('codeSpans reads single and double backtick spans', () => {
   assert.deepEqual(codeSpans('Run `auth`, then ``It said `x` twice.`` and `y`.'), [
@@ -1290,6 +1291,63 @@ test('command line: same-host rows, the codes the command line gives, and its ne
     },
     'app-sentences',
     /does not quote the command line's join conflicts .* "This computer already has \{name\} for this workspace, signing in as another account, and it has never connected\. Run it again with --replace/
+  );
+});
+
+test('troubleshooting: a server that stopped saving, a restarted background service, hidden characters and a paused upload (T3-DOC-6)', () => {
+  // The pages as the live check found them, one gap at a time.
+  assertCaught(
+    {
+      [TROUBLE]: (text) =>
+        text
+          .replace(
+            /\n## A server that stopped saving\n[\s\S]*?(?=\n## Messages and what to do)/,
+            ''
+          )
+          .replace(/^\| "Connected" with "The workspace server has stopped saving.*\n/m, ''),
+    },
+    'app-sentences',
+    /does not quote the stopped-saving sentence/
+  );
+  assertCaught(
+    {
+      [TROUBLE]: (text) =>
+        text.replace(/^\| "Biorouter’s background service restarted, so Crew.*\n/m, ''),
+    },
+    'app-sentences',
+    /does not quote the background-service note/
+  );
+  assertCaught(
+    {
+      [MESSAGES]: (text) =>
+        text.replace(/^\| A name with an invisible or formatting character.*\n/m, ''),
+    },
+    'app-sentences',
+    /does not quote the hidden-character refusal/
+  );
+  assertCaught(
+    {
+      [MESSAGES]: (text) =>
+        text.replaceAll('"The workspace server couldn’t save it"', 'a full server'),
+    },
+    'pause-reasons',
+    /does not list the pause reason "The workspace server couldn't save it"/
+  );
+  // The app rewords the bar and the manual keeps the old words.
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/channel/copy.ts': swap(
+        "serverStorage: 'The workspace server has stopped saving changes.",
+        "serverStorage: 'The workspace server has stopped saving new changes."
+      ),
+      [CLI_OUTPUT_RS]: (text) =>
+        text.replace(
+          '"The workspace server has stopped saving changes.',
+          '"The workspace server has stopped saving new changes.'
+        ),
+    },
+    'app-sentences',
+    /quotes "The workspace server has stopped saving changes\. Reading still works\.", which is not how/
   );
 });
 

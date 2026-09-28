@@ -199,6 +199,7 @@ A refused file shows a red note above the box. Its × closes the note.
 | A device, socket or pipe | Save the data to an ordinary file. |
 | A file that moved, changed or cannot be read | Check that you can open it, then add it again. |
 | A credential file, such as `id_rsa` or `.env` | Do not share it. |
+| A name with an invisible or formatting character, or with characters made to look blank | Rename the file, then share it again. Crew says so, such as "“report�.pdf” has an invisible or formatting character in its name. Rename the file, then share it again.", with each hidden character shown as �. Such a name could hide the file's real type from the people you share it with. |
 
 The credential check runs however a file arrives (the paperclip, a drag, a paste or a terminal),
 and can refuse a file after you choose **Share**. It checks the file's name, and reads the file's
@@ -270,7 +271,7 @@ A transfer is one upload or download on this computer.
 
 | State | Meaning | What to do |
 |---|---|---|
-| "Paused" | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running", "The connection’s privacy changed" or, for any other interruption, "It stopped". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. After "The connection’s privacy changed", check the connection first, and share or save the file again if Crew refuses. |
+| "Paused" | It stopped and can resume. The reason shows under the row: "You paused it", "The connection dropped", "The credential vault is locked", "Two other transfers were running", "The connection’s privacy changed", "The workspace server couldn’t save it" or, for any other interruption, "It stopped". After a computer restart, or quitting Biorouter on Windows, it shows no reason. | Resume it. After "The connection’s privacy changed", check the connection first, and share or save the file again if Crew refuses. After "The workspace server couldn’t save it", the server's disk is full or failing: choose **Resume…** once the host has freed space and restarted Crew. If you host the workspace, follow [Server storage full or failing](administration.md#server-storage-full-or-failing) first. |
 | "Failed" | The workspace refused it. The reason shows under the row. Resuming cannot fix it. | Remove it. Upload or save again once the cause is fixed. |
 | "Not confirmed" | It stopped at the end, so Crew cannot tell whether it finished. | Upload or save again, then remove the old row. |
 
