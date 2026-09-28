@@ -840,6 +840,23 @@ mod tests {
     /// does: a missing proof and a daemon that cannot check one are told apart, and both refuse.
     /// Pinned here because the digest is a process-global `OnceLock`, so an HTTP test binary
     /// can only ever see one of the two.
+    #[tokio::test]
+    async fn the_proof_check_has_the_person_gates_three_answers() {
+        assert!(person_refusal(UserActionProof::Proven).is_none());
+        for (proof, code) in [
+            (UserActionProof::Unproven, USER_ACTION_REQUIRED_CODE),
+            (
+                UserActionProof::NoKeyInstalled,
+                HUMAN_AUTHORITY_UNAVAILABLE_CODE,
+            ),
+        ] {
+            let (status, body) = body_of(person_refusal(proof).unwrap()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(body["code"], code);
+            assert!(body["error"].as_str().is_some_and(|text| !text.is_empty()));
+        }
+    }
+
     /// CROSSCUT-5: a browser opened with `biorouter serve` is told Crew needs the desktop app
     /// or the Crew command line on the person's own computer, never to start a launcher or a
     /// daemon, which would be another daemon the page cannot reach. A daemon started by hand
@@ -861,23 +878,6 @@ mod tests {
         drop(_serving);
         let _blank = env_lock::lock_env([("BIOROUTER_SERVE_UI", Some(""))]);
         assert_eq!(no_human_authority(hand_started), hand_started);
-    }
-
-    #[tokio::test]
-    async fn the_proof_check_has_the_person_gates_three_answers() {
-        assert!(person_refusal(UserActionProof::Proven).is_none());
-        for (proof, code) in [
-            (UserActionProof::Unproven, USER_ACTION_REQUIRED_CODE),
-            (
-                UserActionProof::NoKeyInstalled,
-                HUMAN_AUTHORITY_UNAVAILABLE_CODE,
-            ),
-        ] {
-            let (status, body) = body_of(person_refusal(proof).unwrap()).await;
-            assert_eq!(status, StatusCode::FORBIDDEN);
-            assert_eq!(body["code"], code);
-            assert!(body["error"].as_str().is_some_and(|text| !text.is_empty()));
-        }
     }
 
     #[tokio::test]
