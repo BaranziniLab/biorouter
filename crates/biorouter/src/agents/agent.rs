@@ -2319,7 +2319,13 @@ fn resolve_reply_loop_policy(
         max_turns: effort.scale_turns(
             session_config
                 .max_turns
-                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
+                .or_else(|| {
+                    configured_max_turns(
+                        Config::global()
+                            .get_param::<serde_json::Value>("BIOROUTER_MAX_TURNS")
+                            .ok(),
+                    )
+                })
                 .unwrap_or(DEFAULT_MAX_TURNS),
         ),
         max_tool_calls: effort.scale_tool_calls(
@@ -2342,6 +2348,42 @@ fn resolve_reply_loop_policy(
             Config::global(),
         )),
     }
+}
+
+/// The stored `BIOROUTER_MAX_TURNS`, or `None` when it is absent or unusable.
+///
+/// Only a whole number of at least 1 is a limit. Clearing the settings field
+/// stores `0`, and honouring it stopped every new chat before its first model
+/// call ("0 actions without user input"); a negative or non-numeric value used
+/// to fail to parse and fall back without a word. Both now fall back to
+/// [`DEFAULT_MAX_TURNS`] with a warning that names the stored value, logged
+/// once per distinct value rather than on every reply.
+fn configured_max_turns(raw: Option<serde_json::Value>) -> Option<u32> {
+    let raw = raw?;
+    let parsed = match &raw {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    if let Some(turns) = parsed
+        .filter(|turns| *turns >= 1)
+        .and_then(|turns| u32::try_from(turns).ok())
+    {
+        return Some(turns);
+    }
+    static LAST_WARNED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let shown = raw.to_string();
+    let mut last = LAST_WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.as_deref() != Some(shown.as_str()) {
+        tracing::warn!(
+            "BIOROUTER_MAX_TURNS is set to {shown}, which is not a whole number of at least 1; \
+             using the default of {DEFAULT_MAX_TURNS}"
+        );
+        *last = Some(shown);
+    }
+    None
 }
 
 /// Emit one loop-safety event.
@@ -23625,5 +23667,70 @@ mod gate_c_dispatch_tests {
             !refused_again.contains("stanford"),
             "the accepted flow was about the model that is no longer bound: {refused_again}"
         );
+    }
+}
+
+#[cfg(test)]
+mod max_turns_setting_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn session_without_limit() -> SessionConfig {
+        SessionConfig {
+            id: "max-turns-setting".to_string(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn resolved_with_stored(value: &str) -> u32 {
+        crate::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_MAX_TURNS".to_string(), value.to_string())]),
+            async {
+                resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit())
+                    .max_turns
+            },
+        )
+        .await
+    }
+
+    /// W2-DMN-15: clearing the settings field stores `0`, and a reply that
+    /// honoured it stopped before its first model call. Anything below 1, or
+    /// anything that is not a whole number, is treated as unset.
+    #[tokio::test]
+    async fn a_stored_limit_below_one_falls_back_to_the_default() {
+        for stored in ["0", "-5", "\"0\"", "\"-5\"", "\"many\"", "2.5"] {
+            assert_eq!(
+                resolved_with_stored(stored).await,
+                DEFAULT_MAX_TURNS,
+                "stored BIOROUTER_MAX_TURNS {stored} must not be a limit"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_positive_limit_still_applies() {
+        assert_eq!(resolved_with_stored("7").await, 7);
+        assert_eq!(resolved_with_stored("\"7\"").await, 7);
+        assert_eq!(resolved_with_stored("1").await, 1);
+    }
+
+    #[test]
+    fn only_a_whole_number_of_at_least_one_is_a_limit() {
+        use serde_json::json;
+        assert_eq!(configured_max_turns(None), None);
+        assert_eq!(configured_max_turns(Some(json!(0))), None);
+        assert_eq!(configured_max_turns(Some(json!(-5))), None);
+        assert_eq!(configured_max_turns(Some(json!(" 12 "))), Some(12));
+        assert_eq!(
+            configured_max_turns(Some(json!(u64::from(u32::MAX) + 1))),
+            None
+        );
+        assert_eq!(configured_max_turns(Some(json!(true))), None);
+        assert_eq!(configured_max_turns(Some(json!(3))), Some(3));
     }
 }
