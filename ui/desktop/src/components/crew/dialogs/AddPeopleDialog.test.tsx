@@ -496,6 +496,34 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     expect(within(dialog).queryByRole('checkbox')).toBeNull();
   });
 
+  /**
+   * UXN-6: the list held ten people and showed nine; nothing in it took focus, so a keyboard could
+   * not scroll to the tenth, and it said neither how many there were nor who owns the team or is
+   * online, as the Members tab does.
+   */
+  it('makes the member list a region a keyboard can scroll, with its count, the owner and who is online', async () => {
+    const snapshot = makeSnapshot({
+      actor: bob,
+      principals: [alice, bob, carol, dan],
+      online_principal_ids: [carol.id],
+    });
+    renderDirect({ target: 'team', targetId: 'team-1', view: 'members' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    const region = within(dialog).getByRole('region', { name: addPeopleCopy.memberCount(3) });
+    expect(region).toHaveAttribute('tabindex', '0');
+    expect(within(dialog).getByText('3 members')).toBeInTheDocument();
+    const rows = within(region).getAllByRole('listitem');
+    // Alice created the team: the owner's badge, as the Members tab marks a channel's owner.
+    expect(within(rows[0]).getByText(addPeopleCopy.teamOwner)).toBeInTheDocument();
+    expect(within(rows[1]).queryByText(addPeopleCopy.teamOwner)).toBeNull();
+    // Carol is online; no one else is said to be.
+    expect(rows[2].querySelector('[data-crew-online]')).not.toBeNull();
+    expect(rows[0].querySelector('[data-crew-online]')).toBeNull();
+    expect(rows[1].querySelector('[data-crew-online]')).toBeNull();
+  });
+
   it('opens "Members of {team}…" on the member list for the owner, with Add people one step away (QA Q4-35)', async () => {
     // Alice is the host and Analysis Lab's owner; Dan is not in the team yet.
     renderDirect({ target: 'team', targetId: 'team-1', view: 'members' });

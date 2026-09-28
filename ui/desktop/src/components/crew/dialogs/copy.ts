@@ -450,6 +450,13 @@ export const addPeopleCopy = {
   titleTeam: (team: string) => `Add people to ${team}`,
   /** The same dialog for someone who may not add people to the team: its member list (QA Q3-44). */
   membersOf: (team: string) => `Members of ${team}`,
+  /**
+   * Above a list of who is in the team or channel already (UXN-6): how many people it holds, as
+   * the Members tab's header says, since nine rows fit and the tenth was out of sight.
+   */
+  memberCount: (count: number) => `${count} ${count === 1 ? 'member' : 'members'}`,
+  /** A team's creator, marked as the Members tab marks a channel's owner. */
+  teamOwner: 'Team owner',
   person: 'Person',
   search: 'Search by name or @username',
   choose: 'Choose a person',

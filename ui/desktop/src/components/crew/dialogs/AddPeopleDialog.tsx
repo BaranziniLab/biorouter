@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Avatar } from '../../ui/avatar';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Note } from '../../ui/note';
@@ -8,12 +9,15 @@ import { AlertTriangle, Check } from '../../icons/app-icons';
 import {
   carriesJoinerName,
   channelName,
+  OnlineMark,
+  onlineSet,
   PersonName,
   teamName,
   usableName,
   withJoinerNames,
   type CrewPerson,
 } from '../identity';
+import { membersCopy } from '../pane/copy';
 import { focusIsLost } from '../state/focusReturn';
 import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
@@ -353,6 +357,10 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       : copy.historyTeam(general ? channelName(general) : '#general', choices.length > 1);
   const members =
     message || membersView ? targetMembers(snapshot, dir, pickerTarget, added, workspaceId) : [];
+  // Marked as the Members tab marks them (UXN-6): the owner (`ownerId`, a team's being its
+  // creator), and who is online, from the verified view only.
+  const ownerLabel = team ? copy.teamOwner : membersCopy.owner;
+  const online = crew.snapshot ? onlineSet(crew.snapshot) : null;
   // Named as the host knows them (QA Q4-42): "Jack Moreno (@crew_jack)", as Let in named them.
   const inviteesLine =
     invitees.length > 0
@@ -417,7 +425,15 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
           <>
             {/* The list first: it is what this dialog is for here. Who may add people follows,
                 muted, as its description — or, for someone who may, the way to add them. */}
-            <MemberList place={place} people={members} dir={dir} label={copy.membersOf(place)} />
+            <MemberList
+              place={place}
+              people={members}
+              dir={dir}
+              label={copy.membersOf(place)}
+              ownerId={ownerId ?? null}
+              ownerLabel={ownerLabel}
+              online={online}
+            />
             {mayAdd ? (
               <div className="flex min-w-0">
                 <Button type="button" variant="secondary" size="sm" onClick={() => setAdding(true)}>
@@ -438,7 +454,14 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
             {inviteesLine ? (
               <p className="text-supporting text-text-muted">{inviteesLine}</p>
             ) : null}
-            <MemberList place={place} people={members} dir={dir} />
+            <MemberList
+              place={place}
+              people={members}
+              dir={dir}
+              ownerId={ownerId ?? null}
+              ownerLabel={ownerLabel}
+              online={online}
+            />
           </>
         ) : (
           <>
@@ -495,38 +518,78 @@ function MemberList({
   people,
   dir,
   label,
+  ownerId,
+  ownerLabel,
+  online,
 }: {
   place: string;
   people: readonly CrewPerson[];
   dir: ReturnType<typeof useDialogView>['dir'];
   label?: string;
+  /** Who owns the team (its creator) or the channel, marked with `ownerLabel`. */
+  ownerId: string | null;
+  ownerLabel: string;
+  /** Who the verified view says is online, or null when it says nothing. */
+  online: ReadonlySet<string> | null;
 }) {
   const headingId = React.useId();
+  const countId = React.useId();
+  // The list scrolls inside the dialog once a lab outgrows it (Q2-05), and a keyboard scrolls it
+  // too: a region that takes a Tab stop, named by its count, fading at its lower edge while more is
+  // below (UXN-6). Nothing in it was focusable, so arrows and Page Down moved nothing, and macOS's
+  // overlay scrollbars showed no sign that the tenth person was there.
+  const scroller = React.useRef<HTMLDivElement>(null);
+  const [more, setMore] = React.useState(false);
+  const measure = React.useCallback(() => {
+    const box = scroller.current;
+    setMore(Boolean(box) && box!.scrollHeight - box!.scrollTop - box!.clientHeight > 1);
+  }, []);
+  React.useLayoutEffect(measure, [measure, people.length]);
   if (people.length === 0) return null;
   const list = (
-    <ul role="list" aria-label={label} className="crew-person-checklist flex min-w-0 flex-col">
-      {people.map((person) => (
-        <li
-          key={person.id ?? person.username}
-          className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
-        >
-          <Avatar
-            size={20}
-            fallback={person.avatar}
-            name={person.displayName}
-            username={person.username}
-          />
-          <PersonName
-            person={person}
-            context="header"
-            // A stand-in name (`withJoinerNames`) is drawn as given: the directory's copy has none.
-            dir={carriesJoinerName(person) ? null : dir}
-            you={person.isYou}
-            className="min-w-0 flex-1 truncate"
-          />
-        </li>
-      ))}
-    </ul>
+    <div className="flex min-w-0 flex-col gap-1">
+      <p id={countId} className="text-supporting text-text-muted" data-crew-member-count="">
+        {copy.memberCount(people.length)}
+      </p>
+      <div
+        ref={scroller}
+        role="region"
+        tabIndex={0}
+        aria-labelledby={countId}
+        className="crew-person-checklist crew-member-scroll biorouter-focus-region"
+        data-overflow={more ? 'true' : undefined}
+        onScroll={measure}
+      >
+        <ul role="list" aria-label={label} className="flex min-w-0 flex-col">
+          {people.map((person) => (
+            <li
+              key={person.id ?? person.username}
+              className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
+            >
+              <Avatar
+                size={20}
+                fallback={person.avatar}
+                name={person.displayName}
+                username={person.username}
+              />
+              <PersonName
+                person={person}
+                context="header"
+                // A stand-in name (`withJoinerNames`) is drawn as given: the directory's copy has
+                // none.
+                dir={carriesJoinerName(person) ? null : dir}
+                you={person.isYou}
+                className="min-w-0 flex-1 truncate"
+              />
+              {person.id !== null ? <OnlineMark online={online?.has(person.id) ?? false} /> : null}
+              {person.id !== null && person.id === ownerId ? (
+                <Badge tone="neutral">{ownerLabel}</Badge>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
   if (label) return list;
   return (
