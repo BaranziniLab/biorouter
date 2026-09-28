@@ -414,21 +414,71 @@ pub async fn handle_models_local_rm(model: String) -> Result<()> {
     Ok(())
 }
 
+/// How `models local pull` reports (PROV-F11): a spinner on a terminal, and plain lines
+/// anywhere else. The spinner draws on stderr and draws nothing at all when stderr is not a
+/// terminal, so a script, CI job or `pull 2>log` heard nothing even on success. Plain, the
+/// start goes to stderr and the result to stdout, where a script reads results; a failure is
+/// the error `main` prints, once.
+struct PullReport<Out: std::io::Write, Err: std::io::Write> {
+    spinner: Option<cliclack::ProgressBar>,
+    out: Out,
+    err: Err,
+}
+
+impl PullReport<std::io::Stdout, std::io::Stderr> {
+    fn start(model: &str) -> Self {
+        use std::io::IsTerminal;
+        let spinner = std::io::stderr().is_terminal().then(cliclack::spinner);
+        Self::started(spinner, std::io::stdout(), std::io::stderr(), model)
+    }
+}
+
+impl<Out: std::io::Write, Err: std::io::Write> PullReport<Out, Err> {
+    fn started(
+        spinner: Option<cliclack::ProgressBar>,
+        out: Out,
+        mut err: Err,
+        model: &str,
+    ) -> Self {
+        let line = format!("Downloading {model} (first run can take a while)…");
+        match &spinner {
+            Some(spinner) => spinner.start(line),
+            None => {
+                let _ = writeln!(err, "{line}");
+            }
+        }
+        Self { spinner, out, err }
+    }
+
+    fn done(mut self, model: &str) {
+        let line = format!("{model} is downloaded and cached.");
+        match self.spinner.take() {
+            Some(spinner) => spinner.stop(style(line).green()),
+            None => {
+                let _ = writeln!(self.out, "{line}");
+            }
+        }
+    }
+
+    fn failed(mut self, line: String) {
+        if let Some(spinner) = self.spinner.take() {
+            spinner.stop(style(line).red());
+        }
+        let _ = self.err.flush();
+    }
+}
+
 pub async fn handle_models_local_pull(model: String) -> Result<()> {
     use std::time::Duration;
 
     let source = resolve_model_source(&model)
         .map_err(|e| anyhow::anyhow!("Unknown local model '{}': {}", model, e))?;
 
-    let spin = cliclack::spinner();
-    spin.start(format!(
-        "Downloading {} (first run can take a while)…",
-        model
-    ));
+    let report = PullReport::start(&model);
 
     let sidecar = llamacpp_sidecar::global();
     if let Err(e) = sidecar.ensure(&model, &source).await {
-        spin.stop(style(format!("Could not start Llama Server: {e}")).red());
+        report.failed(format!("Could not start Llama Server: {e}"));
         return Err(anyhow::anyhow!(e));
     }
 
@@ -443,12 +493,43 @@ pub async fn handle_models_local_pull(model: String) -> Result<()> {
 
     match ready {
         Ok(_) => {
-            spin.stop(style(format!("{} is downloaded and cached", model)).green());
+            report.done(&model);
             Ok(())
         }
         Err(e) => {
-            spin.stop(style(format!("{model} did not become ready: {e}")).red());
+            report.failed(format!("{model} did not become ready: {e}"));
             Err(anyhow::anyhow!(e))
         }
+    }
+}
+
+#[cfg(test)]
+mod pull_report_tests {
+    use super::PullReport;
+
+    /// PROV-F11: off a terminal, `pull` says it started on stderr and that it finished on
+    /// stdout, where a spinner drew nothing at all.
+    #[test]
+    fn a_pull_off_a_terminal_reports_in_plain_lines() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        PullReport::started(None, &mut out, &mut err, "gemma4-e2b").done("gemma4-e2b");
+        assert_eq!(
+            String::from_utf8(err).unwrap(),
+            "Downloading gemma4-e2b (first run can take a while)…\n"
+        );
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "gemma4-e2b is downloaded and cached.\n"
+        );
+
+        // A failure prints nothing more here: the error `main` prints says it, once.
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        PullReport::started(None, &mut out, &mut err, "gemma4-e2b")
+            .failed("gemma4-e2b did not become ready: timed out".into());
+        assert!(out.is_empty());
+        assert_eq!(
+            String::from_utf8(err).unwrap(),
+            "Downloading gemma4-e2b (first run can take a while)…\n"
+        );
     }
 }
