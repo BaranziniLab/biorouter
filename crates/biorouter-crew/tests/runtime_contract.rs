@@ -1,7 +1,10 @@
 //! The broker's runtime directory and its lifecycle commands: `status` and `stop` never create
 //! state, an empty descriptor left by an older release does not block a start, a runtime path
 //! another account took after `/tmp` was cleaned moves to a fresh one instead of refusing every
-//! start, and decoy directories cannot hide a running sibling from the workspace-name check.
+//! start (and one only this account could ever have written into keeps its path), and decoy
+//! directories cannot hide a running sibling from the workspace-name check. The bridge finding a
+//! workspace that moved is tested beside it in `broker.rs`, since it needs the broker's
+//! private helpers.
 //!
 //! Everything here runs on any Unix except what drives a real broker process (Linux only).
 #![cfg(unix)]
@@ -208,6 +211,47 @@ fn a_runtime_path_taken_after_tmp_was_cleaned_moves_to_a_fresh_private_one() {
         );
         let _ = fs::set_permissions(&directory, fs::Permissions::from_mode(0o700));
     }
+}
+
+#[test]
+fn a_recorded_directory_only_this_account_could_write_into_keeps_its_path() {
+    // Only this account and root can change the mode of this account's own directory, so with
+    // any mode that never let another account write into it, nothing in it can be another
+    // account's: the mode is put back and members keep the path they were given.
+    for mode in [0o700, 0o755, 0o751] {
+        let mut ws = Workspace::new(&format!("runtime-repair-{mode:o}"));
+        let runtime = TempRoot::short();
+        ws.broker.set_runtime_root(runtime.path());
+        let socket = ws.broker.prepare_runtime(NODE).unwrap();
+        write_descriptor(&ws, &socket);
+        let (directory, _) = runtime_dir(&socket);
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        let mut ws = ws.reopen();
+        ws.broker.set_runtime_root(runtime.path());
+        assert_eq!(
+            ws.broker.prepare_runtime(NODE).unwrap(),
+            socket,
+            "mode {mode:o}"
+        );
+        assert_eq!(
+            fs::symlink_metadata(&directory).unwrap().mode() & 0o7777,
+            0o711
+        );
+        assert!(
+            ws.root.path().join("runtime.json").exists(),
+            "nothing moved, so the descriptor stands"
+        );
+    }
+    // A directory its group could write into is still moved, as one anyone can write into is.
+    let mut ws = Workspace::new("runtime-repair-group");
+    let runtime = TempRoot::short();
+    ws.broker.set_runtime_root(runtime.path());
+    let socket = ws.broker.prepare_runtime(NODE).unwrap();
+    let (directory, _) = runtime_dir(&socket);
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o771)).unwrap();
+    let mut ws = ws.reopen();
+    ws.broker.set_runtime_root(runtime.path());
+    assert_ne!(ws.broker.prepare_runtime(NODE).unwrap(), socket);
 }
 
 #[test]

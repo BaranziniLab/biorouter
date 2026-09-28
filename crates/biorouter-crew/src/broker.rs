@@ -4515,16 +4515,30 @@ fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 fn validate_socket(path: &Path, owner: u32) -> Result<()> {
+    runtime_root_of(path)?;
+    check_runtime_socket(path, owner)
+}
+/// The node-local temporary directory (`/tmp`) a runtime socket path's directory sits
+/// directly in, or `unsafe_socket` when the path is not shaped like one.
+fn runtime_root_of(path: &Path) -> Result<&Path> {
     ensure!(
         path.is_absolute(),
         "unsafe_socket: absolute socket path required"
     );
-    let parent = path.parent().ok_or_else(|| anyhow!("unsafe_socket"))?;
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow!("unsafe_socket"))?;
     ensure!(
-        parent.parent() == Some(Path::new("/tmp"))
-            || parent.parent() == Some(Path::new("/private/tmp")),
+        root == Path::new("/tmp") || root == Path::new("/private/tmp"),
         "unsafe_socket: runtime must be dedicated node-local temporary directory"
     );
+    Ok(root)
+}
+/// `path` is a socket `owner` owns, in a directory (not a symbolic link) `owner` owns that no
+/// other account can write into. Only `owner` and root can make either.
+fn check_runtime_socket(path: &Path, owner: u32) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| anyhow!("unsafe_socket"))?;
     let dir = fs::symlink_metadata(parent)?;
     let socket = fs::symlink_metadata(path)?;
     use std::os::unix::fs::FileTypeExt;
@@ -4537,6 +4551,18 @@ fn validate_socket(path: &Path, owner: u32) -> Result<()> {
         "unsafe_socket: ownership or runtime permissions invalid"
     );
     Ok(())
+}
+/// Whether `name` is shaped like a runtime directory of `uid`: `crew-<uid>-` and 32 lowercase
+/// hex digits. Any account can create an entry with such a name in `/tmp`; the shape says
+/// nothing about who did.
+fn runtime_basename_of(name: &str, uid: u32) -> bool {
+    name.strip_prefix(&format!("crew-{uid}-"))
+        .is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
 }
 /// The workspace names running sibling brokers of `uid` answer `hello` with: every
 /// `crew-<uid>-<32 hex>/broker.sock` under `runtime_root` (at most [`SIBLING_PROBE_LIMIT`])
@@ -4555,20 +4581,12 @@ fn sibling_workspace_names(
     own_basename: Option<&str>,
     own_workspace_id: &str,
 ) -> Vec<String> {
-    let prefix = format!("crew-{uid}-");
     let Ok(entries) = fs::read_dir(runtime_root) else {
         return Vec::new();
     };
     let mut candidates: Vec<String> = entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| {
-            name.strip_prefix(&prefix).is_some_and(|suffix| {
-                suffix.len() == 32
-                    && suffix
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            }) && Some(name.as_str()) != own_basename
-        })
+        .filter(|name| runtime_basename_of(name, uid) && Some(name.as_str()) != own_basename)
         .filter(|name| owned_runtime_socket(&runtime_root.join(name), uid))
         .collect();
     candidates.sort();
@@ -4723,15 +4741,19 @@ enum RuntimeDirectory {
     /// The socket path, in a directory this account owns with mode 0711, free to bind.
     Ready(PathBuf),
     /// The path cannot be used as it stands: another account's entry, a symbolic link or other
-    /// non-directory, the wrong mode, or an unexpected entry. After `/tmp` is cleaned any
-    /// account can create an entry at the recorded name, and a sticky `/tmp` lets only that
-    /// account and root remove it, so this is never repaired in place. The reason is logged.
+    /// non-directory, a directory other accounts can write into, or an unexpected entry. After
+    /// `/tmp` is cleaned any account can create an entry at the recorded name, and a sticky
+    /// `/tmp` lets only that account and root remove it, so none of these is repaired in place.
+    /// The reason is logged. (This account's own directory with another owner-only mode is
+    /// repaired in place: nobody else can have written into it.)
     Unusable(&'static str),
 }
 /// Move the workspace to a fresh runtime directory when its recorded one cannot be used
 /// ([`RuntimeDirectory::Unusable`]). The new name is random and created exclusively, so nobody
-/// can have claimed it first, and it is journaled before the broker binds. Members reach it
-/// through the new invitation line `start` prints; the old line no longer connects.
+/// can have claimed it first, and it is journaled before the broker binds. Members' saved
+/// connections, and the old invitation line, still name the old path: a bridge of this version
+/// or later finds the new directory itself ([`moved_workspace`]), and a member with an older
+/// `biorouter-crew` updates it.
 fn relocate_runtime(
     broker: &mut Broker,
     uid: u32,
@@ -4766,7 +4788,7 @@ fn relocate_runtime(
         broker.commit(state, "system", "workspace.move_runtime")?;
         let socket = directory.join("broker.sock");
         eprintln!(
-            "runtime_moved: the recorded runtime directory {previous} can't be used ({reason}); this workspace now listens at {}. Give members the new invitation line; the old one no longer connects.",
+            "runtime_moved: the recorded runtime directory {previous} can't be used ({reason}); this workspace now listens at {}. Members keep their connections: a biorouter-crew of this version or later in their account finds the new directory, and anyone whose Crew then can't connect updates ~/.local/bin/biorouter-crew. A saved connection is never re-pinned by pasting a new invitation line, so members don't need one.",
             socket.display()
         );
         return Ok(socket);
@@ -4791,8 +4813,29 @@ fn reclaim_runtime_socket(
         Ok(metadata) if metadata.uid() != uid => {
             return Ok(Unusable("another account owns it"));
         }
+        Ok(metadata) if metadata.mode() & 0o022 != 0 => {
+            return Ok(Unusable("other accounts can write into it"));
+        }
         Ok(metadata) if metadata.mode() & 0o7777 != 0o711 => {
-            return Ok(Unusable("its permissions changed"));
+            // This account's own directory, which no other account could ever write into (only
+            // its owner and root can change its mode): nothing in it can be another account's,
+            // so its mode is put back rather than the workspace moved, and members keep the
+            // path they were given.
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o711))?;
+            let repaired = fs::symlink_metadata(&directory)?;
+            ensure!(
+                repaired.is_dir()
+                    && repaired.uid() == uid
+                    && repaired.mode() & 0o7777 == 0o711
+                    && repaired.dev() == metadata.dev()
+                    && repaired.ino() == metadata.ino(),
+                "unsafe_runtime: runtime directory changed while its permissions were repaired"
+            );
+            eprintln!(
+                "runtime_repaired: {} had mode {:o}; set it back to 711",
+                directory.display(),
+                metadata.mode() & 0o7777
+            );
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -5014,29 +5057,95 @@ fn serve_client(mut stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) ->
     }
     Ok(())
 }
-pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
-    ensure!(
-        cfg!(target_os = "linux"),
-        "unsupported: bridge requires Linux"
-    );
-    validate_socket(socket, owner)?;
+/// A connection to `workspace`'s broker, which `owner` runs, with the `hello` it answered: at
+/// `socket`, the path the member's saved connection names, or, when that path no longer leads
+/// to the workspace, wherever in `root` the broker has moved to ([`moved_workspace`]).
+fn open_workspace(
+    root: &Path,
+    socket: &Path,
+    owner: u32,
+    workspace: &str,
+) -> Result<(UnixStream, BufReader<UnixStream>, Value)> {
+    match connect_workspace(socket, owner, workspace, None) {
+        Ok(found) => Ok(found),
+        Err(error) => {
+            let pinned = socket.parent().and_then(Path::file_name);
+            moved_workspace(root, owner, workspace, pinned).ok_or(error)
+        }
+    }
+}
+/// Connect to the broker at `socket` and check it is `workspace`'s, run by `owner`: the socket
+/// and its directory are `owner`'s ([`check_runtime_socket`]), the listener runs as `owner`,
+/// and it answers `hello` for `workspace`. `timeout` bounds the `hello`; the connection is
+/// returned without one.
+fn connect_workspace(
+    socket: &Path,
+    owner: u32,
+    workspace: &str,
+    timeout: Option<Duration>,
+) -> Result<(UnixStream, BufReader<UnixStream>, Value)> {
+    check_runtime_socket(socket, owner)?;
     let mut stream = UnixStream::connect(socket)?;
     ensure!(peer_uid(&stream)? == owner, "identity_mismatch: broker UID");
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
     let mut reader = BufReader::new(stream.try_clone()?);
     stream
         .write_all(b"{\"version\":1,\"id\":\"bridge-pin\",\"method\":\"hello\",\"params\":{}}\n")?;
     let hello: Response = serde_json::from_slice(
         &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
     )?;
+    let hello = hello.result.unwrap_or(Value::Null);
     ensure!(
-        hello
-            .result
-            .as_ref()
-            .and_then(|v| v.get("workspace_id"))
-            .and_then(Value::as_str)
-            == Some(workspace),
+        hello.get("workspace_id").and_then(Value::as_str) == Some(workspace),
         "identity_mismatch: pinned workspace"
     );
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok((stream, reader, hello))
+}
+/// `workspace`'s broker in another runtime directory of `owner` in `root`, after it moved away
+/// from the one a member's connection was saved with (`pinned`, skipped here).
+///
+/// A broker moves when its recorded directory cannot be used ([`relocate_runtime`]), typically
+/// because another account created an entry at that name after `/tmp` was cleaned, and every
+/// saved connection still names the old path. Without this, each member would have to remove
+/// their connection and enroll again, since a pasted invitation never re-pins a workspace
+/// someone already saved. Only a runtime directory of `owner`'s that nobody else can write
+/// into, holding a socket `owner` owns, whose listener runs as `owner` and answers `hello` for
+/// `workspace`, is ever used, and no other account can make any of those. The daemon then
+/// checks the workspace key's signature on its own `hello`, exactly as for the saved path.
+/// As when a start checks its siblings, ownership is checked before at most
+/// [`SIBLING_PROBE_LIMIT`] directories are tried, each bounded by [`SIBLING_PROBE_TIMEOUT`], so
+/// entries another account creates can neither take those slots nor stall the search.
+fn moved_workspace(
+    root: &Path,
+    owner: u32,
+    workspace: &str,
+    pinned: Option<&std::ffi::OsStr>,
+) -> Option<(UnixStream, BufReader<UnixStream>, Value)> {
+    let mut candidates: Vec<PathBuf> = fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            runtime_basename_of(name, owner) && Some(std::ffi::OsStr::new(name)) != pinned
+        })
+        .map(|name| root.join(name).join("broker.sock"))
+        .filter(|socket| check_runtime_socket(socket, owner).is_ok())
+        .collect();
+    candidates.sort();
+    candidates.truncate(SIBLING_PROBE_LIMIT);
+    candidates.into_iter().find_map(|socket| {
+        connect_workspace(&socket, owner, workspace, Some(SIBLING_PROBE_TIMEOUT)).ok()
+    })
+}
+pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
+    ensure!(
+        cfg!(target_os = "linux"),
+        "unsupported: bridge requires Linux"
+    );
+    let root = runtime_root_of(socket)?;
+    let (mut stream, mut reader, _) = open_workspace(root, socket, owner, workspace)?;
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
     let stdout = std::io::stdout();
@@ -5232,8 +5341,9 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
                         .as_ref()
                         .is_some_and(|previous| Some(previous) != info.get("socket"))
                     {
-                        // The recorded runtime directory could not be used (see broker.log):
-                        // the old invitation line no longer connects.
+                        // The recorded runtime directory could not be used (see broker.log),
+                        // and the workspace moved. A bridge of this version or later follows
+                        // it from the old path; an older one needs updating.
                         result["socket_changed"] = json!(true);
                     }
                     match start_invitation(&info, &hello) {
@@ -5636,6 +5746,91 @@ mod runtime_tests {
             "replaced by another socket"
         );
         drop(listener);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A broker stand-in at `root/basename/broker.sock`, in a directory with `mode`, answering
+    /// every `hello` for `workspace_id` with `name`.
+    #[cfg(target_os = "linux")]
+    fn fake_broker(root: &Path, basename: &str, mode: u32, workspace_id: &str, name: &str) {
+        let directory = root.join(basename);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        let listener = UnixListener::bind(directory.join("broker.sock")).unwrap();
+        let answer =
+            json!({"id": "bridge-pin", "result": {"workspace_id": workspace_id, "name": name}});
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut line = String::new();
+                if BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .is_ok()
+                {
+                    let _ = stream.write_all(format!("{answer}\n").as_bytes());
+                }
+                // Held open, as a broker holds a bridge's connection.
+                std::mem::forget(stream);
+            }
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bridge_follows_its_workspace_to_the_directory_it_moved_to() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+        let basename = |fill: char| format!("crew-{uid}-{}", fill.to_string().repeat(32));
+        // The saved connection names `a…`, which the broker had to leave (another account took
+        // it once /tmp was cleaned); it moved to `f…`. Everything that sorts between the two is
+        // something the bridge must never take for the workspace: a directory other accounts
+        // can write into, whose listener claims the workspace, and one of this account's
+        // other workspaces.
+        let pinned = root.join(basename('a')).join("broker.sock");
+        fake_broker(&root, &basename('b'), 0o777, &workspace, "writable");
+        fake_broker(
+            &root,
+            &basename('c'),
+            0o711,
+            &Uuid::new_v4().to_string(),
+            "sibling",
+        );
+        std::os::unix::fs::symlink(root.join(basename('f')), root.join(basename('d'))).unwrap();
+        fake_broker(&root, &basename('f'), 0o711, &workspace, "moved");
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "moved");
+
+        // What stands at the saved path, when it is unusable, changes nothing.
+        std::os::unix::fs::symlink(root.join(basename('f')), root.join(basename('a'))).unwrap();
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "moved");
+        fs::remove_file(root.join(basename('a'))).unwrap();
+        fake_broker(&root, &basename('a'), 0o777, &workspace, "squatted");
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "moved");
+        let _ = fs::remove_dir_all(&root);
+
+        // The saved path, while it still leads to the workspace, is used first.
+        let root = short_root();
+        let pinned = root.join(basename('e')).join("broker.sock");
+        fake_broker(&root, &basename('e'), 0o711, &workspace, "saved");
+        fake_broker(&root, &basename('a'), 0o711, &workspace, "elsewhere");
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "saved");
+        let _ = fs::remove_dir_all(&root);
+
+        // With nowhere to go, the saved path's own refusal is what the member sees.
+        let root = short_root();
+        let pinned = root.join(basename('a')).join("broker.sock");
+        fake_broker(&root, &basename('b'), 0o777, &workspace, "writable");
+        let error = open_workspace(&root, &pinned, uid, &workspace)
+            .err()
+            .expect("no directory of this account's answers for the workspace");
+        assert!(
+            error.downcast_ref::<std::io::Error>().is_some(),
+            "{error:#}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
