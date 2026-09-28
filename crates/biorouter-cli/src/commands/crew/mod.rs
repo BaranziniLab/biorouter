@@ -96,7 +96,10 @@ fn failure(
         let _ = writeln!(stdout, "{line}");
         let _ = stdout.flush();
     }
-    if error.chain().any(|cause| cause.is::<NeedsTerminal>()) {
+    if error
+        .chain()
+        .any(|cause| cause.is::<NeedsTerminal>() || cause.is::<Usage>())
+    {
         needs_a_terminal(message)
     } else if sent && outcome_uncertain(error) {
         anyhow!("{message}\n{}", output::retry_hint(request_id))
@@ -139,6 +142,17 @@ fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value
     }
     if let Some(detail) = connect_detail(error) {
         body["detail"] = json!(detail);
+    }
+    // AGT2-N5: the daemon's other machine-readable fields (`actual_mode`, `expected_mode`,
+    // `institution_refusal`, `reason`, `connection_id`, `host`, `candidates`, …), so a script
+    // reads which mode or institution failed without parsing the sentence. What the CLI wrote
+    // above is never replaced.
+    if let Some(fields) = error.chain().find_map(refusal_fields) {
+        for (key, value) in fields {
+            if body.get(key).is_none() {
+                body[key.as_str()] = value.clone();
+            }
+        }
     }
     if let Some(stopped) = error
         .chain()
@@ -192,6 +206,34 @@ impl std::error::Error for WatchStopped {}
 /// The JSON code of a command that needed a person at a terminal and had none.
 const NEEDS_TERMINAL_CODE: &str = "crew_needs_terminal";
 
+/// A command line refused before anything was sent, with its own code for JSON: several saved
+/// connections and no `--connection`, or a message too long to post. It exits with the usage
+/// status 2, as the manual promises for a wrong command line (SF2-N6, MSG2-N7).
+#[derive(Debug)]
+struct Usage {
+    sentence: String,
+    code: &'static str,
+}
+
+impl std::fmt::Display for Usage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.sentence)
+    }
+}
+
+impl std::error::Error for Usage {}
+
+fn usage(sentence: impl Into<String>, code: &'static str) -> anyhow::Error {
+    Usage {
+        sentence: sentence.into(),
+        code,
+    }
+    .into()
+}
+
+/// The daemon's code for a request that needs a saved connection chosen.
+const CONNECTION_REQUIRED: &str = "crew_connection_required";
+
 /// The refusal of a command that needs a person at a terminal and was run without one. It
 /// exits with the usage status 2: nothing was attempted.
 fn needs_a_terminal(sentence: impl Into<String>) -> anyhow::Error {
@@ -207,7 +249,9 @@ fn needs_a_terminal(sentence: impl Into<String>) -> anyhow::Error {
 ///
 /// A failed connect with one of the daemon's typed codes (`crew_ssh_auth_required`, …) is said
 /// the same way, with what to run, then the code the manual's table is keyed on and OpenSSH's
-/// own words (CLI-7), instead of the transport's internal text.
+/// own words (CLI-7), instead of the transport's internal text. Any other daemon refusal with a
+/// code is the daemon's own sentence ([`daemon_sentence`]); only one without a code keeps the
+/// `Daemon returned NNN:` it is displayed with.
 fn error_text(error: &anyhow::Error) -> String {
     let mut parts = Vec::new();
     for cause in error.chain() {
@@ -218,13 +262,12 @@ fn error_text(error: &anyhow::Error) -> String {
         }
         parts.push(if let Some((code, message)) = broker_refusal(cause) {
             output::broker_refusal_text(code, message)
+        } else if let Some((code, sentence, detail)) = connect_failure(cause) {
+            connect_failure_lines(code, sentence, detail)
         } else if let Some(sentence) = daemon_sentence(cause) {
             sentence
         } else {
-            match connect_failure(cause) {
-                Some((code, sentence, detail)) => connect_failure_lines(code, sentence, detail),
-                None => cause.to_string(),
-            }
+            cause.to_string()
         });
     }
     parts.join(": ")
@@ -367,7 +410,11 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
         connection_id: tokio::sync::OnceCell::new(),
         channel_labels: std::sync::Mutex::default(),
     };
-    run(&api, command).await?.print(api.format)
+    let reply = match run(&api, command).await {
+        Ok(reply) => reply,
+        Err(error) => return Err(api.worded_failure(error).await),
+    };
+    reply.print(api.format)
 }
 
 /// The shared daemon, or a scripted stand-in in tests. Every request goes through
@@ -456,6 +503,12 @@ fn error_code(error: &anyhow::Error) -> Option<String> {
         .or_else(|| {
             error
                 .chain()
+                .find_map(|cause| cause.downcast_ref::<Usage>())
+                .map(|usage| usage.code.to_owned())
+        })
+        .or_else(|| {
+            error
+                .chain()
                 .any(|cause| cause.is::<NotSent>())
                 .then(|| NotSent::CODE.to_owned())
         })
@@ -479,7 +532,7 @@ const RECONNECTING: &str = "crew_reconnecting";
 fn outcome_uncertain(error: &anyhow::Error) -> bool {
     if error
         .chain()
-        .any(|cause| cause.is::<Restated>() || cause.is::<NotSent>())
+        .any(|cause| cause.is::<Restated>() || cause.is::<NotSent>() || cause.is::<Usage>())
     {
         return false;
     }
@@ -510,7 +563,17 @@ fn outcome_uncertain(error: &anyhow::Error) -> bool {
 /// says why nothing was sent, and whether trying again can help: a server that could not be
 /// reached may answer later, but an SSH key the server refused is refused every time, so a
 /// fixed "run it again" would give advice that cannot work and drop the cause.
+///
+/// Every other refusal with a code is the daemon's own sentence too (FILES2-N4, CLIDOCS-F6):
+/// `CrewError.error` is written for a person, and a code says the daemon typed it. Where that
+/// sentence names something only the desktop has, the terminal's words stand in: the
+/// `--overwrite` flag for an existing file, `connect` for a dropped connection, `grants grant`
+/// for a chat's ended access. A refusal with no code, or no sentence, is left to its display,
+/// `Daemon returned NNN: …`.
 fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> {
+    if is_disconnected_refusal(cause) {
+        return Some(NOT_CONNECTED_SENTENCE.to_owned());
+    }
     let (code, message) = refusal_code_and_message(cause)?;
     let own = || {
         Some(message.trim())
@@ -536,14 +599,69 @@ fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> 
             Some((actual, expected)) => Some(output::mode_mismatch_text(actual, expected)),
             None => own(),
         },
-        // The daemon's other typed refusals (W2-DMN-6, 9, 10) are written for a person.
-        RECONNECTING
-        | "crew_public_model_refused"
-        | "crew_channel_not_in_workspace"
-        | "crew_model_fixed"
-        | "crew_credential_store_unavailable" => own(),
-        _ => None,
+        DESTINATION_EXISTS => own().map(|sentence| overwrite_sentence(&sentence)),
+        GRANT_ENDED => Some(grant_ended_sentence(
+            refusal_field(cause, "reason") == Some("settings_changed"),
+            None,
+        )),
+        _ => own(),
     }
+}
+
+/// The daemon's code for a destination file that exists and was not approved for replacing.
+const DESTINATION_EXISTS: &str = "crew_destination_exists";
+/// The daemon's code for a chat whose Crew access ended (T3-BE-7), with `reason`
+/// `settings_changed` or `ended`.
+const GRANT_ENDED: &str = "crew_grant_ended";
+/// The daemon's code for a connection that is not connected.
+const NOT_CONNECTED: &str = "crew_not_connected";
+/// A disconnected connection, when the command could not name it ([`Api::worded_failure`]
+/// names it when it can).
+const NOT_CONNECTED_SENTENCE: &str =
+    "This connection is disconnected. Run biorouter crew connect, then try again.";
+/// The daemon's sentence for a disconnected connection, which a daemon before T3-BE-3 sent
+/// untyped (`crew_request_refused`, 400) and a current one sends as [`NOT_CONNECTED`]. It is
+/// written for the desktop ("connect in Crew"), so the terminal says its own.
+const LEGACY_DISCONNECTED: &str =
+    "Crew connection is disconnected; authenticate and connect in Crew";
+
+/// Whether `cause` is the daemon's refusal of a request on a disconnected connection: its
+/// code, or an older daemon's untyped sentence for it.
+fn is_disconnected_refusal(cause: &(dyn std::error::Error + 'static)) -> bool {
+    match refusal_code_and_message(cause) {
+        Some((NOT_CONNECTED, _)) => true,
+        Some((_, message)) => message.trim().trim_end_matches('.') == LEGACY_DISCONNECTED,
+        None => refusal_message(cause)
+            .is_some_and(|message| message.trim().trim_end_matches('.') == LEGACY_DISCONNECTED),
+    }
+}
+
+/// Whether `error` is a refusal because its connection is disconnected.
+fn disconnected(error: &anyhow::Error) -> bool {
+    error.chain().any(is_disconnected_refusal)
+}
+
+/// An existing file's refusal with the flag that replaces it (FILES2-N4): the desktop's
+/// "Replace it" is a button this terminal does not have.
+fn overwrite_sentence(sentence: &str) -> String {
+    const DESKTOP: &str = "Replace it, or choose another name.";
+    const TERMINAL: &str = "Add --overwrite to replace it, or save it under another name.";
+    match sentence.strip_suffix(DESKTOP) {
+        Some(lead) => format!("{lead}{TERMINAL}"),
+        None => format!("{sentence} Add --overwrite to replace it."),
+    }
+}
+
+/// A chat whose Crew access ended (SF2-N4): why, when the daemon said, and the command that
+/// grants it again, naming the chat and channel when the command knows them.
+fn grant_ended_sentence(settings_changed: bool, grant: Option<(&str, &str)>) -> String {
+    let why = if settings_changed {
+        "This chat's Crew access ended because Crew settings changed."
+    } else {
+        "This chat's Crew access ended."
+    };
+    let (session, channel) = grant.unwrap_or(("SESSION", "CHANNEL"));
+    format!("{why} Run biorouter crew grants grant {session} {channel} to grant it again.")
 }
 
 /// The daemon's code for an institution refusal on any route (W2-DMN-9 a).
@@ -619,6 +737,37 @@ fn refusal_code_and_message<'a>(
         return Some((refused.code.as_deref()?, refused.message.as_str()));
     }
     None
+}
+
+/// A daemon refusal's own text, with a code or without one.
+fn refusal_message<'a>(cause: &'a (dyn std::error::Error + 'static)) -> Option<&'a str> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return Some(refused.message());
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return Some(refused.message.as_str());
+    }
+    None
+}
+
+/// The daemon refusal's other fields ([`crate::daemon_client::REFUSAL_FIELDS`]).
+fn refusal_fields<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a serde_json::Map<String, Value>> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return Some(refused.fields());
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return Some(&refused.fields);
+    }
+    None
+}
+
+/// One of the daemon refusal's other fields as text, such as `reason`.
+fn refusal_field<'a>(cause: &'a (dyn std::error::Error + 'static), key: &str) -> Option<&'a str> {
+    refusal_fields(cause)?.get(key)?.as_str()
 }
 
 /// A refusal said again for a person, keeping the daemon's code for JSON output.
@@ -1095,7 +1244,11 @@ impl Api {
         match connections.as_slice() {
             [only] => Ok(only.clone()),
             [] => bail!("No Crew connection is saved on this computer. Save the invitation your host sent with biorouter crew connections join-invitation -"),
-            _ => bail!("Several Crew connections are saved; choose one with --connection NAME. Run biorouter crew connections list to see them."),
+            // SF2-N6: a wrong command line, exit 2, with the daemon's own code for the case.
+            _ => Err(usage(
+                "Several Crew connections are saved; choose one with --connection NAME. Run biorouter crew connections list to see them.",
+                CONNECTION_REQUIRED,
+            )),
         }
     }
 
@@ -1296,11 +1449,40 @@ impl Api {
                     Ok(connection) => connection_name(&connection),
                     Err(_) => "this workspace".to_owned(),
                 };
-                let disconnected = refusal(&error).and_then(|refused| refused.code).as_deref()
-                    == Some("crew_not_connected");
-                Directory::names_unavailable(&workspace, disconnected)
+                // W2-CLI-9: an older daemon's untyped refusal is the same fact.
+                Directory::names_unavailable(&workspace, disconnected(&error))
             }
         }
+    }
+
+    /// A failed command's error, said with what this command knows that the daemon's refusal
+    /// does not (CLIDOCS-F6): a disconnected connection is named, with the command that
+    /// connects it, in place of the daemon's "authenticate and connect in Crew", which is
+    /// written for the desktop. The refusal stays its source, so JSON keeps the daemon's code.
+    async fn worded_failure(&self, error: anyhow::Error) -> anyhow::Error {
+        if !disconnected(&error) || error.chain().any(|cause| cause.is::<Worded>()) {
+            return error;
+        }
+        let Ok(connection) = self.connection().await else {
+            return error;
+        };
+        let name = connection_name(&connection);
+        let connect = if self.selected.is_some() {
+            format!(
+                "biorouter crew --connection {} connect",
+                safe_text(&shell_word(&name))
+            )
+        } else {
+            "biorouter crew connect".to_owned()
+        };
+        Worded {
+            sentence: format!(
+                "{} is disconnected. Run {connect}, then try again.",
+                name_text(&name)
+            ),
+            source: error,
+        }
+        .into()
     }
 
     /// `"Bob Lee" (@bob)`, always both, for a decision about a person; from the snapshot, else
@@ -2449,10 +2631,7 @@ async fn join_until(
 /// `GET …/join`, connecting first when the connection is not up.
 async fn join_status(api: &Api, path: &str) -> Result<Value> {
     match api.client.request("GET", path, None).await {
-        Err(error)
-            if refusal(&error)
-                .is_some_and(|refused| refused.code.as_deref() == Some("crew_not_connected")) =>
-        {
+        Err(error) if disconnected(&error) => {
             // A typed connect failure already says what to run; anything else is pointed at
             // `auth`, which signs in and connects.
             api.connection_action("connect", json!({}))
@@ -4478,6 +4657,8 @@ mod tests {
         pub(super) message: String,
         pub(super) detail: Option<String>,
         pub(super) modes: Option<(String, String)>,
+        /// The refusal's other fields, as `DaemonRefusal::fields` keeps them.
+        pub(super) fields: serde_json::Map<String, Value>,
     }
 
     impl std::fmt::Display for FakeRefusal {
@@ -4502,6 +4683,7 @@ mod tests {
             message: message.to_owned(),
             detail: None,
             modes: None,
+            fields: Default::default(),
         }
         .into()
     }
@@ -4518,6 +4700,7 @@ mod tests {
             message: message.to_owned(),
             detail: None,
             modes: None,
+            fields: Default::default(),
         }
         .into()
     }
@@ -6484,6 +6667,7 @@ mod tests {
                         message: DAEMON.into(),
                         detail: None,
                         modes: None,
+                        fields: Default::default(),
                     }
                     .into());
                 }
@@ -6730,6 +6914,80 @@ mod tests {
             lines,
             [format!("Chat 20260924_2 → a channel in UCSF HPC (names unavailable while disconnected) [channel ID {METHODS}] · Active")]
         );
+
+        // W2-CLI-9, CLIDOCS-F6: an older daemon's untyped refusal is the same fact.
+        let older = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                return Err(refuse(
+                    400,
+                    Some("crew_request_refused"),
+                    LEGACY_DISCONNECTED,
+                ));
+            }
+            offline(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, older);
+        let lines = said(
+            run(&api, CrewCommand::Grants(GrantCommand::List))
+                .await
+                .expect("listed offline"),
+        );
+        assert!(
+            lines[0].contains("(names unavailable while disconnected)"),
+            "{lines:?}"
+        );
+    }
+
+    /// CLIDOCS-F6: a request on a disconnected connection names the connection and the
+    /// command that connects it, whether the daemon typed the refusal (`crew_not_connected`)
+    /// or sent an older daemon's untyped sentence; JSON keeps the daemon's code.
+    #[tokio::test]
+    async fn a_disconnected_connection_is_named_with_the_command_that_connects_it() {
+        for (status, code) in [(409, NOT_CONNECTED), (400, "crew_request_refused")] {
+            let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if path.ends_with("/request") {
+                    return Err(refuse(status, Some(code), LEGACY_DISCONNECTED));
+                }
+                standard(method, path, body)
+            };
+            let (api, _) = api_with(OutputFormat::Text, handler);
+            let error = run(&api, history("methods"))
+                .await
+                .expect_err("disconnected");
+            let error = api.worded_failure(error).await;
+            let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
+            assert_eq!(
+                shown, "UCSF HPC is disconnected. Run biorouter crew connect, then try again.",
+                "{code}"
+            );
+            assert!(!shown.contains("Daemon returned"), "{shown}");
+            assert!(!shown.contains("in Crew"), "{shown}");
+            assert_eq!(error_code(&error).as_deref(), Some(code));
+
+            // With --connection, the command to run names it too.
+            let (mut api, _) = api_with(OutputFormat::Text, handler);
+            api.selected = Some(CONNECTION.into());
+            let error = run(&api, history("methods"))
+                .await
+                .expect_err("disconnected");
+            let shown = failure(
+                &api.worded_failure(error).await,
+                OutputFormat::Text,
+                "req-1",
+                false,
+            )
+            .to_string();
+            assert_eq!(
+                shown,
+                "UCSF HPC is disconnected. Run biorouter crew --connection 'UCSF HPC' connect, then try again."
+            );
+        }
+        // Where the command could not name the connection, the sentence still says what to do.
+        let bare = refuse(409, Some(NOT_CONNECTED), LEGACY_DISCONNECTED);
+        assert_eq!(
+            failure(&bare, OutputFormat::Text, "req-1", false).to_string(),
+            NOT_CONNECTED_SENTENCE
+        );
     }
 
     /// CLI-6: a watch starts at the newest page by default, after the newest message with
@@ -6881,7 +7139,8 @@ mod tests {
             Some("already_approved")
         );
 
-        // Without a broker code (another route's refusal), the text is unchanged.
+        // Without a broker code (another route's refusal), the daemon's own sentence is
+        // printed as it is, without the status (FILES2-N4).
         let other = refuse(
             404,
             Some("crew_grant_not_found"),
@@ -6889,8 +7148,138 @@ mod tests {
         );
         assert_eq!(
             failure(&other, OutputFormat::Text, "req-1", false).to_string(),
-            "Daemon returned 404: No Crew grant for this session."
+            "No Crew grant for this session."
         );
+    }
+
+    /// FILES2-N4, CLIDOCS-F6: a daemon refusal with a code and a sentence of its own prints
+    /// that sentence alone, whatever the code; only a refusal with no code keeps the
+    /// `Daemon returned NNN:` prefix. JSON keeps the code, and the sentence is its `error`.
+    #[test]
+    fn a_typed_daemon_refusal_prints_its_own_sentence_without_the_status() {
+        let shown =
+            |error: &anyhow::Error| failure(error, OutputFormat::Text, "req-1", false).to_string();
+        for (code, sentence) in [
+            ("crew_folder_shared", "Choose a folder owned by your account that other accounts can't change."),
+            ("crew_file_name_hidden", "“.Rprofile” starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot."),
+            ("crew_file_is_program", "“run.sh” is a program. Choose another name, or save it in another folder."),
+            ("crew_file_is_credential", "“id_ed25519” looks like a credential file. Crew doesn't share credential files."),
+            ("crew_profile_refused", "Crew couldn't read its saved settings."),
+            ("crew_transfer_refused", "That file selection expired. Select the file again."),
+            ("crew_invitation_conflict", "This invitation doesn't match “lab”, which this computer already has for the same workspace. Ask your host to send it again, and compare the fingerprint."),
+            ("crew_grant_not_found", "No Crew grant for this session."),
+            ("crew_connection_not_found", "No such connection."),
+        ] {
+            let error = refuse(400, Some(code), sentence);
+            let text = shown(&error);
+            assert_eq!(text, sentence, "{code}");
+            assert!(!text.contains("Daemon returned"), "{code}: {text}");
+            let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+            assert_eq!(body["code"], code);
+            assert_eq!(body["error"], sentence);
+        }
+        // An existing file names the flag that replaces it, not the desktop's Replace button.
+        let exists = refuse(
+            400,
+            Some("crew_destination_exists"),
+            "A file named “counts.csv” already exists. Replace it, or choose another name.",
+        );
+        assert_eq!(
+            shown(&exists),
+            "A file named “counts.csv” already exists. Add --overwrite to replace it, or save it under another name."
+        );
+        // A refusal with no code has no sentence of its own the CLI can vouch for.
+        let untyped = refuse(400, None, "Something went wrong");
+        assert_eq!(shown(&untyped), "Daemon returned 400: Something went wrong");
+        // An empty sentence keeps the status too.
+        let empty = refuse(409, Some("crew_request_refused"), "  ");
+        assert!(shown(&empty).starts_with("Daemon returned 409:"));
+    }
+
+    /// SF2-N6, CLIDOCS-F8: a command with several saved connections and no `--connection`, and
+    /// `auth` with no terminal, are usage refusals: exit status 2 (`NeedsTerminal` is what
+    /// `main` exits 2 on), a code in JSON, and nothing sent.
+    #[tokio::test]
+    async fn a_missing_connection_choice_and_auth_without_a_terminal_exit_with_the_usage_status() {
+        let two = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if (method, path) == ("GET", "/crew/connections") {
+                return Ok(json!({"connections": [
+                    {"id": CONNECTION, "name": "UCSF HPC", "ssh_target": "bob@hpc", "workspace_id": "w", "status": "connected"},
+                    {"id": "c0ffee00-0000-4000-8000-000000000009", "name": "Stanford", "ssh_target": "bob@su", "workspace_id": "v", "status": "connected"}
+                ]}));
+            }
+            standard(method, path, body)
+        };
+        let (api, fake) = api_with(OutputFormat::Json, two);
+        let error = run(&api, history("methods")).await.expect_err("which one?");
+        assert!(fake.broker_calls().is_empty(), "nothing was sent");
+        assert_eq!(error_code(&error).as_deref(), Some(CONNECTION_REQUIRED));
+        let exit = failure(&error, OutputFormat::Json, "req-1", false);
+        assert!(exit.downcast_ref::<NeedsTerminal>().is_some(), "exit 2");
+        assert!(exit.to_string().contains("--connection NAME"), "{exit}");
+        let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+        assert_eq!(body["code"], CONNECTION_REQUIRED);
+
+        let auth: anyhow::Error =
+            needs_terminal::require(false, crate::daemon_client::AUTH_NEEDS_A_TERMINAL)
+                .unwrap_err()
+                .into();
+        let exit = failure(&auth, OutputFormat::Json, "req-1", false);
+        assert!(exit.downcast_ref::<NeedsTerminal>().is_some(), "exit 2");
+        let body = failure_body(&auth, &safe_lines(&error_text(&auth)), "req-1");
+        assert_eq!(body["code"], NEEDS_TERMINAL_CODE);
+        assert!(body["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("biorouter crew connect")));
+    }
+
+    /// AGT2-N5: a JSON failure carries the daemon's structured refusal fields, so a script
+    /// reads the modes or institutions that failed without parsing the sentence. What the CLI
+    /// writes itself (`error`, `request_id`, `code`) is never replaced by the daemon's.
+    #[test]
+    fn a_json_failure_keeps_the_daemons_structured_refusal_fields() {
+        let mode: anyhow::Error = DaemonRefusal::for_test(
+            400,
+            json!({
+                "code": "crew_mode_mismatch",
+                "error": "Crew refused this.",
+                "actual_mode": "private",
+                "expected_mode": "public",
+                "request_id": "the-daemons-own",
+            }),
+        )
+        .into();
+        let body = failure_body(&mode, &safe_lines(&error_text(&mode)), "req-1");
+        assert_eq!(body["code"], "crew_mode_mismatch");
+        assert_eq!(body["actual_mode"], "private");
+        assert_eq!(body["expected_mode"], "public");
+        assert_eq!(body["request_id"], "req-1", "the CLI's own request ID");
+        assert_eq!(
+            body["error"],
+            "Your connection is Private, but this request required Public. Nothing was sent."
+        );
+
+        let details = json!({"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "okafor-lab", "workspace_institution": "stanford-synthetic"});
+        let institution: anyhow::Error = DaemonRefusal::for_test(
+            400,
+            json!({
+                "code": "crew_institution_mismatch",
+                "error": "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution",
+                "institution_refusal": details,
+                "workspace": "okafor-lab",
+            }),
+        )
+        .into();
+        // Worded by a command, the refusal is still its source, so its fields still come out.
+        let worded = anyhow::Error::from(Worded {
+            sentence: "Said for a person.".into(),
+            source: institution,
+        });
+        let body = failure_body(&worded, &safe_lines(&error_text(&worded)), "req-1");
+        assert_eq!(body["institution_refusal"], details);
+        assert_eq!(body["workspace"], "okafor-lab");
+        assert_eq!(body["code"], "crew_institution_mismatch");
+        assert_eq!(body["error"], "Said for a person.");
     }
 
     /// CLI-7: a connect the server refused is said in words with what to run, then the code
@@ -6911,6 +7300,7 @@ mod tests {
                         "bob@hpc: Permission denied (publickey,password).\nsecond line".into(),
                     ),
                     modes: None,
+                    fields: Default::default(),
                 }
                 .into());
             }
@@ -6946,7 +7336,7 @@ mod tests {
             assert!(text.ends_with('.'), "{code}: {text}");
         }
         assert!(output::connect_failure_text("crew_request_refused").is_none());
-        // Another refusal keeps its text.
+        // Another refusal keeps its own sentence.
         let other = refuse(
             404,
             Some("crew_connection_not_found"),
@@ -6954,7 +7344,7 @@ mod tests {
         );
         assert_eq!(
             failure(&other, OutputFormat::Text, "req-1", false).to_string(),
-            "Daemon returned 404: No such connection."
+            "No such connection."
         );
     }
 
@@ -7127,6 +7517,7 @@ mod tests {
                         message: message.into(),
                         detail: None,
                         modes: modes.clone(),
+                        fields: Default::default(),
                     }
                     .into());
                 }
@@ -7218,6 +7609,7 @@ mod tests {
                     message: SENTENCE.into(),
                     detail: None,
                     modes: None,
+                    fields: Default::default(),
                 }
                 .into());
             }
@@ -7293,6 +7685,7 @@ mod tests {
                             message: sentence.into(),
                             detail: None,
                             modes: None,
+                            fields: Default::default(),
                         }
                         .into());
                     }

@@ -36,6 +36,63 @@ pub struct DaemonRefusal {
     /// `actual_mode` and `expected_mode` beside a privacy-mode refusal (`crew_mode_mismatch`):
     /// the connection's mode and the one the request required.
     modes: Option<(String, String)>,
+    /// The refusal's other machine-readable fields, as the daemon sent them ([`REFUSAL_FIELDS`]),
+    /// bounded: what a script reads beside `code`, such as `actual_mode`, `institution_refusal`,
+    /// `reason` or `connection_id` (AGT2-N5). Never printed as text.
+    fields: serde_json::Map<String, Value>,
+}
+
+/// The optional fields of the daemon's `CrewError` a JSON failure carries through, beside the
+/// `error`, `code`, `broker_code` and `detail` the CLI writes itself. The daemon's `request_id`
+/// is left out: the CLI's own is the one to retry with.
+pub const REFUSAL_FIELDS: &[&str] = &[
+    "host",
+    "connection_id",
+    "reason",
+    "missing",
+    "ssh_code",
+    "workspace",
+    "actual_mode",
+    "expected_mode",
+    "institution_refusal",
+    "connection",
+    "connection_institution",
+    "institution",
+    "institutions",
+    "kind",
+    "text",
+    "candidates",
+    "session_id",
+    "run_id",
+    "stopped_on_this_device",
+    "remote_revocation_confirmed",
+    "task_status",
+    "task_status_error",
+];
+
+/// A daemon value kept for JSON output, bounded so a malformed answer cannot grow it: strings
+/// to 4096 characters, lists to 64 items, objects to 32 fields, three levels deep.
+#[cfg(unix)]
+fn bounded_field(value: &Value, depth: usize) -> Value {
+    match value {
+        Value::String(text) => Value::String(text.chars().take(4096).collect()),
+        Value::Array(items) if depth > 0 => Value::Array(
+            items
+                .iter()
+                .take(64)
+                .map(|item| bounded_field(item, depth - 1))
+                .collect(),
+        ),
+        Value::Object(fields) if depth > 0 => Value::Object(
+            fields
+                .iter()
+                .take(32)
+                .map(|(key, item)| (key.clone(), bounded_field(item, depth - 1)))
+                .collect(),
+        ),
+        Value::Array(_) | Value::Object(_) => Value::Null,
+        other => other.clone(),
+    }
 }
 
 impl DaemonRefusal {
@@ -56,6 +113,22 @@ impl DaemonRefusal {
         self.modes
             .as_ref()
             .map(|(actual, expected)| (actual.as_str(), expected.as_str()))
+    }
+
+    /// The refusal's other fields ([`REFUSAL_FIELDS`]) that the daemon sent.
+    pub fn fields(&self) -> &serde_json::Map<String, Value> {
+        &self.fields
+    }
+
+    /// One of [`Self::fields`] as text, such as `reason` or `connection_id`.
+    pub fn field_text(&self, key: &str) -> Option<&str> {
+        self.fields.get(key).and_then(Value::as_str)
+    }
+
+    /// A refusal as the daemon would answer it with `body`, for a test elsewhere in the crate.
+    #[cfg(all(test, unix))]
+    pub fn for_test(status: u16, body: Value) -> Self {
+        daemon_refusal(status, Some(&body), "Daemon refused the request")
     }
 }
 
@@ -262,10 +335,18 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
             .map(str::to_owned)
     };
     let modes = mode("actual_mode").zip(mode("expected_mode"));
+    let fields = REFUSAL_FIELDS
+        .iter()
+        .filter_map(|key| {
+            let field = value?.get(*key)?;
+            (!field.is_null()).then(|| ((*key).to_owned(), bounded_field(field, 3)))
+        })
+        .collect();
     DaemonRefusal {
         status,
         detail,
         modes,
+        fields,
         kind: value
             .and_then(|value| value.get("status").or_else(|| value.get("code")))
             .and_then(Value::as_str)
@@ -606,10 +687,9 @@ impl CrewClient {
             };
             use futures::{SinkExt, StreamExt};
             use tokio_tungstenite::tungstenite::Message;
-            ensure!(
-                std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-                "SSH authentication needs an interactive terminal for native host-key and MFA prompts"
-            );
+            // SF2-N6: the usage refusal (exit 2, `crew_needs_terminal`), like every other
+            // command that needs a person at a terminal.
+            sign_in_possible(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())?;
             ensure!(
                 connection_id
                     .bytes()
@@ -617,7 +697,10 @@ impl CrewClient {
                 "Invalid connection ID"
             );
             let controller = uuid::Uuid::new_v4().to_string();
-            let (cols, rows) = terminal::size()?;
+            // A pty a script opened (`ssh -tt`) can report 0x0, which the daemon refuses.
+            let (cols, rows) = terminal::size().map_or(DEFAULT_SIGN_IN_SIZE, |(cols, rows)| {
+                sign_in_terminal_size(cols, rows)
+            });
             let started = self.request("POST", &format!("/crew/connections/{connection_id}/authentication"), Some(json!({"request_id": uuid::Uuid::new_v4().to_string(), "controller_id": controller, "cols": cols, "rows": rows}))).await?;
             let id = started["authentication_id"]
                 .as_str()
@@ -657,7 +740,10 @@ impl CrewClient {
                         _ => (),
                     },
                     event = input.next() => match event {
-                        Some(Ok(Event::Resize(cols, rows))) => socket.send(Message::Text(json!({"type":"resize","cols":cols,"rows":rows}).to_string().into())).await?,
+                        Some(Ok(Event::Resize(cols, rows))) => {
+                            let (cols, rows) = sign_in_terminal_size(cols, rows);
+                            socket.send(Message::Text(json!({"type":"resize","cols":cols,"rows":rows}).to_string().into())).await?;
+                        }
                         Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
                             let data = match key.code {
                                 KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) && c.is_ascii() => Some(((c.to_ascii_lowercase() as u8) & 0x1f) as char),
@@ -681,6 +767,32 @@ impl CrewClient {
             Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":true}))
         }
     }
+}
+
+/// What `crew auth` says with no terminal to show the server's prompts in (SF2-N6). A server that
+/// takes this computer's SSH key alone needs no prompt, so `connect` is named for it.
+pub const AUTH_NEEDS_A_TERMINAL: &str = "Signing in needs a terminal, to show the server's host-key and verification-code prompts. Run biorouter crew auth in a terminal. If the server takes this computer's SSH key alone, biorouter crew connect signs in without one.";
+
+/// `Ok` when `crew auth` has a terminal to sign in at, else the usage refusal (exit 2).
+#[cfg(unix)]
+fn sign_in_possible(terminal: bool) -> Result<(), needs_terminal::NeedsTerminal> {
+    needs_terminal::require(terminal, AUTH_NEEDS_A_TERMINAL)
+}
+
+/// The size a sign-in terminal gets when the real one reports none (a pty a script opened can
+/// report 0x0): the classic 80 by 24.
+#[cfg(unix)]
+const DEFAULT_SIGN_IN_SIZE: (u16, u16) = (80, 24);
+
+/// A terminal size the daemon's sign-in accepts (20 to 500 columns, 5 to 200 rows,
+/// `dimensions` in `crew/authentication.rs`): an unknown size (a zero) is 80 by 24, and any
+/// other is clamped into range, so a very small or very large window still signs in.
+#[cfg(unix)]
+fn sign_in_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
+    if cols == 0 || rows == 0 {
+        return DEFAULT_SIGN_IN_SIZE;
+    }
+    (cols.clamp(20, 500), rows.clamp(5, 200))
 }
 
 // Match the daemon turn replay hard ceiling, with room for SSE field framing.
@@ -1569,12 +1681,37 @@ pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Va
     }
 }
 
+/// What `credentials unlock` says when this profile keeps its Crew keys in the OS keyring.
+pub const NO_VAULT_TO_UNLOCK: &str = "There's no Crew vault to unlock: this computer keeps Crew keys in the OS keyring. To use a passphrase vault instead, run biorouter crew credentials init.";
+/// The same, for a development profile that keeps its keys in files.
+const NO_VAULT_TO_UNLOCK_FILES: &str =
+    "There's no Crew vault to unlock: this development profile keeps Crew keys in files.";
+/// The JSON code beside [`NO_VAULT_TO_UNLOCK`].
+pub const NO_VAULT_TO_UNLOCK_CODE: &str = "crew_no_vault";
+
+/// `Ok` when `status` (`GET /crew/credentials`) names a vault `credentials unlock` can open;
+/// the refusal otherwise. Only an initialized encrypted vault can be unlocked.
+fn no_vault_to_unlock(status: &Value) -> Result<()> {
+    let sentence = match status["backend"].as_str() {
+        Some("encrypted_vault") if status["initialized"].as_bool() != Some(false) => return Ok(()),
+        Some("file") => NO_VAULT_TO_UNLOCK_FILES,
+        _ => NO_VAULT_TO_UNLOCK,
+    };
+    Err(Restated::new(sentence, Some(NO_VAULT_TO_UNLOCK_CODE)).into())
+}
+
 pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Result<Value> {
     let client = CrewClient::connect_with_input(true, approval_key_stdin).await?;
     match action {
         "status" => client.request("GET", "/crew/credentials", None).await,
         "lock" => client.request("POST", "/crew/credentials/lock", None).await,
         "init" | "unlock" => {
+            if action == "unlock" {
+                // CLIDOCS-F6: with no vault there is nothing to unlock, so say so before asking
+                // for a passphrase that could only be refused.
+                let status = client.request("GET", "/crew/credentials", None).await?;
+                no_vault_to_unlock(&status)?;
+            }
             let passphrase = vault_passphrase(action, approval_key_stdin, read_secret).await?;
             ensure!(
                 passphrase.as_str() != client.proof.as_str(),
@@ -1595,11 +1732,13 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        choose_approval_secret, daemon_control, daemon_refusal, open_daemon_owner_lock,
-        read_observer_frames, require_supported_platform, secret_prompt_possible, vault_passphrase,
+        choose_approval_secret, daemon_control, daemon_refusal, no_vault_to_unlock,
+        open_daemon_owner_lock, read_observer_frames, require_supported_platform,
+        secret_prompt_possible, sign_in_possible, sign_in_terminal_size, vault_passphrase,
         wait_for_daemon_stop, wrong_approval_secret, CrewClient, DaemonRefusal, EventDecoder,
-        Restated, APPROVAL_SECRET_AGAIN, DAEMON_NOT_RUNNING, DAEMON_NOT_RUNNING_CODE,
-        MAX_SSE_FRAME, NEW_DAEMON_SECRET_PROMPT, NEW_VAULT_PASSPHRASE, VAULT_PASSPHRASE,
+        Restated, APPROVAL_SECRET_AGAIN, AUTH_NEEDS_A_TERMINAL, DAEMON_NOT_RUNNING,
+        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_DAEMON_SECRET_PROMPT, NEW_VAULT_PASSPHRASE,
+        NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
         VAULT_PASSPHRASE_AGAIN, WRONG_APPROVAL_SECRET, WRONG_APPROVAL_SECRET_CODE,
     };
     use crate::commands::needs_terminal::NeedsTerminal;
@@ -2632,6 +2771,114 @@ mod tests {
         secret_prompt_possible(true).expect("a terminal");
         let refusal: NeedsTerminal = secret_prompt_possible(false).expect_err("no terminal");
         assert!(refusal.to_string().contains("--approval-key-stdin"));
+    }
+
+    /// SF2-N6: `auth` with no terminal is the usage refusal every other such command gives
+    /// (exit 2), and names `connect` for a server that takes the key alone.
+    #[test]
+    fn auth_without_a_terminal_is_the_usage_refusal_and_names_connect() {
+        sign_in_possible(true).expect("a terminal");
+        let refusal: NeedsTerminal = sign_in_possible(false).expect_err("no terminal");
+        let text = refusal.to_string();
+        assert_eq!(text, AUTH_NEEDS_A_TERMINAL);
+        assert!(text.contains("biorouter crew connect"), "{text}");
+        assert!(!text.contains("MFA"), "{text}");
+        // It survives the `?` into an anyhow error, which is what `main` downcasts.
+        let error: anyhow::Error = sign_in_possible(false).unwrap_err().into();
+        assert!(error.chain().any(|cause| cause.is::<NeedsTerminal>()));
+    }
+
+    /// SETUPHPC2-F-B: a terminal size the daemon would refuse (a 0x0 pty from `ssh -tt`) is
+    /// never sent; an unknown size is 80 by 24 and any other is clamped into its range.
+    #[test]
+    fn a_sign_in_terminal_size_is_always_one_the_daemon_accepts() {
+        assert_eq!(sign_in_terminal_size(0, 0), (80, 24));
+        assert_eq!(sign_in_terminal_size(0, 50), (80, 24));
+        assert_eq!(sign_in_terminal_size(120, 0), (80, 24));
+        assert_eq!(sign_in_terminal_size(10, 2), (20, 5));
+        assert_eq!(sign_in_terminal_size(900, 900), (500, 200));
+        assert_eq!(sign_in_terminal_size(132, 43), (132, 43));
+        for cols in [0, 1, 19, 20, 80, 500, 501, u16::MAX] {
+            for rows in [0, 1, 4, 5, 24, 200, 201, u16::MAX] {
+                let (cols, rows) = sign_in_terminal_size(cols, rows);
+                assert!((20..=500).contains(&cols) && (5..=200).contains(&rows));
+            }
+        }
+    }
+
+    /// CLIDOCS-F6: `credentials unlock` with no vault refuses before any passphrase is asked,
+    /// in a sentence that names what to run, with its own code.
+    #[test]
+    fn unlocking_without_a_vault_is_refused_before_the_passphrase() {
+        for (status, sentence) in [
+            (
+                serde_json::json!({"backend": "keyring", "initialized": false, "locked": false, "available": true}),
+                NO_VAULT_TO_UNLOCK,
+            ),
+            (
+                serde_json::json!({"backend": "keyring", "initialized": false, "locked": false, "available": false}),
+                NO_VAULT_TO_UNLOCK,
+            ),
+            (
+                serde_json::json!({"backend": "file", "initialized": false, "locked": false, "available": true}),
+                NO_VAULT_TO_UNLOCK_FILES,
+            ),
+        ] {
+            let error = no_vault_to_unlock(&status).expect_err("no vault");
+            assert_eq!(error.to_string(), sentence);
+            assert_eq!(
+                error.downcast_ref::<Restated>().and_then(|r| r.code),
+                Some(NO_VAULT_TO_UNLOCK_CODE)
+            );
+        }
+        assert!(NO_VAULT_TO_UNLOCK.contains("biorouter crew credentials init"));
+        no_vault_to_unlock(&serde_json::json!({"backend": "encrypted_vault", "initialized": true, "locked": true, "available": true}))
+            .expect("a locked vault can be unlocked");
+    }
+
+    /// AGT2-N5: a refusal keeps the daemon's machine-readable fields for JSON output, bounded,
+    /// and never the daemon's own `request_id`.
+    #[test]
+    fn a_refusal_keeps_the_daemons_structured_fields() {
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_mode_mismatch",
+                "error": "Your connection is Private, but this request required Public.",
+                "actual_mode": "private",
+                "expected_mode": "public",
+                "workspace": "lab",
+                "request_id": "the-daemons",
+                "candidates": (0..100).map(|n| format!("c{n}")).collect::<Vec<_>>(),
+                "host": "x".repeat(5000),
+                "reason": null,
+                "unrelated": "dropped",
+            })),
+            "fallback",
+        );
+        let fields = refusal.fields();
+        assert_eq!(fields["actual_mode"], "private");
+        assert_eq!(fields["expected_mode"], "public");
+        assert_eq!(fields["workspace"], "lab");
+        assert_eq!(refusal.field_text("workspace"), Some("lab"));
+        assert!(!fields.contains_key("request_id"));
+        assert!(!fields.contains_key("unrelated"));
+        assert!(!fields.contains_key("reason"), "a null is not kept");
+        assert_eq!(fields["candidates"].as_array().map(Vec::len), Some(64));
+        assert_eq!(fields["host"].as_str().map(str::len), Some(4096));
+        let institution = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_institution_mismatch",
+                "error": "x",
+                "institution_refusal": {"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "lab", "workspace_institution": "stanford"},
+            })),
+            "fallback",
+        );
+        assert_eq!(
+            institution.fields()["institution_refusal"]["approved_for"],
+            serde_json::json!(["ucsf"])
+        );
     }
 
     fn decode_sse(input: &[u8]) -> anyhow::Result<(Vec<serde_json::Value>, EventDecoder)> {
