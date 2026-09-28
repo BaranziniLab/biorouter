@@ -93,8 +93,14 @@ export function TransferRow({
   onPause,
   onResume,
   onRemove,
+  serverStorageNote,
 }: TransferActions & {
   transfer: CrewTransfer;
+  /**
+   * What the viewer does about a transfer the workspace server could not save: the host's own
+   * next step, or whom a member waits for (`filesCopy.serverStorage*`, RES2-N3).
+   */
+  serverStorageNote?: string;
 }) {
   const presentation = transferStatePresentation(transfer);
   const Glyph = transfer.direction === 'upload' ? Upload : Download;
@@ -155,6 +161,7 @@ export function TransferRow({
         presentation.reason ? (
           <p className="crew-file-row-reason" title={transfer.error ?? undefined}>
             {presentation.reason}
+            {presentation.serverStorage && serverStorageNote ? `. ${serverStorageNote}` : null}
           </p>
         ) : null
       ) : transfer.error ? (

@@ -5,9 +5,11 @@ import type { CrewMessage } from '../crewApi';
 import type { CrewTransfer } from '../crewTransfers';
 import type { CrewController } from '../state/types';
 import { AttachmentIndexProvider } from './attachmentIndex';
+import { SERVER_STORAGE_PAUSE_REASON } from '../state/crewStatus';
 import { filesCopy } from './copy';
-import { crewTestController, CrewTestProvider } from './crewTestController';
+import { crewTestController, CrewTestProvider, testSnapshot } from './crewTestController';
 import { FilesTab } from './FilesTab';
+import { TRANSFER_WATCH_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
   crewRequest: vi.fn(),
@@ -155,6 +157,68 @@ describe('FilesTab', () => {
     renderTab();
     expect(await screen.findByText('The source file changed.')).toBeInTheDocument();
     expect(screen.getByText(/^Paused/)).toBeInTheDocument();
+  });
+
+  /**
+   * RES2-N3: a disk-full upload read Failed with only Remove from list, and the workspace's own
+   * sentence told the host to ask the host. The daemon now pauses it (T3-BE-14).
+   */
+  it('offers Resume… for a transfer the workspace server could not save, in the host’s words', async () => {
+    const full = transfer({
+      state: 'needs_file_selection',
+      pause_reason: 'server_storage',
+      error:
+        'The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.',
+    });
+    mocks.listTransfers.mockResolvedValue([full]);
+    mocks.resumeTransfer.mockResolvedValue(null);
+    renderTab();
+    const reason = await screen.findByText(
+      `${SERVER_STORAGE_PAUSE_REASON}. ${filesCopy.serverStorageHost}`
+    );
+    expect(reason).not.toHaveTextContent(/ask the host/i);
+    expect(screen.getByText(/^Paused/)).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Resume…/ }));
+    expect(mocks.resumeTransfer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'transfer-1' })
+    );
+  });
+
+  it('tells a member whom a transfer the server could not save waits for', async () => {
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'needs_file_selection', pause_reason: 'server_storage', error: 'full' }),
+    ]);
+    const host = { id: 'person-host', uid: 1000, username: 'iris', nickname: 'Iris Wong' };
+    const me = { id: 'person-1', uid: 1001, username: 'alice', nickname: 'Alice' };
+    renderTab({
+      snapshot: { ...testSnapshot, actor: me, principals: [host, me] } as typeof testSnapshot,
+    });
+    expect(
+      await screen.findByText(
+        `${SERVER_STORAGE_PAUSE_REASON}. ${filesCopy.serverStorageMember('Iris Wong (@iris)')}`
+      )
+    ).toBeInTheDocument();
+  });
+
+  /** RES2-N3: the list stopped asking once nothing moved, while the command line uploaded. */
+  it('asks again while open, so a change the command line made shows', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.listTransfers.mockResolvedValue([
+        transfer({ state: 'failed', error: 'You are no longer a member of #methods.' }),
+      ]);
+      renderTab();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+      mocks.listTransfers.mockResolvedValue([transfer({ state: 'uploading', offset: 1536 })]);
+      await vi.advanceTimersByTimeAsync(TRANSFER_WATCH_POLL_MS);
+      expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('Uploading 75% · 2 KB')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows a transfer the workspace refused as Failed, in the daemon’s words, with no Resume…', async () => {

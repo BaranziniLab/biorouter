@@ -9,6 +9,7 @@ import {
   runStatusPresentation,
   sentenceCaseStatus,
   transferPauseReason,
+  SERVER_STORAGE_PAUSE_REASON,
   transferStatePresentation,
   type ConnectionStatusInput,
   type CrewScreenInput,
@@ -408,6 +409,25 @@ describe('transfer state words', () => {
     [transfer('queued_for_scan'), 'unknown', 'Queued for scan', false],
   ])('%o reads %s', (input, key, word, active) => {
     expect(transferStatePresentation(input)).toMatchObject({ key, word, active });
+  });
+
+  /**
+   * T3-BE-14, RES2-N3: a transfer the workspace server could not save is paused, to resume once its
+   * host has freed space, and its reason is never the workspace's sentence, which tells a host to
+   * ask the host.
+   */
+  it('reads a transfer the workspace server could not save as Paused, marked so', () => {
+    const paused = transferStatePresentation({
+      ...transfer('needs_file_selection', 'upload', 'Ask the host to free space on the server.'),
+      pause_reason: 'server_storage',
+    });
+    expect(paused).toMatchObject({
+      key: 'paused',
+      word: 'Paused',
+      active: false,
+      reason: SERVER_STORAGE_PAUSE_REASON,
+      serverStorage: true,
+    });
   });
 
   it.each([

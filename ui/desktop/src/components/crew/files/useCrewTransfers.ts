@@ -10,6 +10,13 @@ export const TRANSFER_POLL_MS = 2000;
  * and the list used to keep "Paused 17%" until the view mounted again (R-8).
  */
 export const TRANSFER_PAUSED_POLL_MS = 5000;
+/**
+ * How often it asks while a surface watches every record (the Files tab) and nothing moves or is
+ * paused. The command line on this computer can resume, forget or start a transfer, which nothing
+ * here hears: a list that asked only while a transfer moved kept showing "Failed" while the
+ * command line uploaded the same file (RES2-N3).
+ */
+export const TRANSFER_WATCH_POLL_MS = 10_000;
 
 export interface CrewTransfersState {
   /** Every transfer record this computer keeps for the connection, both directions. */
@@ -25,6 +32,8 @@ const IDLE: CrewTransfersState = { transfers: [], loaded: false, error: '' };
 interface Entry {
   state: CrewTransfersState;
   listeners: Set<() => void>;
+  /** How many subscribers watch every record, so the list is asked again even when idle. */
+  watchers: number;
   timer: ReturnType<typeof setTimeout> | null;
   /** The newest list request; an older answer never overwrites a newer one. */
   sequence: number;
@@ -41,8 +50,9 @@ interface Entry {
  *
  * Transfer records are this computer's receipts. They move while a transfer is active, after an
  * action here (each asks for a fresh list), and after an action from the command line on this
- * computer, which nothing here hears: so a paused transfer keeps the poller going slowly, and
- * the window coming back to the front asks again (R-8). Nothing polls once every transfer has
+ * computer, which nothing here hears: so a paused transfer keeps the poller going slowly, the
+ * window coming back to the front asks again (R-8), and a surface that watches every record (the
+ * Files tab) keeps it going slower still (RES2-N3). Nothing else polls once every transfer has
  * finished.
  */
 const entries = new Map<string, Entry>();
@@ -57,11 +67,14 @@ function isTransferPaused(transfer: CrewTransfer): boolean {
   return transferStatePresentation(transfer).key === 'paused';
 }
 
-/** When the poller asks next, or `null` when nothing can change without an action here. */
-function pollDelay(transfers: readonly CrewTransfer[]): number | null {
+/**
+ * When the poller asks next, or `null` when nothing can change without an action here and no
+ * surface watches every record.
+ */
+function pollDelay(transfers: readonly CrewTransfer[], watched: boolean): number | null {
   if (transfers.some(isTransferActive)) return TRANSFER_POLL_MS;
   if (transfers.some(isTransferPaused)) return TRANSFER_PAUSED_POLL_MS;
-  return null;
+  return watched ? TRANSFER_WATCH_POLL_MS : null;
 }
 
 /** The window came back to the front: every connection shown asks again. */
@@ -90,7 +103,7 @@ function publish(entry: Entry, state: CrewTransfersState) {
 
 function schedule(connectionId: string, entry: Entry) {
   if (entry.disposed || entry.timer) return;
-  const delay = pollDelay(entry.state.transfers);
+  const delay = pollDelay(entry.state.transfers, entry.watchers > 0);
   if (delay === null) return;
   entry.timer = setTimeout(() => {
     entry.timer = null;
@@ -132,18 +145,34 @@ function fetchTransfers(connectionId: string, entry: Entry): Promise<void> {
   );
 }
 
-function subscribeTransfers(connectionId: string, listener: () => void): () => void {
+function subscribeTransfers(
+  connectionId: string,
+  listener: () => void,
+  watch: boolean
+): () => void {
   let entry = entries.get(connectionId);
+  const fresh = !entry;
   if (!entry) {
-    entry = { state: IDLE, listeners: new Set(), timer: null, sequence: 0, disposed: false };
+    entry = {
+      state: IDLE,
+      listeners: new Set(),
+      watchers: 0,
+      timer: null,
+      sequence: 0,
+      disposed: false,
+    };
     entries.set(connectionId, entry);
     listenForReturn(true);
-    void fetchTransfers(connectionId, entry);
   }
   const subscribed = entry;
   subscribed.listeners.add(listener);
+  if (watch) subscribed.watchers += 1;
+  if (fresh) void fetchTransfers(connectionId, subscribed);
+  // A watcher joining an idle list starts its slow poll; the first list's answer schedules it.
+  else if (watch && subscribed.state.loaded) schedule(connectionId, subscribed);
   return () => {
     subscribed.listeners.delete(listener);
+    if (watch) subscribed.watchers -= 1;
     if (subscribed.listeners.size > 0) return;
     subscribed.disposed = true;
     if (subscribed.timer) clearTimeout(subscribed.timer);
@@ -167,12 +196,20 @@ export interface CrewTransfersView extends CrewTransfersState {
   refresh(): Promise<void>;
 }
 
-/** This connection's transfer records, from the one shared poller. */
-export function useCrewTransfers(connectionId: string): CrewTransfersView {
+/**
+ * This connection's transfer records, from the one shared poller. `watch`: the surface shows every
+ * record, so the list is asked again every {@link TRANSFER_WATCH_POLL_MS} even while nothing moves
+ * (the Files tab, RES2-N3).
+ */
+export function useCrewTransfers(
+  connectionId: string,
+  options: { watch?: boolean } = {}
+): CrewTransfersView {
+  const watch = options.watch === true;
   const subscribe = useCallback(
     (listener: () => void) =>
-      connectionId ? subscribeTransfers(connectionId, listener) : () => undefined,
-    [connectionId]
+      connectionId ? subscribeTransfers(connectionId, listener, watch) : () => undefined,
+    [connectionId, watch]
   );
   const read = useCallback(
     () => (connectionId ? (entries.get(connectionId)?.state ?? IDLE) : IDLE),

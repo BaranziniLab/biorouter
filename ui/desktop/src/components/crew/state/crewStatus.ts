@@ -278,6 +278,12 @@ export interface TransferStatePresentation {
   percent?: number;
   /** Why a paused transfer stopped, in a few words ("You paused it"), when the daemon said. */
   reason?: string;
+  /**
+   * Paused because the workspace server could not save it (`pause_reason: server_storage`,
+   * T3-BE-14): Resume works once its host has freed space, which the row says in the viewer's
+   * words.
+   */
+  serverStorage?: boolean;
 }
 
 export interface TransferStateInput {
@@ -286,7 +292,14 @@ export interface TransferStateInput {
   offset: number;
   size: number;
   error?: string | null;
+  pause_reason?: string | null;
 }
+
+/** The daemon's `pause_reason` for a transfer the workspace server could not save (T3-BE-14). */
+export const SERVER_STORAGE_PAUSE = 'server_storage';
+
+/** Said of a transfer paused because the workspace server could not save it. */
+export const SERVER_STORAGE_PAUSE_REASON = 'The workspace server couldn’t save it';
 
 function percentOf(offset: number, size: number): number {
   if (!(size > 0) || !Number.isFinite(offset)) return 0;
@@ -339,6 +352,17 @@ export function transferStatePresentation(transfer: TransferStateInput): Transfe
     case 'pause_requested':
       return { key: 'pausing', word: 'Pausing…', active: true, percent };
     case 'needs_file_selection': {
+      // The workspace's own sentence tells a member to ask the host, whoever reads it: the row
+      // words it by who is reading (RES2-N3).
+      if (transfer.pause_reason === SERVER_STORAGE_PAUSE)
+        return {
+          key: 'paused',
+          word: 'Paused',
+          active: false,
+          percent,
+          reason: SERVER_STORAGE_PAUSE_REASON,
+          serverStorage: true,
+        };
       const reason = transferPauseReason(transfer.error);
       return {
         key: 'paused',

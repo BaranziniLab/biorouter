@@ -57,6 +57,14 @@ export const filesCopy = {
   sending: 'Sending…',
   resume: 'Resume…',
   resumeNamed: (name: string) => `Resume ${name}`,
+  /**
+   * Under a transfer paused because the workspace server could not save it (T3-BE-14, RES2-N3):
+   * what the viewer does. The workspace's own sentence told the host to "ask the host".
+   */
+  serverStorageHost:
+    'Free space on the server, or check its storage, then restart Crew there and choose Resume.',
+  serverStorageMember: (host: string | null) =>
+    `Choose Resume once ${host ?? 'your host'} has freed space on the server.`,
   removeFromList: 'Remove from list',
   removeFromListHelp: 'Removes the record on this computer. Shared files and saved downloads stay.',
   /**

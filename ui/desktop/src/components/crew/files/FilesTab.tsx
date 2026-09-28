@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent } from '../../ui/dropdown-menu';
 import { File, Paperclip } from '../../icons/app-icons';
 import type { CrewMessage } from '../crewApi';
 import { forgetTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from '../crewTransfers';
-import { PersonName, usePeopleDirectory, type PeopleDirectory } from '../identity';
+import { PersonName, personLabel, usePeopleDirectory, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { usePendingPostOf } from '../timeline/pendingPost';
 import { isoTime, messageTime } from '../timeline/timelineTime';
@@ -62,7 +62,21 @@ export function FilesTab() {
   const dir = usePeopleDirectory(snapshot, labels, people ?? null);
   const pendingPost = usePendingPostOf(connectionId, channelId);
   const viewerId = typeof snapshot?.actor?.id === 'string' ? snapshot.actor.id : null;
-  const { transfers, error: listError, refresh } = useCrewTransfers(connectionId);
+  // Watched while this tab is open: a record the command line changed (a resume, a forget) shows
+  // here without an action in this window, whatever state it was in (RES2-N3).
+  const {
+    transfers,
+    error: listError,
+    refresh,
+  } = useCrewTransfers(connectionId, {
+    watch: true,
+  });
+  // What the viewer does about a transfer the workspace server could not save (RES2-N3).
+  const serverStorageNote = dir.viewerIsHost
+    ? filesCopy.serverStorageHost
+    : filesCopy.serverStorageMember(
+        dir.host && !dir.host.isFormer ? personLabel(dir.host, 'authority', dir) : null
+      );
   const [error, setError] = useState('');
   const [attaching, setAttaching] = useState<string | null>(null);
   const headingId = useId();
@@ -184,7 +198,12 @@ export function FilesTab() {
           </h3>
           <ul className="crew-file-list">
             {inProgress.map((transfer) => (
-              <TransferRow key={transfer.id} transfer={transfer} {...actions} />
+              <TransferRow
+                key={transfer.id}
+                transfer={transfer}
+                serverStorageNote={serverStorageNote}
+                {...actions}
+              />
             ))}
           </ul>
         </section>

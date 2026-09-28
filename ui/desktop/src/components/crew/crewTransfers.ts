@@ -5,24 +5,27 @@ import { unwrapIpcError } from '../../utils/ipcError';
 export type TransferDirection = Api.Direction;
 /**
  * A transfer as the daemon records it (`Receipt`), without the daemon's own bookkeeping for
- * resuming and cleaning up, of which only `destination_identity` is read here.
+ * resuming and cleaning up, of which only `destination_identity` is read here. `pause_reason` is
+ * `server_storage` for a transfer paused because the workspace server could not save it
+ * (T3-BE-14); optional, as a daemon from before it does not send it.
  */
-export type CrewTransfer = Pick<
-  Api.Receipt,
-  | 'id'
-  | 'request_id'
-  | 'connection_id'
-  | 'channel_id'
-  | 'direction'
-  | 'name'
-  | 'size'
-  | 'sha256'
-  | 'offset'
-  | 'blob_id'
-  | 'state'
-  | 'error'
-  | 'destination_identity'
->;
+export type CrewTransfer = Partial<Pick<Api.Receipt, 'pause_reason'>> &
+  Pick<
+    Api.Receipt,
+    | 'id'
+    | 'request_id'
+    | 'connection_id'
+    | 'channel_id'
+    | 'direction'
+    | 'name'
+    | 'size'
+    | 'sha256'
+    | 'offset'
+    | 'blob_id'
+    | 'state'
+    | 'error'
+    | 'destination_identity'
+  >;
 export interface FileSelectionRequest {
   expected_mode?: 'private' | 'public';
   purpose?: 'transfer' | 'cleanup';
