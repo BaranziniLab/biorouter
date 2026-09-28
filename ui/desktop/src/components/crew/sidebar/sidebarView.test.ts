@@ -41,6 +41,25 @@ describe('waitingToJoin', () => {
     expect(rows[0]).toMatchObject({ approved: true, serverName: 'Bob Lee' });
   });
 
+  /** SC2-N4: the broker's UID order read "… mallory, paula, kenji, maya" with nothing to go by. */
+  it('lists joiners by the @username their row leads with, case aside', () => {
+    const rows = waitingToJoin(
+      snapshot(
+        ['crew_bob', 'crew_mallory', 'crew_paula', 'Crew_Kenji', 'crew_maya', 'crew_carol'].map(
+          (username) => ({ username })
+        )
+      )
+    );
+    expect(rows.map((row) => row.username)).toEqual([
+      'crew_bob',
+      'crew_carol',
+      'Crew_Kenji',
+      'crew_mallory',
+      'crew_maya',
+      'crew_paula',
+    ]);
+  });
+
   it('keeps only joins it can name, and nothing without the host’s list', () => {
     expect(waitingToJoin(null)).toEqual([]);
     expect(waitingToJoin(snapshot(undefined))).toEqual([]);

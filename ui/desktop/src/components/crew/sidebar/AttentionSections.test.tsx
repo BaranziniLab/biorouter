@@ -349,6 +349,50 @@ describe('Waiting to join', () => {
     });
   });
 
+  /** SC2-N4: nine waiting rows pushed the team's channels below the fold. */
+  it('shows the first few joiners by name, the rest behind Show more, and never hides a warning', async () => {
+    const many: PendingJoin[] = [
+      'paula',
+      'kenji',
+      'maya',
+      'bob',
+      'carol',
+      'gina',
+      'henry',
+      'jack',
+      'mallory',
+    ].map((username) => ({ username }));
+    many[8] = { username: 'mallory', mismatched_attempts: 1 };
+    renderWithCrew(
+      <AttentionSections />,
+      makeController({ snapshot: makeSnapshot({ pending_joins: many }) })
+    );
+    const list = () => section(sidebarCopy.section.waiting);
+    const shown = () =>
+      Array.from(list().querySelectorAll('[data-crew-waiting]')).map((row) =>
+        row.getAttribute('data-crew-waiting')
+      );
+    expect(shown()).toEqual(['bob', 'carol', 'gina', 'henry', 'jack', 'mallory']);
+    const more = within(list()).getByRole('button', { name: sidebarCopy.waiting.showAll(3) });
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(more);
+    expect(shown()).toEqual([
+      'bob',
+      'carol',
+      'gina',
+      'henry',
+      'jack',
+      'kenji',
+      'mallory',
+      'maya',
+      'paula',
+    ]);
+    await userEvent.click(
+      within(list()).getByRole('button', { name: sidebarCopy.waiting.showFewer })
+    );
+    expect(shown()).toHaveLength(6);
+  });
+
   it('opens Let in for that username', () => {
     const controller = asHost();
     renderWithCrew(<AttentionSections />, controller);

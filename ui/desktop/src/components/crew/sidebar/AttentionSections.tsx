@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AlertTriangle } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import {
@@ -28,6 +28,7 @@ import {
   rememberJoinerNames,
   teamSections,
   useSidebarView,
+  WAITING_ROWS_SHOWN,
   waitingToJoin,
   type InvitationRow,
   type JoinedRow,
@@ -365,9 +366,7 @@ export function AttentionSections() {
       )}
       {waiting.length > 0 && (
         <Section label={copy.section.waiting} attention="waiting">
-          {waiting.map((join) => (
-            <WaitingItem key={join.username} join={join} verified={verified} letIn={letIn} />
-          ))}
+          <WaitingRows waiting={waiting} verified={verified} letIn={letIn} />
         </Section>
       )}
       {joined.length > 0 && (
@@ -466,6 +465,50 @@ function JoinedItem({
 }
 
 /** One Waiting to join row. */
+/**
+ * The Waiting to join rows, the first {@link WAITING_ROWS_SHOWN} of them until the host asks for
+ * the rest (SC2-N4): nine rows pushed the team's channels below the fold. A row that needs the
+ * host (a different code tried) is never hidden behind the control.
+ */
+function WaitingRows({
+  waiting,
+  verified,
+  letIn,
+}: {
+  waiting: readonly WaitingRow[];
+  verified: boolean;
+  letIn(username: string, describedBy?: string): ReactNode;
+}) {
+  const [all, setAll] = useState(false);
+  const shown =
+    all || waiting.length <= WAITING_ROWS_SHOWN
+      ? waiting
+      : waiting.filter(
+          (join, index) => index < WAITING_ROWS_SHOWN || (join.otherDeviceTried && !join.expired)
+        );
+  const hidden = waiting.length - shown.length;
+  return (
+    <>
+      {shown.map((join) => (
+        <WaitingItem key={join.username} join={join} verified={verified} letIn={letIn} />
+      ))}
+      {(hidden > 0 || all) && waiting.length > WAITING_ROWS_SHOWN && (
+        <li className="px-2 py-1" data-crew-waiting-more="">
+          <Button
+            variant="ghost"
+            size="xs"
+            className="no-drag text-text-muted"
+            aria-expanded={all}
+            onClick={() => setAll((value) => !value)}
+          >
+            {all ? copy.waiting.showFewer : copy.waiting.showAll(hidden)}
+          </Button>
+        </li>
+      )}
+    </>
+  );
+}
+
 function WaitingItem({
   join,
   verified,

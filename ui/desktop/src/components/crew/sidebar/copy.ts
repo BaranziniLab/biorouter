@@ -149,6 +149,12 @@ export const sidebarCopy = {
     letIn: 'Let in…',
     letInLabel: (username: string) => `Let @${username} in`,
     /**
+     * Under the first rows of a long list (SC2-N4): nine rows pushed the team's channels below the
+     * fold. `hidden` is how many more there are.
+     */
+    showAll: (hidden: number) => `Show ${hidden} more`,
+    showFewer: 'Show fewer',
+    /**
      * The host entered a code (T-13). Not "Approved": the broker compares the code only when the
      * joiner's computer checks in, so a code entered here may still turn out not to match.
      */

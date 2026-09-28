@@ -358,7 +358,18 @@ export interface WaitingRow {
   otherDeviceTried: boolean;
 }
 
-/** People the host invited who have not joined yet (S3a, host snapshot only). */
+/** How many Waiting to join rows show before the rest wait behind "Show all" (SC2-N4). */
+export const WAITING_ROWS_SHOWN = 5;
+
+const byJoinerName = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+/**
+ * People the host invited who have not joined yet (S3a, host snapshot only), in name order: by the
+ * `@username` each row leads with, case aside, then by the name on their server account. The
+ * broker lists them by UID, which read "bob, carol, gina, henry, jack, mallory, paula, kenji" with
+ * nothing to go by (SC2-N4).
+ */
 export function waitingToJoin(snapshot: Pick<Snapshot, 'pending_joins'> | null): WaitingRow[] {
   const pending = snapshot?.pending_joins;
   if (!Array.isArray(pending)) return [];
@@ -377,7 +388,13 @@ export function waitingToJoin(snapshot: Pick<Snapshot, 'pending_joins'> | null):
       expired: join.expired === true,
       otherDeviceTried:
         typeof join.mismatched_attempts === 'number' && join.mismatched_attempts > 0,
-    }));
+    }))
+    .sort(
+      (a, b) =>
+        byJoinerName(a.username, b.username) ||
+        byJoinerName(a.serverName ?? '', b.serverName ?? '') ||
+        a.username.localeCompare(b.username)
+    );
 }
 
 /** "Sat 1:41 AM": the day and the time an invitation runs out, in the viewer's own locale. */
