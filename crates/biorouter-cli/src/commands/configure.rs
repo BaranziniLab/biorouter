@@ -994,7 +994,7 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         (
             "autovisualiser",
             "Auto Visualiser",
-            "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
+            "Interactive charts, diagrams, networks, maps and scientific plots, shown in the side panel.",
         ),
         (
             "computercontroller",
@@ -1461,40 +1461,50 @@ pub fn configure_biorouter_mode_dialog() -> anyhow::Result<()> {
         let _ = cliclack::log::info("Notice: BIOROUTER_MODE environment variable is set and will override the configuration here.");
     }
 
-    let mode = cliclack::select("Which biorouter mode would you like to configure?")
-        .item(
-            BioRouterMode::Auto,
-            "Auto Mode",
-            "Full file modification, extension usage, edit, create and delete files freely"
-        )
-        .item(
-            BioRouterMode::Approve,
-            "Approve Mode",
-            "All tools, extensions and file modifications will require human approval"
-        )
-        .item(
-            BioRouterMode::SmartApprove,
-            "Smart Approve Mode",
-            "Editing, creating, deleting files and using extensions will require human approval"
-        )
-        .item(
-            BioRouterMode::Chat,
-            "Chat Mode",
-            "Engage with the selected provider without using tools, extensions, or file modification"
-        )
-        .interact()?;
+    let mut select = cliclack::select("Which mode should Biorouter use?");
+    for mode in MODES {
+        let (label, description) = mode_choice(mode);
+        select = select.item(mode, label, description);
+    }
+    let mode = select.interact()?;
 
     config.set_biorouter_mode(mode)?;
-    let msg = match mode {
-        BioRouterMode::Auto => "Set to Auto Mode - full file modification enabled",
-        BioRouterMode::Approve => {
-            "Set to Approve Mode - all tools and modifications require approval"
-        }
-        BioRouterMode::SmartApprove => "Set to Smart Approve Mode - modifications require approval",
-        BioRouterMode::Chat => "Set to Chat Mode - no tools or modifications enabled",
-    };
-    cliclack::outro(msg)?;
+    cliclack::outro(format!("Mode set to {}.", mode_choice(mode).0))?;
     Ok(())
+}
+
+/// The modes `configure` offers, in the desktop picker's order.
+const MODES: [BioRouterMode; 4] = [
+    BioRouterMode::Auto,
+    BioRouterMode::Approve,
+    BioRouterMode::SmartApprove,
+    BioRouterMode::Chat,
+];
+
+/// A mode's name and description, exactly as the desktop's mode picker
+/// (`ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx`) says them.
+/// `configure` used to say "Auto/Approve/Smart Approve/Chat Mode" while the app
+/// said "Autonomous/Manual/Smart/Chat only", so a person meeting a mode in one
+/// surface could not find it under the same name in the other.
+fn mode_choice(mode: BioRouterMode) -> (&'static str, &'static str) {
+    match mode {
+        BioRouterMode::Auto => (
+            "Autonomous",
+            "Use tools and edit, create, or delete files without asking first.",
+        ),
+        BioRouterMode::Approve => (
+            "Manual",
+            "Ask before using tools, extensions, or making file changes.",
+        ),
+        BioRouterMode::SmartApprove => (
+            "Smart",
+            "Ask only when an action\u{2019}s risk level requires your approval.",
+        ),
+        BioRouterMode::Chat => (
+            "Chat only",
+            "Chat with the selected model without tools or extensions.",
+        ),
+    }
 }
 
 pub fn configure_tool_output_dialog() -> anyhow::Result<()> {
@@ -2355,5 +2365,44 @@ mod needs_terminal_tests {
             "a refused first run must leave no file behind: {:?}",
             entries(dir.path())
         );
+    }
+}
+
+#[cfg(test)]
+mod mode_name_tests {
+    use super::{mode_choice, MODES};
+    use std::path::Path;
+
+    /// `configure` names and describes every mode exactly as the desktop's mode
+    /// picker does, read from its source so a rename on either side fails here.
+    #[test]
+    fn configure_uses_the_desktop_mode_names() {
+        let picker = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx"),
+        )
+        .expect("the desktop mode picker source");
+        for mode in MODES {
+            let (label, description) = mode_choice(mode);
+            assert!(
+                picker.contains(&format!("label: '{label}'")),
+                "the desktop has no mode named {label:?}"
+            );
+            assert!(
+                picker.contains(&format!("description: '{description}'")),
+                "the desktop describes {label} differently from {description:?}"
+            );
+        }
+        for retired in [
+            "Auto Mode",
+            "Approve Mode",
+            "Smart Approve Mode",
+            "Chat Mode",
+        ] {
+            assert!(
+                MODES.iter().all(|mode| mode_choice(*mode).0 != retired),
+                "{retired}"
+            );
+        }
     }
 }

@@ -205,7 +205,7 @@ const BUILTIN_EXTENSION_METADATA: &[(&str, &str, &str)] = &[
     (
         "autovisualiser",
         "Auto Visualiser",
-        "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
+        "Interactive charts, diagrams, networks, maps and scientific plots, shown in the side panel.",
     ),
     (
         "memory",
@@ -1202,5 +1202,49 @@ mod computer_use_migration_tests {
         migrate_computer_use_capabilities(&mut entries);
         inject_builtin_extensions(&mut entries);
         assert_eq!(entries["webdocuments"], web);
+    }
+}
+
+#[cfg(test)]
+mod builtin_description_copy_tests {
+    use super::BUILTIN_EXTENSION_METADATA;
+    use std::path::Path;
+
+    fn description_of(name: &str) -> &'static str {
+        BUILTIN_EXTENSION_METADATA
+            .iter()
+            .find(|(key, _, _)| *key == name)
+            .map(|(_, _, description)| *description)
+            .unwrap_or_else(|| panic!("{name} is a built-in extension"))
+    }
+
+    /// Auto Visualiser figures open only in the artifact side panel; the
+    /// transcript holds a click-to-open card and nothing else. Its description
+    /// said "rendered inline" in five places, so the one sentence is pinned in
+    /// every surface that repeats it.
+    #[test]
+    fn the_auto_visualiser_description_says_the_side_panel_everywhere() {
+        let description = description_of("autovisualiser");
+        assert!(description.contains("side panel"), "{description}");
+        assert!(!description.contains("inline"), "{description}");
+
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for relative in [
+            "ui/desktop/src/built-in-extensions.json",
+            "ui/desktop/src/components/settings/extensions/bundled-extensions.json",
+            "ui/desktop/src/components/settings/capabilities/capabilities.ts",
+            "crates/biorouter-cli/src/commands/configure.rs",
+        ] {
+            let source = std::fs::read_to_string(repo.join(relative))
+                .unwrap_or_else(|error| panic!("read {relative}: {error}"));
+            assert!(
+                source.contains(description),
+                "{relative} no longer carries the Auto Visualiser description {description:?}"
+            );
+            assert!(
+                !source.contains("scientific plots, rendered inline"),
+                "{relative} still says figures render inline"
+            );
+        }
     }
 }

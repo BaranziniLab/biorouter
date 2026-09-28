@@ -252,7 +252,7 @@ fn no_deployment_error(model: &str) -> ProviderError {
         .unwrap_or_default();
     ProviderError::RequestFailed(format!(
         "no Versa deployment for model `{model}` (Azure deployment not found, so nothing \
-         was sent).{retired} Available: {available}. Switch this chat to one of those models."
+         was sent).{retired} Available: {available}. Choose one of those models."
     ))
 }
 
@@ -1096,6 +1096,18 @@ mod tests {
                 "{model}: retirement date `{retires}` does not parse"
             );
         }
+    }
+
+    /// `biorouter configure` runs the same model check as a chat, so the refusal
+    /// must not tell someone at the configure prompt to switch "this chat".
+    #[test]
+    fn the_no_deployment_refusal_names_no_chat() {
+        let refusal = no_deployment_error("gpt-4.1-bogus-qa-probe").to_string();
+        assert!(!refusal.contains("chat"), "{refusal}");
+        assert!(
+            refusal.ends_with("Choose one of those models."),
+            "{refusal}"
+        );
     }
 
     /// Both halves of a retiring deployment: routed until its retirement date,

@@ -41,7 +41,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     key: 'autovisualiser',
     label: 'Auto Visualiser',
     description:
-      'Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.',
+      'Interactive charts, diagrams, networks, maps and scientific plots, shown in the side panel.',
     defaultEnabled: true,
   },
   {

@@ -98,6 +98,13 @@ pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
 
+/// The provider card's one-line description. It names the family, not a
+/// generation: "GPT-4 and other OpenAI models" outlived GPT-4 as the default by
+/// two generations, and a card that names a model it no longer defaults to
+/// reads as out of date.
+pub const OPEN_AI_DESCRIPTION: &str =
+    "OpenAI's GPT and reasoning models, and any OpenAI-compatible endpoint";
+
 /// Built-in model-id aliases for OpenAI-compatible hosts that are retiring a
 /// model name, so a user's saved config keeps working after the vendor removes
 /// the old id. Keyed by the API host; returns `old id -> live id`.
@@ -362,7 +369,7 @@ impl Provider for OpenAiProvider {
         ProviderMetadata::with_models(
             "openai",
             "OpenAI",
-            "GPT-4 and other OpenAI models, including OpenAI compatible ones",
+            OPEN_AI_DESCRIPTION,
             OPEN_AI_DEFAULT_MODEL,
             models,
             OPEN_AI_DOC_URL,
@@ -851,6 +858,16 @@ mod model_capability_tests {
                 "unexpected reasoning capability for Azure OpenAI model {id}"
             );
         }
+    }
+
+    #[test]
+    fn the_card_description_names_no_model_generation() {
+        let description = OpenAiProvider::metadata().description;
+        assert_eq!(description, OPEN_AI_DESCRIPTION);
+        assert!(
+            !description.contains(char::is_numeric),
+            "a generation in the card copy goes stale with the catalog: {description}"
+        );
     }
 
     #[test]
