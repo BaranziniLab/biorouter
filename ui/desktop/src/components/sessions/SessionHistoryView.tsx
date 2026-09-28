@@ -35,7 +35,8 @@ import { useIsMobile } from '../../hooks/use-mobile';
 import { SearchView } from '../conversation/SearchView';
 import BackButton from '../ui/BackButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
-import { Message, Session } from '../../api';
+import { exportSession, Message, Session } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import { DECLASSIFY_NEEDS_HOST_SHORT, declassifyBrowserReason } from './declassifyOnBrowser';
@@ -62,6 +63,41 @@ const isUserMessage = (message: Message): boolean => {
 const filterMessagesForDisplay = (messages: Message[]): Message[] => {
   return messages;
 };
+
+/** Why a chat could not be shared: the daemon's own sentence when it refused, else one of ours. */
+function shareRefusalMessage(refusal: unknown): string {
+  if (typeof refusal === 'string' && refusal.trim()) return refusal.trim();
+  if (refusal instanceof Error && refusal.message.trim()) return refusal.message.trim();
+  return 'The chat could not be read for sharing. Nothing was shared.';
+}
+
+/**
+ * The transcript to share, read through the daemon's export door rather than taken from this page.
+ * Sharing posts the transcript to another server, so it passes the rule an export does: a chat a
+ * Crew grant restricts is refused there, because its channel context must not leave with it
+ * (CROSSCUT-2), and the refusal's sentence is thrown for the person to read.
+ */
+async function transcriptToShare(sessionId: string): Promise<Message[]> {
+  let exported: string;
+  try {
+    const response = await exportSession({
+      path: { session_id: sessionId },
+      headers: await userActionHeaders(),
+      throwOnError: true,
+    });
+    exported = response.data;
+  } catch (refusal) {
+    throw new Error(shareRefusalMessage(refusal));
+  }
+  let conversation: unknown;
+  try {
+    conversation = (JSON.parse(exported) as { conversation?: unknown }).conversation;
+  } catch {
+    conversation = undefined;
+  }
+  if (!Array.isArray(conversation)) throw new Error(shareRefusalMessage(undefined));
+  return conversation as Message[];
+}
 
 interface SessionHistoryViewProps {
   session: Session;
@@ -268,7 +304,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       const shareToken = await createSharedSession(
         config.baseUrl,
         session.working_dir,
-        messages,
+        await transcriptToShare(session.id),
         session.name || 'Shared chat',
         billedTokenEstimate?.lowerBound ? null : (billedTokenEstimate?.value ?? null)
       );
