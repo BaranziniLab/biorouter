@@ -171,21 +171,24 @@ export function forgetStashedDraft(connectionId: string, channelId: string): voi
 /**
  * Forget every kept draft of a connection, and their attempts: its privacy or access changed, or
  * it was removed. With `keep`, a draft stays only if its channel passes (a verified view still
- * offers it).
+ * offers it). Returns what was forgotten, by channel, so a caller whose reason is a lost channel
+ * can offer the person their own words once more (QA M10); none is ever put back in a composer.
  */
 export function forgetConnectionDrafts(
   connectionId: string,
   keep?: (channelId: string) => boolean
-): void {
+): { channelId: string; body: string }[] {
   const prefix = `${connectionId}\n`;
-  let changed = false;
-  for (const key of [...drafts.keys()]) {
+  const forgotten: { channelId: string; body: string }[] = [];
+  for (const [key, entry] of [...drafts.entries()]) {
     if (!key.startsWith(prefix)) continue;
-    if (keep?.(key.slice(prefix.length))) continue;
+    const channelId = key.slice(prefix.length);
+    if (keep?.(channelId)) continue;
     drafts.delete(key);
-    changed = true;
+    forgotten.push({ channelId, body: entry.body });
   }
-  if (changed) notifyDrafts();
+  if (forgotten.length > 0) notifyDrafts();
+  return forgotten;
 }
 
 /** How many drafts are kept. For tests and diagnostics; never shown. */

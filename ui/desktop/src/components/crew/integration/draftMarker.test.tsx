@@ -4,6 +4,7 @@ import { composerCopy } from '../composer/copy';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import {
   channelReady,
+  currentCrew,
   ids,
   installDaemon,
   mocked,
@@ -120,5 +121,57 @@ describe('the rail marks a channel holding an unsent draft (Q3-09)', () => {
     await waitFor(() => expect(marker(ids.general)).toBeNull());
     expect(within(row(ids.general)).getByText('3')).toBeInTheDocument();
     expect(row(ids.general)).toHaveAccessibleName('general, 3 unread, draft');
+  });
+});
+
+/**
+ * QA M10: being removed from a channel cleared the person's unsent words, and a draft kept for a
+ * channel they had moved away from went without a word. The words are offered once now, in a note
+ * above the message box with Copy draft, held only by that note, and never put in a composer.
+ */
+describe('the unsent words of a channel the person loses (QA M10)', () => {
+  /** The workspace as it is once #general is closed to the viewer. */
+  function withoutGeneral() {
+    const snapshot = richSnapshot();
+    daemon.state.snapshot = {
+      ...snapshot,
+      channels: snapshot.channels.filter((item) => item.id !== ids.general),
+    };
+  }
+  const lostNote = () =>
+    screen.getByText(/held your unsent draft/).closest('[role="status"]') as HTMLElement;
+
+  it('offers the words in the composer for copying, and drops them when the note is closed', async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderCrew();
+    const general = await channelReady('general');
+    fireEvent.change(general, { target: { value: 'half-written reply' } });
+    withoutGeneral();
+    act(() => daemon.emitState());
+
+    const methods = await channelReady('methods');
+    expect(methods).toHaveValue('');
+    const note = lostNote();
+    expect(note).toHaveTextContent('#general held your unsent draft');
+    fireEvent.click(within(note).getByRole('button', { name: 'Copy draft' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('half-written reply'));
+    expect(within(note).getByRole('button', { name: 'Copied' })).toBeInTheDocument();
+
+    fireEvent.click(within(note).getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(/held your unsent draft/)).toBeNull();
+    expect(methods).toHaveValue('');
+  });
+
+  it('offers a draft kept for a channel the person had moved away from, too', async () => {
+    renderCrew();
+    const general = await channelReady('general');
+    fireEvent.change(general, { target: { value: 'kept for later' } });
+    act(() => currentCrew().selectChannel(ids.methods));
+    const methods = await channelReady('methods');
+    withoutGeneral();
+    act(() => daemon.emitState());
+    await waitFor(() => expect(lostNote()).toHaveTextContent('#general held your unsent draft'));
+    expect(methods).toHaveValue('');
   });
 });

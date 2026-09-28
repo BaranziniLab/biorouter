@@ -205,6 +205,20 @@ export interface CrewActionError {
   transport?: boolean;
 }
 
+/**
+ * A channel's unsent words the person can no longer send (QA M10): the channel was closed to them,
+ * with the words in the composer or kept aside for it. They are offered once, in a note above the
+ * message box with Copy draft, and live only in that note: dismissing it drops them, and they are
+ * never put back into any composer.
+ */
+export interface LostDraft {
+  id: number;
+  connectionId: string;
+  /** The channel as `#name`, from the last view that still had it; null when none named it. */
+  channel: string | null;
+  body: string;
+}
+
 /** What an error may say beyond its words: the composer it belongs to, and whether it is the link's. */
 export interface ErrorDetails {
   destination?: string;
@@ -452,6 +466,13 @@ export interface CrewController {
   setContextChannels(ids: string[]): void;
   send(): Promise<void>;
   clearBodyIfEquals(seed: string): void;
+  /**
+   * Unsent words of channels the person lost access to on this connection (QA M10), offered for
+   * copying in a note above the message box until dismissed. Never put back into a composer.
+   * Absent on a stand-in controller.
+   */
+  lostDrafts?: readonly LostDraft[];
+  dismissLostDraft?(id: number): void;
 
   // Owned runs (module-scoped unknown-outcome lock, C10)
   /** Records its error under `pane:agent`; resolves true only when the start was accepted. */

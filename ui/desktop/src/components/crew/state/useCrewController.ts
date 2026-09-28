@@ -250,6 +250,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     stashDraft,
     restoreDraft,
     restoring,
+    lostDrafts,
+    dismissLostDraft,
   } = observation;
 
   useEffect(() => {
@@ -967,6 +969,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setContextChannels: draft.setContextChannels,
     send,
     clearBodyIfEquals: draft.clearBodyIfEquals,
+    lostDrafts: lostDrafts.filter((item) => item.connectionId === connectionId),
+    dismissLostDraft,
 
     startOwnedRun: runStart.startOwnedRun,
     unknownRunDestination: runStart.unknownRunDestination,

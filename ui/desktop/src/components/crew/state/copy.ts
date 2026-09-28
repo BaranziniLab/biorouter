@@ -92,6 +92,17 @@ export const crewObservationCopy = {
 export const crewDraftCopy = {
   /** Added to a rail row's accessible name when its channel holds a kept draft. */
   rowSuffix: ', draft',
+  /**
+   * Above the message box when a channel the person lost access to held their unsent words (QA
+   * M10): they can no longer be sent there, and the note is the one place they are still kept.
+   * `channel` is `#name`, or null when no view named it.
+   */
+  lost: (channel: string | null) =>
+    `${channel ?? 'A channel you lost access to'} held your unsent draft, which can’t be sent there now. Copy it before you close this note.`,
+  copy: 'Copy draft',
+  copied: 'Copied',
+  copyFailed: 'Couldn’t copy',
+  dismiss: 'Dismiss',
 } as const;
 
 export const crewActionCopy = {

@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { Info, Landmark } from '../../icons/app-icons';
+import { Info, Landmark, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { ChatConnectNote } from '../access';
 import type { Snapshot } from '../crewApi';
 import {
@@ -14,8 +15,10 @@ import {
 import { NameSuggestionNote } from '../onboarding';
 import { useJoinContext } from '../onboarding/joinContext';
 import { workspaceTitle } from '../sidebar';
+import { copyText } from '../dialogs/clipboard';
+import { crewDraftCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
-import type { CrewController } from '../state/types';
+import type { CrewController, LostDraft } from '../state/types';
 import { layoutCopy } from './copy';
 
 /** Hosts who chose "Not now" for the institution label, per workspace, on this computer. */
@@ -163,9 +166,73 @@ function HostInstitutionNote({
 }
 
 /**
+ * A lost channel's unsent words (QA M10): "#msg-qa held your unsent draft…" with **Copy draft** and
+ * a dismiss control. The words live only in this note's controller entry: Copy draft puts them on
+ * the clipboard, dismissing the note drops them, and nothing here puts them in the composer, which
+ * belongs to another channel now.
+ */
+function LostDraftNote({ lost, onDismiss }: { lost: LostDraft; onDismiss(): void }) {
+  const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle');
+  return (
+    <Note
+      tone="warning"
+      role="status"
+      action={
+        <>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => void copyText(lost.body).then((ok) => setCopy(ok ? 'copied' : 'failed'))}
+          >
+            {copy === 'copied'
+              ? crewDraftCopy.copied
+              : copy === 'failed'
+                ? crewDraftCopy.copyFailed
+                : crewDraftCopy.copy}
+          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                shape="round"
+                size="xs"
+                aria-label={crewDraftCopy.dismiss}
+                className="size-5"
+                onClick={onDismiss}
+              >
+                <X aria-hidden />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{crewDraftCopy.dismiss}</TooltipContent>
+          </Tooltip>
+        </>
+      }
+    >
+      <p>{crewDraftCopy.lost(lost.channel)}</p>
+    </Note>
+  );
+}
+
+/**
+ * The note for the newest lost draft on this connection, while the view is verified, else null.
+ * Above the composer when a channel is on screen, and on the screen that says there is none when
+ * the lost channel was the team's last (`MainScreen`), so the words are never out of reach.
+ */
+export function useLostDraftNote(): ReactNode {
+  const crew = useCrew();
+  const lost = crew.lostDrafts?.[crew.lostDrafts.length - 1];
+  if (!verifiedSnapshot(crew) || !lost) return null;
+  return (
+    <LostDraftNote key={lost.id} lost={lost} onDismiss={() => crew.dismissLostDraft?.(lost.id)} />
+  );
+}
+
+/**
  * The one standing note directly above the composer card (ui-redesign-spec, "The composer"), in
- * priority order: the chat-connect note, an ownership offer, the host's institution note, the
- * first-join name suggestion. The composer puts its own answers — a send or upload failure, the
+ * priority order: a lost channel's draft (QA M10), the chat-connect note, an ownership offer, the
+ * host's institution note, the first-join name suggestion. The composer puts its own answers — a send or upload failure, the
  * picker a drop opened — above whatever this returns.
  *
  * Each candidate is chosen only when it will render, so the composer never holds an empty slot. A
@@ -177,6 +244,10 @@ export function useComposerNote(): ReactNode {
   const workspaceId = snapshot?.workspace.id ?? '';
   const [later, setLater] = useState<string[]>(readLater);
   const joinContext = useJoinContext(crew.connectionId);
+
+  // Before anything about the channel on screen: the words are gone once this note is.
+  const lostNote = useLostDraftNote();
+  if (lostNote) return lostNote;
 
   if (!snapshot || !crew.channel) return null;
 

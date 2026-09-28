@@ -68,6 +68,7 @@ import type {
   CrewJoinStatus,
   ErrorDetails,
   ErrorSource,
+  LostDraft,
   ObservedPrivacy,
   PaneIntent,
   SurfaceResetReason,
@@ -246,6 +247,9 @@ function allInChannel(messages: readonly CrewMessage[], channelId: string): bool
   return messages.every((message) => message.channel_id === channelId);
 }
 
+/** The most lost drafts offered at once; the oldest goes first. */
+export const LOST_DRAFT_MAX = 5;
+
 /** How an observation ended that may have been a dropped connection. */
 export interface ObservationEnd {
   /** The end's code (the broker's, when it named one). */
@@ -378,6 +382,9 @@ export interface CrewObservation {
    * dimmed rather than a skeleton.
    */
   restoring: string | null;
+  /** Unsent words of channels the person lost, offered for copying until dismissed (QA M10). */
+  lostDrafts: readonly LostDraft[];
+  dismissLostDraft(id: number): void;
 }
 
 /**
@@ -458,6 +465,32 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const [lastVerified, setLastVerified] = useState<VerifiedView | null>(null);
   // Q4-04: the channel whose remembered view is on screen until its fresh first page arrives.
   const [restoring, setRestoring] = useState<string | null>(null);
+  // QA M10: the words of channels the person lost, held only here until they dismiss the note.
+  const [lostDrafts, setLostDrafts] = useState<LostDraft[]>([]);
+  const lostDraftSequence = useRef(0);
+  const offerLostDraft = useCallback((connection: string, channel: string | null, text: string) => {
+    if (!text.trim()) return;
+    lostDraftSequence.current += 1;
+    const lost: LostDraft = {
+      id: lostDraftSequence.current,
+      connectionId: connection,
+      channel,
+      body: text,
+    };
+    // The same words for the same channel are offered once, whether they were in the composer
+    // or kept aside for it (a draft put back is both until its channel's first view).
+    setLostDrafts((list) =>
+      list.some(
+        (item) => item.connectionId === connection && item.channel === channel && item.body === text
+      )
+        ? list
+        : [...list, lost].slice(-LOST_DRAFT_MAX)
+    );
+  }, []);
+  const dismissLostDraft = useCallback(
+    (id: number) => setLostDrafts((list) => list.filter((item) => item.id !== id)),
+    []
+  );
   const observer = useRef<AbortController | null>(null);
   const [observationRevision, setObservationRevision] = useState(0);
   const historyPage = useRef<string | null>(null);
@@ -922,6 +955,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
      */
     const loseChannel = (named: string | null) => {
       const hadContent = draftHasContent.current;
+      // The words the person wrote for it are theirs: offered once, for copying, in a note of
+      // their own (QA M10). Never put back into a composer.
+      const words = selection.current.body.trim()
+        ? selection.current.body
+        : (stashedDraft(connectionId, channelId)?.body ?? '');
+      offerLostDraft(connectionId, named, words);
       // No draft kept for a channel the person can no longer see may ever come back into it,
       // and no view kept across leaving Crew may draw it again (Q4-04).
       forgetStashedDraft(connectionId, channelId);
@@ -942,8 +981,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       const lostText = named
         ? crewObservationCopy.channelAccessLostNamed(named)
         : crewObservationCopy.channelAccessLost;
+      // The words are in the note above the message box; anything else the draft held (files,
+      // server paths) is gone, as the bar says when there were no words to offer.
       reportError(
-        hadContent ? `${lostText} ${crewObservationCopy.draftDiscarded}` : lostText,
+        hadContent && !words.trim()
+          ? `${lostText} ${crewObservationCopy.draftDiscarded}`
+          : lostText,
         'observer',
         CHANNEL_LOST_ERROR_CODE
       );
@@ -1091,7 +1134,14 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               // channel, only into an empty composer, and only when nothing it was written under
               // moved since (`draftScopeChanged` against the kept scope). The body only.
               const readable = new Set(frame.snapshot.channels.map((item) => item.id));
-              forgetConnectionDrafts(connectionId, (id) => readable.has(id));
+              // A channel that went while its words were kept aside: offer them, as a lost
+              // channel's are (QA M10), named from the view that still had it.
+              for (const lost of forgetConnectionDrafts(connectionId, (id) => readable.has(id)))
+                offerLostDraft(
+                  connectionId,
+                  namesFor(connectionId, lost.channelId).channel,
+                  lost.body
+                );
               const kept =
                 channelId && !revoked ? takeStashedDraft(connectionId, channelId) : undefined;
               if (
@@ -1228,6 +1278,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     clearDraft,
     restoreBody,
     tellNote,
+    offerLostDraft,
     generation,
     selectedSources,
     reportError,
@@ -1408,5 +1459,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     stashDraft: stashCurrentDraft,
     restoreDraft,
     restoring,
+    lostDrafts,
+    dismissLostDraft,
   };
 }

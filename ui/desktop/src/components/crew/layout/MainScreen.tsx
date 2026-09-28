@@ -5,6 +5,7 @@ import { ConnectionBar } from '../channel';
 import { OnboardingScreen } from '../onboarding';
 import { workspaceTitle } from '../sidebar';
 import { useCrew } from '../state/CrewControllerContext';
+import { useLostDraftNote } from './ComposerNote';
 import { layoutCopy } from './copy';
 import { MessagesSkeleton } from './CrewSkeleton';
 
@@ -65,6 +66,8 @@ export function MainScreen({ withBand, className }: { withBand: boolean; classNa
   const headingId = useId();
   const { screen } = crew;
   const waitingSince = useWaitingSince(screen);
+  // A lost channel that was the team's last leaves no composer to hold its draft's note (QA M10).
+  const lostNote = useLostDraftNote();
   const title =
     (crew.connection && workspaceTitle(crew.snapshot, crew.connections, crew.connectionId)) ||
     layoutCopy.crew;
@@ -99,6 +102,9 @@ export function MainScreen({ withBand, className }: { withBand: boolean; classNa
     >
       {withBand ? <div className="crew-frame-band">{heading}</div> : heading}
       <ConnectionBar />
+      {lostNote && (screen === 'no-channel' || screen === 'no-team') ? (
+        <div className="crew-frame-lost-draft">{lostNote}</div>
+      ) : null}
       <div className="crew-frame-screen-body">{content}</div>
     </section>
   );

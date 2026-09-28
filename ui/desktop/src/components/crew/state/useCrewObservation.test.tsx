@@ -499,9 +499,11 @@ describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
     send(first, ended('channel_access_changed'));
     expect(crew.channelId).toBe('');
     expect(crew.draft.body).toBe('');
-    expect(crew.error?.message).toBe(
-      `${crewObservationCopy.channelAccessLostNamed('#general')} ${crewObservationCopy.draftDiscarded}`
-    );
+    // The words are the person's: offered once, for copying, and never in any composer (QA M10).
+    expect(crew.error?.message).toBe(crewObservationCopy.channelAccessLostNamed('#general'));
+    expect(crew.lostDrafts).toEqual([
+      expect.objectContaining({ channel: '#general', body: 'for #general' }),
+    ]);
     expect(crew.refreshError).toBeNull();
     // It observes the workspace again rather than the channel it just lost.
     await waitFor(() =>
