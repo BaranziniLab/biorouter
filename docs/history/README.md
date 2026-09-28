@@ -1,6 +1,6 @@
 # Historical records
 
-This folder is BioRouter's archive. Every document in it describes work that is **finished** — designs that were built, plans that were executed, review campaigns that closed, stress tests that ran to completion, and a small number of ideas that were abandoned or later removed. It is kept for the record and for provenance: read it to find out *why* a subsystem is shaped the way it is, never to find out what the code does today. The material spans **May 2026 to August 2026**, and almost all of it shipped.
+This folder is BioRouter's archive. Every document in it describes work that is **finished**: designs that were built, plans that were executed, review campaigns that closed, stress tests that ran to completion, and a small number of ideas that were abandoned or later removed. It is kept for the record and for provenance: read it to find out *why* a subsystem is shaped the way it is, never to find out what the code does today. The material spans **May 2026 to September 2026**, and almost all of it shipped.
 
 The three exceptions are worth knowing up front, because they are the ones most likely to mislead. **Dashboard mode** was built through four generations and then removed from the desktop app on 2026-07-18 — nothing in [`dashboard-mode/`](dashboard-mode/README.md) describes a feature that still exists. **MCP apps** was never a feature this project chose: it was present from the first commit and was removed on 2026-09-08, so [`mcp-apps-removal/`](mcp-apps-removal/README.md) is likewise an archive of something gone. The **extension trait design** in [`legacy-architecture/`](legacy-architecture/extension-trait-design.md) was never shipped either; extensions are MCP servers built on the `rmcp` SDK instead. Everywhere else, a document that has been overtaken says so in its own header and names its successor.
 
@@ -8,7 +8,7 @@ Come here when you are tracing a decision, reconstructing what landed in a relea
 
 > **How to check a document's standing.** Every file here opens with a context header carrying a `Status:` line that states whether the work shipped, was superseded, or was removed, and — where it was superseded — links the document that now holds the truth. Trust that line over the filename.
 
-No documents sit directly in this folder apart from this index. All content sits in the 30 topic subfolders below. One of them, [`agent-loop-campaign/`](agent-loop-campaign/README.md), carries a sub-area of its own — [`cross-platform/`](agent-loop-campaign/cross-platform/README.md), the campaign's Windows and Linux arm — indexed by that campaign's README as well as here.
+No documents sit directly in this folder apart from this index. All content sits in the 31 topic subfolders below. One of them, [`agent-loop-campaign/`](agent-loop-campaign/README.md), carries a sub-area of its own, [`cross-platform/`](agent-loop-campaign/cross-platform/README.md) (the campaign's Windows and Linux arm), indexed by that campaign's README as well as here.
 
 ## Agent Drafter and the Apps SDK
 
@@ -31,6 +31,12 @@ No documents sit directly in this folder apart from this index. All content sits
 | [streaming-tool-call-ui-2026-07](streaming-tool-call-ui-2026-07/README.md) | The 2026-07-18/19 campaign on branch `feat/streaming-tool-call-ui`: an investigation into why a tool card appeared late and already finished, the streaming work it produced across fourteen previously non-streaming providers, and the three QA rounds over the result. The streaming track merged to `main` at `78471bdc`; the QA-campaign fixes were held for a separate merge decision. Its findings register uses `R1-NN`/`R2-NN`/`R3-NN` identifiers. |
 | [subsystem-reviews-2026](subsystem-reviews-2026/README.md) | Five unrelated July-2026 hardening and audit records: [desktop reliability defects](subsystem-reviews-2026/desktop-reliability-defects.md), the [background jobs design](subsystem-reviews-2026/developer-background-jobs-design.md), the [system-prompt inventory](subsystem-reviews-2026/system-prompt-inventory-and-gaps.md), [terminal UI stability](subsystem-reviews-2026/terminal-ui-stability.md), and [tool discovery hardening](subsystem-reviews-2026/tool-discovery-hardening.md). All resolved and integrated, except one open system-prompt item. |
 | [workspace-control](workspace-control/README.md) | Defect notes left by the August 2026 documentation pass over BR-71 workspace control — findings that belong to source rather than prose, recorded because that pass was documentation-only and fixed no Rust. The first, [the CLI plural alias defect](workspace-control/cli-plural-alias-defect.md), was still open on 2026-08-03. |
+
+## Crew
+
+| Folder | What it holds |
+|---|---|
+| [biorouter-crew](biorouter-crew/README.md) | The campaign that designed, built and tested Crew, from the first research on 2026-09-21 to its merge into `main` on 2026-09-27 (PR #366): the implementation plan and its §16 redesign and naming scope, the status ledger and handoff, the source investigations and independent reviews, four live QA rounds, and the bounded evidence runs behind each acceptance claim. Shipped. Its designs are living documentation under [crew/design](../crew/design/README.md), where the rows later fixes changed are marked in place. |
 
 ## Desktop UI
 
@@ -84,15 +90,17 @@ The six implementation plans that built the feature out were executed in order a
 
 ## Data files, scripts and rendered pages
 
-This folder holds no non-Markdown files at its top level, but three subfolders carry machine-readable evidence, one carries a script, and one carries rendered HTML. Each is described by its own folder's index.
+This folder holds no non-Markdown files at its top level, but four subfolders carry machine-readable evidence, two carry scripts, and one carries rendered HTML. Each is described by its own folder's index.
 
 - [`agent-drafter-stress-test/data/prompts.json`](agent-drafter-stress-test/data/prompts.json) — the 100 app specs that drove the stress test, each with an `id`, `domain`, `interaction`, `patterns` and a prose `requirement`.
 - `agent-drafter-testdrive-100/data/` — the machine-readable authoring ledger, the platform-integration audit output, and the static evidence for the five layout probes. `agent-drafter-testdrive-100/authoring-logs/` holds the per-app static-analysis JSON and browser issue logs from the same run. The sibling [`app-results/`](agent-drafter-testdrive-100/app-results/README.md) and [`layout-probes/`](agent-drafter-testdrive-100/layout-probes/README.md) folders are Markdown, not data: they hold the per-app rubrics and the layout probe write-ups.
 - [`agent-loop-review/generate_review_html.py`](agent-loop-review/generate_review_html.py) — a Python script that stitches the review's Markdown corpus into one self-contained HTML report using pandoc. The generated `review.html` is not checked in; the Markdown corpus remains the source of truth, so you never need to run this to read the review.
+- `biorouter-crew/*.json` and `biorouter-crew/smoke/`: the raw results of the Crew build's institutional and AWS probe runs, and the small synthetic probe scripts that produced them and the later local runs. Not production Crew code.
 - `ui-overhaul-2026-07/home-screen-redesign.html` and `ui-overhaul-2026-07/knowledge-view-redesign.html` — the rendered mockups for the two archived view redesigns. **These must be opened in a browser to be useful**; each has a Markdown companion beside it carrying the same reasoning and values in text.
 
 ## Related documentation
 
+- [Crew design and reference](../crew/design/README.md): the living design documents whose build record is the `biorouter-crew` folder here.
 - [Apps SDK](../apps-sdk/README.md) — the current authority on app and SDK behaviour, which supersedes the June 2026 RFC archived here.
 - [The agent loop](../agent-loop/README.md) — the live documentation for the loop that the review and fix campaign in this folder diagnosed and rebuilt.
 - [Knowledge base](../knowledge-base/README.md) — the live working documents for the Knowledge subsystem, whose build record is the `knowledge-base-buildout` folder here.

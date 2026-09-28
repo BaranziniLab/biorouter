@@ -1,7 +1,7 @@
 //! `biorouter crew`: the terminal's view of Crew, through the profile's shared daemon.
 //!
 //! People, teams, channels and saved connections are named, not numbered ("Selectors and the
-//! resolver" in `docs/research/biorouter-crew/naming-design.md`). Every name is resolved by the
+//! resolver" in `docs/crew/design/naming-design.md`). Every name is resolved by the
 //! daemon's `POST /crew/resolve` against the person's own workspace snapshot, so the CLI and the
 //! desktop share one resolver and a candidate can never be something the person could not see.
 //! UUID-shaped text is always an ID and never goes to the resolver, so scripts that pass IDs work

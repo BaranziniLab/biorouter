@@ -92,12 +92,12 @@ Current top-level areas:
 | `cli/` | the `biorouter` command-line interface |
 | `configuration/` | config files and environment variables |
 | `desktop-ui/` | the Electron GUI |
-| `crew/` | Crew lab workspaces: the user manual and administration |
+| `crew/` | Crew lab workspaces: the user manual and administration, and in `design/` the protocol, naming, interface and CLI designs Crew's code is built to |
 | `deployment/` | reaching Biorouter through a browser — on your own machine or on a shared host |
 | `releases/` | release engineering, plus `notes/` per shipped version |
 | `troubleshooting/` | when something is broken |
 | `design/` | visual and interaction design, including HTML studios |
-| `research/` | studies of systems **outside** this repo |
+| `research/` | studies of systems **outside** this repo; a document here links no BioRouter code (`tree/research-cites-repo` in `scripts/docs-lint.py`) |
 | `testing/` | the properties tests must hold, and the shared state they must not inherit |
 | `contributing/` | how to work on the documentation itself |
 | `history/` | records of completed work (see [§3](#3-history-records-of-work-that-was-done)) |
@@ -117,6 +117,12 @@ the abstract. Some judgement calls already made, as worked examples:
 - *Nine studies of external coding agents* → `research/`, not `history/`. They document other
   people's systems, so they are reference material, not a record of our work — and they do not
   go stale when our code changes.
+- *Crew's broker protocol, naming design, UI specification and CLI guide* → `crew/design/`, not
+  `research/`. They are BioRouter's own designs, cited from source comments and amended when the
+  code changes, so they are living documentation for Crew's developers, one level below the user
+  manual. The plans, reviews and test evidence of the campaign that built Crew are records of work
+  that was done, so they are in `history/biorouter-crew/`. All of it was filed under
+  `research/` until 2026-09-28.
 - *The Auto Visualiser tool-selection fixtures* stay in `crates/.../tests/fixtures/`, because
   they are test inputs a run reads, not prose. Their README follows this system and is linked
   from `extensions/built-in/auto-visualiser.md`. **Documentation lives with what it documents
@@ -264,6 +270,10 @@ find docs -name '*.md' | grep -E '/[A-Z_]+\.md$' | grep -v README.md
 
 # nothing loose at the root (README.md and this file are the only two)
 find docs -maxdepth 1 -type f
+
+# the rules CI holds at zero: loose files, missing indexes, status against folder,
+# and research/ linking this repository's code
+python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement,tree/research-cites-repo
 ```
 
 By judgement:

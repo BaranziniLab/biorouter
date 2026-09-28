@@ -1,5 +1,5 @@
 //! Broker contract for human-readable names, slices S1a and S2a of
-//! `docs/research/biorouter-crew/naming-design.md` ("Tests", "Broker").
+//! `docs/crew/design/naming-design.md` ("Tests", "Broker").
 //!
 //! S1a: former principals, invitation enrichment, the `people` and `channel_names` maps, one
 //! active principal per username (D3), display-name rules, `profile.suggest`,

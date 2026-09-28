@@ -4,7 +4,7 @@
 //! terminal-safe and nothing else, so scripts keep every ID. Text output is for people:
 //! type-specific formatters name people, teams and channels, and machine IDs appear only when
 //! [`HumanOptions::show_ids`] asks for them ("Machine IDs stay internal" in
-//! `docs/research/biorouter-crew/naming-design.md`).
+//! `docs/crew/design/naming-design.md`).
 //!
 //! A person renders as `"Display name" (@username)`. The display name is text a colleague
 //! chose, so it is quoted and escaped, and a name that is not ASCII is wrapped in Unicode

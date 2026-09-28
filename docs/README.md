@@ -47,7 +47,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. Includes [coding-agent providers](providers/coding-agents/README.md) — the two that run on the user's own Claude or ChatGPT subscription by driving a vendor CLI, with their tool bridge, child-isolation flags and the vendor-terms and PHI compliance position. |
 | [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, which providers are acceptable for patient and other sensitive data, and the institutional affiliation check behind cross-institution warnings. |
 | [workflows](workflows/README.md) | Reusable workflow files that package instructions, extensions and model settings into one shareable session, plus the built-in cron scheduler. |
-| [crew](crew/README.md) | The Crew user manual: joining or hosting a lab workspace, teams and channels, messages and files, agent access, privacy, connections, the `biorouter crew` commands and server administration. |
+| [crew](crew/README.md) | The Crew user manual: joining or hosting a lab workspace, teams and channels, messages and files, agent access, privacy, connections, the `biorouter crew` commands and server administration. Its [design](crew/design/README.md) folder holds the broker protocol, the naming design, the interface specification and the CLI guide, for developers. |
 | [cli](cli/README.md) | The `biorouter` command-line surface: subcommands and flags, the interactive terminal UI, and the manual QA script that verifies both. |
 | [configuration](configuration/README.md) | The complete reference for both configuration forms — persistent YAML files and the environment variables that override them. |
 | [desktop-ui](desktop-ui/README.md) | Exercising the Electron desktop app as a running program: launching and driving the dev GUI, and the behavior to check once it is in front of you. |
@@ -61,7 +61,7 @@ Two kinds of document live here, and the difference matters more than any other 
 
 ## Historical records
 
-[`history/`](history/README.md) is the archive: 30 topic folders covering May–August 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message — never to learn what the code does today.
+[`history/`](history/README.md) is the archive: 31 topic folders covering May to September 2026, almost all of which shipped. Read it to trace a decision, reconstruct what landed in a release, or decode an identifier like `BR-43` in a commit message, never to learn what the code does today.
 
 The largest campaigns in there:
 
@@ -74,6 +74,7 @@ The largest campaigns in there:
 | [agent-drafter-testdrive-100](history/agent-drafter-testdrive-100/README.md) | A separate test drive against a 100-app spec corpus — per-app rubrics, three cross-cutting audits, and a six-wave remediation plan. |
 | [performance-2026-06](history/performance-2026-06/review-findings.md) | A whole-app latency review against v1.86.0 plus an independent comparison against the jcode harness; nine fixes merged. |
 | [streaming-tool-call-ui-2026-07](history/streaming-tool-call-ui-2026-07/README.md) | The July 2026 streaming tool-call campaign: why a tool card appeared late and already finished, the streaming implemented across fourteen providers that never streamed, and three QA rounds over the result. |
+| [biorouter-crew](history/biorouter-crew/README.md) | The campaign that built Crew, 2026-09-21 to its merge on 2026-09-27: the research and plan, independent reviews, the redesign and naming work, four live QA rounds, and the bounded evidence runs behind each acceptance claim. |
 | [dashboard-mode](history/dashboard-mode/README.md) | Four generations of design for a free-floating multi-chat canvas, and the record of its removal on 2026-07-18. **The feature no longer exists.** |
 | [mcp-apps-removal](history/mcp-apps-removal/README.md) | The sandboxed iframe in which a third-party MCP server ran its own UI inside BioRouter, present since the first commit, never requested, and removed on 2026-09-08. **The feature no longer exists**; Agent Drafter's Built apps is a different one and stays. |
 | [legacy-architecture](history/legacy-architecture/README.md) | Two superseded internals designs: a hand-written `Extension` trait framework that was **never shipped**, and the agent error model, whose two-tier policy still holds but whose every type name is gone. |

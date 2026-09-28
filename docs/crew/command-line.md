@@ -186,7 +186,7 @@ If you host the workspace and no other computer of yours can act as its host, `c
 
 If the workspace lists another computer enrolled as you, `connections remove` goes ahead once you confirm, but first it lists those computers by fingerprint and the date each was added. The host controls continue only if one of them still has the workspace saved. A computer stays on that list after its connection is removed there, so the list alone does not prove it can still act as host. Run `connections list` on that computer before you go on. With `--confirm` or in a script, the list is printed on stderr.
 
-`connections save FILE` adds a connection from a JSON description, and `connections update FILE` replaces the selected one. The fields are listed in [Save a connection from a descriptor](../research/biorouter-crew/cli-guide.md#save-a-connection-from-a-descriptor). The output of `connections show` is not valid input.
+`connections save FILE` adds a connection from a JSON description, and `connections update FILE` replaces the selected one. The fields are listed in [Save a connection from a descriptor](design/cli-guide.md#save-a-connection-from-a-descriptor). The output of `connections show` is not valid input.
 
 ## Host a workspace
 
@@ -221,7 +221,7 @@ Only the host runs `enroll` commands.
 
 ### Tokens for older servers
 
-A server whose `biorouter-crew` cannot join by code needs the older token path. Its commands (`enroll invite --uid UID --public-key HEX`, then `enroll accept`) are hidden from `--help`, and a token works once, within one hour. See [Enroll with a token](../research/biorouter-crew/cli-guide.md#enroll-with-a-token-older-versions), and update the server when you can.
+A server whose `biorouter-crew` cannot join by code needs the older token path. Its commands (`enroll invite --uid UID --public-key HEX`, then `enroll accept`) are hidden from `--help`, and a token works once, within one hour. See [Enroll with a token](design/cli-guide.md#enroll-with-a-token-older-versions), and update the server when you can.
 
 ## Manage your profile, teams and channels
 
@@ -406,4 +406,4 @@ Nothing starts the workspace when the server boots. The host starts it again as 
 - [Privacy and security](privacy-and-security.md): privacy, institutions and classifications.
 - [Connections and troubleshooting](connections-and-troubleshooting.md): connection states and reconnection.
 - [Administration](administration.md): server setup, limits, upgrades and backups.
-- [Crew CLI guide for developers](../research/biorouter-crew/cli-guide.md): design notes and description fields.
+- [Crew CLI guide for developers](design/cli-guide.md): design notes and description fields.

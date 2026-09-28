@@ -56,3 +56,4 @@ changed in 2025 and 2026.
 - [Improvement proposals register](../history/agent-loop-review/improvement-proposals.md) — the `BR-1`…`BR-67` index; the destination for every proposal number cited in this folder.
 - [Agent loop](../agent-loop/README.md) — how BioRouter's own loop, context engineering, hooks and subagents work today, as opposed to how other tools do it.
 - [Agent-loop campaign](../history/agent-loop-campaign/README.md) — the implementation campaign that acted on the gaps these reports identified.
+- [Crew design and reference](../crew/design/README.md): an example of what does not belong here. BioRouter's own designs sit with their subsystem, and `scripts/docs-lint.py` refuses a research document that links this repository's code.

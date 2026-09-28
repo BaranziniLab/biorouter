@@ -101,7 +101,7 @@ Every account that connects, the host's included, needs its own copy at exactly 
 
 - Download `biorouter-cli_<version>_amd64.deb` or `biorouter-cli-<version>-1.x86_64.rpm` from the [Biorouter release page](https://github.com/BaranziniLab/biorouter/releases). Its `sha256sum` must match the `sha256:` value shown beside it.
 - Either package installs `/usr/bin/biorouter-crew`. To extract it instead, run `dpkg-deb --extract biorouter-cli_<version>_amd64.deb staging` and use `staging/usr/bin/biorouter-crew`.
-- Or build it on Linux with `cargo build --locked --release -p biorouter-crew`, following [Linux artifact portability](../research/biorouter-crew/linux-portability.md).
+- Or build it on Linux with `cargo build --locked --release -p biorouter-crew`, following [Linux artifact portability](design/linux-portability.md).
 
 [Install Crew on the server](hosting-a-workspace.md#install-crew-on-the-server) gives these steps for a person on a Mac.
 
@@ -310,5 +310,5 @@ Plan for up to about 1.2 GiB of broker memory when 50 accounts post at once.
 - [Connections and troubleshooting](connections-and-troubleshooting.md): signing in and member messages.
 - [Agents and chat access](agents-and-chat-access.md): agent tasks and the remote work folder.
 - [Managed enterprise policy](../security/managed-policy.md): the policy file IT installs.
-- [Linux artifact portability](../research/biorouter-crew/linux-portability.md): how the Linux build is qualified.
-- [Protocol and setup contract](../research/biorouter-crew/protocol-contract.md): the broker's protocol and limits.
+- [Linux artifact portability](design/linux-portability.md): how the Linux build is qualified.
+- [Protocol and setup contract](design/protocol-contract.md): the broker's protocol and limits.

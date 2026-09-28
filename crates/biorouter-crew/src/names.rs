@@ -2,7 +2,7 @@
 //!
 //! One definition shared by the broker, which enforces these rules on create and rename, and
 //! the desktop daemon, which resolves names against a snapshot and previews them. See
-//! `docs/research/biorouter-crew/naming-design.md` ("Display-name validation", "Normalization
+//! `docs/crew/design/naming-design.md` ("Display-name validation", "Normalization
 //! and keys", "Validation per kind" and "Confusable characters").
 //!
 //! - [`clean`] is the stored form of a display name, and of a team name once NFKC has folded it.

@@ -1,6 +1,6 @@
 //! Joining a workspace (S3a): the `brcrew1:` invitation codec and the device code.
 //!
-//! See `docs/research/biorouter-crew/naming-design.md`, "The invitation" and "The device code".
+//! See `docs/crew/design/naming-design.md`, "The invitation" and "The device code".
 //!
 //! **The invitation** is the host's verified workspace descriptor (the four pinned fields: the
 //! workspace ID and key, the broker socket and the host's UID) plus display labels and SSH

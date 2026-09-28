@@ -638,7 +638,7 @@ impl TextEncoding {
 /// those places. It does not close the door, and says so: `POST /agent/call_tool` reaches
 /// `developer__shell` with the same proof, and a registration proof only the main process
 /// holds, which would close both, is an open decision
-/// (`docs/research/biorouter-crew/implementation-plan.md` §16, D-DROP).
+/// (`docs/history/biorouter-crew/implementation-plan.md` §16, D-DROP).
 struct SettingsLocations {
     /// The person's home directory. Below it, a path that passes through a component starting
     /// with `.` is refused.

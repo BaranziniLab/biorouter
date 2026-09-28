@@ -1,5 +1,5 @@
 //! Broker contract for joining a workspace by invitation and device code, slice S3a of
-//! `docs/research/biorouter-crew/naming-design.md` ("Broker protocol (S3a)", "The device code",
+//! `docs/crew/design/naming-design.md` ("Broker protocol (S3a)", "The device code",
 //! "Security analysis" and "Tests").
 //!
 //! Most of this file needs the `join-by-name` feature, which is on by default since 2026-09-25

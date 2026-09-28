@@ -31,7 +31,7 @@ export type CrewConnection = Loosen<Api.CrewConnectionView, 'server_label'> & {
 export type CrewErrorCode = Api.CrewErrorCode;
 
 // The snapshot is forwarded by the daemon as an untyped value, so these interfaces are written by
-// hand from docs/research/biorouter-crew/naming-design.md. Every field a broker before S1a/S2a does
+// hand from docs/crew/design/naming-design.md. Every field a broker before S1a/S2a does
 // not send is optional; timestamps are Unix seconds, as the broker writes them.
 export interface Principal {
   id: string;

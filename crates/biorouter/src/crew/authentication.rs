@@ -8,7 +8,7 @@
 //! text stays reachable through [`HandoffFailed::log_message`].
 //!
 //! **Workspace admission (S3a).** Joining a workspace by a host's invitation and a device code,
-//! as `docs/research/biorouter-crew/naming-design.md` ("Joining a workspace (S3a)", "The
+//! as `docs/crew/design/naming-design.md` ("Joining a workspace (S3a)", "The
 //! invitation", "The device code") specifies. The `impl CrewManager` blocks below add:
 //!
 //! - [`CrewManager::connection_from_invitation`]: parse a pasted `brcrew1:` invitation (or the

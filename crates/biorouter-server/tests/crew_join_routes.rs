@@ -1,6 +1,6 @@
 //! Workspace admission over HTTP (S3a): `POST /crew/connections/from-invitation`,
 //! `GET /crew/connections/{id}/invitation`, and `GET`/`POST /crew/connections/{id}/join`, as
-//! `docs/research/biorouter-crew/naming-design.md` ("Daemon routes, OpenAPI and TypeScript
+//! `docs/crew/design/naming-design.md` ("Daemon routes, OpenAPI and TypeScript
 //! client") specifies them.
 //!
 //! **Offline.** Nothing here reaches a network or a real broker. The daemon's `ssh` is this

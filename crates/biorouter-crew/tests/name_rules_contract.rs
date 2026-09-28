@@ -2,7 +2,7 @@
 //! device code and the workspace invitation codec (S3a), and the `hello` signing payloads.
 //!
 //! Pure functions only: no broker, socket or account lookup, so this runs on every platform.
-//! See `docs/research/biorouter-crew/naming-design.md`.
+//! See `docs/crew/design/naming-design.md`.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;

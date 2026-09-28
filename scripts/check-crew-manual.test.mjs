@@ -103,10 +103,7 @@ test('brand: the audited "BioRouter" quote is refused (DOCS-6)', () => {
   );
   assertCaught(
     {
-      'docs/crew/README.md': swap(
-        '[Crew implementation and evidence]',
-        '[BioRouter Crew implementation and evidence]'
-      ),
+      'docs/crew/README.md': swap('[Crew build campaign]', '[BioRouter Crew build campaign]'),
     },
     'brand'
   );
@@ -291,7 +288,7 @@ test('readme: the front page names Crew while the sidebar has it (DOCS-5)', () =
 });
 
 test('spec: the redesign spec may not deny what shipped (RENDERER-6)', () => {
-  const spec = 'docs/research/biorouter-crew/ui-redesign-spec.md';
+  const spec = 'docs/crew/design/ui-redesign-spec.md';
   const statusLine = (text) => text.split('\n').find((line) => line.startsWith('> **Status:**'));
   assertCaught(
     {
@@ -859,10 +856,10 @@ test('tsCopyString reads a nested copy string and says when the path is gone', (
 
 // The Crew design documents as they stood before the wave-2 amendments
 // (W2-STR-1): each mutant puts one pre-amendment row back into the real tree.
-const SPEC_DOC = 'docs/research/biorouter-crew/ui-redesign-spec.md';
-const PROTOCOL_DOC = 'docs/research/biorouter-crew/protocol-contract.md';
-const NAMING_DOC = 'docs/research/biorouter-crew/naming-design.md';
-const CLI_GUIDE_DOC = 'docs/research/biorouter-crew/cli-guide.md';
+const SPEC_DOC = 'docs/crew/design/ui-redesign-spec.md';
+const PROTOCOL_DOC = 'docs/crew/design/protocol-contract.md';
+const NAMING_DOC = 'docs/crew/design/naming-design.md';
+const CLI_GUIDE_DOC = 'docs/crew/design/cli-guide.md';
 
 test('design: the UI spec has a row for every connect failure the desktop words (W2-STR-1, F5, R-7)', () => {
   const dropRow = (code) => (text) =>

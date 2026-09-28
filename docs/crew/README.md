@@ -57,4 +57,5 @@ Crew then says the person can now see the team's channels. See [Hosting a worksp
 ## Related documentation
 
 - [Privacy tiers](../security/privacy-tiers.md): the app's privacy rules, for developers.
-- [Crew implementation and evidence](../research/biorouter-crew/README.md): Crew's design, plan and test evidence, for developers.
+- [Crew design and reference](design/README.md): the broker protocol, naming design, interface specification and CLI guide, for developers.
+- [Crew build campaign](../history/biorouter-crew/README.md): the plans, reviews and test evidence of the campaign that built Crew.

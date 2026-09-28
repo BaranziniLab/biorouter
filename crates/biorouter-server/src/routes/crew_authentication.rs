@@ -3,7 +3,7 @@
 //! **SSH authentication** (`/crew/connections/{id}/authentication`, `/crew/authentication/…`):
 //! native clients only; terminal credentials never enter model or replay streams.
 //!
-//! **Workspace admission (S3a)**, as `docs/research/biorouter-crew/naming-design.md` ("Joining
+//! **Workspace admission (S3a)**, as `docs/crew/design/naming-design.md` ("Joining
 //! a workspace (S3a)", "Daemon routes, OpenAPI and TypeScript client") specifies:
 //!
 //! - `POST /crew/connections/from-invitation`: preview a pasted invitation, or save the

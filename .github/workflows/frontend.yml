@@ -196,15 +196,17 @@ jobs:
       # already encodes it — but nothing ran the linter, so two PRs merged in one
       # afternoon each added a file loose at `docs/` root.
       #
-      # ⚠ This is DELIBERATELY three rules, not the whole linter. The tree carries a
+      # ⚠ This is DELIBERATELY four rules, not the whole linter. The tree carries a
       # real backlog (156 findings across ten rules, measured 2026-09-22), and a gate
-      # that fails on arrival gets disabled rather than obeyed. These three are clean
+      # that fails on arrival gets disabled rather than obeyed. These four are clean
       # on main today and can be held that way; the step prints how many findings it
       # is NOT reporting, so a filtered pass never reads as "the docs are clean".
       # Widen the list as a rule's backlog reaches zero — never past it.
+      # tree/research-cites-repo joined on 2026-09-28, when Crew's own design and records left
+      # docs/research/ (which holds studies of systems outside this repo) at zero findings.
       - name: Documents live where the rule says (placement only)
         if: ${{ !cancelled() }}
-        run: python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement
+        run: python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement,tree/research-cites-repo
 
       # The Crew manual and its landing page quote dialog titles, name what a
       # `biorouter serve` browser can do and say who may add people. Each rule

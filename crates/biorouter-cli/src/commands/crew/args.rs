@@ -1,7 +1,7 @@
 //! Arguments for `biorouter crew`.
 //!
 //! Every argument that names a person, team or channel takes a *selector*
-//! ("Selectors and the resolver" in `docs/research/biorouter-crew/naming-design.md`):
+//! ("Selectors and the resolver" in `docs/crew/design/naming-design.md`):
 //!
 //! - a person is `@bob` (the username on the server; a display name never selects anyone);
 //! - a team is its name or handle, `analysis-lab` or `"Analysis Lab"`;
