@@ -5510,6 +5510,34 @@ code [class~='token'] {
   transform-origin: top center;
 }
 
+/* Native-size document previews (PDF, Word, PowerPoint) are centred in the
+   panel, so the space left of a page must equal the space right of it.
+
+   `stable both-edges`: with a classic scrollbar (Windows, Linux, or macOS set
+   to "Always show scroll bars") the vertical bar is taken from the right side
+   only, which left a Word page 12px from the left edge and 22px from the right.
+   Reserving the same gutter on the left keeps the two equal. With overlay
+   scrollbars it reserves nothing. It also keeps the width from changing when a
+   long deck first overflows, which the PowerPoint renderer otherwise has to
+   correct after the fact.
+
+   Authored CSS, not Tailwind strings: under BIOROUTER_NO_HMR the class scanner
+   is blind and a new utility silently never generates.
+   DocumentPreview.test.tsx pins these declarations at the source, because
+   jsdom has no layout engine to measure the centring. */
+.artifact-document-scroll {
+  scrollbar-gutter: stable both-edges;
+}
+
+/* The deck's gutter sits on its SCROLLER, never on `.artifact-pptx-preview`.
+   The renderer sizes each slide from that element's `clientWidth`, which
+   includes padding, so a gutter there made every slide as wide as the whole
+   panel and pushed it off the right edge. See `PowerPointPreview`. */
+.artifact-pptx-scroll {
+  box-sizing: border-box;
+  padding: 16px 12px;
+}
+
 @keyframes biorouter-heatmap-loading {
   0%,
   100% {
