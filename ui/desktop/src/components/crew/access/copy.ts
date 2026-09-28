@@ -181,6 +181,11 @@ export const accessCopy = {
     unconfirmed: 'Stopped on this device',
     /** A task's grant after the task: it ended with the task, nobody revoked it (Q2-09). */
     ended: 'Ended',
+    /**
+     * A task's grant after the person stopped the task: "Stopped", as its card in the channel and
+     * `biorouter crew grants list` say (AGT2-N3), where "Ended" read as if it had finished.
+     */
+    stopped: 'Stopped',
   },
   /** Its rows read Ended, Revoked or Expired: one name for all of them (Q3-30). */
   showOld: (count: number) => `Show past access (${count})`,

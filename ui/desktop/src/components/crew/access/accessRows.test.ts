@@ -298,6 +298,33 @@ describe('task rows in the Access history', () => {
     expect(splitAccessRows(rows).old.map((row) => row.sessionId)).toContain('task-1');
   });
 
+  /** AGT2-N3: a task stopped with Stop read "Ended" here and "Stopped" on its card. */
+  it('labels a task the person stopped "Stopped", as its card does, and a finished one "Ended"', () => {
+    const run = (session_id: string, status: string) => ({
+      run_id: `run-${session_id}`,
+      channel_id: 'channel-1',
+      session_id,
+      status,
+    });
+    const rows = accessRows(
+      [
+        task({ expired: true, revocation: 'confirmed' }),
+        task({ session_id: 'task-2', expired: true, revocation: 'confirmed' }),
+        task({ session_id: 'task-3', expires_at: NOW / 1000 - 5 }),
+      ],
+      {
+        snapshot,
+        now: NOW,
+        runs: [run('task-1', 'cancelled'), run('task-2', 'completed'), run('task-3', 'cancelled')],
+      }
+    );
+    const label = (id: string) => rows.find((row) => row.sessionId === id)?.statusLabel;
+    expect(label('task-1')).toBe(accessCopy.status.stopped);
+    expect(label('task-2')).toBe(accessCopy.status.ended);
+    expect(label('task-3')).toBe(accessCopy.status.stopped);
+    expect(accessCopy.status.stopped).toBe('Stopped');
+  });
+
   it('keeps a task stopped only on this device as a stop to confirm, with Retry', () => {
     const [row] = accessRows([task({ expired: true })], {
       snapshot,

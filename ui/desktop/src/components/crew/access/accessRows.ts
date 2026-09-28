@@ -50,7 +50,10 @@ export interface AccessRow {
   /** Further channels it may read, beyond the destination. */
   extraSources: number;
   status: AccessStatus;
-  /** The badge. A task's grant that is over reads "Ended": it ended with the task (Q2-09). */
+  /**
+   * The badge. A task's grant that is over reads "Ended": it ended with the task (Q2-09), or
+   * "Stopped" when the person stopped it (AGT2-N3).
+   */
   statusLabel: string;
   /** Unix seconds, when the daemon recorded when the workspace ends the grant. */
   expiresAt: number | null;
@@ -285,7 +288,13 @@ export function accessRow(
       (sanitizeDisplayText(grantDestinationLabel(grant)) || accessCopy.unknownChannel),
     extraSources,
     status,
-    statusLabel: ended ? accessCopy.status.ended : label,
+    // A task the person stopped reads Stopped, as its card does; one that finished, or whose run
+    // the observer no longer reports, Ended (AGT2-N3).
+    statusLabel: ended
+      ? run?.status === 'cancelled'
+        ? accessCopy.status.stopped
+        : accessCopy.status.ended
+      : label,
     expiresAt: typeof grant.expires_at === 'number' ? grant.expires_at : null,
     revokedAt: status === 'revoked' ? remembered : null,
     run,
