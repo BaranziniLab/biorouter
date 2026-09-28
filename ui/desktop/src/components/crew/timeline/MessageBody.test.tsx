@@ -176,6 +176,11 @@ describe('markdown', () => {
         '![https://www.ucsf.edu](https://evil.example.net/x.png)',
         'evil.example.net',
       ],
+      [
+        'words that hide the host behind a user name',
+        '[https://www.ucsf.edu@evil.example.net/login](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
     ])('names the real host after %s', (_label, body, host) => {
       const { container } = render(<MessageBody body={body} />);
       expect(container.querySelector('.crew-md-link-host')).toHaveTextContent(`(${host})`);

@@ -90,6 +90,16 @@ export type RevealedSegment =
  * `U+200E`, `U+200F` and `U+061C` that right-to-left text does use are not among them.
  */
 const DIRECTION_CONTROL = /^[\u{202A}-\u{202E}\u{2066}-\u{2069}]$/u;
+/**
+ * The direction marks (`U+200E`, `U+200F`, `U+061C`). Right-to-left text needs them to keep
+ * punctuation and embedded Latin words where they belong, so they stay in text that has any
+ * right-to-left letter. In text that has none they have nothing to do but reorder runs: a strong
+ * right-to-left mark inside `invoice.exe` lays the pieces out right to left.
+ */
+const DIRECTION_MARK = /^[\u{200E}\u{200F}\u{061C}]$/u;
+/** A letter of a script written right to left (a letter: the Arabic letter mark is Arabic too). */
+const RIGHT_TO_LEFT_LETTER =
+  /(?=\p{L})[\p{Script=Hebrew}\p{Script=Arabic}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}\p{Script=Samaritan}\p{Script=Mandaic}\p{Script=Adlam}\p{Script=Hanifi_Rohingya}]/u;
 /** A control character (C0, DEL, C1): drawn as nothing, or as a box, unless it is a tab or a break. */
 const CONTROL = /^\p{Cc}$/u;
 const LAID_OUT_CONTROLS = new Set(['\t', '\n', '\r']);
@@ -164,23 +174,26 @@ function inFlagSequence(characters: readonly string[], index: number): boolean {
 
 /**
  * Another person's text, split so that what could make it read as something else is drawn
- * visibly (QA M3, SEC-9): the direction controls, the invisible control characters, the tag
- * block outside a flag, and a zero-width character where it can spoof a name. Each becomes a
+ * visibly (QA M3, SEC-9): the direction controls, a direction mark in text with no right-to-left
+ * letter, the invisible control characters, the tag block outside a flag, and a zero-width
+ * character where it can spoof a name. Each becomes a
  * `hidden` segment carrying its escape (`\u{202e}`, as `biorouter crew` prints it) and the raw
  * character, so a surface that draws the escape can still copy the bytes that were sent.
  *
  * Unlike {@link stripHiddenCharacters}, nothing is removed and most format characters stay: the
- * zero-width joiners (every emoji sequence), the direction marks right-to-left text uses, the soft
+ * zero-width joiners (every emoji sequence), the direction marks of right-to-left text, the soft
  * hyphen, and a zero-width space between Thai words. For display only; it never changes what is
  * stored or sent.
  */
 export function revealHiddenCharacters(value: string): RevealedSegment[] {
   const characters = Array.from(value);
   const segments: RevealedSegment[] = [];
+  const rightToLeft = RIGHT_TO_LEFT_LETTER.test(value);
   let text = '';
   characters.forEach((character, index) => {
     const hidden =
       DIRECTION_CONTROL.test(character) ||
+      (DIRECTION_MARK.test(character) && !rightToLeft) ||
       (CONTROL.test(character) && !LAID_OUT_CONTROLS.has(character)) ||
       (TAG.test(character) && !inFlagSequence(characters, index)) ||
       (ZERO_WIDTH.test(character) &&

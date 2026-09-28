@@ -114,6 +114,11 @@ describe('revealHiddenCharacters', () => {
     ['a zero-width space inside a bare username', 'cre\u{200B}w_bob said', 1],
     ['a word joiner inside an address', 'see https://www.ucsf\u{2060}.edu/login', 1],
     ['a byte-order mark on a domain', 'open ucsf.edu\u{FEFF} now', 1],
+    [
+      'direction marks in text with no right-to-left letter',
+      'invoice\u{200F}.exe\u{200E}\u{61C}',
+      3,
+    ],
   ])('shows %s', (_label, value, count) => {
     const segments = revealHiddenCharacters(value);
     expect(segments.filter((part) => part.kind === 'hidden')).toHaveLength(count);
@@ -122,7 +127,7 @@ describe('revealHiddenCharacters', () => {
 
   it.each([
     ['a Hebrew paragraph', 'שלום לכולם, הפגישה בשעה 3.'],
-    ['right-to-left marks', 'x\u{200F}y\u{200E}z\u{61C}'],
+    ['the direction marks of right-to-left text', 'שלום\u{200F} (C++)\u{200E} مرحبا\u{61C}'],
     [
       'an emoji joiner sequence',
       'scientist \u{1F469}\u{1F3FD}\u{200D}\u{1F52C} and family \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}',

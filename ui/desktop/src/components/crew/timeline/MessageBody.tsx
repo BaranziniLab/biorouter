@@ -187,15 +187,17 @@ function comparableHost(host: string): string {
  * The host a link's words name, when they read as an address (`https://www.ucsf.edu/x`,
  * `www.ucsf.edu`, `ucsf.edu/login`); null for words that do not (`the docs`, `@bob`).
  */
-function hostInWords(words: string): string | null {
+function hostInWords(words: string): { host: string; userinfo: boolean } | null {
   const text = words.trim();
   if (!text || /\s/.test(text)) return null;
   const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
   if (!scheme && !/^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}(?:[/:?#]|$)/u.test(text))
     return null;
   try {
-    const host = new URL(scheme ? text : `https://${text}`).hostname;
-    return host || null;
+    const url = new URL(scheme ? text : `https://${text}`);
+    return url.hostname
+      ? { host: url.hostname, userinfo: Boolean(url.username || url.password) }
+      : null;
   } catch {
     return null;
   }
@@ -217,7 +219,10 @@ export function mismatchedLinkHost(words: string, href: string): string | null {
   } catch {
     return null;
   }
-  return comparableHost(named) === comparableHost(target) ? null : target;
+  // Words written `https://www.ucsf.edu@evil.example.net/` name evil.example.net, and read as
+  // ucsf.edu: the host is said whatever it is.
+  if (named.userinfo) return target;
+  return comparableHost(named.host) === comparableHost(target) ? null : target;
 }
 
 /** The real host after a link's words, inside the link so it is read as part of its name. */

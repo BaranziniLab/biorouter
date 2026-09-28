@@ -598,6 +598,22 @@ describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
     );
   });
 
+  it('drops a lost channel’s words, unoffered, when access to the workspace changes too', async () => {
+    const first = await observeChannel();
+    act(() => crew.setBody('for #general'));
+    send(first, ended('channel_access_changed'));
+    expect(crew.lostDrafts).toHaveLength(1);
+    // Access or privacy changed: nothing typed under the old one waits to be copied (QA M10).
+    const second = await waitFor(() => {
+      const session = sessions[sessions.length - 1];
+      if (!session || session.signal.aborted) throw new Error('no live observer');
+      return session;
+    });
+    send(second, ended('access_denied'));
+    await waitFor(() => expect(crew.refreshError).not.toBeNull());
+    expect(crew.lostDrafts).toEqual([]);
+  });
+
   it('says plainly that updates stopped once three attempts in a minute have failed', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const first = await observeChannel();

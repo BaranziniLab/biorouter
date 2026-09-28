@@ -530,6 +530,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     (id: number) => setLostDrafts((list) => list.filter((item) => item.id !== id)),
     []
   );
+  /** A privacy or access change on `connection`: its lost channels' words go too, unoffered. */
+  const forgetLostDrafts = useCallback(
+    (connection: string) =>
+      setLostDrafts((list) => list.filter((item) => item.connectionId !== connection)),
+    []
+  );
   const observer = useRef<AbortController | null>(null);
   const [observationRevision, setObservationRevision] = useState(0);
   const historyPage = useRef<string | null>(null);
@@ -763,16 +769,18 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         deferRecoverableToReverification: true,
       });
       if (outcome.clearDraft) {
-        // Access or privacy changed: no draft kept for this workspace may come back either.
+        // Access or privacy changed: no draft kept for this workspace may come back either, nor
+        // the words of a lost channel wait to be copied (QA M10 offers them only for a channel lost).
         clearDraft();
         forgetConnectionDrafts(selection.current.connectionId);
+        forgetLostDrafts(selection.current.connectionId);
       }
       recoveringFrom.current = null;
       setReverifying(false);
       setRefreshErrorCode(code ?? null);
       setRefreshError(outcome.text);
     },
-    [cancelRecovery, clearProtectedState, clearDraft]
+    [cancelRecovery, clearProtectedState, clearDraft, forgetLostDrafts]
   );
   const refresh = useCallback(async () => {
     cancelRecovery();
@@ -1145,6 +1153,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                 const hadContent = draftHasContent.current;
                 clearDraft();
                 forgetConnectionDrafts(connectionId);
+                forgetLostDrafts(connectionId);
                 if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
               // The view drawn from before leaving Crew (Q4-04) may stay only while nothing it
@@ -1332,6 +1341,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     restoreBody,
     tellNote,
     offerLostDraft,
+    forgetLostDrafts,
     resetWindow,
     generation,
     selectedSources,
