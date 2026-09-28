@@ -427,8 +427,9 @@ LAUNCH_PAGES="${{XDG_CONFIG_HOME:-$HOME/.config}}/biorouter/app-launcher/open"
 launch_page() {{
   ( umask 077
     set -C
-    mkdir -p "$LAUNCH_PAGES" && chmod 700 "$LAUNCH_PAGES" || exit 1
+    mkdir -p "$LAUNCH_PAGES" || exit 1
     [ -d "$LAUNCH_PAGES" ] && [ ! -L "$LAUNCH_PAGES" ] && [ -O "$LAUNCH_PAGES" ] || exit 1
+    chmod 700 "$LAUNCH_PAGES" || exit 1
     find "$LAUNCH_PAGES" -type f -name 'launch-*.html' -mmin +10 -exec rm -f {{}} + 2>/dev/null || true
     name="$(new_secret)"
     [ "${{#name}}" -eq 64 ] || exit 1
@@ -443,18 +444,27 @@ launch_page() {{
 
 open_url() {{
   echo "Opening $APP_ID at http://127.0.0.1:$PORT/apps/$APP_ID/"
-  case "$1" in
-    "http://127.0.0.1:$PORT/apps/$APP_ID/?t="*) ;;
-    *) die "not a launch link for $APP_ID; refusing to open it" ;;
+  token="${{1#"http://127.0.0.1:$PORT/apps/$APP_ID/?t="}}"
+  case "$token" in
+    "$1" | *[!0-9a-f]*) die "not a launch link for $APP_ID; refusing to open it" ;;
   esac
+  [ "${{#token}}" -eq 64 ] || die "not a launch link for $APP_ID; refusing to open it"
   page="$(launch_page "$1")" || page=""
+  opened=0
   if [ -n "$page" ]; then
     case "$(uname -s)" in
-      Darwin) open "$page" && return 0 ;;
-      *) if command -v xdg-open >/dev/null 2>&1; then xdg-open "$page" && return 0; fi ;;
+      Darwin) open "$page" && opened=1 ;;
+      *) if command -v xdg-open >/dev/null 2>&1; then xdg-open "$page" && opened=1; fi ;;
     esac
   fi
-  echo "Open this address in your browser (it works once): $1"
+  # This terminal is yours alone, so the link can be shown here: for a browser
+  # that cannot read the page (a snap-packaged one cannot read hidden folders),
+  # or for when none opened.
+  if [ "$opened" = 1 ]; then
+    echo "If the app does not appear, open this address instead (it works once): $1"
+  else
+    echo "Open this address in your browser (it works once): $1"
+  fi
 }}
 
 # ── 5. First-run payload install (full-mode exports only) ─────────────────
@@ -776,6 +786,8 @@ $Html = '<!doctype html><meta charset=utf-8><meta name=referrer content=no-refer
 try {
   Set-Content -LiteralPath $Page -Value $Html -Encoding UTF8
   Invoke-Item -LiteralPath $Page
+  # This window is yours alone, so the link can be shown here too.
+  Write-Host "If the app does not appear, open this address instead (it works once): $Link"
 } catch {
   Write-Host "Open this address in your browser (it works once): $Link"
 }
@@ -1874,7 +1886,11 @@ mod tests {
             "open_url failed:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        assert!(!String::from_utf8_lossy(&out.stdout).contains(&token));
+        // The terminal is the user's alone, so the link is shown there for a
+        // browser that cannot read the page.
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&format!(
+            "open this address instead (it works once): {launch}"
+        )));
         let opened = std::fs::read_to_string(&log).expect("an opener ran");
         let handed: Vec<&str> = opened.lines().collect();
         assert_eq!(handed.len(), 1, "one argument, the page: {opened}");
@@ -1902,8 +1918,15 @@ mod tests {
         // opener runs.
         std::fs::remove_file(&log).unwrap();
         for other in [
-            "http://127.0.0.1:4321/apps/other/?t=00".to_string(),
+            format!("http://127.0.0.1:4321/apps/other/?t={token}"),
             format!("http://127.0.0.1:9999/apps/{}/?t={token}", m.id),
+            format!("http://127.0.0.1:4321/apps/{}/?t={}", m.id, "cd".repeat(31)),
+            format!("http://127.0.0.1:4321/apps/{}/?t={token}\"><script>", m.id),
+            format!(
+                "http://127.0.0.1:4321/apps/{}/?t={}",
+                m.id,
+                token.to_uppercase()
+            ),
             "https://example.test/".to_string(),
         ] {
             assert!(!run(&other).status.success(), "{other}");

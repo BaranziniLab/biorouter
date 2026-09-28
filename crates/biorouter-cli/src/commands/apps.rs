@@ -681,12 +681,22 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
     // The link itself never reaches an opener's command line: see
     // `write_launch_page`. The terminal is this account's alone, so the link is
     // printed there when no browser could be opened.
-    if let Err(e) = open_launch_link(&launch, &launch_pages_dir(), |page| open::that(page)) {
-        eprintln!("    {} {e}", style("!").yellow());
-        println!(
-            "  {} open this address instead (it works once): {launch}",
+    //
+    // It is printed when the page did open, too: a browser that cannot read the
+    // page (a snap-packaged browser cannot read hidden folders such as the state
+    // dir) shows an error, and `open` still reports success.
+    match open_launch_link(&launch, &launch_pages_dir(), |page| open::that(page)) {
+        Ok(()) => println!(
+            "  {} if the app does not appear, open this address instead (it works once): {launch}",
             style("·").dim()
-        );
+        ),
+        Err(e) => {
+            eprintln!("    {} {e}", style("!").yellow());
+            println!(
+                "  {} open this address instead (it works once): {launch}",
+                style("·").dim()
+            );
+        }
     }
     println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
     Ok(())
