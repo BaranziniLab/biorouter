@@ -2930,43 +2930,44 @@ async fn teams(api: &Api, command: TeamCommand) -> Result<Reply> {
     })
 }
 
+/// `channels list [--team T]`: the person's channels in a reader's order, with their unread
+/// counts, and a note when the snapshot left some out.
+async fn list_channels(api: &Api, team: Option<&str>) -> Result<Reply> {
+    let snapshot = api.snapshot().await?;
+    let mut channels = snapshot_field(&snapshot, "channels")?;
+    if let Some(team) = team {
+        let team = api.target(Kind::Team, team).await?;
+        channels = json!(channels
+            .as_array()
+            .context("Invalid channel list")?
+            .iter()
+            .filter(|item| item["team_id"].as_str() == Some(team.id.as_str()))
+            .collect::<Vec<_>>());
+    }
+    let mut channels = with_unread(channels, &snapshot);
+    if let Some(list) = channels.as_array_mut() {
+        output::channels_in_order(
+            list,
+            snapshot["teams"].as_array().map_or(&[], Vec::as_slice),
+        );
+    }
+    // A partial snapshot lists some of the person's channels (wave 1's bounded
+    // snapshot): say so, rather than let the list read as all of them.
+    let listed = snapshot["channels"].as_array().map_or(0, Vec::len);
+    let note =
+        output::partial_list_note("channels", listed, snapshot["totals"]["channels"].as_u64());
+    Ok(Reply::Show(
+        channels,
+        Box::new(
+            api.human(Directory::from_snapshot(&snapshot))
+                .with_notes(note),
+        ),
+    ))
+}
+
 async fn channels(api: &Api, command: ChannelCommand) -> Result<Reply> {
     Ok(match command {
-        ChannelCommand::List { team } => {
-            let snapshot = api.snapshot().await?;
-            let mut channels = snapshot_field(&snapshot, "channels")?;
-            if let Some(team) = team {
-                let team = api.target(Kind::Team, &team).await?;
-                channels = json!(channels
-                    .as_array()
-                    .context("Invalid channel list")?
-                    .iter()
-                    .filter(|item| item["team_id"].as_str() == Some(team.id.as_str()))
-                    .collect::<Vec<_>>());
-            }
-            let mut channels = with_unread(channels, &snapshot);
-            if let Some(list) = channels.as_array_mut() {
-                output::channels_in_order(
-                    list,
-                    snapshot["teams"].as_array().map_or(&[], Vec::as_slice),
-                );
-            }
-            // A partial snapshot lists some of the person's channels (wave 1's bounded
-            // snapshot): say so, rather than let the list read as all of them.
-            let listed = snapshot["channels"].as_array().map_or(0, Vec::len);
-            let note = output::partial_list_note(
-                "channels",
-                listed,
-                snapshot["totals"]["channels"].as_u64(),
-            );
-            Reply::Show(
-                channels,
-                Box::new(
-                    api.human(Directory::from_snapshot(&snapshot))
-                        .with_notes(note),
-                ),
-            )
-        }
+        ChannelCommand::List { team } => list_channels(api, team.as_deref()).await?,
         ChannelCommand::Create {
             name,
             team,
@@ -4199,6 +4200,83 @@ fn revoked_lines(session: &str, answer: &Value) -> Result<Vec<String>> {
     Ok(lines)
 }
 
+/// `privacy set-personal MODE`: how this computer treats the workspace. Going public is
+/// confirmed by typing the workspace's name (CLI-10), and in a workspace that is Private for
+/// everyone it changes nothing until the host allows Public, which is said (SF-F1).
+async fn set_personal(
+    api: &Api,
+    mode: PrivacyMode,
+    institution_id: Option<String>,
+    confirm: Option<&str>,
+) -> Result<Reply> {
+    let connection = api.connection().await?;
+    // SF-F1: in a workspace that is Private for everyone, a public connection changes
+    // nothing until the host allows Public, and the person is told so. Going Private
+    // waits on nothing it does not need.
+    let snapshot = match mode {
+        PrivacyMode::Public => api.snapshot().await.ok(),
+        PrivacyMode::Private => None,
+    };
+    let workspace_private = snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot["workspace"]["mode"] == "private");
+    let workspace = snapshot
+        .as_ref()
+        .and_then(workspace_name_in)
+        .unwrap_or_else(|| connection_name(&connection));
+    let shown = name_text(&workspace);
+    if matches!(mode, PrivacyMode::Public) && connection["mode"].as_str() != Some("public") {
+        let effect = if workspace_private {
+            format!("Make your {shown} connection public? Nothing changes while {shown} is Private for everyone; if the host allows Public, public models will be able to read public-safe work you can see there. Restricted content stays private.")
+        } else {
+            format!("Make your {shown} connection public? Public models will be able to read public-safe work you can see here. Restricted content stays private.")
+        };
+        confirm_public(
+            api,
+            &workspace,
+            confirm,
+            vec![effect],
+            format!("Making your {shown} connection public needs its name typed. There is no terminal to ask in, so confirm with --confirm {}.", safe_text(&shell_word(&workspace))),
+        )
+        .await?;
+    }
+    let mut input = serde_json::Map::new();
+    for key in [
+        "name",
+        "ssh_target",
+        "port",
+        "identity_file",
+        "proxy_jump",
+        "socket_path",
+        "owner_uid",
+        "workspace_id",
+        "workspace_public_key",
+        "remote_root",
+        "remote_execution",
+        "cluster_connection_id",
+        "institution_id",
+    ] {
+        if let Some(value) = connection.get(key) {
+            input.insert(key.into(), value.clone());
+        }
+    }
+    input.insert("mode".into(), json!(mode.as_str()));
+    if let Some(institution_id) = institution_id {
+        input.insert("institution_id".into(), json!(institution_id));
+    }
+    let saved = api
+        .client
+        .request("PATCH", &api.path("").await?, Some(Value::Object(input)))
+        .await?;
+    let saved = with_privacy_of(saved, snapshot.as_ref());
+    let note = (matches!(mode, PrivacyMode::Public) && workspace_private)
+        .then(|| format!("Nothing changes while {shown} is Private for everyone."));
+    Ok(Reply::Show(
+        saved,
+        Box::new(api.human(Directory::default()).with_notes(note)),
+    ))
+}
+
 async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
     Ok(match command {
         PrivacyCommand::Show => {
@@ -4211,75 +4289,7 @@ async fn privacy(api: &Api, command: PrivacyCommand) -> Result<Reply> {
             mode,
             institution_id,
             confirm,
-        } => {
-            let connection = api.connection().await?;
-            // SF-F1: in a workspace that is Private for everyone, a public connection changes
-            // nothing until the host allows Public, and the person is told so. Going Private
-            // waits on nothing it does not need.
-            let snapshot = match mode {
-                PrivacyMode::Public => api.snapshot().await.ok(),
-                PrivacyMode::Private => None,
-            };
-            let workspace_private = snapshot
-                .as_ref()
-                .is_some_and(|snapshot| snapshot["workspace"]["mode"] == "private");
-            let workspace = snapshot
-                .as_ref()
-                .and_then(workspace_name_in)
-                .unwrap_or_else(|| connection_name(&connection));
-            let shown = name_text(&workspace);
-            if matches!(mode, PrivacyMode::Public) && connection["mode"].as_str() != Some("public")
-            {
-                let effect = if workspace_private {
-                    format!("Make your {shown} connection public? Nothing changes while {shown} is Private for everyone; if the host allows Public, public models will be able to read public-safe work you can see there. Restricted content stays private.")
-                } else {
-                    format!("Make your {shown} connection public? Public models will be able to read public-safe work you can see here. Restricted content stays private.")
-                };
-                confirm_public(
-                    api,
-                    &workspace,
-                    confirm.as_deref(),
-                    vec![effect],
-                    format!("Making your {shown} connection public needs its name typed. There is no terminal to ask in, so confirm with --confirm {}.", safe_text(&shell_word(&workspace))),
-                )
-                .await?;
-            }
-            let mut input = serde_json::Map::new();
-            for key in [
-                "name",
-                "ssh_target",
-                "port",
-                "identity_file",
-                "proxy_jump",
-                "socket_path",
-                "owner_uid",
-                "workspace_id",
-                "workspace_public_key",
-                "remote_root",
-                "remote_execution",
-                "cluster_connection_id",
-                "institution_id",
-            ] {
-                if let Some(value) = connection.get(key) {
-                    input.insert(key.into(), value.clone());
-                }
-            }
-            input.insert("mode".into(), json!(mode.as_str()));
-            if let Some(institution_id) = institution_id {
-                input.insert("institution_id".into(), json!(institution_id));
-            }
-            let saved = api
-                .client
-                .request("PATCH", &api.path("").await?, Some(Value::Object(input)))
-                .await?;
-            let saved = with_privacy_of(saved, snapshot.as_ref());
-            let note = (matches!(mode, PrivacyMode::Public) && workspace_private)
-                .then(|| format!("Nothing changes while {shown} is Private for everyone."));
-            Reply::Show(
-                saved,
-                Box::new(api.human(Directory::default()).with_notes(note)),
-            )
-        }
+        } => set_personal(api, mode, institution_id, confirm.as_deref()).await?,
         PrivacyCommand::SetWorkspace {
             mode,
             institution_id,
