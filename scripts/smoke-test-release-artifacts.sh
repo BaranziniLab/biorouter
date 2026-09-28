@@ -175,12 +175,19 @@ smoke_serve() {
 
       # The token is exchanged for a session cookie. It is not consumed
       # (SD-9 in docs/deployment/serve-decisions.md): the readiness loop above
-      # has already redeemed it.
-      curl -s -o /dev/null -D /tmp/h "http://127.0.0.1:18080/?t=smoketoken"
-      grep -qi "^HTTP/1.1 303" /tmp/h
+      # has already redeemed it. The answer is a page served by the daemon
+      # itself that moves on to /, not a 303, so the SameSite=Strict cookie
+      # survives a navigation started by the file: page that serve --open writes.
+      curl -s -o /tmp/bounce.html -D /tmp/h "http://127.0.0.1:18080/?t=smoketoken"
+      grep -qi "^HTTP/1.1 200" /tmp/h
       grep -qi "set-cookie: biorouter_session=" /tmp/h
       grep -qi "HttpOnly" /tmp/h
       grep -qi "SameSite=Strict" /tmp/h
+      grep -qi "cache-control: no-store" /tmp/h
+      grep -q "http-equiv=\"refresh\" content=\"0;url=/\"" /tmp/bounce.html
+      # `! grep` cannot fail a `set -e` script: bash exempts a negated
+      # pipeline from errexit, so each absence is an explicit exit.
+      if grep -q smoketoken /tmp/bounce.html; then exit 1; fi
 
       # And a wrong one is refused, so the gate is a gate.
       code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:18080/?t=wrong")
@@ -192,7 +199,7 @@ smoke_serve() {
       curl -fsS -b "biorouter_session=smoketoken" http://127.0.0.1:18080/ >/tmp/shell.html
       grep -q "__BIOROUTER_HEADLESS_CONFIG__" /tmp/shell.html
       grep -q "\"secretKey\":\"[0-9a-f]\{64\}\"" /tmp/shell.html
-      ! grep -q "apiBaseUrl" /tmp/shell.html
+      if grep -q "apiBaseUrl" /tmp/shell.html; then exit 1; fi
 
       # The bundle really is served, and it is the ROOT-BASE build.
       grep -q "src=\"/assets/" /tmp/shell.html
