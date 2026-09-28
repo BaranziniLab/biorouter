@@ -211,6 +211,9 @@ type TerminalExitEvent = {
 
 const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}');
 
+/** Mirrors `DaemonConnectionState` in `biorouterdSingleton.ts` (the preload imports no main code). */
+type DaemonConnectionState = 'attached' | 'lost' | 'reconnecting';
+
 interface UpdaterEvent {
   event: string;
   data?: unknown;
@@ -348,6 +351,15 @@ type ElectronAPI = {
   downloadUpdate: () => Promise<{ success: boolean; error: string | null }>;
   installUpdate: () => void;
   restartApp: () => void;
+  /**
+   * Where the app stands with the shared background service (R-1): `lost` once the instance it
+   * verified is gone or replaced, until the person reconnects. Optional: a browser surface and an
+   * external backend have no shared daemon to lose.
+   */
+  getDaemonConnection?: () => Promise<DaemonConnectionState>;
+  onDaemonConnection?: (callback: (state: DaemonConnectionState) => void) => () => void;
+  /** Reattach to the profile's background service; the main process asks for its secret. */
+  reconnectDaemon?: () => Promise<boolean>;
   /** Subscribe to main-process updater events. Returns a disposer that removes
    * the listener; call it on unmount to avoid duplicate registrations. */
   onUpdaterEvent: (callback: (event: UpdaterEvent) => void) => () => void;
@@ -779,6 +791,14 @@ const electronAPI: ElectronAPI = {
   restartApp: (): void => {
     ipcRenderer.send('restart-app');
   },
+  getDaemonConnection: () => ipcRenderer.invoke('daemon-connection:get'),
+  onDaemonConnection: (callback: (state: DaemonConnectionState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: DaemonConnectionState) =>
+      callback(state);
+    ipcRenderer.on('daemon-connection', listener);
+    return () => ipcRenderer.removeListener('daemon-connection', listener);
+  },
+  reconnectDaemon: () => ipcRenderer.invoke('daemon-connection:reconnect'),
   onUpdaterEvent: (callback: (event: UpdaterEvent) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, data: UpdaterEvent) => callback(data);
     ipcRenderer.on('updater-event', listener);

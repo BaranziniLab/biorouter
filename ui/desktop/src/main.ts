@@ -46,6 +46,7 @@ import {
   startBiorouterd,
   getBiorouterCliBinaryPath,
   validateDaemonApprovalSecret,
+  type SharedDaemonLink,
 } from './biorouterd';
 import {
   TerminalSessionRegistry,
@@ -53,7 +54,12 @@ import {
   terminalSessionLimitMessage,
   type RegisteredTerminalSession,
 } from './terminalSessionRegistry';
-import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
+import {
+  createDaemonReattachController,
+  getSharedBackend,
+  isSharedDaemonEnabled,
+  resetSharedBackend,
+} from './biorouterdSingleton';
 import {
   StripBandRegistry,
   detachRefusal,
@@ -1401,6 +1407,98 @@ const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => 
   return secret;
 };
 
+/** The approval secret of a daemon this app did not start: asked for, never read from disk. */
+const requestExistingDaemonApprovalSecret = async (runtime: {
+  profileId: string;
+  instanceId: string;
+  userActionInstalled: boolean;
+}): Promise<string | undefined> => {
+  if (!runtime.userActionInstalled)
+    throw new Error(
+      'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
+    );
+  if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
+  const key = await promptNativeSecret(
+    'Connect to existing Biorouter daemon',
+    `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+  );
+  if (!key)
+    throw new Error(
+      'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
+    );
+  validateDaemonApprovalSecret(key);
+  return key;
+};
+
+// ─── Reattaching after the shared daemon restarts (R-1) ───────────────────────────────────────
+//
+// The shared daemon outlives the app, and a restart (a crash, `biorouter crew daemon stop`, a
+// CLI that started a new one) always brings a new instance, which the proxy refuses to follow.
+// This is the one place that notices, asks the person once, and reattaches the same local
+// address to the new instance when they agree. Every window is told where things stand over
+// `daemon-connection`, and the sidebar offers Reconnect and Quit and Reopen from then on.
+
+/** The attachment the controller reconnects through; set by the first shared `createChat`. */
+let sharedDaemonLink: SharedDaemonLink | undefined;
+const wiredDaemonLinks = new WeakSet<SharedDaemonLink>();
+
+const daemonReattach = createDaemonReattachController({
+  ask: async () => {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Background service restarted',
+      message: "Biorouter's background service restarted. Reconnect?",
+      detail:
+        "Chats and Crew can't reach it until Biorouter reconnects. Reconnecting asks for the approval secret you set for the background service. Quit and Reopen connects again when Biorouter opens.",
+      buttons: ['Reconnect', 'Quit and Reopen', 'Not Now'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+    return response === 0 ? 'reconnect' : response === 1 ? 'restart' : 'later';
+  },
+  reportFailure: async (message) => {
+    const { response } = await dialog.showMessageBox({
+      type: 'error',
+      title: 'Could not reconnect',
+      message: "Biorouter couldn't reconnect to its background service.",
+      detail: `${message}\n\nQuit and reopen Biorouter to connect again.`,
+      buttons: ['Quit and Reopen', 'Close'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return response === 0 ? 'restart' : 'close';
+  },
+  reconnect: async () => {
+    if (!sharedDaemonLink) throw new Error('Biorouter is not attached to a background service.');
+    await sharedDaemonLink.reconnect();
+  },
+  restart: () => {
+    app.relaunch();
+    app.exit(0);
+  },
+  broadcast: (state) => {
+    for (const window of BrowserWindow.getAllWindows())
+      if (!window.isDestroyed()) window.webContents.send('daemon-connection', state);
+  },
+});
+
+/** Watch a shared attachment, once. */
+const watchSharedDaemon = (link: SharedDaemonLink) => {
+  sharedDaemonLink = link;
+  if (wiredDaemonLinks.has(link)) return;
+  wiredDaemonLinks.add(link);
+  link.onConnection((event) => {
+    if (event.kind === 'lost') {
+      log.warn(`[daemon] the attached instance was lost (${event.reason})`);
+      void daemonReattach.lost();
+    } else {
+      daemonReattach.answered();
+    }
+  });
+};
+
 const createChat = async (
   app: App,
   initialMessage?: string,
@@ -1457,23 +1555,7 @@ const createChat = async (
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
         requestNewUserActionKey: requestNewDaemonApprovalSecret,
-        requestUserActionKey: async (runtime) => {
-          if (!runtime.userActionInstalled)
-            throw new Error(
-              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
-            );
-          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
-          const key = await promptNativeSecret(
-            'Connect to existing Biorouter daemon',
-            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
-          );
-          if (!key)
-            throw new Error(
-              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
-            );
-          validateDaemonApprovalSecret(key);
-          return key;
-        },
+        requestUserActionKey: requestExistingDaemonApprovalSecret,
       })
     : await startBiorouterd({
         app,
@@ -1483,26 +1565,18 @@ const createChat = async (
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
         requestNewUserActionKey: requestNewDaemonApprovalSecret,
-        requestUserActionKey: async (runtime) => {
-          if (!runtime.userActionInstalled)
-            throw new Error(
-              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
-            );
-          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
-          const key = await promptNativeSecret(
-            'Connect to existing Biorouter daemon',
-            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
-          );
-          if (!key)
-            throw new Error(
-              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
-            );
-          validateDaemonApprovalSecret(key);
-          return key;
-        },
+        requestUserActionKey: requestExistingDaemonApprovalSecret,
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
+  // A new window after the shared daemon restarted would otherwise open onto a proxy that
+  // refuses every request, fail its readiness check and quit the app: ask first (R-1).
+  let daemonAttached = true;
+  if (biorouterdResult.sharedDaemon) {
+    watchSharedDaemon(biorouterdResult.sharedDaemon);
+    if (daemonReattach.state() !== 'attached' || (await biorouterdResult.sharedDaemon.probe()))
+      daemonAttached = await daemonReattach.lost({ ask: true });
+  }
   // Per-window working dir — NOT the shared daemon's spawn cwd. In the
   // per-window (non-shared) path this equals biorouterdResult.workingDir.
   const workingDir = windowWorkingDir;
@@ -1678,7 +1752,9 @@ const createChat = async (
     retainBackend(mainWindow.id, biorouterdProcess);
   }
 
-  const serverReady = await checkServerStatus(biorouterdClient, errorLog);
+  // A window opened while the person chose not to reconnect yet opens anyway: its sidebar
+  // says what happened and offers Reconnect, where a failed readiness check would quit the app.
+  const serverReady = daemonAttached ? await checkServerStatus(biorouterdClient, errorLog) : true;
   if (!serverReady) {
     const isUsingExternalBackend = settings.externalBiorouterd?.enabled;
 
@@ -6599,6 +6675,11 @@ async function appMain() {
     app.relaunch();
     app.exit(0);
   });
+
+  // R-1: where the app stands with the shared daemon, and the sidebar's Reconnect. A reconnect
+  // asks the person for the approval secret natively; the renderer never sees or sends one.
+  ipcMain.handle('daemon-connection:get', () => daemonReattach.state());
+  ipcMain.handle('daemon-connection:reconnect', () => daemonReattach.reconnect());
 
   // Handler for getting app version
   ipcMain.on('get-app-version', (event) => {

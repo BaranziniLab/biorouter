@@ -364,3 +364,214 @@ describe.sequential('shared daemon runtime and pinned Unix proxy', () => {
     }
   });
 });
+
+/**
+ * A stand-in for a daemon instance on the profile's socket: its identity, its own secret, and
+ * the approval secret its person-gated routes take (as the raw `X-User-Action`, which the daemon
+ * hashes and compares with its installed digest).
+ */
+async function instanceOn(
+  socketPath: string,
+  identity: { instance_id: string; pid: number },
+  secret: string,
+  approval: string
+) {
+  const seen: { path: string; secret?: string; userAction?: string }[] = [];
+  const server = http.createServer((request, response) => {
+    const headers = request.headers;
+    seen.push({
+      path: request.url ?? '',
+      secret: typeof headers['x-secret-key'] === 'string' ? headers['x-secret-key'] : undefined,
+      userAction:
+        typeof headers['x-user-action'] === 'string' ? headers['x-user-action'] : undefined,
+    });
+    if (headers['x-secret-key'] !== secret) {
+      response.writeHead(401).end();
+      return;
+    }
+    if (request.url === '/daemon/identity') {
+      response.writeHead(200, { 'content-type': 'application/json' }).end(
+        JSON.stringify({
+          version: 1,
+          profile_id: PROFILE_ID,
+          ...identity,
+          user_action_installed: true,
+        })
+      );
+      return;
+    }
+    if (request.url === '/crew/connections' && headers['x-user-action'] !== approval) {
+      response.writeHead(403).end();
+      return;
+    }
+    response
+      .writeHead(200, { 'content-type': 'text/plain' })
+      .end(`ok from ${identity.instance_id}`);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, () => resolve());
+  });
+  fs.chmodSync(socketPath, 0o600);
+  return {
+    seen,
+    stop: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(socketPath, { force: true });
+    },
+  };
+}
+
+describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
+  let previousRoot: string | undefined;
+  let fixture: Fixture | undefined;
+  const cleanups: (() => Promise<void> | void)[] = [];
+
+  beforeEach(() => {
+    previousRoot = process.env.BIOROUTER_PATH_ROOT;
+  });
+  afterEach(async () => {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+    if (fixture) await fixture.close();
+    fixture = undefined;
+    if (previousRoot === undefined) delete process.env.BIOROUTER_PATH_ROOT;
+    else process.env.BIOROUTER_PATH_ROOT = previousRoot;
+  });
+
+  const INSTANCE_B = '44444444-4444-4444-8444-444444444444';
+  const SECRET_B = 'daemon-secret-of-the-new-instance-b';
+  const APPROVAL_A = 'approval-secret-of-instance-a-0123456789';
+  const APPROVAL_B = 'approval-secret-of-instance-b-9876543210';
+  const get = (proxy: { baseUrl: string }, headers: Record<string, string> = {}) =>
+    responseText(proxy.baseUrl + '/crew/echo', {
+      headers: { 'X-Secret-Key': DESKTOP_SECRET, Origin: RENDERER_ORIGIN, ...headers },
+    });
+
+  it('refuses every request once the instance is gone or replaced, until an explicit reattach, then serves the new one at the same address', async () => {
+    const current = (fixture = await unixFixture());
+    const proxy = await createDaemonProxy(
+      current.runtime,
+      DESKTOP_SECRET,
+      'desktop-proof',
+      APPROVAL_A,
+      RENDERER_ORIGIN
+    );
+    cleanups.push(() => proxy.close());
+    const events: unknown[] = [];
+    proxy.onConnection((event) => events.push(event));
+    expect((await get(proxy)).response.status).toBe(200);
+
+    // A stops (`biorouter crew daemon stop`): nothing answers on the socket.
+    await new Promise<void>((resolve) => current.server.close(() => resolve()));
+    fs.rmSync(current.socketPath, { force: true });
+    const gone = await get(proxy);
+    expect(gone.response.status).toBe(502);
+    expect(JSON.parse(gone.body)).toMatchObject({
+      code: 'daemon_restarted',
+      message: expect.stringContaining('background service restarted'),
+    });
+    expect(gone.body).not.toMatch(/explicitly/);
+    expect(events).toEqual([{ kind: 'lost', reason: 'gone', instanceId: INSTANCE_ID }]);
+    await expect(proxy.probe()).resolves.toEqual({ reason: 'gone', instanceId: INSTANCE_ID });
+
+    // B starts on the same socket, with its own identity and secret.
+    const b = await instanceOn(
+      current.socketPath,
+      { instance_id: INSTANCE_B, pid: process.pid + 1 },
+      SECRET_B,
+      APPROVAL_B
+    );
+    cleanups.push(() => b.stop());
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const refused = await get(proxy, { 'X-User-Action': 'desktop-proof' });
+      expect(refused.response.status).toBe(502);
+      expect(JSON.parse(refused.body).code).toBe('daemon_restarted');
+    }
+    // Replaced, once: the proxy never followed B, and never sent B anything but the identity
+    // check with A's secret, which B refused.
+    expect(events.slice(1)).toEqual([
+      { kind: 'lost', reason: 'replaced', instanceId: INSTANCE_ID },
+    ]);
+    expect(b.seen.every(({ path }) => path === '/daemon/identity')).toBe(true);
+    expect(b.seen.every(({ secret }) => secret === DAEMON_SECRET)).toBe(true);
+
+    const runtimeB: DaemonRuntime = {
+      ...current.runtime,
+      instance_id: INSTANCE_B,
+      pid: process.pid + 1,
+      api_secret: SECRET_B,
+    };
+    // A wrong approval secret changes nothing.
+    await expect(proxy.retarget(runtimeB, 'not-the-approval-secret-of-b-000000')).rejects.toThrow(
+      /did not accept that approval secret/
+    );
+    expect(proxy.instanceId()).toBe(INSTANCE_ID);
+    expect((await get(proxy)).response.status).toBe(502);
+
+    // The person reattached with B's approval secret: the same address now reaches B.
+    const baseUrl = proxy.baseUrl;
+    await proxy.retarget(runtimeB, APPROVAL_B);
+    expect(proxy.baseUrl).toBe(baseUrl);
+    expect(proxy.instanceId()).toBe(INSTANCE_B);
+    const served = await get(proxy, { 'X-User-Action': 'desktop-proof' });
+    expect(served.response.status).toBe(200);
+    expect(served.body).toBe(`ok from ${INSTANCE_B}`);
+    expect(b.seen[b.seen.length - 1]).toEqual({
+      path: '/crew/echo',
+      secret: SECRET_B,
+      userAction: APPROVAL_B,
+    });
+    expect(events[events.length - 1]).toEqual({ kind: 'answered', instanceId: INSTANCE_B });
+    await expect(proxy.probe()).resolves.toBeUndefined();
+  });
+
+  it('reports an instance that only stopped answering for a moment when it answers again', async () => {
+    const current = (fixture = await unixFixture());
+    const proxy = await createDaemonProxy(
+      current.runtime,
+      DESKTOP_SECRET,
+      undefined,
+      undefined,
+      RENDERER_ORIGIN
+    );
+    cleanups.push(() => proxy.close());
+    const events: unknown[] = [];
+    proxy.onConnection((event) => events.push(event));
+    await new Promise<void>((resolve) => current.server.close(() => resolve()));
+    fs.rmSync(current.socketPath, { force: true });
+    expect((await get(proxy)).response.status).toBe(502);
+    expect((await get(proxy)).response.status).toBe(502);
+    // The same instance back on the socket (its identity unchanged).
+    const again = await instanceOn(
+      current.socketPath,
+      { instance_id: INSTANCE_ID, pid: process.pid },
+      DAEMON_SECRET,
+      APPROVAL_A
+    );
+    cleanups.push(() => again.stop());
+    expect((await get(proxy)).response.status).toBe(200);
+    expect(events).toEqual([
+      { kind: 'lost', reason: 'gone', instanceId: INSTANCE_ID },
+      { kind: 'answered', instanceId: INSTANCE_ID },
+    ]);
+  });
+
+  it('never retargets to another profile, and not after it closed', async () => {
+    const current = (fixture = await unixFixture());
+    const proxy = await createDaemonProxy(
+      current.runtime,
+      DESKTOP_SECRET,
+      undefined,
+      undefined,
+      RENDERER_ORIGIN
+    );
+    await expect(
+      proxy.retarget(
+        { ...current.runtime, profile_id: '99999999-9999-4999-8999-999999999999' },
+        APPROVAL_A
+      )
+    ).rejects.toThrow(/another Biorouter profile/);
+    proxy.close();
+    await expect(proxy.retarget(current.runtime, APPROVAL_A)).rejects.toThrow(/closed/);
+  });
+});

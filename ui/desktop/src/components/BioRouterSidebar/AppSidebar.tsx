@@ -22,6 +22,7 @@ import { useRunningChats } from '../../hooks/chatStreamStore';
 import { preloadSessionList } from '../../utils/sessionListCache';
 import { preloadHomeActivity } from '../../utils/homeInsightsCache';
 import SidebarUpdateButton from './SidebarUpdateButton';
+import DaemonRestartNotice from './DaemonRestartNotice';
 import RecentChats from './RecentChats';
 import useSidebarSessions from './useSidebarSessions';
 
@@ -458,6 +459,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         className="mx-3.5 my-1 h-px shrink-0 bg-sidebar-border"
       />
       <SidebarFooter className="gap-1 p-2">
+        <DaemonRestartNotice />
         <SidebarUpdateButton />
         <SidebarMenu className="gap-0">
           <SidebarMenuItem>

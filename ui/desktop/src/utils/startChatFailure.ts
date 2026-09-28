@@ -27,6 +27,26 @@ export type StartChatFailureNotice = {
 
 export const START_CHAT_FAILED_TITLE = 'Failed to start chat';
 export const BACKEND_DISCONNECTED_TITLE = 'Backend disconnected';
+export const DAEMON_RESTARTED_TITLE = 'Background service restarted';
+
+/**
+ * The code the desktop's local proxy answers with when the shared daemon instance it verified
+ * is gone or was replaced (`DAEMON_RESTARTED_CODE` in `daemonRuntime.ts`, which the test holds
+ * this to). The proxy never follows a new instance by itself, so every request fails this way
+ * until the person reconnects (R-1).
+ */
+export const DAEMON_RESTARTED_CODE = 'daemon_restarted';
+
+/** What a person reads instead: the two things that work, and where they are. */
+export const DAEMON_RESTARTED_SENTENCE =
+  "Biorouter's background service restarted. Choose Reconnect in the sidebar, or quit and reopen Biorouter.";
+
+/** Whether a failed request was refused because the shared daemon restarted. */
+export const isDaemonRestarted = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  !(error instanceof Error) &&
+  (error as { code?: unknown }).code === DAEMON_RESTARTED_CODE;
 
 /**
  * The daemon refused to bind its private default because the request carried
@@ -111,6 +131,14 @@ export function startChatFailureNotice(
     };
   }
   const keptSentence = kept ? ` ${MESSAGE_KEPT_SENTENCE}` : '';
+  if (isDaemonRestarted(error)) {
+    // The proxy's own words said "reconnect explicitly" and named no control that did (R-1).
+    return {
+      title: DAEMON_RESTARTED_TITLE,
+      msg: `${DAEMON_RESTARTED_SENTENCE}${keptSentence}`,
+      traceback: daemonText,
+    };
+  }
   if (isStartRefusedForWantOfProof(error)) {
     return {
       title: START_CHAT_FAILED_TITLE,
