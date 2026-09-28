@@ -1,3 +1,4 @@
+import { PREVIEW_CENTRING_INSTALL } from './previewCentring';
 import { PREVIEW_SELECTION_INSTALL } from './previewTextSelection';
 /**
  * How tall a previewed HTML document WANTS to be, told to the panel that frames it.
@@ -91,9 +92,16 @@ export const PREVIEW_SIZE_INSTALL = `(() => {
   window.addEventListener('resize', queue);
 })()`;
 
-/** Put the reporter at the top of the document, where `withPreviewActivityTracking` puts its own. */
+/**
+ * Put the panel's frame runtime at the top of the document, where
+ * `withPreviewActivityTracking` puts its own: this size reporter, the text
+ * selection bridge, and the centring of content narrower than the frame
+ * (`previewCentring.ts`). Every HTML preview the panel frames goes through here,
+ * which is why the centring rides along rather than needing a second wrapper at
+ * each call site.
+ */
 export function withPreviewSizeReporting(html: string): string {
-  const script = `<script>${PREVIEW_SIZE_INSTALL};${PREVIEW_SELECTION_INSTALL}</script>`;
+  const script = `<script>${PREVIEW_SIZE_INSTALL};${PREVIEW_SELECTION_INSTALL};${PREVIEW_CENTRING_INSTALL}</script>`;
   const head = /<head\b[^>]*>/i.exec(html);
   if (head) {
     const end = head.index + head[0].length;

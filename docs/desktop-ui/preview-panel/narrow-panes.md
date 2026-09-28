@@ -43,6 +43,8 @@ The conversation always wins a collision: the sheet gives way down to its strip,
 
 **The transcript keeps its bottom edge.** `ScrollArea`'s `anchorBottomOnResize` writes `scrollTop` once per viewport resize so the line against the composer stays there when a sheet opens, folds, crosses to a column or closes. A scroll event that arrives together with a viewport resize is treated as layout, not the reader, so opening a sheet does not turn following off. Only the live chat's transcript opts in, and only while a stacked sheet is on screen, plus the one resize that ends it.
 
+**Narrow HTML is centred.** A PowerPoint, Word, PDF or image preview is centred by the panel. An HTML document cannot be, because it runs in a sandboxed frame the panel cannot script, and a browser starts its content at the left edge. So the frame script `withPreviewSizeReporting` also carries `utils/previewCentring.ts`: when a document's content is narrower than the frame, the document moves it to the middle with one horizontal `translate` shared by every visible box, so the gap on the left equals the gap on the right up to the frame's edge. Before this, a 300px canvas sat 0px from the left and 59px to 619px from the right at every panel width. The runtime leaves a document alone when its content fills the frame or is wider (it scrolls from its own left edge), when it is already centred, when text sits directly in `<body>`, when the author already translates the box, and when moving a box would re-anchor a `fixed` or `absolute` descendant. `fixed` and `absolute` boxes outside the moved content, such as a navigation bar or a tooltip placed at the pointer, are neither measured nor moved.
+
 **Text reads at the chat measure.** `.br-preview-measure` holds Markdown and notebook prose to `--measure-chat` (760px of content), with responsive paper gutters outside that measure. Code and logs share that left edge through the paper inset, while long lines and wide CSV tables remain horizontally scrollable. The preview status strip aligns with the reading column without shrinking its full-width hairline.
 
 ## Motion and mounting guarantees
@@ -59,8 +61,9 @@ The conversation always wins a collision: the sheet gives way down to its strip,
 | `styles/measures.test.ts` | The CSS literals against the ladder's constants (`minmax(440px, 1fr)`, `calc(146px + 8px)`, `--dock-height`, `--chrome-height`), the stack rules declared after the side rules, the rules unlayered, no container or media condition, no transitions, one unkeyed `<ArtifactViewer>` per host, the anchor scoped to the live chat, and the text measure's declaration and exact call sites. |
 | `components/artifacts/useArtifactPanel.fold.test.tsx` | Folding by the chevron and by drag, unfolding by a tab and the bare strip, the drag clamps, the measuring phase, closing, and node identity across a crossing. |
 | `utils/previewSize.test.ts` | The reporter measures the body's content, not the viewport. |
+| `utils/previewCentring.browser.test.ts`, `utils/previewCentring.test.ts` | A narrower document is centred within 1px at every width and after a resize, in a real Chromium, and fluid, wider, already centred and author-positioned content is left alone. The stubbed-geometry file holds the same rules where no browser is installed. |
 
-Each of those was made to fail once on purpose: 16 mutations, each turning a named test red.
+Each of those was made to fail once on purpose: 16 mutations, each turning a named test red. With the centring runtime taken out of the frame script, 14 of the 20 browser cases fail and the 6 that must not move still pass.
 
 ## What is not built
 
