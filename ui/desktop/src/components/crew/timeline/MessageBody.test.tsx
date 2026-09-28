@@ -319,6 +319,43 @@ describe('markdown', () => {
         'evil.example.net',
       ],
       ['leading slashes', '[//ucsf.edu](https://evil.example.net/login)', 'evil.example.net'],
+      // A word before the first slash, question mark or hash that names no host has no path, so an
+      // address after it is still read (round 3 read these as naming nothing).
+      [
+        'a word and a slash before the address',
+        '[Login/https://www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a word and a slash before an address with a path',
+        '[Ref/https://www.ucsf.edu/login](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a word and a question mark before the address',
+        '[Login?https://www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a word and a hash before the address',
+        '[Login#https://www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a word and a backslash before the address',
+        '[x\\\\https://ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a fraction before the address',
+        '[½https://www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a word and a slash before a domain',
+        '[Portal/www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
       // An image in a link draws its alt text as the link's words (`Image: https://www.ucsf.edu`).
       [
         'an image in the link, named by an address',
@@ -328,6 +365,11 @@ describe('markdown', () => {
       [
         'an image in the link, named by a domain',
         '[![ucsf.edu](x.png)](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'an image in the link, named by a word and a slash before an address',
+        '[![Ref/https://www.ucsf.edu](data:x)](https://evil.example.net/login)',
         'evil.example.net',
       ],
     ])('names the real host after %s', (_label, body, host) => {
@@ -379,8 +421,42 @@ describe('markdown', () => {
       ['https\u{2236}/www.ucsf.edu'],
       ['https;//www.ucsf.edu'],
       ['https//intranet'],
+      // A part before the first `/`, `?` or `#` that names no host has no path: what follows it is
+      // read in turn, as an address or as a domain.
+      ['Login/https://www.ucsf.edu'],
+      ['Login?https://www.ucsf.edu'],
+      ['Login#https://www.ucsf.edu'],
+      ['x\\https://ucsf.edu'],
+      ['go/https://www.ucsf.edu/sso'],
+      ['Ref/https://www.ucsf.edu/login'],
+      ['a/https://www.ucsf.edu'],
+      ['1?https://www.ucsf.edu/login'],
+      ['x#https://www.ucsf.edu'],
+      ['a:b/https://www.ucsf.edu'],
+      ['½https://www.ucsf.edu'],
+      ['℅https://www.ucsf.edu'],
+      ['2https:/www.ucsf.edu'],
+      ['a/b/c/https://www.ucsf.edu'],
+      ['Login/(https://www.ucsf.edu)'],
+      ['Login/2https:ucsf'],
+      ['Note:https:ucsf'],
+      ['https:?www.ucsf.edu'],
+      ['https://?next=https://www.ucsf.edu'],
+      ['Portal/www.ucsf.edu'],
+      ['Sign-in?www.ucsf.edu'],
+      ['Login#ucsf.edu'],
+      ['Login/ucsf.edu:/x'],
+      // A part with a scheme that needs no slash and one before its slash: both addresses are read.
+      ['http::x:/www.ucsf.edu'],
+      ['https:%:/www.ucsf.edu'],
     ])('reads %s as naming a host other than evil.example.net', (words) => {
       expect(mismatchedLinkHost(words, 'https://evil.example.net/login')).toBe('evil.example.net');
+    });
+
+    it('reads both addresses of a part with a scheme that needs no slash and one before its slash', () => {
+      expect(mismatchedLinkHost('https:ucsf.edu:https://intranet', 'https://www.ucsf.edu/')).toBe(
+        'www.ucsf.edu'
+      );
     });
 
     it.each([
@@ -398,6 +474,12 @@ describe('markdown', () => {
       ['a length mark in a word', 'kaːt'],
       ['a path with a double slash', 'https://www.ucsf.edu/a//b'],
       ['a host, then a double slash', 'www.ucsf.edu//x'],
+      ['a word and a slash before the address', 'Login/https://www.ucsf.edu'],
+      ['a word and a question mark before the domain', 'Sign-in?www.ucsf.edu'],
+      ['a host, then an address in its path', 'www.ucsf.edu/go/https://portal.example.org'],
+      ['words joined by slashes', 'and/or TCP/IP input/output'],
+      ['times joined by a slash', '12:30/13:00'],
+      ['a fraction', '½ cup'],
     ])('reads %s as naming only the host it opens, or none', (_label, words) => {
       expect(mismatchedLinkHost(words, 'https://www.ucsf.edu/login')).toBeNull();
     });
@@ -417,6 +499,15 @@ describe('markdown', () => {
         'a host with punctuation at its ends',
         `https://${'('.repeat(32_000)}x${')'.repeat(32_000)}`,
       ],
+      // A word is read part by part until a part names a host, so parts that name none must not
+      // each read the rest of the word.
+      ['parts that name no host', 'a/'.repeat(32_000)],
+      ['parts that end in a scheme', 'a:/?'.repeat(16_000)],
+      ['empty addresses', 'https:#'.repeat(9_000)],
+      ['double slashes after words', 'a//#'.repeat(16_000)],
+      ['slashes after a word', `x${'/'.repeat(64_000)}`],
+      ['digits before colons', `${'1:'.repeat(32_000)}/`],
+      ['a scheme-like run in a later part', `a/${'h'.repeat(64_000)}:`],
     ])('reads 64 KB of %s in bounded time', (_label, words) => {
       const started = performance.now();
       mismatchedLinkHost(words, 'https://www.ucsf.edu/');
