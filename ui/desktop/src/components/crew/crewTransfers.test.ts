@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { beginTransfer } from './crewTransfers';
+import { beginTransfer, cancelUpload } from './crewTransfers';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -101,5 +101,71 @@ describe('Crew transfer privacy handoff', () => {
       })
     ).resolves.toBeNull();
     expect(mocks.crewHttp).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelUpload (FILES-F7)', () => {
+  beforeEach(() => {
+    mocks.crewHttp.mockReset();
+  });
+  const receipt = (state: string, direction = 'upload') => ({
+    id: 'upload-1',
+    direction,
+    state,
+  });
+  const noWait = { wait: async () => undefined };
+
+  it('pauses a moving upload, waits until it has stopped, then forgets its record', async () => {
+    const states = ['uploading', 'pause_requested', 'needs_file_selection'];
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (method === 'GET') return receipt(states.shift() ?? 'needs_file_selection');
+      return {};
+    });
+    await expect(cancelUpload('upload-1', noWait)).resolves.toBe('cancelled');
+    expect(mocks.crewHttp.mock.calls.map(([path, method]) => `${method ?? 'GET'} ${path}`)).toEqual(
+      [
+        'GET /transfers/upload-1',
+        'POST /transfers/upload-1/pause',
+        'GET /transfers/upload-1',
+        'GET /transfers/upload-1',
+        'DELETE /transfers/upload-1',
+      ]
+    );
+  });
+
+  it('forgets a paused upload at once, without pausing it again', async () => {
+    mocks.crewHttp.mockImplementation(async (_path: string, method = 'GET') =>
+      method === 'GET' ? receipt('needs_file_selection') : {}
+    );
+    await expect(cancelUpload('upload-1', noWait)).resolves.toBe('cancelled');
+    expect(mocks.crewHttp).toHaveBeenCalledTimes(2);
+    expect(mocks.crewHttp).toHaveBeenLastCalledWith('/transfers/upload-1', 'DELETE');
+  });
+
+  it('leaves an upload that finished before it could stop, which is a whole file now', async () => {
+    const states = ['publishing', 'completed'];
+    mocks.crewHttp.mockImplementation(async (_path: string, method = 'GET') =>
+      method === 'GET' ? receipt(states.shift() ?? 'completed') : {}
+    );
+    await expect(cancelUpload('upload-1', noWait)).resolves.toBe('finished');
+    expect(mocks.crewHttp).not.toHaveBeenCalledWith('/transfers/upload-1', 'DELETE');
+  });
+
+  it('gives up in words when the upload does not stop, and forgets nothing', async () => {
+    mocks.crewHttp.mockImplementation(async (_path: string, method = 'GET') =>
+      method === 'GET' ? receipt('pause_requested') : {}
+    );
+    await expect(cancelUpload('upload-1', { ...noWait, attempts: 3 })).rejects.toThrow(
+      'Crew couldn’t stop that upload yet. Try again in a moment.'
+    );
+    expect(mocks.crewHttp).not.toHaveBeenCalledWith('/transfers/upload-1', 'DELETE');
+  });
+
+  it('never cancels a download this way', async () => {
+    mocks.crewHttp.mockResolvedValue(receipt('downloading', 'download'));
+    await expect(cancelUpload('upload-1', noWait)).rejects.toThrow(
+      'Only an upload can be cancelled.'
+    );
+    expect(mocks.crewHttp).toHaveBeenCalledTimes(1);
   });
 });

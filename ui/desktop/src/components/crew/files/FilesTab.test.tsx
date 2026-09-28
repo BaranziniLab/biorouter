@@ -136,6 +136,12 @@ describe('FilesTab', () => {
     expect(screen.queryByText('Failed')).toBeNull();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    // Removing an unfinished upload's record says what stays on the server (FILES-F7).
+    expect(
+      await screen.findByRole('menuitem', { name: /Remove from list/ })
+    ).toHaveAccessibleDescription(
+      'Removes the record on this computer. The unfinished part stays on the server for up to a day and counts toward the workspace’s file space until then.'
+    );
     await user.click(await screen.findByRole('menuitem', { name: /Resume…/ }));
     expect(mocks.resumeTransfer).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'transfer-1' })

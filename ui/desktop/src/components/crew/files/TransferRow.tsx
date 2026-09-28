@@ -58,7 +58,9 @@ export function TransferMenuItems({
         <span className="flex min-w-0 flex-col">
           <span>{filesCopy.removeFromList}</span>
           <span id={helpId} className="crew-menu-help">
-            {filesCopy.removeFromListHelp}
+            {transfer.direction === 'upload' && transfer.state !== 'completed'
+              ? filesCopy.removeUnfinishedUploadHelp
+              : filesCopy.removeFromListHelp}
           </span>
         </span>
       </DropdownMenuItem>

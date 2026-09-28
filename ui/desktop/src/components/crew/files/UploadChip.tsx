@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Badge } from '../../ui/badge';
-import { Loader2, Pause, Play } from '../../icons/app-icons';
-import type { CrewTransfer } from '../crewTransfers';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
+import { Loader2, Pause, Play, XIcon } from '../../icons/app-icons';
+import { failureSentence } from '../../../utils/ipcError';
+import { cancelUpload, type CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
 import { visibleFileText } from './fileName';
 import { ChipAction } from './GlyphButton';
+import { refreshCrewTransfers } from './useCrewTransfers';
 import './files.css';
 
 const RING_RADIUS = 6.5;
@@ -45,9 +48,14 @@ export const UPLOAD_SETTLE_MS = 1000;
  * at 0% after its first second showed "0%" and Pause anyway (Q4-16). After both it shows the ring,
  * the percent, and Pause (tooltip "Pause upload"); Pause never shows sooner, so a file that
  * finishes in under a second, or that never moves, never offers it.
- * While it starts or finishes, the spinner. One this composer started that stopped (paused, or
- * failed with the reason on hover) offers Resume, which reopens the secure picker for the same
- * file. When it completes the chip goes, and the file becomes an ordinary attachment chip.
+ * While it starts or finishes, the spinner. One this composer started that paused offers Resume,
+ * which reopens the secure picker for the same file, with why it stopped on hover. When it
+ * completes the chip goes, and the file becomes an ordinary attachment chip.
+ *
+ * Every upload chip also offers Cancel upload (FILES-F7), after a confirmation saying what it
+ * cannot undo: the part already sent stays on the server for up to a day and counts toward the
+ * workspace's file space until then. Cancelling pauses the upload and forgets its record here,
+ * which takes the chip away; a refusal is shown in the confirmation that asked.
  */
 export function UploadChip({
   transfer,
@@ -73,6 +81,27 @@ export function UploadChip({
   const canResume = presentation.key === 'paused';
   const state = starting ? filesCopy.uploading : moving ? `${percent}%` : presentation.word;
   const name = visibleFileText(transfer.name);
+  const [confirming, setConfirming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+  const closeConfirmation = () => {
+    setConfirming(false);
+    setCancelError('');
+  };
+  const confirmCancel = async () => {
+    setCancelling(true);
+    setCancelError('');
+    try {
+      await cancelUpload(transfer.id);
+      setConfirming(false);
+    } catch (failure) {
+      setCancelError(failureSentence(failure, filesCopy.cancelFailed));
+    } finally {
+      setCancelling(false);
+      // Cancelled or not, the record may have moved: the one poller says what it is now.
+      void refreshCrewTransfers(transfer.connection_id);
+    }
+  };
   return (
     <Badge
       variant="chip"
@@ -100,6 +129,34 @@ export function UploadChip({
         <ChipAction label={filesCopy.resumeNamed(name)} onClick={() => onResume(transfer)}>
           <Play className="crew-chip-icon" aria-hidden />
         </ChipAction>
+      ) : null}
+      <ChipAction
+        label={filesCopy.cancelUploadNamed(name)}
+        tooltip={filesCopy.cancelUpload}
+        onClick={() => setConfirming(true)}
+      >
+        <XIcon className="crew-chip-icon" aria-hidden />
+      </ChipAction>
+      {confirming ? (
+        <ConfirmationModal
+          isOpen
+          title={filesCopy.cancelUploadTitle(name)}
+          message={filesCopy.unfinishedPartStays}
+          confirmLabel={filesCopy.cancelUpload}
+          cancelLabel={
+            moving || presentation.active ? filesCopy.keepUploading : filesCopy.keepUpload
+          }
+          confirmVariant="destructive"
+          isSubmitting={cancelling}
+          onCancel={closeConfirmation}
+          onConfirm={() => void confirmCancel()}
+        >
+          {cancelError ? (
+            <p role="alert" className="crew-file-row-error">
+              {cancelError}
+            </p>
+          ) : null}
+        </ConfirmationModal>
       ) : null}
     </Badge>
   );

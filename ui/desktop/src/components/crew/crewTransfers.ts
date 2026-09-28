@@ -107,6 +107,55 @@ export async function resumeTransfer(transfer: CrewTransfer): Promise<CrewTransf
 export function pauseTransfer(id: string): Promise<CrewTransfer> {
   return crewHttp(`/transfers/${encodeURIComponent(id)}/pause`, 'POST', {});
 }
+
+/** Receipt states in which the daemon is still running the transfer and will not forget it. */
+const RUNNING_STATES: readonly string[] = [
+  'starting',
+  'uploading',
+  'publishing',
+  'pause_requested',
+];
+
+/** How a cancel ended: the receipt is gone, or the upload finished before it could stop. */
+export type CancelUploadOutcome = 'cancelled' | 'finished';
+
+export interface CancelUploadOptions {
+  /** How long to wait between looks while the upload stops. */
+  intervalMs?: number;
+  /** How many looks before giving up. */
+  attempts?: number;
+  wait?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Cancel an upload (FILES-F7): pause it if it is moving, wait until the daemon has stopped it,
+ * then forget its receipt. What was already sent stays on the server as an unfinished part,
+ * which the workspace removes a day after its last piece and counts toward its file space until
+ * then; nothing can delete it sooner. An upload that finished before it could stop is left as it
+ * is (`finished`): it is a whole file now, and the draft's own × is the way to take it out.
+ */
+export async function cancelUpload(
+  id: string,
+  {
+    intervalMs = 250,
+    attempts = 40,
+    wait = (ms) => new Promise((r) => setTimeout(r, ms)),
+  }: CancelUploadOptions = {}
+): Promise<CancelUploadOutcome> {
+  const path = `/transfers/${encodeURIComponent(id)}`;
+  let receipt = await crewHttp<CrewTransfer>(path);
+  if (receipt.direction !== 'upload') throw new Error('Only an upload can be cancelled.');
+  if (RUNNING_STATES.includes(receipt.state)) await pauseTransfer(id);
+  for (let look = 0; RUNNING_STATES.includes(receipt.state); look += 1) {
+    if (look >= attempts)
+      throw new Error('Crew couldn’t stop that upload yet. Try again in a moment.');
+    await wait(intervalMs);
+    receipt = await crewHttp<CrewTransfer>(path);
+  }
+  if (receipt.state === 'completed') return 'finished';
+  await crewHttp(path, 'DELETE');
+  return 'cancelled';
+}
 export async function forgetTransfer(id: string): Promise<unknown> {
   const transfer = await crewHttp<CrewTransfer>(`/transfers/${encodeURIComponent(id)}`);
   if (
