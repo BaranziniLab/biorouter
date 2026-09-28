@@ -128,8 +128,9 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// [`REGRANTED_RUN`], and `workspace.snapshot` answers [`grant_snapshot`] once a test has created
 /// `grant-snapshot` under the root ([`allow_grants`]); every other test's probes get the generic
 /// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
-/// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]) and refuse any other blob, as
-/// the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
+/// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]), `blob.read` answers for any
+/// `blob-bulk-N` as a file named `blob-bulk-N.csv` ([`bulk_read`]), and every other blob is
+/// refused, as the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
 /// `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
     use std::os::unix::fs::PermissionsExt;
@@ -145,6 +146,7 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let read_old = blob_read("blob-old", OLD_CSV).to_string();
     let status_new = blob_status("blob-new", NEW_CSV).to_string();
     let status_old = blob_status("blob-old", OLD_CSV).to_string();
+    let read_bulk = bulk_read().to_string();
     let snapshot = grant_snapshot().to_string();
     let run_create = json!({"run": {"id": REGRANTED_RUN, "protected_context": false,
         "expires_at": 4_102_444_800u64}, "credential": "regranted-credential"})
@@ -161,6 +163,7 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
         &read_old,
         &status_new,
         &status_old,
+        &read_bulk,
     ] {
         assert!(!text.contains('\'') && !text.contains('%'));
     }
@@ -237,6 +240,9 @@ while IFS= read -r line; do
       *'"method":"blob.read"'*'"blob_id":"blob-old"'*|*'"blob_id":"blob-old"'*'"method":"blob.read"'*) body='{read_old}' ;;
       *'"method":"blob.status"'*'"blob_id":"blob-new"'*|*'"blob_id":"blob-new"'*'"method":"blob.status"'*) body='{status_new}' ;;
       *'"method":"blob.status"'*'"blob_id":"blob-old"'*|*'"blob_id":"blob-old"'*'"method":"blob.status"'*) body='{status_old}' ;;
+      *'"method":"blob.read"'*'"blob_id":"blob-bulk-'*|*'"blob_id":"blob-bulk-'*'"method":"blob.read"'*)
+        bulk=$(printf '%s\n' "$line" | sed -n 's/.*"blob_id":"\(blob-bulk-[0-9]*\)".*/\1/p')
+        [ -n "$bulk" ] && body=$(printf '%s\n' '{read_bulk}' | sed "s/BULK-ID/$bulk/g") ;;
     esac
     if [ -n "$body" ]; then
       printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
@@ -340,6 +346,14 @@ fn blob_read(id: &str, csv: &str) -> Value {
         "next_offset": size,
         "complete": true,
     })
+}
+
+/// `blob.read` of a `blob-bulk-N` file, with `BULK-ID` where the fixture writes the blob's ID:
+/// one of as many distinct files as a test reads, each named after its ID.
+fn bulk_read() -> Value {
+    let mut read = blob_read("BULK-ID", NEW_CSV);
+    read["blob"]["name"] = json!("BULK-ID.csv");
+    read
 }
 
 fn spawns(root: &Path) -> usize {
@@ -1307,6 +1321,62 @@ async fn a_file_read_again_after_a_post_is_named_by_the_next_post() {
     );
     post("Nothing new.").await.unwrap();
     assert_eq!(last_paragraph(2), "No shared file was read for this post.");
+}
+
+/// W2-DMN-12 (round 3): a chat that has read 32 files, as many as its own list holds, still
+/// names what it reads after them. Its next post said "No shared file was read for this post."
+/// after a 33rd file, and after a file past the first 32 was read again, because the post's
+/// line was cut from the chat's list, which never holds a file read after those 32.
+#[tokio::test]
+async fn a_chat_post_names_what_it_read_after_its_first_32_files() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("chat-post-past-32", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let read = |n: usize| call("blob.read", json!({"blob_id": format!("blob-bulk-{n}")}));
+    let post = |body: &str| call("run.project", json!({"body": body}));
+    let last_paragraph = |n: usize| {
+        let body = frames(&f.root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "run.project")
+            .nth(n)
+            .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+            .expect("the post reached the workspace");
+        body.rsplit("\n\n").next().unwrap().to_owned()
+    };
+    for n in 0..32 {
+        read(n).await.unwrap();
+    }
+    post("The first 32.").await.unwrap();
+    let first = last_paragraph(0);
+    assert!(first.starts_with("Sources: `blob-bulk-0.csv`"), "{first}");
+    assert!(first.contains("`blob-bulk-31.csv`"), "{first}");
+
+    // The 33rd file, the first past the chat's own list.
+    read(32).await.unwrap();
+    post("One more.").await.unwrap();
+    let past = last_paragraph(1);
+    assert!(past.starts_with("Source: `blob-bulk-32.csv`"), "{past}");
+
+    read(33).await.unwrap();
+    post("And another.").await.unwrap();
+    assert!(last_paragraph(2).starts_with("Source: `blob-bulk-33.csv`"));
+
+    // A file past the first 32, read again.
+    read(32).await.unwrap();
+    post("Checked again.").await.unwrap();
+    let again = last_paragraph(3);
+    assert!(again.starts_with("Source: `blob-bulk-32.csv`"), "{again}");
+
+    post("Nothing new.").await.unwrap();
+    assert_eq!(last_paragraph(4), "No shared file was read for this post.");
 }
 
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge

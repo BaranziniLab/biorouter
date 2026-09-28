@@ -4437,13 +4437,18 @@ impl CrewManager {
 struct RunReads {
     /// Each file a `blob.read` returned, in the order first read, once each.
     files: Vec<ReadFile>,
-    /// Files read after [`MAX_READ_FILES`] were listed, so the line can say how many it leaves
-    /// out instead of dropping them silently.
+    /// Files first read after [`MAX_READ_FILES`] were listed, at most [`MAX_READ_ATTACHMENTS`],
+    /// so a task's line can say how many it leaves out instead of dropping them silently, and a
+    /// chat post's line can name them from [`Self::named`] ([`Self::since_last_post`]).
     unlisted: HashSet<String>,
     /// The [`ReadMark`] of the latest read of each file in [`Self::files`] and
     /// [`Self::unlisted`]: a file read again is read again since the chat's last post, though
     /// it is listed once (W2-DMN-12).
     read_at: HashMap<String, ReadMark>,
+    /// The mark of the latest read of a file past both bounds, which no entry above records.
+    /// Such a read is still a read: the line counts it as at least one more file, and never
+    /// says the chat read nothing (W2-DMN-12).
+    unrecorded_at: Option<ReadMark>,
     /// The mark the chat's last post of its own was built at: its line named every read up to
     /// it. A chat post's line names what the chat read after it; a task's result names all.
     posted_through: ReadMark,
@@ -4849,8 +4854,9 @@ impl RunReads {
     }
 
     /// Record a blob's name and sharer from the broker's `blob` fields. `always` records it
-    /// past [`MAX_NAMED_FILES`] (a file the run read, of which there are at most
-    /// [`MAX_READ_FILES`] more).
+    /// past [`MAX_NAMED_FILES`] (a file the run read and [`Self::files`] or
+    /// [`Self::unlisted`] records, of which there are at most [`MAX_READ_FILES`] and
+    /// [`MAX_READ_ATTACHMENTS`] more).
     fn note_blob(&mut self, blob: &Value, always: bool) -> Option<ReadFile> {
         let (Some(id), Some(name)) = (blob["id"].as_str(), blob["name"].as_str()) else {
             return None;
@@ -4868,25 +4874,36 @@ impl RunReads {
 
     /// Record the file a successful `blob.read` returned: listed once, and marked as read now
     /// every time, so a read after the chat's last post is named by its next one even when an
-    /// earlier post named the same file (W2-DMN-12).
+    /// earlier post named the same file (W2-DMN-12). A file past every bound is not recorded
+    /// by itself, but its read still is ([`Self::unrecorded_at`]).
     fn note_file(&mut self, read: &Value) {
-        let Some(file) = self.note_blob(&read["blob"], true) else {
+        let blob = &read["blob"];
+        let recorded = blob["id"].as_str().is_some_and(|id| self.was_read(id))
+            || self.files.len() < MAX_READ_FILES
+            || self.unlisted.len() < MAX_READ_ATTACHMENTS;
+        let Some(file) = self.note_blob(blob, recorded) else {
             return;
         };
         let mark = next_read_mark();
-        if self.was_read(&file.id) {
-            self.read_at.insert(file.id, mark);
-            return;
-        }
-        if self.files.len() >= MAX_READ_FILES {
-            if self.unlisted.len() < MAX_READ_ATTACHMENTS {
-                self.read_at.insert(file.id.clone(), mark);
-                self.unlisted.insert(file.id);
-            }
+        if !recorded {
+            self.unrecorded_at = Some(mark);
             return;
         }
         self.read_at.insert(file.id.clone(), mark);
-        self.files.push(file);
+        if self.was_read(&file.id) {
+            return;
+        }
+        if self.files.len() < MAX_READ_FILES {
+            self.files.push(file);
+        } else {
+            self.unlisted.insert(file.id);
+        }
+    }
+
+    /// Whether these reads hold no read at all: then, and only then, a line says no file was
+    /// read.
+    fn read_nothing(&self) -> bool {
+        self.files.is_empty() && self.unlisted.is_empty() && self.unrecorded_at.is_none()
     }
 
     /// Record the name a successful `blob.status` gave, for a complete file (the only kind a
@@ -4958,15 +4975,37 @@ impl RunReads {
     /// These reads as they stand for the chat's next post: only the files read since its last
     /// one (W2-DMN-12), a file read again included. Everything that names them (people, times,
     /// copies) is kept whole.
+    ///
+    /// The post gets its own [`MAX_READ_FILES`], not what is left of the chat's: the chat's
+    /// list holds the first files it ever read, so a file first read after them is listed
+    /// here by its name in [`Self::named`], after the listed ones, in the order last read.
+    /// Only past this post's own bound is a file counted instead of named. Otherwise a chat
+    /// that had read [`MAX_READ_FILES`] files named none of its later reads, and its next post
+    /// said it read no file.
     fn since_last_post(&self) -> Self {
+        let posted = self.posted_through;
+        let read_since = |id: &str| self.read_at.get(id).is_some_and(|&mark| mark > posted);
         let mut since = self.clone();
-        let read_since = |id: &str| {
-            self.read_at
-                .get(id)
-                .is_some_and(|&mark| mark > self.posted_through)
-        };
         since.files.retain(|file| read_since(&file.id));
-        since.unlisted.retain(|id| read_since(id));
+        since.unlisted.clear();
+        let mut later: Vec<(ReadMark, &String)> = self
+            .unlisted
+            .iter()
+            .filter_map(|id| {
+                let mark = *self.read_at.get(id)?;
+                (mark > posted).then_some((mark, id))
+            })
+            .collect();
+        later.sort();
+        for (_, id) in later {
+            match self.named.get(id) {
+                Some(file) if since.files.len() < MAX_READ_FILES => since.files.push(file.clone()),
+                _ => {
+                    since.unlisted.insert(id.clone());
+                }
+            }
+        }
+        since.unrecorded_at = self.unrecorded_at.filter(|&mark| mark > posted);
         since
     }
 
@@ -4983,25 +5022,33 @@ impl RunReads {
     /// ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.``
     ///
     /// and for several, ``Sources: `a.csv` (earlier copy, shared by …), `b.csv`.``, with
-    /// `and N more files` when more were read than it lists. A file name is a code span, and so
-    /// is a person label Markdown could read as anything ([`markdown_label`]), so neither can
-    /// become a link or pose as the line's own notes.
+    /// `and N more files` when more were read than it lists ([`Self::counted_files`]), or
+    /// ``Sources: N shared files, not listed.`` when it can name none of them. A file name is
+    /// a code span, and so is a person label Markdown could read as anything
+    /// ([`markdown_label`]), so neither can become a link or pose as the line's own notes.
     /// "shared by" is left out when the reads never named the person: never an ID. When another
     /// file with the same name is known, the line tells them apart: a copy known to be the
     /// newest is given the time it was shared ([`shared_when`]; Q4-27: "newest copy" was true
     /// only when it was written, so two results posted a day apart both said it of different
     /// files), and an earlier one says `earlier copy`. When the run read only earlier copies of
-    /// a name, a second sentence says a newer one was left unread. `None` when nothing was
-    /// read.
+    /// a name, a second sentence says a newer one was left unread. `None` only when nothing
+    /// was read ([`Self::read_nothing`]).
     fn source_line_at<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<String> {
         let entries: Vec<LineEntry> = self
             .files
             .iter()
             .map(|file| self.line_entry(file, now))
             .collect();
+        let counted = self.counted_files();
         let mut line = match entries.as_slice() {
-            [] => return None,
-            [entry] if self.unlisted.is_empty() => {
+            [] => {
+                // Files were read, and this line can name none of them: it counts them, and
+                // never reads as no file read.
+                let (count, noun) = counted?;
+                let source = if count == "1" { "Source" } else { "Sources" };
+                format!("{source}: {count} shared {noun}, not listed.")
+            }
+            [entry] if counted.is_none() => {
                 let mut line = format!("Source: {}", entry.name);
                 if let Some(copy) = &entry.copy {
                     line.push_str(&format!(" ({copy})"));
@@ -5029,16 +5076,21 @@ impl RunReads {
                         }
                     })
                     .collect();
-                match self.unlisted.len() {
-                    0 => {}
-                    1 => parts.push("and 1 more file".to_owned()),
-                    more => parts.push(format!("and {more} more files")),
+                if let Some((count, noun)) = &counted {
+                    parts.push(format!("and {count} more {noun}"));
                 }
                 format!("Sources: {}.", parts.join(", "))
             }
         };
         // A name with a copy known to be newer than every copy the run read: the numbers came
-        // from an older upload, and the line says so, whatever the reply claims.
+        // from an older upload, and the line says so, whatever the reply claims. Once a read
+        // went unrecorded, that read may have been the newer copy: the line still warns, and
+        // says only what the daemon saw, so reading past every bound never removes the warning.
+        let unread = if self.unrecorded_at.is_none() {
+            "was not read"
+        } else {
+            "may not have been read"
+        };
         let mut warned: Vec<String> = Vec::new();
         for file in &self.files {
             let shown = plain_label(&file.name);
@@ -5047,13 +5099,31 @@ impl RunReads {
             }
             if self.newer_copy_unread(file) {
                 line.push_str(&format!(
-                    " A newer copy of {} was shared and was not read.",
+                    " A newer copy of {} was shared and {unread}.",
                     markdown_file_name(&file.name)
                 ));
                 warned.push(shown);
             }
         }
         Some(line)
+    }
+
+    /// How many files the line counts rather than names, and the noun for them: those in
+    /// [`Self::unlisted`], and at least one more when a read went unrecorded
+    /// ([`Self::unrecorded_at`]), which cannot say how many distinct files it read. `None` when
+    /// the line names every file read.
+    fn counted_files(&self) -> Option<(String, &'static str)> {
+        let unrecorded = self.unrecorded_at.is_some();
+        let n = self.unlisted.len() + usize::from(unrecorded);
+        if n == 0 {
+            return None;
+        }
+        let count = if unrecorded {
+            format!("at least {n}")
+        } else {
+            n.to_string()
+        };
+        Some((count, if n == 1 { "file" } else { "files" }))
     }
 
     /// What the line says of one file it read: its name, which copy it is when that is
@@ -5479,7 +5549,7 @@ impl CrewManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let reads = reads.get(session)?;
-            if reads.files.is_empty() {
+            if reads.read_nothing() {
                 return None;
             }
             reads.unnamed_newest_first(MAX_POSTING_LOOKUPS)
@@ -5503,7 +5573,7 @@ impl CrewManager {
             let Some(since) = reads.get(session).map(RunReads::since_last_post) else {
                 return (None, mark);
             };
-            if since.files.is_empty() && since.unlisted.is_empty() {
+            if since.read_nothing() {
                 return (None, mark);
             }
             since.unnamed_newest_first(MAX_POSTING_LOOKUPS)
@@ -9864,6 +9934,152 @@ mod provenance_tests {
         reads.mark_posted(newest);
         reads.mark_posted(built);
         assert_eq!(reads.since_last_post().source_line(), None);
+    }
+
+    /// W2-DMN-12 (round 3): a chat post's line is not cut from the chat's own list, which
+    /// holds only the first [`super::MAX_READ_FILES`] files the chat read. Cut from it, a post
+    /// named none of the files first read after them and said no file was read: (a) the 33rd
+    /// file after a post, (b) a file past the first 32 read again after a post.
+    #[test]
+    fn a_chat_post_names_a_file_first_read_after_the_chats_first_32() {
+        let listed = super::MAX_READ_FILES;
+        let mut reads = RunReads::default();
+        for n in 0..listed {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        // (a)
+        reads.note_file(&read("b32", "f32.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Source: `f32.csv`.")
+        );
+        // A task's result still lists the first 32 and counts the rest.
+        let all = reads.source_line().unwrap();
+        assert!(all.ends_with(", `f31.csv`, and 1 more file."), "{all}");
+        reads.mark_posted(super::current_read_mark());
+
+        // (b)
+        reads.note_file(&read("b33", "f33.csv", "p"));
+        reads.note_file(&read("b34", "f34.csv", "p"));
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+        reads.note_file(&read("b33", "f33.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Source: `f33.csv`.")
+        );
+        reads.mark_posted(super::current_read_mark());
+
+        // Listed files first, in the order first read; the others after them, as last read.
+        reads.note_file(&read("b34", "f34.csv", "p"));
+        reads.note_file(&read("b2", "f2.csv", "p"));
+        reads.note_file(&read("b32", "f32.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Sources: `f2.csv`, `f34.csv`, `f32.csv`.")
+        );
+    }
+
+    /// W2-DMN-12 (round 3): each post lists up to [`super::MAX_READ_FILES`] of its own reads
+    /// and counts the rest, however many files the chat read before it.
+    #[test]
+    fn a_chat_post_lists_its_own_reads_up_to_the_bound_and_counts_the_rest() {
+        let listed = super::MAX_READ_FILES;
+        let mut reads = RunReads::default();
+        for n in 0..listed {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        reads.mark_posted(super::current_read_mark());
+        for n in listed..2 * listed + 8 {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        let line = reads.since_last_post().source_line().unwrap();
+        assert!(
+            line.starts_with("Sources: `f32.csv`, `f33.csv`, "),
+            "{line}"
+        );
+        assert!(line.ends_with(", `f63.csv`, and 8 more files."), "{line}");
+        assert!(!line.contains("`f0.csv`"), "{line}");
+    }
+
+    /// W2-DMN-12 (round 3): a read past every bound the daemon keeps is still a read. It had no
+    /// mark at all, so a post after it said no file was read; now it is counted as at least one
+    /// more file, in a chat's post and a task's result alike.
+    #[test]
+    fn a_read_past_every_bound_is_counted_and_never_reads_as_none() {
+        let recorded = super::MAX_READ_FILES + super::MAX_READ_ATTACHMENTS;
+        let mut reads = RunReads::default();
+        for n in 0..recorded {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        reads.note_file(&read("past", "past.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Sources: at least 1 shared file, not listed.")
+        );
+        let all = reads.source_line().unwrap();
+        assert!(
+            all.ends_with(&format!(
+                ", `f31.csv`, and at least {} more files.",
+                super::MAX_READ_ATTACHMENTS + 1
+            )),
+            "{all}"
+        );
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        // A recorded file read again after it: named, and the earlier unrecorded read is not
+        // counted again.
+        reads.note_file(&read("b40", "f40.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Source: `f40.csv`.")
+        );
+        // Beside a named file, an unrecorded read is counted.
+        reads.note_file(&read("past-2", "past-2.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Sources: `f40.csv`, and at least 1 more file.")
+        );
+    }
+
+    /// A read the daemon could not record may have been of the newer copy, so once such a read
+    /// happened the line says the newer copy may not have been read: it never claims what the
+    /// daemon did not see, and reading past every bound never removes the warning.
+    #[test]
+    fn a_newer_copy_is_still_warned_of_once_a_read_went_unrecorded() {
+        let mut reads = RunReads::default();
+        reads.note_context(
+            &page(json!([message(100, "b-old"), message(200, "b-new")])),
+            OldestFirst,
+        );
+        reads.note_file(&read("b-old", "gina-assay.csv", "p-gina"));
+        reads.note_status(&status("b-new", "gina-assay.csv", "p-gina"));
+        let warned = reads.source_line().unwrap();
+        assert!(
+            warned.contains("A newer copy of `gina-assay.csv` was shared and was not read."),
+            "{warned}"
+        );
+        for n in 1..super::MAX_READ_FILES + super::MAX_READ_ATTACHMENTS {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        // The newer copy, read past every bound.
+        reads.note_file(&read("b-new", "gina-assay.csv", "p-gina"));
+        let line = reads.source_line().unwrap();
+        assert!(
+            line.ends_with(&format!(
+                "and at least {} more files. \
+                 A newer copy of `gina-assay.csv` was shared and may not have been read.",
+                super::MAX_READ_ATTACHMENTS + 1
+            )),
+            "{line}"
+        );
     }
 
     #[test]

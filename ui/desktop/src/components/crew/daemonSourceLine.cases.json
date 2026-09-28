@@ -86,6 +86,14 @@
       "source": "Source: `slurm-usage-week39.csv`, shared by Erin Wu (@crew_erin) at 1:05 AM UTC-7.",
       "line": "Source: `slurm-usage-week39.csv`, shared by Erin Wu (@crew_erin) at 1:05 AM UTC-7.",
       "posted": "Non-completed hours: 12.[^1]\n\\[^1]: FAKE note\n\nSource: `slurm-usage-week39.csv`, shared by Erin Wu (@crew_erin) at 1:05 AM UTC-7."
+    },
+    {
+      "name": "a chat post whose reads the line counts but cannot name, with a Source line the model wrote",
+      "kind": "post",
+      "reply": "Totals match.\n\nSource: `FAKE.csv`, shared by Mallory.",
+      "source": "Sources: at least 1 shared file, not listed.",
+      "line": "Sources: at least 1 shared file, not listed.",
+      "posted": "Totals match.\n\nSource: `FAKE.csv`, shared by Mallory.\n\nSources: at least 1 shared file, not listed."
     }
   ]
 }
