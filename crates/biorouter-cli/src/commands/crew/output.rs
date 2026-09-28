@@ -2876,7 +2876,7 @@ fn pause_reason(error: &str) -> Option<String> {
         ),
         (
             "The Crew connection or privacy policy changed",
-            "The connection’s privacy changed.",
+            "The connection's privacy changed.",
         ),
         ("Transfer stopped", "It stopped."),
     ];

@@ -1683,6 +1683,8 @@ pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Va
 
 /// What `credentials unlock` says when this profile keeps its Crew keys in the OS keyring.
 pub const NO_VAULT_TO_UNLOCK: &str = "There's no Crew vault to unlock: this computer keeps Crew keys in the OS keyring. To use a passphrase vault instead, run biorouter crew credentials init.";
+/// The same, on a computer whose keyring cannot keep a key (a headless Linux node).
+const NO_VAULT_NO_KEYRING: &str = "There's no Crew vault to unlock, and this computer has no keyring service Biorouter can use. Run biorouter crew credentials init to set up a vault.";
 /// The same, for a development profile that keeps its keys in files.
 const NO_VAULT_TO_UNLOCK_FILES: &str =
     "There's no Crew vault to unlock: this development profile keeps Crew keys in files.";
@@ -1695,6 +1697,7 @@ fn no_vault_to_unlock(status: &Value) -> Result<()> {
     let sentence = match status["backend"].as_str() {
         Some("encrypted_vault") if status["initialized"].as_bool() != Some(false) => return Ok(()),
         Some("file") => NO_VAULT_TO_UNLOCK_FILES,
+        _ if status["available"].as_bool() == Some(false) => NO_VAULT_NO_KEYRING,
         _ => NO_VAULT_TO_UNLOCK,
     };
     Err(Restated::new(sentence, Some(NO_VAULT_TO_UNLOCK_CODE)).into())
@@ -1738,8 +1741,9 @@ mod tests {
         wait_for_daemon_stop, wrong_approval_secret, CrewClient, DaemonRefusal, EventDecoder,
         Restated, APPROVAL_SECRET_AGAIN, AUTH_NEEDS_A_TERMINAL, DAEMON_NOT_RUNNING,
         DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_DAEMON_SECRET_PROMPT, NEW_VAULT_PASSPHRASE,
-        NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
-        VAULT_PASSPHRASE_AGAIN, WRONG_APPROVAL_SECRET, WRONG_APPROVAL_SECRET_CODE,
+        NO_VAULT_NO_KEYRING, NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES,
+        VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN, WRONG_APPROVAL_SECRET,
+        WRONG_APPROVAL_SECRET_CODE,
     };
     use crate::commands::needs_terminal::NeedsTerminal;
     use biorouter::crew::observation::ObserveEvent;
@@ -2817,7 +2821,7 @@ mod tests {
             ),
             (
                 serde_json::json!({"backend": "keyring", "initialized": false, "locked": false, "available": false}),
-                NO_VAULT_TO_UNLOCK,
+                NO_VAULT_NO_KEYRING,
             ),
             (
                 serde_json::json!({"backend": "file", "initialized": false, "locked": false, "available": true}),
@@ -2831,7 +2835,12 @@ mod tests {
                 Some(NO_VAULT_TO_UNLOCK_CODE)
             );
         }
-        assert!(NO_VAULT_TO_UNLOCK.contains("biorouter crew credentials init"));
+        for sentence in [NO_VAULT_TO_UNLOCK, NO_VAULT_NO_KEYRING] {
+            assert!(
+                sentence.contains("biorouter crew credentials init"),
+                "{sentence}"
+            );
+        }
         no_vault_to_unlock(&serde_json::json!({"backend": "encrypted_vault", "initialized": true, "locked": true, "available": true}))
             .expect("a locked vault can be unlocked");
     }
