@@ -175,6 +175,62 @@ function UnopenedLink({
   );
 }
 
+/** A host name as compared: lower case, no trailing dot, no leading `www.`. */
+function comparableHost(host: string): string {
+  return host
+    .toLowerCase()
+    .replace(/\.$/, '')
+    .replace(/^www\./, '');
+}
+
+/**
+ * The host a link's words name, when they read as an address (`https://www.ucsf.edu/x`,
+ * `www.ucsf.edu`, `ucsf.edu/login`); null for words that do not (`the docs`, `@bob`).
+ */
+function hostInWords(words: string): string | null {
+  const text = words.trim();
+  if (!text || /\s/.test(text)) return null;
+  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+  if (!scheme && !/^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}(?:[/:?#]|$)/u.test(text))
+    return null;
+  try {
+    const host = new URL(scheme ? text : `https://${text}`).hostname;
+    return host || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The host a link really opens, when its words name a different one (QA M4): the link
+ * `[https://www.ucsf.edu](https://evil.example.net/login)` read "https://www.ucsf.edu", with the
+ * target only in a hover title that keyboard and screen-reader users never get. Null when the words
+ * are not an address or name the same host (`www.` aside). A look-alike name in the words is
+ * turned to its `xn--` form by the parser, so it never matches the real one.
+ */
+export function mismatchedLinkHost(words: string, href: string): string | null {
+  const named = hostInWords(words);
+  if (!named) return null;
+  let target: string;
+  try {
+    target = new URL(href).hostname;
+  } catch {
+    return null;
+  }
+  return comparableHost(named) === comparableHost(target) ? null : target;
+}
+
+/** The real host after a link's words, inside the link so it is read as part of its name. */
+function RealHost({ host }: { host: string | null }) {
+  if (!host) return null;
+  return (
+    <>
+      {' '}
+      <span className="crew-md-link-host">{timelineCopy.linkRealHost(host)}</span>
+    </>
+  );
+}
+
 /** Every URL react-markdown emits passes this first; a refused one becomes empty. */
 function urlTransform(url: string): string {
   return safeExternalHref(url) ?? '';
@@ -382,6 +438,7 @@ const COMPONENTS: Components = {
         onClick={(event) => openExternally(event, safe)}
       >
         {children}
+        <RealHost host={mismatchedLinkHost(bodyNodeText(node, true), safe)} />
       </a>
     );
   },
@@ -389,10 +446,11 @@ const COMPONENTS: Components = {
     const name = typeof alt === 'string' ? alt.trim() : '';
     const label = name ? timelineCopy.imageNamed(name) : timelineCopy.image;
     const safe = safeExternalHref(src, false);
+    // The alt text is a property, not a text node, so the body step never saw it.
     const content = (
       <>
         <ImageIcon aria-hidden className="crew-md-image-icon" />
-        {label}
+        <VisibleText text={label} />
       </>
     );
     if (safe && !openableHref(safe))
@@ -412,6 +470,7 @@ const COMPONENTS: Components = {
         onClick={(event) => openExternally(event, safe)}
       >
         {content}
+        <RealHost host={mismatchedLinkHost(name, safe)} />
       </a>
     ) : (
       <span className="crew-md-image">{content}</span>

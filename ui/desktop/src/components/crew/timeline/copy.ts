@@ -104,11 +104,10 @@ export const timelineCopy = {
     'Biorouter opens only public web addresses in your browser. Copy this one to open it yourself.',
   /**
    * A link whose words look like an address on another host (QA M4): the host it really opens,
-   * drawn after the words and read with them. `host` is the target's host name.
+   * drawn after the words inside the link, so it is read as part of the link's name. `host` is
+   * the target's host name.
    */
   linkRealHost: (host: string) => `(${host})`,
-  /** The same host, in the link's accessible name: what the words say, then where it goes. */
-  linkGoesTo: (words: string, host: string) => `${words}, opens ${host}`,
 
   /**
    * A character that draws nothing, or reorders what follows it, shown as its escape (QA M3,

@@ -408,6 +408,14 @@
   text-decoration-color: var(--text-accent);
 }
 
+/* The host a link really opens, after words that name another (QA M4): part of
+   the link and its name, but not underlined as its words are. An inline block
+   stops the link's underline from reaching it. */
+.crew-md-link-host {
+  display: inline-block;
+  color: var(--text-muted);
+}
+
 .crew-md-image {
   display: inline-flex;
   align-items: center;

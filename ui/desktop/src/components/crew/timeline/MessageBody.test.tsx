@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CLAMP_CHAR_THRESHOLD } from '../../../utils/messageClamp';
@@ -148,6 +148,48 @@ describe('markdown', () => {
       expect(container.textContent).toContain(
         `${timelineCopy.imageNamed('gel')} (http://192.168.1.4/gel.png)`
       );
+    });
+  });
+
+  /**
+   * QA M4: `[https://www.ucsf.edu](https://evil.example.net/login)` read as ucsf.edu, with the
+   * real target only in a hover title that a keyboard or a screen reader never gets.
+   */
+  describe('a link whose words name another host', () => {
+    it('shows the host it really opens, as part of the link’s name', () => {
+      render(
+        <MessageBody body={'Sign in at [https://www.ucsf.edu](https://evil.example.net/login)'} />
+      );
+      const link = screen.getByRole('link', {
+        name: 'https://www.ucsf.edu (evil.example.net)',
+      });
+      expect(link).toHaveAttribute('href', 'https://evil.example.net/login');
+      expect(within(link).getByText('(evil.example.net)')).toHaveClass('crew-md-link-host');
+    });
+
+    it.each([
+      ['a bare domain', '[ucsf.edu](https://evil.example.net/)', 'evil.example.net'],
+      ['a path on a domain', '[ucsf.edu/login](https://evil.example.net/)', 'evil.example.net'],
+      ['a look-alike name', '[https://www.uсsf.edu](https://www.ucsf.edu/)', 'www.ucsf.edu'],
+      [
+        'an image named by an address',
+        '![https://www.ucsf.edu](https://evil.example.net/x.png)',
+        'evil.example.net',
+      ],
+    ])('names the real host after %s', (_label, body, host) => {
+      const { container } = render(<MessageBody body={body} />);
+      expect(container.querySelector('.crew-md-link-host')).toHaveTextContent(`(${host})`);
+    });
+
+    it.each([
+      ['the same host', '[https://www.ucsf.edu/news](https://www.ucsf.edu/about)'],
+      ['the same host with or without www', '[ucsf.edu](https://www.ucsf.edu/)'],
+      ['words that are not an address', '[the lab docs](https://evil.example.net/)'],
+      ['an autolinked address', 'https://www.ucsf.edu/news'],
+    ])('adds nothing for %s', (_label, body) => {
+      const { container } = render(<MessageBody body={body} />);
+      expect(screen.getByRole('link')).toBeInTheDocument();
+      expect(container.querySelector('.crew-md-link-host')).toBeNull();
     });
   });
 
