@@ -1509,7 +1509,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     };
     const liveTail =
       Boolean(channelId) && messagesLoaded && ours && historyBefore === null && backlog !== false;
-    rememberVerifiedView(view, liveTail ? { messages, people } : null);
+    // The live tail's last page only: older pages added above it (QA M6) are not kept across
+    // leaving Crew, so what is kept stays as bounded as it was.
+    rememberVerifiedView(
+      view,
+      liveTail ? { messages: messages.slice(-HISTORY_PAGE_SIZE), people } : null
+    );
     setLastVerified((previous) => {
       const current = (messagesLoaded || !channelId) && ours;
       const same = previous?.connectionId === connectionId && previous.channelId === channelId;
