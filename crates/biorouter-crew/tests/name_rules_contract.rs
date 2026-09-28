@@ -876,6 +876,10 @@ fn a_wrapped_invitation_token_still_parses() {
             wrap_token(&line, 60, "\u{200B}"),
         ),
         (
+            "quoted-printable soft line breaks",
+            wrap_token(&line, 75, "=\r\n"),
+        ),
+        (
             "a quoted reply that was re-wrapped",
             format!("> {}", hard(72, "\n> ")),
         ),

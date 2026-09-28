@@ -394,12 +394,15 @@ fn is_token_char(c: char) -> bool {
 /// the token: no proper prefix of the host's token can decode to one, and a word of prose after
 /// the token is never needed to complete it, so the prose is left out. When no prefix decodes,
 /// the first run is returned, so [`parse_token`] refuses it exactly as it always has.
+///
+/// The host's token has no padding, so an `=` ending a run is dropped: it is what a
+/// quoted-printable soft line break leaves at the end of each wrapped line.
 fn find_token(text: &str) -> Option<String> {
     let (_, after) = text.split_once(PREFIX)?;
     let runs = token_runs(after);
     let mut joined = String::new();
     for run in &runs {
-        joined.push_str(run);
+        joined.push_str(run.trim_end_matches('='));
         if joined.len() > MAX_TOKEN_CHARS {
             break;
         }
