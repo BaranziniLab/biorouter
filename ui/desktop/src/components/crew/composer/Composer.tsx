@@ -152,7 +152,11 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
     onReady: addAttachment,
   });
   const [dropHint, setDropHint] = useState('');
-  // Several files dropped at once (DW-18): the note naming the one Crew took, until closed.
+  // Several files dropped at once (DW-18): the note naming the one Crew took, until closed. Unlike
+  // an upload failure it does not go with any change to the draft: the file it names lands in the
+  // draft when its upload completes, which for a small file is within one transfer poll, and the
+  // note went with it. So it goes on the person's own edits (typing, removing a chip), a send, its
+  // dismiss control, a new drop or paste, and the surface resets listed below.
   const [extraFiles, setExtraFiles] = useState('');
   const latestUpload = useRef(upload);
   latestUpload.current = upload;
@@ -188,7 +192,6 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   const shownComposerError = useRef<CrewActionError | null>(null);
   useEffect(() => {
     latestUpload.current.dismissError();
-    setExtraFiles('');
     const shown = shownComposerError.current;
     if (shown) controller.dismissErrorIfShown?.(shown);
   }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps -- runs per edit of the draft only
@@ -196,6 +199,19 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
     latestUpload.current.dismissError();
     setExtraFiles('');
     void send();
+  };
+  // The person's own edits: what the note about several files goes with (an upload landing is not).
+  const editBody = (value: string) => {
+    setExtraFiles('');
+    setBody(value);
+  };
+  const removeOwnAttachment = (id: string) => {
+    setExtraFiles('');
+    removeAttachment(id);
+  };
+  const removeOwnReference = (id: string) => {
+    setExtraFiles('');
+    removeReference(id);
   };
   const dismissUploadError = () => {
     latestUpload.current.dismissError();
@@ -382,14 +398,14 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
       <ComposerCard
         name={name}
         body={draft.body}
-        setBody={setBody}
+        setBody={editBody}
         attachments={draft.attachments}
         references={draft.references}
         upload={upload}
         duplicates={duplicates}
         server={serverLabel(controller.connection)}
-        onRemoveAttachment={removeAttachment}
-        onRemoveReference={removeReference}
+        onRemoveAttachment={removeOwnAttachment}
+        onRemoveReference={removeOwnReference}
         onSend={sendNow}
         posting={isPending('send')}
         agentOpen={agentOpen}
@@ -493,8 +509,9 @@ function sendNote(error: CrewActionError): ReactNode {
  * dismiss control, and it clears when the person edits the draft or sends, when the verified
  * privacy mode or scope changes, on a protected-state reset, and on another channel. The drop
  * hint lasts only while the picker it names is open. The note about several files names the
- * one Crew took, in red with its own dismiss control as the manual says (DW-18), and goes the
- * same ways as an upload failure.
+ * one Crew took, in red with its own dismiss control as the manual says (DW-18). It goes the
+ * same ways as an upload failure except one: the file it names landing in the draft is not an
+ * edit by the person, so that leaves it standing.
  */
 function composerNote({
   error,

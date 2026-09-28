@@ -76,6 +76,13 @@ function StatefulComposer({
     draft,
     setBody: (body) => setDraft((current) => ({ ...current, body })),
     send: async () => setDraft({ body: '', attachments: [], references: [] }),
+    addAttachment: (file) =>
+      setDraft((current) => ({ ...current, attachments: [...current.attachments, file] })),
+    removeAttachment: (id) =>
+      setDraft((current) => ({
+        ...current,
+        attachments: current.attachments.filter((file) => file.id !== id),
+      })),
     ...overrides,
   });
   return (
@@ -994,6 +1001,133 @@ describe('Crew composer', () => {
       await userEvent.click(
         within(note).getByRole('button', { name: composerCopy.dismissUploadError })
       );
+      expect(screen.queryByText(composerCopy.oneFileAtATime('counts.csv'))).toBeNull();
+    });
+
+    /**
+     * W2-UIC-15: the note went with any change to the draft, and the file it names lands in the
+     * draft when its upload completes, which for a small file is within one transfer poll. So it
+     * still read as passing news rather than a note the person closes.
+     */
+    it('keeps the note about several files when the file it names finishes uploading', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const record = (state: 'uploading' | 'completed') => ({
+        id: 'transfer-8',
+        request_id: 'request-8',
+        connection_id: 'connection-1',
+        channel_id: 'channel-1',
+        direction: 'upload',
+        name: 'counts.csv',
+        size: 3,
+        sha256: state === 'completed' ? 'b'.repeat(64) : '',
+        offset: state === 'completed' ? 3 : 0,
+        blob_id: state === 'completed' ? 'blob-8' : null,
+        state,
+        error: null,
+      });
+      try {
+        share.mockResolvedValue({
+          outcome: 'shared',
+          capability_id: 'cap-8',
+          name: 'counts.csv',
+          size: 3,
+        });
+        mocks.beginTransfer.mockImplementation(async () => {
+          mocks.listTransfers.mockResolvedValue([record('uploading')]);
+          return { id: 'transfer-8' };
+        });
+        render(<StatefulComposer overrides={named()} />);
+        const zone = screen.getByLabelText('Message #general').closest('[data-drop-zone="true"]');
+        const files = [counts(), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+        await act(async () => {
+          fireEvent.drop(zone as HTMLElement, {
+            dataTransfer: {
+              types: ['Files'],
+              files,
+              items: files.map(() => ({
+                kind: 'file',
+                webkitGetAsEntry: () => ({ isDirectory: false }),
+              })),
+              dropEffect: 'none',
+            },
+          });
+        });
+        const note = await screen.findByRole('alert');
+        expect(note).toHaveTextContent(composerCopy.oneFileAtATime('counts.csv'));
+
+        // The upload completes and its file lands in the draft, as a chip.
+        mocks.listTransfers.mockResolvedValue([record('completed')]);
+        await act(async () => {
+          vi.advanceTimersByTime(TRANSFER_POLL_MS);
+        });
+        expect(
+          await screen.findByRole('button', { name: composerCopy.removeFile('counts.csv') })
+        ).toBeInTheDocument();
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          composerCopy.oneFileAtATime('counts.csv')
+        );
+
+        // It goes when the person closes it.
+        await act(async () => {
+          fireEvent.click(
+            within(screen.getByRole('alert')).getByRole('button', {
+              name: composerCopy.dismissUploadError,
+            })
+          );
+        });
+        expect(screen.queryByText(composerCopy.oneFileAtATime('counts.csv'))).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('lets the note about several files go when the person edits the draft', async () => {
+      share.mockResolvedValue({
+        outcome: 'shared',
+        capability_id: 'cap-9',
+        name: 'counts.csv',
+        size: 3,
+      });
+      mocks.beginTransfer.mockImplementation(async () => {
+        mocks.listTransfers.mockResolvedValue([
+          {
+            id: 'transfer-9',
+            request_id: 'request-9',
+            connection_id: 'connection-1',
+            channel_id: 'channel-1',
+            direction: 'upload',
+            name: 'counts.csv',
+            size: 3,
+            sha256: '',
+            offset: 0,
+            blob_id: null,
+            state: 'uploading',
+            error: null,
+          },
+        ]);
+        return { id: 'transfer-9' };
+      });
+      render(<StatefulComposer overrides={named()} />);
+      const box = screen.getByLabelText('Message #general');
+      const zone = box.closest('[data-drop-zone="true"]');
+      const files = [counts(), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+      await act(async () => {
+        fireEvent.drop(zone as HTMLElement, {
+          dataTransfer: {
+            types: ['Files'],
+            files,
+            items: files.map(() => ({
+              kind: 'file',
+              webkitGetAsEntry: () => ({ isDirectory: false }),
+            })),
+            dropEffect: 'none',
+          },
+        });
+      });
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        composerCopy.oneFileAtATime('counts.csv')
+      );
+      fireEvent.change(box, { target: { value: 'h' } });
       expect(screen.queryByText(composerCopy.oneFileAtATime('counts.csv'))).toBeNull();
     });
 
