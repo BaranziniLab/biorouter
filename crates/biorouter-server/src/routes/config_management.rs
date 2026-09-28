@@ -512,22 +512,78 @@ async fn destination_change_refusal(
     change: DestinationChange<'_>,
     headers: &http::HeaderMap,
 ) -> Option<(StatusCode, String)> {
-    if !biorouter::providers::is_destination_key(key) || is_user_action(headers) {
+    if !biorouter::providers::is_destination_key(key) {
         return None;
     }
+    let reader = RefusalReader::of(headers)?;
     let defaults = declared_defaults(key).await;
-    (!leaves_destination_unchanged(config, key, change, &defaults)).then(|| {
-        (
-            StatusCode::CONFLICT,
-            format!(
-                "'{key}' decides where a provider sends its requests and the key or sign-in \
-                 they carry, so changing it is the user's decision, and this request carried no \
-                 proof it came from them. Nothing was changed. Change it in the provider's \
-                 settings in the Biorouter app, or with `biorouter configure` on the computer \
-                 running Biorouter."
-            ),
-        )
-    })
+    (!leaves_destination_unchanged(config, key, change, &defaults))
+        .then(|| (StatusCode::CONFLICT, destination_refusal(key, reader)))
+}
+
+/// Who reads a refusal to move where a provider's key goes, which decides what
+/// it should say. The gate is the same for all three; only the sentence
+/// differs, because the sentence written for a model in a chat (go and ask the
+/// user) sent a person in a browser back to the page they were on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefusalReader {
+    /// A daemon that holds a user-action key, and a caller that did not present
+    /// it. The desktop app sends the key with every settings write, so this is
+    /// a script or a model holding the daemon secret.
+    Agent,
+    /// A daemon that holds no key and was never handed one: `biorouter serve`,
+    /// whose reader is a person in a browser, or a hand-run `biorouterd`.
+    HostComputer,
+    /// The desktop app's own daemon, started without the key the app meant to
+    /// hand it. A person at the desktop, and a fault a restart repairs.
+    DesktopWithoutItsKey,
+}
+
+impl RefusalReader {
+    /// `None` for a caller who proved a person asked, whom nothing refuses.
+    fn of(headers: &http::HeaderMap) -> Option<Self> {
+        match biorouter_server::auth::user_action_proof(headers) {
+            biorouter_server::auth::UserActionProof::Proven => None,
+            biorouter_server::auth::UserActionProof::Unproven => Some(Self::Agent),
+            biorouter_server::auth::UserActionProof::NoKeyInstalled => {
+                Some(if biorouter_server::launch::expected_a_user_action_key() {
+                    Self::DesktopWithoutItsKey
+                } else {
+                    Self::HostComputer
+                })
+            }
+        }
+    }
+}
+
+/// Why this daemon cannot tell who asked, for the two readers who are people.
+const CANNOT_CONFIRM_A_PERSON: &str = "This Biorouter cannot confirm who makes a change, and a \
+     browser opened with `biorouter serve` never can";
+const DESKTOP_KEY_MISSING: &str = "Biorouter cannot confirm that this change came from you: the \
+     app that started it was meant to hand it a key for that, and none arrived";
+
+/// The refusal `/config/upsert` and `/config/remove` give for a destination key.
+fn destination_refusal(key: &str, reader: RefusalReader) -> String {
+    let what = format!(
+        "'{key}' decides where a provider sends its requests and the key or sign-in they carry"
+    );
+    match reader {
+        RefusalReader::Agent => format!(
+            "{what}, so changing it is the user's decision, and this request carried no proof it \
+             came from them. Nothing was changed. The user can change it in the provider's \
+             settings in the Biorouter app, or with `biorouter configure` on the computer running \
+             Biorouter."
+        ),
+        RefusalReader::HostComputer => format!(
+            "{what}. {CANNOT_CONFIRM_A_PERSON}, so this setting is changed on the computer running \
+             Biorouter: run `biorouter configure` there, or use the Biorouter desktop app on that \
+             computer. Nothing was changed."
+        ),
+        RefusalReader::DesktopWithoutItsKey => format!(
+            "{DESKTOP_KEY_MISSING}. {what}, so nothing was changed. Quit and reopen Biorouter, then \
+             change it again."
+        ),
+    }
 }
 
 /// Every default a registered provider declares for `key` (`None` for one that
@@ -1937,9 +1993,9 @@ pub async fn update_custom_provider(
     headers: http::HeaderMap,
     Json(request): Json<UpdateCustomProviderRequest>,
 ) -> Result<Json<String>, (StatusCode, String)> {
-    if !is_user_action(&headers) {
+    if let Some(reader) = RefusalReader::of(&headers) {
         let saved = biorouter::config::declarative_providers::load_provider(&id).ok();
-        if let Some(refusal) = custom_provider_move_refusal(saved.as_ref(), &request) {
+        if let Some(refusal) = custom_provider_move_refusal(saved.as_ref(), &request, reader) {
             return Err(refusal);
         }
     }
@@ -1975,6 +2031,7 @@ pub async fn update_custom_provider(
 fn custom_provider_move_refusal(
     saved: Option<&LoadedProvider>,
     request: &UpdateCustomProviderRequest,
+    reader: RefusalReader,
 ) -> Option<(StatusCode, String)> {
     let saved = saved?;
     // A provider that is not editable keeps its URL whatever the request says.
@@ -1991,20 +2048,39 @@ fn custom_provider_move_refusal(
     if !request.api_key.is_empty() && !keeps_headers {
         return None;
     }
-    let what = if request.api_key.is_empty() {
+    let keeps_key = request.api_key.is_empty();
+    let what = if keeps_key {
         "its saved key"
     } else {
         "its saved headers"
     };
-    Some((
-        StatusCode::CONFLICT,
-        format!(
-            "Moving {} to a new URL would send {what} there. That is the user's decision, and \
-             this request carried no proof it came from them. Nothing was changed. Change it in \
-             the provider's settings in the Biorouter app.",
-            saved.config.display_name
+    let moving = format!(
+        "Moving {} to a new URL would send {what} there",
+        saved.config.display_name
+    );
+    let sentence = match reader {
+        RefusalReader::Agent => format!(
+            "{moving}. That is the user's decision, and this request carried no proof it came \
+             from them. Nothing was changed. The user can change it in the provider's settings \
+             in the Biorouter app."
         ),
-    ))
+        // Typing the key again is a way through only when no saved headers
+        // would go along with it.
+        RefusalReader::HostComputer if keeps_key => format!(
+            "{moving}. {CANNOT_CONFIRM_A_PERSON}, so type the key again to move it, or change \
+             the URL in the Biorouter desktop app on the computer running Biorouter. Nothing was \
+             changed."
+        ),
+        RefusalReader::HostComputer => format!(
+            "{moving}. {CANNOT_CONFIRM_A_PERSON}, so change the URL in the Biorouter desktop app \
+             on the computer running Biorouter. Nothing was changed."
+        ),
+        RefusalReader::DesktopWithoutItsKey => format!(
+            "{DESKTOP_KEY_MISSING}. {moving}, so nothing was changed. Quit and reopen Biorouter, \
+             then change it again."
+        ),
+    };
+    Some((StatusCode::CONFLICT, sentence))
 }
 
 #[utoipa::path(
@@ -2045,11 +2121,13 @@ pub async fn check_provider(
     // (`unproven_check_scope`).
     //
     // ⚠ This fences one door, not the only one. Where a provider sends its
-    // saved key is decided by its host and endpoint settings, and a chat, a
-    // model listing and this check all send it there. Over HTTP those settings
-    // take the same proof (`destination_change_refusal` on `/config/upsert` and
-    // `/config/remove`); written straight into `config.yaml` by a shell they do
-    // not (DR-14's filesystem deny is deferred), and then every sender follows.
+    // saved key is decided by its host and endpoint settings (the AWS endpoint
+    // overrides Bedrock and SageMaker read from the stores among them), and a
+    // chat, a model listing and this check all send it there. Over HTTP those
+    // settings take the same proof (`destination_change_refusal` on
+    // `/config/upsert` and `/config/remove`); written straight into
+    // `config.yaml` by a shell they do not (DR-14's filesystem deny is
+    // deferred), and then every sender follows.
     let proof = biorouter_server::auth::user_action_proof(&headers);
     if let Some(refusal) = credential_check_refusal(live, candidate.is_some(), &proof) {
         return Err(refusal);
@@ -3072,14 +3150,18 @@ mod tests {
             headers: None,
         };
         let plain = saved(None, true);
+        let agent = RefusalReader::Agent;
         let status = |saved: &LoadedProvider, request| {
-            custom_provider_move_refusal(Some(saved), &request).map(|(status, _)| status)
+            custom_provider_move_refusal(Some(saved), &request, agent).map(|(status, _)| status)
         };
 
         // Moved with the saved key kept: refused, and the sentence says so.
-        let (code, sentence) =
-            custom_provider_move_refusal(Some(&plain), &update("https://attacker.example", ""))
-                .expect("the saved key does not move with the URL");
+        let (code, sentence) = custom_provider_move_refusal(
+            Some(&plain),
+            &update("https://attacker.example", ""),
+            agent,
+        )
+        .expect("the saved key does not move with the URL");
         assert_eq!(code, StatusCode::CONFLICT);
         assert!(sentence.contains("its saved key"), "{sentence}");
         // Moved with a new key typed: that key replaces the saved one.
@@ -3109,8 +3191,240 @@ mod tests {
         );
         // One that cannot be loaded is reported by the update itself.
         assert!(
-            custom_provider_move_refusal(None, &update("https://attacker.example", "")).is_none()
+            custom_provider_move_refusal(None, &update("https://attacker.example", ""), agent)
+                .is_none()
         );
+
+        // A person in a browser is told what works there: typing the key
+        // again, when no saved headers would go along, or the desktop app on
+        // the computer running Biorouter. Not "this request carried no proof".
+        let (_, keyless) = custom_provider_move_refusal(
+            Some(&plain),
+            &update("https://attacker.example", ""),
+            RefusalReader::HostComputer,
+        )
+        .unwrap();
+        assert!(keyless.contains("type the key again"), "{keyless}");
+        assert!(keyless.contains("computer running Biorouter"), "{keyless}");
+        assert!(!keyless.contains("no proof"), "{keyless}");
+        let (_, keyless) = custom_provider_move_refusal(
+            Some(&with_headers),
+            &update("https://new.example/v1", "sk-typed"),
+            RefusalReader::HostComputer,
+        )
+        .unwrap();
+        assert!(
+            !keyless.contains("type the key again"),
+            "a typed key does not get saved headers through: {keyless}"
+        );
+        let (_, faulted) = custom_provider_move_refusal(
+            Some(&plain),
+            &update("https://attacker.example", ""),
+            RefusalReader::DesktopWithoutItsKey,
+        )
+        .unwrap();
+        assert!(faulted.contains("Quit and reopen Biorouter"), "{faulted}");
+    }
+
+    /// Review of W2-PRV-2, round 4. A daemon that holds no user-action key
+    /// refuses every change to a destination key, and on `biorouter serve` the
+    /// reader is a person in the Biorouter page of a browser. The agent's
+    /// sentence ("this request carried no proof it came from them ... change it
+    /// in the provider's settings in the Biorouter app") pointed that person
+    /// back at the page they were on. Each reader now gets its own sentence;
+    /// the gate does not change.
+    #[test]
+    fn a_destination_refusal_is_worded_for_whoever_reads_it() {
+        let agent = destination_refusal("OPENAI_HOST", RefusalReader::Agent);
+        assert!(agent.contains("no proof it came from them"), "{agent}");
+        assert!(agent.contains("The user can change it"), "{agent}");
+
+        let person = destination_refusal("OPENAI_HOST", RefusalReader::HostComputer);
+        assert!(person.contains("'OPENAI_HOST'"), "{person}");
+        assert!(person.contains("`biorouter configure`"), "{person}");
+        assert!(person.contains("computer running Biorouter"), "{person}");
+        assert!(person.contains("`biorouter serve`"), "{person}");
+        for agent_words in ["no proof", "the user's decision", "provider's settings"] {
+            assert!(!person.contains(agent_words), "{person}");
+        }
+
+        let desktop = destination_refusal("OPENAI_HOST", RefusalReader::DesktopWithoutItsKey);
+        assert!(desktop.contains("Quit and reopen Biorouter"), "{desktop}");
+        assert!(!desktop.contains("no proof"), "{desktop}");
+
+        for sentence in [agent, person, desktop] {
+            assert!(
+                sentence.contains("Nothing was changed")
+                    || sentence.contains("nothing was changed")
+            );
+        }
+    }
+
+    /// Review of W2-PRV-2, round 4. Amazon Bedrock and SageMaker take their
+    /// endpoint from `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`,
+    /// `AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME` or `AWS_ENDPOINT_URL`, read from
+    /// `config.yaml` or the secret store by `aws_stored_settings` rather than
+    /// through `get_param`. None of the three was a destination key, so an
+    /// unproven `/config/upsert` could aim the next Bedrock chat, with a stored
+    /// Bedrock API key as its bearer token, at any host.
+    #[tokio::test]
+    async fn an_unproven_caller_cannot_move_the_aws_endpoint_in_either_store() {
+        let keys = [
+            "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+            "AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME",
+            "AWS_ENDPOINT_URL",
+            // A service Biorouter does not call yet: the SDK honours it all the
+            // same, and the prefix covers it.
+            "AWS_ENDPOINT_URL_STS",
+        ];
+        for key in keys {
+            assert!(
+                std::env::var(key).is_err(),
+                "{key} is set in this test's environment, which decides what it resolves to; \
+                 unset it to run this test"
+            );
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+        let store = &config;
+        let refused = move |key: &'static str, change: DestinationChange<'static>| async move {
+            destination_change_refusal(store, key, change, &HeaderMap::new())
+                .await
+                .map(|(status, _sentence)| status)
+        };
+        static ATTACKER: std::sync::LazyLock<Value> =
+            std::sync::LazyLock::new(|| Value::from("https://attacker.example"));
+        static VPC: std::sync::LazyLock<Value> =
+            std::sync::LazyLock::new(|| Value::from("https://vpce-1.bedrock.example"));
+        let conflict = Some(StatusCode::CONFLICT);
+
+        // Nothing stored and no provider declares a default: every write is a
+        // move, whichever store it is meant for (the gate runs before either).
+        for key in keys {
+            assert_eq!(
+                refused(key, DestinationChange::Write(&ATTACKER)).await,
+                conflict,
+                "{key}"
+            );
+        }
+        assert_eq!(
+            refused(
+                "aws_endpoint_url_bedrock_runtime",
+                DestinationChange::Write(&ATTACKER)
+            )
+            .await,
+            conflict,
+            "a lower-case spelling is the same key"
+        );
+
+        // The user's own endpoint in config.yaml: re-saving it moves nothing,
+        // changing or removing it does.
+        config
+            .set_param("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", VPC.clone())
+            .unwrap();
+        assert_eq!(
+            refused(
+                "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+                DestinationChange::Write(&VPC)
+            )
+            .await,
+            None
+        );
+        for change in [
+            DestinationChange::Write(&ATTACKER),
+            DestinationChange::Remove { is_secret: false },
+        ] {
+            assert_eq!(
+                refused("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", change).await,
+                conflict
+            );
+        }
+
+        // The same endpoint in the secret store, which `aws_stored_settings`
+        // reads too, and where it wins over config.yaml.
+        config
+            .set_secret("AWS_ENDPOINT_URL", &Value::from("https://vpce-2.example"))
+            .unwrap();
+        assert_eq!(
+            refused(
+                "AWS_ENDPOINT_URL",
+                DestinationChange::Remove { is_secret: true }
+            )
+            .await,
+            conflict
+        );
+        assert_eq!(
+            refused("AWS_ENDPOINT_URL", DestinationChange::Write(&ATTACKER)).await,
+            conflict
+        );
+
+        // The credentials themselves are not this gate's.
+        assert_eq!(
+            refused(
+                "AWS_BEARER_TOKEN_BEDROCK",
+                DestinationChange::Write(&ATTACKER)
+            )
+            .await,
+            None
+        );
+    }
+
+    /// Review of W2-PRV-2, round 4. The tests above call the gates directly,
+    /// so they keep passing when a route stops calling one. This fails then.
+    /// A source scan, as `auth.rs`'s `all_five_raise_channels_call_the_guard`
+    /// is: it also asks that the gate come before the write it guards.
+    #[test]
+    fn the_routes_call_the_destination_gates_before_they_write() {
+        let source = include_str!("config_management.rs");
+        // The handler's code, without its comments: a comment that names a
+        // write (`config.set(.., is_secret)`) is not one.
+        let body_of = |signature: &str| -> String {
+            let (_, body) = source
+                .split_once(signature)
+                .unwrap_or_else(|| panic!("{signature} is in this file"));
+            let (body, _) = body.split_once("\n}\n").expect("the function's end");
+            body.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for (handler, gate, writes) in [
+            (
+                "pub async fn upsert_config(",
+                "destination_change_refusal(",
+                &["config.set(", "master_switch::write_for("][..],
+            ),
+            (
+                "pub async fn remove_config(",
+                "destination_change_refusal(",
+                &["config.delete_secret(", "config.delete("][..],
+            ),
+            (
+                "pub async fn update_custom_provider(",
+                "custom_provider_move_refusal(",
+                &["declarative_providers::update_custom_provider("][..],
+            ),
+        ] {
+            let body = body_of(handler);
+            let gated_at = body
+                .find(gate)
+                .unwrap_or_else(|| panic!("{handler} no longer calls {gate}"));
+            for write in writes {
+                let written_at = body
+                    .find(write)
+                    .unwrap_or_else(|| panic!("{handler} no longer writes with {write}"));
+                assert!(
+                    gated_at < written_at,
+                    "{handler} writes with {write} before it calls {gate}"
+                );
+            }
+        }
+        // Not vacuous: a handler with no destination gate comes back without one.
+        assert!(!body_of("pub async fn read_all_config(").contains("destination_change_refusal("));
     }
 
     /// Review of W2-PRV-2, round 2. The key a provider is built with under a
@@ -4139,5 +4453,203 @@ mod extension_credential_tests {
         let mut headers = http::HeaderMap::new();
         headers.insert("X-User-Action", TEST_USER_ACTION_KEY.parse().unwrap());
         assert!(require_credential_user(&headers).is_ok());
+    }
+}
+
+/// Review of W2-PRV-2, round 4, at the handlers. Each test runs in a process of
+/// its own (`test_sandbox::in_a_process_of_its_own`), for two reasons: the
+/// user-action digest is a process-global that one test must leave uninstalled
+/// and the other must install, and `Config::global()` there is a fresh config
+/// under that process's own sandbox root, which a proven write may change.
+///
+/// ⚠ No secret is written or read through `Config::global()` unless the
+/// sandbox keeps secrets in a file: otherwise that store is the developer's
+/// real keychain. The gate itself is store-agnostic on a write (it runs before
+/// either store is touched), and the secret store's half is pinned against a
+/// throwaway `Config` in `an_unproven_caller_cannot_move_the_aws_endpoint_in_either_store`.
+#[cfg(test)]
+mod destination_route_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use biorouter_server::auth::{user_action_proof, UserActionProof};
+    use serial_test::serial;
+
+    const ENDPOINT: &str = "AWS_ENDPOINT_URL_BEDROCK_RUNTIME";
+    const ATTACKER: &str = "https://attacker.example";
+    const VPC: &str = "https://vpce-1.bedrock.example";
+
+    fn headers_with(user_action: Option<&str>) -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Secret-Key", "test".parse().unwrap());
+        if let Some(key) = user_action {
+            headers.insert("X-User-Action", key.parse().unwrap());
+        }
+        headers
+    }
+
+    fn write(key: &str, value: &str, is_secret: bool) -> Json<UpsertConfigQuery> {
+        Json(UpsertConfigQuery {
+            key: key.to_string(),
+            value: Value::from(value),
+            is_secret,
+            confirm: None,
+        })
+    }
+
+    fn removal(key: &str) -> Json<ConfigKeyQuery> {
+        Json(ConfigKeyQuery {
+            key: key.to_string(),
+            is_secret: false,
+        })
+    }
+
+    fn stored(key: &str) -> Option<Value> {
+        Config::global().all_values().ok()?.get(key).cloned()
+    }
+
+    fn preconditions() {
+        for key in [ENDPOINT, "AWS_ENDPOINT_URL"] {
+            assert!(
+                std::env::var(key).is_err(),
+                "{key} is set in this test's environment, which decides what it resolves to"
+            );
+        }
+        assert!(
+            stored(ENDPOINT).is_none(),
+            "the sandbox config starts empty"
+        );
+    }
+
+    /// `biorouter serve`'s daemon: no key, and none expected. The person reading
+    /// the refusal is in a browser, so it names the computer running Biorouter,
+    /// not the page they are on.
+    #[tokio::test]
+    #[serial]
+    async fn a_keyless_daemon_refuses_to_move_the_aws_endpoint_in_words_for_a_person() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        assert_eq!(
+            user_action_proof(&http::HeaderMap::new()),
+            UserActionProof::NoKeyInstalled
+        );
+        assert!(!biorouter_server::launch::expected_a_user_action_key());
+        preconditions();
+
+        let (status, sentence) =
+            upsert_config(headers_with(None), write(ENDPOINT, ATTACKER, false))
+                .await
+                .expect_err("an unproven write of the Bedrock endpoint is refused");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(sentence.contains("`biorouter configure`"), "{sentence}");
+        assert!(
+            sentence.contains("computer running Biorouter"),
+            "{sentence}"
+        );
+        assert!(!sentence.contains("no proof"), "{sentence}");
+        assert!(stored(ENDPOINT).is_none(), "nothing was written");
+
+        if crate::test_sandbox::global_config_reads_secrets_from_a_file() {
+            let (status, _) = upsert_config(headers_with(None), write(ENDPOINT, ATTACKER, true))
+                .await
+                .expect_err("the secret store is no way round it");
+            assert_eq!(status, StatusCode::CONFLICT);
+        }
+        let (status, _) = upsert_config(
+            headers_with(None),
+            write("AWS_ENDPOINT_URL", ATTACKER, false),
+        )
+        .await
+        .expect_err("nor is the SDK's generic endpoint");
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // The operator's own endpoint, set on the computer itself: re-saving it
+        // moves nothing, and removing it would hand Bedrock back to AWS's own
+        // host, which is a move.
+        Config::global().set_param(ENDPOINT, VPC).unwrap();
+        let _ = upsert_config(headers_with(None), write(ENDPOINT, VPC, false))
+            .await
+            .expect("re-saving the stored endpoint moves nothing");
+        let (status, _) = remove_config(headers_with(None), removal(ENDPOINT))
+            .await
+            .expect_err("removing it is a move");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(stored(ENDPOINT), Some(Value::from(VPC)));
+
+        // A custom provider's URL, at its own route.
+        let dir = biorouter::config::declarative_providers::custom_providers_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = serde_json::json!({
+            "name": "custom_lab",
+            "engine": "openai",
+            "display_name": "Lab gateway",
+            "api_key_env": "CUSTOM_LAB_API_KEY",
+            "base_url": "https://lab.example/v1",
+            "models": [],
+        });
+        let file = dir.join("custom_lab.json");
+        std::fs::write(&file, saved.to_string()).unwrap();
+        let (status, sentence) = update_custom_provider(
+            Path("custom_lab".to_string()),
+            headers_with(None),
+            Json(UpdateCustomProviderRequest {
+                engine: "openai_compatible".to_string(),
+                display_name: "Lab gateway".to_string(),
+                api_url: ATTACKER.to_string(),
+                api_key: String::new(),
+                models: Vec::new(),
+                supports_streaming: None,
+                headers: None,
+            }),
+        )
+        .await
+        .expect_err("moving a custom provider's saved key is refused");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(sentence.contains("type the key again"), "{sentence}");
+        assert!(!sentence.contains("no proof"), "{sentence}");
+        let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(kept["base_url"], "https://lab.example/v1");
+    }
+
+    /// The desktop's daemon: it holds a key, the app sends it, and a caller
+    /// without it is a script or a model holding the daemon secret.
+    #[tokio::test]
+    #[serial]
+    async fn a_keyed_daemon_refuses_an_unproven_aws_endpoint_and_takes_a_proven_one() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        install_test_user_action_key();
+        preconditions();
+
+        let (status, sentence) =
+            upsert_config(headers_with(None), write(ENDPOINT, ATTACKER, false))
+                .await
+                .expect_err("an unproven write of the Bedrock endpoint is refused");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(
+            sentence.contains("no proof it came from them"),
+            "{sentence}"
+        );
+        assert!(stored(ENDPOINT).is_none(), "nothing was written");
+
+        let _ = upsert_config(
+            headers_with(Some(TEST_USER_ACTION_KEY)),
+            write(ENDPOINT, VPC, false),
+        )
+        .await
+        .expect("the person's own change lands");
+        assert_eq!(stored(ENDPOINT), Some(Value::from(VPC)));
+
+        let (status, _) = remove_config(headers_with(None), removal(ENDPOINT))
+            .await
+            .expect_err("an unproven removal is a move");
+        assert_eq!(status, StatusCode::CONFLICT);
+        let _ = remove_config(headers_with(Some(TEST_USER_ACTION_KEY)), removal(ENDPOINT))
+            .await
+            .expect("the person's own removal lands");
+        assert!(stored(ENDPOINT).is_none());
     }
 }
