@@ -3393,6 +3393,7 @@ done
                 mode: signed.then_some(ClusterMode::Private),
                 institution_id: signed.then(|| "ucsf".into()),
                 policy_epoch: signed.then_some(1),
+                storage: None,
             },
         );
     }
@@ -4375,6 +4376,7 @@ fi
                 mode: Some(ClusterMode::Private),
                 institution_id: None,
                 policy_epoch: Some(1),
+                storage: None,
             },
         );
         (root, connection, manager, env)

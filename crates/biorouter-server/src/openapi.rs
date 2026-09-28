@@ -586,6 +586,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::crew::wire::CrewTransferForgotten,
         super::routes::crew::wire::CrewPreviewImage,
         biorouter::crew::Connection,
+        biorouter::crew::ServerStorage,
         biorouter::crew::SaveConnection,
         biorouter::crew::PreparedDevice,
         biorouter::crew::AuthenticationPlan,

@@ -372,12 +372,15 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
 async fn connection_view(
     connection: &biorouter::crew::Connection,
 ) -> anyhow::Result<CrewConnectionView> {
-    let last_error_code = manager()?.last_error_code(connection);
+    let crew = manager()?;
+    let last_error_code = crew.last_error_code(connection);
+    let server_storage = crew.server_storage(connection);
     let server_label = biorouter::crew::server_label(&connection.ssh_target, connection.port).await;
     Ok(saved_connection_view(
         connection,
         last_error_code,
         server_label,
+        server_storage,
     ))
 }
 
@@ -386,11 +389,13 @@ fn saved_connection_view(
     connection: &biorouter::crew::Connection,
     last_error_code: Option<&str>,
     server_label: String,
+    server_storage: Option<biorouter::crew::ServerStorage>,
 ) -> CrewConnectionView {
     CrewConnectionView {
         connection: connection.clone(),
         last_error_code: last_error_code.map(str::to_owned),
         server_label,
+        server_storage,
     }
 }
 
@@ -399,7 +404,7 @@ fn saved_connection_view(
     operation_id = "crew_list_connections",
     path = "/crew/connections",
     responses(
-        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`", body = CrewConnectionList),
+        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known", body = CrewConnectionList),
         (status = 400, description = "`crew_request_refused`: Crew's saved settings could not be read", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
     ),
@@ -3911,6 +3916,7 @@ mod provenance_tests {
                 &connection,
                 code,
                 "example.test".into(),
+                None,
             ))
             .unwrap()
         };
@@ -3925,6 +3931,24 @@ mod provenance_tests {
         assert_eq!(ended["server_label"], "example.test");
         let plain = view(None);
         assert!(plain.get("last_error_code").is_none());
+        // T3-BE-13: saving normally, or not known, is `null`; a server that stopped saving says
+        // why and since when.
+        assert_eq!(plain["server_storage"], serde_json::Value::Null);
+        let stopped = serde_json::to_value(saved_connection_view(
+            &connection,
+            None,
+            "example.test".into(),
+            Some(biorouter::crew::ServerStorage {
+                state: "storage_failed".into(),
+                code: "storage_full".into(),
+                since: Some(1_790_000_000),
+            }),
+        ))
+        .unwrap();
+        assert_eq!(
+            stopped["server_storage"],
+            json!({"state": "storage_failed", "code": "storage_full", "since": 1_790_000_000u64})
+        );
     }
 }
 

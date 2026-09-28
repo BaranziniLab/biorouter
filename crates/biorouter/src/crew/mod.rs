@@ -293,6 +293,51 @@ pub struct BrokerHello {
     pub institution_id: Option<String>,
     /// The workspace's policy epoch. Signed only under v2.
     pub policy_epoch: Option<u64>,
+    /// Whether the workspace server has stopped saving changes, as this `hello` said (T3-BE-13).
+    /// Unsigned under either signature, so it is shown and never relied on; `None` when the
+    /// server is saving, or is an older one that does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<ServerStorage>,
+}
+
+/// A workspace server that has stopped saving changes (its disk or quota is full, or it could
+/// not write its storage), as its `hello` says since W2-BRK-3. Reading still works; every
+/// change is refused until the host frees space and restarts Crew (T3-BE-13). Served as a saved
+/// connection's `server_storage`, so a person is told before trying to write, not after.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct ServerStorage {
+    /// Always `storage_failed`: the server has stopped saving changes.
+    pub state: String,
+    /// Why: `storage_full` (the server's disk or the account's quota is full) or
+    /// `storage_failed` (another storage error).
+    pub code: String,
+    /// When the server stopped saving, in seconds since the Unix epoch, as it says; `null` when
+    /// it did not say.
+    pub since: Option<u64>,
+}
+
+/// [`ServerStorage::state`].
+const STORAGE_STOPPED: &str = "storage_failed";
+
+impl ServerStorage {
+    /// What `hello` says about the server's storage: `Some` only for a server that says it has
+    /// stopped saving (`"state": "storage_failed"`). Its own sentence is not kept: it is the
+    /// workspace's unauthenticated words, and each client says this in its own.
+    fn from_hello(hello: &Value) -> Option<Self> {
+        if hello.get("state").and_then(Value::as_str) != Some(STORAGE_STOPPED) {
+            return None;
+        }
+        let storage = hello.get("storage");
+        let code = match storage.and_then(|storage| storage["code"].as_str()) {
+            Some("storage_full") => "storage_full",
+            _ => "storage_failed",
+        };
+        Some(Self {
+            state: STORAGE_STOPPED.to_owned(),
+            code: code.to_owned(),
+            since: storage.and_then(|storage| storage["since"].as_u64()),
+        })
+    }
 }
 
 /// A `hello` whose signature verified, with the node identity to pin.
@@ -1182,6 +1227,7 @@ impl HelloV2Fields {
             }),
             institution_id: self.institution_id,
             policy_epoch: Some(self.policy_epoch),
+            storage: None,
         })
     }
 }
@@ -1205,6 +1251,7 @@ impl BrokerHello {
             mode: None,
             institution_id: None,
             policy_epoch: None,
+            storage: None,
         }
     }
 }
@@ -1699,6 +1746,48 @@ impl CrewManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(id)
             .cloned()
+    }
+    /// Whether `connection`'s workspace server has stopped saving changes, as its last verified
+    /// `hello` said (T3-BE-13). Only while it is connected: a `hello` from before a drop says
+    /// nothing about the server now, so a disconnected connection is unknown (`None`). Every
+    /// verified `hello` replaces the last (a connect, a heartbeat, a refresh after a change the
+    /// server refused for its storage), so a server that saves again clears it.
+    pub fn server_storage(&self, connection: &Connection) -> Option<ServerStorage> {
+        if connection.status != "connected" {
+            return None;
+        }
+        self.broker_hello(&connection.id)?.storage
+    }
+    /// A request the workspace refused because its server could not save it (`storage_full`,
+    /// `storage_failed`): ask `hello` again, in the background, so the connection says whether
+    /// the server has stopped saving (T3-BE-13). The broker also refuses one attachment with
+    /// the same codes when only that file could not be written and it keeps saving; its `hello`
+    /// tells the two apart, never the refusal's words. A manager built without
+    /// [`CrewManager::shared`] asks nothing.
+    fn heed_storage_refusal(&self, id: &str, answer: &Result<Value>) {
+        let Err(error) = answer else {
+            return;
+        };
+        if !keepalive::broker_refusal(error)
+            .is_some_and(|(code, _)| matches!(code.as_str(), "storage_full" | "storage_failed"))
+        {
+            return;
+        }
+        let Some(manager) = self.this.get().cloned() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let id = id.to_owned();
+        runtime.spawn(async move {
+            let Some(manager) = manager.upgrade() else {
+                return;
+            };
+            if let Err(error) = manager.refresh_broker_hello(&id).await {
+                tracing::debug!(connection = %id, error = %error, "Couldn't ask a Crew workspace whether it still saves changes");
+            }
+        });
     }
     fn forget_broker(&self, id: &str) {
         self.brokers
@@ -2690,6 +2779,10 @@ impl CrewManager {
             }
             None => BrokerHello::unsigned(hello),
         };
+        let broker = BrokerHello {
+            storage: ServerStorage::from_hello(hello),
+            ..broker
+        };
         Ok(VerifiedHello {
             node_id: node_id.to_string(),
             broker,
@@ -3278,6 +3371,7 @@ impl CrewManager {
         // Q3-12: whether the workspace still knows this device (see `keepalive.rs`).
         self.heed_membership(door == SignedDoor::Join, id, method, &result, &transport)
             .await;
+        self.heed_storage_refusal(id, &result);
         result
     }
     async fn signed_exchange(
@@ -4099,6 +4193,7 @@ impl CrewManager {
             self.retire_broken_bridge(&s.connection_id, &transport, method, &result)
                 .await?;
         }
+        self.heed_storage_refusal(&s.connection_id, &result);
         let mut result = match result {
             Ok(result) => result,
             Err(error) => {
@@ -6330,6 +6425,40 @@ mod tests {
             Some("Source: `counts.tsv`.")
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-13: only a `hello` that says its server stopped saving is read as one, and its
+    /// own sentence is never kept.
+    #[test]
+    fn a_hello_says_whether_its_server_stopped_saving() {
+        assert_eq!(
+            ServerStorage::from_hello(&json!({"state": "running"})),
+            None
+        );
+        assert_eq!(
+            ServerStorage::from_hello(&json!({})),
+            None,
+            "an older broker"
+        );
+        assert_eq!(
+            ServerStorage::from_hello(&json!({"state": "storage_failed",
+                "storage": {"code": "storage_full", "message": "Ask the host.", "since": 7}})),
+            Some(ServerStorage {
+                state: "storage_failed".into(),
+                code: "storage_full".into(),
+                since: Some(7),
+            })
+        );
+        // A code it does not know reads as the general one; a missing time as unknown.
+        assert_eq!(
+            ServerStorage::from_hello(&json!({"state": "storage_failed",
+                "storage": {"code": "<b>made up</b>"}})),
+            Some(ServerStorage {
+                state: "storage_failed".into(),
+                code: "storage_failed".into(),
+                since: None,
+            })
+        );
     }
 
     /// W2-DMN-7: a request's lost bridge is typed by where it was lost, with the SSH failure
@@ -9072,6 +9201,7 @@ done
                 mode: (version == 2).then_some(ClusterMode::Public),
                 institution_id: None,
                 policy_epoch: (version == 2).then_some(1),
+                storage: None,
             },
         };
         assert_eq!(manager.capabilities(connection_id), None);
@@ -9201,6 +9331,7 @@ done
                 mode: Some(ClusterMode::Public),
                 institution_id: Some("ucsf".into()),
                 policy_epoch: Some(4),
+                storage: None,
             }
         );
         assert_eq!(
@@ -9222,6 +9353,7 @@ done
                 mode: None,
                 institution_id: None,
                 policy_epoch: None,
+                storage: None,
             }
         );
 

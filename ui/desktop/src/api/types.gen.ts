@@ -953,6 +953,7 @@ export type CrewConnectionView = Connection & {
      * it never enters the connection's binding or an invitation.
      */
     server_label: string;
+    server_storage?: ServerStorage | null;
 };
 
 /**
@@ -4620,6 +4621,29 @@ export type SecretKeyRequest = {
     required?: boolean;
 };
 
+/**
+ * A workspace server that has stopped saving changes (its disk or quota is full, or it could
+ * not write its storage), as its `hello` says since W2-BRK-3. Reading still works; every
+ * change is refused until the host frees space and restarts Crew (T3-BE-13). Served as a saved
+ * connection's `server_storage`, so a person is told before trying to write, not after.
+ */
+export type ServerStorage = {
+    /**
+     * Why: `storage_full` (the server's disk or the account's quota is full) or
+     * `storage_failed` (another storage error).
+     */
+    code: string;
+    /**
+     * When the server stopped saving, in seconds since the Unix epoch, as it says; `null` when
+     * it did not say.
+     */
+    since?: number | null;
+    /**
+     * Always `storage_failed`: the server has stopped saving changes.
+     */
+    state: string;
+};
+
 export type Session = {
     accumulated_input_tokens?: number | null;
     accumulated_output_tokens?: number | null;
@@ -7413,7 +7437,7 @@ export type CrewListConnectionsError = CrewListConnectionsErrors[keyof CrewListC
 
 export type CrewListConnectionsResponses = {
     /**
-     * Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`
+     * Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known
      */
     200: CrewConnectionList;
 };

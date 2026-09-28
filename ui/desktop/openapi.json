@@ -2161,7 +2161,7 @@
         "operationId": "crew_list_connections",
         "responses": {
           "200": {
-            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`",
+            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known",
             "content": {
               "application/json": {
                 "schema": {
@@ -11071,6 +11071,14 @@
               "server_label": {
                 "type": "string",
                 "description": "What to call the connection's server on screen (D-ALIAS): the person's own SSH alias\nfor its address when one maps to it, else the host. Display only, and never saved, so\nit never enters the connection's binding or an invitation."
+              },
+              "server_storage": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ServerStorage"
+                  }
+                ],
+                "nullable": true
               }
             }
           }
@@ -18075,6 +18083,31 @@
           "required": {
             "type": "boolean",
             "description": "Whether the request can be satisfied without this one."
+          }
+        }
+      },
+      "ServerStorage": {
+        "type": "object",
+        "description": "A workspace server that has stopped saving changes (its disk or quota is full, or it could\nnot write its storage), as its `hello` says since W2-BRK-3. Reading still works; every\nchange is refused until the host frees space and restarts Crew (T3-BE-13). Served as a saved\nconnection's `server_storage`, so a person is told before trying to write, not after.",
+        "required": [
+          "state",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Why: `storage_full` (the server's disk or the account's quota is full) or\n`storage_failed` (another storage error)."
+          },
+          "since": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the server stopped saving, in seconds since the Unix epoch, as it says; `null` when\nit did not say.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "Always `storage_failed`: the server has stopped saving changes."
           }
         }
       },

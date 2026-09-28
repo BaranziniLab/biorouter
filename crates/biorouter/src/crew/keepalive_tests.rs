@@ -132,7 +132,10 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// `blob-bulk-N` as a file named `blob-bulk-N.csv` ([`bulk_read`]), and every other blob is
 /// refused, as the broker refuses one outside the run. `remote.read` answers [`remote_file`] and
 /// `blob.begin` [`BEGUN_BLOB`], for `remote.attach`; `drop-at-post` exits at the first
-/// `run.project`, once it is written. Every request line is logged as `<spawn> <line>` to
+/// `run.project`, once it is written. `storage-stops` refuses `message.post` as a server that
+/// has stopped saving (`storage_full`), after which every `hello` says so
+/// ([`storage_stopped_hello`]) until a test removes `storage-stopped` under the root; it refuses
+/// `blob.chunk` as one attachment that could not be written, which stops nothing. Every request line is logged as `<spawn> <line>` to
 /// `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
     use std::os::unix::fs::PermissionsExt;
@@ -143,6 +146,7 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let hello_v2 = signed_hello(NODE, true, &["human_chat"]).to_string();
     let hello_other = signed_hello(&"5d".repeat(32), false, &["human_chat"]).to_string();
     let hello_join = signed_hello(NODE, false, &["human_chat", "join_by_name_v1"]).to_string();
+    let hello_storage = storage_stopped_hello().to_string();
     let manifest = manifest().to_string();
     let read_new = blob_read("blob-new", NEW_CSV).to_string();
     let read_old = blob_read("blob-old", OLD_CSV).to_string();
@@ -162,6 +166,7 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
         &hello_v2,
         &hello_other,
         &hello_join,
+        &hello_storage,
         &manifest,
         &read_new,
         &read_old,
@@ -227,6 +232,7 @@ while IFS= read -r line; do
       other-node-after-1) [ "$answered" -gt 1 ] && body='{hello_other}' ;;
       join-drop-after-1) body='{hello_join}' ;;
     esac
+    [ -e "$root/storage-stopped" ] && body='{hello_storage}'
     printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
   elif [ "$plan" = grant-expired ] && printf '%s\n' "$line" | grep -q '"credential":'; then
     printf '{{"id":"%s","error":{{"code":"grant_expired","message":"grant_expired: run revoked, expired or policy changed"}}}}\n' "$id"
@@ -265,6 +271,11 @@ while IFS= read -r line; do
     esac
     if [ "$refuse" = 1 ]; then
       printf '{{"id":"%s","error":{{"code":"unauthorized","message":"unauthorized: unknown device"}}}}\n' "$id"
+    elif [ "$plan" = storage-stops ] && printf '%s\n' "$line" | grep -q '"method":"message.post"'; then
+      : > "$root/storage-stopped"
+      printf '{{"id":"%s","error":{{"code":"storage_full","message":"storage_full: The workspace server ran out of disk space and has stopped saving changes."}}}}\n' "$id"
+    elif [ "$plan" = storage-stops ] && printf '%s\n' "$line" | grep -q '"method":"blob.chunk"'; then
+      printf '{{"id":"%s","error":{{"code":"storage_full","message":"storage_full: The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again."}}}}\n' "$id"
     elif printf '%s\n' "$line" | grep -q '"method":"run.create"'; then
       printf '{{"id":"%s","result":%s}}\n' "$id" '{run_create}'
     elif printf '%s\n' "$line" | grep -q '"method":"remote.read"'; then
@@ -287,6 +298,17 @@ done
     let ssh = bin.join("ssh");
     fs::write(&ssh, script).unwrap();
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// A `hello` from a server that has stopped saving changes (W2-BRK-3): the fixture's own, with
+/// the unsigned `state` and `storage` the broker adds.
+fn storage_stopped_hello() -> Value {
+    let mut hello = hello();
+    hello["state"] = json!("storage_failed");
+    hello["storage"] = json!({"code": "storage_full",
+        "message": "The workspace server ran out of disk space and has stopped saving changes.",
+        "since": 1_790_000_000u64});
+    hello
 }
 
 /// The run a grant made against the scripted broker gets.
@@ -1937,6 +1959,71 @@ async fn a_request_on_a_connection_nobody_is_dialling_is_refused_as_not_connecte
     );
     assert_eq!(spawns(&f.root), 0, "nothing dialled for it");
     assert!(requests(&f.root).is_empty(), "nothing written for it");
+}
+
+/// T3-BE-13: a workspace server that has stopped saving changes is shown on the connection,
+/// from its own `hello`, so a person is told before trying to write. A change it refuses for
+/// its storage asks `hello` again at once; one attachment it could not write, which stops
+/// nothing, marks nothing. A later `hello` that no longer says so clears it.
+#[tokio::test]
+async fn a_server_that_stopped_saving_is_shown_on_the_connection() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("storage-stopped", &["storage-stops"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let connection = || async { f.manager.connection(CONNECTION_ID).await.unwrap() };
+    assert_eq!(f.manager.server_storage(&connection().await), None);
+
+    // One attachment the server could not write: it keeps saving, and says so.
+    let hellos = |root: &Path| {
+        requests(root)
+            .iter()
+            .filter(|(_, method)| method == "hello")
+            .count()
+    };
+    let before = hellos(&f.root);
+    f.manager
+        .human_request(CONNECTION_ID, "blob.chunk", json!({}), None)
+        .await
+        .unwrap_err();
+    let root = f.root.clone();
+    until(async || hellos(&root) > before).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(f.manager.server_storage(&connection().await), None);
+
+    f.manager
+        .human_request(CONNECTION_ID, "message.post", json!({}), None)
+        .await
+        .unwrap_err();
+    let manager = Arc::clone(&f.manager);
+    until(async || {
+        let c = manager.connection(CONNECTION_ID).await.unwrap();
+        manager.server_storage(&c).is_some()
+    })
+    .await;
+    assert_eq!(
+        f.manager.server_storage(&connection().await),
+        Some(super::ServerStorage {
+            state: "storage_failed".into(),
+            code: "storage_full".into(),
+            since: Some(1_790_000_000),
+        })
+    );
+
+    // The host freed space and restarted Crew: the next `hello` clears it.
+    fs::remove_file(f.root.join("storage-stopped")).unwrap();
+    f.manager.refresh_broker_hello(CONNECTION_ID).await.unwrap();
+    assert_eq!(f.manager.server_storage(&connection().await), None);
+
+    // Not connected is not known, whatever the last `hello` said.
+    fs::write(f.root.join("storage-stopped"), "").unwrap();
+    f.manager.refresh_broker_hello(CONNECTION_ID).await.unwrap();
+    assert!(f.manager.server_storage(&connection().await).is_some());
+    let mut down = connection().await;
+    down.status = "disconnected".into();
+    assert_eq!(f.manager.server_storage(&down), None);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
 }
 
 /// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`

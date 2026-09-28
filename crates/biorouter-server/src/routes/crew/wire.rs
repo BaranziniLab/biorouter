@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use biorouter::crew::authentication::InvitationMissing;
 use biorouter::crew::observation::RunView;
-use biorouter::crew::{ClusterMode, Connection, GrantRow};
+use biorouter::crew::{ClusterMode, Connection, GrantRow, ServerStorage};
 use biorouter_server::crew::transfers::Receipt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -309,6 +309,12 @@ pub struct CrewConnectionView {
     /// for its address when one maps to it, else the host. Display only, and never saved, so
     /// it never enters the connection's binding or an invitation.
     pub server_label: String,
+    /// The workspace server has stopped saving changes, as its last `hello` said: every change
+    /// is refused until the host frees space and restarts Crew, and reading still works
+    /// (T3-BE-13). `null` while it saves normally, and whenever that is not known (the
+    /// connection is not connected, or its server is an older one that does not say). Display
+    /// only: the server's word, unsigned.
+    pub server_storage: Option<ServerStorage>,
 }
 
 /// `GET /crew/connections`.
