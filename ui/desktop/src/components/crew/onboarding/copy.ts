@@ -230,8 +230,15 @@ export const joinStateCopy = {
     username
       ? `Ask ${person} to invite @${username}. This page updates by itself.`
       : `Ask ${person} to invite you. This page updates by itself.`,
+  /**
+   * A member whose computer was removed reads as not invited too: the workspace answers a new key
+   * the same way either way (F3). So the card names the invitation that works for them, and the
+   * host's plain invitation, which the workspace refuses for a member, is not the only ask.
+   */
+  notInvitedBefore: (workspace: string, person: string, username: string | null) =>
+    `If you were in ${workspace} before, ask ${person} to use Add another device for ${username ? `@${username}` : 'you'}.`,
   notInvitedMessage: (first: string | null, username: string | null, workspace: string) =>
-    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew.`,
+    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew. If I’m already a member there, please use Add another device for ${username ? `@${username}` : 'me'} instead.`,
   notInvitedMessageLabel: 'message to your host',
   /**
    * A member the workspace no longer admits (Q3-50): this computer was a member this session, or

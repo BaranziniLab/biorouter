@@ -205,8 +205,12 @@ export const inviteCopy = {
   addDeviceUnnamed: 'Add another device for this person',
   refusal: {
     noAccount: (text: string) => `No account named @${text} on this server.`,
+    /**
+     * The broker's "already a member … Choose Add device" (F3): a member's new or re-added
+     * computer. The switch is turned on with it, and the sentence says so.
+     */
     alreadyMember: (username: string, workspace: string) =>
-      `@${username} is already in ${workspace}.`,
+      `@${username} is already in ${workspace}. To add this computer of theirs, Add another device for @${username} is now on: choose Invite again.`,
     canonical: (canonical: string) =>
       `Invite @${canonical} instead: that’s the account’s exact name.`,
   },
@@ -633,6 +637,20 @@ export const confirmCopy = {
     title: (workspace: string) => `Remove ${workspace} from this computer?`,
     description:
       'It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. If you host it and no other computer of yours still has it, nobody can let people in, change its privacy or remove anyone there again.',
+    /**
+     * A member's removal (F3): the old invitation cannot bring it back, and a plain invitation is
+     * refused for a member, so it names the one that works. `username` is the person's, or null.
+     */
+    memberDescription: (workspace: string, username: string | null) =>
+      `It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use ${workspace} on this computer again, ask the host to invite you with Add another device for ${username ? `@${username}` : 'you'}.`,
+    /**
+     * The host removing it from the only computer of theirs the workspace lists (CLI-1): the host
+     * controls end for good, so it asks for the workspace's name first, as the CLI asks for
+     * `--give-up-host-controls`.
+     */
+    onlyHostDescription: (workspace: string, username: string | null) =>
+      `You host ${workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: nobody could let people in, change its privacy or remove anyone again. To keep them, first invite another computer of yours with Add another device for ${username ? `@${username}` : 'yourself'}.`,
+    onlyHostConfirm: 'Remove and give up hosting',
     confirm: 'Remove',
   },
   stopTask: {

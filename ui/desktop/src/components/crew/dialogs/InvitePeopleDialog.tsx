@@ -75,6 +75,12 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
       : null;
   const typed = typedUsername(username);
   const refusalId = `${formId}-refusal`;
+  // The broker refused a plain invitation for a member (F3): the way on is Add another device,
+  // which the refusal's sentence names, so it is turned on for the next Invite.
+  const alreadyMember = refusal?.alreadyMember === true;
+  React.useEffect(() => {
+    if (alreadyMember) setAddDevice(true);
+  }, [alreadyMember]);
   const usernameRef = React.useRef<HTMLInputElement>(null);
   const [again, setAgain] = React.useState(false);
 

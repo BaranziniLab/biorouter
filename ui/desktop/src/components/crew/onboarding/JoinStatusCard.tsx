@@ -557,6 +557,9 @@ export function JoinStatusCard() {
         <p className="text-body text-text-default">
           {joinStateCopy.notInvitedBody(person, username || null)}
         </p>
+        <p className="text-supporting text-text-muted" data-testid="crew-join-not-invited-before">
+          {joinStateCopy.notInvitedBefore(workspace, person, username || null)}
+        </p>
         <CopyField
           multiline
           label={joinStateCopy.notInvitedMessageLabel}

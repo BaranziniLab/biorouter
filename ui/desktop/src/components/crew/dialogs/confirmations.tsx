@@ -3,12 +3,13 @@ import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { DangerousConfirmDialog } from '../../ui/DangerousConfirmDialog';
 import { toastSuccess } from '../../../toasts';
 import { channelName, personLabel } from '../identity';
+import { sshUsername } from '../onboarding/joinText';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent, CrewController, ErrorSource } from '../state/types';
 import { confirmCopy, dialogErrorCopy } from './copy';
 import { DialogErrorNote } from './fields';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
-import { useDialogView } from './workspace';
+import { useDialogView, type DialogView } from './workspace';
 import './dialogs.css';
 
 /**
@@ -376,24 +377,78 @@ function RemoveChannelMember({
   );
 }
 
+/**
+ * Whether removing a connection ends its workspace's host controls, as far as the verified view
+ * says (CLI-1, the CLI's `host_standing`): `only-host` when the person hosts it and the workspace
+ * lists no other computer of theirs, `member` when they do not host it, `unknown` otherwise (no
+ * view of this connection, or the host with another listed computer, which is not proof that
+ * computer can still act as host).
+ */
+export function removalStanding(
+  snapshot: DialogView['snapshot'],
+  viewerIsHost: boolean,
+  ownDeviceId: string | null | undefined
+): 'only-host' | 'member' | 'unknown' {
+  if (!snapshot) return 'unknown';
+  if (!viewerIsHost) return 'member';
+  const digits = (text: string) =>
+    Array.from(text)
+      .filter((char) => /[0-9a-f]/i.test(char))
+      .slice(0, 16)
+      .join('')
+      .toUpperCase();
+  const own = ownDeviceId ? digits(ownDeviceId) : '';
+  const devices = snapshot.actor.devices ?? [];
+  const others =
+    devices.length > 1
+      ? devices.filter((device) => !own || digits(device.fingerprint) !== own)
+      : [];
+  return others.length === 0 ? 'only-host' : 'unknown';
+}
+
 function RemoveConnection({ connectionId, onClose }: { connectionId: string; onClose(): void }) {
-  const { crew, workspace } = useDialogView(connectionId);
+  const { crew, workspace, phrase, snapshot, dir } = useDialogView(connectionId);
   const key = 'connection.remove';
+  const saved = crew.connections.find((item) => item.id === connectionId) ?? null;
+  const standing = removalStanding(snapshot, dir.viewerIsHost, saved?.device_id);
+  const username = dir.me?.username ?? sshUsername(saved?.ssh_target) ?? null;
+  const remove = () =>
+    void runConfirmed(crew, key, () => crew.removeConnection(connectionId)).then(
+      (done) => done && onClose()
+    );
+  // The host's last computer: the workspace's name is typed first (CLI-1).
+  if (standing === 'only-host')
+    return (
+      <DangerousConfirmDialog
+        open
+        title={confirmCopy.removeConnection.title(workspace)}
+        description={confirmCopy.removeConnection.onlyHostDescription(workspace, username)}
+        phrase={phrase}
+        fieldLabel={confirmCopy.typeToConfirm(phrase)}
+        confirmLabel={confirmCopy.removeConnection.onlyHostConfirm}
+        cancelLabel={confirmCopy.cancel}
+        busy={crew.isPending(key)}
+        onConfirm={remove}
+        onCancel={onClose}
+      >
+        <ConfirmBody />
+      </DangerousConfirmDialog>
+    );
   return (
     <ConfirmationModal
       isOpen
       title={confirmCopy.removeConnection.title(workspace)}
-      message={confirmCopy.removeConnection.description}
+      message={
+        standing === 'member'
+          ? confirmCopy.removeConnection.memberDescription(workspace, username)
+          : confirmCopy.removeConnection.description
+      }
       confirmLabel={confirmCopy.removeConnection.confirm}
       cancelLabel={confirmCopy.cancel}
       confirmVariant="destructive"
       isSubmitting={crew.isPending(key)}
       onCancel={onClose}
-      onConfirm={() =>
-        void runConfirmed(crew, key, () => crew.removeConnection(connectionId)).then(
-          (done) => done && onClose()
-        )
-      }
+      onConfirm={remove}
     >
       <ConfirmBody />
     </ConfirmationModal>

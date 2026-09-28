@@ -4,7 +4,14 @@ import { connectionUpdateBody } from '../state/useCrewConnections';
 import type { ConfirmIntent } from '../state/types';
 import { CrewConfirmation } from './confirmations';
 import { confirmCopy } from './copy';
-import { bob, connection, makeSnapshot, renderWithCrew, requestsFor } from './dialogsTestHarness';
+import {
+  alice,
+  bob,
+  connection,
+  makeSnapshot,
+  renderWithCrew,
+  requestsFor,
+} from './dialogsTestHarness';
 
 const toasts = vi.hoisted(() => ({ toastSuccess: vi.fn() }));
 vi.mock('../../../toasts', () => toasts);
@@ -216,7 +223,17 @@ describe('CrewConfirmation', () => {
   });
 
   it('says what removing a connection costs, and never that the workspace can simply be added again', async () => {
-    const { crew } = renderConfirm({ action: 'remove-connection', connectionId: connection.id });
+    // A host with another computer listed: whether it can still act as host is not known here.
+    const snapshot = makeSnapshot({
+      actor: {
+        ...alice,
+        devices: [{ fingerprint: 'DE1C E000 0000 0000' }, { fingerprint: 'AAAA BBBB CCCC DDDD' }],
+      },
+    });
+    const { crew } = renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { snapshot }
+    );
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
@@ -231,6 +248,48 @@ describe('CrewConfirmation', () => {
     expect(description).toMatch(/If you host it and no other computer of yours still has it/);
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+  });
+
+  // F3: a removed computer is told "not in lab yet" when it joins again, because a plain
+  // invitation cannot bring a member back; the confirmation names the one that can.
+  it('tells a member which invitation brings the workspace back to this computer', async () => {
+    const { crew } = renderConfirm(
+      { action: 'remove-connection', connectionId: connection.id },
+      { snapshot: makeSnapshot({ actor: bob }) }
+    );
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('lab'),
+    });
+    expect(dialog).toHaveTextContent(
+      'To use lab on this computer again, ask the host to invite you with Add another device for @bob.'
+    );
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+  });
+
+  // CLI-1 (desktop half): the CLI refuses to remove the host's only computer unless told to give
+  // up the host controls; the desktop asks for the workspace's name first.
+  it('asks the host for the workspace’s name before removing the only computer that can host it', async () => {
+    const { crew } = renderConfirm({ action: 'remove-connection', connectionId: connection.id });
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('lab'),
+    });
+    expect(dialog).toHaveTextContent(
+      confirmCopy.removeConnection.onlyHostDescription('lab', 'alice')
+    );
+    const remove = within(dialog).getByRole('button', {
+      name: confirmCopy.removeConnection.onlyHostConfirm,
+    });
+    expect(remove).toBeDisabled();
+    fireEvent.click(remove);
+    expect(crew.removeConnection).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'lab' } });
+    await act(async () => {
+      fireEvent.click(remove);
     });
     await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
   });

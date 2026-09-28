@@ -447,6 +447,8 @@ describe('ConnectionSettingsDialog', () => {
   });
 
   it('confirms before removing the saved connection', async () => {
+    // The harness's person hosts lab from this, the only computer of theirs it lists: removing it
+    // ends the host controls, so the workspace's name is typed first (CLI-1).
     const { crew } = renderSettings();
     fireEvent.click(
       await screen.findByRole('button', { name: connectionSettingsCopy.remove('lab') })
@@ -455,8 +457,13 @@ describe('ConnectionSettingsDialog', () => {
       name: confirmCopy.removeConnection.title('lab'),
     });
     expect(crew.removeConnection).not.toHaveBeenCalled();
+    const remove = within(confirm).getByRole('button', {
+      name: confirmCopy.removeConnection.onlyHostConfirm,
+    });
+    expect(remove).toBeDisabled();
+    fireEvent.change(within(confirm).getByRole('textbox'), { target: { value: 'lab' } });
     await act(async () => {
-      fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }));
+      fireEvent.click(remove);
     });
     await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith('conn-1'));
   });
