@@ -6,6 +6,7 @@ import { AttachmentCard, SAVE_PATIENCE_MS, type CrewBlob } from './AttachmentCar
 import { AttachmentIndexProvider } from './attachmentIndex';
 import { cachedBlob, clearBlobCache } from './blobMetadataCache';
 import { filesCopy } from './copy';
+import { openFileWindow } from './fileWindows';
 import { TRANSFER_PAUSED_POLL_MS, TRANSFER_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
@@ -392,6 +393,34 @@ describe('a Save that another window is in the way of (FILES-F2, FILES-F6)', () 
     );
     expect(document.body.textContent).not.toContain('Error invoking remote method');
     expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeEnabled();
+  });
+
+  /**
+   * FILES2-N5: the note stayed after the Save sheet it named had closed, and after later saves
+   * worked, until this card was used again.
+   */
+  it('lets “Finish the open … first.” go once the window it names has closed', async () => {
+    const close = openFileWindow(); // Another card's Save sheet is open.
+    mocks.beginTransfer.mockRejectedValue(new Error('Finish the open Save or Open window first.'));
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Finish the open Save or Open window first.'
+    );
+    act(() => close());
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('keeps any other refusal when a file window closes', async () => {
+    const close = openFileWindow();
+    mocks.beginTransfer.mockRejectedValue(new Error('The daemon refused this file selection.'));
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    await screen.findByRole('alert');
+    act(() => close());
+    expect(screen.getByRole('alert')).toHaveTextContent('The daemon refused this file selection.');
   });
 
   it('offers Save again after a window that never answers, and ignores that window’s late answer', async () => {

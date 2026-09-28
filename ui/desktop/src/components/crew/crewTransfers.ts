@@ -1,5 +1,6 @@
 import type * as Api from '../../api/types.gen';
 import { crewHttp } from './crewApi';
+import { withFileWindow } from './files/fileWindows';
 import { unwrapIpcError } from '../../utils/ipcError';
 
 export type TransferDirection = Api.Direction;
@@ -55,16 +56,19 @@ export async function chooseTransferFile(
       'This desktop build does not provide the secure Crew file picker. Update the desktop app before transferring local files.'
     );
   try {
-    return await picker({
-      expectedMode: request.expected_mode,
-      purpose: request.purpose,
-      direction: request.direction,
-      connectionId: request.connection_id,
-      channelId: request.channel_id,
-      blobId: request.blob_id,
-      transferId: request.transfer_id,
-      suggestedName: request.suggestedName,
-    });
+    // Counted open until it answers, so a card told to finish it first hears when it closed.
+    return await withFileWindow(() =>
+      picker({
+        expectedMode: request.expected_mode,
+        purpose: request.purpose,
+        direction: request.direction,
+        connectionId: request.connection_id,
+        channelId: request.channel_id,
+        blobId: request.blob_id,
+        transferId: request.transfer_id,
+        suggestedName: request.suggestedName,
+      })
+    );
   } catch (error) {
     throw unwrapIpcError(error, 'The file window could not open.');
   }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { beginTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from '../crewTransfers';
+import { withFileWindow } from './fileWindows';
 import type { CrewShareDroppedFileResult } from '../../../utils/crewSharePathBridge';
 import { filesCopy } from './copy';
 import { isTransferActive, useCrewTransfers } from './useCrewTransfers';
@@ -242,13 +243,15 @@ export function useCrewUpload({
         if (!expectedMode) throw new Error(filesCopy.privacyPending);
         // The preload turns the `File` into a path itself; nothing here names one.
         const answer = readShareResult(
-          await share(file, {
-            expectedMode,
-            connectionId,
-            channelId,
-            channelName: names.channelName,
-            workspaceName: names.workspaceName,
-          })
+          await withFileWindow(() =>
+            share(file, {
+              expectedMode,
+              connectionId,
+              channelId,
+              channelName: names.channelName,
+              workspaceName: names.workspaceName,
+            })
+          )
         );
         setConfirming(false);
         if (!answer) throw new Error(filesCopy.uploadFailed);

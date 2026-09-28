@@ -19,6 +19,7 @@ import { postedLabel, useAttachmentWhich, useRegisterAttachment } from './attach
 import { cachedBlob, forgetBlob, rememberBlob } from './blobMetadataCache';
 import { filesCopy } from './copy';
 import { saveNameFor, visibleFileText } from './fileName';
+import { isFileWindowBusyNote, subscribeFileWindowsClosed } from './fileWindows';
 import { MiddleTruncatedName } from './MiddleTruncatedName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
@@ -161,6 +162,16 @@ export function AttachmentCard({
     );
     return records[records.length - 1] ?? null;
   }, [transfers, blobId, connectionId]);
+
+  // "Finish the open … first." describes a window: once no file window is open, it is not news
+  // any more (FILES2-N5).
+  const busyNote = isFileWindowBusyNote(error);
+  useEffect(() => {
+    if (!busyNote) return;
+    return subscribeFileWindowsClosed(() =>
+      setError((current) => (isFileWindowBusyNote(current) ? '' : current))
+    );
+  }, [busyNote]);
 
   const act = useCallback(
     async (operation: () => Promise<unknown>, fallback: string) => {
