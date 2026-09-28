@@ -1804,7 +1804,7 @@ describe('summarizeToolCall: Crew tool rows read as actions (AG-F10)', () => {
     expect(
       summarizeToolCall(
         { name: 'crew__request', arguments: { method: 'blob.read', params: { blob_id: 'b' } } },
-        result({ blob: { name: 'invoice‮fdp.sh' } })
+        result({ blob: { name: 'invoice\u202Efdp.sh' } })
       )
     ).toBe('Reading invoicefdp.sh');
     expect(
