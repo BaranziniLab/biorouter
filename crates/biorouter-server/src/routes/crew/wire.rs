@@ -101,6 +101,7 @@ pub enum CrewErrorCode {
     CrewRequestRefused,
     CrewCredentialStoreUnavailable,
     CrewCredentialStoreRefused,
+    CrewRegistryUnreadable,
     // A connection and its server.
     CrewConnectionNotFound,
     CrewConnectionRequired,
@@ -185,8 +186,9 @@ pub struct CrewError {
     /// One plain sentence for a person.
     pub error: String,
     /// Diagnostic words for "Copy details", never shown by default: OpenSSH's own bounded
-    /// words for an SSH failure, a request reader's diagnostic for `crew_request_invalid`, or
-    /// why the workspace has not confirmed a revocation.
+    /// words for an SSH failure, a request reader's diagnostic for `crew_request_invalid`, what
+    /// could not be read in Crew's saved settings for `crew_registry_unreadable`, or why the
+    /// workspace has not confirmed a revocation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// The SSH hop an SSH failure concerns, a jump host's included.

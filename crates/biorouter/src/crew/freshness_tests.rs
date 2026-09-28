@@ -309,16 +309,27 @@ async fn an_unreadable_registry_restricts_only_the_chats_it_names() {
         .await
         .unwrap();
 
-    // Nothing is saved over what could not be read.
+    // Nothing is saved over what could not be read, and the refusal is one sentence, typed,
+    // with the reader's own words kept for support in `detail` (T3-BE-6).
     let refused = crew
         .update_registry(|r| {
             r.completed_preparations.insert("x".into(), "y".into());
             Ok(())
         })
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("can't be read"), "{refused}");
+        .unwrap_err();
+    assert_eq!(refused.to_string(), freshness::UNREADABLE_SAVE);
+    let typed = CrewRefusal::find(&refused).expect("typed");
+    assert_eq!(typed.code(), "crew_registry_unreadable");
+    assert_eq!(typed.http_status(), 409);
+    let [("detail", detail)] = typed.fields() else {
+        panic!("only a detail: {:?}", typed.fields());
+    };
+    assert!(
+        detail.as_str().unwrap().contains("unknown variant"),
+        "the reader's words, for support: {detail}"
+    );
+    assert!(!refused.to_string().contains("unknown variant"));
     assert_eq!(fs::read(profile.registry_path()).unwrap(), bytes);
 
     // Repaired (the value this build knows), it is read again at the next question.
@@ -370,9 +381,12 @@ async fn a_registry_that_names_no_readable_chat_restricts_every_chat() {
             "correct horse battery staple".into(),
         ))
         .await
-        .unwrap_err()
-        .to_string();
-    assert!(vault.contains("can't be read"), "{vault}");
+        .unwrap_err();
+    assert_eq!(vault.to_string(), freshness::UNREADABLE_VAULT);
+    assert_eq!(
+        CrewRefusal::find(&vault).map(CrewRefusal::code),
+        Some("crew_registry_unreadable")
+    );
 
     // Repaired, nothing is restricted that holds no grant.
     fs::write(

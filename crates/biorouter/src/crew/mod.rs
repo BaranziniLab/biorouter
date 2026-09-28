@@ -1716,10 +1716,14 @@ impl CrewManager {
         // A registry that cannot be read is not an empty one: the identities it names may hold
         // keyring credentials a new vault would shadow (DAEMON-6).
         self.refresh_registry().await;
-        ensure!(
-            self.unreadable_sessions().is_none(),
-            "Crew's saved settings on this computer (connections.json) can't be read, so an encrypted vault can't be set up yet. Update Biorouter to the version that saved them, or restore the file from a backup."
-        );
+        if self.unreadable_sessions().is_some() {
+            return Err(CrewRefusal::new(
+                refusal::REGISTRY_UNREADABLE,
+                freshness::UNREADABLE_VAULT,
+            )
+            .status(409)
+            .into());
+        }
         ensure!(!file_credentials_enabled(), "Encrypted vault initialization requires a production credential profile, not the development plaintext backend");
         let registry = self.registry.lock().await;
         ensure!(registry.holds_no_identity(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");

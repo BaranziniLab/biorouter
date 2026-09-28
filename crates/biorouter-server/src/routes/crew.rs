@@ -440,6 +440,7 @@ pub async fn prepare_device(headers: HeaderMap) -> CrewResult<PreparedDevice> {
         (status = 200, description = "The saved connection", body = CrewConnectionView),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
     ),
@@ -466,6 +467,7 @@ pub async fn save_connection(
         (status = 200, description = "The connection as saved. A save that would change nothing changes nothing, and answers the connection as it stands; a save that keeps the route of a connected connection reconnects it", body = CrewConnectionView),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
     ),
@@ -491,7 +493,8 @@ pub async fn update_connection(
     responses(
         (status = 200, description = "Removed, with its keys. A workspace that is online is asked to end the connection's grants", body = CrewConnectionRemoved),
         (status = 400, description = "`crew_request_refused`: no saved connection has that ID, or it could not be removed", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -2397,7 +2400,7 @@ pub struct GrantSessionRequest {
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
-        (status = 409, description = "`crew_model_fixed`: the chat already has Crew access bound to another model; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
+        (status = 409, description = "`crew_model_fixed`: the chat already has Crew access bound to another model; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent; `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"

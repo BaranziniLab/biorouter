@@ -22,7 +22,7 @@
 //! chat it can read restricts every chat, because none can be told apart. Nothing is written
 //! while the file cannot be read, so it is never overwritten with less than it holds.
 
-use super::{carry_process_state, registry_digest, CrewManager, Registry};
+use super::{carry_process_state, registry_digest, CrewManager, CrewRefusal, Registry};
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::SystemTime;
@@ -31,6 +31,18 @@ use std::time::SystemTime;
 pub(super) const REGISTRY_UNREADABLE: &str = "Crew's saved settings on this computer \
 (connections.json) can't be read, so this chat's Crew access can't be confirmed. Update \
 Biorouter to the version that saved them, or restore the file from a backup.";
+
+/// What a save is refused with while the saved registry cannot be read (`crew_registry_unreadable`,
+/// T3-BE-6). The reader's words go in the refusal's `detail`, never here.
+pub(super) const UNREADABLE_SAVE: &str = "Crew's saved settings on this computer \
+(connections.json) can't be read, so nothing was changed. Update Biorouter to the version \
+that saved them, or restore the file from a backup.";
+
+/// What setting up an encrypted vault is refused with while the saved registry cannot be read:
+/// the identities it may name can hold keyring credentials a new vault would shadow (DAEMON-6).
+pub(super) const UNREADABLE_VAULT: &str = "Crew's saved settings on this computer \
+(connections.json) can't be read, so an encrypted vault can't be set up yet. Update Biorouter \
+to the version that saved them, or restore the file from a backup.";
 
 /// When the saved registry's file last changed, as far as the file system says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,13 +290,12 @@ impl CrewManager {
             .map(|unreadable| unreadable.sessions.clone())
     }
 
-    /// Why saving is refused while the saved registry cannot be read, for the person.
+    /// Why saving is refused while the saved registry cannot be read: one sentence for the
+    /// person, typed `crew_registry_unreadable` (`409`), and the reader's own words in `detail`
+    /// for support (T3-BE-6). They used to sit in the middle of the sentence, so a person read
+    /// "unknown variant `…`, expected one of …" as part of what to do.
     pub(super) fn unreadable_save_error(error: &serde_json::Error) -> anyhow::Error {
-        anyhow::anyhow!(
-            "Crew's saved settings on this computer (connections.json) can't be read, so \
-             nothing was changed: {error}. Update Biorouter to the version that saved them, \
-             or restore the file from a backup."
-        )
+        CrewRefusal::registry_unreadable(UNREADABLE_SAVE, error).into()
     }
 
     /// Every chat saved in the store grants name, for a registry that may restrict any chat.

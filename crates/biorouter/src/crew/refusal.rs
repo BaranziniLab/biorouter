@@ -48,6 +48,11 @@ pub const NOT_SENT: &str = "crew_not_sent";
 /// sentence, answered as `400 crew_request_refused`, so no client could word it for itself.
 pub const NOT_CONNECTED: &str = "crew_not_connected";
 
+/// `crew_registry_unreadable`: Crew's saved settings on this computer (`connections.json`) can't
+/// be read by this build, so nothing was saved over them (DAEMON-6, T3-BE-6). The reader's own
+/// words go in `detail`, never in the sentence.
+pub const REGISTRY_UNREADABLE: &str = "crew_registry_unreadable";
+
 /// [`NOT_CONNECTED`]'s sentence. Kept byte for byte: the desktop's transport matchers, a chat's
 /// turn error and a transfer's recovery advice all still read it.
 pub const NOT_CONNECTED_TEXT: &str =
@@ -142,6 +147,14 @@ impl CrewRefusal {
             .with("workspace", serde_json::json!(workspace))
     }
 
+    /// [`REGISTRY_UNREADABLE`], answered `409`: `sentence` for the person, and the reader's
+    /// `error` as `detail` for "Copy details", control characters removed and bounded.
+    pub(super) fn registry_unreadable(sentence: &str, error: &serde_json::Error) -> Self {
+        Self::new(REGISTRY_UNREADABLE, sentence)
+            .status(409)
+            .with("detail", serde_json::json!(bounded_detail(&error.to_string())))
+    }
+
     /// [`MODEL_FIXED`], answered `409`.
     pub(super) fn model_fixed() -> Self {
         Self::new(MODEL_FIXED, MODEL_FIXED_TEXT).status(409)
@@ -151,6 +164,23 @@ impl CrewRefusal {
     pub(super) fn public_model(sentence: impl Into<String>) -> Self {
         Self::new(PUBLIC_MODEL_REFUSED, sentence)
     }
+}
+
+/// At most this many bytes of a reader's diagnostic go in a refusal's `detail`.
+const DETAIL_LIMIT: usize = 512;
+
+/// `text` for a refusal's `detail`: without control characters, and cut at a character boundary
+/// to at most [`DETAIL_LIMIT`] bytes, with an ellipsis when it was cut.
+fn bounded_detail(text: &str) -> String {
+    let clean: String = text.chars().filter(|c| !c.is_control()).collect();
+    if clean.len() <= DETAIL_LIMIT {
+        return clean;
+    }
+    let mut end = DETAIL_LIMIT;
+    while !clean.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &clean[..end])
 }
 
 /// `Private` or `Public`, as the manual writes a privacy mode.
@@ -193,6 +223,31 @@ mod tests {
             ]
         );
         assert!(CrewRefusal::find(&anyhow::anyhow!("plain")).is_none());
+    }
+
+    /// T3-BE-6: the reader's words go in `detail`, bounded and without control characters,
+    /// never into the sentence a person reads.
+    #[test]
+    fn an_unreadable_registry_keeps_the_readers_words_out_of_its_sentence() {
+        let error = serde_json::from_str::<ClusterMode>("\"bogus_future_variant\"").unwrap_err();
+        let refusal = CrewRefusal::registry_unreadable("Nothing was changed.", &error);
+        assert_eq!(refusal.code(), REGISTRY_UNREADABLE);
+        assert_eq!(refusal.http_status(), 409);
+        assert_eq!(refusal.to_string(), "Nothing was changed.");
+        let [("detail", detail)] = refusal.fields() else {
+            panic!("only a detail: {:?}", refusal.fields());
+        };
+        assert!(
+            detail.as_str().unwrap().contains("bogus_future_variant"),
+            "{detail}"
+        );
+
+        let long = format!("a\u{1b}[31m\n{}", "é".repeat(DETAIL_LIMIT));
+        let bounded = bounded_detail(&long);
+        assert!(!bounded.chars().any(char::is_control), "{bounded:?}");
+        assert!(bounded.len() <= DETAIL_LIMIT + '…'.len_utf8());
+        assert!(bounded.ends_with('…'));
+        assert_eq!(bounded_detail("short"), "short");
     }
 
     #[test]
