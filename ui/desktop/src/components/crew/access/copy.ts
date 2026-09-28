@@ -109,6 +109,21 @@ export const accessCopy = {
    * the person to reconnect: it says what happens next.
    */
   unconfirmed: 'Stopped on this device. Crew confirms it with the workspace when it reconnects.',
+  /** The same, naming the workspace, where the note is the chat's one word on it (AG-F11). */
+  unconfirmedIn: (workspace: string) =>
+    `Stopped on this device. ${workspace} confirms it when it reconnects.`,
+  /**
+   * A Retry that came back "stopped on this device" again while the workspace is still out of
+   * reach (AG-F12): the same sentence as before read as if nothing had happened. `workspace` is
+   * null when this computer cannot name it.
+   */
+  stillUnreachable: (workspace: string | null) =>
+    workspace
+      ? `Still can’t reach ${workspace} · checked just now.`
+      : 'Still can’t reach the workspace · checked just now.',
+  /** After {@link accessCopy.stillUnreachable}: what confirms the stop sooner than waiting. */
+  connectToConfirm: 'Connect to confirm it now.',
+  connect: 'Connect',
   /** The same, once the connection is back and the daemon is asking the workspace (F3). */
   confirming: 'Stopped on this device. Confirming with the workspace…',
   /** The workspace confirmed a revoke this view saw waiting (F3). */

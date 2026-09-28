@@ -22,6 +22,7 @@ import { paneCopy } from '../pane/copy';
 import { DetailsPane } from '../pane/DetailsPane';
 import { useCrew } from '../state/CrewControllerContext';
 import { ChatAccessPane } from './ChatAccessPane';
+import { RevokeResultNote } from './RevokeControls';
 import {
   ChatConnectNote,
   chatAccessRoute,
@@ -1279,5 +1280,42 @@ describe('chat access: the chat’s model and workspace, before Allow', () => {
     const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
     fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.allow }));
     expect(await within(paneNode).findByRole('alert')).toHaveTextContent(sentence);
+  });
+});
+
+/** AG-F12: a Retry answered "stopped on this device" again changed nothing on screen. */
+describe('RevokeResultNote after a Retry that still cannot reach the workspace', () => {
+  it('says it checked just now, is announced again, and offers Connect', () => {
+    const outcome = { kind: 'unconfirmed' as const, message: accessCopy.unconfirmed };
+    const connect = vi.fn();
+    const props = {
+      chat: 'Plot review',
+      onRetry: vi.fn(),
+      confirmation: 'offline' as const,
+      connectAction: (
+        <button type="button" onClick={connect}>
+          {accessCopy.connect}
+        </button>
+      ),
+    };
+    const view = render(<RevokeResultNote outcome={outcome} {...props} />);
+    expect(screen.getByRole('alert')).toHaveTextContent(accessCopy.unconfirmed);
+    expect(screen.queryByRole('button', { name: accessCopy.connect })).toBeNull();
+    const first = screen.getByRole('alert');
+
+    view.rerender(<RevokeResultNote outcome={outcome} {...props} retrying />);
+    view.rerender(<RevokeResultNote outcome={{ ...outcome }} {...props} />);
+    const again = screen.getByRole('alert');
+    expect(again).toHaveTextContent(
+      'Still can’t reach the workspace · checked just now. Connect to confirm it now.'
+    );
+    // A new alert, so it is announced again, not the old one with new words.
+    expect(again).not.toBe(first);
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.connect }));
+    expect(connect).toHaveBeenCalled();
+
+    // Once the connection is back, the daemon confirms by itself: no "still can't reach".
+    view.rerender(<RevokeResultNote outcome={outcome} {...props} confirmation="confirming" />);
+    expect(screen.getByRole('alert')).toHaveTextContent(accessCopy.confirming);
   });
 });

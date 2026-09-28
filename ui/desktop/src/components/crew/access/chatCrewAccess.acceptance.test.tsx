@@ -187,7 +187,8 @@ describe('a revoke waiting for the workspace (F3)', () => {
     daemon.connections = [{ ...connection, status: 'disconnected' }];
     daemon.grants = [grantRow({ session_id: 'chat-1', expired: true, revocation: 'unconfirmed' })];
     renderChat();
-    expect(await screen.findByText(accessCopy.unconfirmed)).toBeInTheDocument();
+    // The workspace named, as this chat's one note on it (AG-F11).
+    expect(await screen.findByText(accessCopy.unconfirmedIn('Fixture'))).toBeInTheDocument();
     expect(screen.queryByText(accessCopy.confirming)).toBeNull();
     expect(screen.queryByText(/Reconnect to/)).toBeNull();
     expect(screen.getByRole('button', { name: accessCopy.retry })).toBeInTheDocument();

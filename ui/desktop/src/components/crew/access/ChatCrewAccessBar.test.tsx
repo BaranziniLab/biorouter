@@ -705,12 +705,29 @@ describe('a chat whose Crew connection is offline', () => {
       ).toBe(true)
     );
     // Stopped here at once: the chat is held, and it says the workspace confirms by itself.
-    expect(await screen.findByText(accessCopy.unconfirmed)).toBeInTheDocument();
-    expect(await screen.findByText(accessCopy.chatRevoked('#general'))).toBeInTheDocument();
-    expect(screen.getByTestId('blocked')).toHaveTextContent('true');
+    expect(await screen.findByText(accessCopy.unconfirmedIn('Fixture'))).toBeInTheDocument();
+    expect(accessCopy.unconfirmedIn('Fixture')).toBe(
+      'Stopped on this device. Fixture confirms it when it reconnects.'
+    );
+    // AG-F11: one state, one note. "Access was removed, so this chat can't continue" beneath it
+    // said the same thing as settled.
+    await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    expect(screen.queryByText(accessCopy.chatRevoked('#general'))).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    // A new chat always works; granting access again waits for the connection it needs.
+    expect(screen.getByRole('button', { name: accessCopy.chatNewChat })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: accessCopy.chatGrantAgain })).toBeNull();
     expect(screen.queryByText(/reconnect and retry/i)).toBeNull();
     // Revoking is not connecting: nothing navigated to Crew.
     expect(mocks.navigate).not.toHaveBeenCalled();
+
+    // AG-F12: Retry while still offline got the same 503 and changed nothing on screen.
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.retry }));
+    const still = `${accessCopy.stillUnreachable('Fixture')} ${accessCopy.connectToConfirm}`;
+    expect(await screen.findByText(still)).toBeInTheDocument();
+    expect(still).toBe('Still can’t reach Fixture · checked just now. Connect to confirm it now.');
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.connect }));
+    expect(mocks.navigate).toHaveBeenCalled();
   });
 
   it('reads as connected once the connection is back', async () => {

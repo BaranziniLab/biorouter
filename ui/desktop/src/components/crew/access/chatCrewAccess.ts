@@ -58,6 +58,11 @@ export interface ChatCrewAccess {
    */
   destination: string;
   /**
+   * The grant's workspace as this computer can name it (the name recorded with the grant, else the
+   * saved connection's), or `null`. Optional for callers that build this by hand.
+   */
+  workspace?: string | null;
+  /**
    * Why an `offline` chat's connection is down: `network` when the daemon's last answer (or the
    * computer itself) says the network failed — the daemon dials such a drop again by itself once
    * the network is back (Q4-01) — else `other`. `null` unless `state` is `offline`.
@@ -620,6 +625,11 @@ export function useChatCrewAccess(
     () => chatDestination(grant, current?.connections ?? []),
     [grant, current]
   );
+  const workspace = grant
+    ? sanitizeDisplayText(grant.labels?.workspace) ||
+      current?.connections.find((item) => item.id === grant.connection_id)?.name ||
+      null
+    : null;
   const online = useOnline();
   const offlineCause =
     state === 'offline' && grant
@@ -634,6 +644,7 @@ export function useChatCrewAccess(
     state,
     grant,
     destination,
+    workspace,
     offlineCause,
     expiredBecause: state === 'expired' ? expiredBecause : null,
     unconfirmed,
