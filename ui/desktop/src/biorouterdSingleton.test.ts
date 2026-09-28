@@ -189,6 +189,21 @@ describe('createDaemonReattachController (R-1)', () => {
     expect(reattach.state()).toBe('attached');
   });
 
+  it('is attached again when the instance answers while the prompt is open, whatever the answer', async () => {
+    const answer = deferred<DaemonRestartChoice>();
+    const { deps, reattach } = controller({ ask: vi.fn(() => answer.promise) });
+    const asked = reattach.lost();
+    reattach.answered();
+    expect(reattach.state()).toBe('attached');
+    answer.resolve('later');
+    await expect(asked).resolves.toBe(true);
+    expect(reattach.state()).toBe('attached');
+    expect(deps.reconnect).not.toHaveBeenCalled();
+    // A later loss asks again: "Not Now" was about an instance that came back.
+    reattach.lost();
+    expect(deps.ask).toHaveBeenCalledTimes(2);
+  });
+
   it('is attached again, with nothing asked, when the lost instance answers by itself', async () => {
     const { deps, reattach } = controller({ ask: vi.fn(async () => 'later' as const) });
     await reattach.lost();

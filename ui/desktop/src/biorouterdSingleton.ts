@@ -168,6 +168,7 @@ export function createDaemonReattachController(deps: DaemonReattachDeps): Daemon
           deps.restart();
           return false;
         }
+        if (state === 'attached') return true;
         declined = true;
         return false;
       })().finally(() => {
@@ -176,7 +177,9 @@ export function createDaemonReattachController(deps: DaemonReattachDeps): Daemon
       return asking;
     },
     answered: () => {
-      if (state === 'lost' && !asking) {
+      // Also while the prompt is open: whatever the person then answers, the app is attached,
+      // and "Not Now" must not leave every window saying the service restarted.
+      if (state === 'lost') {
         declined = false;
         set('attached');
       }

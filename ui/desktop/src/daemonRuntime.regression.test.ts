@@ -482,8 +482,11 @@ describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
       APPROVAL_B
     );
     cleanups.push(() => b.stop());
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const refused = await get(proxy, { 'X-User-Action': 'desktop-proof' });
+    // Concurrent requests that all fail the identity check report the replacement once.
+    const refusals = await Promise.all(
+      [0, 1, 2, 3].map(() => get(proxy, { 'X-User-Action': 'desktop-proof' }))
+    );
+    for (const refused of refusals) {
       expect(refused.response.status).toBe(502);
       expect(JSON.parse(refused.body).code).toBe('daemon_restarted');
     }

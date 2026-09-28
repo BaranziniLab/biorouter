@@ -22,6 +22,22 @@ function attentionBridge(): AttentionBridge | null {
     : null;
 }
 
+/** The longest one attention read may take; a daemon that hangs must not freeze the badge. */
+export const ATTENTION_READ_TIMEOUT_MS = 15_000;
+
+/** `signal`, also aborted after {@link ATTENTION_READ_TIMEOUT_MS}. */
+function bounded(signal: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ATTENTION_READ_TIMEOUT_MS);
+  const abort = () => {
+    clearTimeout(timer);
+    controller.abort();
+  };
+  if (signal.aborted) abort();
+  else signal.addEventListener('abort', abort, { once: true });
+  return controller.signal;
+}
+
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     if (signal.aborted) return resolve();
@@ -73,18 +89,18 @@ export function useCrewAttention({ onCrewRoute, onOpenChannel }: CrewAttentionOp
             '/connections',
             'GET',
             undefined,
-            signal
+            bounded(signal)
           )
         ).connections ?? [],
       readSnapshot: (connectionId, signal) =>
-        crewRequest(connectionId, 'workspace.snapshot', {}, false, signal),
+        crewRequest(connectionId, 'workspace.snapshot', {}, false, bounded(signal)),
       readLatest: (connectionId, channelId, limit, signal) =>
         crewRequest<CrewMessageResult>(
           connectionId,
           'messages.history',
           { channel_id: channelId, limit, latest: true },
           false,
-          signal
+          bounded(signal)
         ),
       notify: (notification) => bridge.notifyCrewAttention(notification),
       onTotal: (count) => {

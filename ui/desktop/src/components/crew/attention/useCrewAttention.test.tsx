@@ -1,7 +1,7 @@
 import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ATTENTION_POLL_MS } from './crewAttention';
-import { useCrewAttention } from './useCrewAttention';
+import { ATTENTION_READ_TIMEOUT_MS, useCrewAttention } from './useCrewAttention';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -138,6 +138,29 @@ describe('useCrewAttention (M2)', () => {
     open({ connectionId: 'conn-1', channelId: 'c-general' });
     expect(mocks.rememberLastChannel).toHaveBeenCalledWith('conn-1', 'c-general');
     expect(onOpenChannel).toHaveBeenCalledWith('conn-1', 'c-general');
+  });
+
+  it('gives every read a deadline, so a hung daemon cannot freeze the count', async () => {
+    installBridge();
+    render(<Probe onCrewRoute={false} onOpenChannel={vi.fn()} />);
+    await settle();
+    const [, , , , signal] = mocks.crewRequest.mock.calls[0] as [
+      string,
+      string,
+      object,
+      boolean,
+      AbortSignal,
+    ];
+    const [, , , listSignal] = mocks.crewHttp.mock.calls[0] as [
+      string,
+      string,
+      undefined,
+      AbortSignal,
+    ];
+    expect(signal.aborted).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(ATTENTION_READ_TIMEOUT_MS));
+    expect(signal.aborted).toBe(true);
+    expect(listSignal.aborted).toBe(true);
   });
 
   it('does nothing on a browser surface', async () => {

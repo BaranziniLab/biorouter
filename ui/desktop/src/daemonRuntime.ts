@@ -430,7 +430,13 @@ export async function createDaemonProxy(
     } catch (error) {
       const reason = daemonLossOf(error);
       // Reported once per change: every later request fails the same way without a new report.
-      if (reason && current === target && !closed && !(reason === 'gone' && current.gone)) {
+      if (
+        reason &&
+        current === target &&
+        !closed &&
+        !current.replaced &&
+        !(reason === 'gone' && current.gone)
+      ) {
         if (reason === 'replaced') current.replaced = true;
         else current.gone = true;
         emit({ kind: 'lost', reason, instanceId: current.runtime.instance_id });
