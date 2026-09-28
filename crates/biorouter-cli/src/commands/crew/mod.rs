@@ -1713,10 +1713,10 @@ fn invitation_request(pasted: &str, args: &JoinInvitationArgs) -> Result<Value> 
     Ok(body)
 }
 
-/// A local file path as the daemon needs it, absolute (CLI-19): a leading `~/` is the home
-/// folder, since a shell leaves `--identity-file=~/.ssh/key` as it is, and a relative path is
-/// taken from the current folder, as the files commands take theirs. An empty value is left
-/// for the daemon to judge.
+/// A local file path as the daemon needs it, absolute (CLI-19): a leading `~/` (or `~\` on
+/// Windows) is the home folder, since a shell leaves `--identity-file=~/.ssh/key` as it is,
+/// and a relative path is taken from the current folder, as the files commands take theirs.
+/// An empty value is left for the daemon to judge.
 fn absolute_local_path(
     text: &str,
     home: Option<std::path::PathBuf>,
@@ -1725,11 +1725,18 @@ fn absolute_local_path(
     if text.is_empty() {
         return Ok(String::new());
     }
-    let path = if text == "~" || text.starts_with("~/") {
+    // What follows `~` and a separator, or "" for a bare `~`. `~bob/key` is not in it.
+    let under_home = match text.strip_prefix('~') {
+        Some("") => Some(""),
+        Some(rest) => rest.strip_prefix(std::path::is_separator),
+        None => None,
+    };
+    let path = if let Some(rest) = under_home {
         let home = home.context("Biorouter couldn't find your home folder for the ~ in --identity-file; give the full path")?;
-        match text.strip_prefix("~/") {
-            Some(rest) => home.join(rest),
-            None => home,
+        if rest.is_empty() {
+            home
+        } else {
+            home.join(rest)
         }
     } else if Path::new(text).is_absolute() {
         return Ok(text.to_owned());
@@ -4654,28 +4661,56 @@ mod tests {
     }
 
     /// CLI-19: `--identity-file` is sent absolute, whatever the shell left of it.
+    ///
+    /// Every expected path is built with `Path::join` and compared as a `Path` (component by
+    /// component), and the folders are real absolute ones, so the test reads the same on
+    /// Windows, where `join` writes `\` and `/etc/key` is not absolute.
     #[test]
     fn an_identity_file_is_made_absolute_before_it_is_sent() {
-        let home = Some(std::path::PathBuf::from("/home/bob"));
-        let cwd = || Ok(std::path::PathBuf::from("/work"));
+        let base = std::env::temp_dir();
+        let home_dir = base.join("home").join("bob");
+        let work = base.join("work");
+        let home = Some(home_dir.clone());
+        let cwd = || Ok(work.clone());
+        let made = |text: &str, home: Option<std::path::PathBuf>| {
+            let made = absolute_local_path(text, home, cwd).expect(text);
+            assert!(Path::new(&made).is_absolute(), "{text} -> {made}");
+            std::path::PathBuf::from(made)
+        };
+
         assert_eq!(
-            absolute_local_path("~/.ssh/lab_ed25519", home.clone(), cwd).unwrap(),
-            "/home/bob/.ssh/lab_ed25519"
+            made("~/.ssh/lab_ed25519", home.clone()),
+            home_dir.join(".ssh").join("lab_ed25519")
+        );
+        assert_eq!(made("~", home.clone()), home_dir);
+        // The platform's own separator after `~` is the home folder too: `~\key` on Windows.
+        assert_eq!(
+            made(&format!("~{}key", std::path::MAIN_SEPARATOR), home.clone()),
+            home_dir.join("key")
         );
         assert_eq!(
-            absolute_local_path("./keys/lab", home.clone(), cwd).unwrap(),
-            "/work/./keys/lab"
+            made("./keys/lab", home.clone()),
+            work.join("keys").join("lab")
         );
         assert_eq!(
-            absolute_local_path("/etc/key", home.clone(), cwd).unwrap(),
-            "/etc/key"
+            made("keys/lab", home.clone()),
+            work.join("keys").join("lab")
         );
-        assert!(absolute_local_path("~/key", None, cwd).is_err());
         // `~bob/key` is another user's home, which only a shell can read; it stays relative.
         assert_eq!(
-            absolute_local_path("~bob/key", home, cwd).unwrap(),
-            "/work/~bob/key"
+            made("~bob/key", home.clone()),
+            work.join("~bob").join("key")
         );
+        assert!(absolute_local_path("~/key", None, cwd).is_err());
+
+        // An absolute path is sent exactly as it was given.
+        let absolute = base.join("keys").join("lab_ed25519");
+        let absolute = absolute.to_str().expect("a Unicode temp folder");
+        assert_eq!(
+            absolute_local_path(absolute, home.clone(), || bail!("not read")).unwrap(),
+            absolute
+        );
+        assert_eq!(absolute_local_path("", home, cwd).unwrap(), "");
 
         let mut args = join_args(Path::new("-"));
         args.identity_file = Some("keys/lab".into());
@@ -4684,7 +4719,10 @@ mod tests {
             .as_str()
             .expect("identity file");
         assert!(Path::new(sent).is_absolute(), "{sent}");
-        assert!(sent.ends_with("keys/lab"), "{sent}");
+        assert!(
+            Path::new(sent).ends_with(Path::new("keys").join("lab")),
+            "{sent}"
+        );
     }
 
     #[tokio::test]
@@ -5256,41 +5294,113 @@ mod tests {
         assert!(!shown.contains("--request-id"), "{shown}");
     }
 
-    /// CLI-18: a Ctrl-C pressed while join re-reads its status (which can wait on a slow SSH
-    /// connect) stops the wait; it used to be swallowed until the next sleep's new listener.
+    /// `(status checks, claims)` join sent: `GET …/join` and `POST …/join`.
+    fn join_requests(fake: &FakeDaemon) -> (usize, usize) {
+        let sent = fake.sent();
+        let count = |method: &str| {
+            sent.iter()
+                .filter(|sent| sent.method == method && sent.path.ends_with("/join"))
+                .count()
+        };
+        (count("GET"), count("POST"))
+    }
+
+    /// Runs `join_until` with `interrupt` standing in for Ctrl-C, and fails rather than hangs
+    /// when the press is not heard.
+    async fn join_interrupted(
+        api: &Api,
+        interrupt: impl std::future::Future<Output = std::io::Result<()>>,
+    ) -> Reply {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            join_until(api, JoinArgs { no_wait: false }, interrupt),
+        )
+        .await
+        .expect("the press stops the wait")
+        .expect("stopping is not an error")
+    }
+
+    /// CLI-18. The fake daemon answers within one poll, so a request can never be pending when
+    /// the press lands; each of these tests reaches one `select!` in `join_until` instead, and
+    /// fails if that select stops listening for the press.
+    ///
+    /// The status check: a press already made when join reaches it wins the biased select, so
+    /// `GET …/join` (which can wait on a slow SSH connect) is never sent.
     #[tokio::test]
-    async fn a_ctrl_c_during_the_status_check_stops_join() {
+    async fn a_ctrl_c_already_pressed_stops_join_before_the_status_check() {
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match (method, path.ends_with("/join")) {
+                ("GET", true) => Ok(json!({"status": "approved", "code": "7QK2-M9XA-3JTP-WZ4D",
+                                           "workspace_name": "lab", "add_device": false})),
+                ("POST", true) => Ok(
+                    json!({"joined": true, "status": "joined", "workspace_name": "lab", "add_device": false}),
+                ),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::StreamJson, handler);
+        let reply = join_interrupted(&api, async { Ok(()) }).await;
+        assert!(matches!(reply, Reply::Streamed));
+        assert_eq!(join_requests(&fake), (0, 0), "nothing sent after the press");
+    }
+
+    /// The claim: a press made while the status was read (the fake answers "approved" and
+    /// presses in the same call) is heard before the claim, so `POST …/join` is never sent.
+    #[tokio::test]
+    async fn a_ctrl_c_during_the_status_check_stops_join_before_it_claims() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let pressed = Arc::clone(&notify);
+        let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match (method, path.ends_with("/join")) {
+                ("GET", true) => {
+                    pressed.notify_one();
+                    Ok(json!({"status": "approved", "code": "7QK2-M9XA-3JTP-WZ4D",
+                              "workspace_name": "lab", "add_device": false}))
+                }
+                ("POST", true) => Ok(
+                    json!({"joined": true, "status": "joined", "workspace_name": "lab", "add_device": false}),
+                ),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, fake) = api_with(OutputFormat::StreamJson, handler);
+        let interrupt = async move {
+            notify.notified().await;
+            Ok(())
+        };
+        let reply = join_interrupted(&api, interrupt).await;
+        assert!(matches!(reply, Reply::Streamed));
+        assert_eq!(join_requests(&fake), (1, 0), "no claim after the press");
+    }
+
+    /// The wait: a press made while the status was read is kept by the one listener and ends
+    /// the sleep that follows. The poll is an hour, so only the sleep's own select can hear it
+    /// in time; with a fresh listener per sleep, as before CLI-18, the press was lost.
+    #[tokio::test]
+    async fn a_ctrl_c_during_the_status_check_ends_the_wait_that_follows() {
         let notify = Arc::new(tokio::sync::Notify::new());
         let pressed = Arc::clone(&notify);
         let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
             if method == "GET" && path.ends_with("/join") {
-                // The press lands while this request is in flight.
-                pressed.notify_waiters();
+                pressed.notify_one();
                 return Ok(json!({"status": "invited", "code": "7QK2-M9XA-3JTP-WZ4D",
                                  "workspace_name": "lab"}));
             }
             standard(method, path, body)
         };
-        let (api, fake) = api_with(OutputFormat::StreamJson, handler);
-        let notified = notify.notified();
+        let (mut api, fake) = api_with(OutputFormat::StreamJson, handler);
+        api.poll = Duration::from_secs(60 * 60);
         let interrupt = async move {
-            notified.await;
+            notify.notified().await;
             Ok(())
         };
-        let reply = tokio::time::timeout(
-            Duration::from_secs(5),
-            join_until(&api, JoinArgs { no_wait: false }, interrupt),
-        )
-        .await
-        .expect("the press stops the wait")
-        .expect("stopping is not an error");
+        let reply = join_interrupted(&api, interrupt).await;
         assert!(matches!(reply, Reply::Streamed));
-        let checks = fake
-            .sent()
-            .iter()
-            .filter(|sent| sent.method == "GET" && sent.path.ends_with("/join"))
-            .count();
-        assert_eq!(checks, 1, "no status check after the press");
+        assert_eq!(
+            join_requests(&fake),
+            (1, 0),
+            "no status check after the press"
+        );
     }
 
     /// A broker that predates direct add says so, and points at the invitation that works.
