@@ -603,6 +603,23 @@ pub(crate) fn open_launch_link(
     }
 }
 
+/// Open the launch page `page` in the default browser. Only a launch page is
+/// ever handed to this: see [`write_launch_page`] for why the link itself never
+/// reaches an opener.
+///
+/// A browser, and not whatever opens `.html` files, which on a developer's
+/// machine is often an editor: `webbrowser` asks the platform for the handler of
+/// `https:` and opens the page in it. The page goes over as its `file:` address.
+/// On macOS that is a LaunchServices call, which starts no process whose
+/// arguments could be read; elsewhere it is the browser's argument, which names
+/// the page and not the link.
+pub(crate) fn open_page_in_browser(page: &Path) -> std::io::Result<()> {
+    let page_url = url::Url::from_file_path(page).map_err(|()| {
+        std::io::Error::other(format!("{} is not an absolute path", page.display()))
+    })?;
+    webbrowser::open(page_url.as_str())
+}
+
 /// Whether a daemon this command starts is tied to this process's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Supervision {
@@ -782,7 +799,7 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
     // page (a snap-packaged browser cannot read hidden folders such as the state
     // dir) shows an error, and `open` still reports success.
     let once = format!("it works once, within {LAUNCH_LINK_LIFETIME}");
-    match open_launch_link(&launch, &launch_pages_dir(), |page| open::that(page)) {
+    match open_launch_link(&launch, &launch_pages_dir(), open_page_in_browser) {
         Ok(_) => println!(
             "  {} if the app does not appear, open this address instead ({once}): {launch}",
             style("·").dim()
@@ -1173,19 +1190,43 @@ mod tests {
         );
     }
 
-    /// A source guard for the property above: the only thing this file ever
-    /// hands `open::that` is a launch page.
+    /// A source guard for the property above: this file opens a browser in one
+    /// place, `open_page_in_browser`, which is handed the page and never the
+    /// link, and no other opener appears at all.
     #[test]
     fn nothing_but_a_launch_page_reaches_an_opener() {
         let source = include_str!("apps.rs")
             .split("\n#[cfg(test)]\nmod tests {")
             .next()
             .unwrap();
-        let calls: Vec<&str> = source.split("open::that(").skip(1).collect();
-        assert!(!calls.is_empty());
-        for call in calls {
-            assert!(call.starts_with("page)"), "open::that({call:.40}");
+        let calls: Vec<&str> = source.split("webbrowser::").skip(1).collect();
+        assert_eq!(calls.len(), 1, "one browser opener, and only one");
+        assert!(
+            calls[0].starts_with("open(page_url.as_str())"),
+            "webbrowser::{:.40}",
+            calls[0]
+        );
+        for opener in [
+            "open::that",
+            "open::with",
+            "open::commands",
+            "Command::new(\"open\")",
+            "Command::new(\"xdg-open\")",
+        ] {
+            assert!(!source.contains(opener), "{opener}");
         }
+        assert!(source.contains("fn open_page_in_browser(page: &Path)"));
+    }
+
+    /// A page goes to the browser as a `file:` address, which needs an absolute
+    /// path; a relative one is refused before any browser is asked.
+    #[test]
+    fn a_relative_page_is_not_opened() {
+        let error = open_page_in_browser(Path::new("launch-relative.html")).unwrap_err();
+        assert!(
+            error.to_string().contains("not an absolute path"),
+            "{error}"
+        );
     }
 
     #[test]

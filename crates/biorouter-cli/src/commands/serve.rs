@@ -53,7 +53,7 @@
 //! token, so the documented service deployment printed an address the operator
 //! could not know and refused the one they had published.
 
-use crate::commands::apps::{launch_pages_dir, open_launch_link};
+use crate::commands::apps::{launch_pages_dir, open_launch_link, open_page_in_browser};
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
 use std::net::{TcpListener, ToSocketAddrs};
@@ -249,7 +249,8 @@ const LAUNCH_PAGE_KEPT: Duration = Duration::from_secs(120);
 /// arguments are readable by every account on the machine: `ps` on macOS, and
 /// `/proc/<pid>/cmdline` on Linux for as long as a browser that was not already
 /// running stays open. So the opener is handed a page only this account can
-/// read, which sends the browser on (`apps::write_launch_page`), and the daemon
+/// read, which sends the browser on (`apps::write_launch_page`,
+/// `apps::open_page_in_browser`), and the daemon
 /// answers the token with a page of its own origin so the cookie survives a
 /// navigation a `file:` page started (`routes::web_ui` in `biorouter-server`).
 /// The address is on the banner, for a browser that cannot read the page.
@@ -257,7 +258,7 @@ const LAUNCH_PAGE_KEPT: Duration = Duration::from_secs(120);
 /// Runs inside the runtime: the page is removed after [`LAUNCH_PAGE_KEPT`] by a
 /// task of its own, and by the caller when `serve` stops, whichever is first.
 fn open_in_browser(url: &str) -> Option<PathBuf> {
-    let page = open_in_browser_with(url, &launch_pages_dir(), |page| open::that(page))?;
+    let page = open_in_browser_with(url, &launch_pages_dir(), open_page_in_browser)?;
     let removed_later = page.clone();
     tokio::spawn(async move {
         tokio::time::sleep(LAUNCH_PAGE_KEPT).await;
@@ -897,34 +898,32 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     }
 
-    /// A source guard for the property above: nothing in this file hands an
-    /// opener anything but a launch page, and the crate that opens a URL as
-    /// given is not used here at all.
+    /// A source guard for the property above: this file names no opener of its
+    /// own, and opens the browser only through the launch page `apps` shares.
     #[test]
     fn nothing_but_a_launch_page_reaches_an_opener() {
         let source = include_str!("serve.rs")
             .split("\n#[cfg(test)]\nmod tests {")
             .next()
             .unwrap();
-        assert!(
-            !source.contains(concat!("webbrowser", "::")),
-            "an opener that is handed the URL puts the token on a command line"
-        );
         for opener in [
-            "open::with(",
-            "open::that_detached(",
-            "open::that_in_background(",
-            "open::commands(",
+            "webbrowser::",
+            "open::that",
+            "open::with",
+            "open::commands",
             "Command::new(\"open\")",
             "Command::new(\"xdg-open\")",
         ] {
-            assert!(!source.contains(opener), "{opener}");
+            assert!(
+                !source.contains(opener),
+                "{opener}: an opener that is handed the URL puts the token on a command line"
+            );
         }
-        let calls: Vec<&str> = source.split("open::that(").skip(1).collect();
-        assert!(!calls.is_empty());
-        for call in calls {
-            assert!(call.starts_with("page)"), "open::that({call:.40}");
-        }
+        // The one opener is the one `apps` uses, and it is handed a page.
+        assert!(
+            source.contains("open_in_browser_with(url, &launch_pages_dir(), open_page_in_browser)"),
+            "serve must open the browser through a launch page"
+        );
     }
 
     /// `--token` leaves the token on this command's command line for as long
