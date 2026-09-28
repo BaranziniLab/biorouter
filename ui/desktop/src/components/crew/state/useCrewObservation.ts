@@ -250,6 +250,16 @@ function allInChannel(messages: readonly CrewMessage[], channelId: string): bool
 /** The most lost drafts offered at once; the oldest goes first. */
 export const LOST_DRAFT_MAX = 5;
 
+/**
+ * The most messages the channel's window holds (QA M6): older pages are added above the ones on
+ * screen until it holds this many, and then the far end (the newest) gives way, and the window no
+ * longer reaches the live tail.
+ */
+export const MESSAGE_WINDOW_MAX = 3 * HISTORY_PAGE_SIZE;
+
+/** A page of the window being loaded: before its first message, or after its last. */
+export type HistoryDirection = 'older' | 'newer';
+
 /** How an observation ended that may have been a dropped connection. */
 export interface ObservationEnd {
   /** The end's code (the broker's, when it named one). */
@@ -341,6 +351,17 @@ export interface CrewObservation {
   backlogComplete: boolean | undefined;
   /** The full-page size of what is shown: the live tail's, or the older page's. */
   pageSize: number;
+  /**
+   * The window reaches the channel's first message: an older page came back short. Undefined
+   * until one was asked for; the list's own length says it for the live tail alone.
+   */
+  reachesStart: boolean | undefined;
+  /** A page being added to the window, if one is on its way. */
+  historyLoading: HistoryDirection | null;
+  /** Add the page before the window's first message above it (QA M6). */
+  loadOlder(): void;
+  /** Add the page after the window's last message below it, while it does not reach the tail. */
+  loadNewer(): void;
   /** Authors the selected channel's message pages named. */
   people: CrewMessagePeople | null;
   /** The connected broker's capabilities, from the last `state` frame that carried any. */
@@ -456,6 +477,24 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     livePageSizeRef.current = livePageSize;
   }, [livePageSize]);
   const [historyPageSize, setHistoryPageSize] = useState<number | null>(null);
+  // The window of the channel's messages (QA M6): how many the live tail may keep (older pages
+  // raise it), whether it reaches the channel's start, and the page on its way.
+  const windowLimit = useRef(HISTORY_PAGE_SIZE);
+  const [reachesStart, setReachesStart] = useState<boolean | undefined>(undefined);
+  const [historyLoading, setHistoryLoading] = useState<HistoryDirection | null>(null);
+  const [pageRequest, setPageRequest] = useState<{
+    id: number;
+    direction: HistoryDirection;
+  } | null>(null);
+  const messagesNow = useRef<CrewMessage[]>([]);
+  /** The last page request added to the window: a request is answered once. */
+  const answeredPage = useRef(0);
+  const resetWindow = useCallback(() => {
+    windowLimit.current = HISTORY_PAGE_SIZE;
+    setReachesStart(undefined);
+    setHistoryLoading(null);
+    setPageRequest(null);
+  }, []);
   const [people, setPeople] = useState<CrewMessagePeople | null>(null);
   const [capabilities, setCapabilities] = useState<readonly string[] | null>(null);
   const [refreshError, setRefreshError] = useState('');
@@ -497,6 +536,9 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   useEffect(() => {
     historyPage.current = historyBefore;
   }, [historyBefore]);
+  useEffect(() => {
+    messagesNow.current = messages;
+  }, [messages]);
 
   // What async callbacks read: whether the composer holds anything, the saved connections, the
   // error on show, and the last verified snapshot (for names in the plain sentences only).
@@ -658,10 +700,11 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       setHistoryBefore(null);
       setHistoryPageSize(null);
       historyPage.current = null;
+      resetWindow();
       setLastVerified(null);
       resetSurfaces(reason);
     },
-    [resetSurfaces]
+    [resetSurfaces, resetWindow]
   );
 
   const clearProtectedView = useCallback(() => clearProtectedState(), [clearProtectedState]);
@@ -743,6 +786,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setRuns([]);
     setMessages([]);
     setMessagesLoaded(false);
+    resetWindow();
     setLabels(null);
     setPeople(null);
     setBacklog(undefined);
@@ -758,7 +802,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       if (!controller.signal.aborted && generation.current === current)
         observationFailure(crewObservationCopy.connectionsRefreshFailed, failureCode(failure));
     }
-  }, [cancelRecovery, generation, loadConnections, observationFailure, resetSurfaces]);
+  }, [cancelRecovery, generation, loadConnections, observationFailure, resetSurfaces, resetWindow]);
   const restartObservation = useCallback(
     () => setObservationRevision((revision) => revision + 1),
     []
@@ -812,6 +856,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setBacklog(undefined);
     setCapabilities(null);
     setLivePageSize(HISTORY_PAGE_SIZE);
+    resetWindow();
     setChannelId('');
     setTeamId('');
     setBody('');
@@ -892,6 +937,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     historyPage.current = null;
     setHistoryBefore(null);
     setHistoryPageSize(null);
+    resetWindow();
     setMessagesLoaded(false);
     setPeople(null);
     setBacklog(undefined);
@@ -974,6 +1020,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       setReferences([]);
       setContextChannels([]);
       setHistoryBefore(null);
+      resetWindow();
       setPeople(null);
       setBacklog(undefined);
       resetSurfaces('channel-revoked');
@@ -1208,6 +1255,11 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   frame.reset ? pageSize : Math.min(previous, pageSize)
                 );
               if (historyPage.current !== null) return;
+              // A reset opens the live tail afresh: the window is its page again.
+              if (frame.reset) {
+                windowLimit.current = HISTORY_PAGE_SIZE;
+                setReachesStart(undefined);
+              }
               setMessages((previous) => {
                 const next = frame.reset ? [] : [...previous];
                 for (const message of frame.messages) {
@@ -1215,7 +1267,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   if (index < 0) next.push(message);
                   else next[index] = message;
                 }
-                return next.slice(-HISTORY_PAGE_SIZE);
+                // Older pages added above the tail stay while the window has room (QA M6).
+                return next.slice(-Math.max(HISTORY_PAGE_SIZE, windowLimit.current));
               });
               const framePeople = frame.people;
               setPeople((previous) => mergePeople(frame.reset ? null : previous, framePeople));
@@ -1279,6 +1332,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     restoreBody,
     tellNote,
     offerLostDraft,
+    resetWindow,
     generation,
     selectedSources,
     reportError,
@@ -1293,18 +1347,25 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setContextChannels,
   ]);
 
-  // An older page. It asks for the page size the observer settled on, halves it while the broker
-  // answers `response_too_large`, and records the size it was loaded with, so a full page of that
-  // size still offers the page before it. A failure that says nothing about access returns to the
-  // live tail with the error in the connection bar; any other clears the view.
+  // A page of the window (QA M6): the one before its first message, added above it, or the one
+  // after its last, added below it. It asks for the page size the observer settled on, and halves it
+  // while the broker answers `response_too_large`. The window keeps at most `MESSAGE_WINDOW_MAX`:
+  // past that the far end gives way, and a window whose newest end gave way no longer reaches the
+  // live tail (`historyBefore` names the first message after it, and live frames wait). A newer
+  // page that comes back short has reached the tail: the window goes back to it. A failure that
+  // says nothing about access leaves the window as it is, with the error in the connection bar;
+  // any other clears the view.
   useEffect(() => {
-    if (historyBefore === null || !connectionId || !channelId) return;
+    if (pageRequest === null || !connectionId || !channelId) return;
+    if (pageRequest.id <= answeredPage.current) return;
+    const { direction, id: requestId } = pageRequest;
+    const list = messagesNow.current;
+    const anchor = direction === 'older' ? list[0]?.sequence : list[list.length - 1]?.sequence;
+    if (!anchor) return;
     const controller = new AbortController();
     const current = generation.current;
     const fresh = () => !controller.signal.aborted && current === generation.current;
-    setMessages([]);
-    setMessagesLoaded(false);
-    setHistoryPageSize(null);
+    setHistoryLoading(direction);
     void (async () => {
       let limit = Math.max(1, Math.min(livePageSizeRef.current, HISTORY_PAGE_SIZE));
       for (;;) {
@@ -1316,16 +1377,57 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
           }>(
             connectionId,
             'messages.history',
-            { channel_id: channelId, limit, latest: true, before: historyBefore },
+            direction === 'older'
+              ? { channel_id: channelId, limit, latest: true, before: anchor }
+              : { channel_id: channelId, limit, after: anchor },
             false,
             controller.signal
           );
           if (!fresh()) return;
+          answeredPage.current = requestId;
           const pagePeople = validatedPeople(page.people);
-          setHistoryPageSize(limit);
-          setMessages(page.messages);
+          const onScreen = messagesNow.current;
+          const known = new Set(onScreen.map((message) => message.id));
+          const added = page.messages.filter((message) => !known.has(message.id));
           setPeople((previous) => mergePeople(previous, pagePeople));
-          setMessagesLoaded(true);
+          setHistoryLoading(null);
+          if (direction === 'older') {
+            if (page.messages.length < limit) setReachesStart(true);
+            const merged = [...added, ...onScreen];
+            if (merged.length <= MESSAGE_WINDOW_MAX) {
+              // The live tail now grows under the pages added above it, up to the bound.
+              windowLimit.current = MESSAGE_WINDOW_MAX;
+              setMessages(merged);
+              return;
+            }
+            // Full: the newest end gives way, and the window no longer reaches the live tail.
+            const kept = merged.slice(0, MESSAGE_WINDOW_MAX);
+            const boundary = merged[MESSAGE_WINDOW_MAX].sequence;
+            historyPage.current = boundary;
+            setHistoryBefore(boundary);
+            setHistoryPageSize(limit);
+            setMessages(kept);
+            return;
+          }
+          // Newer: a short page has reached the live tail, which the observer brings back.
+          if (page.messages.length < limit) {
+            historyPage.current = null;
+            setHistoryBefore(null);
+            setHistoryPageSize(null);
+            resetWindow();
+            setObservationRevision((revision) => revision + 1);
+            return;
+          }
+          // A full page: its last message is where the next one starts, so it marks the window's
+          // end and is fetched again with it.
+          const last = page.messages[page.messages.length - 1];
+          const next = added.filter((message) => message.id !== last.id);
+          const boundary = last.sequence;
+          const merged = [...onScreen, ...next];
+          if (merged.length > MESSAGE_WINDOW_MAX) setReachesStart(false);
+          historyPage.current = boundary;
+          setHistoryBefore(boundary);
+          setMessages(merged.slice(-MESSAGE_WINDOW_MAX));
           return;
         } catch (failure: unknown) {
           if (!fresh()) return;
@@ -1333,10 +1435,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             limit = Math.max(1, Math.floor(limit / 2));
             continue;
           }
+          answeredPage.current = requestId;
+          setHistoryLoading(null);
           if (isLocalHistoryFailure(failure)) {
             const detail = failure instanceof Error ? failure.message : '';
-            historyPage.current = null;
-            setHistoryBefore(null);
             reportError(
               detail
                 ? `${crewObservationCopy.historyFailed} ${detail}`
@@ -1344,8 +1446,6 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               'observer',
               failureCode(failure)
             );
-            // The live observer ignored the tail while the page was asked for: start it over.
-            setObservationRevision((revision) => revision + 1);
             return;
           }
           observer.current?.abort();
@@ -1355,16 +1455,27 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         }
       }
     })();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      setHistoryLoading(null);
+    };
   }, [
-    historyBefore,
+    pageRequest,
     connectionId,
     channelId,
-    observationRevision,
     observationFailure,
     reportError,
+    resetWindow,
     generation,
   ]);
+  const loadOlder = useCallback(
+    () => setPageRequest((previous) => ({ id: (previous?.id ?? 0) + 1, direction: 'older' })),
+    []
+  );
+  const loadNewer = useCallback(
+    () => setPageRequest((previous) => ({ id: (previous?.id ?? 0) + 1, direction: 'newer' })),
+    []
+  );
 
   // Presentation only: remember the last verified view so a re-verification can keep drawing it,
   // and so can coming back to Crew (`viewMemory`, Q4-04). A list is taken for the channel's only
@@ -1443,6 +1554,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     labels,
     backlogComplete: backlog,
     pageSize: historyBefore !== null ? (historyPageSize ?? HISTORY_PAGE_SIZE) : livePageSize,
+    reachesStart,
+    historyLoading,
+    loadOlder,
+    loadNewer,
     people,
     capabilities,
     refreshError,

@@ -17,6 +17,12 @@ export const timelineCopy = {
   /** Pinned. The sentinel at the top of a full page of history. */
   older: 'Older messages',
   loadingOlder: 'Loading earlier messages…',
+  /**
+   * The control at the end of a window that no longer reaches the newest message (QA M6): the
+   * page after it, added below.
+   */
+  newer: 'Newer messages',
+  loadingNewer: 'Loading newer messages…',
   loadingMessages: 'Loading messages…',
 
   /** Pinned: `Welcome to #{name}`. */
@@ -130,6 +136,11 @@ export const timelineCopy = {
   newMessages: (count: number) => `${count} new ${count === 1 ? 'message' : 'messages'}`,
   /** Read after the count, so the button still says what it does. */
   newMessagesAction: ', jump to latest',
+  /**
+   * The pill when more is unread than the window holds (QA M7): it loads back to the first unread
+   * message and puts the reader there.
+   */
+  jumpToFirstUnread: 'Jump to first unread',
 
   /**
    * The head of the viewer's own agent's post, when a chat of theirs posted it (Q3-22): "Your

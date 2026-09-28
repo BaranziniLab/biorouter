@@ -892,10 +892,12 @@ describe('older history', () => {
     }
   });
 
-  it('loads older pages in the controller’s order without a single row rising in or a jump to the bottom', () => {
-    // useCrewController.loadOlder only moves the boundary to the first message on
-    // screen; useCrewObservation clears the list a render later and then puts the
-    // page in. For that first render the previous page is still drawn.
+  /**
+   * QA M6: an older page replaced the view, so the reader lost their place and had only "Jump to
+   * latest" to get back. Pages are added above now, with the reader's place kept, and a window
+   * that no longer reaches the newest message offers "Newer messages".
+   */
+  it('adds older pages above without a single row rising in or a jump to the bottom (QA M6)', () => {
     const pageOf = (label: string) =>
       Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
         message({
@@ -904,7 +906,6 @@ describe('older history', () => {
           at: new Date(2026, 8, 22, 9, index % 60),
         })
       );
-    const oldest = pageOf('oldest');
     const older = pageOf('older');
     const live = pageOf('live');
     const arrivingRows = () => document.querySelectorAll('[data-arriving="true"]').length;
@@ -915,49 +916,42 @@ describe('older history', () => {
     if (!viewport) throw new Error('no viewport');
     const scrollTo = vi.fn();
     viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
-    const log = screen.getByRole('log');
+    // The reader has scrolled up to the top, where the page is asked for (jsdom lays nothing
+    // out: the viewport is given a height and content to be scrolled up in).
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 20_000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
 
-    // 1. The boundary moves; the live tail is still the list.
-    rerenderWith({ ...controller, messages: live, historyBefore: live[0].sequence });
-    expect(scrollTo).not.toHaveBeenCalled();
-    expect(log).toHaveAttribute('aria-busy', 'true');
+    // 1. The page is on its way: the sentinel says so; the list is untouched.
+    rerenderWith({ ...controller, messages: live, historyLoading: 'older' });
     expect(screen.getByRole('button', { name: timelineCopy.loadingOlder })).toBeDisabled();
-    // 2. The list is cleared while the page is fetched.
-    rerenderWith({
-      ...controller,
-      messages: [],
-      messagesLoaded: false,
-      historyBefore: live[0].sequence,
-    });
+    expect(screen.getByText('live 199')).toBeInTheDocument();
+    // 2. It lands above: both pages are drawn, nothing jumps or rises in, and nothing is "new".
+    rerenderWith({ ...controller, messages: [...older, ...live], historyLoading: null });
+    expect(screen.getByText('older 0')).toBeInTheDocument();
+    expect(screen.getByText('live 199')).toBeInTheDocument();
     expect(scrollTo).not.toHaveBeenCalled();
-    // 3. The page lands: opened at its newest message, and nothing on it is an arrival.
-    rerenderWith({ ...controller, messages: older, historyBefore: live[0].sequence });
-    expect(screen.getByText('older 199')).toBeInTheDocument();
-    expect(scrollTo).toHaveBeenCalledTimes(1);
-    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: 'auto' }));
     expect(arrivingRows()).toBe(0);
-    expect(log).not.toHaveAttribute('aria-busy');
+    expect(screen.queryByText(/new messages?$/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Older messages' })).toBeEnabled();
 
-    // The next page, with the previous list handed over as a copy this time.
-    rerenderWith({ ...controller, messages: [...older], historyBefore: older[0].sequence });
-    expect(scrollTo).toHaveBeenCalledTimes(1);
+    // 3. The window is full and its newest end gives way: still no jump, and "Newer messages" and
+    // the history pill show.
+    const window = [...pageOf('oldest'), ...older, ...live.slice(0, 100)];
+    rerenderWith({ ...controller, messages: window, historyBefore: live[100].sequence });
+    expect(scrollTo).not.toHaveBeenCalled();
     expect(arrivingRows()).toBe(0);
-    rerenderWith({
-      ...controller,
-      messages: [],
-      messagesLoaded: false,
-      historyBefore: older[0].sequence,
-    });
-    rerenderWith({ ...controller, messages: oldest, historyBefore: older[0].sequence });
-    expect(screen.getByText('oldest 199')).toBeInTheDocument();
-    expect(scrollTo).toHaveBeenCalledTimes(2);
-    expect(arrivingRows()).toBe(0);
+    expect(screen.getByText(timelineCopy.viewingEarlier)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: timelineCopy.newer }));
+    expect(controller.loadNewer).toHaveBeenCalledTimes(1);
 
-    // Jump to latest clears the page and refreshes: the live tail opens, not arrives…
+    // Jump to latest clears the window and refreshes: the live tail opens, not arrives…
     rerenderWith({ ...controller, messages: [], messagesLoaded: false, historyBefore: null });
     rerenderWith({ ...controller, messages: live, historyBefore: null });
-    expect(scrollTo).toHaveBeenCalledTimes(3);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
     expect(arrivingRows()).toBe(0);
+    expect(screen.queryByRole('button', { name: timelineCopy.newer })).toBeNull();
     // …and a post after it is a live arrival again.
     rerenderWith({
       ...controller,
@@ -969,6 +963,23 @@ describe('older history', () => {
       'true'
     );
     expect(arrivingRows()).toBe(1);
+  });
+
+  it('shows the channel’s start once an older page reaches it, however long the window', () => {
+    vi.useFakeTimers();
+    const long = page(HISTORY_PAGE_SIZE + 50);
+    renderWithController(<Timeline />, makeController({ messages: long, reachesStart: true }));
+    openFully();
+    expect(screen.getByRole('heading', { name: 'Welcome to #general' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Older messages' })).toBeNull();
+  });
+
+  it('keeps room under the last row for a pill, so it never covers it (QA M6)', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: page(5), historyBefore: 's100' })
+    );
+    expect(timelineRoot()).toHaveAttribute('data-pill', 'history');
   });
 
   it('measures a full page by the size the observer asks for', () => {
@@ -1744,8 +1755,13 @@ describe('following a full live tail', () => {
     });
     expect(controller.markRead).toHaveBeenCalledTimes(1);
 
-    // The newest message comes into view: it is marked read after the next look.
+    // The newest message comes into view: it is marked read once it has been on screen for a
+    // whole dwell, two looks a dwell apart (QA M7).
     place(MAX_TOP);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledTimes(1);
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
     });
@@ -1923,6 +1939,104 @@ describe('automatic mark-read', () => {
     });
     expect(controller.markRead).toHaveBeenCalledTimes(1);
     expect(controller.reportError).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * QA M7: a busy channel opened at its newest message and marked every unread message read a
+ * second later, those never loaded included, and the broker keeps one watermark, so the signal
+ * could not be had back.
+ */
+describe('opening where the unread messages start (QA M7)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Forty messages, the first ten read. */
+  const channelOf = (count = 40) =>
+    Array.from({ length: count }, (_, index) =>
+      message({ id: `u-${index}`, sequence: `u${index}`, body: `unread ${index}` })
+    );
+
+  it('opens at the New line when it is in the window', () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: channelOf(),
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 'u9' },
+          unread: { [ID.general]: 30 },
+        }),
+      })
+    );
+    openFully();
+    const line = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+    expect(scrollIntoView.mock.instances[0]).toBe(line);
+  });
+
+  it('opens at the newest message when nothing is unread', () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: channelOf(),
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 'u39' },
+          unread: { [ID.general]: 0 },
+        }),
+      })
+    );
+    openFully();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('marks nothing read, and offers Jump to first unread, when more is unread than is loaded', async () => {
+    const full = page(HISTORY_PAGE_SIZE);
+    const controller = makeController({
+      messages: full,
+      snapshot: snapshotFor({
+        // Never read, and 321 unread: 121 of them are not loaded.
+        read_positions: { [ID.general]: null },
+        unread: { [ID.general]: 321 },
+      }),
+    });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_MIN_INTERVAL_MS * 3);
+    });
+    expect(controller.markRead).not.toHaveBeenCalled();
+
+    const pill = screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread });
+    act(() => {
+      fireEvent.click(pill);
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    // An older page lands: 400 others are loaded now, more than the 321 unread.
+    const older = Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+      message({
+        id: `older-${index}`,
+        body: `older ${index}`,
+        at: new Date(2026, 8, 21, 9, index % 60),
+      })
+    );
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    rerenderWith({ ...controller, messages: [...older, ...full] });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: timelineCopy.jumpToFirstUnread })).toBeNull();
+    // The reader is put at the New line, now before the first unread message.
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+    // …and marking read may begin again.
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 2);
+    });
+    expect(controller.markRead).toHaveBeenCalled();
   });
 });
 
@@ -2211,6 +2325,20 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     expect(css.replace(/\s+/g, ' ')).toContain(
       ".crew-md-table-scroll[data-overflow='true'] { border-right: 1px solid var(--border-subtle); mask-image: linear-gradient( to right, black calc(100% - 41px), transparent calc(100% - 1px), black calc(100% - 1px) ); }"
     );
+  });
+
+  it('keeps room under the last row while a pill shows, and anchors the view itself (QA M6)', () => {
+    // The pill stands 12px above the log's end and is 32px tall: the last row used to sit 19px
+    // under it for as long as an older page was shown.
+    const pill = css.match(/\.crew-timeline-pill-slot \{[^}]*bottom: (\d+)px;/);
+    expect(pill?.[1]).toBe('12');
+    const reserve = css.match(/--crew-pill-reserve: (\d+)px;/);
+    expect(Number(reserve?.[1])).toBeGreaterThanOrEqual(12 + 32 + 8);
+    expect(css).toMatch(
+      /\.crew-timeline\[data-pill\] \.crew-timeline-log \{\s*padding-block-end: var\(--crew-pill-reserve\);/
+    );
+    // The timeline keeps the reader's place when rows are added above: the browser must not too.
+    expect(css).toMatch(/\[data-radix-scroll-area-viewport\] \{\s*overflow-anchor: none;/);
   });
 
   it('sets every message body on the 14/21 reading line (T-62, Q2-58)', () => {

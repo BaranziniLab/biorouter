@@ -394,7 +394,17 @@ export interface CrewController {
    * Absent: the bar falls back to `refresh()`.
    */
   retryUpdates?(): Promise<void>;
+  /** Add the page before the window's first message above it (QA M6). */
   loadOlder(): void;
+  /**
+   * Add the page after the window's last message below it, while the window does not reach the
+   * live tail. Absent on a stand-in controller.
+   */
+  loadNewer?(): void;
+  /** The window reaches the channel's first message (an older page came back short). */
+  reachesStart?: boolean;
+  /** A page being added to the window, if one is on its way. */
+  historyLoading?: 'older' | 'newer' | null;
   jumpToLatest(): void;
 
   // Selection

@@ -14,6 +14,7 @@ import {
   type ScopeFrame,
 } from './observationFailure';
 import {
+  MESSAGE_WINDOW_MAX,
   isLocalHistoryFailure,
   mergePeople,
   REOBSERVE_BACKOFF_MS,
@@ -364,11 +365,12 @@ describe('an older page', () => {
       }
     );
     act(() => crew.loadOlder());
-    await waitFor(() => expect(crew.messagesLoaded).toBe(true));
+    // Added above the messages on screen, which stay (QA M6): the window still reaches the tail.
+    await waitFor(() => expect(crew.messages.map((item) => item.id)).toEqual(['older', 'a']));
     expect(limits).toEqual([100, 50, 25]);
-    expect(crew.historyBefore).toBe('sequence-a');
-    expect(crew.pageSize).toBe(25);
-    expect(crew.messages.map((item) => item.id)).toEqual(['older']);
+    expect(crew.historyBefore).toBeNull();
+    // A page shorter than asked for reaches the channel's start.
+    expect(crew.reachesStart).toBe(true);
     expect(crew.people?.['person-dan']?.display_name).toBe('Dan Wu');
     expect(crew.snapshot).not.toBeNull();
   });
@@ -385,7 +387,90 @@ describe('an older page', () => {
     expect(crew.snapshot).not.toBeNull();
     expect(crew.refreshError).toBeNull();
     expect(crew.historyBefore).toBeNull();
-    // The live tail is observed afresh.
+    // The window is as it was, and still the live tail: nothing had to be observed again.
+    expect(crew.messages.map((item) => item.id)).toEqual(['a']);
+    expect(crew.historyLoading).toBeNull();
+    expect(mocks.observeCrew.mock.calls.length).toBe(observers);
+  });
+
+  /** A page of `count` messages named `label-0` … `label-{count - 1}`, oldest first. */
+  const pageOf = (label: string, count: number) =>
+    Array.from({ length: count }, (_, index) => message(`${label}-${index}`));
+
+  it('keeps older pages above a live tail that goes on arriving (QA M6)', async () => {
+    const session = await openFullTail(200);
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) =>
+      method === 'messages.history' ? { messages: pageOf('old', 200), cursor: null } : {}
+    );
+    act(() => crew.loadOlder());
+    await waitFor(() => expect(crew.messages).toHaveLength(201));
+    expect(crew.messages[0].id).toBe('old-0');
+    // Full: there may be more before it.
+    expect(crew.reachesStart).toBeUndefined();
+    send(session, messagesFrame('b'));
+    expect(crew.messages.map((item) => item.id).slice(-3)).toEqual(['old-199', 'a', 'b']);
+    expect(crew.messages[0].id).toBe('old-0');
+  });
+
+  it('lets the newest end go once the window is full, and follows it with newer pages', async () => {
+    const session = await openFullTail(200);
+    let page = 0;
+    const history: Record<string, unknown>[] = [];
+    mocks.crewRequest.mockImplementation(
+      async (_connection: string, method: string, params: Record<string, unknown>) => {
+        if (method !== 'messages.history') return {};
+        history.push(params);
+        if (params.after) return { messages: pageOf('newer', 200), cursor: null };
+        page += 1;
+        return { messages: pageOf(`older${page}`, 200), cursor: null };
+      }
+    );
+    for (const total of [201, 401, 601]) {
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(crew.messages).toHaveLength(Math.min(total, MESSAGE_WINDOW_MAX)));
+    }
+    // 601 would not fit: the newest end ('a') went, and the window no longer reaches the tail.
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages[0].id).toBe('older3-0');
+    expect(crew.historyBefore).toBe('sequence-a');
+    // Live frames wait while it does not reach the tail.
+    send(session, messagesFrame('c'));
+    expect(crew.messages.some((item) => item.id === 'c')).toBe(false);
+
+    // Newer messages: the page after the window's last, added below, its last message marking
+    // where the next one starts.
+    act(() => crew.loadNewer?.());
+    await waitFor(() => expect(crew.historyBefore).toBe('sequence-newer-199'));
+    expect(history[history.length - 1]).toMatchObject({ after: 'sequence-older1-199' });
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages[crew.messages.length - 1].id).toBe('newer-198');
+  });
+
+  it('goes back to the live tail when a newer page reaches it', async () => {
+    await openFullTail(200);
+    let reachedTail = false;
+    let page = 0;
+    mocks.crewRequest.mockImplementation(
+      async (_connection: string, method: string, params: Record<string, unknown>) => {
+        if (method !== 'messages.history') return {};
+        if (params.after) {
+          reachedTail = true;
+          return { messages: [message('b')], cursor: null };
+        }
+        page += 1;
+        return { messages: pageOf(`old${page}`, 200), cursor: null };
+      }
+    );
+    for (const total of [201, 401, 600]) {
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(crew.messages).toHaveLength(total));
+    }
+    expect(crew.historyBefore).not.toBeNull();
+    const observers = mocks.observeCrew.mock.calls.length;
+    act(() => crew.loadNewer?.());
+    await waitFor(() => expect(reachedTail).toBe(true));
+    await waitFor(() => expect(crew.historyBefore).toBeNull());
+    // The observer brings the live tail back.
     await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observers));
   });
 

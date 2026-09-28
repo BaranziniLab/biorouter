@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
   type MutableRefObject,
 } from 'react';
+import { Button } from '../../ui/button';
 import { ScrollArea, type ScrollAreaHandle } from '../../ui/scroll-area';
 import { cn } from '../../../utils';
 import type { Channel, CrewMessage, CrewMessagePeople, ObservedRun, Snapshot } from '../crewApi';
@@ -75,6 +76,13 @@ export interface TimelineView {
   backlogComplete?: boolean;
   /** Authors the message pages named, including people who have left. Display only. */
   people?: CrewMessagePeople | null;
+  /**
+   * The window reaches the channel's first message: an older page came back short. Absent: the
+   * list's own length decides (`reachesChannelStart`).
+   */
+  reachesStart?: boolean;
+  /** A page being added to the window, if one is on its way. */
+  historyLoading?: 'older' | 'newer' | null;
 }
 
 export interface TimelineProps {
@@ -175,10 +183,13 @@ function prefersReducedMotion(): boolean {
  *
  * `ScrollArea` — the chat transcript's primitive, following the bottom and
  * keeping it anchored when the viewport changes height — around a
- * `role="log"` in the 760px chat column. It opens at the newest message,
- * follows new posts while the reader is at the bottom, and keeps its place when
- * they are not (a "Jump to latest" pill appears instead). A refresh never sends
- * it to the top. Older history loads by itself at the top of a full page. The
+ * `role="log"` in the 760px chat column. It opens at the newest message, or at
+ * the New line when there is one to read (QA M7), follows new posts while the
+ * reader is at the bottom, and keeps its place when they are not (a "Jump to
+ * latest" pill appears instead). A refresh never sends it to the top. Older
+ * history is added above by itself at the top of a full page, with the reader's
+ * place kept, and "Newer messages" follows a window that no longer reaches the
+ * newest message (QA M6). The
  * live tail streams in one message per frame, so what describes the whole
  * channel — the New line, the intro, mark-read, `aria-busy`, arrivals — waits
  * until enough of it has arrived (`openingProgress`, `useOpening`).
@@ -210,6 +221,8 @@ export function Timeline({ view, ...props }: TimelineProps) {
           pageSize: crew.pageSize,
           backlogComplete: crew.backlogComplete,
           people: crew.people,
+          reachesStart: crew.reachesStart,
+          historyLoading: crew.historyLoading,
         }
       : null);
   if (!current) return null;
@@ -427,13 +440,20 @@ function ChannelTimeline({
       return;
     }
     const ids = known.current.ids;
+    // Only what arrived after the newest known message is new below: an older page added above
+    // is history (QA M6).
+    let lastKnown = -1;
+    messages.forEach((message, index) => {
+      if (ids.has(message.id)) lastKnown = index;
+    });
     const added = messages.filter((message) => !ids.has(message.id));
+    const below = messages.slice(lastKnown + 1).filter((message) => !ids.has(message.id));
     added.forEach((message) => ids.add(message.id));
-    if (added.length > 0 && !followingRef.current && historyBefore === null) {
+    if (below.length > 0 && !followingRef.current && historyBefore === null) {
       setUnseenBelow(true);
       // What the pill counts is what a person would call a new message: not their own post, and
       // not an agent's folded tool update.
-      const counted = added.filter(
+      const counted = below.filter(
         (message) => !isTraceMessage(message) && !(message.actor_id === viewerId && !message.run_id)
       ).length;
       if (counted > 0) setUnseenCount((count) => count + counted);
@@ -452,15 +472,74 @@ function ChannelTimeline({
   /** Set by the reader scrolling up; the sentinel loads an older page only when armed. */
   const armed = useRef(false);
   if (reloading) emptied.current = true;
+  // The ids drawn at the last page that was ready: a list that shares one is the same window
+  // moved (an older page added above, its newest end giving way), never a page to open afresh.
+  const drawnIds = useRef<ReadonlySet<string> | null>(null);
+  const movedWindow =
+    drawnIds.current !== null && messages.some((message) => drawnIds.current?.has(message.id));
   useLayoutEffect(() => {
     if (!pageReady) return;
-    if (lastLoaded.current !== loadKey || emptied.current || followingRef.current) {
+    const opening = lastLoaded.current !== loadKey && !movedWindow;
+    if (opening || emptied.current || followingRef.current) {
       scrollToBottom(scroller.current, 'auto');
     }
     lastLoaded.current = loadKey;
     emptied.current = false;
-    armed.current = false;
-  }, [pageReady, loadKey]);
+    if (opening) armed.current = false;
+  }, [pageReady, loadKey]); // eslint-disable-line react-hooks/exhaustive-deps -- a move is read as the page changes, not on its own
+  useLayoutEffect(() => {
+    if (pageReady) drawnIds.current = new Set(messages.map((message) => message.id));
+    else if (reloading) drawnIds.current = null;
+  }, [pageReady, reloading, messages]);
+
+  // ── The rows, by message ────────────────────────────────────────────────
+  // Rows register themselves (`registerRow`), so no message ID is ever written into the DOM.
+  const rowsByMessage = useRef(new Map<string, HTMLElement>());
+  const messageOfRow = useRef(new WeakMap<Element, string>());
+  const registerRow = useCallback((messageId: string, element: HTMLElement | null) => {
+    const rows = rowsByMessage.current;
+    const before = rows.get(messageId);
+    if (element) {
+      rows.set(messageId, element);
+      messageOfRow.current.set(element, messageId);
+    } else if (before) {
+      rows.delete(messageId);
+    }
+  }, []);
+  /** The message rows on screen, in document order. */
+  const messageRows = useCallback((viewport: HTMLElement) => {
+    const rows: { id: string; element: HTMLElement }[] = [];
+    viewport.querySelectorAll<HTMLElement>('[data-crew-row]').forEach((element) => {
+      const id = messageOfRow.current.get(element);
+      if (id) rows.push({ id, element });
+    });
+    return rows;
+  }, []);
+
+  // ── Keeping the reader's place when the window moves ────────────────────
+  // Rows added above, or rows dropped from the top as the window slides, move everything under
+  // them: the first row the reader could see is put back where it was (QA M6). It is measured as
+  // the new list renders, while the DOM still shows the old one, and restored once the new one is
+  // committed. Not while following the bottom, which is its own anchor. Scroll anchoring is off in
+  // the stylesheet, so the browser never does it a second time.
+  const placedList = useRef(messages);
+  const place = useRef<{ id: string; top: number } | null>(null);
+  if (placedList.current !== messages) {
+    placedList.current = messages;
+    const viewport = scroller.current?.viewportRef.current;
+    place.current =
+      viewport && !followingRef.current ? firstVisibleRow(viewport, messageRows(viewport)) : null;
+  }
+  useLayoutEffect(() => {
+    const viewport = scroller.current?.viewportRef.current;
+    const held = place.current;
+    place.current = null;
+    if (!viewport || !held || followingRef.current) return;
+    const row = rowsByMessage.current.get(held.id);
+    if (!row || !viewport.contains(row)) return;
+    const shift = row.getBoundingClientRect().top - viewport.getBoundingClientRect().top - held.top;
+    if (Math.abs(shift) >= 1) viewport.scrollTop += shift;
+  }, [messages]);
 
   // ── Following the live tail ─────────────────────────────────────────────
   // A full tail keeps its last page (useCrewObservation drops the oldest
@@ -480,9 +559,12 @@ function ChannelTimeline({
 
   // ── Older history ───────────────────────────────────────────────────────
   const loadingPage = !pageReady;
-  // Drawn from the list on screen, so the row stays put (as "Loading…") while
-  // the previous page is still drawn.
-  const hasOlder = messagesLoaded && messages.length >= pageSize;
+  const loadingOlder = loadingPage || view.historyLoading === 'older';
+  // The window reaches the channel's start: an older page came back short, or the live tail is
+  // shorter than a page. Drawn from the list on screen, so the row stays put (as "Loading…")
+  // while a page is on its way.
+  const reachesStart = view.reachesStart ?? reachesChannelStart(messages, pageSize);
+  const hasOlder = messagesLoaded && !reachesStart;
   const lastTop = useRef(0);
   const onViewportScroll = useCallback((viewport: HTMLDivElement) => {
     // Scrolling UP is what arms the automatic load, so a page that lands with
@@ -492,34 +574,92 @@ function ChannelTimeline({
   }, []);
   const loadOlder = crew.loadOlder;
   const onSentinelReached = useCallback(() => {
-    if (!armed.current || readOnly || loadingPage) return;
+    if (!armed.current || readOnly || loadingOlder) return;
     armed.current = false;
     loadOlder();
-  }, [readOnly, loadingPage, loadOlder]);
+  }, [readOnly, loadingOlder, loadOlder]);
   const sentinelRoot = useCallback(() => scroller.current?.viewportRef.current ?? null, []);
 
+  // ── The unread start, and opening at the New line ───────────────────────
+  // A channel with unread messages opens where they start rather than at the newest, once the New
+  // line's place is fixed (QA M7): once per channel, and only while the reader has not moved away
+  // from where it opened. When more is unread than the window holds, the first unread message is
+  // not loaded: it opens at the newest as before, nothing is marked read (the watermark would take
+  // the messages never shown with it), and a pill offers to load back to them.
+  const firstUnreadOutside =
+    historyBefore === null && !reachesStart && unreadBeyond(messages, readState);
+  const logRef = useRef<HTMLDivElement>(null);
+  const placedAtNew = useRef(false);
+  useLayoutEffect(() => {
+    if (placedAtNew.current || readOnly || historyBefore !== null || !newLine.computed) return;
+    if (firstUnreadOutside) return;
+    placedAtNew.current = true;
+    if (!newLine.id || postedHere || !followingRef.current) return;
+    const target = logRef.current?.querySelector<HTMLElement>('[data-crew-new-line]');
+    if (!target) return;
+    target.scrollIntoView({ block: 'start' });
+    const atBottom = scroller.current?.isAtBottom() ?? true;
+    followingRef.current = atBottom;
+    setFollowing(atBottom);
+  }, [newLine, readOnly, historyBefore, postedHere, days, firstUnreadOutside]);
+
+  // Jump to first unread: older pages are added until the read position is in the window, the
+  // channel's start is, or the window is full; then the New line is placed again and shown.
+  const [seeking, setSeeking] = useState(false);
+  useEffect(() => {
+    if (!seeking) return;
+    if (!firstUnreadOutside || readOnly) {
+      setSeeking(false);
+      setNewLine({ computed: true, id: newLineBeforeId(messages, readState) });
+      placedAtNew.current = false;
+      followingRef.current = true;
+      return;
+    }
+    if (!loadingOlder) loadOlder();
+  }, [seeking, firstUnreadOutside, loadingOlder, loadOlder, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps -- the list is read as a page lands
+
   // ── Automatic mark-read ─────────────────────────────────────────────────
-  // `following` is the scroll area's last verdict; the newest row must also be
-  // on screen, measured, when the dwell ends.
-  const newestOnScreen = useCallback(() => {
+  // Up to the newest message on screen, measured, and only one the read position has not passed
+  // (QA M7): opening a busy channel used to mark everything read a second later.
+  const latestMessages = useRef(messages);
+  latestMessages.current = messages;
+  const readPosition = snapshot.read_positions?.[channel.id];
+  const latestReadPosition = useRef(readPosition);
+  latestReadPosition.current = readPosition;
+  const newestSeen = useCallback(() => {
     const handle = scroller.current;
     const viewport = handle?.viewportRef.current;
-    if (!handle || !viewport) return false;
-    return (
+    if (!handle || !viewport) return null;
+    const list = latestMessages.current;
+    let index: number;
+    if (
       handle.isAtBottom() &&
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_TOLERANCE_PX
-    );
-  }, []);
+    ) {
+      index = list.length - 1;
+    } else {
+      const id = lastVisibleMessageId(viewport, messageRows(viewport));
+      index = id ? list.findIndex((message) => message.id === id) : -1;
+    }
+    if (index < 0) return null;
+    const read = latestReadPosition.current;
+    const readIndex =
+      typeof read === 'string' ? list.findIndex((message) => message.sequence === read) : -1;
+    if (index <= readIndex) return null;
+    const sequence = list[index].sequence;
+    return typeof sequence === 'string' && sequence ? sequence : null;
+  }, [messageRows]);
   const latest = messages[messages.length - 1];
   useAutoMarkRead({
     channelId: channel.id,
     latestSequence: typeof latest?.sequence === 'string' ? latest.sequence : null,
-    readPosition: snapshot.read_positions?.[channel.id],
+    readPosition,
     unread: snapshot.unread?.[channel.id],
-    atBottom: following,
-    isAtBottom: newestOnScreen,
-    // Not while the tail streams in: the newest message so far is not the channel's.
-    enabled: !readOnly && historyBefore === null && opened && messages.length > 0,
+    seen: newestSeen,
+    // Not while the tail streams in (the newest message so far is not the channel's), nor while
+    // the unread start is outside the window.
+    enabled:
+      !readOnly && historyBefore === null && opened && messages.length > 0 && !firstUnreadOutside,
     markRead: crew.markRead,
     memory: readMemory,
   });
@@ -609,6 +749,7 @@ function ChannelTimeline({
       setActiveRow,
       arriving: arrivingSet,
       registerTaskRow,
+      registerRow,
       highlightedRunId: highlighted,
       onHighlightEnd,
     }),
@@ -622,6 +763,7 @@ function ChannelTimeline({
       activeRow,
       arrivingSet,
       registerTaskRow,
+      registerRow,
       highlighted,
       onHighlightEnd,
     ]
@@ -632,20 +774,31 @@ function ChannelTimeline({
   // can show: while it streams in, the list is short whatever the channel's
   // size. Its place is kept meanwhile (hidden, named nothing), so a short
   // channel's messages do not move down when it appears; a full page removes it.
-  const intro: 'shown' | 'pending' | null = !reachesChannelStart(messages, pageSize)
+  const intro: 'shown' | 'pending' | null = !reachesStart
     ? null
     : opened
       ? 'shown'
       : pageReady && historyBefore === null && messages.length > 0
         ? 'pending'
         : null;
-  const pill: 'history' | 'live' | null =
-    historyBefore !== null ? 'history' : unseenBelow && !following ? 'live' : null;
+  const pill: 'history' | 'live' | 'unread' | null =
+    historyBefore !== null
+      ? 'history'
+      : unseenBelow && !following
+        ? 'live'
+        : firstUnreadOutside && opened && !readOnly
+          ? 'unread'
+          : null;
 
   // The copy announcer's live region sits inside the timeline's own box, beside
   // (never inside) the log, so an announcement is not read as a message.
   return (
-    <div className={cn('crew-timeline', className)} data-readonly={readOnly ? 'true' : undefined}>
+    <div
+      className={cn('crew-timeline', className)}
+      data-readonly={readOnly ? 'true' : undefined}
+      // A pill stands over the log's end: the log keeps room for it (QA M6).
+      data-pill={pill ?? undefined}
+    >
       <TimelineCopyProvider>
         <TimelineContextProvider value={context}>
           <ScrollArea
@@ -664,13 +817,14 @@ function ChannelTimeline({
                 aria-description={timelineCopy.logDescription}
                 aria-busy={opened && !loadingPage ? undefined : 'true'}
                 tabIndex={0}
+                ref={logRef}
                 className="crew-timeline-log biorouter-focus-region"
                 onKeyDown={onLogKeyDown}
                 onBlur={onLogBlur}
               >
                 {hasOlder && (
                   <HistorySentinel
-                    loading={loadingPage}
+                    loading={loadingOlder}
                     disabled={readOnly}
                     onLoad={loadOlder}
                     onReached={onSentinelReached}
@@ -703,6 +857,13 @@ function ChannelTimeline({
                     ))}
                   </section>
                 ))}
+                {historyBefore !== null && messagesLoaded && (
+                  <NewerMessages
+                    loading={view.historyLoading === 'newer'}
+                    disabled={readOnly || !crew.loadNewer}
+                    onLoad={() => crew.loadNewer?.()}
+                  />
+                )}
                 {showPending &&
                   (pendingNewDay ? (
                     <section className="crew-day" data-pending="true" aria-hidden="true" inert>
@@ -724,14 +885,16 @@ function ChannelTimeline({
                 onJump={
                   pill === 'history'
                     ? crew.jumpToLatest
-                    : () => {
-                        setUnseenBelow(false);
-                        setUnseenCount(0);
-                        scrollToBottom(
-                          scroller.current,
-                          prefersReducedMotion() ? 'auto' : 'smooth'
-                        );
-                      }
+                    : pill === 'unread'
+                      ? () => setSeeking(true)
+                      : () => {
+                          setUnseenBelow(false);
+                          setUnseenCount(0);
+                          scrollToBottom(
+                            scroller.current,
+                            prefersReducedMotion() ? 'auto' : 'smooth'
+                          );
+                        }
                 }
               />
             </div>
@@ -755,6 +918,88 @@ function PendingPostGroup({ post, head }: { post: PendingPost; head: boolean }) 
   ) : (
     row
   );
+}
+
+/** "Newer messages": the page after a window that no longer reaches the newest message (QA M6). */
+function NewerMessages({
+  loading,
+  disabled,
+  onLoad,
+}: {
+  loading: boolean;
+  disabled: boolean;
+  onLoad(): void;
+}) {
+  return (
+    <div className="crew-history-sentinel crew-history-newer">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="text-text-muted"
+        disabled={disabled || loading}
+        onClick={onLoad}
+      >
+        {loading ? timelineCopy.loadingNewer : timelineCopy.newer}
+      </Button>
+    </div>
+  );
+}
+
+/** A message row on screen: the message it draws, and its element. */
+interface MessageRowElement {
+  id: string;
+  element: HTMLElement;
+}
+
+/**
+ * The first message row whose bottom is below the viewport's top, and where its top is, relative
+ * to the viewport: what the reader sees first. Rows are in document order, so it is found by
+ * halving.
+ */
+export function firstVisibleRow(
+  viewport: HTMLElement,
+  rows: readonly MessageRowElement[]
+): { id: string; top: number } | null {
+  if (rows.length === 0) return null;
+  const top = viewport.getBoundingClientRect().top;
+  let low = 0;
+  let high = rows.length - 1;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (rows[middle].element.getBoundingClientRect().bottom > top) high = middle;
+    else low = middle + 1;
+  }
+  const row = rows[low];
+  return { id: row.id, top: row.element.getBoundingClientRect().top - top };
+}
+
+/** The last message row whose end is inside the viewport: the newest message read to its end. */
+export function lastVisibleMessageId(
+  viewport: HTMLElement,
+  rows: readonly MessageRowElement[]
+): string | null {
+  const box = viewport.getBoundingClientRect();
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const rect = rows[index].element.getBoundingClientRect();
+    if (rect.bottom <= box.bottom + 1 && rect.bottom > box.top) return rows[index].id;
+  }
+  return null;
+}
+
+/**
+ * More is unread than the list holds (QA M7): the read position's message is not in it, or, for a
+ * channel never read, the broker counts more unread messages from others than the list has.
+ */
+export function unreadBeyond(messages: readonly CrewMessage[], input: NewLineInput): boolean {
+  if (!(typeof input.unread === 'number' && input.unread > 0) || messages.length === 0)
+    return false;
+  const { readPosition } = input;
+  if (typeof readPosition === 'string' && readPosition)
+    return !messages.some((message) => message.sequence === readPosition);
+  if (readPosition === null)
+    return messages.filter((message) => message.actor_id !== input.viewerId).length < input.unread;
+  return false;
 }
 
 function TimelineEntry({ item }: { item: TimelineItem }) {

@@ -124,6 +124,7 @@ export function makeController(overrides: Partial<CrewController> = {}): CrewCon
     refreshError: null,
     refresh: vi.fn(async () => {}),
     loadOlder: vi.fn(),
+    loadNewer: vi.fn(),
     jumpToLatest: vi.fn(),
     teamId: ID.team,
     channelId: ID.general,

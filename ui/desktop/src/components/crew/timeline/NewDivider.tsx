@@ -8,7 +8,12 @@ import { timelineCopy } from './copy';
  */
 export function NewDivider() {
   return (
-    <div className="crew-new-divider" role="separator" aria-label={timelineCopy.newLineLabel}>
+    <div
+      className="crew-new-divider"
+      role="separator"
+      aria-label={timelineCopy.newLineLabel}
+      data-crew-new-line=""
+    >
       <span aria-hidden="true" className="crew-new-label text-chip text-text-accent">
         {timelineCopy.newLine}
       </span>

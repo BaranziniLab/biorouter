@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
@@ -75,6 +75,21 @@ function useAuthorLabel(group: TimelineGroup): string {
 export interface GroupLabelIds {
   author: string;
   time: string;
+}
+
+/**
+ * Tell the timeline which message a row draws (`registerRow`): how it keeps the reader's place and
+ * measures what has been read (QA M6, M7). Kept in memory, never in the DOM, which carries no
+ * machine ID.
+ */
+function useRowRef(id: string | undefined) {
+  const { registerRow } = useTimeline();
+  return useCallback(
+    (element: HTMLDivElement | null) => {
+      if (id) registerRow(id, element);
+    },
+    [id, registerRow]
+  );
 }
 
 /** Circle initials for a person, a square Bot tile for an agent. Decorative beside the name. */
@@ -318,6 +333,7 @@ export function MessageRow({
     <div
       role="group"
       aria-labelledby={`${ids.author} ${timeId} ${mentionLabel}`}
+      ref={useRowRef(message.id)}
       className="crew-message-row"
       data-crew-row=""
       data-head={entry.head ? 'true' : undefined}
@@ -373,6 +389,7 @@ export function TraceRow({
     <div
       role="group"
       aria-labelledby={`${ids.author} ${timeId}`}
+      ref={useRowRef(entry.messages[entry.messages.length - 1]?.id)}
       className="crew-message-row"
       data-crew-row=""
       data-head={entry.head ? 'true' : undefined}

@@ -73,6 +73,22 @@
   padding-block: 8px 24px;
 }
 
+/* A pill stands 12px above the log's end and is 32px tall (QA M6): while one shows, the log keeps
+   room for it and a gap above it, so the last row is never under it. */
+.crew-timeline[data-pill] .crew-timeline-log {
+  padding-block-end: var(--crew-pill-reserve);
+}
+
+.crew-timeline {
+  --crew-pill-reserve: 60px;
+}
+
+/* The timeline keeps the reader's place itself when rows are added above or dropped from the top
+   (QA M6), so the browser's own scroll anchoring would move it twice. */
+.crew-timeline > .crew-timeline-scroll > [data-radix-scroll-area-viewport] {
+  overflow-anchor: none;
+}
+
 /* ── Days ────────────────────────────────────────────────────────────────────
    Each day is its own section, so its sticky band rides only while the day is
    on screen.

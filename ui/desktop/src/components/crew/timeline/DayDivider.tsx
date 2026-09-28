@@ -31,6 +31,7 @@ export function DayDivider({ label, newOnRule = false }: { label: string; newOnR
           className="crew-day-new-separator sr-only"
           role="separator"
           aria-label={timelineCopy.newLineLabel}
+          data-crew-new-line=""
         />
       )}
       <div

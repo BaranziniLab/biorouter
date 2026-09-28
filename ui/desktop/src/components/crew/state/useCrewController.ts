@@ -929,10 +929,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     reverifying,
     refresh,
     retryUpdates,
-    loadOlder: () => {
-      historyPage.current = messages[0]?.sequence ?? null;
-      setHistoryBefore(historyPage.current);
-    },
+    loadOlder: observation.loadOlder,
+    loadNewer: observation.loadNewer,
+    reachesStart: observation.reachesStart,
+    historyLoading: observation.historyLoading,
     jumpToLatest: () => {
       historyPage.current = null;
       setHistoryBefore(null);

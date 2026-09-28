@@ -1,5 +1,5 @@
 import { Button } from '../../ui/button';
-import { ArrowDown } from '../../icons/app-icons';
+import { ArrowDown, ArrowUp } from '../../icons/app-icons';
 import { timelineCopy } from './copy';
 
 /**
@@ -9,6 +9,8 @@ import { timelineCopy } from './copy';
  *   and "Jump to latest", which leaves the page and reloads the live tail.
  *   Live message frames are ignored while a page is shown, so this pill is the
  *   reminder that the channel may have moved on.
+ * - `unread`: more is unread than the window holds (QA M7). "Jump to first
+ *   unread" loads back to the first unread message and puts the reader there.
  * - `live`: the reader is scrolled up and something arrived below. It says how
  *   many messages arrived — "3 new messages ↓" — so the reader knows what the
  *   jump is worth (Q3-27), or "↓ Jump to latest" when none of what arrived was
@@ -21,7 +23,7 @@ export function JumpPill({
   count = 0,
   onJump,
 }: {
-  mode: 'history' | 'live';
+  mode: 'history' | 'live' | 'unread';
   disabled?: boolean;
   /** Messages that arrived below while scrolled up (`live` only). */
   count?: number;
@@ -35,6 +37,16 @@ export function JumpPill({
         </span>
         <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={onJump}>
           {timelineCopy.jumpToLatest}
+        </Button>
+      </div>
+    );
+  }
+  if (mode === 'unread') {
+    return (
+      <div className="crew-jump-pill" data-mode="unread">
+        <Button type="button" variant="ghost" size="sm" disabled={disabled} onClick={onJump}>
+          <ArrowUp aria-hidden />
+          {timelineCopy.jumpToFirstUnread}
         </Button>
       </div>
     );

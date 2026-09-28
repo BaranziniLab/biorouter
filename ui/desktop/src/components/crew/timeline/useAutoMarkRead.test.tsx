@@ -2,15 +2,17 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AUTO_READ_DWELL_MS,
+  AUTO_READ_MIN_INTERVAL_MS,
   useAutoMarkRead,
   type AutoMarkReadInput,
   type AutoReadMemory,
 } from './useAutoMarkRead';
 
 /**
- * The automatic mark-read's own gate, apart from the timeline: the scroll area's
- * cached "at the bottom" is not enough; the newest message must be on screen,
- * measured, when the dwell ends.
+ * The automatic mark-read's own gate, apart from the timeline (QA M7): the channel is marked read
+ * up to the newest message that has been on screen, measured, for the whole dwell, and never past
+ * it. It used to mark the newest loaded message whenever the bottom was in view, so a busy channel
+ * opened at its newest lost every unread mark a second later.
  */
 
 beforeEach(() => {
@@ -25,10 +27,10 @@ afterEach(() => {
 function input(overrides: Partial<AutoMarkReadInput> = {}): AutoMarkReadInput {
   return {
     channelId: 'channel-1',
-    latestSequence: 's2',
+    latestSequence: 's9',
     readPosition: 's1',
-    unread: 1,
-    atBottom: true,
+    unread: 8,
+    seen: () => 's9',
     enabled: true,
     markRead: vi.fn(async () => {}),
     memory: { current: new Map() as AutoReadMemory },
@@ -37,49 +39,78 @@ function input(overrides: Partial<AutoMarkReadInput> = {}): AutoMarkReadInput {
 }
 
 describe('useAutoMarkRead', () => {
-  it('marks read after the dwell when nothing measures the bottom (the cached verdict alone)', () => {
+  it('marks read up to the message on screen once it has been there for the dwell', () => {
     const options = input();
     renderHook(() => useAutoMarkRead(options));
     act(() => {
-      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
-    });
-    expect(options.markRead).toHaveBeenCalledWith('channel-1', 's2');
-  });
-
-  it('does not mark read while the newest message is off screen, however long the dwell', () => {
-    let onScreen = false;
-    const options = input({ isAtBottom: () => onScreen });
-    renderHook(() => useAutoMarkRead(options));
-    act(() => {
-      vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 10);
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS - 1);
     });
     expect(options.markRead).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(options.markRead).toHaveBeenCalledWith('channel-1', 's9');
+  });
 
-    // The reader reaches the newest message without the cached verdict changing.
-    onScreen = true;
+  it('marks only as far as the reader has read, and follows them down', () => {
+    let onScreen: string | null = 's4';
+    const options = input({ seen: () => onScreen });
+    renderHook(() => useAutoMarkRead(options));
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
     });
+    // Up to s4, not the newest loaded (s9): s5 to s9 have not been on screen.
     expect(options.markRead).toHaveBeenCalledTimes(1);
-    expect(options.markRead).toHaveBeenCalledWith('channel-1', 's2');
+    expect(options.markRead).toHaveBeenCalledWith('channel-1', 's4');
+
+    onScreen = 's7';
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_MIN_INTERVAL_MS + AUTO_READ_DWELL_MS);
+    });
+    expect(options.markRead).toHaveBeenLastCalledWith('channel-1', 's7');
   });
 
-  it('stops looking once the view is no longer at the bottom or the hook is disabled', () => {
-    const isAtBottom = vi.fn(() => false);
-    const options = input({ isAtBottom });
+  it('marks nothing for a message that was not on screen for the whole dwell', () => {
+    const passing = ['s3', 's5', 's7', 's9'];
+    let look = 0;
+    const options = input({ seen: () => passing[Math.min(look++, passing.length - 1)] });
+    renderHook(() => useAutoMarkRead(options));
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 3);
+    });
+    // Scrolling past: each look finds a different message, until the reader stops at s9.
+    expect(options.markRead).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(options.markRead).toHaveBeenCalledWith('channel-1', 's9');
+  });
+
+  it('marks nothing while nothing unread is on screen, or once it is disabled', () => {
+    const seen = vi.fn((): string | null => null);
+    const options = input({ seen });
     const { rerender } = renderHook((props: AutoMarkReadInput) => useAutoMarkRead(props), {
       initialProps: options,
     });
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 3);
     });
-    const looks = isAtBottom.mock.calls.length;
+    const looks = seen.mock.calls.length;
     expect(looks).toBeGreaterThan(0);
     rerender({ ...options, enabled: false });
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 5);
     });
-    expect(isAtBottom.mock.calls.length).toBe(looks);
+    expect(seen.mock.calls.length).toBe(looks);
+    expect(options.markRead).not.toHaveBeenCalled();
+  });
+
+  it('never marks the read position itself again', () => {
+    const options = input({ seen: () => 's1' });
+    renderHook(() => useAutoMarkRead(options));
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 3);
+    });
     expect(options.markRead).not.toHaveBeenCalled();
   });
 });
