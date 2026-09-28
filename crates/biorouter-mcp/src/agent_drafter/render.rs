@@ -698,6 +698,9 @@ function Start-Daemon {
     $env:BIOROUTER_PORT = "$p"
     $env:BIOROUTER_SERVER__SECRET_KEY = $secret
     Start-Process -FilePath $bin -ArgumentList "agent" -WindowStyle Hidden | Out-Null
+    # Only the daemon needs it: the browser started below inherits this
+    # process's environment, so the secret must not stay in it.
+    Remove-Item Env:BIOROUTER_SERVER__SECRET_KEY -ErrorAction SilentlyContinue
     for ($i = 0; $i -lt 40; $i++) {
       if (Test-Secret $p $secret) { Save-Daemon $p $secret; return @($p, $secret) }
       Start-Sleep -Milliseconds 500
@@ -1666,6 +1669,14 @@ mod tests {
         assert!(ps1.contains("\"$Base/apps/$AppId/launch\""));
         assert!(ps1.contains("Start-Process \"$Base$LaunchPath\""));
         assert!(ps1.contains("$env:BIOROUTER_SERVER__SECRET_KEY = $secret"));
+        // ...and it leaves the launcher's environment before the browser starts.
+        let (_, after_spawn) = ps1
+            .split_once("$env:BIOROUTER_SERVER__SECRET_KEY = $secret")
+            .unwrap();
+        let (spawn, _) = after_spawn
+            .split_once("Start-Process \"$Base$LaunchPath\"")
+            .unwrap();
+        assert!(spawn.contains("Remove-Item Env:BIOROUTER_SERVER__SECRET_KEY"));
         // The app id is embedded, not a leftover placeholder.
         assert!(ps1.contains("$AppId = \"demo\""));
         assert!(!ps1.contains("__APP_ID__"));
