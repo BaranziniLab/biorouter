@@ -6,7 +6,7 @@
 
 These commands and the desktop app share one background service on your computer, the Biorouter daemon (`biorouterd`), and its saved connections, so both show the same workspace.
 
-Every command here starts with `biorouter crew`, which short examples leave out. Add `--connection lab` when several connections are saved. The examples use workspace `lab`, host `@alice`, new member `@bob`, team `analysis-lab` and channel `#methods`. Capitals mark placeholders. `--help` lists every option.
+Every command here starts with `biorouter crew`, which short examples leave out. Add `--connection lab` when several connections are saved; without it, such a command exits with `2` and names the option. The examples use workspace `lab`, host `@alice`, new member `@bob`, team `analysis-lab` and channel `#methods`. Capitals mark placeholders. `--help` lists every option.
 
 ## Before you start
 
@@ -44,7 +44,7 @@ Your connections, keys and workspaces stay. A running task or transfer may stop,
 
 ### Supply the secret from a script
 
-Add `--approval-key-stdin` and send the secret as the first line of standard input, for example `print-approval-secret | biorouter crew --approval-key-stdin history methods`. Any further input, such as `send --input -` text or the `credentials init` or `credentials unlock` passphrase, follows on the next lines. A script sends a new secret or passphrase once; only a terminal asks for it twice, so the script is responsible for sending the one it means. Never put the secret in an argument, shell history, environment variable or file. `auth` always needs a real terminal.
+Add `--approval-key-stdin` and send the secret as the first line of standard input, for example `print-approval-secret | biorouter crew --approval-key-stdin history methods`. Any further input, such as `send --input -` text or the `credentials init` or `credentials unlock` passphrase, follows on the next lines. A script sends a new secret or passphrase once; only a terminal asks for it twice, so the script is responsible for sending the one it means. Never put the secret in an argument, shell history, environment variable or file. `auth` always needs a real terminal. Without one it exits with `2` (code `crew_needs_terminal`), and says that `connect` signs in without one when the server takes this computer's SSH key alone.
 
 ## Global options
 
@@ -69,9 +69,23 @@ Results go to standard output, and prompts and error sentences to standard error
 |---|---|
 | `0` | Success, or you stopped one of those four with Ctrl+C. |
 | `1` | Failed, refused, or not finished, such as `grants revoke` before the workspace confirms. |
-| `2` | Wrong command line, or a command that needed a terminal to ask you something ran without one. Nothing was sent. |
+| `2` | Wrong command line, a command that needed a terminal to ask you something ran without one, several saved connections and no `--connection`, or a message too long to send. Nothing was sent. |
 
-In JSON, an error has `error` and `request_id`, and usually a `code`. The code is your daemon's, such as `crew_outcome_unknown`, or one the command line gives its own errors: `unknown_name` and `ambiguous_name` for a name it could not look up, `crew_not_sent` for a request that never left this computer, and `crew_needs_terminal` for a command that needed a terminal. A refusal from the workspace adds `broker_code`, and a refused `connect` adds `detail`. Scripts should match those codes, not the wording. A daemon refusal that has no sentence of its own starts with its HTTP status, such as `Daemon returned 409:`. When a command needs one of two options, the usage line lists both as required. Give exactly one.
+In JSON, an error has `error` and `request_id`, and usually a `code`. The code is your daemon's, such as `crew_outcome_unknown` (see [Workspace refusals](#workspace-refusals)), or one the command line gives its own errors, in the table below. A refusal from the workspace adds `broker_code`, and a refused `connect` adds `detail`. A daemon refusal also keeps its other fields, such as `reason`, `actual_mode`, `expected_mode` or `institution_refusal`. Scripts should match those codes and fields, not the wording. A daemon refusal prints its own sentence; only one that has no sentence of its own starts with its HTTP status, such as `Daemon returned 409:`. When a command needs one of two options, the usage line lists both as required. Give exactly one.
+
+| Code | What it means |
+|---|---|
+| `unknown_name`, `ambiguous_name` | A name the command could not look up. See [Name people, teams and channels](#name-people-teams-and-channels). |
+| `crew_lookup_failed` | The daemon's answer to a name lookup was not one the command could use. Run it again, or use the ID. |
+| `crew_needs_terminal` | The command needed a terminal to ask you something. Exit `2`. |
+| `crew_connection_required` | Several connections are saved and none was chosen: ``Several Crew connections are saved; choose one with --connection NAME. Run biorouter crew connections list to see them.`` Exit `2`. |
+| `crew_message_too_long` | The message is over 64 KB. See [Post and read messages](#post-and-read-messages). Exit `2`. |
+| `crew_nothing_to_replace` | `connections join-invitation --replace` found no saved connection it may replace. Exit `2`. |
+| `crew_daemon_not_running` | No daemon runs for this profile. See [Start, check and stop the daemon](#start-check-and-stop-the-daemon). |
+| `crew_approval_secret_mismatch` | The approval secret does not match the running daemon. |
+| `crew_platform_unsupported` | This computer runs Windows, where the commands do not work. |
+| `crew_no_vault` | `credentials unlock` found no vault to unlock, because this computer keeps Crew keys in its keyring. |
+| `crew_not_sent` | The request never left this computer. Run it again as it was. |
 
 Text output prints a display name in double quotes, such as `"Alice Chen" (@alice)`. A name with letters outside ASCII also has two invisible direction marks (U+2068 and U+2069) inside its quotes, so right-to-left text cannot reorder the rest of the line. Scripts should read names from JSON, which has neither the quotes nor the marks.
 
@@ -123,6 +137,10 @@ Save the invitation your host sent, or only its `brcrew1:` line, in a file such 
 
 To paste the invitation, pass `-`, end with Ctrl+D, and add `--yes`. If saving fails, the message names the option to add. One computer cannot use two institutions on one server.
 
+An invitation names one server account. If this computer signs in to the server as another account, the summary says so, such as ``This invitation is for @bob, but this computer signs in to lab-ubuntu as carol. Ask your host for your own invitation.`` Saving it anyway works, but that connection can never join. Your own invitation for that workspace then gets, in the preview, ``This computer already has lab for this workspace, signing in as another account, and it has never connected. Add --replace to save this invitation in its place.``, and without `--replace` the save is refused with ``This computer already has lab for this workspace, signing in as another account, and it has never connected. Run it again with --replace, or remove it with biorouter crew --connection lab connections remove.`` Run `join-invitation` again with `--replace` to save your invitation in place of that connection.
+
+For a workspace this computer already has, the preview says ``This computer already has this workspace as lab; saving again keeps that connection if its settings match.`` A save with other settings is refused with ``This workspace is already saved as lab. Run biorouter crew --connection lab join to finish joining.`` To change that connection, see [Change or remove a saved connection](#change-or-remove-a-saved-connection).
+
 `--mode`, `--institution`, `--username` and `--name` override the invitation's values. `--ssh-target` uses a login from your SSH settings and ignores the invitation's port and jump host. `--port`, `--identity-file` and `--proxy-jump` set SSH details. A relative `--identity-file`, or one starting with `~/`, is made absolute, and an empty `--proxy-jump` means none. `--remote-root PATH` gives agents a server work folder, for private models only, and `--remote-execution` lets them run commands there. See [Administration](administration.md).
 
 While `join` waits:
@@ -163,8 +181,8 @@ A failed `connect` says what went wrong and what to run, then the code below on 
 | SSH failure code | What to do |
 |---|---|
 | `crew_ssh_auth_required` | The server wants a password or a verification code. Run `auth`. |
-| `crew_ssh_key_refused` | The server refused this computer's SSH key and asks for nothing else, so `auth` cannot help. Check the login and key file in `connections show`, and ask IT which login and key to use. |
-| `crew_ssh_host_key_unknown` | Get the key fingerprint from IT, check it, and add the key to your known hosts file. |
+| `crew_ssh_key_refused` | The server refused this computer's SSH key and asks for nothing else, so `auth` cannot help. Check the login and key file in `connections show`, and ask IT which login and key to use. For a login on this machine, the sentence is ``Couldn't sign in as bob on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.`` Do that yourself, as step 2 of [Join from the workspace's own server](#join-from-the-workspaces-own-server) shows. |
+| `crew_ssh_host_key_unknown` | Get the key fingerprint from IT, check it, and add the key to your known hosts file. For a login on this machine, the sentence is ``localhost's host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.`` Do that yourself, as step 3 of [Join from the workspace's own server](#join-from-the-workspaces-own-server) shows. |
 | `crew_ssh_host_key_changed` | Do not connect. Ask IT to confirm the change. |
 | `crew_ssh_unreachable` | Check your network, or your VPN (the app that connects you to your institution's network). The daemon keeps trying. |
 | `crew_bridge_missing` | Install `~/.local/bin/biorouter-crew` yourself, or ask IT. See [Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account). |
@@ -256,6 +274,7 @@ A channel invitation needs the person in its team first. `invites accept` exits 
 ## Post and read messages
 
 - `send methods --text 'Ready.'` posts under your name. `--input FILE` reads the text from a file, or `-` for standard input. `--attachment ID` and `--reference ID` add files and can repeat.
+- A message is at most 64 KB. A longer one is refused before anything is sent, with ``Messages can be up to 64 KB. Save the text to a file and share it with biorouter crew files upload.`` (exit `2`, code `crew_message_too_long`).
 - `history methods --latest` shows the newest 100 messages. Without `--latest`, it starts from the oldest. `--limit` takes 1 to 200. With `--show-ids`, it ends with a `Cursor:` line to pass to `--before` or `--after`.
 - `search methods 'qPCR'` finds messages in one channel, in any case.
 - `watch methods` shows the newest messages, up to 200, then prints new ones as they arrive. `--new-only` prints only messages posted from now on, `--from-start` replays the channel from its oldest message, and `--after CURSOR` starts after a cursor. Ctrl+C stops it without cancelling tasks. If the daemon ends it, for example because you lost access, it prints why and exits with `1`.
@@ -318,7 +337,7 @@ biorouter crew grants grant SESSION_ID methods --context-channel analysis-lab/ra
 
 The first channel is where the chat posts. Each `--context-channel` adds one to read, up to 20 channels in all. `grants list` shows each chat and task with access, its state and time left. `context SESSION_ID` starts with the grant's channels, such as `Access: #methods · also reads #raw-data`, then lists the messages the chat can read, oldest first. Each post the chat makes ends with a line from your daemon naming the shared files it read since its last post, or saying it read none.
 
-Some workspace changes end every grant and task in the workspace. `grants list` then shows `Ended: Crew settings changed`, and you grant access again. [Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access) lists the changes.
+Some workspace changes end every grant and task in the workspace. `grants list` then shows `Ended: Crew settings changed`, and `context` says ``This chat's Crew access ended because Crew settings changed.`` (code `crew_grant_ended`), followed by the `grants grant` command that grants it again. Run that command. [Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access) lists the changes.
 
 `grants revoke SESSION_ID` exits with `0` only when the workspace confirms. After `Stopped on this device ...` (exit `1`), the chat already cannot use Crew, and Biorouter confirms later by itself. `Not revoked` means the chat still has access, so retry. A revoke does not prove that a command already running on the server stopped.
 
@@ -387,6 +406,11 @@ Your own daemon refuses some requests before they reach the workspace, each with
 | `crew_reconnecting`, `crew_not_sent` | Nothing was sent. Run the command again once Crew reconnects. |
 | `crew_outcome_unknown` | The request may have reached the workspace. See [Retry after an uncertain result](#retry-after-an-uncertain-result). |
 | `crew_credential_store_unavailable`, `crew_credential_store_refused` | Crew cannot use this computer's keyring. See [Keep device keys in an encrypted vault](#keep-device-keys-in-an-encrypted-vault). |
+| `crew_not_connected` | The connection is disconnected, and Crew is not dialling it again. The command says ``lab is disconnected. Run biorouter crew connect, then try again.`` Run `connect`, or `auth` if the server asks for a password or code. Nothing was sent. |
+| `crew_grant_ended` | The chat's Crew access ended. In JSON, `reason` is `settings_changed` or `ended`. The sentence names the `grants grant` command that grants it again. |
+| `crew_registry_unreadable` | Crew's saved connections on this computer (`connections.json`) were saved by a newer Biorouter, or are damaged, so nothing was changed. Update Biorouter, or restore the file from a backup. In JSON, `detail` holds what could not be read, for support. |
+| `crew_file_name_invisible` | The file's name has an invisible or formatting character. Rename the file, then share it again. |
+| `crew_destination_exists` | The file that `files download --output` names already exists. Add `--overwrite` to replace it, or choose another name. |
 
 ## Server commands
 

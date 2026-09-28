@@ -1215,6 +1215,84 @@ test('app-sentences: the joining page quotes the damaged-invitation note and bot
   );
 });
 
+test('saysTemplate never takes a name alone for the opening of a template that starts with one', () => {
+  const template = "{}'s host key isn't in your ~/.ssh/known_hosts yet. Add it.";
+  assert.ok(!saysTemplate('crew_ssh_host_key_unknown', template));
+  assert.ok(saysTemplate("localhost's host key isn't in your ~/.ssh/known_hosts yet.", template));
+  assert.ok(saysTemplate("localhost's host key isn't…", template));
+});
+
+test('command line: same-host rows, the codes the command line gives, and its new sentences (T3-DOC-3)', () => {
+  // The SSH rows as the live check found them: a member on the server sent to IT.
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text
+          .replace(/ For a login on this machine, the sentence is ``Couldn't sign in[^|]*\|/, ' |')
+          .replace(
+            / For a login on this machine, the sentence is ``localhost's host key[^|]*\|/,
+            ' |'
+          ),
+    },
+    'ssh-codes',
+    /row for `crew_ssh_key_refused` does not quote what a login on this machine gets/
+  );
+  // A code the command line gives, missing from the page.
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text
+          .split('\n')
+          .filter((line) => !line.startsWith('| `crew_connection_required` |'))
+          .join('\n'),
+    },
+    'refusal-codes',
+    /never names the command line's code `crew_connection_required`/
+  );
+  // One the command line starts to give later needs a row too.
+  assertCaught(
+    {
+      'crates/biorouter-cli/src/commands/crew/mod.rs': (text) =>
+        text.replace(
+          'const CONNECTION_REQUIRED: &str',
+          'const SOMETHING_NEW: &str = "crew_something_new";\nconst CONNECTION_REQUIRED: &str'
+        ),
+    },
+    'refusal-codes',
+    /never names the command line's code `crew_something_new`/
+  );
+  // The 64 KB refusal, unquoted, and then reworded in the code.
+  assertCaught(
+    {
+      [COMMAND_LINE]: swap(
+        'A longer one is refused before anything is sent, with ``Messages can be up to 64 KB. Save the text to a file and share it with biorouter crew files upload.`` (exit',
+        'A longer one is refused before anything is sent (exit'
+      ),
+    },
+    'app-sentences',
+    /does not quote the command line's the refusal of a message over 64 KB/
+  );
+  assertCaught(
+    {
+      'crates/biorouter-cli/src/commands/crew/output.rs': swap(
+        'Messages can be up to 64 KB. Save the text to a file',
+        'Messages can be up to 64 KB. Put the text in a file'
+      ),
+    },
+    'app-sentences',
+    /quotes "Messages can be up to 64 KB\. Save the text to a file and share it with biorouter crew files upload\.", which is not how/
+  );
+  // The join paragraph without --replace: the refusal the live check met, with no way out.
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text.replace(/\n\nAn invitation names one server account\.[^\n]*/, ''),
+    },
+    'app-sentences',
+    /does not quote the command line's join conflicts .* "This computer already has \{name\} for this workspace, signing in as another account, and it has never connected\. Run it again with --replace/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

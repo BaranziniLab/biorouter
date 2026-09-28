@@ -80,7 +80,12 @@
 //     shows it, and the pages a reader is sent to quote it (T3-DOC-1). The
 //     joining page quotes the damaged-invitation note and each join conflict
 //     to the end of a sentence, since each conflict has its own way out
-//     (T3-DOC-4).
+//     (T3-DOC-4). The command-line page quotes the command line's own
+//     sentences for a missing --connection, an over-long message, a join
+//     conflict, a disconnected connection and an ended grant (T3-DOC-3).
+//   * `refusal-codes` also holds every code the command line gives its own
+//     errors, and `ssh-codes` the words a login on this machine gets in place
+//     of the advice to ask IT (T3-DOC-3).
 //   * `data-paths`: "Where Crew keeps its data" has a row for every folder the
 //     code writes on a member computer (T3-DOC-2).
 //   * `work-folder`: while the server's sandbox gives a work-folder command no
@@ -148,6 +153,12 @@ const CREW_STATUS = 'ui/desktop/src/components/crew/state/crewStatus.ts';
 const SHARE_PATH = 'ui/desktop/src/utils/crewSharePath.ts';
 const HOSTING_PAGE = 'docs/crew/hosting-a-workspace.md';
 const CLI_CREW = 'crates/biorouter-cli/src/commands/crew/mod.rs';
+/** The command line's own words and codes. */
+const CLI_SOURCES = [
+  CLI_CREW,
+  'crates/biorouter-cli/src/commands/crew/output.rs',
+  'crates/biorouter-cli/src/daemon_client.rs',
+];
 const INVITATION_RS = 'crates/biorouter/src/crew/authentication.rs';
 const ADMINISTRATION = 'docs/crew/administration.md';
 const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
@@ -369,9 +380,11 @@ export function saysTemplate(phrase, template) {
   const stem = said.replace(/\s*(…|\.\.\.)$/, '').trimEnd();
   const opening = (end) => new RegExp(`^${templatePattern(whole.slice(0, end))}$`, 's').test(stem);
   for (let end = 1; end <= whole.length; end += 1) {
-    // Never cut a hole in half.
+    // Never cut a hole in half, and never take a hole alone for the opening: a template that
+    // starts with a name would then open every phrase.
     const before = whole.slice(0, end);
     if (before.lastIndexOf('{') > before.lastIndexOf('}')) continue;
+    if (before.replace(TEMPLATE_HOLE, '').replace(/[^\p{L}\p{N}]/gu, '').length < 4) continue;
     if (opening(end)) return true;
   }
   return false;
@@ -926,7 +939,9 @@ export function checkCrewManual(tree = repoTree()) {
   const coreForApp = need(CREW_CORE, 'app-sentences');
   const invitationSource = need(INVITATION_RS, 'app-sentences');
   const onboardingSource = need(ONBOARDING_COPY, 'app-sentences');
-  const opening = (texts, opens) => texts.filter((text) => opens.test(sameQuotes(text)));
+  const opening = (texts, opens) =>
+    texts.map((text) => text.trim()).filter((text) => opens.test(sameQuotes(text)));
+  const cliLiterals = CLI_SOURCES.flatMap((path) => rustLiterals(tree.read(path) || ''));
   // A person added to a team or channel. A device's "Added September 24, 2026" is another string.
   const addedOpens = /^Added\b(?! [A-Z][a-z]+ \d)/;
   holdToFamilies('app-sentences', [
@@ -958,6 +973,33 @@ export function checkCrewManual(tree = repoTree()) {
       source: dialogsSource,
       requiredIn: [TROUBLESHOOTING],
     },
+    {
+      name: `the command line's join conflicts in ${CLI_CREW}`,
+      opens: /^(?:This computer already has|This workspace is already saved as)\b/,
+      templates: opening(
+        cliLiterals,
+        /^(?:This computer already has|This workspace is already saved as)\b/
+      ),
+      source: cliCrewSource,
+      requiredIn: [COMMAND_LINE],
+      requiredEach: true,
+      onlyIn: [COMMAND_LINE],
+    },
+    ...[
+      ['the login mismatch warning', /^This invitation is for @/],
+      ['the refusal of a missing --connection', /^Several Crew connections are saved\b/],
+      ['the refusal of a message over 64 KB', /^Messages can be up to\b/],
+      ['the ended grant sentences', /^This chat's Crew access ended\b/],
+      ['the disconnected sentence', /^\S+ is disconnected\. Run\b/],
+    ].map(([what, opens]) => ({
+      name: `the command line's ${what} in ${CLI_SOURCES.join(', ')}`,
+      opens,
+      templates: opening(cliLiterals, opens),
+      source: cliCrewSource,
+      requiredIn: [COMMAND_LINE],
+      requiredWhole: true,
+      onlyIn: [COMMAND_LINE],
+    })),
     {
       name: `the damaged-invitation note in ${ONBOARDING_COPY}`,
       opens: /^This invitation is incomplete\b/,
@@ -1007,6 +1049,28 @@ export function checkCrewManual(tree = repoTree()) {
         fail('refusal-codes', `${COMMAND_LINE} never names the daemon's refusal code \`${code}\``);
       }
     }
+    // And every code the command line gives its own errors (T3-DOC-3): a wrong command line,
+    // several connections and no --connection, a message too long to send.
+    const cliCodes = [
+      ...new Set(
+        CLI_SOURCES.flatMap((path) => [
+          ...(tree.read(path) || '')
+            .split(/\n#\[cfg\(test\)\]\nmod \w+ \{/)[0]
+            .matchAll(/\bconst [A-Z_]+: &str = "(crew_[a-z_]+)";/g),
+        ]).map((m) => m[1])
+      ),
+    ];
+    if (cliCodes.length < 8) {
+      fail(
+        'refusal-codes',
+        `found ${cliCodes.length} codes in ${CLI_SOURCES.join(', ')}; update this reader`
+      );
+    }
+    for (const code of cliCodes.filter((code) => !codes.includes(code))) {
+      if (!commandLine.includes(`\`${code}\``)) {
+        fail('refusal-codes', `${COMMAND_LINE} never names the command line's code \`${code}\``);
+      }
+    }
   }
 
   // ── ssh-codes ────────────────────────────────────────────────────────────
@@ -1023,9 +1087,32 @@ export function checkCrewManual(tree = repoTree()) {
       );
     }
     const rows = markdownBlocks(tree.read(COMMAND_LINE) || '').filter((b) => b.startsWith('|'));
+    const rowOf = (code) => rows.find((row) => new RegExp(`^\\|\\s*\`${code}\`\\s*\\|`).test(row));
     for (const code of codes) {
-      if (!rows.some((row) => new RegExp(`^\\|\\s*\`${code}\`\\s*\\|`).test(row))) {
+      if (!rowOf(code)) {
         fail('ssh-codes', `${COMMAND_LINE}'s SSH failure table has no row for \`${code}\``);
+      }
+    }
+    // A failure the command line words otherwise for a login on this machine (T3-DOC-3) quotes
+    // those words in its row too: the general advice sends a member on the server to IT.
+    const sameHost = /pub fn same_host_connect_failure_text\([\s\S]*?\n\}/.exec(cliOutput)?.[0];
+    if (sameHost === undefined) {
+      fail(
+        'ssh-codes',
+        `${CLI_OUTPUT} has no same_host_connect_failure_text; re-read it and update this rule`
+      );
+    } else {
+      for (const [, code, template] of sameHost.matchAll(
+        /"(crew_[a-z_]+)" => Some\(format!\(\s*"((?:[^"\\]|\\.)*)"/g
+      )) {
+        const row = rowOf(code);
+        const said = codeSpans(row?.split('|').slice(2).join('|') ?? '');
+        if (row && !said.some((phrase) => saysTemplate(phrase, template))) {
+          fail(
+            'ssh-codes',
+            `${COMMAND_LINE}'s row for \`${code}\` does not quote what a login on this machine gets: "${template}"`
+          );
+        }
       }
     }
   }
