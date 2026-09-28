@@ -927,6 +927,17 @@ describe('the download refusal codes are the daemon’s (W2-HRD-4)', () => {
     expect(rust).toContain(`"\\u{201c}{name}\\u{201d}${rest.slice(1)}"`);
     expect(rust).toContain(`"${crewShareCopy.folderShared}"`);
   });
+
+  it('keys the privacy change on the Crew core’s own code (W2-DMN-9)', () => {
+    const refusal = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../crates/biorouter/src/crew/refusal.rs'
+      ),
+      'utf8'
+    );
+    expect(refusal).toContain(`pub const MODE_MISMATCH: &str = "${CREW_MODE_MISMATCH}";`);
+  });
 });
 
 describe('daemonRefusalSentence', () => {
