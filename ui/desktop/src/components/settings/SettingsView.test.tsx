@@ -132,4 +132,27 @@ describe('SettingsView sits on the chat measure', () => {
     expect(columns).toHaveLength(3);
     for (const column of columns) expect(column.dataset.size).toBe('chat');
   });
+
+  /**
+   * W2-PRV-11. Radix dismisses its dialogs on a capture-phase Escape and marks
+   * the event handled with preventDefault(); the Settings listener used to
+   * leave Settings on that same key press, so closing a modal also went Home.
+   */
+  it('leaves Settings on a bare Escape, but not on one a dialog already handled', () => {
+    const onClose = vi.fn();
+    render(<SettingsView onClose={onClose} setView={() => {}} viewOptions={{}} />);
+
+    const handledByDialog = (event: KeyboardEvent) => event.preventDefault();
+    document.addEventListener('keydown', handledByDialog, { capture: true });
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    document.removeEventListener('keydown', handledByDialog, { capture: true });
+    expect(onClose).not.toHaveBeenCalled();
+
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });
