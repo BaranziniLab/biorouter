@@ -3345,6 +3345,7 @@ async fn teams(api: &Api, command: TeamCommand) -> Result<Reply> {
                 teams,
                 Box::new(
                     api.human(Directory::from_snapshot(&snapshot))
+                        .with_view(output::View::Teams)
                         .with_notes(note),
                 ),
             )
@@ -3410,6 +3411,7 @@ async fn list_channels(api: &Api, team: Option<&str>) -> Result<Reply> {
         channels,
         Box::new(
             api.human(Directory::from_snapshot(&snapshot))
+                .with_view(output::View::Channels)
                 .with_notes(note),
         ),
     ))
@@ -3534,7 +3536,14 @@ async fn invitations(api: &Api, command: InvitationCommand) -> Result<Reply> {
         InvitationCommand::List => {
             let snapshot = api.snapshot().await?;
             let invitations = snapshot_field(&snapshot, "invitations")?;
-            api.show_with(invitations, Directory::from_snapshot(&snapshot))
+            // CLIDOCS-F12: each list says its own empty sentence, never "No items.".
+            Reply::Show(
+                invitations,
+                Box::new(
+                    api.human(Directory::from_snapshot(&snapshot))
+                        .with_view(output::View::Invitations),
+                ),
+            )
         }
         InvitationCommand::Create {
             person,
@@ -7779,6 +7788,35 @@ mod tests {
             panic!("JSON is the manifest")
         };
         assert_eq!(manifest["source_channels"], json!([METHODS, GENERAL]));
+    }
+
+    /// CLIDOCS-F12: an empty list says what it lists, never "No items.".
+    #[tokio::test]
+    async fn an_empty_list_names_what_it_lists() {
+        let empty = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                let mut snapshot = snapshot();
+                snapshot["teams"] = json!([]);
+                snapshot["channels"] = json!([]);
+                return Ok(snapshot);
+            }
+            standard(method, path, body)
+        };
+        for (command, sentence) in [
+            (
+                CrewCommand::Invites(InvitationCommand::List),
+                "No pending invitations.",
+            ),
+            (CrewCommand::Teams(TeamCommand::List), "No teams."),
+            (
+                CrewCommand::Channels(ChannelCommand::List { team: None }),
+                "No channels.",
+            ),
+        ] {
+            let (api, _) = api_with(OutputFormat::Text, empty);
+            let lines = said(run(&api, command).await.expect("listed"));
+            assert_eq!(lines, [sentence]);
+        }
     }
 
     /// CLIDOCS-F10, CLIDOCS-F6: `files forget` says what it did in the terminal's words, and an

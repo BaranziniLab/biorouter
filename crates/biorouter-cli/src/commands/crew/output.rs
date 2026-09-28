@@ -612,6 +612,9 @@ pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -
         }
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
         ("already_approved", Some(name)) => already_approved(name),
+        // CLIDOCS-F12: the broker's "Choose Add device…" names the desktop's control; the
+        // hint below names this terminal's flag.
+        ("already_member", Some(name)) => format!("@{name} is already a member."),
         _ if SENTENCE_CODES.contains(&code) && reads_as_sentence(sentence) => sentence.to_owned(),
         _ => plain_refusal(code, sentence),
     };
@@ -1768,7 +1771,7 @@ impl Ctx {
         let mut out = self.rows(
             value,
             "invitations",
-            "No invitations.",
+            "No pending invitations.",
             Self::invitation_row,
         );
         if !list(value, "invitations").is_empty() {
@@ -2986,6 +2989,13 @@ fn credentials(value: &Value) -> String {
         (_, Some(true)) => "Locked",
         _ => "Unlocked",
     };
+    // SETUPHPC2-F-C: a keyring that cannot keep a key (a headless Linux node with no Secret
+    // Service) is not the normal "Not set up · keyring": say so, and what to run instead.
+    if value.get("available").and_then(Value::as_bool) == Some(false) {
+        return format!(
+            "Credential vault: {state} · no keyring on this computer; run biorouter crew credentials init"
+        );
+    }
     match str_field(value, "backend") {
         Some(backend) => format!("Credential vault: {state} · {}", safe_text(backend)),
         None => format!("Credential vault: {state}"),
@@ -4333,6 +4343,16 @@ mod tests {
                 json!({"backend":"file","initialized":true,"locked":false}),
                 "Credential vault: Unlocked · file",
             ),
+            // Normal on a desktop, where the OS keyring keeps the keys.
+            (
+                json!({"backend":"keyring","initialized":false,"locked":false,"available":true}),
+                "Credential vault: Not set up · keyring",
+            ),
+            // SETUPHPC2-F-C: a headless node's keyring cannot keep a key.
+            (
+                json!({"backend":"keyring","initialized":false,"locked":false,"available":false}),
+                "Credential vault: Not set up · no keyring on this computer; run biorouter crew credentials init",
+            ),
             (
                 json!({"detached":true,"transfer_id":TRANSFER}),
                 "Stopped watching. The transfer continues.",
@@ -4584,7 +4604,7 @@ mod tests {
         (
             "already_member",
             "already_member: @bob is already a member. Choose Add device to add another computer for them.",
-            "@bob is already a member. Choose Add device to add another computer for them.\nTo add another computer for them, run: biorouter crew enroll invite @bob --add-device",
+            "@bob is already a member.\nTo add another computer for them, run: biorouter crew enroll invite @bob --add-device",
         ),
         (
             "code_mismatch",
