@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CLAMP_CHAR_THRESHOLD } from '../../../utils/messageClamp';
 import { timelineCopy } from './copy';
-import { MessageBody, safeExternalHref } from './MessageBody';
+import { MessageBody, mismatchedLinkHost, safeExternalHref } from './MessageBody';
 
 /**
  * Message bodies are markdown with nothing active in them (supplement: an
@@ -181,9 +181,92 @@ describe('markdown', () => {
         '[https://www.ucsf.edu@evil.example.net/login](https://evil.example.net/login)',
         'evil.example.net',
       ],
+      // The words need not be one bare address to name one (a review found each of these drew no
+      // host while the words plainly said ucsf.edu).
+      [
+        'a sentence’s final period',
+        '[ucsf.edu.](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      ['a comma', '[ucsf.edu,](https://evil.example.net/login)', 'evil.example.net'],
+      ['an exclamation mark', '[ucsf.edu!](https://evil.example.net/login)', 'evil.example.net'],
+      ['brackets', '[(https://www.ucsf.edu)](https://evil.example.net/login)', 'evil.example.net'],
+      ['quotes', '[“www.ucsf.edu”](https://evil.example.net/login)', 'evil.example.net'],
+      [
+        'a word after the address',
+        '[https://www.ucsf.edu login](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'words after the address and its path',
+        '[https://www.ucsf.edu/login (official)](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'words before the address',
+        '[Go to ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'backslashes for the scheme’s slashes',
+        // Markdown reads `\\` as one backslash: the words are `https:\\www.ucsf.edu`.
+        '[https:\\\\\\\\www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'one backslash for the scheme’s slashes',
+        '[https:\\\\www.ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'look-alike slashes and full stops',
+        '[https:／／www.ucsf。edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a hidden character inside the name',
+        '[ucsf\u{200B}.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'tags around the name',
+        '[<b>ucsf.edu</b>](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a name the link does not open among one it does',
+        '[evil.example.net, not ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      [
+        'a name glued to a word',
+        '[visit:ucsf.edu](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      ['an address', '[10.0.0.1](https://evil.example.net/login)', 'evil.example.net'],
+      [
+        'full-width letters',
+        '[ｕｃｓｆ.ｅｄｕ](https://evil.example.net/login)',
+        'evil.example.net',
+      ],
+      ['a dot leader for a dot', '[ucsf․edu](https://evil.example.net/login)', 'evil.example.net'],
     ])('names the real host after %s', (_label, body, host) => {
       const { container } = render(<MessageBody body={body} />);
       expect(container.querySelector('.crew-md-link-host')).toHaveTextContent(`(${host})`);
+    });
+
+    // Link words are up to 64 KB somebody else chose, read as each row mounts: every test is
+    // anchored or a plain split, so none rescans the words from each position.
+    it.each([
+      ['labels', 'a.'.repeat(32_000)],
+      ['dots and hyphens', `${'-.'.repeat(32_000)}x`],
+      ['one long label', `${'a'.repeat(64_000)}-`],
+      ['a scheme-like run', `${'h'.repeat(64_000)}:`],
+      ['addresses', 'ucsf.edu '.repeat(7_000)],
+    ])('reads 64 KB of %s in bounded time', (_label, words) => {
+      const started = performance.now();
+      mismatchedLinkHost(words, 'https://www.ucsf.edu/');
+      expect(performance.now() - started).toBeLessThan(750);
     });
 
     it.each([
@@ -191,6 +274,13 @@ describe('markdown', () => {
       ['the same host with or without www', '[ucsf.edu](https://www.ucsf.edu/)'],
       ['words that are not an address', '[the lab docs](https://evil.example.net/)'],
       ['an autolinked address', 'https://www.ucsf.edu/news'],
+      ['an autolinked address to a file', 'https://www.ucsf.edu/docs/index.html'],
+      [
+        'the same host in a sentence',
+        '[Read the news at www.ucsf.edu.](https://www.ucsf.edu/news)',
+      ],
+      ['abbreviations and numbers', '[e.g. Fig.2, v1.2, U.S.A.](https://www.ucsf.edu/)'],
+      ['the same host, then a line of words', '[www.ucsf.edu\nnews](https://www.ucsf.edu/)'],
     ])('adds nothing for %s', (_label, body) => {
       const { container } = render(<MessageBody body={body} />);
       expect(screen.getByRole('link')).toBeInTheDocument();
@@ -390,6 +480,24 @@ describe('hidden characters and direction', () => {
     await user.click(screen.getByRole('button', { name: timelineCopy.copyCode }));
     expect(writeText).toHaveBeenCalledWith(code);
   });
+
+  /**
+   * react-markdown turns raw HTML into text only as it builds the elements, after the body step,
+   * so an HTML block, a tag's attribute or a comment kept its hidden characters live.
+   */
+  it.each([
+    ['an HTML block', '<div>\nOpen invoice_\u{202E}gnp.exe now\n</div>', '<div>'],
+    ['an inline tag’s attribute', 'Open invoice_<x a="\u{202E}gnp.exe"> now', '<x a="'],
+    ['an HTML comment', 'Look <!-- \u{202E} --> here', '<!-- '],
+  ])(
+    'shows the hidden characters of %s, which is drawn as the characters typed',
+    (_label, body, typed) => {
+      const { container } = render(<MessageBody body={body} />);
+      expect(container.textContent).not.toMatch(/[\u{202A}-\u{202E}\u{2066}-\u{2069}]/u);
+      expect(hiddenMarks(container)).toEqual(['\\u{202e}']);
+      expect(container).toHaveTextContent(typed);
+    }
+  );
 
   it('names a table region with the escapes, never the raw controls', () => {
     const { container } = render(<MessageBody body={'| a\u{202E}b |\n| --- |\n| 1 |'} />);

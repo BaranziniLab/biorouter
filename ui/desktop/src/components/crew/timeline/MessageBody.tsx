@@ -14,7 +14,7 @@ import remarkGfm from 'remark-gfm';
 import { Button } from '../../ui/button';
 import { ChevronDown, ChevronUp, Image as ImageIcon } from '../../icons/app-icons';
 import { CLAMP_MAX_HEIGHT_PX, describeMessageLength } from '../../../utils/messageClamp';
-import { revealHiddenCharacters } from '../../../utils/untrustedText';
+import { revealHiddenCharacters, stripHiddenCharacters } from '../../../utils/untrustedText';
 import { bodyNodeText, rehypeCrewBodyText } from './bodyText';
 import { timelineCopy } from './copy';
 import { CopyIconButton } from './TimelineCopy';
@@ -44,7 +44,8 @@ import { CopyIconButton } from './TimelineCopy';
  *   rather than a link whose click does nothing ({@link openableHref}).
  * - **Raw HTML is text.** react-markdown turns an HTML node into a text node
  *   unless `rehype-raw` is installed, and it is not — so `<svg onload>` or
- *   `<script>` shows as the characters typed.
+ *   `<script>` shows as the characters typed. The body step (`bodyText.ts`)
+ *   makes that text first, so its hidden characters are shown like any other's.
  * - **No math, no syntax highlighting, no "Run".** Math would bring KaTeX's
  *   `\href`; highlighting is decoration; running a teammate's command is a
  *   decision for a terminal, not a click.
@@ -184,20 +185,102 @@ function comparableHost(host: string): string {
 }
 
 /**
- * The host a link's words name, when they read as an address (`https://www.ucsf.edu/x`,
- * `www.ucsf.edu`, `ucsf.edu/login`); null for words that do not (`the docs`, `@bob`).
+ * What the words hold beyond the shared drop set that is never drawn either (a variation selector,
+ * a Hangul filler): removed first, then the shared set, so the words are read as the eye reads them.
  */
-function hostInWords(words: string): { host: string; userinfo: boolean } | null {
-  const text = words.trim();
-  if (!text || /\s/.test(text)) return null;
-  const scheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text);
-  if (!scheme && !/^[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}(?:[/:?#]|$)/u.test(text))
-    return null;
+const UNDRAWN_BEYOND_DROP_SET = /\p{Default_Ignorable_Code_Point}/gu;
+/** A slash as the eye takes it: the URL parser reads a backslash as one, the others look like one. */
+const SLASH_LOOKALIKE = /[\\\u{FF0F}\u{2044}\u{2215}\u{29F8}]/gu;
+/** A dot as a host name takes it: the URL parser reads these full stops as dots. */
+const DOT_LOOKALIKE = /[\u{3002}\u{FF0E}\u{FF61}\u{2024}\u{FE52}]/gu;
+/** Where an address's host part ends: its path, query or fragment. */
+const AUTHORITY_END = /[/?#]/;
+/** A run of what a host name may hold: letters, marks, digits, hyphens and dots. */
+const HOST_RUN = /[^\p{L}\p{M}\p{N}.-]+/u;
+/** One label of a host name. Anchored, so it is tried once per label. */
+const HOST_LABEL = /^[\p{L}\p{N}](?:[\p{L}\p{M}\p{N}-]*[\p{L}\p{M}\p{N}])?$/u;
+/** The letters a top-level label starts with (`edu` of `edu-login`), or a punycode label. */
+const TOP_LEVEL = /^(?:xn--[a-z0-9-]+$|\p{L}[\p{L}\p{M}]*)/iu;
+const IPV4_WORDS = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+
+/** `part` without the dots and hyphens at its ends, by a loop: `[.-]+$` would rescan every start. */
+function trimDotsAndHyphens(part: string): string {
+  let start = 0;
+  let end = part.length;
+  while (start < end && (part[start] === '.' || part[start] === '-')) start += 1;
+  while (end > start && (part[end - 1] === '.' || part[end - 1] === '-')) end -= 1;
+  return part.slice(start, end);
+}
+
+/**
+ * The host names in a run of host characters: `www.ucsf.edu` of `www.ucsf.edu.`, `ucsf.edu` of
+ * `ucsf.edu-login`, an IPv4 address; nothing for `Fig.2`, `e.g` or a single word.
+ */
+function hostsInRun(run: string): string[] {
+  const hosts: string[] = [];
+  for (const part of run.split(/\.{2,}/)) {
+    const candidate = trimDotsAndHyphens(part);
+    if (!candidate.includes('.')) continue;
+    if (IPV4_WORDS.test(candidate)) {
+      hosts.push(candidate);
+      continue;
+    }
+    const labels = candidate.split('.');
+    const top = TOP_LEVEL.exec(labels[labels.length - 1])?.[0] ?? '';
+    if (top.length < 2) continue;
+    // The labels before it, back to the first one a host could not have.
+    let first = labels.length - 1;
+    while (first > 0 && HOST_LABEL.test(labels[first - 1])) first -= 1;
+    if (first === labels.length - 1) continue;
+    hosts.push([...labels.slice(first, -1), top].join('.'));
+  }
+  return hosts;
+}
+
+/**
+ * What a link's words say about where it goes (QA M4): every host they name, and whether an
+ * address in them carries a user name (`https://www.ucsf.edu@evil.example.net/`, which names
+ * evil.example.net and reads as ucsf.edu).
+ *
+ * Every address-shaped part counts, wherever it is in the words and whatever surrounds it: a
+ * sentence's final period (`ucsf.edu.`), a comma or a bracket (`(https://www.ucsf.edu)`), quotes,
+ * other words (`Go to ucsf.edu`, `https://www.ucsf.edu login`), backslashes or look-alike slashes
+ * for the scheme's (`https:\\www.ucsf.edu`), full stops the parser takes as dots, and characters
+ * that draw nothing. Only the host part of an address is read: `index.html` in a path is not a
+ * host. Each word is looked at once, and each test is anchored, so a long link costs no more than
+ * its length.
+ */
+function addressesInWords(words: string): { hosts: string[]; userinfo: boolean } {
+  const hosts: string[] = [];
+  let userinfo = false;
+  // A break or a tab still parts two words: made a space before the controls are dropped. Then
+  // compatibility forms are read as what they stand for (`ｕｃｓｆ.ｅｄｕ`, `ucsf․edu`), as the URL
+  // parser reads them.
+  const text = stripHiddenCharacters(
+    words.replace(/[\t\n\v\f\r]/g, ' ').replace(UNDRAWN_BEYOND_DROP_SET, '')
+  )
+    .normalize('NFKC')
+    .replace(SLASH_LOOKALIKE, '/')
+    .replace(DOT_LOOKALIKE, '.');
+  for (const word of text.split(/\s+/)) {
+    if (!word) continue;
+    // After a scheme, however many slashes follow it (the parser takes `https:/x` as `https://x`).
+    const scheme = word.indexOf(':/');
+    let start = scheme >= 0 ? scheme + 1 : 0;
+    while (scheme >= 0 && word[start] === '/') start += 1;
+    const rest = word.slice(start);
+    const end = rest.search(AUTHORITY_END);
+    const authority = end >= 0 ? rest.slice(0, end) : rest;
+    if (scheme >= 0 && authority.includes('@')) userinfo = true;
+    for (const run of authority.split(HOST_RUN)) hosts.push(...hostsInRun(run));
+  }
+  return { hosts, userinfo };
+}
+
+/** A host name as the URL parser writes it (`xn--` for a look-alike), or null for none it takes. */
+function parsedHost(host: string): string | null {
   try {
-    const url = new URL(scheme ? text : `https://${text}`);
-    return url.hostname
-      ? { host: url.hostname, userinfo: Boolean(url.username || url.password) }
-      : null;
+    return new URL(`https://${host}/`).hostname || null;
   } catch {
     return null;
   }
@@ -207,22 +290,25 @@ function hostInWords(words: string): { host: string; userinfo: boolean } | null 
  * The host a link really opens, when its words name a different one (QA M4): the link
  * `[https://www.ucsf.edu](https://evil.example.net/login)` read "https://www.ucsf.edu", with the
  * target only in a hover title that keyboard and screen-reader users never get. Null when the words
- * are not an address or name the same host (`www.` aside). A look-alike name in the words is
- * turned to its `xn--` form by the parser, so it never matches the real one.
+ * name no host, or name only the one the link opens (`www.` aside). A look-alike name in the words
+ * is turned to its `xn--` form by the parser, so it never matches the real one; a name the parser
+ * refuses matches nothing either. Words whose address carries a user name always get the host.
  */
 export function mismatchedLinkHost(words: string, href: string): string | null {
-  const named = hostInWords(words);
-  if (!named) return null;
   let target: string;
   try {
     target = new URL(href).hostname;
   } catch {
     return null;
   }
-  // Words written `https://www.ucsf.edu@evil.example.net/` name evil.example.net, and read as
-  // ucsf.edu: the host is said whatever it is.
+  const named = addressesInWords(words);
   if (named.userinfo) return target;
-  return comparableHost(named.host) === comparableHost(target) ? null : target;
+  const opened = comparableHost(target);
+  const differs = named.hosts.some((host) => {
+    const parsed = parsedHost(host);
+    return parsed === null || comparableHost(parsed) !== opened;
+  });
+  return differs ? target : null;
 }
 
 /** The real host after a link's words, inside the link so it is read as part of its name. */

@@ -17,6 +17,8 @@ import { timelineCopy } from './copy';
  *    a hidden "mentions you" span with `mentionLabelId` is added at its end, which the row names
  *    itself by (`aria-labelledby`), and the row's stylesheet gives the row its accent.
  *
+ * Raw HTML, which this surface draws as the characters typed, is text here like any other.
+ *
  * A fenced code block is left alone here: `CodeBlock` draws its text through `VisibleText` and
  * copies the raw text. Nothing here changes what is stored, sent or copied.
  */
@@ -158,13 +160,20 @@ const NO_MENTION = new Set(['code', 'a']);
 /**
  * Rewrite the tree's text nodes in place, and say whether a mention was marked. `pre` is skipped:
  * a code block draws and copies its own text.
+ *
+ * Raw HTML is text too, and is rewritten here as text. With `allowDangerousHtml`, an HTML block, an
+ * inline tag (attributes and all) or a comment reaches this step as a `raw` node, and react-markdown
+ * turns it into a text node only afterwards, as it builds the elements. Left for that, its hidden
+ * characters were drawn live: `<div>invoice_{U+202E}gnp.exe</div>` read `invoice_exe.png`. So a
+ * raw node is replaced by the same text nodes and escapes as any other text, and react-markdown
+ * finds no raw node left to convert.
  */
 function transformChildren(node: BodyNode, pattern: RegExp | null, marking: boolean): boolean {
   if (!Array.isArray(node.children)) return false;
   let mentioned = false;
   const next: BodyNode[] = [];
   for (const child of node.children) {
-    if (child.type === 'text' && typeof child.value === 'string') {
+    if ((child.type === 'text' || child.type === 'raw') && typeof child.value === 'string') {
       const replaced = transformText(child.value, pattern, marking);
       if (replaced.mentioned) mentioned = true;
       next.push(...replaced.nodes);
