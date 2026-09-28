@@ -9,6 +9,8 @@ import { disclosureTitle, useDisclosure } from '../../privacy/disclosureCopy';
 import { DisclosureProse } from '../../privacy/DisclosureProse';
 import { privacyTiersOffCopy } from '../../privacy/privacyTiersOffCopy';
 import { RecordedIn } from '../../privacy/RecordedIn';
+import { useOptionalModelAndProvider } from '../../ModelAndProviderContext';
+import { useBoundProviderTier } from '../../privacy/useBoundProviderTier';
 import {
   DISABLE_PHRASE,
   PRIVACY_TIERS_KEY,
@@ -212,11 +214,17 @@ export default function PrivacyPanel() {
               the one-definition rule holds. Only the substitution differs: the
               modal names the provider it is about to open, and this pane is
               about the whole class, so the class is what fills the slot. */}
+            {/* W2-PRV-14: the settings copy is about the CLASS. The dialog's
+                copy says "this model" and "this chat", and on this panel,
+                shown whatever is bound, a person on a private model read that
+                as their own. The bound model's tier is stated beside it. The
+                dialog's copy is the fallback for a daemon that predates it. */}
             <p className="text-label text-text-default">
-              {disclosureTitle(disclosure, 'A non-private model')}
+              {disclosure.settingsTitle ?? disclosureTitle(disclosure, 'A non-private model')}
             </p>
+            <CurrentModelTier />
             <DisclosureProse
-              text={disclosure.long}
+              text={disclosure.settings ?? disclosure.long}
               paragraphClassName="min-w-0 [overflow-wrap:anywhere]"
             />
             {!enabled && (
@@ -383,5 +391,27 @@ export default function PrivacyPanel() {
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * W2-PRV-14 — which side of the line the bound model is on, beside the
+ * statement about non-private models, so nobody has to guess whether it is
+ * about them. Renders nothing outside the model context or while the tier is
+ * unresolved: an unresolved tier is never stated as public.
+ */
+function CurrentModelTier() {
+  const modelContext = useOptionalModelAndProvider();
+  if (!modelContext?.currentModel) return null;
+  return <CurrentModelTierLine model={modelContext.currentModel} />;
+}
+
+function CurrentModelTierLine({ model }: { model: string }) {
+  const tier = useBoundProviderTier();
+  if (tier !== 'private' && tier !== 'public') return null;
+  return (
+    <p data-testid="privacy-current-model-tier" className="min-w-0 text-text-muted">
+      Your current model, {model}, is {tier}.
+    </p>
   );
 }

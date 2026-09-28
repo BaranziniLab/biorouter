@@ -1869,6 +1869,11 @@ pub struct PrivacyDisclosureResponse {
     /// The one-line form: the model chip's tooltip and the provider grid's
     /// Commercial section.
     pub short: String,
+    /// Settings > App > Privacy's heading and long form: about non-private
+    /// models as a class, never "this model" or "this chat" (W2-PRV-14). The
+    /// panel shows it whatever model is bound, beside that model's tier.
+    pub settings_title: String,
+    pub settings: String,
     /// Has the user acknowledged on this install? Once per install, not once per
     /// session — a dialog on every chat is a dialog nobody reads.
     pub acknowledged: bool,
@@ -1896,6 +1901,8 @@ pub async fn get_privacy_disclosure() -> Json<PrivacyDisclosureResponse> {
         title_template: disclosure::COPY_TITLE_TEMPLATE.to_string(),
         long: disclosure::COPY_LONG.to_string(),
         short: disclosure::COPY_SHORT.to_string(),
+        settings_title: disclosure::COPY_SETTINGS_TITLE.to_string(),
+        settings: disclosure::COPY_SETTINGS.to_string(),
         acknowledged: disclosure::is_acknowledged(),
     })
 }
@@ -2745,6 +2752,14 @@ mod privacy_disclosure_tests {
         let served = get_privacy_disclosure().await.0;
         assert_eq!(served.long, biorouter::privacy::disclosure::COPY_LONG);
         assert_eq!(served.short, biorouter::privacy::disclosure::COPY_SHORT);
+        assert_eq!(
+            served.settings,
+            biorouter::privacy::disclosure::COPY_SETTINGS
+        );
+        assert_eq!(
+            served.settings_title,
+            biorouter::privacy::disclosure::COPY_SETTINGS_TITLE
+        );
         assert_eq!(
             served.title_template,
             biorouter::privacy::disclosure::COPY_TITLE_TEMPLATE

@@ -1065,6 +1065,13 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   );
 };
 
+/**
+ * {@link useModelAndProvider} for a surface that can also render outside the
+ * provider (a settings panel mounted alone in a test or a harness): `undefined`
+ * there instead of a throw.
+ */
+export const useOptionalModelAndProvider = () => useContext(ModelAndProviderContext);
+
 export const useModelAndProvider = () => {
   const context = useContext(ModelAndProviderContext);
   if (context === undefined) {

@@ -104,6 +104,34 @@ pub const COPY_SHORT: &str = "Not HIPAA-compliant, not on-premise, not local. Th
 read files on this computer. Biorouter will not hand it another chat's transcript or a \
 knowledge base marked private.";
 
+/// The settings panel's heading for [`COPY_SETTINGS`]: a lead about the class,
+/// never about the model or chat on screen (W2-PRV-14).
+pub const COPY_SETTINGS_TITLE: &str = "About non-private models";
+
+/// The long form as Settings > App > Privacy shows it: the same three
+/// paragraphs as [`COPY_LONG`], in the same order and with the same emphasis,
+/// written about the CLASS.
+///
+/// ⚠ **Its own copy because the panel is not the dialog.** [`COPY_LONG`] is
+/// written for the blocking dialog that names one provider ("Anything a chat on
+/// this model can reach", "switch this chat"), and the panel shows it
+/// permanently above the switch, whatever model is bound (DR-17 requirement 3,
+/// Task 30A). A person on a private model read "this model" as their own. The
+/// panel states the bound model's tier beside it instead.
+pub const COPY_SETTINGS: &str = "\
+A non-private model is not HIPAA-compliant, is not hosted on-premise, and does not run on \
+this machine. It can read **files on this computer**. Anything a chat on such a model can \
+reach, it can send there: the contents of your working directory, and whatever a command you \
+approve prints.
+
+Biorouter does stop three things: such a model cannot read another chat's transcript, cannot \
+read a knowledge base marked private, and cannot use an extension marked private or switch \
+its chat to a private model to reach one.
+
+It **does not** stop it reading ordinary files on this computer through the shell, including \
+files an earlier private chat wrote outside Biorouter's own storage. If the work involves \
+patient data, use a local model or an institutional one.";
+
 /// The dialog heading for `provider_display_name`.
 pub fn title_for(provider_display_name: &str) -> String {
     COPY_TITLE_TEMPLATE.replace("{provider}", provider_display_name)

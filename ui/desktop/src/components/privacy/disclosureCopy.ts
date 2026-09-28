@@ -28,6 +28,13 @@ export interface DisclosureCopy {
   long: string;
   /** The one-line form: the model chip's tooltip, the provider grid. */
   short: string;
+  /**
+   * Settings > App > Privacy's heading and long form, written about the class
+   * rather than "this model" (W2-PRV-14). `null` from a daemon that predates
+   * them, where the panel falls back to the dialog's copy.
+   */
+  settingsTitle?: string | null;
+  settings?: string | null;
 }
 
 export interface DisclosureState {
@@ -173,11 +180,16 @@ function ensureFetched() {
       const result = await getPrivacyDisclosure();
       const served = result?.data;
       if (!served) return;
+      // Read structurally: the generated client describes the daemon this tree
+      // was built against, and an older daemon serves neither settings field.
+      const extra = served as { settings?: unknown; settings_title?: unknown };
       patch({
         copy: {
           titleTemplate: served.title_template,
           long: served.long,
           short: served.short,
+          settingsTitle: typeof extra.settings_title === 'string' ? extra.settings_title : null,
+          settings: typeof extra.settings === 'string' ? extra.settings : null,
         },
         acknowledged: served.acknowledged,
       });
