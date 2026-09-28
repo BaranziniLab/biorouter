@@ -14,7 +14,7 @@ mod files;
 mod output;
 
 use crate::commands::needs_terminal::{self, NeedsTerminal};
-use crate::daemon_client::{CrewClient, DaemonRefusal, Restated};
+use crate::daemon_client::{CrewClient, DaemonRefusal, NotSent, Restated};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 pub use args::CrewOptions;
 use args::*;
@@ -193,6 +193,9 @@ fn error_text(error: &anyhow::Error) -> String {
         .map(|cause| {
             if let Some((code, message)) = broker_refusal(cause) {
                 return output::broker_refusal_text(code, message);
+            }
+            if let Some(sentence) = daemon_outcome_sentence(cause) {
+                return sentence;
             }
             match connect_failure(cause) {
                 Some((code, sentence, detail)) => connect_failure_lines(code, sentence, detail),
@@ -415,7 +418,8 @@ fn refusal(error: &anyhow::Error) -> Option<Refusal> {
     })
 }
 
-/// The code a script can match on: the daemon's, or the one a restated refusal kept.
+/// The code a script can match on: the daemon's, the one a restated refusal kept, or
+/// [`NotSent::CODE`] for a request the connection never took.
 fn error_code(error: &anyhow::Error) -> Option<String> {
     error
         .chain()
@@ -424,18 +428,77 @@ fn error_code(error: &anyhow::Error) -> Option<String> {
                 .downcast_ref::<Restated>()
                 .and_then(|restated| restated.code.map(str::to_owned))
         })
+        .or_else(|| {
+            error
+                .chain()
+                .any(|cause| cause.is::<NotSent>())
+                .then(|| NotSent::CODE.to_owned())
+        })
         .or_else(|| refusal(error).and_then(|refused| refused.code))
 }
 
-/// A refusal is a definite answer: nothing changed. A daemon failure or a lost answer is not.
+/// The daemon's code for a request whose outcome it could not confirm (W2-DMN-7): the bridge
+/// was lost after the request was written, so it may have landed.
+const OUTCOME_UNKNOWN: &str = "crew_outcome_unknown";
+/// The daemon's code for a request it never wrote to the workspace.
+const NOT_SENT: &str = "crew_not_sent";
+
+/// Whether the change may have landed although the command failed (R-3), so the one safe retry,
+/// the same request ID, is offered. A refusal is a definite answer: nothing changed. So is a
+/// request that was never sent, by the daemon ([`NOT_SENT`]) or by the connection here
+/// ([`NotSent`]). An outcome the daemon could not confirm ([`OUTCOME_UNKNOWN`]), a daemon
+/// failure (5xx) and a lost answer are not.
 fn outcome_uncertain(error: &anyhow::Error) -> bool {
     if error
         .chain()
-        .any(|cause| cause.downcast_ref::<Restated>().is_some())
+        .any(|cause| cause.is::<Restated>() || cause.is::<NotSent>())
     {
         return false;
     }
-    refusal(error).is_none_or(|refused| refused.status >= 500)
+    match refusal(error) {
+        None => true,
+        Some(refused) => match refused.code.as_deref() {
+            Some(OUTCOME_UNKNOWN) => true,
+            Some(NOT_SENT) => false,
+            _ => refused.status >= 500,
+        },
+    }
+}
+
+/// A daemon refusal whose own sentence is what a person needs, without the `Daemon returned
+/// N:` prefix: an outcome the daemon could not confirm (the retry line follows it), and a
+/// request it never sent.
+fn daemon_outcome_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let (code, message) = refusal_code_and_message(cause)?;
+    match code {
+        NOT_SENT => Some("Nothing was sent; run it again.".to_owned()),
+        OUTCOME_UNKNOWN => Some(
+            Some(message.trim())
+                .filter(|message| !message.is_empty())
+                .map_or_else(
+                    || {
+                        "Crew couldn't confirm whether this reached the workspace. Check the channel before you retry."
+                            .to_owned()
+                    },
+                    str::to_owned,
+                ),
+        ),
+        _ => None,
+    }
+}
+
+/// A daemon refusal's code and its own text.
+fn refusal_code_and_message<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<(&'a str, &'a str)> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return Some((refused.kind.as_deref()?, refused.message()));
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return Some((refused.code.as_deref()?, refused.message.as_str()));
+    }
+    None
 }
 
 /// A refusal said again for a person, keeping the daemon's code for JSON output.
@@ -6245,6 +6308,33 @@ mod tests {
         assert!(failure(&failed, OutputFormat::Text, "req-1", true)
             .to_string()
             .ends_with(hint));
+
+        // R-3: an outcome the daemon could not confirm may have landed, whatever its status, so
+        // the retry is offered, after the daemon's own sentence and with its own code.
+        const UNCONFIRMED: &str = "Crew couldn't confirm whether this reached lab. Check the channel, then retry with the same request ID.";
+        for status in [400, 503] {
+            let unknown = refuse(status, Some("crew_outcome_unknown"), UNCONFIRMED);
+            let shown = failure(&unknown, OutputFormat::Text, "req-1", true).to_string();
+            assert_eq!(shown, format!("{UNCONFIRMED}\n{hint}"));
+            assert_eq!(
+                failure_body(&unknown, UNCONFIRMED, "req-1")["code"],
+                "crew_outcome_unknown"
+            );
+        }
+        // A request the daemon never sent is a definite answer: no retry ID, and it says so.
+        let not_sent = refuse(503, Some("crew_not_sent"), "Nothing was sent.");
+        assert_eq!(
+            failure(&not_sent, OutputFormat::Text, "req-1", true).to_string(),
+            "Nothing was sent; run it again."
+        );
+        // M16: nor did one the connection here handed back unsent, though it carried the ID.
+        let unsent: anyhow::Error = crate::daemon_client::NotSent::for_test().into();
+        let shown = failure(&unsent, OutputFormat::Text, "req-1", true).to_string();
+        assert_eq!(
+            shown,
+            "The daemon connection wasn't ready. Nothing was sent; run it again."
+        );
+        assert_eq!(error_code(&unsent).as_deref(), Some("crew_not_sent"));
 
         assert_eq!(
             failure(

@@ -69,6 +69,86 @@ impl std::fmt::Display for Restated {
 
 impl std::error::Error for Restated {}
 
+/// A request the daemon never received (M16): hyper handed it back unsent, because the
+/// connection could not take it (it was not ready yet, or it closed first). Nothing reached the
+/// daemon, so running the command again is always safe, and no retry ID is needed.
+#[derive(Debug)]
+pub struct NotSent {
+    cause: String,
+}
+
+impl NotSent {
+    /// What a person reads: the connection, then that nothing was sent.
+    pub const SENTENCE: &'static str =
+        "The daemon connection wasn't ready. Nothing was sent; run it again.";
+    /// The JSON code beside [`Self::SENTENCE`], the daemon's own code for the same outcome.
+    pub const CODE: &'static str = "crew_not_sent";
+
+    #[cfg(unix)]
+    fn new(cause: impl std::fmt::Display) -> Self {
+        Self {
+            cause: cause.to_string(),
+        }
+    }
+
+    /// One for a test elsewhere in the crate.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        Self {
+            cause: "connection was not ready".to_owned(),
+        }
+    }
+
+    /// hyper's own words, for a log or a bug report.
+    pub fn cause(&self) -> &str {
+        &self.cause
+    }
+}
+
+impl std::fmt::Display for NotSent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(Self::SENTENCE)
+    }
+}
+
+impl std::error::Error for NotSent {}
+
+/// Send `request` once `sender`'s connection can take it, and wait up to `timeout` for the
+/// answer.
+///
+/// Every connection here carries two requests: the identity check, then the request itself.
+/// hyper lets the first through at once, but takes the next only after the connection task
+/// has finished the previous answer, and that task runs on another thread. Sending without
+/// waiting was refused as "connection was not ready" about once in a thousand (M16). A request
+/// the connection hands back unsent is [`NotSent`]; one that failed after it was written keeps
+/// hyper's error, because its outcome is not known.
+#[cfg(unix)]
+async fn send_when_ready<B>(
+    sender: &mut hyper::client::conn::http1::SendRequest<B>,
+    request: hyper::Request<B>,
+    timeout: Duration,
+) -> Result<hyper::Response<hyper::body::Incoming>>
+where
+    B: hyper::body::Body + 'static,
+{
+    match tokio::time::timeout(Duration::from_secs(5), sender.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(NotSent::new(error).into()),
+        Err(_) => return Err(NotSent::new("the connection did not become ready in time").into()),
+    }
+    match tokio::time::timeout(timeout, sender.try_send_request(request)).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(mut error)) => {
+            if error.take_message().is_some() {
+                Err(NotSent::new(error.into_error()).into())
+            } else {
+                Err(error.into_error().into())
+            }
+        }
+        Err(elapsed) => Err(elapsed.into()),
+    }
+}
+
 /// What `daemon status` and `--no-start` say when no daemon is running, whether it never
 /// started or it died and left its discovery record behind.
 pub const DAEMON_NOT_RUNNING: &str = "No Biorouter daemon is running for this profile.";
@@ -394,9 +474,16 @@ impl CrewClient {
             request = request.header("Content-Type", "application/json");
         }
         let request = request.body(Full::new(bytes::Bytes::from(bytes)))?;
-        let response = tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
+        let response = send_when_ready(&mut sender, request, Duration::from_secs(180))
             .await
-            .context("Daemon response timed out; inspect session state before retrying")??;
+            .map_err(|error| {
+                if error.is::<tokio::time::error::Elapsed>() {
+                    error
+                        .context("Daemon response timed out; inspect session state before retrying")
+                } else {
+                    error
+                }
+            })?;
         if !response.status().is_success() {
             let status = response.status();
             let bytes = bounded_response(response, 16 * 1024)
@@ -448,9 +535,7 @@ impl CrewClient {
                 .header("X-Daemon-Instance", &self.descriptor.instance_id)
                 .header("X-User-Action", self.proof.as_str())
                 .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
-            let response =
-                tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
-                    .await??;
+            let response = send_when_ready(&mut sender, request, Duration::from_secs(180)).await?;
             ensure!(
                 response.status().is_success(),
                 "Crew observer refused ({}); check the connection, daemon and approval secret",
@@ -756,8 +841,7 @@ async fn verified_observer_connection(
         .header("Host", "localhost")
         .header("X-Secret-Key", &descriptor.api_secret)
         .body(Full::new(Bytes::new()))?;
-    let response =
-        tokio::time::timeout(Duration::from_secs(5), sender.send_request(request)).await??;
+    let response = send_when_ready(&mut sender, request, Duration::from_secs(5)).await?;
     ensure!(
         response.status().is_success(),
         "Shared daemon identity was refused"
@@ -856,11 +940,7 @@ async fn authenticated_terminal_socket(
         .header("Host", "localhost")
         .header("X-Secret-Key", &descriptor.api_secret)
         .body(Full::new(Bytes::new()))?;
-    let response = tokio::time::timeout(
-        Duration::from_secs(5),
-        sender.send_request(identity_request),
-    )
-    .await??;
+    let response = send_when_ready(&mut sender, identity_request, Duration::from_secs(5)).await?;
     ensure!(
         response.status().is_success(),
         "Shared daemon identity was refused before terminal authentication"
@@ -895,11 +975,12 @@ async fn authenticated_terminal_socket(
         .headers_mut()
         .insert("X-Daemon-Instance", descriptor.instance_id.parse()?);
     let (parts, _) = upgrade.into_parts();
-    let mut response = tokio::time::timeout(
+    let mut response = send_when_ready(
+        &mut sender,
+        Request::from_parts(parts, Full::new(Bytes::new())),
         Duration::from_secs(15),
-        sender.send_request(Request::from_parts(parts, Full::new(Bytes::new()))),
     )
-    .await??;
+    .await?;
     validate_terminal_upgrade(&response, &expected_accept)?;
     let upgraded =
         tokio::time::timeout(Duration::from_secs(5), hyper::upgrade::on(&mut response)).await??;
@@ -1182,11 +1263,8 @@ async fn request(
             .header("Host", "localhost")
             .header("X-Secret-Key", &descriptor.api_secret)
             .body(Full::new(Bytes::new()))?;
-        let response = tokio::time::timeout(
-            Duration::from_secs(5),
-            sender.send_request(identity_request),
-        )
-        .await??;
+        let response =
+            send_when_ready(&mut sender, identity_request, Duration::from_secs(5)).await?;
         ensure!(
             response.status().is_success(),
             "Shared daemon identity was refused"
@@ -1222,11 +1300,12 @@ async fn request(
             .map(|body| serde_json::to_vec(&body))
             .transpose()?
             .unwrap_or_default();
-        let response = tokio::time::timeout(
+        let response = send_when_ready(
+            &mut sender,
+            builder.body(Full::new(Bytes::from(bytes)))?,
             Duration::from_secs(180),
-            sender.send_request(builder.body(Full::new(Bytes::from(bytes)))?),
         )
-        .await??;
+        .await?;
         let status = response.status();
         let bytes = bounded_response(response, 16 * 1024 * 1024).await?;
         let value: Value = if bytes.is_empty() {
@@ -2518,5 +2597,130 @@ mod tests {
             .push(b'x')
             .expect_err("the byte after the bound must be refused");
         assert!(error.to_string().contains("exceeds 32 MiB"));
+    }
+
+    /// A daemon that serves every connection it is offered: `/daemon/identity` answers
+    /// `descriptor`'s identity and every other path answers `{"ok":true}`.
+    async fn serving_daemon_fixture() -> Descriptor {
+        let directory = runtime_dir();
+        let socket_path = directory.join("daemon.sock");
+        let _ = fs::remove_file(&socket_path);
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("fixture socket binds");
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+            .expect("fixture socket is private");
+        let mut descriptor = expected_descriptor(&directory);
+        descriptor.endpoint = Endpoint::Unix { path: socket_path };
+        daemon_runtime::write_private(&daemon_runtime::descriptor_path(), &descriptor)
+            .expect("fixture descriptor writes");
+        let identity = descriptor.identity();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let identity = identity.clone();
+                tokio::spawn(async move {
+                    let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                        let body = if request.uri().path() == "/daemon/identity" {
+                            serde_json::to_vec(&identity).expect("identity serializes")
+                        } else {
+                            br#"{"ok":true}"#.to_vec()
+                        };
+                        async move {
+                            Ok::<_, std::convert::Infallible>(
+                                Response::builder()
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(body)))
+                                    .expect("fixture response builds"),
+                            )
+                        }
+                    });
+                    let _ = server_http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        descriptor
+    }
+
+    /// M16: a request the connection hands back unsent is [`NotSent`], which says that nothing
+    /// was sent; a connection whose task is gone takes nothing.
+    #[tokio::test]
+    async fn a_request_the_connection_never_took_is_not_sent() {
+        let (client_end, _server_end) = tokio::net::UnixStream::pair().expect("a socket pair");
+        let (mut sender, connection) = http1::handshake::<_, Full<Bytes>>(TokioIo::new(client_end))
+            .await
+            .expect("handshake");
+        // The connection task is never run: its dispatcher is gone, so it can take nothing.
+        drop(connection);
+        let request = Request::builder()
+            .uri("/crew/connections")
+            .header("Host", "localhost")
+            .body(Full::new(Bytes::new()))
+            .expect("request builds");
+        let error = super::send_when_ready(&mut sender, request, Duration::from_secs(1))
+            .await
+            .expect_err("nothing can be sent");
+        let not_sent = error
+            .downcast_ref::<super::NotSent>()
+            .expect("the request was never written");
+        assert_eq!(
+            not_sent.to_string(),
+            "The daemon connection wasn't ready. Nothing was sent; run it again."
+        );
+        assert!(!not_sent.cause().is_empty());
+    }
+
+    /// M16: every request is the identity check and then the request itself, on one connection.
+    /// hyper takes the second only once the connection task has finished the first answer, and
+    /// that task runs on another thread (the CLI's `block_on` host thread is not a worker). A
+    /// second send that got there first was refused as "connection was not ready" about once
+    /// in a thousand, which failed `crew send` and every watch at random. Each send now waits
+    /// for the connection to be ready.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn back_to_back_requests_on_one_connection_never_fail_as_not_ready() {
+        // Before the fix this failed a few times in every few thousand. Four callers on their
+        // own threads, as the CLI's host thread is, make a regression all but certain to show.
+        const CALLERS: usize = 4;
+        const REQUESTS: usize = 5_000;
+        let descriptor = serving_daemon_fixture().await;
+        let client = Arc::new(CrewClient {
+            descriptor,
+            proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+        });
+        let runtime = tokio::runtime::Handle::current();
+        let callers: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let client = Arc::clone(&client);
+                let runtime = runtime.clone();
+                std::thread::spawn(move || {
+                    runtime.block_on(async move {
+                        let mut failures = Vec::new();
+                        for _ in 0..REQUESTS {
+                            if let Err(error) =
+                                client.request("GET", "/crew/connections", None).await
+                            {
+                                failures.push(format!("{error:#}"));
+                            }
+                        }
+                        failures
+                    })
+                })
+            })
+            .collect();
+        let failures: Vec<String> = tokio::task::spawn_blocking(move || {
+            callers
+                .into_iter()
+                .flat_map(|caller| caller.join().expect("a caller thread"))
+                .collect()
+        })
+        .await
+        .expect("the callers finish");
+        assert!(
+            failures.is_empty(),
+            "{} of {} requests failed; the first: {:?}",
+            failures.len(),
+            CALLERS * REQUESTS,
+            failures.first()
+        );
     }
 }
