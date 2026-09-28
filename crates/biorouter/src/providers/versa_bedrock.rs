@@ -17,8 +17,27 @@ use super::base::MessageStream;
 use super::formats::bedrock::{
     bedrock_blocking_inference_config, bedrock_inference_config, bedrock_message_stream,
     classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
-    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_messages, to_bedrock_tool_config,
+    from_bedrock_usage, gateway_message, map_bedrock_stop_reason, to_bedrock_messages,
+    to_bedrock_tool_config,
 };
+
+/// W2-PRV-9 — a key pair the Versa gateway refuses, said as that: whose
+/// refusal it is, the gateway's own reason, and where the pair is replaced.
+///
+/// The gateway answers a bad pair with a code-less 403 (`{"message": "Invalid
+/// Client Id"}`), and a real pair that does not sign with a different sentence,
+/// so the reason is what tells the two apart. It used to read "Bedrock endpoint
+/// returned HTTP 403 (unauthorized) ... no further detail was returned" for
+/// both, and named nowhere to fix it.
+pub(crate) fn versa_rejected_key(error: ProviderError, said: Option<String>) -> ProviderError {
+    match error {
+        ProviderError::Authentication(_) => ProviderError::Authentication(format!(
+            "Versa rejected this key pair ({}). Replace it in Settings > Models > Versa API Bedrock.",
+            said.unwrap_or_else(|| "no reason was given".to_string())
+        )),
+        other => other,
+    }
+}
 use super::provider_binding::{
     model_without_restore_marker, PersistedRetryConfig, ProviderRestoreBinding, SecretFreeEndpoint,
 };
@@ -355,10 +374,10 @@ impl VersaBedrockProvider {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(classify_bedrock_converse_error)?;
+        let response = request.send().await.map_err(|err| {
+            let said = gateway_message(&err);
+            versa_rejected_key(classify_bedrock_converse_error(err), said)
+        })?;
 
         let finish_reason = map_bedrock_stop_reason(&response.stop_reason);
         match response.output {
@@ -396,10 +415,10 @@ impl VersaBedrockProvider {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
         }
 
-        request
-            .send()
-            .await
-            .map_err(classify_bedrock_converse_stream_error)
+        request.send().await.map_err(|err| {
+            let said = gateway_message(&err);
+            versa_rejected_key(classify_bedrock_converse_stream_error(err), said)
+        })
     }
 }
 
@@ -589,6 +608,30 @@ impl Provider for VersaBedrockProvider {
 mod tests {
     use super::*;
     use aws_smithy_http_client::test_util::capture_request;
+
+    /// W2-PRV-9: a refused pair names Versa, the gateway's reason and where to
+    /// replace the pair; every other failure is left as it was classified.
+    #[test]
+    fn a_refused_key_pair_says_whose_refusal_and_where_to_fix_it() {
+        let refused = versa_rejected_key(
+            ProviderError::Authentication("Bedrock endpoint returned HTTP 403".to_string()),
+            Some("Invalid Client Id".to_string()),
+        );
+        assert_eq!(
+            refused.to_string(),
+            ProviderError::Authentication(
+                "Versa rejected this key pair (Invalid Client Id). Replace it in Settings > \
+                 Models > Versa API Bedrock."
+                    .to_string()
+            )
+            .to_string()
+        );
+        let throttled = versa_rejected_key(
+            ProviderError::ServerError("HTTP 503".to_string()),
+            Some("busy".to_string()),
+        );
+        assert!(matches!(throttled, ProviderError::ServerError(_)));
+    }
 
     /// A provider wired the way `from_env` builds one, minus the credential and
     /// global-config lookups — `from_env` needs UCSF-issued secrets, so it
