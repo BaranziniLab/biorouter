@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ConversationLimitsDropdown,
   DEFAULT_MAX_TURNS,
@@ -28,6 +28,11 @@ function openLimits() {
 // hidden behind the default; and the default shown was 1000 against the
 // agent's 100.
 describe('Max turns', () => {
+  beforeEach(() => {
+    config.read.mockReset();
+    config.upsert.mockReset();
+  });
+
   it('shows the agent default, read from the Rust constant it mirrors', () => {
     const agent = readFileSync(
       join(__dirname, '../../../../../../crates/biorouter/src/agents/agent.rs'),
@@ -49,7 +54,7 @@ describe('Max turns', () => {
     expect(parseMaxTurns(' 250 ')).toBe(250);
   });
 
-  it('never saves an empty or negative entry, and says why', () => {
+  it('never saves an empty or negative entry, and says why', async () => {
     const onChange = vi.fn();
     render(<ConversationLimitsDropdown maxTurns={40} onMaxTurnsChange={onChange} />);
     const field = openLimits();
@@ -66,8 +71,10 @@ describe('Max turns', () => {
     expect(onChange).not.toHaveBeenCalled();
 
     fireEvent.change(field, { target: { value: '25' } });
-    expect(onChange).toHaveBeenCalledWith(25);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // Saved once the typing settles, not on every keystroke (T3-SH-8).
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(25));
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   it('shows a saved 0 as 0, so it can be seen and fixed', async () => {
@@ -80,6 +87,66 @@ describe('Max turns', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(
       'The saved value, 0, is not a whole number of at least 1. Enter a new value.'
     );
+  });
+
+  // T3-SH-8: clearing the field by deleting one digit at a time saved each
+  // digit left on the way ("10", then "1"), and each save's answer, arriving
+  // after the field was already empty, wrote its number back into the field:
+  // no message, and a value the person had just deleted.
+  it('clearing the field leaves it empty, says why, and saves nothing on the way', async () => {
+    config.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_MAX_TURNS' ? 100 : 'auto'
+    );
+    let settle: () => void = () => {};
+    config.upsert.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        })
+    );
+    render(<ModeSection />);
+    const field = openLimits();
+    await waitFor(() => expect(field).toHaveValue(100));
+
+    fireEvent.change(field, { target: { value: '10' } });
+    fireEvent.change(field, { target: { value: '1' } });
+    fireEvent.change(field, { target: { value: '' } });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      settle();
+    });
+
+    expect(field).toHaveValue(null);
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
+    expect(config.upsert).not.toHaveBeenCalled();
+  });
+
+  it("does not let a save's answer overwrite what was typed after it", async () => {
+    config.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_MAX_TURNS' ? 100 : 'auto'
+    );
+    const settles: Array<() => void> = [];
+    config.upsert.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settles.push(resolve);
+        })
+    );
+    render(<ModeSection />);
+    const field = openLimits();
+    await waitFor(() => expect(field).toHaveValue(100));
+
+    fireEvent.change(field, { target: { value: '40' } });
+    await waitFor(() =>
+      expect(config.upsert).toHaveBeenCalledWith('BIOROUTER_MAX_TURNS', 40, false)
+    );
+    fireEvent.change(field, { target: { value: '' } });
+    await act(async () => {
+      settles.forEach((resolve) => resolve());
+    });
+
+    expect(field).toHaveValue(null);
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
   });
 
   it('saves a valid entry through the config', async () => {

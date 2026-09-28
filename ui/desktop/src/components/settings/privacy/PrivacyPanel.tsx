@@ -340,8 +340,8 @@ export default function PrivacyPanel() {
               directions — the list stays true, and the thing that is never
               blocked is still disclosed rather than quietly dropped. */}
           <p className="text-supporting text-text-default">
-            Commercial models will be able to call your private extensions, read private chat
-            history, and read and write your knowledge bases.
+            Public models will be able to call your private extensions, read private chat history,
+            and read and write your knowledge bases.
           </p>
           <p className="text-supporting text-text-default">
             Reading your saved chats, memories and Biorouter apps off the disk through the shell is

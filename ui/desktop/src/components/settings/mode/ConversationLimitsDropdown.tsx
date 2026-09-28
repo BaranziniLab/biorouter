@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { Input } from '../../ui/input';
 
@@ -12,6 +12,12 @@ export const DEFAULT_MAX_TURNS = 100;
 
 /** The largest value the daemon's `u32` setting can hold. */
 const MAX_TURNS_CEILING = 4_294_967_295;
+
+/**
+ * How long the field waits after the last keystroke before it saves. Long
+ * enough that deleting "100" one digit at a time saves nothing on the way.
+ */
+export const MAX_TURNS_SAVE_DELAY_MS = 400;
 
 /**
  * A max-turns entry as a limit, or `null` when it is not one.
@@ -47,9 +53,47 @@ export const ConversationLimitsDropdown = ({
   const shown = maxTurns ?? DEFAULT_MAX_TURNS;
   const [draft, setDraft] = useState(String(shown));
 
+  /**
+   * T3-SH-8. Saves wait for the typing to settle, and a save's own answer never
+   * rewrites the field.
+   *
+   * Saving on every keystroke meant that deleting "100" saved 10, then 1, and
+   * each save came back, as a new `maxTurns`, after the field was already
+   * empty. The effect below then wrote that number into the field: the person
+   * saw no message, and a value they had just deleted. Now nothing is saved
+   * until the entry has been a limit for {@link MAX_TURNS_SAVE_DELAY_MS}, a
+   * value this field saved is recognised when it comes back (`ownSaves`), and a
+   * save still waiting when the field goes away is made then rather than lost.
+   */
+  const pendingSave = useRef<number | null>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ownSaves = useRef<number[]>([]);
+  const onMaxTurnsChangeRef = useRef(onMaxTurnsChange);
+  onMaxTurnsChangeRef.current = onMaxTurnsChange;
+
+  const flushSave = useCallback(() => {
+    if (saveTimer.current !== null) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const value = pendingSave.current;
+    pendingSave.current = null;
+    if (value !== null) {
+      ownSaves.current.push(value);
+      onMaxTurnsChangeRef.current(value);
+    }
+  }, []);
+  useEffect(() => flushSave, [flushSave]);
+
   // Follow the stored value when it arrives (the read is async) or changes
-  // elsewhere, but never overwrite an entry that already means that value.
+  // elsewhere, but never overwrite an entry that already means that value, and
+  // never overwrite anything with the echo of this field's own save.
   useEffect(() => {
+    const own = ownSaves.current.indexOf(shown);
+    if (own !== -1) {
+      ownSaves.current.splice(0, own + 1);
+      return;
+    }
     setDraft((current) => (parseMaxTurns(current) === shown ? current : String(shown)));
   }, [shown]);
 
@@ -71,9 +115,13 @@ export const ConversationLimitsDropdown = ({
 
   const handleChange = (text: string) => {
     setDraft(text);
-    const value = parseMaxTurns(text);
-    if (value !== null) {
-      onMaxTurnsChange(value);
+    // An entry that is not a limit cancels a save still waiting: the last
+    // thing typed is the one that counts.
+    if (saveTimer.current !== null) clearTimeout(saveTimer.current);
+    saveTimer.current = null;
+    pendingSave.current = parseMaxTurns(text);
+    if (pendingSave.current !== null) {
+      saveTimer.current = setTimeout(flushSave, MAX_TURNS_SAVE_DELAY_MS);
     }
   };
 
@@ -142,6 +190,7 @@ export const ConversationLimitsDropdown = ({
             aria-invalid={message ? true : undefined}
             aria-describedby={message ? 'max-turns-problem' : undefined}
             onChange={(e) => handleChange(e.target.value)}
+            onBlur={flushSave}
             className="w-20"
           />
         </div>
