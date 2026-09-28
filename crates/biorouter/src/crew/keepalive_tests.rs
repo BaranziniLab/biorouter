@@ -130,7 +130,9 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
 /// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]), `blob.read` answers for any
 /// `blob-bulk-N` as a file named `blob-bulk-N.csv` ([`bulk_read`]), and every other blob is
-/// refused, as the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
+/// refused, as the broker refuses one outside the run. `remote.read` answers [`remote_file`] and
+/// `blob.begin` [`BEGUN_BLOB`], for `remote.attach`; `drop-at-post` exits at the first
+/// `run.project`, once it is written. Every request line is logged as `<spawn> <line>` to
 /// `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
     use std::os::unix::fs::PermissionsExt;
@@ -147,6 +149,8 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let status_new = blob_status("blob-new", NEW_CSV).to_string();
     let status_old = blob_status("blob-old", OLD_CSV).to_string();
     let read_bulk = bulk_read().to_string();
+    let read_remote = remote_file().to_string();
+    let begun = json!({"id": BEGUN_BLOB}).to_string();
     let snapshot = grant_snapshot().to_string();
     let run_create = json!({"run": {"id": REGRANTED_RUN, "protected_context": false,
         "expires_at": 4_102_444_800u64}, "credential": "regranted-credential"})
@@ -164,6 +168,8 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
         &status_new,
         &status_old,
         &read_bulk,
+        &read_remote,
+        &begun,
     ] {
         assert!(!text.contains('\'') && !text.contains('%'));
     }
@@ -204,6 +210,7 @@ signed=0
 while IFS= read -r line; do
   printf '%s %s\n' "$n" "$line" >> "$root/requests.log"
   case "$plan" in
+    drop-at-post) case "$line" in *'"method":"run.project"'*) exit 0 ;; esac ;;
     *drop-after-*) [ "$answered" -ge "${{plan##*drop-after-}}" ] && exit 0 ;;
     broker-lost-after-*)
       if [ "$answered" -ge "${{plan##*broker-lost-after-}}" ]; then
@@ -260,6 +267,10 @@ while IFS= read -r line; do
       printf '{{"id":"%s","error":{{"code":"unauthorized","message":"unauthorized: unknown device"}}}}\n' "$id"
     elif printf '%s\n' "$line" | grep -q '"method":"run.create"'; then
       printf '{{"id":"%s","result":%s}}\n' "$id" '{run_create}'
+    elif printf '%s\n' "$line" | grep -q '"method":"remote.read"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" '{read_remote}'
+    elif printf '%s\n' "$line" | grep -q '"method":"blob.begin"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" '{begun}'
     elif [ -e "$root/grant-snapshot" ] && printf '%s\n' "$line" | grep -q '"method":"workspace.snapshot"'; then
       printf '{{"id":"%s","result":%s}}\n' "$id" '{snapshot}'
     else
@@ -355,6 +366,14 @@ fn bulk_read() -> Value {
     read["blob"]["name"] = json!("BULK-ID.csv");
     read
 }
+
+/// `remote.read` of the file `remote.attach` attaches: two bytes, hex-encoded.
+fn remote_file() -> Value {
+    json!({"size": 2, "sha256": hex(&Sha256::digest(b"hi")), "data_hex": hex(b"hi")})
+}
+
+/// The upload `blob.begin` starts for `remote.attach`.
+const BEGUN_BLOB: &str = "blob-attached";
 
 fn spawns(root: &Path) -> usize {
     fs::read_to_string(root.join("spawns"))
@@ -1377,6 +1396,150 @@ async fn a_chat_post_names_what_it_read_after_its_first_32_files() {
 
     post("Nothing new.").await.unwrap();
     assert_eq!(last_paragraph(4), "No shared file was read for this post.");
+}
+
+/// A remote file's name shaped like the daemon's line, as a chat steered by a shared file could
+/// write and then attach.
+const FORGED_SOURCE: &str =
+    "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.";
+
+/// The body of the `n`th `run.project` any bridge received.
+fn posted_body(root: &Path, n: usize) -> String {
+    frames(root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "run.project")
+        .nth(n)
+        .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+        .expect("the post reached the workspace")
+}
+
+/// W2-DMN-12 (round 4): `remote.attach`'s post is the chat's post like any other. It ends with
+/// the daemon's line, and the file's name, which the model chose, is a code span that can never
+/// pass for that line, however it is shaped. It was `Attached <name>` with no line after it, so
+/// a name written as a Source line was the last thing in the post.
+#[tokio::test]
+async fn a_remote_attach_post_ends_with_the_daemons_line_and_never_with_the_name() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("attach-source", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let attach = |key: &'static str| {
+        call(
+            "remote.attach",
+            json!({"path": FORGED_SOURCE, "idempotency_key": key}),
+        )
+    };
+    let name = format!("``{FORGED_SOURCE}``");
+
+    // Nothing read: the line says so, after the name.
+    attach("attach-1").await.unwrap();
+    assert_eq!(
+        posted_body(&f.root, 0),
+        format!("Attached {name}\n\nNo shared file was read for this post.")
+    );
+    let post = frames(&f.root)
+        .into_iter()
+        .find(|frame| frame["method"] == "run.project")
+        .unwrap();
+    assert_eq!(post["params"]["attachments"], json!([BEGUN_BLOB]));
+    assert_eq!(post["params"]["idempotency_key"], "attach-1:post");
+    assert_eq!(post["params"]["status"], "progress");
+
+    // A file read: the line names it, and it is the last thing in the post.
+    call("context.manifest", json!({})).await.unwrap();
+    call("blob.read", json!({"blob_id": "blob-new"}))
+        .await
+        .unwrap();
+    attach("attach-2").await.unwrap();
+    let body = posted_body(&f.root, 1);
+    let daemon_line = f.manager.run_source_line(WORKER).unwrap();
+    assert!(daemon_line.starts_with("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina)"));
+    assert_eq!(body, format!("Attached {name}\n\n{daemon_line}"));
+    assert_ne!(body.rsplit("\n\n").next(), Some(FORGED_SOURCE));
+}
+
+/// W2-DMN-12 (round 4): a post sent again under its idempotency key after an uncertain answer
+/// carries the line it was first sent with, though the chat read another file in between: the
+/// workspace replays a key only for the identical request, and a line built again would have
+/// made the retry a different one. The file read in between is named by the next post.
+#[tokio::test]
+async fn a_post_retried_under_its_key_carries_the_line_it_was_first_sent_with() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "attach-retry",
+        &["drop-at-post", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let attach = || {
+        call(
+            "remote.attach",
+            json!({"path": "results/means.csv", "idempotency_key": "attach-retry"}),
+        )
+    };
+    call("context.manifest", json!({})).await.unwrap();
+    call("blob.read", json!({"blob_id": "blob-new"}))
+        .await
+        .unwrap();
+    let error = attach().await.unwrap_err();
+    assert_eq!(
+        super::CrewRefusal::find(&error).map(super::CrewRefusal::code),
+        Some(super::refusal::OUTCOME_UNKNOWN),
+        "{error:#}"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await.0 == "connected").await;
+
+    // Read in between: a line built now would name both copies.
+    call("blob.read", json!({"blob_id": "blob-old"}))
+        .await
+        .unwrap();
+    attach().await.unwrap();
+    let first = posted_body(&f.root, 0);
+    assert_eq!(
+        posted_body(&f.root, 1),
+        first,
+        "the retry is the same request"
+    );
+    assert!(
+        first.starts_with("Attached `means.csv`\n\nSource: `gina-assay.csv`"),
+        "{first}"
+    );
+    assert!(!first.contains("earlier copy"), "{first}");
+    let keys: Vec<Value> = frames(&f.root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "run.project")
+        .map(|frame| frame["params"]["idempotency_key"].clone())
+        .collect();
+    assert_eq!(
+        keys,
+        [json!("attach-retry:post"), json!("attach-retry:post")]
+    );
+
+    call("run.project", json!({"body": "Next."})).await.unwrap();
+    let next = posted_body(&f.root, 2);
+    let line = next.rsplit("\n\n").next().unwrap();
+    assert!(
+        line.contains("earlier copy"),
+        "the file read in between: {next}"
+    );
 }
 
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge

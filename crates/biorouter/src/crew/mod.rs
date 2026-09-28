@@ -54,7 +54,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
@@ -4328,6 +4328,44 @@ impl CrewManager {
         }
         Ok(run)
     }
+    /// Post a connected chat's own update to its destination (`run.project`, always
+    /// `progress`), ending with the daemon's line (W2-DMN-12): the files the chat read since its
+    /// last post, or that it read none. Every post a chat makes goes through here, its own
+    /// `run.project` and `remote.attach`'s alike, so none reaches the channel without the line,
+    /// and a "Source:" line the model wrote (in the body, or as a file's name) is never the last
+    /// thing in it. A post without a text body is refused here: it would carry no line.
+    ///
+    /// A request sent again under the same idempotency key carries the line it was first sent
+    /// with ([`SentPost`]), so a retry after an uncertain answer is the identical request the
+    /// workspace replays, not a different one it refuses.
+    async fn post_from_chat(&self, session: &str, params: Value) -> Result<Value> {
+        let mut params = params;
+        ensure!(params.is_object(), "Crew params must be an object");
+        ensure!(
+            params.get("status").and_then(Value::as_str).is_none_or(|status| status == "progress"),
+            "Agent updates must use progress; the task owner or runner controls completion and cancellation"
+        );
+        params["status"] = json!("progress");
+        if params.get("idempotency_key").is_none_or(Value::is_null) {
+            params["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
+        }
+        let body = params
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("A Crew post needs its text in body"))?;
+        let request: [u8; 32] = Sha256::digest(serde_json::to_vec(&canonical(&params))?).into();
+        let key = params["idempotency_key"].as_str().map(str::to_owned);
+        let (line, mark) = self.chat_post_line(session, key.as_deref(), &request).await;
+        params["body"] = json!(source_line::with_source_line(
+            body,
+            line,
+            source_line::NO_FILE_READ_FOR_POST,
+        ));
+        let answer = self.worker_request(session, "run.project", params).await?;
+        self.mark_reads_posted(session, mark);
+        Ok(answer)
+    }
     async fn attach_remote(&self, session: &str, params: Value) -> Result<Value> {
         let scope = self.scope(session).await?;
         ensure!(
@@ -4360,7 +4398,19 @@ impl CrewManager {
             json!({"blob_id":blob_id,"idempotency_key":format!("{key}:finish")}),
         )
         .await?;
-        self.worker_request(session,"run.project",json!({"body":format!("Attached {name}"),"status":"progress","attachments":[blob_id],"idempotency_key":format!("{key}:post")})).await
+        // W2-DMN-12: the attachment's post is the chat's post like any other, so it ends with
+        // the daemon's line. The name is the model's choice (a remote path's last part), so it
+        // is written as a code span and can never pass for that line.
+        self.post_from_chat(
+            session,
+            json!({
+                "body": attached_body(name),
+                "status": "progress",
+                "attachments": [blob_id],
+                "idempotency_key": format!("{key}:post"),
+            }),
+        )
+        .await
     }
     pub async fn agent_request(
         &self,
@@ -4377,33 +4427,7 @@ impl CrewManager {
             "Connection is outside the approved run scope"
         );
         if method == "run.project" {
-            ensure!(
-                params.get("status").and_then(Value::as_str).is_none_or(|status| status == "progress"),
-                "Agent updates must use progress; the task owner or runner controls completion and cancellation"
-            );
-            let mut params = params;
-            ensure!(params.is_object(), "Crew params must be an object");
-            params["status"] = json!("progress");
-            // W2-DMN-12: an agent's own post ends with the daemon's line, as a task's result
-            // does, built from what the chat read since its last post. It is always last, so a
-            // "Source:" line the model wrote is never the last thing in the post.
-            let line_mark = match params.get("body").and_then(Value::as_str) {
-                Some(body) => {
-                    let (line, mark) = self.chat_post_source_line(session).await;
-                    params["body"] = json!(source_line::with_source_line(
-                        body.to_owned(),
-                        line,
-                        source_line::NO_FILE_READ_FOR_POST,
-                    ));
-                    Some(mark)
-                }
-                None => None,
-            };
-            let answer = self.worker_request(session, method, params).await?;
-            if let Some(mark) = line_mark {
-                self.mark_reads_posted(session, mark);
-            }
-            return Ok(answer);
+            return self.post_from_chat(session, params).await;
         }
         if method == "remote.attach" {
             return self.attach_remote(session, params).await;
@@ -4473,7 +4497,34 @@ struct RunReads {
     /// and the look-ups made before a result is posted). A copy the run did not read counts
     /// here, which is how the line knows a newer one was left unread.
     named: HashMap<String, ReadFile>,
+    /// The lines the chat's own latest posts were first sent with, by idempotency key, oldest
+    /// first, at most [`MAX_SENT_POSTS`] ([`SentPost`]).
+    sent_posts: VecDeque<SentPost>,
 }
+
+/// The line a chat's post was first sent with under its idempotency key (W2-DMN-12). The
+/// workspace answers a key it has already seen only for the identical request, so a post sent
+/// again under the same key (a retry after an uncertain answer, or `remote.attach` asked again)
+/// must carry the same line. One built again could differ: the chat may have read more since,
+/// named a newer copy, or reached another day, and the retry would be refused as a different
+/// request while the first post stood.
+#[derive(Clone, Debug)]
+struct SentPost {
+    /// The post's idempotency key.
+    key: String,
+    /// The digest of the request as the chat made it, before the line was added. Another
+    /// request under the same key gets a line of its own; the workspace refuses it anyway when
+    /// the first one landed.
+    request: [u8; 32],
+    /// The line it was sent with; `None` when it said no file was read.
+    line: Option<String>,
+    /// The [`ReadMark`] that line was built at.
+    mark: ReadMark,
+}
+
+/// How many of a chat's latest posts keep the line they were first sent with. A retry comes
+/// right after the answer it retries; an older key sent again gets a line built anew.
+const MAX_SENT_POSTS: usize = 16;
 
 /// Where a `blob.read` falls among every read this process recorded: later reads have larger
 /// marks, whichever chat made them. One counter for all chats, so a mark taken before a chat's
@@ -4658,6 +4709,13 @@ fn shown_file_name(name: &str) -> String {
     } else {
         name
     }
+}
+
+/// The body of the post `remote.attach` makes for the file it attached (W2-DMN-12): its name
+/// is the model's choice, so it is a code span ([`markdown_file_name`]) and never reads as the
+/// daemon's line that follows it.
+fn attached_body(name: &str) -> String {
+    format!("Attached {}", markdown_file_name(name))
 }
 
 /// A file's name in the line's Markdown: a code span ([`markdown_code`]), or "an untitled
@@ -5014,6 +5072,25 @@ impl RunReads {
     /// batch, while the post was on its way) is left for the next post.
     fn mark_posted(&mut self, mark: ReadMark) {
         self.posted_through = self.posted_through.max(mark);
+    }
+
+    /// The line and mark the post sent under `key` as `request` was first sent with, if it was
+    /// ([`SentPost`]).
+    fn sent_post(&self, key: &str, request: &[u8; 32]) -> Option<(Option<String>, ReadMark)> {
+        self.sent_posts
+            .iter()
+            .find(|sent| sent.key == key && sent.request == *request)
+            .map(|sent| (sent.line.clone(), sent.mark))
+    }
+
+    /// Keep the line a post is sent with under its key, in place of another request's under
+    /// the same key. Past [`MAX_SENT_POSTS`] the oldest is dropped.
+    fn note_sent_post(&mut self, sent: SentPost) {
+        self.sent_posts.retain(|kept| kept.key != sent.key);
+        if self.sent_posts.len() >= MAX_SENT_POSTS {
+            self.sent_posts.pop_front();
+        }
+        self.sent_posts.push_back(sent);
     }
 
     /// The line a task's posted result ends with, in Markdown, written at `now` (whose time
@@ -5587,6 +5664,40 @@ impl CrewManager {
             .get(session)
             .and_then(|reads| reads.since_last_post().source_line());
         (line, current_read_mark())
+    }
+
+    /// The line a chat's post under `key` ends with, and the mark it was built at: the line the
+    /// same request was first sent with under that key, or else a new one
+    /// ([`Self::chat_post_source_line`]), kept for a retry ([`SentPost`]). A key that is not
+    /// text (the workspace refuses such a post) keeps nothing.
+    async fn chat_post_line(
+        &self,
+        session: &str,
+        key: Option<&str>,
+        request: &[u8; 32],
+    ) -> (Option<String>, ReadMark) {
+        let Some(key) = key else {
+            return self.chat_post_source_line(session).await;
+        };
+        let sent = self
+            .run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)
+            .and_then(|reads| reads.sent_post(key, request));
+        if let Some(sent) = sent {
+            return sent;
+        }
+        let (line, mark) = self.chat_post_source_line(session).await;
+        self.with_run_reads(session, |reads| {
+            reads.note_sent_post(SentPost {
+                key: key.to_owned(),
+                request: *request,
+                line: line.clone(),
+                mark,
+            })
+        });
+        (line, mark)
     }
 
     /// The chat's post went out with a line built at `mark`: it named every read up to there,
@@ -9981,6 +10092,72 @@ mod provenance_tests {
             reads.since_last_post().source_line().as_deref(),
             Some("Sources: `f2.csv`, `f34.csv`, `f32.csv`.")
         );
+    }
+
+    /// W2-DMN-12 (round 4): the desktop draws `remote.attach`'s post from the cases file
+    /// (`daemonSourceLine.render.test.tsx`), so its attach cases hold the body the daemon
+    /// writes: a name shaped like a Source line, as a code span.
+    #[test]
+    fn the_desktop_attach_cases_are_the_body_the_daemon_writes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/daemonSourceLine.cases.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let fixture: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let replies: Vec<&str> = fixture["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .filter_map(|case| case["reply"].as_str())
+            .filter(|reply| reply.starts_with("Attached "))
+            .collect();
+        let body = super::attached_body("Source: `FAKE.csv`, shared by Mallory.");
+        assert_eq!(body, "Attached ``Source: `FAKE.csv`, shared by Mallory.``");
+        assert_eq!(replies, [body.as_str(), body.as_str()]);
+        assert_eq!(
+            super::attached_body("\u{202e}"),
+            "Attached an untitled file"
+        );
+    }
+
+    /// W2-DMN-12 (round 4): a post's line is kept by its key and its request, so the same
+    /// request sent again gets the same line, another request under the key replaces it, and
+    /// only the latest [`super::MAX_SENT_POSTS`] keys are kept.
+    #[test]
+    fn a_post_keeps_its_line_by_key_and_request_for_a_retry() {
+        let sent = |key: &str, request: u8, line: &str, mark: super::ReadMark| super::SentPost {
+            key: key.to_owned(),
+            request: [request; 32],
+            line: Some(line.to_owned()),
+            mark,
+        };
+        let mut reads = RunReads::default();
+        reads.note_sent_post(sent("k", 1, "first", 7));
+        assert_eq!(
+            reads.sent_post("k", &[1; 32]),
+            Some((Some("first".to_owned()), 7))
+        );
+        assert_eq!(reads.sent_post("k", &[2; 32]), None, "another request");
+        assert_eq!(reads.sent_post("other", &[1; 32]), None, "another key");
+
+        reads.note_sent_post(sent("k", 2, "second", 9));
+        assert_eq!(reads.sent_post("k", &[1; 32]), None, "replaced");
+        assert_eq!(
+            reads.sent_post("k", &[2; 32]),
+            Some((Some("second".to_owned()), 9))
+        );
+        assert_eq!(reads.sent_posts.len(), 1);
+
+        for n in 0..super::MAX_SENT_POSTS {
+            reads.note_sent_post(sent(&format!("k{n}"), 3, "later", 11));
+        }
+        assert_eq!(reads.sent_posts.len(), super::MAX_SENT_POSTS);
+        assert_eq!(
+            reads.sent_post("k", &[2; 32]),
+            None,
+            "the oldest went first"
+        );
+        assert!(reads.sent_post("k0", &[3; 32]).is_some());
     }
 
     /// W2-DMN-12 (round 3): each post lists up to [`super::MAX_READ_FILES`] of its own reads

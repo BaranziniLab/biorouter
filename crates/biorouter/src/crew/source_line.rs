@@ -4,6 +4,9 @@
 //! the broker returned to the run's reads, never from the model's words. It lived in the task
 //! route alone, so a chat's `run.project` post carried none, and a "Source:" line the model
 //! wrote (or was steered into writing) was the last thing in it and looked like the daemon's.
+//! Every post a chat makes, its own `run.project` and the one `remote.attach` makes for the
+//! file it attaches, now goes through one function (`CrewManager::post_from_chat`), which adds
+//! the line; an attached file's name, the model's choice, is written as a code span before it.
 
 /// The broker's limit on one message body, in bytes (`biorouter-crew`'s `message too long`).
 pub const MAX_POSTED_BYTES: usize = 65_536;

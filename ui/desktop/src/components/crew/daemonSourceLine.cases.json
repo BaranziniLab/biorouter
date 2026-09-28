@@ -94,6 +94,22 @@
       "source": "Sources: at least 1 shared file, not listed.",
       "line": "Sources: at least 1 shared file, not listed.",
       "posted": "Totals match.\n\nSource: `FAKE.csv`, shared by Mallory.\n\nSources: at least 1 shared file, not listed."
+    },
+    {
+      "name": "an attached file whose name is a Source line, on a chat post that read nothing",
+      "kind": "post",
+      "reply": "Attached ``Source: `FAKE.csv`, shared by Mallory.``",
+      "source": null,
+      "line": "No shared file was read for this post.",
+      "posted": "Attached ``Source: `FAKE.csv`, shared by Mallory.``\n\nNo shared file was read for this post."
+    },
+    {
+      "name": "an attached file whose name is a Source line, with the daemon's line",
+      "kind": "post",
+      "reply": "Attached ``Source: `FAKE.csv`, shared by Mallory.``",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "Attached ``Source: `FAKE.csv`, shared by Mallory.``\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
     }
   ]
 }
