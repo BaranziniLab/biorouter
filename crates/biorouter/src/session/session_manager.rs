@@ -7722,8 +7722,11 @@ impl SessionStorage {
     /// deleted Crew task's cancel failed on every retry. And the route that deletes a chat
     /// only signals its turn to stop, so a turn still unwinding with Crew context in hand
     /// would have lost its restriction to Crew tools mid-flight. Kept and bound to the
-    /// deleted chat, a grant restricts that turn, stays revocable and authorizes nothing;
-    /// Crew prunes it once a later chat holds the id.
+    /// deleted chat, a grant restricts that turn, stays revocable and authorizes nothing.
+    /// Crew forgets it once it is settled, a week past its run's own end, or prunes it at once
+    /// if a later chat of the same store holds the id (a restored backup reissues ids); only a
+    /// process whose own store holds the grant does either (CROSSCUT-8, see
+    /// `crate::crew::CrewManager::retire_deleted_sessions`).
     ///
     /// After the commit and best-effort, for the reason
     /// [`Self::remove_checkpoint_repository`] gives: the chat is gone either way, so a
