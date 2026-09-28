@@ -1,5 +1,5 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
-import { fireEvent, render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { act, fireEvent, render } from '@testing-library/react';
 import { screen, waitFor } from '@testing-library/dom';
 import MarkdownContent from './MarkdownContent';
 import {
@@ -278,6 +278,111 @@ console.log('Hello, World!');
         expect(screen.getByText(/to debug/)).toBeInTheDocument();
         expect(screen.getByText('console.log()')).toBeInTheDocument();
       });
+    });
+  });
+
+  // A fenced block's Copy, measured failing in the running app in two ways.
+  //
+  // - While a reply streamed, 13 of 15 clicks on an EARLIER message's Copy
+  //   copied nothing. The renderers were an inline map, so each re-render gave
+  //   `pre` and `code` new component types and React rebuilt every fenced block:
+  //   the press landed on one button and the release on its replacement, so no
+  //   click fired. A streamed chunk re-rendered every message, because each got
+  //   a fresh `knownFilePaths` and `onOpenArtifact` — exactly what the rerender
+  //   below hands it.
+  // - A refused write (1.90.4–1.91.2 refused every one) reached only
+  //   `console.error`; the button went on saying "Copy".
+  describe('Copying a fenced block', () => {
+    const content = 'Run it:\n\n```python\nprint("hi")\n```\n\nThen open `report.md`.';
+    let writeText: ReturnType<typeof vi.fn>;
+
+    const installExecCommand = (impl: (command: string) => boolean) => {
+      const execCommand = vi.fn(impl);
+      Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true });
+      return execCommand;
+    };
+
+    beforeEach(() => {
+      writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        writable: true,
+        value: { writeText },
+      });
+    });
+
+    afterEach(() => {
+      Reflect.deleteProperty(document, 'execCommand');
+    });
+
+    it('keeps the same Copy button, and its "Copied", when the message re-renders with new props', async () => {
+      const { container, rerender } = render(
+        <MarkdownContent
+          content={content}
+          workingDir="/work"
+          knownFilePaths={() => ['/work/report.md']}
+          onOpenArtifact={() => undefined}
+        />
+      );
+      await waitFor(() => expect(container.querySelector('.biorouter-md-code')).not.toBeNull());
+      const block = container.querySelector('.biorouter-md-code');
+      const button = screen.getByRole('button', { name: 'Copy' });
+
+      fireEvent.click(button);
+      await waitFor(() => expect(button).toHaveTextContent('Copied'));
+      expect(writeText).toHaveBeenCalledExactlyOnceWith('print("hi")');
+
+      // What a streamed chunk hands every finished message: equal answers, new identities.
+      rerender(
+        <MarkdownContent
+          content={content}
+          workingDir="/work"
+          knownFilePaths={() => ['/work/report.md']}
+          onOpenArtifact={() => undefined}
+        />
+      );
+
+      expect(container.querySelector('.biorouter-md-code')).toBe(block);
+      expect(screen.getByRole('button', { name: 'Copied' })).toBe(button);
+    });
+
+    it('copies through the document when the clipboard refuses, from inside the block', async () => {
+      writeText.mockRejectedValue(new Error('Write permission denied'));
+      let inBlock = false;
+      const execCommand = installExecCommand((command) => {
+        const area = document.activeElement as HTMLTextAreaElement;
+        inBlock =
+          area.tagName === 'TEXTAREA' &&
+          area.value === 'print("hi")' &&
+          area.closest('.biorouter-md-code') !== null;
+        return command === 'copy';
+      });
+      const { container } = render(<MarkdownContent content={content} />);
+      await waitFor(() => expect(container.querySelector('.biorouter-md-code')).not.toBeNull());
+      const button = screen.getByRole('button', { name: 'Copy' });
+
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      await waitFor(() => expect(button).toHaveTextContent('Copied'));
+      expect(writeText).toHaveBeenCalledTimes(2);
+      expect(execCommand).toHaveBeenCalledWith('copy');
+      expect(inBlock).toBe(true);
+      expect(container.querySelector('textarea')).toBeNull();
+    });
+
+    it('says "Copy failed" when every path refuses, instead of nothing', async () => {
+      writeText.mockRejectedValue(new Error('Write permission denied'));
+      installExecCommand(() => false);
+      const { container } = render(<MarkdownContent content={content} />);
+      await waitFor(() => expect(container.querySelector('.biorouter-md-code')).not.toBeNull());
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+      });
+
+      expect(await screen.findByRole('button', { name: 'Copy failed' })).toBeInTheDocument();
     });
   });
 

@@ -165,3 +165,23 @@ export function filePathLookupBeforeMessage(
       .filter(({ afterMessage }) => afterMessage < messageIndex)
       .map(({ path }) => path);
 }
+
+/**
+ * The lookup `filePathLookupBeforeMessage` answers with, built from the paths it would answer
+ * from (`filePathsBeforeMessage`). A caller that must hand MarkdownContent a referentially STABLE
+ * lookup keys a memo on those paths and builds the lookup here, because the index behind
+ * `filePathLookupBeforeMessage` is rebuilt for every new `messages` array, which is every
+ * streamed chunk (see `BioRouterMessage`).
+ */
+export function filePathLookupFromPaths(
+  paths: readonly string[]
+): (basename: string) => readonly string[] {
+  const byBasename = new Map<string, string[]>();
+  for (const path of paths) {
+    const name = localFileBasename(path);
+    const matching = byBasename.get(name) ?? [];
+    matching.push(path);
+    byBasename.set(name, matching);
+  }
+  return (basename) => byBasename.get(basename) ?? [];
+}

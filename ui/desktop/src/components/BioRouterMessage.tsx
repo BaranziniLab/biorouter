@@ -26,7 +26,10 @@ import { ChevronRight } from './icons/app-icons';
 import { cn } from '../utils';
 import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
 import type { ArtifactSource } from './artifacts/artifactTypes';
-import { filePathLookupBeforeMessage } from './artifacts/artifactFileProvenance';
+import {
+  filePathLookupFromPaths,
+  filePathsBeforeMessage,
+} from './artifacts/artifactFileProvenance';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -125,9 +128,21 @@ export default function BioRouterMessage({
   // Use the index passed by the parent list when available (O(1)); only fall
   // back to the O(n) scan when rendered standalone.
   const messageIndex = messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
-  const knownFilePaths = useMemo(
-    () => filePathLookupBeforeMessage(messages, messageIndex, sessionId, workingDir),
+  // Keyed on WHAT the lookup answers, never on `messages`. `messages` is a new
+  // array on every streamed chunk, so a lookup built from it was a new function
+  // per chunk for every message in the transcript: MarkdownContent's memo never
+  // held, and every finished message re-rendered its markdown on every token
+  // (which, while its renderers were an inline map, also remounted each fenced
+  // block and its Copy button mid-click). The files named before a finished
+  // message do not change while the next reply streams, so neither does this.
+  // NUL separates the paths because no path can contain one.
+  const knownFilePathsKey = useMemo(
+    () => filePathsBeforeMessage(messages, messageIndex, sessionId, workingDir).join('\0'),
     [messages, messageIndex, sessionId, workingDir]
+  );
+  const knownFilePaths = useMemo(
+    () => filePathLookupFromPaths(knownFilePathsKey ? knownFilePathsKey.split('\0') : []),
+    [knownFilePathsKey]
   );
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);

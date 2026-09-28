@@ -7,7 +7,12 @@ import React, {
   createContext,
   useContext,
 } from 'react';
-import ReactMarkdown, { defaultUrlTransform, type Options } from 'react-markdown';
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+  type ExtraProps,
+  type Options,
+} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import remarkMath from 'remark-math';
@@ -27,6 +32,8 @@ import { AlertTriangle, Check, Copy, Image as ImageIcon, Play } from './icons/ap
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import { normalizeExternalHttpUrl } from '../utils/externalUrl';
 import { runnableCommandFromCodeBlock } from '../utils/shellCommandBlock';
+import { copyToClipboard } from '../utils/clipboard';
+import { useTransientValue } from '../hooks/useTransientFlag';
 import type { ArtifactFilePreview, ArtifactSource } from './artifacts/artifactTypes';
 import {
   imageSourceForPreview,
@@ -123,7 +130,13 @@ const CodeBlock = memo(function CodeBlock({
    */
   wrapLongLines?: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
+  /**
+   * What the last Copy click achieved. `failed` is shown, never swallowed: a
+   * refused write used to reach only `console.error`, so the button went on
+   * saying "Copy" and the only way to learn nothing was copied was to paste.
+   */
+  const [copyOutcome, markCopyOutcome] = useTransientValue<'copied' | 'failed'>(2000);
+  const rootRef = useRef<HTMLDivElement>(null);
   /**
    * What the last Run click actually achieved, not merely that one happened.
    *
@@ -132,18 +145,12 @@ const CodeBlock = memo(function CodeBlock({
    * pty — a case that used to render as a tick and the word "Sent".
    */
   const [runOutcome, setRunOutcome] = useState<'idle' | 'sent' | 'unavailable'>('idle');
-  const timeoutRef = useRef<number | null>(null);
   const sentTimeoutRef = useRef<number | null>(null);
 
+  // The shared path (utils/clipboard.ts): a refusal is retried, then copied
+  // through the document's own selection, and only then reported as failed.
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(children);
-      setCopied(true);
-      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
-      timeoutRef.current = window.setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy text: ', err);
-    }
+    markCopyOutcome((await copyToClipboard(children, rootRef.current)) ? 'copied' : 'failed');
   };
 
   // Null unless this block is a shell COMMAND the caller can run — see
@@ -164,7 +171,6 @@ const CodeBlock = memo(function CodeBlock({
 
   useEffect(() => {
     return () => {
-      if (timeoutRef.current) window.clearTimeout(timeoutRef.current);
       if (sentTimeoutRef.current) window.clearTimeout(sentTimeoutRef.current);
     };
   }, []);
@@ -229,7 +235,10 @@ const CodeBlock = memo(function CodeBlock({
     //
     // The `biorouter-md-code*` names are hooks for surfaces that restyle the
     // block in authored CSS (the artifact panel's paper, main.css).
-    <div className="biorouter-md-code not-prose w-full overflow-hidden bg-background-code">
+    <div
+      ref={rootRef}
+      className="biorouter-md-code not-prose w-full overflow-hidden bg-background-code"
+    >
       {/* Header bar */}
       <div className="biorouter-md-code-head flex items-center justify-between">
         <span className="biorouter-md-code-lang text-[11px] font-medium text-text-muted select-none">
@@ -274,11 +283,31 @@ const CodeBlock = memo(function CodeBlock({
             variant="ghost"
             size="xs"
             onClick={handleCopy}
-            className="gap-1 text-[11px] text-text-muted hover:text-text-default"
-            title="Copy code"
+            className={`gap-1 text-[11px] ${
+              copyOutcome === 'failed'
+                ? 'text-text-warning hover:text-text-warning'
+                : 'text-text-muted hover:text-text-default'
+            }`}
+            title={
+              copyOutcome === 'failed'
+                ? 'Biorouter could not write to the clipboard. Select the code and copy it with your keyboard.'
+                : 'Copy code'
+            }
           >
-            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-            <span>{copied ? 'Copied' : 'Copy'}</span>
+            {copyOutcome === 'copied' ? (
+              <Check className="h-3 w-3" />
+            ) : copyOutcome === 'failed' ? (
+              <AlertTriangle className="h-3 w-3" />
+            ) : (
+              <Copy className="h-3 w-3" />
+            )}
+            <span>
+              {copyOutcome === 'copied'
+                ? 'Copied'
+                : copyOutcome === 'failed'
+                  ? 'Copy failed'
+                  : 'Copy'}
+            </span>
           </Button>
         </div>
       </div>
@@ -707,6 +736,207 @@ const SOFT_BREAK_REMARK_PLUGINS: NonNullable<Options['remarkPlugins']> = [
   [remarkMath, { singleDollarTextMath: false }],
 ];
 
+const REHYPE_PLUGINS: NonNullable<Options['rehypePlugins']> = [
+  [
+    rehypeKatex,
+    {
+      throwOnError: false,
+      // KaTeX takes a raw colour string, not a CSS var. Keep it in step
+      // with --text-danger (light).
+      errorColor: '#b3261e',
+      strict: false,
+    },
+  ],
+];
+
+/**
+ * What the element renderers below need from the MarkdownContent that mounted
+ * them. It travels by context, not by closure, so the renderers can be defined
+ * ONCE, at module scope — see `MARKDOWN_COMPONENTS`.
+ */
+interface MarkdownRenderOptions {
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
+  workingDir?: string;
+  knownFilePaths?: KnownFilePaths;
+  onRunInTerminal?: (command: string) => boolean;
+  variant: 'chat' | 'document';
+}
+
+const MarkdownRenderContext = createContext<MarkdownRenderOptions>({ variant: 'chat' });
+
+type SlotProps<Tag extends keyof React.JSX.IntrinsicElements> = React.JSX.IntrinsicElements[Tag] &
+  ExtraProps;
+
+function MarkdownAnchor({ href, children: linkChildren, node: _node, ...props }: SlotProps<'a'>) {
+  const { onOpenArtifact, workingDir, knownFilePaths } = useContext(MarkdownRenderContext);
+  if (!href) return <>{linkChildren}</>;
+  const children = (
+    <InsideLinkContext.Provider value={true}>{linkChildren}</InsideLinkContext.Provider>
+  );
+  if (isLocalFileReference(href)) {
+    // A link to a sibling/local file. If there is a panel to open it in,
+    // preview it there; otherwise render it as styled, inert text with a
+    // tooltip rather than an <a> that would dead-navigate the renderer.
+    const resolved = resolveFileLink(href, workingDir, knownFilePaths);
+    if (onOpenArtifact && looksLikePreviewableFile(href) && resolved.kind === 'resolved') {
+      return (
+        <ArtifactLinkButton
+          artifact={{
+            kind: 'file',
+            title: localFileBasename(resolved.path),
+            path: resolved.path,
+            ...(resolved.line ? { line: resolved.line } : {}),
+          }}
+          onOpenArtifact={onOpenArtifact}
+          workingDir={workingDir}
+        >
+          {children}
+        </ArtifactLinkButton>
+      );
+    }
+    return (
+      <span
+        className="cursor-default font-medium text-text-muted underline decoration-dotted decoration-text-muted/40 underline-offset-2"
+        title={resolved.kind === 'unresolved' ? resolved.reason : resolved.path}
+      >
+        {children}
+      </span>
+    );
+  }
+  const externalUrl = previewableExternalUrl(href);
+  if (externalUrl && onOpenArtifact) {
+    return (
+      <button
+        type="button"
+        className={`inline break-all text-left ${LINK_CLASS}`}
+        onClick={() => onOpenArtifact({ kind: 'externalUrl', title: href, url: externalUrl })}
+      >
+        {children}
+      </button>
+    );
+  }
+  return (
+    <a
+      href={href}
+      {...props}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(event) => openExternalLink(event, href)}
+    >
+      {children}
+    </a>
+  );
+}
+
+function MarkdownImageSlot({ src, alt }: SlotProps<'img'>) {
+  const { workingDir } = useContext(MarkdownRenderContext);
+  return (
+    <MarkdownImage
+      src={typeof src === 'string' ? src : undefined}
+      alt={typeof alt === 'string' ? alt : undefined}
+      workingDir={workingDir}
+    />
+  );
+}
+
+function MarkdownPre({ children }: SlotProps<'pre'>) {
+  return (
+    <InsideCodeBlockContext.Provider value={true}>
+      <div className="biorouter-md-pre">{children}</div>
+    </InsideCodeBlockContext.Provider>
+  );
+}
+
+function MarkdownCodeSlot({ node: _node, ...props }: SlotProps<'code'>) {
+  const { onOpenArtifact, workingDir, knownFilePaths, onRunInTerminal, variant } =
+    useContext(MarkdownRenderContext);
+  return (
+    <MarkdownCode
+      {...props}
+      onOpenArtifact={onOpenArtifact}
+      workingDir={workingDir}
+      knownFilePaths={knownFilePaths}
+      onRunInTerminal={onRunInTerminal}
+      variant={variant}
+    />
+  );
+}
+
+function MarkdownParagraphSlot({ node: _node, ...props }: SlotProps<'p'>) {
+  const { onOpenArtifact, workingDir, knownFilePaths } = useContext(MarkdownRenderContext);
+  return (
+    <MarkdownParagraph
+      {...props}
+      onOpenArtifact={onOpenArtifact}
+      workingDir={workingDir}
+      knownFilePaths={knownFilePaths}
+    />
+  );
+}
+
+function MarkdownListItem({ children, node: _node, ...props }: SlotProps<'li'>) {
+  const { onOpenArtifact, workingDir, knownFilePaths } = useContext(MarkdownRenderContext);
+  return (
+    <li {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}</li>
+  );
+}
+
+function MarkdownTable({ node: _node, ...props }: SlotProps<'table'>) {
+  return (
+    <div
+      className="biorouter-md-table-scroll"
+      role="region"
+      aria-label="Scrollable table"
+      tabIndex={0}
+    >
+      <table {...props} />
+    </div>
+  );
+}
+
+function MarkdownTableCell({ children, node: _node, ...props }: SlotProps<'td'>) {
+  const { onOpenArtifact, workingDir, knownFilePaths } = useContext(MarkdownRenderContext);
+  return (
+    <td {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}</td>
+  );
+}
+
+function MarkdownTableHeader({ children, node: _node, ...props }: SlotProps<'th'>) {
+  const { onOpenArtifact, workingDir, knownFilePaths } = useContext(MarkdownRenderContext);
+  return (
+    <th {...props}>{linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}</th>
+  );
+}
+
+/**
+ * The element renderers, defined ONCE. ⚠ Never build this map inline in
+ * MarkdownContent's render.
+ *
+ * ReactMarkdown uses each entry as a component TYPE. An inline map made a new
+ * `pre` and `code` function on every render, and React unmounts a subtree whose
+ * type changed, so every fenced block in the transcript was torn down and
+ * rebuilt each time its MarkdownContent re-rendered. During a streamed reply
+ * that was every 50-100 ms for every message (a fresh `knownFilePaths` per
+ * chunk defeated the memo): a click pressed on one Copy button and released on
+ * its replacement, so no `click` fired and nothing was copied, and a "Copied"
+ * that did land was thrown away with its button. Measured live: 13 of 15
+ * clicks on a finished message's Copy failed while the next reply streamed.
+ *
+ * What the renderers need from their MarkdownContent reaches them through
+ * `MarkdownRenderContext`, which changes a consumer's props, never its type.
+ */
+const MARKDOWN_COMPONENTS: Components = {
+  a: MarkdownAnchor,
+  img: MarkdownImageSlot,
+  pre: MarkdownPre,
+  code: MarkdownCodeSlot,
+  p: MarkdownParagraphSlot,
+  li: MarkdownListItem,
+  table: MarkdownTable,
+  td: MarkdownTableCell,
+  th: MarkdownTableHeader,
+};
+
 const MarkdownContent = memo(function MarkdownContent({
   content,
   className = '',
@@ -728,6 +958,11 @@ const MarkdownContent = memo(function MarkdownContent({
     }
   }, [content]);
 
+  const renderOptions = useMemo<MarkdownRenderOptions>(
+    () => ({ onOpenArtifact, workingDir, knownFilePaths, onRunInTerminal, variant }),
+    [onOpenArtifact, workingDir, knownFilePaths, onRunInTerminal, variant]
+  );
+
   return (
     <div
       data-variant={variant}
@@ -746,148 +981,18 @@ const MarkdownContent = memo(function MarkdownContent({
       [&_blockquote_p:first-of-type]:before:content-none
       [&_blockquote_p:last-of-type]:after:content-none ${className}`}
     >
-      <ReactMarkdown
-        urlTransform={artifactAwareUrlTransform}
-        remarkPlugins={
-          variant === 'document' ? SOFT_BREAK_REMARK_PLUGINS : HARD_BREAK_REMARK_PLUGINS
-        }
-        rehypePlugins={[
-          [
-            rehypeKatex,
-            {
-              throwOnError: false,
-              // KaTeX takes a raw colour string, not a CSS var. Keep it in step
-              // with --text-danger (light).
-              errorColor: '#b3261e',
-              strict: false,
-            },
-          ],
-        ]}
-        components={{
-          a: ({ href, children: linkChildren, node: _node, ...props }) => {
-            if (!href) return <>{linkChildren}</>;
-            const children = (
-              <InsideLinkContext.Provider value={true}>{linkChildren}</InsideLinkContext.Provider>
-            );
-            if (isLocalFileReference(href)) {
-              // A link to a sibling/local file. If there is a panel to open it in,
-              // preview it there; otherwise render it as styled, inert text with a
-              // tooltip rather than an <a> that would dead-navigate the renderer.
-              const resolved = resolveFileLink(href, workingDir, knownFilePaths);
-              if (
-                onOpenArtifact &&
-                looksLikePreviewableFile(href) &&
-                resolved.kind === 'resolved'
-              ) {
-                return (
-                  <ArtifactLinkButton
-                    artifact={{
-                      kind: 'file',
-                      title: localFileBasename(resolved.path),
-                      path: resolved.path,
-                      ...(resolved.line ? { line: resolved.line } : {}),
-                    }}
-                    onOpenArtifact={onOpenArtifact}
-                    workingDir={workingDir}
-                  >
-                    {children}
-                  </ArtifactLinkButton>
-                );
-              }
-              return (
-                <span
-                  className="cursor-default font-medium text-text-muted underline decoration-dotted decoration-text-muted/40 underline-offset-2"
-                  title={resolved.kind === 'unresolved' ? resolved.reason : resolved.path}
-                >
-                  {children}
-                </span>
-              );
-            }
-            const externalUrl = previewableExternalUrl(href);
-            if (externalUrl && onOpenArtifact) {
-              return (
-                <button
-                  type="button"
-                  className={`inline break-all text-left ${LINK_CLASS}`}
-                  onClick={() =>
-                    onOpenArtifact({ kind: 'externalUrl', title: href, url: externalUrl })
-                  }
-                >
-                  {children}
-                </button>
-              );
-            }
-            return (
-              <a
-                href={href}
-                {...props}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={(event) => openExternalLink(event, href)}
-              >
-                {children}
-              </a>
-            );
-          },
-          img: ({ src, alt, node: _node }) => (
-            <MarkdownImage
-              src={typeof src === 'string' ? src : undefined}
-              alt={typeof alt === 'string' ? alt : undefined}
-              workingDir={workingDir}
-            />
-          ),
-          pre: ({ children }) => (
-            <InsideCodeBlockContext.Provider value={true}>
-              <div className="biorouter-md-pre">{children}</div>
-            </InsideCodeBlockContext.Provider>
-          ),
-          code: ({ node: _node, ...props }) => (
-            <MarkdownCode
-              {...props}
-              onOpenArtifact={onOpenArtifact}
-              workingDir={workingDir}
-              knownFilePaths={knownFilePaths}
-              onRunInTerminal={onRunInTerminal}
-              variant={variant}
-            />
-          ),
-          p: ({ node: _node, ...props }) => (
-            <MarkdownParagraph
-              {...props}
-              onOpenArtifact={onOpenArtifact}
-              workingDir={workingDir}
-              knownFilePaths={knownFilePaths}
-            />
-          ),
-          li: ({ children, node: _node, ...props }) => (
-            <li {...props}>
-              {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
-            </li>
-          ),
-          table: ({ node: _node, ...props }) => (
-            <div
-              className="biorouter-md-table-scroll"
-              role="region"
-              aria-label="Scrollable table"
-              tabIndex={0}
-            >
-              <table {...props} />
-            </div>
-          ),
-          td: ({ children, node: _node, ...props }) => (
-            <td {...props}>
-              {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
-            </td>
-          ),
-          th: ({ children, node: _node, ...props }) => (
-            <th {...props}>
-              {linkifyFilePaths(children, onOpenArtifact, workingDir, knownFilePaths)}
-            </th>
-          ),
-        }}
-      >
-        {processedContent}
-      </ReactMarkdown>
+      <MarkdownRenderContext.Provider value={renderOptions}>
+        <ReactMarkdown
+          urlTransform={artifactAwareUrlTransform}
+          remarkPlugins={
+            variant === 'document' ? SOFT_BREAK_REMARK_PLUGINS : HARD_BREAK_REMARK_PLUGINS
+          }
+          rehypePlugins={REHYPE_PLUGINS}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {processedContent}
+        </ReactMarkdown>
+      </MarkdownRenderContext.Provider>
     </div>
   );
 });
