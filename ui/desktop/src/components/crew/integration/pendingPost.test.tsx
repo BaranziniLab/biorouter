@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { composerCopy } from '../composer/copy';
+import { POST_CHECK_TIMEOUT_MS } from '../state/crewSend';
 import { CrewHttpError, type CrewMessage } from '../crewApi';
 import { clearBlobCache } from '../files/blobMetadataCache';
 import { filesCopy } from '../files/copy';
@@ -336,6 +337,55 @@ describe('a post whose outcome is unknown (QA R-4)', () => {
     deliver([landed]);
     await waitFor(() => expect(pendingRow()).toBeNull());
     expect(within(screen.getByRole('log')).getAllByText(words)).toHaveLength(1);
+  });
+
+  /**
+   * W2-UIC-6: the time bound was remembered by channel. Once one check there had timed out, the
+   * next post in doubt in that channel was called unconfirmed after a single view, not after its
+   * own views or its own 30 s, which invites the edit-and-resend duplicate R-4 is there to prevent.
+   */
+  it('gives a second post in doubt in the same channel its own time, after the first one’s ran out', async () => {
+    const keys: string[] = [];
+    daemon.state.request = (method, params) => {
+      if (method !== 'message.post') return undefined;
+      keys.push(String(params.idempotency_key));
+      return Promise.reject(
+        new CrewHttpError(
+          'Crew couldn’t confirm whether this reached lab.',
+          503,
+          'crew_outcome_unknown'
+        )
+      );
+    };
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const box = await sendWords();
+      // Its 30 s pass with the channel read only once: the time bound decides it.
+      clock.mockReturnValue(now + POST_CHECK_TIMEOUT_MS + 1_000);
+      act(() => daemon.emitState());
+      expect(await screen.findByText(composerCopy.unconfirmed)).toBeInTheDocument();
+
+      // Other words, and that post is in doubt too.
+      fireEvent.change(box, { target: { value: 'Different words, sent again' } });
+      fireEvent.click(screen.getByRole('button', { name: composerCopy.send }));
+      await waitFor(() => expect(keys).toHaveLength(2));
+      expect(keys[1]).not.toBe(keys[0]);
+      expect(await screen.findByText(composerCopy.checking)).toBeInTheDocument();
+      // One view later it is still being checked: the first check's time is not this one's.
+      act(() => daemon.emitState());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(screen.getByText(composerCopy.checking)).toBeInTheDocument();
+      expect(screen.queryByText(composerCopy.unconfirmed)).toBeNull();
+      // Its own views decide it.
+      act(() => daemon.emitState());
+      expect(await screen.findByText(composerCopy.unconfirmed)).toBeInTheDocument();
+      expect(box).toHaveValue('Different words, sent again');
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('still says it was sent when the message turns up after it could not be confirmed', async () => {

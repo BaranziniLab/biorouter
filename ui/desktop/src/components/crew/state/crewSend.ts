@@ -652,6 +652,12 @@ interface PostCheck {
   /** The words' attempt and the one this post made, so a found post lets the key go. */
   attempt: DraftAttempt;
   made: MessageAttempt;
+  /**
+   * Which check this is. A channel holds one at a time, and a later post in doubt replaces the
+   * one before, so what is decided about a check (that its time ran out) is kept by this, never
+   * by the channel.
+   */
+  serial: number;
   /** When the check began, for {@link POST_CHECK_TIMEOUT_MS}. */
   startedAt: number;
   /**
@@ -672,8 +678,11 @@ export const POST_CHECK_VIEWS = 2;
 /** The longest a check waits for those views while its channel is shown. */
 export const POST_CHECK_TIMEOUT_MS = 30_000;
 
-function startCheck(destination: string, check: Omit<PostCheck, 'startedAt'>): void {
-  postChecks.set(destination, { ...check, startedAt: Date.now() });
+let postCheckSerial = 0;
+
+function startCheck(destination: string, check: Omit<PostCheck, 'serial' | 'startedAt'>): void {
+  postCheckSerial += 1;
+  postChecks.set(destination, { ...check, serial: postCheckSerial, startedAt: Date.now() });
 }
 
 function endCheck(destination: string): void {
@@ -719,7 +728,13 @@ export function usePostCheck(input: PostCheckInput): void {
   const destination = postDestination(connectionId, channelId);
   const latest = useRef(input);
   latest.current = input;
-  const [timedOut, setTimedOut] = useState<string | null>(null);
+  // The check whose time ran out, by its serial. Kept by channel, one check that timed out made the
+  // next post in doubt there "could not be confirmed" after a single view, inviting the resend of
+  // edited words that R-4 exists to prevent.
+  const [timedOut, setTimedOut] = useState<number | null>(null);
+  // Read as the screen renders (the composer's "Checking…" note is a render), so a check that
+  // starts gets its own time bound at once, and a later one in the same channel its own again.
+  const checkSerial = postChecks.get(destination)?.serial ?? null;
 
   useEffect(() => {
     const check = postChecks.get(destination);
@@ -739,7 +754,7 @@ export function usePostCheck(input: PostCheckInput): void {
     }
     if (check.unconfirmed) return;
     const read = liveTailLoaded && verifiedViews >= check.views + POST_CHECK_VIEWS;
-    if (read || timedOut === destination) {
+    if (read || timedOut === check.serial) {
       check.unconfirmed = true;
       reportError(composerCopy.unconfirmed, 'composer', POST_NOTE_CODES.unconfirmed, {
         destination,
@@ -754,16 +769,17 @@ export function usePostCheck(input: PostCheckInput): void {
     verifiedViews,
     viewerId,
     timedOut,
+    checkSerial,
   ]);
 
-  // The time bound, counted only while the channel is on screen.
+  // The time bound of the check in the channel on screen, counted only while it is on screen.
   useEffect(() => {
     const check = postChecks.get(destination);
     if (!check || check.unconfirmed) return;
     const wait = Math.max(0, check.startedAt + POST_CHECK_TIMEOUT_MS - Date.now());
-    const timer = setTimeout(() => setTimedOut(destination), wait);
+    const timer = setTimeout(() => setTimedOut(check.serial), wait);
     return () => clearTimeout(timer);
-  }, [destination, verifiedViews]);
+  }, [destination, verifiedViews, checkSerial]);
 }
 
 /** Forget every post on its way (vitest only): one left unanswered must not hold the next Send. */
