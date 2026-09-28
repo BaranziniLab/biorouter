@@ -316,8 +316,11 @@ fn reject_reparse(file: &File) -> Result<()> {
 /// The code `POST /crew/files` answers a [`CredentialRefusal`] with, beside its sentence.
 pub const CREDENTIAL_REFUSAL_CODE: &str = "crew_file_is_credential";
 
-/// How much of a source file the content check reads. A credential store is small; a key
-/// buried deeper in a large file is beyond this check, as it is beyond the name check.
+/// How much of each end of a source file the content check reads. A credential store is
+/// small, and a key added to a large file is appended far more often than spliced in, so the
+/// check reads the first and the last this many bytes (FILES-F5); a file up to twice this
+/// size is read whole. A key buried in the middle of a larger file is beyond this check, as it
+/// is beyond the name check, and the manual says so.
 const CREDENTIAL_SNIFF_BYTES: u64 = 64 * 1024;
 
 /// A local path Crew refuses because the BR-23 credential floor says it holds, or would hold,
@@ -338,8 +341,11 @@ pub enum CredentialRefusal {
     /// An upload source. `name` is the file name as the request spelled it, made printable.
     Source { name: String },
     /// A download destination: a location the credential floor names, or (Q4-55) a settings,
-    /// login or autostart location or an executable file ([`download_destination_denied`]).
-    /// One sentence covers both, so it names both.
+    /// login or autostart location ([`download_destination_rule`]'s
+    /// [`DestinationRule::SettingsLocation`]). One sentence covers both, so it names both. A
+    /// refusal the person can fix by renaming (a dotted name, a program) is a
+    /// [`SelectionRefusal`] instead, because this sentence's advice, another folder, cannot
+    /// help with those (FILES-F3).
     Destination,
 }
 
@@ -361,20 +367,116 @@ impl std::error::Error for CredentialRefusal {}
 
 impl CredentialRefusal {
     fn source(path: &Path) -> Self {
-        let raw = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let name = biorouter::utils::sanitize_untrusted_label(&raw, 255);
         Self::Source {
-            name: if name.is_empty() {
-                "This file".into()
-            } else {
-                name
-            },
+            name: printable_name(path),
         }
     }
 }
+
+/// The file name `path` ends in, made printable for a sentence. A path that names no file
+/// reads as "This file".
+fn printable_name(path: &Path) -> String {
+    let raw = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = biorouter::utils::sanitize_untrusted_label(&raw, 255);
+    if name.is_empty() {
+        "This file".into()
+    } else {
+        name
+    }
+}
+
+/// The code `POST /crew/files` answers [`SelectionRefusal::HiddenName`] with.
+pub const FILE_NAME_HIDDEN_CODE: &str = "crew_file_name_hidden";
+/// The code `POST /crew/files` answers [`SelectionRefusal::SharedFolder`] with.
+pub const FOLDER_SHARED_CODE: &str = "crew_folder_shared";
+/// The code `POST /crew/files` answers [`SelectionRefusal::Folder`] with.
+pub const DESTINATION_IS_FOLDER_CODE: &str = "crew_destination_is_folder";
+/// The code `POST /crew/files` answers [`SelectionRefusal::Exists`] with.
+pub const DESTINATION_EXISTS_CODE: &str = "crew_destination_exists";
+/// The code `POST /crew/files` answers [`SelectionRefusal::Program`] with.
+pub const FILE_IS_PROGRAM_CODE: &str = "crew_file_is_program";
+
+/// A download destination refused for a reason other than credentials, named so the person
+/// knows what to change (FILES-F3, FILES-F9).
+///
+/// Every one of these used to reach the person as one of two sentences that could not help: a
+/// peer's `.Rprofile` was "a credential or settings location. Choose another folder." (no
+/// folder in the home would ever take that name), and a folder given as the file, or an
+/// existing file without approval to replace it, both read "Destination exists; explicitly
+/// approve replacement or select another filename" (approval can never help the first). The
+/// refusals are unchanged; only the words and the code are the cause's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectionRefusal {
+    /// Q4-55 rule (a) where only the file's own name starts with a dot: renaming it is enough.
+    HiddenName { name: String },
+    /// The folder is not the person's alone: another account owns it, or may change it.
+    SharedFolder,
+    /// The destination is a folder, or is spelled as one (it ends in a separator). `path` is
+    /// that folder, made printable.
+    Folder { path: String },
+    /// A file of that name exists, and replacing it was not approved.
+    Exists { name: String },
+    /// Q4-55 rule (d): the destination is a program, which a replacement would take over.
+    Program { name: String },
+}
+
+impl SelectionRefusal {
+    /// The code the transfer routes answer this refusal with.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::HiddenName { .. } => FILE_NAME_HIDDEN_CODE,
+            Self::SharedFolder => FOLDER_SHARED_CODE,
+            Self::Folder { .. } => DESTINATION_IS_FOLDER_CODE,
+            Self::Exists { .. } => DESTINATION_EXISTS_CODE,
+            Self::Program { .. } => FILE_IS_PROGRAM_CODE,
+        }
+    }
+
+    fn folder(path: &Path) -> Self {
+        let spelled = path.to_string_lossy();
+        let trimmed = spelled.trim_end_matches(std::path::is_separator);
+        let folder = if trimmed.is_empty() {
+            spelled.as_ref()
+        } else {
+            trimmed
+        };
+        Self::Folder {
+            path: biorouter::utils::sanitize_untrusted_label(folder, 1024),
+        }
+    }
+}
+
+impl std::fmt::Display for SelectionRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HiddenName { name } => write!(
+                f,
+                "\u{201c}{name}\u{201d} starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot."
+            ),
+            Self::SharedFolder => f.write_str(
+                "Choose a folder owned by your account that other accounts can't change.",
+            ),
+            Self::Folder { path } => write!(
+                f,
+                "That is a folder. Give a file name, for example {}.",
+                Path::new(path).join("counts.csv").display()
+            ),
+            Self::Exists { name } => write!(
+                f,
+                "A file named \u{201c}{name}\u{201d} already exists. Replace it, or choose another name."
+            ),
+            Self::Program { name } => write!(
+                f,
+                "\u{201c}{name}\u{201d} is a program, and Crew won't replace one. Choose another name."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SelectionRefusal {}
 
 /// The floor's verdict on a path, before anything is opened. Only an absolute path is judged;
 /// `select_local` refuses any other in words of its own.
@@ -392,19 +494,79 @@ fn credential_floor_denies(path: &Path) -> bool {
     biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(root).is_denied_resolved(path)
 }
 
-/// True when the first [`CREDENTIAL_SNIFF_BYTES`] of `file` hold credential material a
-/// credential file's *name* would not reveal: a hard-linked or renamed copy of a private key,
-/// an AWS credentials file, a provider-key store. Leaves the file positioned at its start.
+/// True when the first or the last [`CREDENTIAL_SNIFF_BYTES`] of `file` hold credential
+/// material a credential file's *name* would not reveal: a hard-linked or renamed copy of a
+/// private key, an AWS credentials file, a provider-key store, or a key pasted onto the end of
+/// a large CSV or log (FILES-F5 uploaded a 78 KB CSV with a key at byte 78,000, when only the
+/// first 64 KiB were read). A file that starts with a UTF-16 byte-order mark is decoded as
+/// UTF-16 first, because read as UTF-8 its `-----BEGIN` line is not the bytes the detectors
+/// match. Leaves the file positioned at its start.
 fn holds_credential_material(file: &File) -> Result<bool> {
+    let length = file.metadata()?.len();
     let mut reader = file;
+    let mut read = |start: u64, bytes: u64| -> Result<Vec<u8>> {
+        reader.seek(SeekFrom::Start(start))?;
+        let mut buffer = Vec::new();
+        (&mut reader).take(bytes).read_to_end(&mut buffer)?;
+        Ok(buffer)
+    };
+    // One window when the ends meet, so a key across the middle of a small file is read whole.
+    let windows = if length <= 2 * CREDENTIAL_SNIFF_BYTES {
+        vec![(0, read(0, 2 * CREDENTIAL_SNIFF_BYTES)?)]
+    } else {
+        let tail = length - CREDENTIAL_SNIFF_BYTES;
+        vec![
+            (0, read(0, CREDENTIAL_SNIFF_BYTES)?),
+            (tail, read(tail, CREDENTIAL_SNIFF_BYTES)?),
+        ]
+    };
     reader.seek(SeekFrom::Start(0))?;
-    let mut head = Vec::new();
-    reader.take(CREDENTIAL_SNIFF_BYTES).read_to_end(&mut head)?;
-    reader.seek(SeekFrom::Start(0))?;
-    Ok(
-        biorouter::guardrails::secret_output::redact_text(&String::from_utf8_lossy(&head))
-            .is_some(),
-    )
+    let encoding = windows
+        .first()
+        .map_or(TextEncoding::Utf8, |(_, head)| TextEncoding::sniff(head));
+    Ok(windows.iter().any(|(start, bytes)| {
+        biorouter::guardrails::secret_output::redact_text(&encoding.decode(*start, bytes)).is_some()
+    }))
+}
+
+/// How the content check reads a file's bytes as text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TextEncoding {
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+}
+
+impl TextEncoding {
+    /// From the byte-order mark at the start of the file, if there is one.
+    fn sniff(head: &[u8]) -> Self {
+        match head {
+            [0xFF, 0xFE, ..] => Self::Utf16Le,
+            [0xFE, 0xFF, ..] => Self::Utf16Be,
+            _ => Self::Utf8,
+        }
+    }
+
+    /// `bytes`, read from byte `start` of the file, as text. A UTF-16 window that starts on an
+    /// odd byte drops that byte so its code units line up with the file's.
+    fn decode(self, start: u64, bytes: &[u8]) -> String {
+        let pair = |bytes: &[u8]| -> Vec<u16> {
+            bytes
+                .chunks_exact(2)
+                .map(|unit| match self {
+                    Self::Utf16Be => u16::from_be_bytes([unit[0], unit[1]]),
+                    _ => u16::from_le_bytes([unit[0], unit[1]]),
+                })
+                .collect()
+        };
+        match self {
+            Self::Utf8 => String::from_utf8_lossy(bytes).into_owned(),
+            Self::Utf16Le | Self::Utf16Be => {
+                let aligned = bytes.get(usize::from(start % 2 == 1)..).unwrap_or_default();
+                String::from_utf16_lossy(&pair(aligned))
+            }
+        }
+    }
 }
 
 // ---- Q4-55: settings, login and autostart destinations -------------------------------------
@@ -638,12 +800,58 @@ fn below(path: &Path, root: &Path) -> Option<Vec<String>> {
 ///
 /// On unix the folder is also matched by device and inode, so a route no string comparison
 /// sees (a macOS firmlink such as `/System/Volumes/Data/Users/…`, a bind mount) is refused too.
+#[cfg(test)]
 fn download_destination_denied(path: &Path, locations: &SettingsLocations) -> bool {
+    download_destination_rule(path, locations).is_some()
+}
+
+/// Which of the Q4-55 rules refuses a download destination, and so what the refusal says
+/// (FILES-F3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DestinationRule {
+    /// Rule (a) through a folder (`~/.ssh/…`, `~/.config/autostart/…`, `.git/…`), a dotted
+    /// file reached by a link named like an ordinary one, or rule (b) or (c): a settings, login
+    /// or autostart location, answered with [`CredentialRefusal::Destination`].
+    SettingsLocation,
+    /// Rule (a) where only the name the person gave starts with a dot (`~/.bashrc`,
+    /// `~/Downloads/.Rprofile`): the same place under another name is fine.
+    HiddenName,
+    /// Rule (d).
+    Program,
+}
+
+/// What rule (a) finds below a home: nothing, a dotted name only, or a dotted folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Hidden {
+    No,
+    NameOnly,
+    Folder,
+}
+
+impl Hidden {
+    /// Rule (a) over the components below a home, the file's own name last.
+    fn of<S: AsRef<str>>(rest: &[S]) -> Self {
+        let dotted = |part: &S| part.as_ref().starts_with('.');
+        match rest.split_last() {
+            Some((_, folders)) if folders.iter().any(dotted) => Self::Folder,
+            Some((name, _)) if dotted(name) => Self::NameOnly,
+            _ => Self::No,
+        }
+    }
+}
+
+/// [`download_destination_denied`]'s rules, with which one refused. A settings location
+/// outranks a dotted name, and both outrank a program, so the sentence names the place when
+/// the place is the problem.
+fn download_destination_rule(
+    path: &Path,
+    locations: &SettingsLocations,
+) -> Option<DestinationRule> {
     if !path.is_absolute() {
-        return false;
+        return None;
     }
     let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
-        return false;
+        return None;
     };
     let folder = resolved(parent);
     let mut spellings = vec![lexical(path), folder.join(name)];
@@ -665,14 +873,33 @@ fn download_destination_denied(path: &Path, locations: &SettingsLocations) -> bo
             })
         })
         .collect();
-    let hidden = |rest: Vec<String>| rest.iter().any(|name| name.starts_with('.'));
-    spellings.iter().any(|spelled| {
-        homes
-            .iter()
-            .any(|home| below(spelled, home).is_some_and(hidden))
-            || in_settings_folder(spelled, &settings, &drives)
-    }) || denied_by_identity(&folder, name, locations, &drives)
-        || names_an_executable(path)
+    let mut in_settings = false;
+    let mut hidden = Hidden::No;
+    for spelled in &spellings {
+        for home in &homes {
+            if let Some(rest) = below(spelled, home) {
+                hidden = hidden.max(Hidden::of(&rest));
+            }
+        }
+        in_settings |= in_settings_folder(spelled, &settings, &drives);
+    }
+    let (by_identity_settings, by_identity_hidden) =
+        denied_by_identity(&folder, name, locations, &drives);
+    in_settings |= by_identity_settings;
+    hidden = hidden.max(by_identity_hidden);
+    if in_settings || hidden == Hidden::Folder {
+        return Some(DestinationRule::SettingsLocation);
+    }
+    if hidden == Hidden::NameOnly {
+        // Only a name the person wrote with a dot is one they can rename. A link named like an
+        // ordinary file that reaches `~/.bashrc` is that settings file under another name.
+        return Some(if name.to_string_lossy().starts_with('.') {
+            DestinationRule::HiddenName
+        } else {
+            DestinationRule::SettingsLocation
+        });
+    }
+    names_an_executable(path).then_some(DestinationRule::Program)
 }
 
 /// Rules (b) and (c) for one spelling: below a settings folder and not inside a cloud drive.
@@ -691,13 +918,15 @@ fn in_cloud_drive(spelled: &Path, drives: &[CloudDrive]) -> bool {
 /// with the home and settings folders themselves. Below a settings folder found that way, the
 /// rest of the path is spelled again from that folder's own name, and a cloud drive is judged
 /// on that spelling, as [`in_settings_folder`] judges one.
+///
+/// Answers whether a settings folder was found, and what rule (a) found below a home.
 #[cfg(unix)]
 fn denied_by_identity(
     folder: &Path,
     name: &std::ffi::OsStr,
     locations: &SettingsLocations,
     drives: &[CloudDrive],
-) -> bool {
+) -> (bool, Hidden) {
     use std::os::unix::fs::MetadataExt;
     let identity = |path: &Path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
     let homes: Vec<_> = locations.homes.iter().filter_map(|p| identity(p)).collect();
@@ -706,24 +935,28 @@ fn denied_by_identity(
         .iter()
         .filter_map(|p| identity(p).map(|id| (id, p)))
         .collect();
-    folder.ancestors().any(|ancestor| {
+    let mut in_settings = false;
+    let mut hidden = Hidden::No;
+    for ancestor in folder.ancestors() {
         let Some(this) = identity(ancestor) else {
-            return false;
+            continue;
         };
-        let rest = || {
-            folder
-                .strip_prefix(ancestor)
-                .unwrap_or(Path::new(""))
-                .join(name)
-        };
-        settings
+        let rest = folder
+            .strip_prefix(ancestor)
+            .unwrap_or(Path::new(""))
+            .join(name);
+        in_settings |= settings
             .iter()
-            .any(|(id, root)| *id == this && !in_cloud_drive(&root.join(rest()), drives))
-            || (homes.contains(&this)
-                && rest()
-                    .components()
-                    .any(|part| part.as_os_str().to_string_lossy().starts_with('.')))
-    })
+            .any(|(id, root)| *id == this && !in_cloud_drive(&root.join(&rest), drives));
+        if homes.contains(&this) {
+            let parts: Vec<String> = rest
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            hidden = hidden.max(Hidden::of(&parts));
+        }
+    }
+    (in_settings, hidden)
 }
 
 #[cfg(not(unix))]
@@ -732,8 +965,8 @@ fn denied_by_identity(
     _: &std::ffi::OsStr,
     _: &SettingsLocations,
     _: &[CloudDrive],
-) -> bool {
-    false
+) -> (bool, Hidden) {
+    (false, Hidden::No)
 }
 
 /// Rule (d): an existing file with any execute bit, following a link as the replacement would
@@ -751,12 +984,39 @@ fn names_an_executable(_: &Path) -> bool {
 }
 
 /// What every download destination must pass, whichever door registered it: the credential
-/// floor (Q3-01) and the settings locations (Q4-55), answered with one refusal.
+/// floor (Q3-01) and the settings locations (Q4-55). A credential, settings, login or
+/// autostart location is one refusal; a dotted name and a program each say what to rename
+/// (FILES-F3).
 fn refuse_destination(path: &Path, locations: &SettingsLocations) -> Result<()> {
-    if credential_floor_denies(path) || download_destination_denied(path, locations) {
+    if credential_floor_denies(path) {
         return Err(CredentialRefusal::Destination.into());
     }
-    Ok(())
+    match download_destination_rule(path, locations) {
+        None => Ok(()),
+        Some(DestinationRule::SettingsLocation) => Err(CredentialRefusal::Destination.into()),
+        Some(DestinationRule::HiddenName) => Err(SelectionRefusal::HiddenName {
+            name: printable_name(path),
+        }
+        .into()),
+        Some(DestinationRule::Program) => Err(SelectionRefusal::Program {
+            name: printable_name(path),
+        }
+        .into()),
+    }
+}
+
+/// Whether `path` is spelled as a folder: it ends in a separator, or in `.` or `..`. `Path`
+/// drops all three (`Path::new("trav/").file_name()` is `trav`), so a download given
+/// `--output ~/Downloads/trav/` would otherwise be saved as a FILE named `trav` (FILES-F9).
+fn spelled_as_folder(path: &Path) -> bool {
+    let spelled = path.as_os_str().to_string_lossy();
+    if spelled.ends_with(std::path::is_separator) {
+        return true;
+    }
+    matches!(
+        spelled.rsplit(std::path::is_separator).next(),
+        Some("." | "..")
+    )
 }
 
 pub fn select(path: &Path, direction: Direction, overwrite: bool) -> Result<Selection> {
@@ -869,6 +1129,9 @@ fn select_local(
     cleanup: bool,
 ) -> Result<Selection> {
     ensure!(path.is_absolute(), "Select an absolute local path");
+    if direction == Direction::Download && !cleanup && spelled_as_folder(path) {
+        return Err(SelectionRefusal::folder(path).into());
+    }
     let name = path
         .file_name()
         .context("Select a file, not a directory")?
@@ -898,13 +1161,31 @@ fn select_local(
             Ok(Selection::Source { file, stamp, name })
         }
         Direction::Download => {
+            // The folder's own words first: `/tmp` and a shared lab folder are refused because
+            // other accounts can change what lands there, and saying so is what helps.
+            #[cfg(unix)]
+            if !directory_is_private(&directory)? {
+                return Err(SelectionRefusal::SharedFolder.into());
+            }
             protected_directory(&directory)?;
             if !cleanup && directory.try_exists(&name)? {
                 reject_link(path)?;
+                let metadata = directory.metadata(&name)?;
+                // Three causes that used to share one sentence (FILES-F9): approval to replace
+                // can never help a folder, and a file only needs that approval.
+                if metadata.is_dir() {
+                    return Err(SelectionRefusal::folder(path).into());
+                }
                 ensure!(
-                    directory.metadata(&name)?.is_file() && overwrite,
-                    "Destination exists; explicitly approve replacement or select another filename"
+                    metadata.is_file(),
+                    "That is not an ordinary file, so Crew won't replace it. Choose another name."
                 );
+                if !overwrite {
+                    return Err(SelectionRefusal::Exists {
+                        name: printable_name(path),
+                    }
+                    .into());
+                }
             }
             let target = if cleanup {
                 TargetApproval::Cleanup
@@ -1068,18 +1349,29 @@ pub(crate) fn verify_named_file(directory: &Dir, name: &Path, file: &File) -> Re
     Ok(())
 }
 
-pub fn protected_directory(directory: &Dir) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use cap_std::fs::MetadataExt;
-        let metadata = directory.dir_metadata()?;
-        ensure!(
-            metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0,
-            "Choose an output directory owned by your account that other accounts cannot modify"
-        );
+/// Whether `directory` is this account's alone: owned by it, writable by no group or other
+/// account, and (macOS) granting no one an extended ACL allow. An error is a folder whose
+/// ownership could not be read, which is not an answer either way.
+#[cfg(unix)]
+fn directory_is_private(directory: &Dir) -> Result<bool> {
+    use cap_std::fs::MetadataExt;
+    let metadata = directory.dir_metadata()?;
+    if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
+        return Ok(false);
     }
     #[cfg(target_os = "macos")]
-    reject_acl_allows(&directory.try_clone()?.into_std_file())?;
+    if acl_allows_anyone(&directory.try_clone()?.into_std_file())? {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+pub fn protected_directory(directory: &Dir) -> Result<()> {
+    #[cfg(unix)]
+    ensure!(
+        directory_is_private(directory)?,
+        "Choose an output directory owned by your account that other accounts cannot modify"
+    );
     #[cfg(windows)]
     return windows::protected_directory(directory);
     #[cfg(not(windows))]
@@ -1120,6 +1412,16 @@ pub fn validate_file_acl(file: &File) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn reject_acl_allows(file: &File) -> Result<()> {
+    ensure!(
+        !acl_allows_anyone(file)?,
+        "Choose a private output directory without extended ACL allow grants"
+    );
+    Ok(())
+}
+
+/// Whether `file`'s extended ACL holds any allow entry.
+#[cfg(target_os = "macos")]
+fn acl_allows_anyone(file: &File) -> Result<bool> {
     use std::ffi::c_void;
     use std::os::fd::AsRawFd;
     unsafe extern "C" {
@@ -1134,7 +1436,7 @@ fn reject_acl_allows(file: &File) -> Result<()> {
         // Darwin reports an absent FILESEC_ACL property as ENOENT on a valid descriptor.
         if error.raw_os_error() == Some(libc::ENOENT) {
             file.metadata()?;
-            return Ok(());
+            return Ok(false);
         }
         return Err(error).context("Could not verify extended ACL");
     }
@@ -1154,13 +1456,12 @@ fn reject_acl_allows(file: &File) -> Result<()> {
                 unsafe { acl_get_tag_type(entry, &mut tag) } == 0,
                 "Could not verify destination ACL entry"
             );
-            ensure!(
-                tag != 1,
-                "Choose a private output directory without extended ACL allow grants"
-            );
+            if tag == 1 {
+                return Ok(true);
+            }
             selector = -1;
         }
-        Ok(())
+        Ok(false)
     })();
     unsafe {
         acl_free(acl);
@@ -1381,6 +1682,104 @@ mod credential_floor_tests {
             refusal(upload(&renamed)),
             CredentialRefusal::Source { .. }
         ));
+    }
+
+    /// An ordinary CSV `bytes` long, then `tail` appended.
+    fn csv_ending_with(bytes: usize, tail: &str) -> String {
+        let mut csv = String::from("sample,od600\n");
+        while csv.len() < bytes {
+            csv.push_str("gina-1,0.42\n");
+        }
+        csv.truncate(bytes);
+        csv.push_str(tail);
+        csv
+    }
+
+    fn utf16(text: &str, big_endian: bool) -> Vec<u8> {
+        let mut bytes = if big_endian {
+            vec![0xFE, 0xFF]
+        } else {
+            vec![0xFF, 0xFE]
+        };
+        for unit in text.encode_utf16() {
+            bytes.extend(if big_endian {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            });
+        }
+        bytes
+    }
+
+    /// FILES-F5: only the first 64 KiB were read, so a 78,419-byte CSV with a private key at
+    /// byte 78,000 uploaded, and so would any key appended to a large log or table. Both ends
+    /// are read now, and a file small enough is read whole.
+    #[test]
+    fn a_key_at_the_end_of_a_large_file_is_refused_by_its_content() {
+        let home = FakeHome::new();
+        for (name, bytes) in [
+            // The measured file: the key starts at byte 78,000.
+            ("results-late-key.csv", 78_000),
+            // Straddling the old 64 KiB edge.
+            ("results-edge-key.csv", 65_500),
+            // Far past both windows' meeting point: only the tail window sees it.
+            ("results-appended-key.csv", 300_000),
+        ] {
+            let path = home.data.join(name);
+            fs::write(&path, csv_ending_with(bytes, &fake_private_key())).unwrap();
+            assert_eq!(
+                refusal(upload(&path)),
+                CredentialRefusal::Source { name: name.into() },
+                "{name}"
+            );
+        }
+        // An AWS key pasted onto the end of a large log, not a PEM block.
+        let log = home.data.join("pipeline.log");
+        fs::write(&log, csv_ending_with(500_000, &fake_aws_credentials())).unwrap();
+        assert!(matches!(
+            refusal(upload(&log)),
+            CredentialRefusal::Source { .. }
+        ));
+        // A large file with nothing in it is still shared.
+        let clean = home.data.join("big-clean.csv");
+        fs::write(&clean, csv_ending_with(500_000, "gina-9,0.99\n")).unwrap();
+        assert!(upload(&clean).is_ok());
+    }
+
+    /// FILES-F5's variant: a UTF-16 file's `-----BEGIN` line is not the bytes the detectors
+    /// match when it is read as UTF-8, so a key saved as UTF-16 (Windows Notepad's "Unicode")
+    /// passed. A file with a UTF-16 byte-order mark is decoded first, at either end.
+    #[test]
+    fn a_key_in_a_utf16_file_is_refused_by_its_content() {
+        let home = FakeHome::new();
+        for big_endian in [false, true] {
+            let small = home.data.join(format!("notes-utf16-{big_endian}.txt"));
+            fs::write(
+                &small,
+                utf16(&format!("exported\n{}", fake_private_key()), big_endian),
+            )
+            .unwrap();
+            assert!(
+                matches!(refusal(upload(&small)), CredentialRefusal::Source { .. }),
+                "big endian: {big_endian}"
+            );
+            // At the end of a large file, where the tail window may start on an odd byte.
+            for pad in [0, 1] {
+                let large = home
+                    .data
+                    .join(format!("table-utf16-{big_endian}-{pad}.csv"));
+                let mut text = csv_ending_with(200_000 + pad, "");
+                text.push_str(&fake_aws_credentials());
+                fs::write(&large, utf16(&text, big_endian)).unwrap();
+                assert!(
+                    matches!(refusal(upload(&large)), CredentialRefusal::Source { .. }),
+                    "big endian: {big_endian}, pad: {pad}"
+                );
+            }
+        }
+        let clean = home.data.join("clean-utf16.csv");
+        fs::write(&clean, utf16(&csv_ending_with(200_000, ""), false)).unwrap();
+        assert!(upload(&clean).is_ok());
     }
 
     #[test]
@@ -1621,15 +2020,55 @@ mod settings_destination_tests {
         );
     }
 
+    fn selection_refusal(result: Result<Selection>) -> SelectionRefusal {
+        let error = match result {
+            Ok(selection) => panic!("expected a selection refusal for {}", selection.name()),
+            Err(error) => error,
+        };
+        error
+            .downcast_ref::<SelectionRefusal>()
+            .cloned()
+            .unwrap_or_else(|| panic!("expected a selection refusal, got: {error:#}"))
+    }
+
+    /// Refused by download and by replay alike, with the dotted-name sentence: the place is
+    /// fine, the name is not (FILES-F3).
+    fn assert_refused_as_hidden_name(fake: &FakeHome, path: &Path, overwrite: bool) {
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        for (door, result) in [
+            ("download", fake.download(path, overwrite)),
+            ("replay", fake.replay(path, overwrite)),
+        ] {
+            assert_eq!(
+                selection_refusal(result),
+                SelectionRefusal::HiddenName { name: name.clone() },
+                "{door} {}",
+                path.display()
+            );
+        }
+    }
+
+    /// Refused by download and by replay alike, with the program sentence.
+    fn assert_refused_as_program(fake: &FakeHome, path: &Path, overwrite: bool) {
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        for (door, result) in [
+            ("download", fake.download(path, overwrite)),
+            ("replay", fake.replay(path, overwrite)),
+        ] {
+            assert_eq!(
+                selection_refusal(result),
+                SelectionRefusal::Program { name: name.clone() },
+                "{door} {}",
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn login_settings_and_autostart_files_are_refused() {
         let fake = FakeHome::new();
+        // Inside a settings folder: another folder is the fix.
         for (spelled, overwrite) in [
-            (".bashrc", true),
-            (".zshrc", true),
-            (".zshenv", false),
-            (".profile", true),
-            (".gitconfig", true),
             (".ssh/authorized_keys", true),
             (".ssh/authorized_keys", false),
             (".ssh/config", true),
@@ -1639,9 +2078,21 @@ mod settings_destination_tests {
             (".local/bin/python3", false),
             ("Library/LaunchAgents/x.plist", false),
             ("project/.git/hooks/pre-commit", false),
-            ("Downloads/.hidden-script", false),
         ] {
             assert_refused(&fake, &fake.home.join(spelled), overwrite);
+        }
+        // A dotted file name in an ordinary folder of the home: another name is the fix, and
+        // the refusal says so (FILES-F3).
+        for (spelled, overwrite) in [
+            (".bashrc", true),
+            (".zshrc", true),
+            (".zshenv", false),
+            (".profile", true),
+            (".gitconfig", true),
+            ("Downloads/.hidden-script", false),
+            ("Downloads/.Rprofile", false),
+        ] {
+            assert_refused_as_hidden_name(&fake, &fake.home.join(spelled), overwrite);
         }
         // Refused before anything is written: the files are as they were.
         assert_eq!(
@@ -1657,7 +2108,7 @@ mod settings_destination_tests {
         let home = &fake.home;
         // A dot-dot route: no component of the tail is hidden until `..` is folded.
         assert_refused(&fake, &home.join("Downloads/../.ssh/authorized_keys"), true);
-        assert_refused(&fake, &home.join("project/results/../../.bashrc"), true);
+        assert_refused_as_hidden_name(&fake, &home.join("project/results/../../.bashrc"), true);
         // A linked folder: `Downloads/keys/authorized_keys` names nothing hidden until the
         // link is resolved to `~/.ssh`.
         symlink(home.join(".ssh"), home.join("Downloads/keys")).unwrap();
@@ -1668,18 +2119,30 @@ mod settings_destination_tests {
         )
         .unwrap();
         assert_refused(&fake, &home.join("Downloads/agents/x.plist"), false);
-        // A link named like an ordinary file, pointing at an rc file.
+        // A link named like an ordinary file, pointing at an rc file: renaming cannot help, so
+        // it is refused as the settings file it reaches, not as a dotted name.
         symlink(home.join(".bashrc"), home.join("Downloads/notes.txt")).unwrap();
         assert_refused(&fake, &home.join("Downloads/notes.txt"), true);
         // A case variant: on APFS and NTFS this opens `~/Library`.
         assert_refused(&fake, &home.join("LIBRARY/LaunchAgents/x.plist"), false);
         // The home itself named through a link, and a link used as the home.
         symlink(home, fake.root.join("home-link")).unwrap();
-        assert_refused(&fake, &fake.root.join("home-link/.bashrc"), true);
+        assert_refused_as_hidden_name(&fake, &fake.root.join("home-link/.bashrc"), true);
         let linked = SettingsLocations::new(vec![fake.root.join("home-link")], vec![], vec![]);
         assert_eq!(
-            refusal(select_with(
+            selection_refusal(select_with(
                 &home.join(".bashrc"),
+                Direction::Download,
+                true,
+                &linked
+            )),
+            SelectionRefusal::HiddenName {
+                name: ".bashrc".into()
+            }
+        );
+        assert_eq!(
+            refusal(select_with(
+                &home.join(".ssh/authorized_keys"),
                 Direction::Download,
                 true,
                 &linked
@@ -1700,7 +2163,7 @@ mod settings_destination_tests {
             let path = fake.home.join(spelled);
             fs::write(&path, "#!/bin/sh\necho hi\n").unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
-            assert_refused(&fake, &path, true);
+            assert_refused_as_program(&fake, &path, true);
         }
         // The same place is fine once nothing there would be run.
         let plain = fake.home.join("bin/notes.txt");
@@ -1734,6 +2197,67 @@ mod settings_destination_tests {
         assert!(fake.download(&elsewhere.join("run.csv"), false).is_ok());
     }
 
+    /// FILES-F9: a folder given as the file, and a file that exists, used to share one sentence
+    /// telling the person to approve a replacement, which can never help a folder; a trailing
+    /// separator even slipped past the "not a directory" check. FILES-F3: a folder other
+    /// accounts can change was refused in words that reached the person as a generic refusal.
+    #[test]
+    fn a_folder_an_existing_file_and_a_shared_folder_each_say_so() {
+        let fake = FakeHome::new();
+        let downloads = fake.home.join("Downloads");
+        for overwrite in [false, true] {
+            assert_eq!(
+                selection_refusal(fake.download(&downloads, overwrite)),
+                SelectionRefusal::Folder {
+                    path: downloads.to_string_lossy().into_owned()
+                },
+                "overwrite: {overwrite}"
+            );
+        }
+        let with_separator =
+            |p: &Path| PathBuf::from(format!("{}{}", p.display(), std::path::MAIN_SEPARATOR));
+        for spelled in [
+            with_separator(&downloads),
+            // Spelled as a folder that does not exist yet: saving it as a FILE named
+            // `new-folder` is not what the person asked for.
+            with_separator(&downloads.join("new-folder")),
+            downloads.join("."),
+            downloads.join("project").join(".."),
+        ] {
+            assert!(
+                matches!(
+                    selection_refusal(fake.download(&spelled, true)),
+                    SelectionRefusal::Folder { .. }
+                ),
+                "{}",
+                spelled.display()
+            );
+            assert!(!downloads.join("new-folder").exists());
+        }
+        assert_eq!(
+            selection_refusal(fake.download(&downloads.join("data.csv"), false)),
+            SelectionRefusal::Exists {
+                name: "data.csv".into()
+            }
+        );
+        assert!(fake.download(&downloads.join("data.csv"), true).is_ok());
+
+        for mode in [0o777, 0o775, 0o757] {
+            let shared = fake.root.join(format!("shared-{mode:o}"));
+            fs::create_dir(&shared).unwrap();
+            fs::set_permissions(&shared, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(
+                selection_refusal(fake.download(&shared.join("counts.csv"), false)),
+                SelectionRefusal::SharedFolder,
+                "mode {mode:o}"
+            );
+        }
+        // Removing a transfer's own partial is judged by the folder check it always had.
+        let private = fake.root.join("private-results");
+        private_folder(&private);
+        assert!(fake.download(&private.join("counts.csv"), false).is_ok());
+    }
+
     #[test]
     fn a_partial_in_a_refused_folder_can_still_be_removed() {
         let fake = FakeHome::new();
@@ -1743,15 +2267,33 @@ mod settings_destination_tests {
     }
 
     #[test]
-    fn the_refusal_keeps_the_destination_sentence() {
+    fn each_refusal_names_its_own_cause() {
         let fake = FakeHome::new();
-        let error = fake
-            .download(&fake.home.join(".bashrc"), true)
+        let settings = fake
+            .download(&fake.home.join(".config/autostart/sync.desktop"), false)
             .err()
             .unwrap();
         assert_eq!(
-            error.to_string(),
-            CredentialRefusal::Destination.to_string()
+            settings.to_string(),
+            "Crew won't save into a credential or settings location. Choose another folder."
+        );
+        // FILES-F3: a peer's `.Rprofile` could never be saved in any folder of the home, and the
+        // old advice, another folder, could not help.
+        let dotted = fake
+            .download(&fake.home.join("Downloads/.Rprofile"), false)
+            .err()
+            .unwrap();
+        assert_eq!(
+            dotted.to_string(),
+            "\u{201c}.Rprofile\u{201d} starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot."
+        );
+        let run = fake.home.join("bin/run");
+        fs::write(&run, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&run, fs::Permissions::from_mode(0o755)).unwrap();
+        let program = fake.download(&run, true).err().unwrap();
+        assert_eq!(
+            program.to_string(),
+            "\u{201c}run\u{201d} is a program, and Crew won't replace one. Choose another name."
         );
     }
 
@@ -1822,13 +2364,18 @@ mod settings_destination_tests {
             ("Mobile Documents/x.plist", false),
             // Rule (a) inside a drive.
             ("CloudStorage/Dropbox-LCATeam/.dropbox.cache/x", false),
-            // Rule (d) inside a drive.
-            ("CloudStorage/Box-Box/run.sh", true),
             // A dot-dot route out of a drive.
             ("CloudStorage/Box-Box/../../LaunchAgents/x.plist", false),
         ] {
             assert_refused(&fake, &library.join(spelled), overwrite);
         }
+        // Rule (a) for a dotted name, and rule (d), inside a drive.
+        assert_refused_as_hidden_name(
+            &fake,
+            &library.join("CloudStorage/Box-Box/.Rprofile"),
+            false,
+        );
+        assert_refused_as_program(&fake, &library.join("CloudStorage/Box-Box/run.sh"), true);
         // A link inside a drive is judged as the place it reaches.
         symlink(
             library.join("LaunchAgents"),
@@ -1896,7 +2443,8 @@ mod settings_destination_tests {
             eprintln!("no /System/Volumes/Data route to {}", fake.home.display());
             return;
         }
-        assert_refused(&fake, &firmlinked.join(".bashrc"), true);
+        assert_refused_as_hidden_name(&fake, &firmlinked.join(".bashrc"), true);
+        assert_refused(&fake, &firmlinked.join(".ssh/authorized_keys"), true);
         assert_refused(
             &fake,
             &firmlinked.join("Library/LaunchAgents/x.plist"),
@@ -1914,30 +2462,54 @@ mod settings_destination_tests {
         let locations = fake.locations();
         let drives = &locations.drives;
         let name = std::ffi::OsStr::new(".bashrc");
-        assert!(denied_by_identity(&firmlinked, name, &locations, drives));
-        assert!(denied_by_identity(
-            &firmlinked.join("Library/LaunchAgents"),
-            std::ffi::OsStr::new("x.plist"),
-            &locations,
-            drives
-        ));
-        assert!(!denied_by_identity(
-            &firmlinked.join("Downloads"),
-            std::ffi::OsStr::new("data.csv"),
-            &locations,
-            drives
-        ));
-        assert!(!denied_by_identity(
-            &firmlinked.join("Library/CloudStorage/Box-Box"),
-            std::ffi::OsStr::new("results.csv"),
-            &locations,
-            drives
-        ));
-        assert!(denied_by_identity(
-            &firmlinked.join("Library/CloudStorage"),
-            std::ffi::OsStr::new("x.plist"),
-            &locations,
-            drives
-        ));
+        assert_eq!(
+            denied_by_identity(&firmlinked, name, &locations, drives),
+            (false, Hidden::NameOnly)
+        );
+        assert_eq!(
+            denied_by_identity(
+                &firmlinked.join(".ssh"),
+                std::ffi::OsStr::new("authorized_keys"),
+                &locations,
+                drives
+            ),
+            (false, Hidden::Folder)
+        );
+        assert!(
+            denied_by_identity(
+                &firmlinked.join("Library/LaunchAgents"),
+                std::ffi::OsStr::new("x.plist"),
+                &locations,
+                drives
+            )
+            .0
+        );
+        assert_eq!(
+            denied_by_identity(
+                &firmlinked.join("Downloads"),
+                std::ffi::OsStr::new("data.csv"),
+                &locations,
+                drives
+            ),
+            (false, Hidden::No)
+        );
+        assert_eq!(
+            denied_by_identity(
+                &firmlinked.join("Library/CloudStorage/Box-Box"),
+                std::ffi::OsStr::new("results.csv"),
+                &locations,
+                drives
+            ),
+            (false, Hidden::No)
+        );
+        assert!(
+            denied_by_identity(
+                &firmlinked.join("Library/CloudStorage"),
+                std::ffi::OsStr::new("x.plist"),
+                &locations,
+                drives
+            )
+            .0
+        );
     }
 }

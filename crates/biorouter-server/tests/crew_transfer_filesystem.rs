@@ -5,6 +5,7 @@ mod test_sandbox;
 
 use biorouter_server::crew::local_files::{
     self, open_directory, protected_directory, select, validate_file_acl, Direction, Selection,
+    SelectionRefusal,
 };
 use std::fs;
 use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
@@ -64,16 +65,57 @@ fn source_and_destination_selection_refuse_symlinks_and_nonregular_targets() {
 
     let existing = directory.join("existing.bin");
     fs::write(&existing, b"old").unwrap();
-    assert!(select(&existing, Direction::Download, false).is_err());
+    assert_eq!(
+        refusal(select(&existing, Direction::Download, false)),
+        SelectionRefusal::Exists {
+            name: "existing.bin".into()
+        }
+    );
     assert!(select(&existing, Direction::Download, true).is_ok());
 
     let existing_link = directory.join("existing-link.bin");
     symlink(&existing, &existing_link).unwrap();
     assert!(select(&existing_link, Direction::Download, true).is_err());
 
+    // FILES-F9: a folder is refused as a folder, with or without approval to replace, and
+    // however it is spelled.
     let existing_directory = directory.join("existing-directory");
     fs::create_dir(&existing_directory).unwrap();
-    assert!(select(&existing_directory, Direction::Download, true).is_err());
+    for overwrite in [false, true] {
+        assert!(matches!(
+            refusal(select(&existing_directory, Direction::Download, overwrite)),
+            SelectionRefusal::Folder { .. }
+        ));
+    }
+    let slashed = format!("{}/", existing_directory.display());
+    assert!(matches!(
+        refusal(select(Path::new(&slashed), Direction::Download, true)),
+        SelectionRefusal::Folder { .. }
+    ));
+
+    // FILES-F3: a folder other accounts can change says so.
+    let shared = root.path().join("shared");
+    fs::create_dir(&shared).unwrap();
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(
+        refusal(select(
+            &shared.join("counts.csv"),
+            Direction::Download,
+            false
+        )),
+        SelectionRefusal::SharedFolder
+    );
+}
+
+fn refusal(result: anyhow::Result<Selection>) -> SelectionRefusal {
+    let error = match result {
+        Ok(selection) => panic!("expected a refusal for {}", selection.name()),
+        Err(error) => error,
+    };
+    error
+        .downcast_ref::<SelectionRefusal>()
+        .cloned()
+        .unwrap_or_else(|| panic!("expected a selection refusal, got: {error:#}"))
 }
 
 #[test]

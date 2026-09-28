@@ -4,7 +4,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use biorouter_server::auth::{user_action_proof, UserActionProof};
-use biorouter_server::crew::local_files::{CredentialRefusal, CREDENTIAL_REFUSAL_CODE};
+use biorouter_server::crew::local_files::{
+    CredentialRefusal, SelectionRefusal, CREDENTIAL_REFUSAL_CODE,
+};
 use biorouter_server::crew::transfers::{service, FileRequest, PreviewRequest, StartRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -14,9 +16,20 @@ type TransferResult = Result<Json<Value>, TransferError>;
 const TRANSFER_REFUSED_CODE: &str = "crew_transfer_refused";
 pub struct TransferError(StatusCode, String, &'static str);
 impl From<anyhow::Error> for TransferError {
-    /// A credential refusal (Q3-01) keeps its own code and its plain sentence, wherever in the
-    /// chain it sits; every other refusal is `crew_transfer_refused` with the error's text.
+    /// A credential refusal (Q3-01) and a named selection refusal (FILES-F3, FILES-F9: a dotted
+    /// name, a shared folder, a folder given as the file, an existing file, a program) keep
+    /// their own code and plain sentence, wherever in the chain they sit; every other refusal is
+    /// `crew_transfer_refused` with the error's text.
     fn from(error: anyhow::Error) -> Self {
+        // A refusal the Crew core typed (W2-DMN-9: `crew_mode_mismatch` when the file was
+        // checked for the other privacy mode) keeps its own status, code and sentence.
+        if let Some(refusal) = biorouter::crew::CrewRefusal::find(&error) {
+            return Self(
+                StatusCode::from_u16(refusal.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                refusal.message().to_owned(),
+                refusal.code(),
+            );
+        }
         if let Some(refusal) = error
             .chain()
             .find_map(|cause| cause.downcast_ref::<CredentialRefusal>())
@@ -26,6 +39,12 @@ impl From<anyhow::Error> for TransferError {
                 refusal.to_string(),
                 CREDENTIAL_REFUSAL_CODE,
             );
+        }
+        if let Some(refusal) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<SelectionRefusal>())
+        {
+            return Self(StatusCode::BAD_REQUEST, refusal.to_string(), refusal.code());
         }
         Self(
             StatusCode::BAD_REQUEST,
@@ -231,6 +250,60 @@ mod tests {
             body["error"],
             "Crew won't save into a credential or settings location. Choose another folder."
         );
+    }
+
+    /// FILES-F3 and FILES-F9: each named selection refusal reaches the person with its own
+    /// code and sentence, never as the general `crew_transfer_refused`, even when wrapped.
+    #[tokio::test]
+    async fn a_selection_refusal_keeps_its_own_code_and_sentence() {
+        // The example is the folder the person gave, with the platform's separator.
+        let folder_sentence = format!(
+            "That is a folder. Give a file name, for example {}.",
+            std::path::Path::new("/Users/henry/Downloads/trav")
+                .join("counts.csv")
+                .display()
+        );
+        for (refusal, code, sentence) in [
+            (
+                SelectionRefusal::HiddenName {
+                    name: ".Rprofile".into(),
+                },
+                "crew_file_name_hidden",
+                "\u{201c}.Rprofile\u{201d} starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot.",
+            ),
+            (
+                SelectionRefusal::SharedFolder,
+                "crew_folder_shared",
+                "Choose a folder owned by your account that other accounts can't change.",
+            ),
+            (
+                SelectionRefusal::Folder {
+                    path: "/Users/henry/Downloads/trav".into(),
+                },
+                "crew_destination_is_folder",
+                &*folder_sentence,
+            ),
+            (
+                SelectionRefusal::Exists {
+                    name: "crew-evil.txt".into(),
+                },
+                "crew_destination_exists",
+                "A file named \u{201c}crew-evil.txt\u{201d} already exists. Replace it, or choose another name.",
+            ),
+            (
+                SelectionRefusal::Program {
+                    name: "run.sh".into(),
+                },
+                "crew_file_is_program",
+                "\u{201c}run.sh\u{201d} is a program, and Crew won't replace one. Choose another name.",
+            ),
+        ] {
+            let wrapped =
+                anyhow::Error::from(refusal.clone()).context("while selecting the destination");
+            let (status, body) = body_of(wrapped.into()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{code}");
+            assert_eq!(body, json!({"code": code, "error": sentence}), "{code}");
+        }
     }
 
     #[tokio::test]
