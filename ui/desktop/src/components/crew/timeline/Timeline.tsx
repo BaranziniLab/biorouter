@@ -605,17 +605,44 @@ function ChannelTimeline({
 
   // Jump to first unread: older pages are added until the read position is in the window, the
   // channel's start is, or the window is full; then the New line is placed again and shown.
+  //
+  // A page that adds nothing ends the search where it is: one that failed (the connection bar says
+  // why, and the observer leaves the window as it was), or one that held only messages already on
+  // screen. Asking again at once would ask for as long as the failure lasted, with a new error each
+  // time. The pill stays, so the person can try again.
   const [seeking, setSeeking] = useState(false);
+  /** The page the search asked for: the window's first message then, and whether it started. */
+  const seekPage = useRef<{ firstId: string | null; started: boolean } | null>(null);
   useEffect(() => {
-    if (!seeking) return;
+    if (!seeking) {
+      seekPage.current = null;
+      return;
+    }
     if (!firstUnreadOutside || readOnly) {
+      seekPage.current = null;
       setSeeking(false);
       setNewLine({ computed: true, id: newLineBeforeId(messages, readState) });
       placedAtNew.current = false;
       followingRef.current = true;
       return;
     }
-    if (!loadingOlder) loadOlder();
+    const asked = seekPage.current;
+    if (loadingOlder) {
+      if (asked) asked.started = true;
+      return;
+    }
+    const firstId = messages[0]?.id ?? null;
+    if (asked) {
+      // Its answer is on its way.
+      if (!asked.started) return;
+      if (asked.firstId === firstId) {
+        seekPage.current = null;
+        setSeeking(false);
+        return;
+      }
+    }
+    seekPage.current = { firstId, started: false };
+    loadOlder();
   }, [seeking, firstUnreadOutside, loadingOlder, loadOlder, readOnly]); // eslint-disable-line react-hooks/exhaustive-deps -- the list is read as a page lands
 
   // ── Automatic mark-read ─────────────────────────────────────────────────

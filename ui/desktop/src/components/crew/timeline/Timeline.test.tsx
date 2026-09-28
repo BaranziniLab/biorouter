@@ -2038,6 +2038,80 @@ describe('opening where the unread messages start (QA M7)', () => {
     });
     expect(controller.markRead).toHaveBeenCalled();
   });
+
+  /** Never read, with more unread than the loaded page holds. */
+  const unreadBeyondThePage = (unread: number) => {
+    const full = page(HISTORY_PAGE_SIZE);
+    return {
+      full,
+      controller: makeController({
+        messages: full,
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: null },
+          unread: { [ID.general]: unread },
+        }),
+      }),
+    };
+  };
+  const olderPage = (label: string) =>
+    Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+      message({
+        id: `${label}-${index}`,
+        body: `${label} ${index}`,
+        at: new Date(2026, 8, 21, 9, index % 60),
+      })
+    );
+
+  it('asks for the next page while each one adds messages and the unread start is still not loaded', () => {
+    const { full, controller } = unreadBeyondThePage(700);
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread }));
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    rerenderWith({ ...controller, historyLoading: 'older' });
+    // One page lands: 400 others are loaded, fewer than the 700 unread.
+    const first = [...olderPage('older1'), ...full];
+    rerenderWith({ ...controller, messages: first, historyLoading: null });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(2);
+    rerenderWith({ ...controller, messages: first, historyLoading: 'older' });
+    rerenderWith({
+      ...controller,
+      messages: [...olderPage('older2'), ...first],
+      historyLoading: null,
+    });
+    // 600 loaded, still fewer than 700: the search goes on.
+    expect(controller.loadOlder).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * W2-UIC-8: a page that failed for a reason that leaves the view standing (a 503 while Crew
+   * reconnects, a rate limit) left the window as it was, and the search asked for it again the
+   * moment it came back, for as long as the failure lasted, with a new error each time.
+   */
+  it('stops when a page adds nothing, instead of asking again for as long as it fails', () => {
+    const { controller } = unreadBeyondThePage(321);
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread }));
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      rerenderWith({ ...controller, historyLoading: 'older' });
+      rerenderWith({ ...controller, historyLoading: null });
+    }
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    // The pill stays, and pressing it again asks once more.
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread }));
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(2);
+    rerenderWith({ ...controller, historyLoading: 'older' });
+    rerenderWith({ ...controller, historyLoading: null });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('keyboard', () => {
