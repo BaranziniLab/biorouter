@@ -147,7 +147,7 @@ When your host enters it, the workspace opens on the new computer.
 | Message | What to do |
 |---|---|
 | "This doesn’t look like a Crew invitation…" | Paste the whole message. If that fails, ask your host to copy it again. |
-| "This invitation is incomplete…" | Email or chat may have wrapped the `brcrew1:` line or cut it short. Paste the whole message again, or ask your host to send it as an attachment. |
+| "This invitation is incomplete or was changed. Paste the whole message again, or ask your host to send it again." | The copy you pasted was cut short, or something changed a character in it. Paste the whole message again. If it happens again, ask your host to send it again. An invitation that email or chat broke across lines is read whole, so line breaks are not the problem. |
 | "This invitation needs a newer Biorouter…" | Update Biorouter, then paste it again. |
 | "This feature needs a newer Biorouter background service…" | Follow [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service), then paste again. |
 | "You already have chen-lab on this computer." | Choose **Open chen-lab**. To sign in with another account, choose **Connection settings…** and change **Your server login**. Pasting again changes nothing. |
@@ -162,7 +162,8 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | Message | What to do |
 |---|---|
 | "@bob can't be used as an SSH login…" | Ask IT for the login to use, and type it in **Server login** under **Advanced**. |
-| "This computer already has “chen-lab” for this workspace…" | Choose **Open chen-lab**. |
+| "This computer already has “chen-lab” for this workspace. Change it in its connection settings instead." | This computer joined chen-lab before. Choose **Open chen-lab**. To sign in with another account, choose **Connection settings…** in the workspace menu and change **Your server login**. |
+| "This computer already has “chen-lab” for this workspace, signing in as another account, and it has never connected. Replace it with this invitation, or change it in its connection settings." | The saved connection came from an invitation that could not work here, such as someone else's. Close the dialog, then join again with your own invitation. After you paste it, the dialog says the saved connection will be replaced, and the button reads **Replace the saved connection**. Choose it. From a terminal, run `connections join-invitation` again with `--replace` ([Join a workspace](command-line.md#join-a-workspace)). |
 | Any other note | Wait a moment and choose Join again. If it repeats, quit and reopen Biorouter, then update it or contact IT. |
 
 ### Problems while connecting
@@ -176,7 +177,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | "lab.example.edu’s identity changed" | Do not connect. Send IT the text from **Copy details for IT**, then follow [A changed server identity](connections-and-troubleshooting.md#a-changed-server-identity). |
 | "This isn’t the workspace you joined" | Send your host the text from **Copy details**, and wait. |
 | "Crew isn’t set up for your account on lab.example.edu" | See [Install Crew in your server account](#install-crew-in-your-server-account). |
-| "lab.example.edu refused this computer’s SSH key" | The server takes no password here, so signing in cannot help. Check **Your server login** in **Connection settings…**, and ask IT which login and key to use. |
+| "Can’t sign in to lab.example.edu" with "lab.example.edu refused this computer’s SSH key for bob." | The server takes no password here, so signing in cannot help. Check **Your server login** in **Connection settings…**, and ask IT which login and key to use. |
 | "Crew isn’t running on lab.example.edu" | The workspace stopped on the server, for example after it restarted. Ask your host to start Crew. Crew connects by itself once it runs. |
 | "It didn’t connect" | Choose **Connect to chen-lab** again. If it repeats, ask your host. The server name may reach a different machine each time. |
 | "You already use this server for {other workspace}…" | One computer uses a server for one institution only. Ask your host. |

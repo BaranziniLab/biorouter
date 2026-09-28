@@ -77,7 +77,10 @@
 //
 //   * `app-sentences`: a quote of a `members add` summary, a share note about
 //     a privacy change, or the Identity file note is that string as the code
-//     shows it, and the pages a reader is sent to quote it (T3-DOC-1).
+//     shows it, and the pages a reader is sent to quote it (T3-DOC-1). The
+//     joining page quotes the damaged-invitation note and each join conflict
+//     to the end of a sentence, since each conflict has its own way out
+//     (T3-DOC-4).
 //   * `data-paths`: "Where Crew keeps its data" has a row for every folder the
 //     code writes on a member computer (T3-DOC-2).
 //   * `work-folder`: while the server's sandbox gives a work-folder command no
@@ -147,6 +150,8 @@ const HOSTING_PAGE = 'docs/crew/hosting-a-workspace.md';
 const CLI_CREW = 'crates/biorouter-cli/src/commands/crew/mod.rs';
 const INVITATION_RS = 'crates/biorouter/src/crew/authentication.rs';
 const ADMINISTRATION = 'docs/crew/administration.md';
+const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
+const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
 const CREW_SOURCE_DIRS = [
@@ -226,7 +231,11 @@ const withoutLineComments = (source) =>
 export function rustLiterals(source) {
   const shipped = withoutLineComments(source.split(/\n#\[cfg\(test\)\]\nmod \w+ \{/)[0]);
   return [...shipped.matchAll(/(?<![\w#'])"((?:[^"\\]|\\[\s\S])*)"/g)].map((m) =>
-    m[1].replace(/\\\n\s*/g, '').replace(/\\(["'\\])/g, '$1')
+    m[1]
+      .replace(/\\\n\s*/g, '')
+      .replace(/\\u\{([0-9a-fA-F]{1,6})\}/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+      .replace(/\\n/g, '\n')
+      .replace(/\\(["'\\])/g, '$1')
   );
 }
 
@@ -312,8 +321,12 @@ export function htmlBlocks(html) {
     .filter(Boolean);
 }
 
-/** Every double-quoted phrase in a block of prose, straight or curly quotes. */
-const quotedPhrases = (text) => [...text.matchAll(/["“]([^"”\n]+)["”]/g)].map((m) => m[1]);
+/**
+ * Every double-quoted phrase in a block of prose, in straight or curly quotes. A straight-quoted
+ * phrase may hold curly quotes, as a quoted message that names “chen-lab” does.
+ */
+const quotedPhrases = (text) =>
+  [...text.matchAll(/"([^"\n]+)"|“([^”\n]+)”/g)].map((m) => m[1] ?? m[2]);
 
 /**
  * Every inline code span in a Markdown block, its content trimmed as Markdown trims it. A span
@@ -862,7 +875,11 @@ export function checkCrewManual(tree = repoTree()) {
         );
         continue;
       }
-      for (const surface of surfaces) {
+      // `onlyIn` and `notIn` scope a family to the pages that quote that surface's words: the
+      // desktop and the command line can say one thing in two ways.
+      const inScope = ({ path }) =>
+        (!family.onlyIn || family.onlyIn.includes(path)) && !(family.notIn || []).includes(path);
+      for (const surface of surfaces.filter(inScope)) {
         for (const phrase of quotesOf(surface)) {
           if (!family.opens.test(sameQuotes(phrase))) continue;
           if (!templates.some((template) => saysTemplate(phrase, template))) {
@@ -873,9 +890,24 @@ export function checkCrewManual(tree = repoTree()) {
           }
         }
       }
+      // A family that says `requiredWhole` is quoted at least to the end of a sentence there, so
+      // a quote cut short cannot hide which of the family's sentences, old or new, it means. One
+      // that says `requiredEach` is quoted so for every sentence in it.
+      const whole = (phrase, template) => /[.!?]$/.test(phrase) && saysTemplate(phrase, template);
       for (const page of family.requiredIn) {
-        if (!pageQuotes(page).some((phrase) => family.opens.test(sameQuotes(phrase)))) {
-          fail(rule, `${page} does not quote ${family.name}: "${templates[0]}"`);
+        const quoted = pageQuotes(page).filter((phrase) => family.opens.test(sameQuotes(phrase)));
+        const missing = family.requiredEach
+          ? templates.filter((template) => !quoted.some((phrase) => whole(phrase, template)))
+          : family.requiredWhole
+            ? quoted.some((phrase) => templates.some((template) => whole(phrase, template)))
+              ? []
+              : [templates[0]]
+            : quoted.length
+              ? []
+              : [templates[0]];
+        const how = family.requiredEach || family.requiredWhole ? ' to the end of a sentence' : '';
+        for (const template of missing) {
+          fail(rule, `${page} does not quote ${family.name}${how}: "${template}"`);
         }
       }
     }
@@ -893,6 +925,7 @@ export function checkCrewManual(tree = repoTree()) {
   const shareSource = need(SHARE_PATH, 'app-sentences');
   const coreForApp = need(CREW_CORE, 'app-sentences');
   const invitationSource = need(INVITATION_RS, 'app-sentences');
+  const onboardingSource = need(ONBOARDING_COPY, 'app-sentences');
   const opening = (texts, opens) => texts.filter((text) => opens.test(sameQuotes(text)));
   // A person added to a team or channel. A device's "Added September 24, 2026" is another string.
   const addedOpens = /^Added\b(?! [A-Z][a-z]+ \d)/;
@@ -924,6 +957,24 @@ export function checkCrewManual(tree = repoTree()) {
       templates: opening(tsLiterals(dialogsSource || ''), /^Use the key file\b/),
       source: dialogsSource,
       requiredIn: [TROUBLESHOOTING],
+    },
+    {
+      name: `the damaged-invitation note in ${ONBOARDING_COPY}`,
+      opens: /^This invitation is incomplete\b/,
+      templates: opening(tsLiterals(onboardingSource || ''), /^This invitation is incomplete\b/),
+      source: onboardingSource,
+      requiredIn: [JOINING_PAGE],
+      requiredWhole: true,
+    },
+    {
+      // Each one, since each has its own way out: open the saved connection, or replace it.
+      name: `the daemon's join conflicts in ${INVITATION_RS}`,
+      opens: /^This computer already has\b/,
+      templates: opening(rustLiterals(invitationSource || ''), /^This computer already has\b/),
+      source: invitationSource,
+      requiredIn: [JOINING_PAGE],
+      requiredEach: true,
+      notIn: [COMMAND_LINE],
     },
     {
       name: `the daemon's identity file refusals in ${CREW_CORE} and ${INVITATION_RS}`,

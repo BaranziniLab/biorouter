@@ -1166,6 +1166,55 @@ test('work-folder: the manual says what a command in the work folder cannot do (
   );
 });
 
+test('rustLiterals reads a \\u{…} escape as its character', () => {
+  assert.deepEqual(rustLiterals('fn f() { g("has \\u{201c}{}\\u{201d} here"); }'), [
+    'has “{}” here',
+  ]);
+});
+
+test('app-sentences: the joining page quotes the damaged-invitation note and both join conflicts whole (T3-DOC-4)', () => {
+  const JOINING = 'docs/crew/joining-a-workspace.md';
+  // The rows as the live check found them: a quote cut short, and one answer for two sentences.
+  assertCaught(
+    {
+      [JOINING]: (text) =>
+        text.replace(
+          /^\| "This invitation is incomplete or was changed\..*$/m,
+          '| "This invitation is incomplete…" | Email or chat may have wrapped the `brcrew1:` line or cut it short. Paste the whole message again, or ask your host to send it as an attachment. |'
+        ),
+    },
+    'app-sentences',
+    /joining-a-workspace\.md does not quote the damaged-invitation note .* to the end of a sentence/
+  );
+  assertCaught(
+    {
+      [JOINING]: (text) =>
+        text
+          .replace(
+            /^\| "This computer already has “chen-lab” for this workspace, signing in.*\n/m,
+            ''
+          )
+          .replace(
+            /^\| "This computer already has “chen-lab” for this workspace\. Change it.*$/m,
+            '| "This computer already has “chen-lab” for this workspace…" | Choose **Open chen-lab**. |'
+          ),
+    },
+    'app-sentences',
+    /does not quote the daemon's join conflicts .* "This computer already has “\{\}” for this workspace, signing in as another account/
+  );
+  // The app rewords the note and the manual keeps the old words.
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/onboarding/copy.ts': swap(
+        "'This invitation is incomplete or was changed. Paste",
+        "'This invitation is incomplete or damaged. Paste"
+      ),
+    },
+    'app-sentences',
+    /quotes "This invitation is incomplete or was changed\. Paste the whole message again, or ask your host to send it again\.", which is not how/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });
