@@ -173,8 +173,8 @@
 }
 
 /* The status word keeps its width before the chip does (T-68): "Updates
-   unavailable" is the state; the chip truncates first, and both carry a
-   `title` with their full words. */
+   unavailable" is the state; the chip truncates first, and its institution
+   carries a `title` with the full words (SF-F6). */
 .crew-sidebar-status-word {
   display: flex;
   flex: 0 0 auto;
@@ -605,13 +605,21 @@
   min-width: 0;
 }
 
-/* The fingerprint line, with its small Copy at the end (Q4-49): the digits
-   truncate before the Copy does. */
+/* The fingerprint line, with its small Copy at the end (Q4-49). The digits
+   never truncate (SF-F6): a host reads all sixteen out, and in the 288px menu
+   the line is a few pixels too long, so it wraps between the digit groups
+   instead, the Copy staying at the end of the first line. */
 .crew-sidebar-menu-fingerprint {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
+}
+
+.crew-sidebar-menu-fingerprint-text {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: normal;
 }
 
 /* The Copy itself: a menu item (so the arrow keys reach it) drawn as a compact

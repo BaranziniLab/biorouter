@@ -24,7 +24,7 @@ import { StatusDot, type StatusDotTone } from '../../ui/status-dot';
 import { connectErrorText } from '../channel/ConnectionBar';
 import type { CrewConnection } from '../crewApi';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from '../dialogs/fingerprint';
-import { connectionNames, PersonName } from '../identity';
+import { connectionNames, PersonName, personLabel } from '../identity';
 import { CONNECT_FAILURE_CODES } from '../state/connectFailure';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewStatusCopy } from '../state/copy';
@@ -225,15 +225,27 @@ export function WorkspaceMenu({
       onKeyDownCapture={firstStop.onKeyDownCapture}
     >
       <div id={headerId} className="crew-sidebar-menu-header" data-crew-menu-header="">
-        <span className="crew-sidebar-truncate text-label text-text-default">{title}</span>
+        {/* Every truncated line carries its full words as a `title` (SF-F6): "Signed in as
+            @crew_frank on lab-debian…" was cut with no way to read the rest. */}
+        <span className="crew-sidebar-truncate text-label text-text-default" title={title}>
+          {title}
+        </span>
         {dir.host && (
-          <span className="crew-sidebar-truncate text-supporting text-text-muted">
+          <span
+            className="crew-sidebar-truncate text-supporting text-text-muted"
+            title={`${copy.hostedBy} ${personLabel(dir.host, 'inline', dir)}`}
+          >
             {copy.hostedBy} <PersonName person={dir.host} context="inline" dir={dir} />
           </span>
         )}
         <span
           className="crew-sidebar-truncate text-supporting text-text-muted"
           data-crew-signed-in=""
+          title={
+            me
+              ? `${copy.signedInAs} @${me.username} ${copy.signedInOn} ${server}`
+              : `${copy.server} ${server}`
+          }
         >
           {me ? (
             <>
@@ -269,7 +281,7 @@ export function WorkspaceMenu({
             className="crew-sidebar-menu-fingerprint text-supporting text-text-muted"
             data-crew-menu-fingerprint=""
           >
-            <span className="crew-sidebar-truncate">
+            <span className="crew-sidebar-menu-fingerprint-text">
               {copy.fingerprint}{' '}
               <bdi className="font-mono" translate="no">
                 {fingerprint}

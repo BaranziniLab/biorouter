@@ -253,6 +253,10 @@ export interface VerifiedPrivacy {
    * has one. Already worded for display (the ID, or a name the model registry publishes for it).
    */
   institution: string | null;
+  /** Whose `institution` is: the workspace's own label, or this connection's alone (SF-F10). */
+  institutionSource: 'workspace' | 'connection' | null;
+  /** This connection's own institution, worded as `institution` is, or `null`. */
+  connectionInstitution: string | null;
   why: PrivacyWhy;
 }
 
@@ -278,13 +282,19 @@ export function verifiedPrivacy(
         : connectionMode === 'private'
           ? 'connection'
           : 'workspace';
+  const workspaceInstitution = institutionLabel(snapshot.workspace.institution_id, known);
+  const connectionInstitution = institutionLabel(observedPrivacy.institutionId, known);
   return {
     effective: effectivePrivacy,
     connectionMode,
     workspaceMode,
-    institution:
-      institutionLabel(snapshot.workspace.institution_id, known) ??
-      institutionLabel(observedPrivacy.institutionId, known),
+    institution: workspaceInstitution ?? connectionInstitution,
+    institutionSource: workspaceInstitution
+      ? 'workspace'
+      : connectionInstitution
+        ? 'connection'
+        : null,
+    connectionInstitution,
     why,
   };
 }

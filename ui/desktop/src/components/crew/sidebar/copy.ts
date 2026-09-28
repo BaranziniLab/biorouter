@@ -339,6 +339,14 @@ export const sidebarCopy = {
       workspacePrivate: 'Private for everyone',
       workspacePublic: 'Allows Public',
       notSet: 'Not set',
+      /**
+       * Where the institution in force comes from, after it (SF-F10): the workspace's own label,
+       * else this connection's alone. The popover and Settings → Privacy say it the same way.
+       */
+      institutionFrom: {
+        workspace: 'the workspace’s',
+        connection: 'your connection’s only',
+      },
     },
     /**
      * Why the mode is what it is, first in the popover's one note (Q2-44). `workspace` is the

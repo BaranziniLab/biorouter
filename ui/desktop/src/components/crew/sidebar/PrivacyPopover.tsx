@@ -8,6 +8,7 @@ import { useCrew } from '../state/CrewControllerContext';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { sidebarCopy } from './copy';
 import { keepNamesWhole, useSidebarView, type VerifiedPrivacy } from './sidebarView';
+import { useTitleWhenCut } from './useTitleWhenCut';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy.privacy;
@@ -67,6 +68,10 @@ export function PrivacyPopover({
   const [askInstitution, setAskInstitution] = useState(false);
   const pending = crew.isPending(PRIVACY_UPDATE_KEY);
   const institution = privacy.effective === 'private' ? privacy.institution : null;
+  const headingInstitution = useTitleWhenCut<HTMLElement>(institution);
+  const connectionInstitution = useTitleWhenCut<HTMLElement>(
+    privacy.connectionMode === 'private' ? privacy.connectionInstitution : null
+  );
 
   const makePrivate = (institutionValue?: string) => {
     const connection = crew.connection;
@@ -109,7 +114,7 @@ export function PrivacyPopover({
         {institution && (
           <span className="crew-sidebar-chip-institution">
             {' · '}
-            <bdi translate="no" className="crew-sidebar-truncate">
+            <bdi ref={headingInstitution} translate="no" className="crew-sidebar-truncate">
               {institution}
             </bdi>
           </span>
@@ -154,7 +159,24 @@ export function PrivacyPopover({
       <Separator className="bg-border-subtle" />
       <dl className="crew-sidebar-privacy-facts text-secondary">
         <dt className="text-text-muted">{copy.rows.connection}</dt>
-        <dd>{privacy.connectionMode === 'private' ? copy.values.private : copy.values.public}</dd>
+        {/* As Settings → Privacy draws it (SF-F10): ONE badge, the connection's mode with its own
+            institution, `🔒 Private · UCSF`. */}
+        <dd className="min-w-0">
+          <span
+            className="crew-sidebar-chip-badge"
+            data-crew-privacy-badge={privacy.connectionMode}
+          >
+            <PrivacyBadge tier={privacy.connectionMode} enforcementOff={false} />
+            {privacy.connectionMode === 'private' && privacy.connectionInstitution ? (
+              <span className="crew-sidebar-chip-institution">
+                {' · '}
+                <bdi ref={connectionInstitution} translate="no" className="crew-sidebar-truncate">
+                  {privacy.connectionInstitution}
+                </bdi>
+              </span>
+            ) : null}
+          </span>
+        </dd>
         <dt className="text-text-muted">{copy.rows.workspace}</dt>
         <dd>
           {privacy.workspaceMode === 'private'
@@ -164,7 +186,15 @@ export function PrivacyPopover({
         <dt className="text-text-muted">{copy.rows.institution}</dt>
         <dd className="min-w-0">
           {privacy.institution ? (
-            <bdi translate="no">{privacy.institution}</bdi>
+            <>
+              <bdi translate="no">{privacy.institution}</bdi>
+              {privacy.institutionSource ? (
+                <span className="text-text-muted" data-crew-institution-source="">
+                  {' '}
+                  ({copy.values.institutionFrom[privacy.institutionSource]})
+                </span>
+              ) : null}
+            </>
           ) : (
             copy.values.notSet
           )}

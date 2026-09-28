@@ -118,11 +118,33 @@ describe('PrivacyChip', () => {
     expect(pill).toContainElement(within(chip).getByTestId('privacy-badge'));
     expect(pill).toContainElement(within(chip).getByText('ucsf'));
     expect(Array.from(chip.children)).toEqual([pill]);
-    // No tooltip that repeats the badge's own words.
+    // No tooltip that repeats the badge's own words while they fit.
     expect(chip.querySelector('[title]')).toBeNull();
     // Security state never animates: the shared press scale is overridden, not merely hidden.
     expect(chip).toHaveClass('active:scale-100');
     expect(chip.className).not.toContain('active:scale-[0.98]');
+  });
+
+  // SF-F6: in the 240px column "stanford-synthetic" read "stanf…", with nothing to read the rest.
+  it('carries the institution’s full words as a title once it is cut short', () => {
+    const scroll = vi
+      .spyOn(HTMLElement.prototype, 'scrollWidth', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.tagName === 'BDI' ? 95 : 0;
+      });
+    const client = vi
+      .spyOn(HTMLElement.prototype, 'clientWidth', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.tagName === 'BDI' ? 44 : 0;
+      });
+    try {
+      renderWithCrew(<PrivacyChip />);
+      const chip = screen.getByRole('button', { name: 'Privacy: Private · ucsf' });
+      expect(within(chip).getByText('ucsf')).toHaveAttribute('title', 'ucsf');
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
   });
 
   it('words the institution by the name a configured provider publishes for it (Q2-38)', async () => {
@@ -137,7 +159,7 @@ describe('PrivacyChip', () => {
       within(popover).getByText(sentence('Only private and UCSF-approved models can read Fixture.'))
     ).toBeInTheDocument();
     const values = Array.from(popover.querySelectorAll('dd')).map((dd) => dd.textContent);
-    expect(values[2]).toBe('UCSF');
+    expect(values[2]).toBe(`UCSF (${copy.values.institutionFrom.workspace})`);
   });
 
   it('keeps an institution ID nobody publishes a name for exactly as stored', () => {
@@ -492,11 +514,26 @@ describe('the privacy popover', () => {
     expect(facts).not.toBeNull();
     const values = Array.from(facts?.querySelectorAll('dd') ?? []).map((dd) => dd.textContent);
     expect(values).toEqual([
-      copy.values.private,
+      // SF-F10: the connection as Settings → Privacy draws it, one badge with its own institution.
+      'Private · ucsf',
       copy.values.workspacePrivate,
-      // The institution renders as itself: no trailing "." and no casing guesswork.
-      'ucsf',
+      // The institution renders as itself: no trailing "." and no casing guesswork, then whose it
+      // is, as Settings → Privacy says it.
+      `ucsf (${copy.values.institutionFrom.workspace})`,
     ]);
+  });
+
+  it('says whose the institution is when only the connection has one (SF-F10)', async () => {
+    const base = makeSnapshot();
+    renderWithCrew(
+      <PrivacyChip />,
+      makeController({
+        snapshot: makeSnapshot({ workspace: { ...base.workspace, institution_id: null } }),
+      })
+    );
+    const popover = await openPopover(/^Privacy: Private/);
+    const values = Array.from(popover.querySelectorAll('dd')).map((dd) => dd.textContent);
+    expect(values[2]).toBe(`ucsf (${copy.values.institutionFrom.connection})`);
   });
 
   it('says "Not set" when neither the workspace nor the connection has an institution', async () => {

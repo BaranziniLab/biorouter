@@ -133,8 +133,11 @@ describe('WorkspaceSwitcher', () => {
     const { menu } = await openMenu();
     const line = menu.querySelector('[data-crew-signed-in]') as HTMLElement;
     expect(line).toHaveTextContent('Signed in as @alice on lab-server');
+    // SF-F6: in the 288px menu the line is cut, so its full words are its title.
+    expect(line).toHaveAttribute('title', 'Signed in as @alice on lab-server');
     // The raw address belongs to Connection settings' details, not this header.
     expect(menu).not.toHaveTextContent('52.33.141.141');
+    expect(line.getAttribute('title')).not.toContain('52.33.141.141');
   });
 
   it('shows the workspace key’s fingerprint after "identity verified" (Q2-04)', async () => {
@@ -152,6 +155,10 @@ describe('WorkspaceSwitcher', () => {
     expect(line.closest('[data-crew-menu-fingerprint]')).toHaveTextContent(
       `${copy.fingerprint} ${expected}`
     );
+    // SF-F6: all sixteen digits, never cut: the line wraps between groups instead of truncating.
+    const text = line.closest('.crew-sidebar-menu-fingerprint-text');
+    expect(text).not.toBeNull();
+    expect(text).not.toHaveClass('crew-sidebar-truncate');
     // After the verified status line, in the header the menu is described by.
     const verified = within(header).getByText(crewStatusCopy.verified);
     expect(verified.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

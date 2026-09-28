@@ -357,7 +357,13 @@ describe('WorkspaceSettingsDialog', () => {
     snapshot.workspace.institution_id = null;
     const { crew } = renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
-    expect(dialog).toHaveTextContent(copy.notSet);
+    // SF-F10: the institution in force, as the status-row popover names it: the connection's
+    // alone, saying so, never "Not set" here beside the popover's "ucsf".
+    const institutionRow = within(dialog).getByText(copy.institution).parentElement!;
+    expect(institutionRow).toHaveTextContent(
+      `ucsf (${sidebarCopy.privacy.values.institutionFrom.connection})`
+    );
+    expect(institutionRow).not.toHaveTextContent(copy.notSet);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set institution to ucsf…' }));
     const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.setInstitution.title('lab', 'ucsf'),
@@ -563,9 +569,14 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
     renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     const button = within(dialog).getByRole('button', { name: 'Make my connection public…' });
-    expect(button).toHaveAccessibleDescription(
-      sidebarCopy.privacy.makePublicEffect('lab', 'public')
-    );
+    const effect = sidebarCopy.privacy.makePublicEffect('lab', 'public');
+    expect(button).toHaveAccessibleDescription(effect);
+    // AG-F17: under the row whose button it describes, not after the list under Institution.
+    const row = button.closest('.crew-settings-row') as HTMLElement;
+    expect(row).toHaveTextContent(copy.yourConnection);
+    expect(within(row).getByText(effect)).toBeInTheDocument();
+    const institutionRow = within(dialog).getByText(copy.institution).closest('.crew-settings-row');
+    expect(institutionRow).not.toHaveTextContent(effect);
   });
 
   it('offers no downgrade in a workspace that is Private for everyone, as the popover (QA Q4-39)', async () => {

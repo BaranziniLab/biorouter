@@ -22,6 +22,7 @@ import { AlertTriangle, MoreHorizontal } from '../../icons/app-icons';
 import type { PendingJoin } from '../crewApi';
 import {
   InstitutionName,
+  institutionLabel,
   joinerPerson,
   PersonName,
   personLabel,
@@ -232,11 +233,32 @@ function savedConnection({ crew }: DialogView) {
 }
 
 /** A label and its value, one settings row. */
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="biorouter-settings-row crew-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
+function Row({
+  label,
+  children,
+  note,
+}: {
+  label: string;
+  children: React.ReactNode;
+  /** A line under the row, inside it, about its control (AG-F17). */
+  note?: React.ReactNode;
+}) {
+  const line = (
+    <>
       <span className="text-label text-text-default">{label}</span>
       <div className="flex min-w-0 items-center gap-2 text-body text-text-muted">{children}</div>
+    </>
+  );
+  if (!note)
+    return (
+      <div className="biorouter-settings-row crew-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
+        {line}
+      </div>
+    );
+  return (
+    <div className="biorouter-settings-row crew-settings-row flex min-w-0 flex-col gap-1 px-3 py-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-4">{line}</div>
+      {note}
     </div>
   );
 }
@@ -596,6 +618,7 @@ function PrivacyTab({
   const workspaceMode = snapshot?.workspace.mode ?? null;
   const workspaceInstitution = snapshot?.workspace.institution_id ?? null;
   const connectionInstitution = saved?.institution_id ?? connection?.institution_id ?? null;
+  const inForce = workspaceInstitution ?? connectionInstitution;
   const verified = crew.snapshot !== null && crew.observedPrivacy !== null;
   const makePrivateKey = 'connection.update';
   // Read-only institutions in their display form — `UCSF` where a configured provider publishes
@@ -631,7 +654,18 @@ function PrivacyTab({
   return (
     <div className="flex flex-col">
       <div className="biorouter-settings-list">
-        <Row label={copy.yourConnection}>
+        {/* The line saying what "Make my connection public…" changes sits under that row, not
+            after the whole list, under Institution (AG-F17). */}
+        <Row
+          label={copy.yourConnection}
+          note={
+            publicEffect ? (
+              <p id={effectId} className="text-supporting text-text-muted">
+                {publicEffect}
+              </p>
+            ) : undefined
+          }
+        >
           {connection ? (
             <>
               {/* ONE badge, `🔒 Private · UCSF`, as the sidebar chip draws it (QA Q2-45, Q3-40):
@@ -642,7 +676,10 @@ function PrivacyTab({
               >
                 <PrivacyBadge tier={connection.mode} enforcementOff={false} />
                 {connection.mode === 'private' && connectionInstitution ? (
-                  <span className="crew-settings-privacy-institution">
+                  <span
+                    className="crew-settings-privacy-institution"
+                    title={institutionLabel(connectionInstitution, known) ?? undefined}
+                  >
                     {' · '}
                     <InstitutionName id={connectionInstitution} known={known} />
                   </span>
@@ -698,8 +735,22 @@ function PrivacyTab({
           ) : null}
         </Row>
         <Row label={copy.institution}>
-          {workspaceInstitution ? (
-            <InstitutionName id={workspaceInstitution} known={known} />
+          {/* The institution in force, as the status-row popover names it (SF-F10): the
+              workspace's own, else this connection's alone, saying which. */}
+          {inForce ? (
+            <span className="min-w-0">
+              <InstitutionName id={inForce} known={known} />
+              <span data-crew-institution-source="">
+                {' '}
+                (
+                {
+                  sidebarCopy.privacy.values.institutionFrom[
+                    workspaceInstitution ? 'workspace' : 'connection'
+                  ]
+                }
+                )
+              </span>
+            </span>
           ) : (
             <span>{copy.notSet}</span>
           )}
@@ -717,11 +768,6 @@ function PrivacyTab({
           ) : null}
         </Row>
       </div>
-      {publicEffect ? (
-        <p id={effectId} className="mt-2 px-3 text-supporting text-text-muted">
-          {publicEffect}
-        </p>
-      ) : null}
       {!workspaceInstitution && isHost && !connectionInstitution ? (
         <p className="mt-2 px-3 text-supporting text-text-muted">
           {copy.institutionNeedsConnection}
