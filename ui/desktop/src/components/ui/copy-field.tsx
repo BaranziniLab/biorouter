@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { cn } from '../../utils';
+import { CLIPBOARD_RETRY_DELAY_MS, copyToClipboard } from '../../utils/clipboard';
 import { Check, Copy, Eye, EyeOff } from '../icons/app-icons';
 import { Button } from './button';
 
@@ -76,82 +77,7 @@ export const COPY_FIELD_CLAMP_CHARS = 600;
 export const COPY_FIELD_CLAMP_NOTE = 'The whole message is copied.';
 
 /** How long a refused clipboard write waits, after focusing the window, before its one retry. */
-export const COPY_FIELD_RETRY_DELAY_MS = 50;
-
-async function writeClipboard(text: string): Promise<void> {
-  // `navigator.clipboard` can be absent (an insecure context) as well as
-  // rejecting (no permission, a document without focus), so it is a check AND a
-  // catch at the call site.
-  if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-  await navigator.clipboard.writeText(text);
-}
-
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-/**
- * The last resort: select `text` in a hidden read-only textarea and ask the document to copy it.
- *
- * The textarea goes INSIDE the field (`host`), never on `<body>`: every CopyField that matters
- * sits in a dialog, whose focus trap would pull focus straight back out of `<body>`, and a copy
- * with nothing focused takes nothing. Focus goes back to what had it (the Copy button) whatever
- * happens. `false` whenever the document cannot or will not copy.
- */
-function copyWithSelection(text: string, host: HTMLElement | null): boolean {
-  if (!host || typeof document.execCommand !== 'function') return false;
-  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const area = document.createElement('textarea');
-  area.value = text;
-  area.readOnly = true;
-  area.tabIndex = -1;
-  area.setAttribute('aria-hidden', 'true');
-  area.setAttribute('data-slot', 'copy-field-fallback');
-  area.className = 'biorouter-copy-field-fallback';
-  host.appendChild(area);
-  let copied = false;
-  try {
-    area.focus({ preventScroll: true });
-    area.select();
-    area.setSelectionRange(0, text.length);
-    copied = document.execCommand('copy') === true;
-  } catch {
-    copied = false;
-  } finally {
-    area.remove();
-    previous?.focus({ preventScroll: true });
-  }
-  return copied;
-}
-
-/**
- * Put `text` on the clipboard, trying harder than once (QA Q3-41).
- *
- * `navigator.clipboard.writeText` rejects when the document does not have focus, which is not the
- * person's fault and usually not lasting: the Keys and security dialog's first Copy said "Copy
- * failed" once and then worked three times in a row. So a refusal focuses the window, waits a
- * beat and tries once more, and only then falls back to the selection path. "Copy failed" is left
- * for when all three have refused.
- */
-async function copyText(text: string, host: HTMLElement | null): Promise<boolean> {
-  try {
-    await writeClipboard(text);
-    return true;
-  } catch {
-    // Retried below.
-  }
-  try {
-    window.focus();
-  } catch {
-    // A window that cannot be focused still gets its retry.
-  }
-  await wait(COPY_FIELD_RETRY_DELAY_MS);
-  try {
-    await writeClipboard(text);
-    return true;
-  } catch {
-    // Fall back to the selection path.
-  }
-  return copyWithSelection(text, host);
-}
+export const COPY_FIELD_RETRY_DELAY_MS = CLIPBOARD_RETRY_DELAY_MS;
 
 /** A multi-line value wider than its box: more to the right, or scrolled to its end (Q3-18). */
 type SidewaysOverflow = 'true' | 'end';
@@ -247,7 +173,7 @@ export function CopyField({
   };
 
   const copy = async () => {
-    const copied = await copyText(value, rootRef.current);
+    const copied = await copyToClipboard(value, rootRef.current);
     if (!mountedRef.current) return;
     if (!copied) {
       settle('failed');

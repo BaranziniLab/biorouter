@@ -32,7 +32,10 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(document, 'execCommand');
+});
 
 /**
  * The reported defect: when both clipboard writes fail, the outer catch logged
@@ -52,6 +55,24 @@ describe('MessageCopyLink', () => {
     await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Copy failed'));
     expect(mocks.toastError).toHaveBeenCalledTimes(1);
     expect(mocks.toastError.mock.calls[0][0]).toMatchObject({ title: 'Copy failed' });
+  });
+
+  it('copies through the document before it gives up', async () => {
+    // Both clipboard writes refused is what every Copy met in 1.90.4-1.91.2,
+    // whose permission handler refused `clipboard-sanitized-write`. The shared
+    // path (utils/clipboard.ts) retries and then copies through the document's
+    // own selection, which that handler never sees.
+    const user = userEvent.setup();
+    stubClipboard(() => Promise.reject(new Error('denied')));
+    const execCommand = vi.fn((command: string) => command === 'copy');
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true });
+    render(<MessageCopyLink text="hello" contentRef={noContent} />);
+
+    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+
+    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Copied!'));
+    expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it('leaves the success path alone', async () => {
