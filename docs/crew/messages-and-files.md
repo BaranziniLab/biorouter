@@ -178,8 +178,12 @@ While a file uploads:
   that finishes after you leave the channel, waits in the **Files** tab.
 - After "The upload couldn’t start." or "The daemon refused this file selection…", check that you
   can open the file and that it is 1 GB or smaller, then try again.
-- After "Connection privacy changed" or a note that asks you to refresh the workspace, wait until
-  the status row reads "Connected", then drop or choose the file again.
+- After "Your connection is now Private; this file was checked for Public. Refresh Crew and drop
+  the file again.", the workspace's privacy changed after Crew checked the file. "Your
+  connection's privacy changed since Crew checked it…" means the same. Choose the channel name at
+  the top, then **Refresh channel**, and wait until the status row reads "Connected". Then drop
+  or choose the file again, if it may still be shared under the new privacy. Do the same after a
+  note that asks you to refresh the workspace.
 
 ### Files Crew will not share
 

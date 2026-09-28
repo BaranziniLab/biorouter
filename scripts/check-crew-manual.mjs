@@ -72,6 +72,13 @@
 //     strings it pins, the naming design may not say nothing in it is built,
 //     and the CLI guide names the daemon's answers for a lost request.
 //
+// A third live check of 2026-09-28 (T3-DOC-*) found quotes of the desktop
+// app's and the command line's own words that no rule read:
+//
+//   * `app-sentences`: a quote of a `members add` summary, a share note about
+//     a privacy change, or the Identity file note is that string as the code
+//     shows it, and the pages a reader is sent to quote it (T3-DOC-1).
+//
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
 // code and update the rule, never to delete the anchor check.
@@ -131,6 +138,9 @@ const CLI_ARGS = 'crates/biorouter-cli/src/commands/crew/args.rs';
 const ATTENTION = 'ui/desktop/src/components/crew/attention/crewAttention.ts';
 const CREW_STATUS = 'ui/desktop/src/components/crew/state/crewStatus.ts';
 const SHARE_PATH = 'ui/desktop/src/utils/crewSharePath.ts';
+const HOSTING_PAGE = 'docs/crew/hosting-a-workspace.md';
+const CLI_CREW = 'crates/biorouter-cli/src/commands/crew/mod.rs';
+const INVITATION_RS = 'crates/biorouter/src/crew/authentication.rs';
 const KEY_NOTICE =
   'ui/desktop/src/components/settings/providers/modal/subcomponents/SecureStorageNotice.tsx';
 const CARD_BUTTONS =
@@ -191,6 +201,38 @@ export function tsCopyString(source, path) {
   return match ? match[1].replace(/\\(['\\])/g, '$1') : null;
 }
 
+/** Source without its whole-line comments, whose quotes are not strings the code shows. */
+const withoutLineComments = (source) =>
+  source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+/**
+ * Every string literal in Rust source outside its test modules, as rustc reads it: line
+ * continuations removed and escapes undone. A format string keeps its `{…}` holes, which is how a
+ * manual quote of it is matched.
+ */
+export function rustLiterals(source) {
+  const shipped = withoutLineComments(source.split(/\n#\[cfg\(test\)\]\nmod \w+ \{/)[0]);
+  return [...shipped.matchAll(/(?<![\w#'])"((?:[^"\\]|\\[\s\S])*)"/g)].map((m) =>
+    m[1].replace(/\\\n\s*/g, '').replace(/\\(["'\\])/g, '$1')
+  );
+}
+
+/**
+ * Every string literal in TypeScript source, comments left out: quoted strings as they read, and
+ * template literals with each `${…}` hole written `{…}`, as a manual quote of it is matched.
+ */
+export function tsLiterals(source) {
+  return [
+    ...withoutLineComments(source).matchAll(
+      /'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"|`((?:[^`\\]|\\[\s\S])*)`/g
+    ),
+  ].map(([, single, double, template]) =>
+    template !== undefined
+      ? template.replace(/\$\{/g, '{').replace(/\\([`\\$])/g, '$1')
+      : (single ?? double).replace(/\\(['"\\])/g, '$1')
+  );
+}
+
 const decode = (html) =>
   html
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -204,7 +246,8 @@ const decode = (html) =>
 
 /**
  * Markdown as the reader meets it, in blocks: a paragraph, a table row or a
- * list item. Fenced code is dropped, because a command example is not a claim.
+ * list item with its wrapped lines. Fenced code is dropped, because a command
+ * example is not a claim.
  */
 export function markdownBlocks(text) {
   const blocks = [];
@@ -226,9 +269,13 @@ export function markdownBlocks(text) {
       continue;
     }
     if (!line.trim()) flush();
-    else if (/^\s*(\||[-*+] |\d+\. |>)/.test(line)) {
+    else if (/^\s*(\||>)/.test(line)) {
       flush();
       blocks.push(line.trim());
+    } else if (/^\s*([-*+] |\d+\. )/.test(line)) {
+      // A list item goes on over its wrapped lines, so a quote that wraps stays whole.
+      flush();
+      paragraph.push(line.trim());
     } else paragraph.push(line.trim());
   }
   flush();
@@ -786,33 +833,96 @@ export function checkCrewManual(tree = repoTree()) {
       requiredIn: [COMMAND_LINE],
     },
   ];
-  for (const family of families) {
-    if (family.source === null) continue;
-    const templates = family.templates.filter((template) => typeof template === 'string');
-    if (templates.length === 0) {
-      fail(
-        'daemon-sentences',
-        `found no ${family.name}; re-read the code and update this rule and the manual together`
-      );
-      continue;
-    }
-    for (const surface of surfaces) {
-      for (const phrase of quotesOf(surface)) {
-        if (!family.opens.test(sameQuotes(phrase))) continue;
-        if (!templates.some((template) => saysTemplate(phrase, template))) {
-          fail(
-            'daemon-sentences',
-            `${surface.path} quotes "${phrase}", which is not how ${family.name} reads: "${templates[0]}"`
-          );
+  /**
+   * Hold every surface to each family of sentences: a quote that opens as one of the family does
+   * says one of its templates, and each page in `requiredIn` quotes one. A family whose templates
+   * are gone from the code fails rather than passing vacuously.
+   */
+  const holdToFamilies = (rule, list) => {
+    for (const family of list) {
+      if (family.source === null) continue;
+      const templates = family.templates.filter((template) => typeof template === 'string');
+      if (templates.length === 0) {
+        fail(
+          rule,
+          `found no ${family.name}; re-read the code and update this rule and the manual together`
+        );
+        continue;
+      }
+      for (const surface of surfaces) {
+        for (const phrase of quotesOf(surface)) {
+          if (!family.opens.test(sameQuotes(phrase))) continue;
+          if (!templates.some((template) => saysTemplate(phrase, template))) {
+            fail(
+              rule,
+              `${surface.path} quotes "${phrase}", which is not how ${family.name} reads: "${templates[0]}"`
+            );
+          }
+        }
+      }
+      for (const page of family.requiredIn) {
+        if (!pageQuotes(page).some((phrase) => family.opens.test(sameQuotes(phrase)))) {
+          fail(rule, `${page} does not quote ${family.name}: "${templates[0]}"`);
         }
       }
     }
-    for (const page of family.requiredIn) {
-      if (!pageQuotes(page).some((phrase) => family.opens.test(sameQuotes(phrase)))) {
-        fail('daemon-sentences', `${page} does not quote ${family.name}: "${templates[0]}"`);
-      }
-    }
-  }
+  };
+  holdToFamilies('daemon-sentences', families);
+
+  // ── app-sentences ────────────────────────────────────────────────────────
+  // A sentence the desktop app or the command line shows, quoted by the manual, is that sentence
+  // (T3-DOC-1). The manual quoted a `members add` summary, a share note and an Identity file note
+  // that had each been reworded, and no rule read them. Each family is found by its opening
+  // words, the retired ones included, so a quote of the old words is refused while the code no
+  // longer says them.
+  const cliCrewSource = need(CLI_CREW, 'app-sentences');
+  const dialogsSource = need(DIALOGS_COPY, 'app-sentences');
+  const shareSource = need(SHARE_PATH, 'app-sentences');
+  const coreForApp = need(CREW_CORE, 'app-sentences');
+  const invitationSource = need(INVITATION_RS, 'app-sentences');
+  const opening = (texts, opens) => texts.filter((text) => opens.test(sameQuotes(text)));
+  // A person added to a team or channel. A device's "Added September 24, 2026" is another string.
+  const addedOpens = /^Added\b(?! [A-Z][a-z]+ \d)/;
+  holdToFamilies('app-sentences', [
+    {
+      name: `the "Added …" summaries in ${CLI_CREW} and ${DIALOGS_COPY}`,
+      opens: addedOpens,
+      templates: [
+        ...opening(rustLiterals(cliCrewSource || ''), addedOpens),
+        ...opening(tsLiterals(dialogsSource || ''), /^Added .* to /),
+      ],
+      source: cliCrewSource === null || dialogsSource === null ? null : cliCrewSource,
+      requiredIn: [COMMAND_LINE, HOSTING_PAGE],
+    },
+    {
+      name: `the crew_mode_mismatch share notes in ${SHARE_PATH}`,
+      opens:
+        /^(?:Your connection is now|Your connection's privacy changed|Connection privacy changed)\b/,
+      templates: opening(
+        tsLiterals(shareSource || ''),
+        /^Your connection(?: is now|'s privacy changed)\b/
+      ),
+      source: shareSource,
+      requiredIn: [MESSAGES_PAGE],
+    },
+    {
+      name: `the Identity file note in ${DIALOGS_COPY}`,
+      opens: /^Use the key file\b/,
+      templates: opening(tsLiterals(dialogsSource || ''), /^Use the key file\b/),
+      source: dialogsSource,
+      requiredIn: [TROUBLESHOOTING],
+    },
+    {
+      name: `the daemon's identity file refusals in ${CREW_CORE} and ${INVITATION_RS}`,
+      opens: /^(?:Identity file must be|Choose the identity file)\b/,
+      templates: opening(
+        [...rustLiterals(coreForApp || ''), ...rustLiterals(invitationSource || '')],
+        /^(?:Identity file must be|Choose the identity file)\b/
+      ),
+      source: coreForApp === null || invitationSource === null ? null : coreForApp,
+      requiredIn: [],
+    },
+  ]);
 
   // ── refusal-codes ────────────────────────────────────────────────────────
   // Every code the daemon refuses a Crew request with is in the command-line

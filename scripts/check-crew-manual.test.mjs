@@ -14,9 +14,11 @@ import {
   landingCrewPage,
   markdownBlocks,
   repoTree,
+  rustLiterals,
   rustStrConst,
   saysTemplate,
   tsCopyString,
+  tsLiterals,
 } from './check-crew-manual.mjs';
 
 const real = repoTree();
@@ -981,6 +983,95 @@ test('design: the naming design and the CLI guide may not deny what shipped (W2-
     { [CLI_GUIDE_DOC]: (text) => text.replaceAll('`crew_outcome_unknown`', 'an unknown outcome') },
     'design',
     /crew_outcome_unknown/
+  );
+});
+
+// ── The third round (T3-DOC-*). Each mutant puts back the manual's text as the
+// 2026-09-28 live check found it, or rewords the code it quotes.
+const HOSTING = 'docs/crew/hosting-a-workspace.md';
+const SHARE_PATH = 'ui/desktop/src/utils/crewSharePath.ts';
+const DIALOGS_COPY = 'ui/desktop/src/components/crew/dialogs/copy.ts';
+
+test('markdownBlocks keeps a list item whole over its wrapped lines', () => {
+  assert.deepEqual(markdownBlocks('- After "one\n  two", three.\n- next\n\npara'), [
+    '- After "one two", three.',
+    '- next',
+    'para',
+  ]);
+});
+
+test('rustLiterals and tsLiterals read the strings the code shows, not its comments or tests', () => {
+  const rust = [
+    '/// "Added in a comment"',
+    'fn f() { format!("Added {person} to {}. \\',
+    '    They can now see {}.", a, b); }',
+    '#[cfg(test)]',
+    'mod tests {',
+    '    const X: &str = "Added in a test";',
+    '}',
+  ].join('\n');
+  assert.deepEqual(rustLiterals(rust), ['Added {person} to {}. They can now see {}.']);
+  const ts = [
+    '/** "Identity file must be an absolute path" */',
+    "// 'a comment'",
+    'export const copy = {',
+    "  plain: 'It’s \\'plain\\'.',",
+    '  held: (who: string) => `Added ${who} to ${team}.`,',
+    '};',
+  ].join('\n');
+  assert.deepEqual(tsLiterals(ts), ["It’s 'plain'.", 'Added {who} to {team}.']);
+});
+
+test('app-sentences: the manual quotes the members add line, the share note and the Identity file note as they are shown (T3-DOC-1)', () => {
+  // The three quotes as the live check found them.
+  assertCaught(
+    {
+      [HOSTING]: swap(
+        'It prints a line such as `Added "Bob Lee" (@bob) to #methods.`',
+        'It prints "Added. @bob can now see #methods."'
+      ),
+    },
+    'app-sentences',
+    /hosting-a-workspace\.md quotes "Added\. @bob can now see #methods\.", which is not how the "Added …" summaries/
+  );
+  assertCaught(
+    {
+      [MESSAGES]: (text) =>
+        text.replace(
+          /- After "Your connection is now Private;[\s\S]*?note that asks you to refresh the workspace\./,
+          '- After "Connection privacy changed" or a note that asks you to refresh the workspace, wait until\n  the status row reads "Connected", then drop or choose the file again.'
+        ),
+    },
+    'app-sentences',
+    /messages-and-files\.md quotes "Connection privacy changed", which is not how the crew_mode_mismatch share notes/
+  );
+  assertCaught(
+    {
+      [TROUBLE]: (text) =>
+        text.replace(
+          /^\| "Use the key file’s full path…".*$/m,
+          '| "Identity file must be an absolute path" | Enter a path that starts with `/`, or leave the field empty. |'
+        ),
+    },
+    'app-sentences',
+    /connections-and-troubleshooting\.md does not quote the Identity file note/
+  );
+  // The code rewords a note and the manual keeps the old words.
+  assertCaught(
+    {
+      [SHARE_PATH]: swap(
+        'this file was checked for ${modeName(expected)}. Refresh Crew and',
+        'this file was checked for ${modeName(expected)}. Reload Crew and'
+      ),
+    },
+    'app-sentences',
+    /quotes "Your connection is now Private; this file was checked for Public\. Refresh Crew and drop the file again\.", which is not how/
+  );
+  // A family whose strings are gone from the code fails instead of passing.
+  assertCaught(
+    { [DIALOGS_COPY]: (text) => text.replaceAll('Use the key file’s', 'Give the key file’s') },
+    'app-sentences',
+    /found no the Identity file note/
   );
 });
 

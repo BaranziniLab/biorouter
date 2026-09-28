@@ -232,7 +232,7 @@ The team dialog lists only people not in the team yet. To add someone already in
 
 1. Open a terminal on your own computer.
 2. Run `biorouter crew members add @bob --channel '#methods'`.
-3. Type your approval secret. It prints "Added. @bob can now see #methods."
+3. Type your approval secret. It prints a line such as `Added "Bob Lee" (@bob) to #methods.`
 
 ## Manage the workspace
 
