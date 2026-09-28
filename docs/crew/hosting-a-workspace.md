@@ -198,9 +198,11 @@ When the person joins, their Biorouter shows a code of 16 letters and numbers, s
 
 "Code saved" does not mean the person has joined. The fingerprint in the dialog is not the code. The code field accepts dashes, spaces and lowercase, reads I and L as 1 and O as 0, and refuses U.
 
+For another computer of a member, invited with **Add another device for @{name}**, the dialog lets in "{first}’s new computer". Its button reads **Let {first}’s new computer in**, and once that computer checks in, the dialog shows "{first}’s new computer is in {workspace}". The person keeps their teams and channels, so choose **Done**.
+
 If you closed the dialog before step 5, choose **Add to a team…** on the person's row under "Joined, not in your teams".
 
-Only you see "Waiting to join". Its rows read "invited", "Code entered" or "Invitation expired".
+Only you see "Waiting to join". It lists people by username, and its rows read "invited", "Code entered" or "Invitation expired". With more than five people waiting, it shows the first five and **Show {n} more**. A row that warns of a different code always shows.
 
 After "Invitation expired", choose **Invite again…** on the row, and follow [Invite people](#invite-people) from step 2.
 

@@ -132,6 +132,8 @@ is back when you return.
   them. A screen reader hears ", draft" after the channel's name either way.
 - Only text is kept. An attached file waits in the **Files** tab under "Uploaded, not sent".
 - Drafts are kept in memory only, so quitting Biorouter discards them.
+- A draft over 1 MB is not kept. While it is that long, a note above the message box says "This
+  draft is too long to keep when you switch channel. Attach it as a file."
 - Crew clears a draft, and says so, when the workspace's or your connection's privacy or
   institution changes.
 - When you lose access to a channel that held your draft, a note above the message box says

@@ -149,11 +149,12 @@ Only the host can stop it. `stop` confirms the process behind the socket is this
 When the disk that holds the state directory fills up, the host's disk quota runs out, or a write to it fails, the broker stops saving changes. It has to: a journal written past a fault could not be trusted. Reading still works, and the broker does not recover by itself.
 
 - A member's post fails with "The workspace server can’t save messages right now. Ask {host} to restart Crew." In a terminal, the sentence says whether the change was saved, such as `The workspace server is out of disk space, so this change was not saved.` Its code is `storage_full` for a full disk or quota, and `storage_failed` for any other write fault.
-- The host reads "The workspace server can’t save messages right now. Restart Crew on the server, then send again.", and a terminal adds the commands to run.
+- The host reads "The server is out of disk space. Free space on it, then restart Crew there." for a full disk, or "The workspace server can’t save messages right now. Restart Crew on the server, then send again." for another fault, and a terminal adds the commands to run.
+- Once a member's Crew learns of it, when it next connects to the workspace or a change is refused, their connection bar says "The workspace server has stopped saving changes. Reading still works.", and `biorouter crew status` says the same. See [A server that stopped saving](connections-and-troubleshooting.md#a-server-that-stopped-saving).
 - `broker.log` in the state directory gets one line with the time, the operating system's error and the commands.
 - `status` fails with a line such as `storage_full: Crew on this server stopped saving changes at <time> because the disk is full. Reading still works.`, followed by the commands.
 
-A shared file the broker cannot write is refused the same way, but the broker keeps saving other changes, and the same upload can be sent again once there is space.
+A shared file the broker cannot write is refused the same way, but the broker keeps saving other changes. The upload pauses with "The workspace server couldn’t save it", and resumes from where it stopped once there is space.
 
 To recover, as the host:
 
