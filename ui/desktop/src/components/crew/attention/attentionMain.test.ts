@@ -41,6 +41,16 @@ describe('parseAttentionRequest', () => {
     expect(parsed?.body).toBe('chen-lab');
   });
 
+  it('never fuses two halves of a character across a hidden one', () => {
+    // A high and a low surrogate either side of a zero-width space would become U+F0000 (private
+    // use) and U+E0001 (a tag) once the space went, after the passes that remove those.
+    const parsed = parseAttentionRequest({
+      ...valid,
+      title: 'Alice\uDB80\u200B\uDC00 mentioned you\uDB40\u200B\uDC01',
+    });
+    expect(parsed?.title).toBe('Alice mentioned you');
+  });
+
   it.each([
     ['nothing', null],
     ['no title', { ...valid, title: '  ' }],

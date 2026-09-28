@@ -44,6 +44,9 @@ export interface CrewAttentionRequest {
   channelId: string;
 }
 
+/** A lone surrogate: half of a character, which no line should carry. */
+const LONE_SURROGATE = /\p{Cs}/gu;
+
 /**
  * Private-use characters draw a glyph of some font's choosing. They are neither controls nor
  * format characters, so {@link stripHiddenCharacters} keeps them; a notification line does not.
@@ -54,11 +57,13 @@ const PRIVATE_USE = /\p{Co}/gu;
  * One plain line: line breaks (JavaScript's `\s` includes U+2028 and U+2029, the line and
  * paragraph separators) become spaces first, so two lines stay two words; then every control and
  * format character goes through the renderer's one drop set, `stripHiddenCharacters`, and the
- * private-use characters after it.
+ * private-use characters after it. Lone surrogates go before any of that, as `untrustedText.ts`
+ * requires: removing a format character between two halves would otherwise fuse them into one
+ * character, a private-use or tag character among them, after the pass that could see it.
  */
 function line(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const text = stripHiddenCharacters(value.replace(/\s+/g, ' '))
+  const text = stripHiddenCharacters(value.replace(LONE_SURROGATE, '').replace(/\s+/g, ' '))
     .replace(PRIVATE_USE, '')
     .replace(/<[^>]*>/g, '')
     .replace(/ {2,}/g, ' ')
