@@ -62,6 +62,7 @@ export {
   type TeamNameInput,
 } from './objectNames';
 export { identityCopy } from './copy';
+export { OnlineMark, onlineSet } from './presence';
 export {
   PERSON_CONTEXTS,
   type CrewPeopleMap,

@@ -195,6 +195,16 @@ describe('ChannelHeader', () => {
     ]);
   });
 
+  // M18: the stack says who of the channel is online where the broker says, and nothing otherwise.
+  it('says how many members are online, and marks their avatars', async () => {
+    installObserver({ snapshot: makeSnapshot({ online_principal_ids: [bob.id] }) });
+    renderCrew(Header({}));
+    await channelShown();
+    const stack = await screen.findByRole('button', { name: '2 members, 1 online' });
+    expect(channelCopy.membersOnline(2, 1)).toBe('2 members, 1 online');
+    expect(stack.querySelectorAll('[data-crew-online]')).toHaveLength(1);
+  });
+
   it('counts the channel’s members, not the team’s people, and opens the Members tab', async () => {
     renderCrew(Header({}));
     await channelShown();

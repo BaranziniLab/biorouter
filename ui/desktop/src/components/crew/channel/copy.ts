@@ -29,6 +29,9 @@ export const channelCopy = {
   accessChipName: (visible: string) => `${visible} can post here`,
   /** The member stack's accessible name (and the Members tab count). */
   members: (count: number) => plural(count, 'member', 'members'),
+  /** The member stack's name where the broker says who is online (M18). */
+  membersOnline: (count: number, online: number) =>
+    `${plural(count, 'member', 'members')}, ${online} online`,
   /** The details toggle. */
   details: 'Channel details',
   menu: {

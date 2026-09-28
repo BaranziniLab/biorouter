@@ -103,6 +103,28 @@ describe('MembersTab', () => {
     expect(tab.textContent).not.toMatch(UUID);
   });
 
+  // M18: nothing told a connected teammate from one who never connected.
+  it('says who is online where the broker says, and nothing where it does not', async () => {
+    installObserver({ snapshot: makeSnapshot({ online_principal_ids: [bob.id] }) });
+    renderCrew(Members);
+    const tab = await shown();
+    await waitFor(() =>
+      expect(rows(tab)).toEqual([
+        `Alice Chen (@alice) · you${membersCopy.owner}`,
+        'Bob Lee (@bob)Online',
+      ])
+    );
+    expect(tab.querySelectorAll('[data-crew-online]')).toHaveLength(1);
+    cleanup();
+
+    // An older broker sends no presence: no one is marked, and nothing says "offline".
+    installObserver();
+    renderCrew(Members);
+    const older = await shown();
+    expect(older.querySelector('[data-crew-online]')).toBeNull();
+    expect(older.textContent).not.toMatch(/online|offline/i);
+  });
+
   it('lets the owner add people, make someone owner, or remove them — through dialogs', async () => {
     const user = userEvent.setup();
     renderCrew(Members);

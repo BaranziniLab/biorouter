@@ -13,6 +13,7 @@ import {
   identityCopy,
   institutionLabel,
   isMachineIdShaped,
+  onlineSet,
   sanitizeDisplayText,
   usePeopleDirectory,
   type KnownInstitution,
@@ -41,6 +42,11 @@ export interface PanePresentation {
   isOwner: boolean;
   /** The workspace as the switcher names it: its own name, else the saved connection's. */
   workspace: string;
+  /**
+   * Who is online now, from the verified view only (M18), or `null` when the broker says nothing
+   * or the view is not verified.
+   */
+  online: ReadonlySet<string> | null;
 }
 
 export function usePanePresentation(): PanePresentation {
@@ -65,6 +71,7 @@ export function usePanePresentation(): PanePresentation {
     team,
     dir,
     isOwner: Boolean(snapshot && channel && channel.owner_id === snapshot.actor.id),
+    online: verified ? onlineSet(crew.snapshot) : null,
     workspace:
       named && !isMachineIdShaped(named)
         ? named

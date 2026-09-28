@@ -167,6 +167,28 @@ export interface Snapshot {
   /** People the host invited who have not joined yet (S3a, manager only). */
   pending_joins?: PendingJoin[];
   runs: CrewRun[];
+  /**
+   * The people online now (W2-BRK-6, `presence_v1`): an active member whose computer holds a
+   * connection open, or who made a signed request in the last few minutes. In memory only on the
+   * broker, never authority, and absent from an older broker, which says nothing about presence.
+   */
+  online_principal_ids?: string[];
+  /** How full the workspace's budgets are (W2-BRK-7): the host's snapshot only. */
+  usage?: CrewWorkspaceUsage;
+}
+/**
+ * The host's view of the workspace's non-renewable budgets, in bytes. Ordinary changes stop at a
+ * limit less its headroom, which is kept for the host's removals and policy changes.
+ */
+export interface CrewWorkspaceUsage {
+  state_bytes: number;
+  state_limit: number;
+  state_admin_headroom?: number;
+  journal_bytes: number;
+  journal_limit: number;
+  journal_admin_headroom?: number;
+  attachment_bytes?: number;
+  attachment_limit?: number;
 }
 export interface CrewMessage {
   id: string;
@@ -494,6 +516,45 @@ function validatedRun(run: unknown): unknown {
   return count(startedAt) === undefined ? rest : run;
 }
 
+/** A list of principal IDs, strings only, or undefined for anything that is not a list. */
+function validatedIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((id): id is string => nonEmptyText(id) && id.length <= 128);
+}
+
+/** The host's usage, only with the four sizes it is judged by, each a count. */
+function validatedUsage(value: unknown): CrewWorkspaceUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const stateBytes = count(value.state_bytes);
+  const stateLimit = count(value.state_limit);
+  const journalBytes = count(value.journal_bytes);
+  const journalLimit = count(value.journal_limit);
+  if (
+    stateBytes === undefined ||
+    stateLimit === undefined ||
+    journalBytes === undefined ||
+    journalLimit === undefined
+  )
+    return undefined;
+  const usage: CrewWorkspaceUsage = {
+    state_bytes: stateBytes,
+    state_limit: stateLimit,
+    journal_bytes: journalBytes,
+    journal_limit: journalLimit,
+  };
+  const optional = [
+    'state_admin_headroom',
+    'journal_admin_headroom',
+    'attachment_bytes',
+    'attachment_limit',
+  ] as const;
+  for (const key of optional) {
+    const amount = count(value[key]);
+    if (amount !== undefined) usage[key] = amount;
+  }
+  return usage;
+}
+
 /** A pending join, without an `expired` that is not a flag. */
 function validatedPendingJoin(join: PendingJoin): PendingJoin {
   if (!('expired' in join) || typeof join.expired === 'boolean') return join;
@@ -519,6 +580,8 @@ function stateWithValidatedProjections(frame: Record<string, unknown>): CrewObse
     'pending_joins',
     recordsWith<PendingJoin>(snapshot.pending_joins, ['username'])?.map(validatedPendingJoin)
   );
+  assignOptional(snapshot, 'online_principal_ids', validatedIds(snapshot.online_principal_ids));
+  assignOptional(snapshot, 'usage', validatedUsage(snapshot.usage));
   state.snapshot = snapshot;
   state.runs = (frame.runs as unknown[]).map(validatedRun);
   assignOptional(state, 'labels', validatedLabels(labels));

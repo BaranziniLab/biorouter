@@ -45,6 +45,8 @@
        .crew-access-row-end                     badge + actions, kept together
          .crew-access-row-actions               Open, Revoke / Retry / Stop, ⋯
      .crew-consent-facts                      Chat access's Workspace and Model rows
+     .crew-online-mark                        "Online": a dot after a person's name
+     .crew-member-stack-avatar                an avatar in the member stack, with its dot
 
    The skin of each column (the sidebar's `bg-sidebar` + hairline, a header's
    `h-chrome` band) belongs to the component inside it. This file owns the
@@ -455,6 +457,27 @@
    shrinks, and it may wrap inside itself (badge over actions) rather than
    grow past the row, so `⋯` is never cut off. Order and names are the
    markup's; this only places them. */
+/* "Online" beside a person's name (M18): the dot after the name, nudged off
+   it, never wrapping away from it. The word is for a screen reader. */
+.crew-online-mark {
+  display: inline-flex;
+  align-items: center;
+  margin-inline-start: 6px;
+  vertical-align: middle;
+}
+
+/* The member stack's online dot, on the avatar's lower edge. */
+.crew-member-stack-avatar {
+  position: relative;
+  display: inline-flex;
+}
+
+.crew-member-stack-avatar > [data-slot='status-dot'] {
+  position: absolute;
+  inset-block-end: -1px;
+  inset-inline-end: -1px;
+}
+
 /* Chat access's consent facts (AG-F1): a label column as wide as its longest
    label, and the value beside it, wrapping within the pane. */
 .crew-consent-facts {

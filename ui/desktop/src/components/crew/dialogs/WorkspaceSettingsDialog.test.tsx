@@ -376,6 +376,24 @@ describe('WorkspaceSettingsDialog', () => {
     );
   });
 
+  // M18: People said nothing about who is connected.
+  it('marks who is online in People where the broker says, and no one where it does not', async () => {
+    const view = renderSettings(
+      { tab: 'people' },
+      { snapshot: makeSnapshot({ online_principal_ids: [bob.id] }) }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const marks = dialog.querySelectorAll('[data-crew-online]');
+    expect(marks).toHaveLength(1);
+    expect(marks[0].closest('li')).toHaveTextContent('Bob Lee');
+    expect(marks[0]).toHaveTextContent('Online');
+    view.unmount();
+
+    renderSettings({ tab: 'people' });
+    const older = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(older.querySelector('[data-crew-online]')).toBeNull();
+  });
+
   it('names its tab list and lets Shift+Tab leave it instead of looping on the tab', async () => {
     const user = userEvent.setup();
     renderSettings({ tab: 'people' });

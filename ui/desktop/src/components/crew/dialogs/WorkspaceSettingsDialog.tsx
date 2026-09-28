@@ -24,6 +24,8 @@ import {
   InstitutionName,
   institutionLabel,
   joinerPerson,
+  OnlineMark,
+  onlineSet,
   PersonName,
   personLabel,
   type CrewPerson,
@@ -356,6 +358,11 @@ function PeopleTab({
   const waiting = isHost ? (snapshot?.pending_joins ?? []) : [];
   const people = React.useMemo(() => peopleInOrder(dir.people), [dir.people]);
   const others = people.filter((person) => !person.isYou);
+  // Who is online, from the verified view only: a kept view is not now (M18).
+  const online =
+    crew.snapshot && crew.observedPrivacy?.connectionId === crew.connectionId
+      ? onlineSet(crew.snapshot)
+      : null;
 
   const invite = isHost ? (
     <Button
@@ -382,6 +389,7 @@ function PeopleTab({
             key={person.id ?? person.username}
             person={person}
             view={view}
+            online={Boolean(person.id && online?.has(person.id))}
             canRemove={isHost && !person.isYou && !person.isHost}
             onRemove={() =>
               person.id && onConfirm({ action: 'remove-person', principalId: person.id })
@@ -401,11 +409,14 @@ function PeopleTab({
 function MemberRow({
   person,
   view,
+  online = false,
   canRemove,
   onRemove,
 }: {
   person: CrewPerson;
   view: DialogView;
+  /** The broker says this person is online now (M18). */
+  online?: boolean;
   canRemove: boolean;
   onRemove(): void;
 }) {
@@ -430,6 +441,7 @@ function MemberRow({
       />
       <div className="min-w-0 flex-1 truncate text-label">
         <PersonName person={person} context="header" dir={dir} you={person.isYou} />
+        <OnlineMark online={online} />
       </div>
       {person.isHost ? (
         // What "Host" means, on hover and on focus (QA Q2-69): the badge takes a tab stop only
