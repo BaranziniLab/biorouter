@@ -666,6 +666,9 @@ fn team_names_are_unique_whatever_the_spelling() {
         "ANALYSIS_LAB",
         "Analysis.Lab",
         "AnaIysis Lab",
+        // Fullwidth letters fold to ASCII, as they do in a channel name, so a fullwidth
+        // spelling is the same name.
+        "\u{FF2C}\u{FF41}\u{FF42}",
     ] {
         assert_eq!(
             refused(ws.host_call("team.create", json!({"name": taken}))),
@@ -673,15 +676,19 @@ fn team_names_are_unique_whatever_the_spelling() {
             "{taken}"
         );
     }
-    // Width and invisible variants never reach the uniqueness check: they are not valid team
-    // names at all.
-    for invalid in ["\u{FF2C}\u{FF41}\u{FF42}", "Lab\u{FE0F}"] {
-        assert_eq!(
-            refused(ws.host_call("team.create", json!({"name": invalid}))).0,
-            "name_invalid",
-            "{invalid:?}"
-        );
-    }
+    // An invisible variant never reaches the uniqueness check: it is not a valid team name.
+    assert_eq!(
+        refused(ws.host_call("team.create", json!({"name": "Lab\u{FE0F}"}))).0,
+        "name_invalid"
+    );
+    let folded = ws.host_ok(
+        "team.create",
+        json!({"name": "\u{FF27}\u{FF45}\u{FF4E}\u{FF4F}\u{FF4D}\u{FF49}\u{FF43}\u{FF53}"}),
+    );
+    assert_eq!(
+        folded["team"]["name"], "Genomics",
+        "a fullwidth team name is stored folded"
+    );
     let cleaned = ws.host_ok("team.create", json!({"name": "  Data   Team "}));
     assert_eq!(cleaned["team"]["name"], "Data Team");
     let renamed = ws.host_ok("team.rename", json!({"team_id": lab, "name": "LAB"}));
