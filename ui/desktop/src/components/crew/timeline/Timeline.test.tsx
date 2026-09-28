@@ -965,6 +965,57 @@ describe('older history', () => {
     expect(arrivingRows()).toBe(1);
   });
 
+  /**
+   * MSG2-N2: the reader at the bottom of a window off the live tail pressed Newer messages, and
+   * was carried to the end of what it added (message 670) rather than left at 600 to read on.
+   */
+  it('leaves the reader where they were when a page is added below a window off the live tail (MSG2-N2)', async () => {
+    const detached = Array.from({ length: 10 }, (_, index) =>
+      message({ id: `w-${index}`, body: `window ${index}` })
+    );
+    const below = Array.from({ length: 10 }, (_, index) =>
+      message({ id: `n-${index}`, body: `newer ${index}` })
+    );
+    const controller = makeController({
+      messages: detached,
+      historyBefore: below[0].sequence,
+      reachesStart: false,
+    });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if (!viewport) throw new Error('no viewport');
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    // jsdom lays nothing out: every row is 100px, the viewport 600px, the reader at its bottom.
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => document.querySelectorAll('[data-crew-row]').length * 100,
+    });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+
+    // The page after it reaches the tail: added below, and the window is the live tail again.
+    rerenderWith({ ...controller, messages: [...detached, ...below], historyBefore: null });
+    expect(screen.getByText('newer 9')).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(400);
+    // Not at the bottom any more: a live arrival is counted below, never followed to.
+    rerenderWith({
+      ...controller,
+      messages: [...detached, ...below, postedNow({ id: 'live', body: 'just posted' })],
+      historyBefore: null,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(400);
+  });
+
   it('shows the channel’s start once an older page reaches it, however long the window', () => {
     vi.useFakeTimers();
     const long = page(HISTORY_PAGE_SIZE + 50);
@@ -1899,7 +1950,14 @@ describe('automatic mark-read', () => {
       }),
     });
     renderWithController(<Timeline />, read);
-    const history = unread({ historyBefore: 's9' });
+    // A window off the live tail that does not hold where the read position stands.
+    const history = unread({
+      historyBefore: 's9',
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: 's0' },
+        unread: { [ID.general]: 5 },
+      }),
+    });
     renderWithController(<Timeline />, history);
     const readOnly = unread();
     renderWithController(<Timeline readOnly />, readOnly);
@@ -1926,6 +1984,37 @@ describe('automatic mark-read', () => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
     });
     expect(unfocused.markRead).toHaveBeenCalledWith(ID.general, 's2');
+  });
+
+  /**
+   * MSG2-N2: marking read was off for every window off the live tail, so a reader who read two
+   * hundred messages there still had them all unread, and Jump to first unread took them back.
+   */
+  it('marks read what the reader has had on screen off the live tail, from the read position on (MSG2-N2)', () => {
+    const controller = unread({ historyBefore: 's9' });
+    renderWithController(<Timeline />, controller);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledWith(ID.general, 's2');
+
+    // A channel never read: only a window that reaches its start.
+    const neverRead = {
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: null },
+        unread: { [ID.general]: 2 },
+      }),
+      historyBefore: 's9',
+    };
+    const fromStart = unread({ ...neverRead, reachesStart: true });
+    renderWithController(<Timeline />, fromStart);
+    const midway = unread({ ...neverRead, reachesStart: false });
+    renderWithController(<Timeline />, midway);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(fromStart.markRead).toHaveBeenCalledWith(ID.general, 's2');
+    expect(midway.markRead).not.toHaveBeenCalled();
   });
 
   it('stays silent when the write fails', async () => {

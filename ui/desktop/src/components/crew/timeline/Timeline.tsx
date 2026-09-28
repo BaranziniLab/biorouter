@@ -477,11 +477,24 @@ function ChannelTimeline({
   const drawnIds = useRef<ReadonlySet<string> | null>(null);
   const movedWindow =
     drawnIds.current !== null && messages.some((message) => drawnIds.current?.has(message.id));
+  /**
+   * The window last drawn did not reach the live tail (`historyBefore`). Its bottom is where the
+   * reader stopped, not the channel's newest message, so a page added below it (Newer messages,
+   * including the one that brings it back to the tail) extends what they are reading and is never
+   * followed to its end (MSG2-N2: the reader at message 600 landed on 670).
+   */
+  const drawnDetached = useRef(historyBefore !== null);
+  const extendedBelow = movedWindow && drawnDetached.current;
+  /** A window extended below its reader, who was at its old bottom: see where they are now. */
+  const resettle = useRef(false);
   useLayoutEffect(() => {
     if (!pageReady) return;
     const opening = lastLoaded.current !== loadKey && !movedWindow;
-    if (opening || emptied.current || followingRef.current) {
+    if (opening || emptied.current || (followingRef.current && !extendedBelow)) {
       scrollToBottom(scroller.current, 'auto');
+    } else if (extendedBelow && followingRef.current) {
+      // The reader was at the old bottom and stays there, once their place is kept (below).
+      resettle.current = true;
     }
     lastLoaded.current = loadKey;
     emptied.current = false;
@@ -490,7 +503,8 @@ function ChannelTimeline({
   useLayoutEffect(() => {
     if (pageReady) drawnIds.current = new Set(messages.map((message) => message.id));
     else if (reloading) drawnIds.current = null;
-  }, [pageReady, reloading, messages]);
+    if (pageReady) drawnDetached.current = historyBefore !== null;
+  }, [pageReady, reloading, messages, historyBefore]);
 
   // ── The rows, by message ────────────────────────────────────────────────
   // Rows register themselves (`registerRow`), so no message ID is ever written into the DOM.
@@ -520,25 +534,38 @@ function ChannelTimeline({
   // Rows added above, or rows dropped from the top as the window slides, move everything under
   // them: the first row the reader could see is put back where it was (QA M6). It is measured as
   // the new list renders, while the DOM still shows the old one, and restored once the new one is
-  // committed. Not while following the bottom, which is its own anchor. Scroll anchoring is off in
-  // the stylesheet, so the browser never does it a second time.
+  // committed. Not while following the live tail's bottom, which is its own anchor; a window that
+  // did not reach the tail has no bottom to follow (MSG2-N2). Scroll anchoring is off in the
+  // stylesheet, so the browser never does it a second time.
   const placedList = useRef(messages);
-  const place = useRef<{ id: string; top: number } | null>(null);
+  const place = useRef<{ id: string; top: number; detached: boolean } | null>(null);
   if (placedList.current !== messages) {
     placedList.current = messages;
     const viewport = scroller.current?.viewportRef.current;
-    place.current =
-      viewport && !followingRef.current ? firstVisibleRow(viewport, messageRows(viewport)) : null;
+    const detached = drawnDetached.current;
+    const first =
+      viewport && (!followingRef.current || detached)
+        ? firstVisibleRow(viewport, messageRows(viewport))
+        : null;
+    place.current = first ? { ...first, detached } : null;
   }
   useLayoutEffect(() => {
     const viewport = scroller.current?.viewportRef.current;
     const held = place.current;
     place.current = null;
-    if (!viewport || !held || followingRef.current) return;
-    const row = rowsByMessage.current.get(held.id);
-    if (!row || !viewport.contains(row)) return;
-    const shift = row.getBoundingClientRect().top - viewport.getBoundingClientRect().top - held.top;
-    if (Math.abs(shift) >= 1) viewport.scrollTop += shift;
+    if (viewport && held && (!followingRef.current || held.detached)) {
+      const row = rowsByMessage.current.get(held.id);
+      if (row && viewport.contains(row)) {
+        const shift =
+          row.getBoundingClientRect().top - viewport.getBoundingClientRect().top - held.top;
+        if (Math.abs(shift) >= 1) viewport.scrollTop += shift;
+      }
+    }
+    // The scroll area (and `following`) learns where the kept place is from a scroll event, as if
+    // the reader had put it there: its own following would otherwise carry them to the new bottom
+    // as the content grew.
+    if (viewport && resettle.current) viewport.dispatchEvent(new Event('scroll'));
+    resettle.current = false;
   }, [messages]);
 
   // ── Following the live tail ─────────────────────────────────────────────
@@ -586,8 +613,8 @@ function ChannelTimeline({
   // from where it opened. When more is unread than the window holds, the first unread message is
   // not loaded: it opens at the newest as before, nothing is marked read (the watermark would take
   // the messages never shown with it), and a pill offers to load back to them.
-  const firstUnreadOutside =
-    historyBefore === null && !reachesStart && unreadBeyond(messages, readState);
+  const unreadOutside = !reachesStart && unreadBeyond(messages, readState);
+  const firstUnreadOutside = historyBefore === null && unreadOutside;
   const logRef = useRef<HTMLDivElement>(null);
   const placedAtNew = useRef(false);
   useLayoutEffect(() => {
@@ -684,9 +711,15 @@ function ChannelTimeline({
     unread: snapshot.unread?.[channel.id],
     seen: newestSeen,
     // Not while the tail streams in (the newest message so far is not the channel's), nor while
-    // the unread start is outside the window.
+    // the unread start is outside the window. Off the live tail, what the reader reads counts too
+    // (MSG2-N2), from a window that holds where the read position stands: one that does not could
+    // pass over unread messages above it.
     enabled:
-      !readOnly && historyBefore === null && opened && messages.length > 0 && !firstUnreadOutside,
+      !readOnly &&
+      opened &&
+      messages.length > 0 &&
+      !unreadOutside &&
+      (historyBefore === null || holdsReadStart(messages, readPosition, reachesStart)),
     markRead: crew.markRead,
     memory: readMemory,
   });
@@ -1012,6 +1045,24 @@ export function lastVisibleMessageId(
     if (rect.bottom <= box.bottom + 1 && rect.bottom > box.top) return rows[index].id;
   }
   return null;
+}
+
+/**
+ * The list holds where reading the channel starts: the read position's message, or the channel's
+ * first message for a channel never read. A window off the live tail marks read only then
+ * (MSG2-N2), so what it marks read is what the reader has had on screen since that point.
+ */
+export function holdsReadStart(
+  messages: readonly CrewMessage[],
+  readPosition: string | null | undefined,
+  reachesStart: boolean
+): boolean {
+  if (readPosition === null) return reachesStart;
+  return (
+    typeof readPosition === 'string' &&
+    readPosition !== '' &&
+    messages.some((message) => message.sequence === readPosition)
+  );
 }
 
 /**

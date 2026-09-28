@@ -247,6 +247,20 @@ function allInChannel(messages: readonly CrewMessage[], channelId: string): bool
   return messages.every((message) => message.channel_id === channelId);
 }
 
+/**
+ * The live tail's opening page follows on from the window: it holds a message the window holds,
+ * so nothing lies between them. The observer sends that page oldest first, so its first frame
+ * alone decides.
+ */
+export function joinsWindow(
+  window: readonly CrewMessage[],
+  opening: readonly CrewMessage[]
+): boolean {
+  if (window.length === 0 || opening.length === 0) return false;
+  const held = new Set(window.map((message) => message.id));
+  return opening.some((message) => held.has(message.id));
+}
+
 /** The most lost drafts offered at once; the oldest goes first. */
 export const LOST_DRAFT_MAX = 5;
 
@@ -478,9 +492,24 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   }, [livePageSize]);
   const [historyPageSize, setHistoryPageSize] = useState<number | null>(null);
   // The window of the channel's messages (QA M6): how many the live tail may keep (older pages
-  // raise it), whether it reaches the channel's start, and the page on its way.
+  // raise it), the channel's first message once an older page found it, and the page on its way.
   const windowLimit = useRef(HISTORY_PAGE_SIZE);
-  const [reachesStart, setReachesStart] = useState<boolean | undefined>(undefined);
+  /**
+   * The channel's first message, found when an older page came back short, or undefined while no
+   * page has found it. The window reaches the channel's start only while that message is still its
+   * first: a claim about the list rather than a flag beside it, so a live arrival or a newer page
+   * that pushes it out of a full window reopens "Older messages" by itself (MSG2-N1). As a flag, it
+   * stayed true after 370 arrivals had pushed the first 100 messages out, and the channel intro
+   * stood above message 101 with nothing to load the rest.
+   */
+  const [channelStart, setChannelStart] = useState<string | undefined>(undefined);
+  const reachesStart = channelStart === undefined ? undefined : messages[0]?.id === channelStart;
+  /**
+   * A newer page reached the live tail and the observer is starting again to follow it
+   * (MSG2-N2): its opening page is merged into the window rather than put in place of it, so the
+   * reader stays where they were and the messages they had loaded stay loaded.
+   */
+  const rejoiningTail = useRef(false);
   const [historyLoading, setHistoryLoading] = useState<HistoryDirection | null>(null);
   const [pageRequest, setPageRequest] = useState<{
     id: number;
@@ -499,7 +528,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const pageRequestIds = useRef(0);
   const resetWindow = useCallback(() => {
     windowLimit.current = HISTORY_PAGE_SIZE;
-    setReachesStart(undefined);
+    rejoiningTail.current = false;
+    setChannelStart(undefined);
     setHistoryLoading(null);
     setPageRequest(null);
   }, []);
@@ -1272,23 +1302,35 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   frame.reset ? pageSize : Math.min(previous, pageSize)
                 );
               if (historyPage.current !== null) return;
-              // A reset opens the live tail afresh: the window is its page again.
-              if (frame.reset) {
+              // A reset opens the live tail afresh: the window is its page again. Unless a newer
+              // page has just brought the window back to the tail (MSG2-N2): the opening page then
+              // joins the window, when it follows on from it. One that shares no message with the
+              // window left a gap between them, and replaces it as any reset does.
+              const rejoin =
+                frame.reset &&
+                rejoiningTail.current &&
+                joinsWindow(messagesNow.current, frame.messages);
+              if (frame.reset) rejoiningTail.current = false;
+              if (frame.reset && !rejoin) {
                 windowLimit.current = HISTORY_PAGE_SIZE;
-                setReachesStart(undefined);
+                setChannelStart(undefined);
               }
+              const limit = Math.max(HISTORY_PAGE_SIZE, windowLimit.current);
               setMessages((previous) => {
-                const next = frame.reset ? [] : [...previous];
+                const next = frame.reset && !rejoin ? [] : [...previous];
                 for (const message of frame.messages) {
                   const index = next.findIndex((old) => old.id === message.id);
                   if (index < 0) next.push(message);
                   else next[index] = message;
                 }
-                // Older pages added above the tail stay while the window has room (QA M6).
-                return next.slice(-Math.max(HISTORY_PAGE_SIZE, windowLimit.current));
+                // Older pages added above the tail stay while the window has room (QA M6). What
+                // gives way at the top takes the channel's start with it (`reachesStart`).
+                return next.length > limit ? next.slice(-limit) : next;
               });
               const framePeople = frame.people;
-              setPeople((previous) => mergePeople(frame.reset ? null : previous, framePeople));
+              setPeople((previous) =>
+                mergePeople(frame.reset && !rejoin ? null : previous, framePeople)
+              );
               // `remaining` counts down the page this frame came from; the page a reset opens is
               // the channel's backlog, so its last frame (`0`) is the end of the opening.
               const remaining = frame.remaining;
@@ -1410,8 +1452,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
           setPeople((previous) => mergePeople(previous, pagePeople));
           setHistoryLoading(null);
           if (direction === 'older') {
-            if (page.messages.length < limit) setReachesStart(true);
             const merged = [...added, ...onScreen];
+            if (page.messages.length < limit) setChannelStart(merged[0]?.id);
             if (merged.length <= MESSAGE_WINDOW_MAX) {
               // The live tail now grows under the pages added above it, up to the bound.
               windowLimit.current = MESSAGE_WINDOW_MAX;
@@ -1427,22 +1469,30 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             setMessages(kept);
             return;
           }
-          // Newer: a short page has reached the live tail, which the observer brings back.
+          // Newer: a short page has reached the live tail. It is added below like any other, so
+          // reading goes on at its first message, and the window follows the tail from here: the
+          // observer starts again and its opening page joins the window (`rejoiningTail`). Putting
+          // the newest page in place of the window instead skipped whatever lay between the two
+          // (MSG2-N2: the reader at message 600 landed on 670).
           if (page.messages.length < limit) {
+            const merged = [...onScreen, ...added];
             historyPage.current = null;
             setHistoryBefore(null);
             setHistoryPageSize(null);
-            resetWindow();
+            windowLimit.current = MESSAGE_WINDOW_MAX;
+            setMessages(merged.slice(-MESSAGE_WINDOW_MAX));
+            rejoiningTail.current = true;
+            setPageRequest(null);
             setObservationRevision((revision) => revision + 1);
             return;
           }
           // A full page: its last message is where the next one starts, so it marks the window's
-          // end and is fetched again with it.
+          // end and is fetched again with it. What gives way at the top takes the channel's start
+          // with it (`reachesStart`).
           const last = page.messages[page.messages.length - 1];
           const next = added.filter((message) => message.id !== last.id);
           const boundary = last.sequence;
           const merged = [...onScreen, ...next];
-          if (merged.length > MESSAGE_WINDOW_MAX) setReachesStart(false);
           historyPage.current = boundary;
           setHistoryBefore(boundary);
           setMessages(merged.slice(-MESSAGE_WINDOW_MAX));
