@@ -5,6 +5,7 @@ import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
 import { teamName } from '../identity';
 import { useFormValidation } from '../onboarding/fields';
+import { focusChannelRowWhenShown } from '../state/channelRowFocus';
 import type { ErrorSource } from '../state/types';
 import { createChannelCopy as copy, nameRuleCopy } from './copy';
 import {
@@ -124,6 +125,8 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
         if (!channelId) return;
         if (teamId !== crew.teamId) crew.selectTeam(teamId);
         crew.selectChannel(channelId);
+        // Focus goes to the new channel's row once it is drawn, not back to Add channel (UXN-7).
+        focusChannelRowWhenShown(channelId);
         onClose();
       });
   };

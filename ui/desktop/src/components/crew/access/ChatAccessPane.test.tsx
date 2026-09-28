@@ -177,6 +177,10 @@ describe('chat access: grant', () => {
     });
     expect(await within(pane()).findByText(accessCopy.connected)).toBeInTheDocument();
     expect(within(pane()).getByRole('button', { name: accessCopy.backToChat })).toBeInTheDocument();
+    // UXN-7: Allow took its own button away; focus goes to the granted view's first action.
+    await waitFor(() =>
+      expect(within(pane()).getByRole('button', { name: accessCopy.backToChat })).toHaveFocus()
+    );
     expect(
       within(pane()).getByRole('button', { name: accessCopy.revokeButton })
     ).toBeInTheDocument();
@@ -317,6 +321,10 @@ describe('chat access: an active grant', () => {
     await waitFor(() => expect(mocks.crewHttp).toHaveBeenCalledWith(REVOKE_PATH, 'POST'));
     expect(await within(pane()).findByText(accessCopy.revoked('Plot review'))).toBeInTheDocument();
     expect(within(pane()).getByRole('button', { name: accessCopy.openChat })).toBeInTheDocument();
+    // UXN-7: Revoke took its own button away; focus went to the page, now to what replaced it.
+    await waitFor(() =>
+      expect(within(pane()).getByRole('button', { name: accessCopy.openChat })).toHaveFocus()
+    );
     expect(within(pane()).getByRole('button', { name: accessCopy.done })).toBeInTheDocument();
     await waitFor(() =>
       expect(callsTo(mocks, GRANTS_PATH, 'GET').length).toBeGreaterThan(listsBefore)

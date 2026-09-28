@@ -225,6 +225,14 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   const [outcome, setOutcome] = useState<RevokeOutcome | null>(null);
   const revokeButton = useRef<HTMLButtonElement>(null);
   const allowButton = useFocusAllowOnConsent();
+  // Allow and Revoke take their own button away with them: focus goes to the first action of the
+  // view that replaced it (`data-crew-access-next`), rather than falling to the page (UXN-7).
+  const paneRoot = useRef<HTMLDivElement>(null);
+  const [focusNext, setFocusNext] = useState(0);
+  useEffect(() => {
+    if (focusNext === 0) return;
+    paneRoot.current?.querySelector<HTMLElement>('[data-crew-access-next]')?.focus();
+  }, [focusNext]);
   const cachedTitle = useKnownChatTitle(sessionId);
   // The chat's own model, which the grant binds (AG-F1, SF-F5): named in the consent, and checked
   // before Allow as Ask my agent checks its model before Start. Outside the app's configuration (a
@@ -268,7 +276,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
 
   if (!sessionId) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <p className="text-supporting text-text-muted">{accessCopy.paneNoChat}</p>
       </div>
     );
@@ -384,6 +392,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     setRevoking(false);
     setOutcome(result);
     if (result.kind === 'revoked') setGranted(false);
+    setFocusNext((count) => count + 1);
   };
 
   const allow = async (event: FormEvent<HTMLFormElement>) => {
@@ -395,6 +404,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     if (!ok) return;
     setOutcome(null);
     setGranted(true);
+    setFocusNext((count) => count + 1);
     rememberChannelLabels(connectionId, destinations, [channelId]);
     announceGrantsChanged({ connectionId, sessionId, change: 'granted' });
   };
@@ -417,7 +427,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── Loading and failure, before anything is known ────────────────────────────────────────
   if (!granted && !grant && (connectionsState !== 'loaded' || grants.status === 'loading')) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <p role="status" className="text-supporting text-text-muted">
           {accessCopy.noteChecking}
         </p>
@@ -426,7 +436,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   }
   if (!granted && !grant && grants.anyFailed) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <Note
           tone="warning"
           icon={AlertCircle}
@@ -452,14 +462,20 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── A confirmed revoke ───────────────────────────────────────────────────────────────────
   if (outcome?.kind === 'revoked') {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <RevokeResultNote
           outcome={outcome}
           chat={chat}
           onRetry={() => void revoke()}
           successActions={
             <>
-              <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={openChat}
+                data-crew-access-next=""
+              >
                 {accessCopy.openChat}
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={controller.closePane}>
@@ -528,7 +544,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── Stopped on this device, waiting for the workspace to confirm ─────────────────────────
   if (stoppedHere) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-2">
             <p className="min-w-0 text-label text-text-default">{accessCopy.chatName(chat)}</p>
@@ -546,7 +562,13 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
             confirmation={confirmation}
           />
           <div>
-            <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={openChat}
+              data-crew-access-next=""
+            >
               {accessCopy.openChat}
             </Button>
           </div>
@@ -564,7 +586,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         ? accessStatusOf(grant, Date.now(), false)
         : { status: 'active' as const, label: accessCopy.status.active };
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-2">
             <p className="min-w-0 text-label text-text-default">{accessCopy.canNow(chat)}</p>
@@ -601,11 +623,17 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-2">
               {granted ? (
-                <Button type="button" size="sm" onClick={openChat}>
+                <Button type="button" size="sm" onClick={openChat} data-crew-access-next="">
                   {accessCopy.backToChat}
                 </Button>
               ) : (
-                <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={openChat}
+                  data-crew-access-next=""
+                >
                   {accessCopy.openChat}
                 </Button>
               )}
@@ -631,7 +659,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── A task's access after the task: it ended with it, and a task is not granted again ────────
   if (grant && grant.kind === 'task') {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           <p className="text-label text-text-default">{accessCopy.paneTaskFinished}</p>
           <div>
@@ -660,7 +688,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
 
   if (!canGrant) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           {confirmedNote}
           {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
@@ -676,7 +704,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   }
 
   return (
-    <div className={className} data-testid="crew-chat-access-pane">
+    <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
       <form className="flex flex-col gap-3" onSubmit={(event) => void allow(event)}>
         {confirmedNote}
         {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}

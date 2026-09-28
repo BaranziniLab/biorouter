@@ -1,7 +1,8 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, renderHook, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
+import { useChannelRowFocusRequested } from '../state/channelRowFocus';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
 import { CreateChannelDialog, examplePlaceholder, withoutLeadingHash } from './CreateChannelDialog';
@@ -113,6 +114,8 @@ describe('CreateChannelDialog', () => {
     );
     expect(crew.selectChannel).toHaveBeenCalledWith('channel-new');
     expect(onClose).toHaveBeenCalled();
+    // UXN-7: the new channel's row takes the focus, not Add channel, the dialog's opener.
+    expect(renderHook(() => useChannelRowFocusRequested('channel-new')).result.current).toBe(true);
   });
 
   it('refuses a name the broker would refuse before sending it', async () => {

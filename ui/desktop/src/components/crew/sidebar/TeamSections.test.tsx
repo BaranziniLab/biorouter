@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage, Invitation } from '../crewApi';
 import { buildPeopleDirectory } from '../identity';
+import { focusChannelRowWhenShown } from '../state/channelRowFocus';
 import { MARK_READ_KEY } from './ChannelRow';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
@@ -166,6 +167,25 @@ describe('team sections', () => {
       getItem.mockRestore();
       setItem.mockRestore();
     }
+  });
+
+  /**
+   * UXN-7: after Create channel, focus went back to Add channel, its opener, a step away from the
+   * channel the person had just made.
+   */
+  it('gives the focus to a channel just made once its row is drawn and no dialog is open', () => {
+    const { update } = renderTeams({
+      ui: { dialog: { kind: 'create-channel', teamId: TEAM_LAB }, pane: null },
+    });
+    act(() => focusChannelRowWhenShown('chan-methods'));
+    // The dialog is still open: focus stays in it.
+    expect(channelRow('methods')).not.toHaveFocus();
+    update(makeController({ ui: { dialog: null, pane: null } }));
+    expect(channelRow('methods')).toHaveFocus();
+    // Once only: a later render leaves focus wherever the person put it.
+    act(() => channelRow('general').focus());
+    update(makeController({ ui: { dialog: null, pane: null } }));
+    expect(channelRow('general')).toHaveFocus();
   });
 
   it('selects a channel in the current team without switching teams', () => {
