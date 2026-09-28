@@ -757,9 +757,11 @@ export const CREW_DEFAULT_SAVE_NAME = 'crew-download';
  * daemon accepts (FILES-F3): the last path segment only, then the renderer's own rule,
  * `saveNameFor` in `components/crew/files/fileName.ts`, run again here on whatever the renderer
  * sent. That rule leaves out every control, format, line or paragraph separator and private-use
- * character (a U+202E in `q3_\u202Efdp.exe` would otherwise make the proposed name read as a PDF)
- * and a leading dot, since the daemon never saves a dot name into the home. One rule, so the two
- * processes cannot propose different names.
+ * character (a U+202E in `q3_\u202Efdp.exe` would otherwise make the proposed name read as a PDF),
+ * every lone surrogate (removed before the rest are joined, so two halves split by a hidden
+ * character cannot fuse into a tag or private-use character) and a leading dot, since the daemon
+ * never saves a dot name into the home. One rule, so the two processes cannot propose different
+ * names.
  */
 export function crewSaveName(raw: unknown): string {
   if (typeof raw !== 'string') return CREW_DEFAULT_SAVE_NAME;

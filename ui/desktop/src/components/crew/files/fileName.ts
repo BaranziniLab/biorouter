@@ -16,7 +16,8 @@ import { stripHiddenCharacters } from '../../../utils/untrustedText';
  *   main-process code the renderer cannot import; `peerFileNames.test.tsx` holds the two
  *   together). The name then looks odd instead of looking like a different name.
  * - {@link saveNameFor} is the Save dialog's default name: the same characters left out, since a
- *   saved file should not carry U+FFFD in its name, and `undefined` when nothing is left.
+ *   saved file should not carry U+FFFD in its name, along with private-use characters and lone
+ *   surrogates, and `undefined` when nothing is left.
  *
  * Neither changes what is sent anywhere. A transfer's own name (the local file it reads or
  * writes), a path that is copied and an ID all stay exactly as they are.
@@ -46,19 +47,31 @@ export function visibleFileText(raw: unknown): string {
 
 /** Private-use characters draw a glyph of some font's choosing, never one a name can rely on. */
 const PRIVATE_USE = /^\p{Co}$/u;
+/** A lone surrogate: half of a character, which `Array.from` yields as an element of its own. */
+const LONE_SURROGATE = /^\p{Cs}$/u;
 
 /**
  * The default name for the native Save dialog, one the daemon accepts (FILES-F3): the name with
- * every hidden and private-use character left out, trimmed, and without a leading dot (the daemon
- * never saves a dot name into the home, so `.Rprofile` is offered as `Rprofile`). `undefined`
- * when nothing usable is left (the main process then offers its own default). The main process
- * runs this same function again on whatever it is sent (`crewSaveName` in `utils/crewSharePath.ts`),
- * so this module must stay free of anything only a renderer has.
+ * every hidden and private-use character and every lone surrogate left out, trimmed, and without a
+ * leading dot (the daemon never saves a dot name into the home, so `.Rprofile` is offered as
+ * `Rprofile`). `undefined` when nothing usable is left (the main process then offers its own
+ * default). The main process runs this same function again on whatever it is sent (`crewSaveName`
+ * in `utils/crewSharePath.ts`), so this module must stay free of anything only a renderer has.
+ *
+ * ⚠ The lone surrogates go in the same per-character filter, before the join, as
+ * `utils/untrustedText.ts` requires. Dropping the zero-width character in `a\uDB40\u200B\uDC01b`
+ * leaves the two halves adjacent, and the join would fuse them into U+E0001, a tag (format)
+ * character, after the only test that could see it; `\uDB80\u200B\uDC00` fuses into U+F0000, a
+ * private-use one. Every element that survives the filter is a whole code point, so the join can
+ * never make a new one.
  */
 export function saveNameFor(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const name = Array.from(raw)
-    .filter((character) => !isHidden(character) && !PRIVATE_USE.test(character))
+    .filter(
+      (character) =>
+        !LONE_SURROGATE.test(character) && !isHidden(character) && !PRIVATE_USE.test(character)
+    )
     .join('')
     .trim()
     .replace(/^\.+/, '')

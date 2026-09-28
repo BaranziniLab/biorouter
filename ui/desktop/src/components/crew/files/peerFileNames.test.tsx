@@ -235,11 +235,37 @@ describe('the two rules (visibleFileText, saveNameFor)', () => {
     expect(saveNameFor('.')).toBeUndefined();
   });
 
+  /** Two halves of one character with a hidden character between them, and what they fuse into. */
+  const SPLIT_SURROGATES = [
+    ['a\uDB40\u200B\uDC01b.txt', 'U+E0001, a tag (format) character'],
+    ['a\uDB80\u200B\uDC00b.txt', 'U+F0000, a private-use character'],
+    ['a\uD800\u2066\uDC00b.txt', 'U+10000, a character the name never had'],
+    ['a\uDBFF\u2028\uDFFFb.txt', 'U+10FFFF, a private-use character'],
+  ] as const;
+
+  it('never fuses two halves of a character across a hidden one', () => {
+    // Removing the hidden character between the halves must not join them into a character the
+    // filter never looked at, so the lone halves are left out with it.
+    for (const [raw, fused] of SPLIT_SURROGATES) {
+      const name = saveNameFor(raw);
+      expect(name, fused).toBe('ab.txt');
+      expect(/[\p{Cs}\p{Co}]/u.test(name ?? ''), fused).toBe(false);
+      expect(hasHidden(name ?? ''), fused).toBe(false);
+    }
+    expect(saveNameFor('\uD800')).toBeUndefined();
+    expect(saveNameFor('\uDC00.\uD800')).toBeUndefined();
+    expect(saveNameFor('x\uDC00\uD800y.csv')).toBe('xy.csv');
+    // A whole character outside the Basic Multilingual Plane is one element, and stays.
+    expect(saveNameFor('\u{1F9EC} genome.fa')).toBe('\u{1F9EC} genome.fa');
+    expect(saveNameFor('\u{1F469}\u200D\u{1F4BB} notes.md')).toBe('\u{1F469}\u{1F4BB} notes.md');
+  });
+
   it('proposes the name the main process proposes (utils/crewSharePath.ts crewSaveName)', async () => {
     // The Save window's default is chosen again in the main process, which a compromised
     // renderer cannot skip; the two rules must agree on every name.
     const { crewSaveName, CREW_DEFAULT_SAVE_NAME } = await import('../../../utils/crewSharePath');
-    for (const sample of [...samples, '.Rprofile', 'a\uE000b', '\u202E..', ' . x']) {
+    const split = SPLIT_SURROGATES.map(([raw]) => raw);
+    for (const sample of [...samples, ...split, '.Rprofile', 'a\uE000b', '\u202E..', ' . x']) {
       const renderer = saveNameFor(sample);
       expect(crewSaveName(sample)).toBe(renderer ?? CREW_DEFAULT_SAVE_NAME);
       if (renderer) expect(crewSaveName(renderer)).toBe(renderer);

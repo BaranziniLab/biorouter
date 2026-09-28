@@ -39,6 +39,7 @@ import {
   type ShareDroppedFileDeps,
   type ShareFs,
 } from './crewSharePath';
+import { stripHiddenCharacters } from './untrustedText';
 
 const posix = process.platform !== 'win32';
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
@@ -967,11 +968,21 @@ describe('crewSaveName: a default the daemon accepts (FILES-F3)', () => {
     ['privateuse.csv', 'privateuse.csv'],
     ['../../etc/passwd', 'passwd'],
     ['two\nlines.txt', 'twolines.txt'],
+    // Two halves of one character split by a hidden one: dropped before the join, so they never
+    // fuse into U+E0001 (a tag), U+F0000 (private use) or U+10000.
+    ['a\uDB40\u200B\uDC01b.txt', 'ab.txt'],
+    ['a\uDB80\u200B\uDC00b.txt', 'ab.txt'],
+    ['a\uD800\u2066\uDC00b.txt', 'ab.txt'],
+    ['dir/a\uDB40\u202E\uDC01b.txt', 'ab.txt'],
+    ['\u{1F9EC} genome.fa', '\u{1F9EC} genome.fa'],
   ])('offers %j as %j', (raw, name) => {
-    expect(crewSaveName(raw)).toBe(name);
+    const offered = crewSaveName(raw);
+    expect(offered).toBe(name);
+    expect(stripHiddenCharacters(offered)).toBe(offered);
+    expect(/[\p{Cs}\p{Co}]/u.test(offered)).toBe(false);
   });
 
-  it.each([undefined, null, 7, '', '.', '..', '\u202E', '/'])(
+  it.each([undefined, null, 7, '', '.', '..', '\u202E', '/', '\uD800', '\uDB40\u200B'])(
     'falls back to its own name for %j',
     (raw) => {
       expect(crewSaveName(raw)).toBe(CREW_DEFAULT_SAVE_NAME);
