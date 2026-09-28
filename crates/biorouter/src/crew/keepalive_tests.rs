@@ -3002,12 +3002,18 @@ async fn saving_a_connection_unchanged_changes_nothing() {
     assert_eq!(resaved.name, before.name);
     assert!(resaved.policy_epoch > before.policy_epoch);
 
-    // A real change is a save: the epoch moves, the bridge drops, and the grant ends.
+    // A real change is a save: the epoch moves, the bridge is replaced, and the grant ends.
+    // The route is the same, so the save reconnects it over a new, verified bridge
+    // (W2-DMN-8); that does not revive the grant.
     let mut renamed = same(&before, before.mode);
     renamed.name = "renamed fixture".into();
     let saved = f.manager.update(CONNECTION_ID, renamed).await.unwrap();
     assert!(saved.policy_epoch > before.policy_epoch);
-    assert_eq!(saved.status, "disconnected");
+    assert_eq!(saved.status, "connected");
+    assert!(!Arc::ptr_eq(
+        &bridge,
+        &f.manager.transport(CONNECTION_ID).await.unwrap()
+    ));
     assert_eq!(
         f.manager
             .check_dispatch(WORKER, &cap)
@@ -3016,6 +3022,72 @@ async fn saving_a_connection_unchanged_changes_nothing() {
             .to_string(),
         GRANT_POLICY_CHANGED
     );
+}
+
+/// W2-DMN-8: a person's own privacy save on a connected connection reconnects it, verified
+/// again, with the new mode; a save that changes where the bridge goes does not; and a
+/// reconnect that fails leaves it offline, saying why.
+#[tokio::test]
+async fn a_privacy_save_reconnects_a_connected_connection() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("privacy-save", &["serve", "serve", "unreachable"], quiet()).await;
+    f.manager.registry.lock().await.connections[0].cluster_connection_id =
+        "6b6b6b6b-6b6b-46b6-86b6-6b6b6b6b6b6b".into();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let before = f.manager.connection(CONNECTION_ID).await.unwrap();
+    let edit = |c: &Connection, mode: ClusterMode, institution: Option<&str>| SaveConnection {
+        preparation_id: None,
+        name: c.name.clone(),
+        ssh_target: c.ssh_target.clone(),
+        port: c.port,
+        identity_file: c.identity_file.clone(),
+        proxy_jump: c.proxy_jump.clone(),
+        socket_path: c.socket_path.clone(),
+        owner_uid: c.owner_uid,
+        workspace_id: c.workspace_id.clone(),
+        workspace_public_key: c.workspace_public_key.clone(),
+        remote_root: c.remote_root.clone(),
+        remote_execution: c.remote_execution,
+        cluster_connection_id: Some(c.cluster_connection_id.clone()),
+        mode,
+        institution_id: institution.map(str::to_owned),
+    };
+    let other = match before.mode {
+        ClusterMode::Public => ClusterMode::Private,
+        ClusterMode::Private => ClusterMode::Public,
+    };
+    let saved = f
+        .manager
+        .update(CONNECTION_ID, edit(&before, other, Some("ucsf")))
+        .await
+        .unwrap();
+    assert_eq!(saved.mode, other);
+    assert_eq!(saved.status, "connected");
+    assert!(saved.policy_epoch > before.policy_epoch);
+    assert_eq!(spawns(&f.root), 2, "one new bridge");
+    assert_eq!(methods_on(&f.root, 2), ["hello"], "verified from scratch");
+
+    // A reconnect that fails leaves it offline with the reason.
+    let saved = f
+        .manager
+        .update(CONNECTION_ID, edit(&saved, before.mode, Some("ucsf")))
+        .await
+        .unwrap();
+    assert_eq!(saved.mode, before.mode);
+    assert_eq!(saved.status, "disconnected");
+    assert!(saved.last_error.is_some());
+    assert_eq!(spawns(&f.root), 3);
+
+    // Disconnected, a save connects nothing.
+    let saved = f
+        .manager
+        .update(CONNECTION_ID, edit(&saved, other, Some("ucsf")))
+        .await
+        .unwrap();
+    assert_eq!(saved.status, "disconnected");
+    assert_eq!(spawns(&f.root), 3);
 }
 
 /// How many `context.manifest` requests any bridge received: the live admissions.

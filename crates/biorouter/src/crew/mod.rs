@@ -825,6 +825,20 @@ impl LiveAdmission {
         }
     }
 }
+/// Whether saving `input` over `saved` keeps the route to the workspace: the same login,
+/// server, port, key, jump host, socket, owner and pinned workspace. What else may change (the
+/// name, the privacy mode, the institution, the remote folder) does not change where a bridge
+/// goes or what it verifies (W2-DMN-8).
+fn same_route(saved: &Connection, input: &SaveConnection) -> bool {
+    saved.ssh_target == input.ssh_target
+        && saved.port == input.port
+        && saved.identity_file == input.identity_file
+        && saved.proxy_jump == input.proxy_jump
+        && saved.socket_path == input.socket_path
+        && saved.owner_uid == input.owner_uid
+        && saved.workspace_id == input.workspace_id
+        && saved.workspace_public_key == input.workspace_public_key
+}
 /// The interactive sign-in's `ssh` arguments: a control master that keeps the session open
 /// for the bridge (`-M -N`, ControlPersist 600) over the same hardening every Crew `ssh`
 /// carries.
@@ -1883,8 +1897,38 @@ impl CrewManager {
         }
         // P-1: a save that would be refused is refused while the bridge is still up.
         self.refusal_before_saving(id, &input).await?;
+        // W2-DMN-8: a person's save of a connected connection that keeps its route (the same
+        // login, server, socket and pinned workspace: a privacy, institution or name change)
+        // reconnects it at once. The save still drops the bridge and moves the policy epoch,
+        // which ends every grant; the new bridge is verified from scratch, and grants are not
+        // revived. Nothing reconnected it before, and the desktop must not connect by itself,
+        // so the workspace read "offline" until someone pressed Connect.
+        let reconnect = self.transports.lock().await.contains_key(id)
+            && self
+                .connection(id)
+                .await
+                .is_ok_and(|saved| same_route(&saved, &input));
         self.disconnect_locked(id).await?;
-        self.save_inner(Some(id), input).await
+        let saved = self.save_inner(Some(id), input).await?;
+        if !reconnect || authentication::ensure_connect_available(id).is_err() {
+            return Ok(saved);
+        }
+        match self.connect_locked(id).await {
+            Ok(connected) => Ok(connected),
+            Err(error) => {
+                let message = error.to_string();
+                tracing::info!(connection = id, %error, "Crew couldn't reconnect after saving a connection");
+                {
+                    let mut registry = self.registry.lock().await;
+                    if let Some(c) = registry.connections.iter_mut().find(|c| c.id == id) {
+                        c.status = "disconnected".into();
+                        c.last_error = Some(message.clone());
+                    }
+                }
+                self.note_error_code(id, &error, &message);
+                self.connection(id).await
+            }
+        }
     }
     /// The refusal saving `input` over `id` would meet, if any, asked before anything changes:
     /// the save's own checks — an institution that does not normalize, a private connection
