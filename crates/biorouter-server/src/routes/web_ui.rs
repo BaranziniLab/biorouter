@@ -27,8 +27,9 @@
 //!
 //! 1. `biorouter serve` mints a browser token for the launch and prints it in
 //!    the URL it shows the user.
-//! 2. `GET /?t=<token>` validates it, sets a session cookie, and redirects to
-//!    `/` so the token leaves the address bar.
+//! 2. `GET /?t=<token>` validates it, sets a session cookie, and answers a
+//!    short page of this origin that moves the browser on to `/`, so the token
+//!    leaves the address bar ([`exchange_bounce`]).
 //! 3. `GET /` with that cookie returns the shell, with the daemon's secret
 //!    injected into it.
 //! 4. From then on the application presents `X-Secret-Key` exactly as the
@@ -237,20 +238,14 @@ async fn index(
     headers: HeaderMap,
     Query(query): Query<IndexQuery>,
 ) -> Response<Body> {
-    // The token in the URL is exchanged for a cookie and then redirected away,
-    // so it does not linger in the address bar, in browser history, or in the
-    // `Referer` of anything the page later loads.
+    // The token in the URL is exchanged for a cookie and the browser is moved
+    // on, so it does not linger in the address bar, in the tab's history, or in
+    // the `Referer` of anything the page later loads.
     if let Some(token) = query.t.as_deref() {
         if ui.token_matches(Some(token)) {
-            return Response::builder()
-                .status(StatusCode::SEE_OTHER)
-                .header(header::LOCATION, "/")
-                .header(
-                    header::SET_COOKIE,
-                    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"),
-                )
-                .body(Body::empty())
-                .expect("valid redirect");
+            return exchange_bounce(&format!(
+                "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
+            ));
         }
         return unauthorized();
     }
@@ -268,6 +263,44 @@ async fn index(
         .body(Body::from(ui.index_html.clone()))
         .expect("valid html response")
 }
+
+/// The answer to a valid token: a page of this origin that sets the session
+/// cookie and moves the browser on to `/`, replacing the tokenised address.
+///
+/// ⚠ A `200` page that navigates, not a `303`. The cookie is `SameSite=Strict`,
+/// and a navigation another site started stays cross-site through its
+/// redirects, so a `303` lands on the shell without the cookie it just set: the
+/// person sees "This link needs its access token" with the right link in hand.
+/// `biorouter serve --open` starts exactly such a navigation. The address
+/// carries a token that works until the daemon stops, so it never goes on an
+/// opener's command line, where every account on the machine can read it; the
+/// opener is handed a `file:` page only this account can read, and a `file:`
+/// page is another site. The navigation this page starts is same-site, so the
+/// cookie goes with it. The same rule, for the same reason, as an app's launch
+/// link (`routes::apps::launch_bounce`). A meta refresh rather than a script,
+/// because the page's policy allows no script, and no token in the page: the
+/// cookie carries it, and the address the page moves to is `/`.
+fn exchange_bounce(cookie: &str) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::REFERRER_POLICY, "no-referrer")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
+             form-action 'none'; frame-ancestors 'none'",
+        )
+        .header(header::SET_COOKIE, cookie)
+        .body(Body::from(EXCHANGE_BOUNCE_HTML))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+const EXCHANGE_BOUNCE_HTML: &str = "<!doctype html><meta charset=utf-8>\
+     <meta http-equiv=\"refresh\" content=\"0;url=/\">\
+     <title>Opening Biorouter</title>\
+     <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+     <p>Opening Biorouter. If nothing happens, <a href=\"/\">continue here</a>.</p>";
 
 /// Refuse without saying anything a caller does not already know.
 fn unauthorized() -> Response<Body> {
@@ -398,8 +431,12 @@ mod tests {
         );
     }
 
+    /// The exchange sets the cookie and moves the browser on to `/` with a page
+    /// of this origin, not a redirect: under `SameSite=Strict` a redirect keeps
+    /// the cookie off a navigation that `biorouter serve --open`'s `file:` page
+    /// started (see [`exchange_bounce`]).
     #[tokio::test]
-    async fn the_token_is_exchanged_for_a_cookie_and_redirected_out_of_the_address_bar() {
+    async fn the_token_is_exchanged_for_a_cookie_and_moved_out_of_the_address_bar() {
         let ui = ui_with(Some("tok"));
         let res = index(
             State(ui),
@@ -409,15 +446,19 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(res.status(), StatusCode::SEE_OTHER);
-        assert_eq!(res.headers().get(header::LOCATION).unwrap(), "/");
-        let cookie = res
-            .headers()
-            .get(header::SET_COOKIE)
-            .unwrap()
-            .to_str()
-            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get(header::LOCATION).is_none());
+        let header_value = |name: header::HeaderName| {
+            res.headers()
+                .get(&name)
+                .unwrap_or_else(|| panic!("no {name} header"))
+                .to_str()
+                .unwrap()
+                .to_string()
+        };
+        let cookie = header_value(header::SET_COOKIE);
         assert!(cookie.contains("biorouter_session=tok"));
+        assert!(cookie.contains("Path=/;"), "{cookie}");
         // Both flags are load-bearing: HttpOnly keeps page script from reading
         // it, and SameSite=Strict is what makes the cookie useless to a
         // cross-site request -- the reason it is safe for the cookie to exist
@@ -427,6 +468,29 @@ mod tests {
             cookie.contains("SameSite=Strict"),
             "cookie must be SameSite=Strict"
         );
+        assert_eq!(header_value(header::CACHE_CONTROL), "no-store");
+        assert_eq!(header_value(header::REFERRER_POLICY), "no-referrer");
+        let policy = header_value(header::CONTENT_SECURITY_POLICY);
+        assert!(policy.starts_with("default-src 'none';"), "{policy}");
+        assert!(!policy.contains("script-src"), "{policy}");
+        assert_eq!(
+            header_value(header::CONTENT_TYPE),
+            "text/html; charset=utf-8"
+        );
+
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            body.contains("<meta http-equiv=\"refresh\" content=\"0;url=/\">"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("tok"),
+            "the page must not carry the token: {body}"
+        );
+        assert!(!body.contains("<script"), "{body}");
     }
 
     /// Would pass trivially against an implementation with no gate at all, so
@@ -468,8 +532,17 @@ mod tests {
             .await;
             assert_eq!(
                 res.status(),
-                StatusCode::SEE_OTHER,
+                StatusCode::OK,
                 "redemption {attempt} must succeed like the first"
+            );
+            assert!(
+                res.headers()
+                    .get(header::SET_COOKIE)
+                    .is_some_and(|cookie| cookie
+                        .to_str()
+                        .unwrap()
+                        .contains("biorouter_session=tok")),
+                "redemption {attempt} must set the cookie like the first"
             );
         }
     }

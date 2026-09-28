@@ -341,7 +341,10 @@ fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCo
 // the exported `run.sh` and `run.ps1`, the desktop's Applications view), and
 // the exchange answers with a page rather than a redirect so that works under
 // `SameSite=Strict` (`routes::apps::launch_bounce`). The desktop preview loads
-// the link in-process.
+// the link in-process. `biorouter serve --open` hands over the served
+// document's browser token the same way, and `routes::web_ui::exchange_bounce`
+// answers it the same way: that token opens every app below on a serve daemon
+// (`app_access_granted_by`), and it is not single use.
 //
 // ⚠ The stores live HERE, in the lib-only `auth`, and not in `routes::apps`:
 // `src/routes/` is compiled twice (`lib.rs`), so a static there exists once for

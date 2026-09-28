@@ -118,6 +118,35 @@ fn http_status(port: u16, path: &str) -> Option<u16> {
         .ok()
 }
 
+/// The status of `GET /?t=<token>` and whether the answer set the session
+/// cookie: what a browser gets for the address `serve` printed. A token the
+/// daemon holds is a `200` page that sets the cookie and moves on to `/` (a
+/// page, not a `303`, so the cookie survives a navigation `serve --open`'s
+/// `file:` page started); any other token is a `401`.
+fn exchange(port: u16, token: &str) -> Option<(u16, bool)> {
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        Duration::from_millis(500),
+    )
+    .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        stream,
+        "GET /?t={token} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).ok()?;
+    let answer = String::from_utf8_lossy(&answer);
+    let head = answer.split("\r\n\r\n").next()?;
+    let status = head.split_whitespace().nth(1)?.parse().ok()?;
+    let cookie = head.lines().any(|line| {
+        line.to_ascii_lowercase()
+            .starts_with(&format!("set-cookie: biorouter_session={token};"))
+    });
+    Some((status, cookie))
+}
+
 /// Whether `pid` is a process that has not yet exited. A zombie has exited: it
 /// is waiting to be reaped by a parent, and holds no port and no memory.
 fn is_running(pid: u32) -> bool {
@@ -351,22 +380,22 @@ impl Drop for Served {
 /// whole purpose is a token that survives a restart — could not work as written.
 ///
 /// The daemon holds the token and nothing reads it back, so the only honest
-/// check is to present the operator's token to the running daemon: 303 is the
-/// exchange for a cookie, 401 is a token it has never heard of.
+/// check is to present the operator's token to the running daemon: a page that
+/// sets the cookie is the exchange, 401 is a token it has never heard of.
 ///
 /// Fails the shipped command with `Some(401)`.
 #[test]
 fn serve_hands_the_daemon_the_token_the_operator_set_in_its_environment() {
     let served = Served::start_with(&[], &[("BIOROUTER_BROWSER_TOKEN", "token-from-the-file")]);
     assert_eq!(
-        http_status(served.port, "/?t=token-from-the-file"),
-        Some(303),
+        exchange(served.port, "token-from-the-file"),
+        Some((200, true)),
         "the operator's own token must open the interface:\n{}",
         served.log()
     );
     assert_eq!(
-        http_status(served.port, "/?t=some-other-token"),
-        Some(401),
+        exchange(served.port, "some-other-token"),
+        Some((401, false)),
         "and nothing else may"
     );
 }
@@ -378,8 +407,8 @@ fn the_token_flag_outranks_the_environment() {
         &["--token", TOKEN],
         &[("BIOROUTER_BROWSER_TOKEN", "from-the-file")],
     );
-    assert_eq!(http_status(served.port, &format!("/?t={TOKEN}")), Some(303));
-    assert_eq!(http_status(served.port, "/?t=from-the-file"), Some(401));
+    assert_eq!(exchange(served.port, TOKEN), Some((200, true)));
+    assert_eq!(exchange(served.port, "from-the-file"), Some((401, false)));
 }
 
 /// `--no-token` is a refusal to have a gate. A token this shell exports must not
