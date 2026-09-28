@@ -39,8 +39,17 @@
 //! `GET /status`, reuse a daemon if one answers, and otherwise best-effort spawn
 //! the sibling `biorouterd agent`. If no `biorouterd` binary can be located the
 //! command fails with the exact command to run — an honest v1 over a fragile
-//! spawn. The `/apps/<id>/` GET routes are auth-exempt, so the browser loads the
-//! app without needing the daemon's secret key.
+//! spawn.
+//!
+//! **Opening an app takes the daemon's secret (W2-HRD-1).** A daemon serves an
+//! app's page only to a browser holding that app's access cookie, set by a
+//! one-time link the daemon hands out on `POST /apps/<id>/launch`, which needs
+//! the secret. The `/apps/<id>/` routes used to be auth-exempt, and any local
+//! account could then read an app's socket token off its page. So a daemon these
+//! commands start gets a secret they generate (and `open` remembers it, readable
+//! by this account alone, so a later `open` can reuse that daemon), and a daemon
+//! they did not start is used only when `BIOROUTER_SERVER__SECRET_KEY` names its
+//! secret.
 //!
 //! In-terminal rendering of an app is explicitly OUT of scope (design §7); the
 //! app always opens in a real browser.
@@ -291,6 +300,139 @@ enum Daemon {
     Started(tokio::process::Child),
 }
 
+/// One request to the daemon on `port`, carrying its secret. The status and the
+/// body, or `None` when nothing answered in time. A raw socket like
+/// [`daemon_ok`]; the body of a refusal or a launch link is small, so it is read
+/// whole (bounded) until the daemon closes the connection.
+///
+/// ⚠ HTTP/1.0 on purpose. The daemon's compression layer makes every body's
+/// length unknown up front, so an HTTP/1.1 answer comes chunked, and this reader
+/// would hand the chunk sizes to the JSON parser (measured: the launch link was
+/// refused while the daemon answered 200). A 1.0 answer is the plain body, ended
+/// by the close.
+async fn with_secret(port: u16, method: &str, path: &str, secret: &str) -> Option<(u16, String)> {
+    let addr = format!("{DAEMON_HOST}:{port}");
+    let connect = biorouter::net::connect_non_inheritable(&addr);
+    let mut stream = tokio::time::timeout(Duration::from_secs(2), connect)
+        .await
+        .ok()?
+        .ok()?;
+    let request = format!(
+        "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nX-Secret-Key: {secret}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.ok()?;
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        (&mut stream).take(1 << 20).read_to_end(&mut response),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let text = String::from_utf8_lossy(&response);
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    let status = head.split_whitespace().nth(1)?.parse().ok()?;
+    Some((status, body.to_string()))
+}
+
+/// Whether `secret` is the secret of the daemon on `port`.
+async fn secret_works(port: u16, secret: &str) -> bool {
+    matches!(
+        with_secret(port, "GET", "/apps", secret).await,
+        Some((200, _))
+    )
+}
+
+/// A secret for a daemon this command starts: 32 bytes from the system generator.
+fn new_daemon_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Where `apps open` remembers the secret of the daemon it left running on
+/// `port`: a record readable by this account alone, in Biorouter's state folder.
+fn remembered_daemon_path(port: u16) -> PathBuf {
+    biorouter::config::paths::Paths::state_dir()
+        .join("apps-daemon")
+        .join(format!("{port}.json"))
+}
+
+#[derive(serde::Deserialize, Serialize)]
+struct RememberedDaemon {
+    port: u16,
+    secret: String,
+}
+
+fn remember_daemon(port: u16, secret: &str) {
+    let path = remembered_daemon_path(port);
+    let written = path
+        .parent()
+        .ok_or_else(|| anyhow!("no folder for {}", path.display()))
+        .and_then(biorouter::daemon_runtime::private_directory)
+        .and_then(|()| {
+            biorouter::daemon_runtime::write_private(
+                &path,
+                &RememberedDaemon {
+                    port,
+                    secret: secret.to_string(),
+                },
+            )
+        });
+    if let Err(error) = written {
+        eprintln!(
+            "    {} could not remember this daemon ({error}); the next `apps open` starts another",
+            style("!").yellow()
+        );
+    }
+}
+
+fn remembered_secret(port: u16) -> Option<String> {
+    let record: RememberedDaemon =
+        biorouter::daemon_runtime::read_private(&remembered_daemon_path(port)).ok()?;
+    (record.port == port).then_some(record.secret)
+}
+
+/// The one-time address a browser opens app `id` at (W2-HRD-1): the daemon's
+/// launch link, minted with its secret. Opening it sets the app's access cookie
+/// and lands on the app; it works once and for a few minutes.
+async fn launch_url(port: u16, id: &str, secret: &str) -> Result<String> {
+    // The id goes into a request line, so it must be an app name and nothing else.
+    biorouter_mcp::agent_drafter::store::validate_artifact_id(id)
+        .map_err(|_| anyhow!("'{id}' is not an app name"))?;
+    let answer = with_secret(port, "POST", &format!("/apps/{id}/launch"), secret).await;
+    let path = match &answer {
+        Some((200, body)) => serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value.get("path")?.as_str().map(str::to_string)),
+        _ => None,
+    };
+    match path {
+        Some(path) if is_launch_path(&path, id) => Ok(format!("http://{DAEMON_HOST}:{port}{path}")),
+        _ => bail!(
+            "the daemon on port {port} would not open '{id}'{}",
+            match answer {
+                Some((404, _)) => ": it has no such app".to_string(),
+                Some((status, _)) => format!(" (HTTP {status})"),
+                None => ": it did not answer".to_string(),
+            }
+        ),
+    }
+}
+
+/// Whether `path` is exactly app `id`'s page with a launch token and nothing else.
+fn is_launch_path(path: &str, id: &str) -> bool {
+    path.strip_prefix(&format!("/apps/{id}/?t="))
+        .is_some_and(|token| {
+            token.len() == 64
+                && token
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+}
+
 /// Whether a daemon this command starts is tied to this process's lifetime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Supervision {
@@ -303,12 +445,29 @@ pub(crate) enum Supervision {
     TiedToThisProcess,
 }
 
-/// Ensure a daemon is reachable on the configured port, spawning one if needed.
-async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
+/// Ensure a daemon whose secret this command knows is reachable on the configured
+/// port, spawning one if needed. Answers the daemon and its secret.
+async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<(Daemon, String)> {
     if daemon_ok(DAEMON_HOST, port).await {
-        return Ok(Daemon::Reused);
+        let known = std::env::var("BIOROUTER_SERVER__SECRET_KEY")
+            .ok()
+            .filter(|secret| !secret.is_empty())
+            .into_iter()
+            .chain(remembered_secret(port));
+        for secret in known {
+            if secret_works(port, &secret).await {
+                return Ok((Daemon::Reused, secret));
+            }
+        }
+        bail!(
+            "a Biorouter daemon is already running on port {port}, and opening an app on it takes \
+             that daemon's secret key, which this command does not know. Set \
+             BIOROUTER_SERVER__SECRET_KEY to it, or set BIOROUTER_PORT to a free port so this \
+             command starts a daemon of its own."
+        );
     }
 
+    let secret = new_daemon_secret();
     let bin = biorouterd_path();
     let mut command = tokio::process::Command::new(&bin);
     command.arg("agent");
@@ -322,6 +481,9 @@ async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
     }
     let mut child = command
         .env("BIOROUTER_PORT", port.to_string())
+        // The secret rides the environment, which only this account can read,
+        // and never the command line.
+        .env("BIOROUTER_SERVER__SECRET_KEY", &secret)
         // Issue #56 DR-16: `biorouterd agent` now reads one line off stdin at
         // startup (the launcher's user-action digest). `Command` INHERITS fd 0,
         // so without this the spawned daemon would consume a line of the CLI's
@@ -359,8 +521,11 @@ async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
                  Is port {port} already in use? Try a different BIOROUTER_PORT."
             );
         }
-        if daemon_ok(DAEMON_HOST, port).await {
-            return Ok(Daemon::Started(child));
+        if secret_works(port, &secret).await {
+            if supervision == Supervision::Detached {
+                remember_daemon(port, &secret);
+            }
+            return Ok((Daemon::Started(child), secret));
         }
         if tokio::time::Instant::now() >= deadline {
             let _ = child.start_kill();
@@ -393,8 +558,9 @@ fn app_url(port: u16, id: &str) -> String {
 pub async fn handle_apps_open(id: String) -> Result<()> {
     require_app(&id)?;
     let port = configured_port();
-    let daemon = ensure_daemon(port, Supervision::Detached).await?;
+    let (daemon, secret) = ensure_daemon(port, Supervision::Detached).await?;
     let url = app_url(port, &id);
+    let launch = launch_url(port, &id, &secret).await?;
 
     match daemon {
         Daemon::Reused => {
@@ -410,8 +576,12 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
         }
     }
 
-    if let Err(e) = open::that(&url) {
+    if let Err(e) = open::that(&launch) {
         eprintln!("    {} could not open a browser: {e}", style("!").yellow());
+        println!(
+            "  {} open this address instead (it works once): {launch}",
+            style("·").dim()
+        );
     }
     println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
     Ok(())
@@ -430,8 +600,20 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
     // and leave the daemon behind — so from here on a signal waits to be read,
     // including one that lands during the readiness wait inside `ensure_daemon`.
     let mut stop = StopSignals::install()?;
-    let daemon = ensure_daemon(port, Supervision::TiedToThisProcess).await?;
-    let url = app_url(port, &id);
+    let (daemon, secret) = ensure_daemon(port, Supervision::TiedToThisProcess).await?;
+    let url = match launch_url(port, &id, &secret).await {
+        Ok(url) => url,
+        Err(error) => {
+            if let Daemon::Started(mut child) = daemon {
+                stop_daemon(&mut child, &mut stop).await;
+            }
+            return Err(error);
+        }
+    };
+    println!(
+        "  {} the address below opens the app once; run this again for another",
+        style("·").dim()
+    );
 
     match daemon {
         Daemon::Reused => {
@@ -611,5 +793,31 @@ mod tests {
     #[test]
     fn app_url_is_well_formed() {
         assert_eq!(app_url(3000, "beta"), "http://127.0.0.1:3000/apps/beta/");
+    }
+
+    /// W2-HRD-1: only exactly the app's page with a launch token is opened.
+    #[test]
+    fn only_the_apps_own_launch_link_is_opened() {
+        let token = "ab".repeat(32);
+        assert!(is_launch_path(&format!("/apps/beta/?t={token}"), "beta"));
+        for path in [
+            format!("/apps/other/?t={token}"),
+            format!("/apps/beta/?t={token}&next=/sessions"),
+            format!("/apps/beta/?t={}", token.to_uppercase()),
+            format!("/apps/beta/?t={}", "ab".repeat(31)),
+            format!("/apps/beta/agent?t={token}"),
+            format!("//evil.test/apps/beta/?t={token}"),
+            "/apps/beta/".to_string(),
+        ] {
+            assert!(!is_launch_path(&path, "beta"), "{path}");
+        }
+    }
+
+    #[test]
+    fn a_daemon_secret_is_64_hex_and_fresh() {
+        let one = new_daemon_secret();
+        assert_eq!(one.len(), 64);
+        assert!(one.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(one, new_daemon_secret());
     }
 }
