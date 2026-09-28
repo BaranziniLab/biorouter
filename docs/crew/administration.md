@@ -204,6 +204,8 @@ On member computers, each Biorouter background service listens on a TCP port on 
 | `~/.local/bin/biorouter-crew` | The program, in each member's server account. |
 | `~/.local/state/biorouter-crew/remote-jobs/` | Records of agent commands, in each member's server account. |
 | `~/.config/biorouter/crew/` | On each computer: saved connections, and vault files when used. Device keys stay in the system keychain. |
+| `~/.local/state/biorouter/crew/` | On each computer: `runs.json`, the record of the agent tasks started there, and `transfers/`, the receipts of its file uploads and downloads. |
+| `~/.local/share/biorouter/crew/tasks/` | On each computer: the working folder of agent task chats. The task chats themselves are saved with your other chats, in `~/.local/share/biorouter/sessions/`. |
 | `~/.local/state/biorouter/daemon/` | On each computer: how Biorouter finds its background service. |
 
 The first three rows are in the state directory. Computer paths are macOS and Linux defaults.

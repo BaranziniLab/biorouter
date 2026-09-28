@@ -78,6 +78,8 @@
 //   * `app-sentences`: a quote of a `members add` summary, a share note about
 //     a privacy change, or the Identity file note is that string as the code
 //     shows it, and the pages a reader is sent to quote it (T3-DOC-1).
+//   * `data-paths`: "Where Crew keeps its data" has a row for every folder the
+//     code writes on a member computer (T3-DOC-2).
 //
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
@@ -141,6 +143,13 @@ const SHARE_PATH = 'ui/desktop/src/utils/crewSharePath.ts';
 const HOSTING_PAGE = 'docs/crew/hosting-a-workspace.md';
 const CLI_CREW = 'crates/biorouter-cli/src/commands/crew/mod.rs';
 const INVITATION_RS = 'crates/biorouter/src/crew/authentication.rs';
+const ADMINISTRATION = 'docs/crew/administration.md';
+/** Where the code that writes Crew's files on a member computer lives. */
+const CREW_SOURCE_DIRS = [
+  'crates/biorouter/src/crew',
+  'crates/biorouter-server/src/crew',
+  'crates/biorouter-server/src/routes',
+];
 const KEY_NOTICE =
   'ui/desktop/src/components/settings/providers/modal/subcomponents/SecureStorageNotice.tsx';
 const CARD_BUTTONS =
@@ -1345,6 +1354,68 @@ export function checkCrewManual(tree = repoTree()) {
         fail(
           'design',
           `${CLI_GUIDE} never names \`${code}\`, the daemon's answer for a lost request`
+        );
+      }
+    }
+  }
+
+  // ── data-paths ───────────────────────────────────────────────────────────
+  // "Where Crew keeps its data" lists every folder Crew writes on a member computer (T3-DOC-2).
+  // It named the saved connections and left out the task records, the file transfer receipts and
+  // the folder agent tasks start in. The code names each as a `Paths::config_dir()`,
+  // `data_dir()` or `state_dir()` joined with a `crew…` path, which on macOS and Linux is under
+  // ~/.config/biorouter, ~/.local/share/biorouter and ~/.local/state/biorouter.
+  const bases = {
+    config: '~/.config/biorouter',
+    data: '~/.local/share/biorouter',
+    state: '~/.local/state/biorouter',
+  };
+  const crewSources = [
+    ...CREW_SOURCE_DIRS.flatMap((dir) =>
+      tree
+        .list(dir)
+        .filter((name) => name.endsWith('.rs') && !/tests?\.rs$/.test(name))
+        .filter((name) => !dir.endsWith('/routes') || name.startsWith('crew'))
+        .map((name) => `${dir}/${name}`)
+    ),
+  ];
+  const written = [
+    ...new Set(
+      crewSources.flatMap((path) =>
+        [
+          ...(tree.read(path) || '')
+            .split(/\n#\[cfg\(test\)\]\nmod \w+ \{/)[0]
+            .matchAll(/Paths::(config|data|state)_dir\(\)((?:\s*\.join\("[^"]+"\))+)/g),
+        ]
+          .map(([, base, joins]) => [
+            base,
+            [...joins.matchAll(/"([^"]+)"/g)].map((m) => m[1]).join('/'),
+          ])
+          .filter(([, rest]) => /^crew/.test(rest))
+          .map(([base, rest]) => `${bases[base]}/${rest}`)
+      )
+    ),
+  ];
+  if (written.length < 3) {
+    fail(
+      'data-paths',
+      `found ${written.length} Crew paths in ${CREW_SOURCE_DIRS.join(', ')}; update this reader`
+    );
+  }
+  const administration = tree.read(ADMINISTRATION) || '';
+  const dataSection = /\n## Where Crew keeps its data\n([\s\S]*?)(?=\n## |$)/.exec(administration);
+  if (!dataSection) {
+    fail('data-paths', `${ADMINISTRATION} has no "## Where Crew keeps its data" section`);
+  } else {
+    const listed = markdownBlocks(dataSection[1])
+      .filter((block) => block.startsWith('|'))
+      .flatMap((row) => codeSpans(row.split('|')[1] || ''))
+      .map((path) => path.replace(/\/+$/, ''));
+    for (const path of written) {
+      if (!listed.some((row) => path === row || path.startsWith(`${row}/`))) {
+        fail(
+          'data-paths',
+          `${ADMINISTRATION}'s "Where Crew keeps its data" has no row for ${path}, which Crew writes on each computer`
         );
       }
     }

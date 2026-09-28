@@ -1075,6 +1075,54 @@ test('app-sentences: the manual quotes the members add line, the share note and 
   );
 });
 
+test('data-paths: every folder Crew writes on a member computer has a row (T3-DOC-2)', () => {
+  const ADMINISTRATION = 'docs/crew/administration.md';
+  // The table as the live check found it: no task records, receipts or task folder.
+  assertCaught(
+    {
+      [ADMINISTRATION]: (text) =>
+        text
+          .split('\n')
+          .filter(
+            (line) =>
+              !line.startsWith('| `~/.local/state/biorouter/crew/` |') &&
+              !line.startsWith('| `~/.local/share/biorouter/crew/tasks/` |')
+          )
+          .join('\n'),
+    },
+    'data-paths',
+    /has no row for ~\/\.local\/state\/biorouter\/crew\/runs\.json/
+  );
+  // A folder the code starts writing later needs a row too.
+  assertCaught(
+    {
+      'crates/biorouter-server/src/routes/crew.rs': swap(
+        '.join("crew")\n        .join("tasks")',
+        '.join("crew-tasks")'
+      ),
+    },
+    'data-paths',
+    /has no row for ~\/\.local\/share\/biorouter\/crew-tasks/
+  );
+  // A reader that finds no paths fails instead of passing.
+  assertCaught(
+    Object.fromEntries(
+      [
+        'crates/biorouter/src/crew',
+        'crates/biorouter-server/src/crew',
+        'crates/biorouter-server/src/routes',
+      ].flatMap((dir) =>
+        real
+          .list(dir)
+          .filter((name) => name.endsWith('.rs'))
+          .map((name) => [`${dir}/${name}`, (text) => text.replaceAll('Paths::', 'Dirs::')])
+      )
+    ),
+    'data-paths',
+    /update this reader/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });
