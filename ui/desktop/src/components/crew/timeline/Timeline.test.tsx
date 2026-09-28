@@ -2106,6 +2106,53 @@ describe('opening where the unread messages start (QA M7)', () => {
     expect(scrollIntoView.mock.instances[0]).toBe(line);
   });
 
+  /**
+   * UXN-2: opening Crew from the app's Crew item draws the view remembered from when the person
+   * left, then the fresh one in the same timeline. The New line was fixed from the remembered copy,
+   * which had nothing unread, so the fresh view never drew one.
+   */
+  it('draws the New line from the fresh view, never the remembered one drawn while it verifies', () => {
+    const read = message({ id: 'read', sequence: 'r1', body: 'read before leaving' });
+    const arrived = message({
+      id: 'arrived',
+      sequence: 'r2',
+      actor_id: ID.carol,
+      body: 'posted while away',
+    });
+    const remembered = {
+      snapshot: snapshotFor({ read_positions: { [ID.general]: 'r1' }, unread: {} }),
+      channel,
+      messages: [read],
+      messagesLoaded: true,
+      runs: [],
+      labels: null,
+      historyBefore: null,
+    };
+    function Stage() {
+      const crew = useCrew();
+      const verifying = !crew.snapshot;
+      return <Timeline view={verifying ? remembered : null} readOnly={verifying} />;
+    }
+    const { rerenderWith } = renderWithController(<Stage />, makeController({ snapshot: null }));
+    openFully();
+    expect(screen.getByText('read before leaving')).toBeInTheDocument();
+    rerenderWith(
+      makeController({
+        messages: [read, arrived],
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 'r1' },
+          unread: { [ID.general]: 1 },
+        }),
+      })
+    );
+    openFully();
+    const line = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    expect(
+      line.compareDocumentPosition(screen.getByText('posted while away')) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
   it('opens at the newest message when nothing is unread', () => {
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     renderWithController(

@@ -355,12 +355,18 @@ function ChannelTimeline({
   const pendingPost = usePendingPost(crew, messages, viewerId);
 
   // ── The New line: fixed once, as soon as the live tail decides its place ──
+  // Never by a read-only view. Coming back to Crew draws the view remembered from when the person
+  // left, dimmed, and the fresh view then takes its place in this same timeline: a line fixed from
+  // the remembered copy, whose read position was already at its newest message, fixed "no New
+  // line" for good, so a channel opened from the app's Crew item with unread messages never
+  // showed one, and was marked read (UXN-2).
   const [newLine, setNewLine] = useState<{ computed: boolean; id: string | null }>({
     computed: false,
     id: null,
   });
   if (
     !newLine.computed &&
+    !readOnly &&
     pageReady &&
     historyBefore === null &&
     (opened || progress === 'caught-up' || newLineDecided(messages, readState))
