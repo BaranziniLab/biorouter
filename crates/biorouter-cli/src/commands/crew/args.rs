@@ -243,7 +243,7 @@ pub enum ConnectionCommand {
         give_up_host_controls: bool,
     },
     /// Save a connection from the invitation your host sent. Use - to paste it on stdin.
-    JoinInvitation(JoinInvitationArgs),
+    JoinInvitation(Box<JoinInvitationArgs>),
     /// Print the invitation message to send someone you invited (host).
     Invitation {
         /// The invited person, as @username; the message then names them.
@@ -301,6 +301,10 @@ pub struct JoinInvitationArgs {
     /// `biorouter-crew start` printed.
     #[arg(long)]
     pub preparation_id: Option<String>,
+    /// Save in place of a connection this computer already has for the same workspace that
+    /// signs in as another account and has never connected, removing it and its key.
+    #[arg(long)]
+    pub replace: bool,
 }
 
 #[derive(Args)]

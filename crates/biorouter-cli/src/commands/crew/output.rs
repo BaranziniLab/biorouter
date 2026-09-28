@@ -448,10 +448,21 @@ fn storage_refusal(code: &str, sentence: &str, place: &RefusalPlace) -> String {
         // An older broker said storage_failed for a full disk too.
         _ => format!("Free space on {server} if it is full"),
     };
+    format!("{said}\n{}", host_restart_steps(&first))
+}
+
+/// What the host of a server that stopped saving runs, after `first` ("Free space on hpc").
+fn host_restart_steps(first: &str) -> String {
     format!(
-        "{said}\nYou host this workspace. {first}, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+        "You host this workspace. {first}, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
     )
 }
+
+/// Said under a connection whose workspace server has stopped saving changes, as the daemon
+/// reads it from the server (`server_storage`, T3-BE-13, RES2-N2): before anyone tries to write,
+/// not only after a change is refused. The host is told what to run on the server.
+pub const SERVER_STOPPED_SAVING: &str =
+    "The workspace server has stopped saving changes. Reading still works.";
 
 /// Whether a storage refusal says the change may have been saved after all (the broker's
 /// "…so it may not have been saved."): an outcome that is not known, so the one safe retry,
@@ -663,6 +674,44 @@ pub fn connect_failure_text(code: &str) -> Option<&'static str> {
         }
         _ => return None,
     })
+}
+
+/// The user and host of an SSH login that signs in to this machine over loopback
+/// (`crew_iris@localhost`, `127.0.0.1`, `[::1]`): what the daemon's `SignInTarget::is_loopback`
+/// in `crew/transport.rs` treats as the same host. `None` for any other login, an SSH alias
+/// included, which only the person's SSH settings resolve.
+pub fn loopback_login(ssh_target: &str) -> Option<(Option<&str>, &str)> {
+    let ssh_target = ssh_target.trim();
+    let (user, host) = match ssh_target.rsplit_once('@') {
+        Some((user, host)) if !user.is_empty() && !host.is_empty() => (Some(user), host),
+        _ => (None, ssh_target),
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    loopback.then_some((user, host))
+}
+
+/// A refused connect to a login on this machine, in the daemon's same-host words (W2-DMN-2,
+/// SETUPHPC2-F-A): a member on the workspace's own server needs this machine's host key in
+/// their own known hosts file, and their own key in their own `authorized_keys`, so "get the
+/// fingerprint from your IT team" and "check the saved connection" point the wrong way.
+/// `None` for another code, or another server.
+pub fn same_host_connect_failure_text(code: &str, ssh_target: &str) -> Option<String> {
+    let (user, host) = loopback_login(ssh_target)?;
+    match code {
+        "crew_ssh_host_key_unknown" => Some(format!(
+            "{}'s host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.",
+            safe_text(host)
+        )),
+        "crew_ssh_key_refused" => Some(format!(
+            "Couldn't sign in as {} on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.",
+            user.map_or_else(|| "yourself".to_owned(), safe_text)
+        )),
+        _ => None,
+    }
 }
 
 /// How text output is rendered.
@@ -1731,8 +1780,8 @@ impl Ctx {
         if let Some(target) = str_field(connection, "ssh_target") {
             parts.push(safe_text(target));
         }
-        if let Some(status) = str_field(connection, "status") {
-            parts.push(sentence_case(status));
+        if let Some(status) = connection_status(connection) {
+            parts.push(status);
         }
         parts.push(match Effective::of(connection) {
             None | Some(Effective::Own) => connection_privacy(connection),
@@ -1751,6 +1800,7 @@ impl Ctx {
             "connection ID",
             str_field(connection, "id"),
         )];
+        out.extend(server_storage_lines(connection));
         out.extend(last_error_lines(connection));
         out
     }
@@ -1769,9 +1819,10 @@ impl Ctx {
             }
             out.push(server);
         }
-        if let Some(status) = str_field(connection, "status") {
-            out.push(format!("  Status: {}", sentence_case(status)));
+        if let Some(status) = connection_status(connection) {
+            out.push(format!("  Status: {status}"));
         }
+        out.extend(server_storage_lines(connection));
         let mut privacy = vec![mode_word(str_field(connection, "mode"))];
         privacy.push(institution(connection));
         if let Some(epoch) = connection.get("policy_epoch").and_then(Value::as_u64) {
@@ -2476,6 +2527,39 @@ impl Ctx {
     }
 }
 
+/// A saved connection's status word, as the desktop's status row says it: "Not joined yet" for a
+/// connection the host has not let in (`joined: false`, SC2-N5), which is connected but not a
+/// member, before the transport's own status.
+fn connection_status(connection: &Value) -> Option<String> {
+    if connection.get("joined").and_then(Value::as_bool) == Some(false) {
+        return Some("Not joined yet".to_owned());
+    }
+    str_field(connection, "status").map(sentence_case)
+}
+
+/// [`SERVER_STOPPED_SAVING`] for a connection whose `server_storage` says so, and, for its host
+/// (`you_host`), what to run on the server. Nothing for an absent or `null` `server_storage`:
+/// the server is saving, or it is an older one that does not say.
+fn server_storage_lines(connection: &Value) -> Vec<String> {
+    let Some(storage) = connection.get("server_storage").filter(|s| s.is_object()) else {
+        return Vec::new();
+    };
+    let mut out = vec![format!("  {SERVER_STOPPED_SAVING}")];
+    if connection.get("you_host").and_then(Value::as_bool) == Some(true) {
+        let server = str_field(connection, "server_label")
+            .or_else(|| {
+                str_field(connection, "ssh_target").and_then(|target| target.rsplit('@').next())
+            })
+            .map_or_else(|| "the server".to_owned(), safe_text);
+        let first = match str_field(storage, "code") {
+            Some("storage_full") => format!("Free space on {server}"),
+            _ => format!("Check the storage on {server}"),
+        };
+        out.push(format!("  {}", host_restart_steps(&first)));
+    }
+    out
+}
+
 /// A saved connection's last error. When the daemon types it (`last_error_code`) with a code
 /// the connect failures share, the sentence that says what to do comes first and the daemon's
 /// own text follows as its details (a wave-1 follow-up to CLI-7); otherwise the text is shown
@@ -2484,7 +2568,12 @@ fn last_error_lines(connection: &Value) -> Vec<String> {
     let Some(error) = str_field(connection, "last_error") else {
         return Vec::new();
     };
-    match str_field(connection, "last_error_code").and_then(connect_failure_text) {
+    let code = str_field(connection, "last_error_code");
+    // A login on this machine is told what a member on the server itself must fix.
+    let same_host = code
+        .zip(str_field(connection, "ssh_target"))
+        .and_then(|(code, ssh_target)| same_host_connect_failure_text(code, ssh_target));
+    match same_host.or_else(|| code.and_then(connect_failure_text).map(str::to_owned)) {
         Some(sentence) => vec![
             format!("  Last error: {sentence}"),
             format!("    Details: {}", safe_text(error)),

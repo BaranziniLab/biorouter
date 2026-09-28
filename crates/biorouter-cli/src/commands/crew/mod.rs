@@ -40,6 +40,8 @@ const RESTART_FOR_JOINING: &str =
 const STOPPED_ON_THIS_DEVICE: &str = "Stopped on this device. The workspace hasn't confirmed the revocation yet; Biorouter confirms it with the workspace by itself when the connection is back. biorouter crew grants list shows when it has.";
 /// How often `crew join` asks where joining stands, as the desktop's join screen does.
 const JOIN_POLL: Duration = Duration::from_secs(5);
+/// How long a listing waits for a workspace to answer before it says what it could not check.
+const LISTING_WAIT: Duration = Duration::from_secs(10);
 
 pub async fn handle(mut options: CrewOptions) -> Result<()> {
     let format = options.output_format;
@@ -1034,7 +1036,7 @@ async fn run(api: &Api, command: CrewCommand) -> Result<Reply> {
             let id = api.connection_id().await?;
             api.show(api.client.shared()?.authenticate_ssh(&id).await?)
         }
-        CrewCommand::Connect => api.show(api.connection_action("connect", json!({})).await?),
+        CrewCommand::Connect => api.show(api.connect().await?),
         CrewCommand::Disconnect => api.show(api.connection_action("disconnect", json!({})).await?),
         CrewCommand::Join(args) => join(api, args).await?,
         CrewCommand::Workspace(command) => workspace(api, command).await?,
@@ -1219,19 +1221,37 @@ impl Api {
     /// be read), and the workspace's `workspace_mode` and `workspace_name` when read. Privacy is
     /// Public only when the connection is Public and the workspace allows it, so the workspace
     /// is asked only about a Public connection, and only while it is connected.
+    ///
+    /// Two more facts are read for a connected connection, as the desktop's status row reads
+    /// them. Whether this computer has joined (`joined`, SC2-N5): a connection the host has not
+    /// let in yet is connected but not a member, and reads "Not joined yet", never "Connected".
+    /// And, when the daemon says the workspace server has stopped saving (`server_storage`,
+    /// RES2-N2), whether the person hosts it (`you_host`), since only the host can fix it.
     async fn with_effective_privacy(&self, connection: Value) -> Value {
-        if connection["mode"].as_str() != Some("public")
-            || connection["status"].as_str() != Some("connected")
-        {
-            return with_privacy_of(connection, None);
-        }
-        let Some(id) = connection["id"].as_str().and_then(|id| component(id).ok()) else {
+        let connected = connection["status"].as_str() == Some("connected");
+        let Some(id) = connection["id"]
+            .as_str()
+            .and_then(|id| component(id).ok())
+            .map(str::to_owned)
+            .filter(|_| connected)
+        else {
             return with_privacy_of(connection, None);
         };
+        let mut connection = connection;
+        let joined = self.joined(&id).await;
+        if let Some(joined) = joined {
+            connection["joined"] = json!(joined);
+        }
+        let stopped_saving = connection["server_storage"].is_object();
+        let public = connection["mode"].as_str() == Some("public");
+        // A person who has not joined cannot read the workspace, and nothing else needs it.
+        if joined == Some(false) || !(public || stopped_saving) {
+            return with_privacy_of(connection, None);
+        }
         // A listing must not wait on a workspace that is slow to answer: after a few seconds
         // its privacy reads as not checked, as it does offline.
         let snapshot = tokio::time::timeout(
-            Duration::from_secs(10),
+            LISTING_WAIT,
             self.client.request(
                 "POST",
                 &format!("/crew/connections/{id}/request"),
@@ -1241,7 +1261,41 @@ impl Api {
         .await
         .ok()
         .and_then(Result::ok);
-        with_privacy_of(connection, snapshot.as_ref())
+        if stopped_saving {
+            let standing = snapshot.as_ref().map_or(HostStanding::Unknown, |snapshot| {
+                host_standing(snapshot, None)
+            });
+            match standing {
+                HostStanding::NotHost => connection["you_host"] = json!(false),
+                HostStanding::Unknown => {}
+                _ => connection["you_host"] = json!(true),
+            }
+        }
+        if public {
+            with_privacy_of(connection, snapshot.as_ref())
+        } else {
+            with_privacy_of(connection, None)
+        }
+    }
+
+    /// Whether this computer has joined the connected workspace `id`, from `GET …/join` (the
+    /// desktop's "Not joined yet" rule): `false` while the host has not let it in, `true` once
+    /// it is a member, and `None` when the daemon could not say in time, or the workspace's
+    /// server cannot tell (`unsupported`).
+    async fn joined(&self, id: &str) -> Option<bool> {
+        let status = tokio::time::timeout(
+            LISTING_WAIT,
+            self.client
+                .request("GET", &format!("/crew/connections/{id}/join"), None),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        match status["status"].as_str()? {
+            "joined" => Some(true),
+            "invited" | "approved" | "code_mismatch" | "not_invited" | "expired" => Some(false),
+            _ => None,
+        }
     }
 
     async fn connection(&self) -> Result<Value> {
@@ -1295,6 +1349,36 @@ impl Api {
         self.client
             .request("POST", &self.path(&format!("/{action}")).await?, Some(body))
             .await
+    }
+
+    /// `POST …/connect`. A refused connect to a login on this machine (`crew_iris@localhost`)
+    /// is said in the same-host words ([`output::same_host_connect_failure_text`], SETUPHPC2-F-A),
+    /// with the code and OpenSSH's words as for any other connect; JSON keeps both.
+    async fn connect(&self) -> Result<Value> {
+        let error = match self.connection_action("connect", json!({})).await {
+            Ok(connected) => return Ok(connected),
+            Err(error) => error,
+        };
+        let Some((code, detail)) = error.chain().find_map(|cause| {
+            connect_failure(cause)
+                .map(|(code, _, detail)| (code.to_owned(), detail.map(str::to_owned)))
+        }) else {
+            return Err(error);
+        };
+        let Ok(connection) = self.connection().await else {
+            return Err(error);
+        };
+        let Some(sentence) = connection["ssh_target"]
+            .as_str()
+            .and_then(|target| output::same_host_connect_failure_text(&code, target))
+        else {
+            return Err(error);
+        };
+        Err(Worded {
+            sentence: connect_failure_lines(&code, &sentence, detail.as_deref()),
+            source: error,
+        }
+        .into())
     }
 
     async fn broker(&self, method: &str, mut params: Value, mutation: bool) -> Result<Value> {
@@ -2217,7 +2301,7 @@ async fn connections(api: &Api, command: ConnectionCommand) -> Result<Reply> {
             confirm,
             give_up_host_controls,
         } => remove_connection(api, confirm.as_deref(), give_up_host_controls).await?,
-        ConnectionCommand::JoinInvitation(args) => join_invitation(api, args).await?,
+        ConnectionCommand::JoinInvitation(args) => join_invitation(api, *args).await?,
         ConnectionCommand::Invitation { invitee } => {
             let invitation = fetch_invitation(api, invitee.as_deref()).await?;
             let lines = invitation_lines(&invitation);
@@ -2261,13 +2345,27 @@ async fn join_invitation(api: &Api, args: JoinInvitationArgs) -> Result<Reply> {
         !pasted.trim().is_empty(),
         "Paste the whole invitation your host sent, or the brcrew1: line in it."
     );
-    let request = invitation_request(&pasted, &args)?;
+    let mut request = invitation_request(&pasted, &args)?;
     let answer = from_invitation(api, &request, true).await?;
     let preview = answer
         .get("preview")
         .filter(|preview| preview.is_object())
         .context("The daemon did not describe the invitation")?;
-    let summary = invitation_summary(preview, args.preparation_id.is_some());
+    // SC2-N1: a connection saved from someone else's invitation, never connected, is offered
+    // for replacement, and replaced only when the person asks with --replace.
+    let replaceable = preview["replaceable_connection_id"].as_str();
+    if args.replace && replaceable.is_none() {
+        return Err(usage(
+            "There's no saved connection for this workspace that this invitation can replace. Run it again without --replace.",
+            NOTHING_TO_REPLACE,
+        ));
+    }
+    let saved_names = saved_connection_names(api).await;
+    let mut summary = invitation_summary(preview, args.preparation_id.is_some());
+    summary.extend(saved_connection_lines(preview, &saved_names, args.replace));
+    if args.replace {
+        request["replace"] = json!(replaceable);
+    }
     if args.preview {
         return Ok(api.say(answer.clone(), summary));
     }
@@ -2302,7 +2400,10 @@ async fn join_invitation(api: &Api, args: JoinInvitationArgs) -> Result<Reply> {
         );
         asked = true;
     }
-    let saved = from_invitation(api, &request, false).await?;
+    let saved = match from_invitation(api, &request, false).await {
+        Ok(saved) => saved,
+        Err(error) => return Err(saved_conflict(error, preview, &saved_names)),
+    };
     let connection = saved
         .get("connection")
         .filter(|connection| connection.is_object())
@@ -2466,12 +2567,26 @@ fn invitation_summary(preview: &Value, hosting: bool) -> Vec<String> {
         format!("Invitation to {workspace}")
     }];
     let host = field("host_username").map(|host| person_text(host, field("host_display_name")));
-    let server = field("server").or_else(|| field("ssh_host")).map(safe_text);
+    // SC2-N5: the server by the name the desktop shows (`server_label`: the person's own SSH
+    // alias for it, else its host), not the address the invitation resolved.
+    let server = field("server_label")
+        .or_else(|| field("server"))
+        .or_else(|| field("ssh_host"))
+        .map(safe_text);
     match (&host, &server) {
         (Some(host), Some(server)) => lines.push(format!("  Hosted by {host} on {server}")),
         (Some(host), None) => lines.push(format!("  Hosted by {host}")),
         (None, Some(server)) => lines.push(format!("  On {server}")),
         (None, None) => {}
+    }
+    // SETUPHPC2-F-C: a member on the workspace's own server signs in to this machine.
+    if field("proxy_jump").is_none() {
+        if let Some((_, here)) = field("ssh_target").and_then(output::loopback_login) {
+            lines.push(format!(
+                "  Crew will connect to this machine ({}).",
+                safe_text(here)
+            ));
+        }
     }
     let workspace_privacy =
         privacy_badge(field("workspace_mode"), field("workspace_institution_id"));
@@ -2484,6 +2599,22 @@ fn invitation_summary(preview: &Value, hosting: bool) -> Vec<String> {
         lines.push(format!(
             "  Your username on {server}: {}",
             safe_text(username)
+        ));
+    }
+    // SC2-N1: the invitation names one account, and this computer's SSH settings sign in to the
+    // server as another: someone else's invitation, which the host must replace.
+    let mismatch = &preview["login_mismatch"];
+    if let (Some(config_user), Some(invitee)) = (
+        mismatch["config_user"]
+            .as_str()
+            .filter(|user| !user.is_empty()),
+        mismatch["invitee"].as_str().filter(|user| !user.is_empty()),
+    ) {
+        lines.push(format!(
+            "  This invitation is for @{}, but this computer signs in to {} as {}. Ask your host for your own invitation.",
+            safe_text(invitee),
+            server.as_deref().unwrap_or("the server"),
+            safe_text(config_user)
         ));
     }
     let choice = privacy_badge(field("mode"), field("institution_id"));
@@ -2517,13 +2648,112 @@ fn invitation_summary(preview: &Value, hosting: bool) -> Vec<String> {
             name_text(name)
         ));
     }
-    if field("existing_connection_id").is_some() {
-        lines.push(
-            "  This computer already has this workspace; saving again keeps that connection."
-                .into(),
-        );
+    lines
+}
+
+/// The code of `join-invitation --replace` when nothing saved can be replaced.
+const NOTHING_TO_REPLACE: &str = "crew_nothing_to_replace";
+
+/// Each saved connection's name by ID, for sentences about one this computer already has.
+/// Empty when the list cannot be read: those sentences then say "a connection".
+async fn saved_connection_names(api: &Api) -> std::collections::HashMap<String, String> {
+    let Ok(listed) = api.connections().await else {
+        return std::collections::HashMap::new();
+    };
+    listed["connections"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|connection| {
+            Some((
+                connection["id"].as_str()?.to_owned(),
+                connection_name(connection),
+            ))
+        })
+        .collect()
+}
+
+/// A saved connection's name for a sentence: `chen-lab`, isolated when it could hold
+/// right-to-left text, or "a connection" when it could not be read.
+fn saved_name(names: &std::collections::HashMap<String, String>, id: &str) -> String {
+    names
+        .get(id)
+        .map_or_else(|| "a connection".to_owned(), |name| name_text(name))
+}
+
+/// What the invitation summary says about a connection this computer already has for the same
+/// workspace (SC2-N1, CLIDOCS-F6): the one saving keeps, or one saved from someone else's
+/// invitation that `--replace` replaces.
+fn saved_connection_lines(
+    preview: &Value,
+    names: &std::collections::HashMap<String, String>,
+    replace: bool,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(id) = preview["existing_connection_id"].as_str() {
+        lines.push(format!(
+            "  This computer already has this workspace as {}; saving again keeps that connection if its settings match.",
+            saved_name(names, id)
+        ));
+    }
+    if let Some(id) = preview["replaceable_connection_id"].as_str() {
+        let name = saved_name(names, id);
+        lines.push(if replace {
+            format!("  Saving replaces {name}, which signs in as another account and has never connected. Its key is deleted.")
+        } else {
+            format!("  This computer already has {name} for this workspace, signing in as another account, and it has never connected. Add --replace to save this invitation in its place.")
+        });
     }
     lines
+}
+
+/// A save refused because this computer already has the workspace (`crew_connection_exists`),
+/// said with the command that acts on it (SC2-N1, CLIDOCS-F6): the daemon's "Replace it … or
+/// change it in its connection settings" names the desktop's controls. JSON keeps its code.
+fn saved_conflict(
+    error: anyhow::Error,
+    preview: &Value,
+    names: &std::collections::HashMap<String, String>,
+) -> anyhow::Error {
+    let conflict = error.chain().find_map(|cause| {
+        let (code, _) = refusal_code_and_message(cause)?;
+        (code == "crew_connection_exists")
+            .then(|| refusal_field(cause, "connection_id").map(str::to_owned))
+    });
+    let Some(id) = conflict else {
+        return error;
+    };
+    let replaceable = preview["replaceable_connection_id"].as_str();
+    let id = id.or_else(|| replaceable.map(str::to_owned));
+    let raw = id
+        .as_deref()
+        .and_then(|id| names.get(id))
+        .map_or("NAME", String::as_str);
+    let name = id
+        .as_deref()
+        .map_or_else(|| "a connection".to_owned(), |id| saved_name(names, id));
+    let command = |verb: &str| {
+        format!(
+            "biorouter crew --connection {} {verb}",
+            safe_text(&shell_word(raw))
+        )
+    };
+    let sentence = if id.is_some() && id.as_deref() == replaceable {
+        format!(
+            "This computer already has {name} for this workspace, signing in as another account, and it has never connected. Run it again with --replace, or remove it with {}.",
+            command("connections remove")
+        )
+    } else {
+        format!(
+            "This workspace is already saved as {name}. Run {} to finish joining.",
+            command("join")
+        )
+    };
+    Worded {
+        sentence,
+        source: error,
+    }
+    .into()
 }
 
 /// What saving still needs, with the option that supplies each.
@@ -2649,15 +2879,13 @@ async fn join_status(api: &Api, path: &str) -> Result<Value> {
         Err(error) if disconnected(&error) => {
             // A typed connect failure already says what to run; anything else is pointed at
             // `auth`, which signs in and connects.
-            api.connection_action("connect", json!({}))
-                .await
-                .map_err(|error| {
-                    if error.chain().any(|cause| connect_failure(cause).is_some()) {
-                        error
-                    } else {
-                        error.context("Connect to the workspace first: biorouter crew auth")
-                    }
-                })?;
+            api.connect().await.map_err(|error| {
+                if error.chain().any(|cause| connect_failure(cause).is_some()) {
+                    error
+                } else {
+                    error.context("Connect to the workspace first: biorouter crew auth")
+                }
+            })?;
             api.client
                 .request("GET", path, None)
                 .await
@@ -5216,7 +5444,9 @@ mod tests {
         std::fs::write(file.path(), "brcrew1:abc").expect("write invitation");
         let error = run(
             &api,
-            CrewCommand::Connections(ConnectionCommand::JoinInvitation(join_args(file.path()))),
+            CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(join_args(
+                file.path(),
+            )))),
         )
         .await
         .expect_err("an old daemon");
@@ -5603,6 +5833,7 @@ mod tests {
             remote_root: None,
             remote_execution: false,
             preparation_id: None,
+            replace: false,
         }
     }
 
@@ -5639,7 +5870,9 @@ mod tests {
         let lines = said(
             run(
                 &api,
-                CrewCommand::Connections(ConnectionCommand::JoinInvitation(join_args(file.path()))),
+                CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(join_args(
+                    file.path(),
+                )))),
             )
             .await
             .expect("saved"),
@@ -5677,7 +5910,7 @@ mod tests {
         args.yes = false;
         let error = run(
             &api,
-            CrewCommand::Connections(ConnectionCommand::JoinInvitation(args)),
+            CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(args))),
         )
         .await
         .expect_err("no confirmation");
@@ -5700,7 +5933,9 @@ mod tests {
         let (api, _) = api_with(OutputFormat::Json, missing);
         let error = run(
             &api,
-            CrewCommand::Connections(ConnectionCommand::JoinInvitation(join_args(file.path()))),
+            CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(join_args(
+                file.path(),
+            )))),
         )
         .await
         .expect_err("missing choices");
@@ -5708,6 +5943,381 @@ mod tests {
             message(&error),
             "Saving this invitation needs your username on the server (--username), an institution for a Private connection (--institution)."
         );
+    }
+
+    /// SC2-N1: someone else's invitation is flagged in the preview and on a `--yes` save, a
+    /// connection it left behind is replaced only with `--replace`, and a save refused because
+    /// the workspace is already saved names the terminal's commands, keeping the daemon's code.
+    #[tokio::test]
+    async fn join_invitation_warns_about_another_account_and_replaces_only_when_asked() {
+        const OLD: &str = "c0ffee00-0000-4000-8000-00000000000b";
+        let saves = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let handler = {
+            let saves = std::sync::Arc::clone(&saves);
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if path == "/crew/connections/from-invitation" {
+                    let body = body.expect("body");
+                    if body["preview"] == true {
+                        let mut answer = preview(&[]);
+                        answer["preview"]["server"] = json!("44.246.189.59");
+                        answer["preview"]["server_label"] = json!("lab-ubuntu");
+                        answer["preview"]["login_mismatch"] =
+                            json!({"config_user": "crew_trent", "invitee": "crew_bob"});
+                        answer["preview"]["replaceable_connection_id"] = json!(OLD);
+                        return Ok(answer);
+                    }
+                    saves.lock().expect("saves").push(body.clone());
+                    if body.get("replace").is_none() {
+                        return Err(FakeRefusal {
+                            status: 409,
+                            code: Some("crew_connection_exists".into()),
+                            broker_code: None,
+                            institution_refusal: None,
+                            connection_institution: None,
+                            message: "This computer already has “chen-lab” for this workspace, signing in as another account, and it has never connected. Replace it with this invitation, or change it in its connection settings.".into(),
+                            detail: None,
+                            modes: None,
+                            fields: json!({"connection_id": OLD}).as_object().cloned().expect("object"),
+                        }
+                        .into());
+                    }
+                    return Ok(json!({"connection": {"id": CONNECTION, "name": "lab"}}));
+                }
+                if (method, path) == ("GET", "/crew/connections") {
+                    return Ok(
+                        json!({"connections": [{"id": OLD, "name": "chen-lab", "ssh_target": "crew_bob@44.246.189.59", "workspace_id": "w", "status": "disconnected"}]}),
+                    );
+                }
+                standard(method, path, body)
+            }
+        };
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(file.path(), "brcrew1:abc\n").expect("write invitation");
+        let join = |replace: bool| {
+            let mut args = join_args(file.path());
+            args.username = None;
+            args.replace = replace;
+            CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(args)))
+        };
+
+        // Without --replace the save is refused, in the terminal's words.
+        let (api, _) = api_with(OutputFormat::Text, handler.clone());
+        let error = run(&api, join(false)).await.expect_err("already saved");
+        let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+        assert_eq!(
+            shown,
+            "This computer already has chen-lab for this workspace, signing in as another account, and it has never connected. Run it again with --replace, or remove it with biorouter crew --connection chen-lab connections remove."
+        );
+        assert!(!shown.contains("connection settings"), "{shown}");
+        assert_eq!(
+            error_code(&error).as_deref(),
+            Some("crew_connection_exists")
+        );
+        assert!(saves.lock().expect("saves")[0].get("replace").is_none());
+
+        // With --replace, the preview's connection is named, and the save replaces it.
+        let (api, _) = api_with(OutputFormat::Text, handler.clone());
+        let lines = said(run(&api, join(true)).await.expect("replaced"));
+        assert_eq!(saves.lock().expect("saves")[1]["replace"], OLD);
+        assert!(
+            lines.contains(&"  Hosted by \"Alice Chen\" (@alice) on lab-ubuntu".to_owned()),
+            "{lines:#?}"
+        );
+        assert!(
+            lines.contains(&"  This invitation is for @crew_bob, but this computer signs in to lab-ubuntu as crew_trent. Ask your host for your own invitation.".to_owned()),
+            "--yes still prints the warning: {lines:#?}"
+        );
+        assert!(lines.contains(&"  Saving replaces chen-lab, which signs in as another account and has never connected. Its key is deleted.".to_owned()), "{lines:#?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("44.246.189.59")),
+            "{lines:#?}"
+        );
+
+        // A preview without --replace says it can be replaced.
+        let (api, _) = api_with(OutputFormat::Text, handler.clone());
+        let mut args = join_args(file.path());
+        args.yes = false;
+        args.preview = true;
+        args.username = None;
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(args))),
+            )
+            .await
+            .expect("previewed"),
+        );
+        assert!(lines.contains(&"  This computer already has chen-lab for this workspace, signing in as another account, and it has never connected. Add --replace to save this invitation in its place.".to_owned()), "{lines:#?}");
+
+        // --replace with nothing to replace is a usage refusal, and nothing is saved.
+        let (api, fake) = api_with(
+            OutputFormat::Text,
+            |method: &str, path: &str, body: Option<&Value>| {
+                if path == "/crew/connections/from-invitation" {
+                    return Ok(preview(&[]));
+                }
+                standard(method, path, body)
+            },
+        );
+        let error = run(&api, join(true)).await.expect_err("nothing to replace");
+        assert_eq!(error_code(&error).as_deref(), Some(NOTHING_TO_REPLACE));
+        assert!(failure(&error, OutputFormat::Text, "req-1", false)
+            .downcast_ref::<NeedsTerminal>()
+            .is_some());
+        assert_eq!(
+            fake.sent()
+                .iter()
+                .filter(|sent| sent.path == "/crew/connections/from-invitation")
+                .count(),
+            1,
+            "only the preview"
+        );
+
+        // The workspace already saved under the login saving would use.
+        let existing = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path == "/crew/connections/from-invitation" {
+                if body.expect("body")["preview"] == true {
+                    let mut answer = preview(&[]);
+                    answer["preview"]["existing_connection_id"] = json!(CONNECTION);
+                    return Ok(answer);
+                }
+                return Err(FakeRefusal {
+                    status: 409,
+                    code: Some("crew_connection_exists".into()),
+                    broker_code: None,
+                    institution_refusal: None,
+                    connection_institution: None,
+                    message: "This computer already has “UCSF HPC” for this workspace. Change it in its connection settings instead.".into(),
+                    detail: None,
+                    modes: None,
+                    fields: json!({"connection_id": CONNECTION}).as_object().cloned().expect("object"),
+                }
+                .into());
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, existing);
+        let error = run(&api, join(false)).await.expect_err("already saved");
+        assert_eq!(
+            failure(&error, OutputFormat::Text, "req-1", true).to_string(),
+            "This workspace is already saved as UCSF HPC. Run biorouter crew --connection 'UCSF HPC' join to finish joining."
+        );
+        let (api, _) = api_with(OutputFormat::Text, existing);
+        let mut args = join_args(file.path());
+        args.yes = false;
+        args.preview = true;
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(args))),
+            )
+            .await
+            .expect("previewed"),
+        );
+        assert!(lines.contains(&"  This computer already has this workspace as UCSF HPC; saving again keeps that connection if its settings match.".to_owned()), "{lines:#?}");
+    }
+
+    /// SETUPHPC2-F-C: a route to this machine says so in the preview; one through a jump host
+    /// or to another server does not.
+    #[test]
+    fn a_same_host_route_is_said_in_the_preview() {
+        let mut answer = preview(&[]);
+        answer["preview"]["ssh_target"] = json!("crew_iris@localhost");
+        answer["preview"]["server_label"] = json!("localhost");
+        let lines = invitation_summary(&answer["preview"], false);
+        assert!(
+            lines.contains(&"  Crew will connect to this machine (localhost).".to_owned()),
+            "{lines:#?}"
+        );
+        answer["preview"]["proxy_jump"] = json!("bastion");
+        assert!(!invitation_summary(&answer["preview"], false)
+            .iter()
+            .any(|line| line.contains("this machine")));
+        answer["preview"]["proxy_jump"] = Value::Null;
+        answer["preview"]["ssh_target"] = json!("crew_iris@hpc.ucsf.edu");
+        assert!(!invitation_summary(&answer["preview"], false)
+            .iter()
+            .any(|line| line.contains("this machine")));
+    }
+
+    /// SC2-N5: a connected connection the host has not let in reads "Not joined yet", in
+    /// the list and in `connections show`; a member's reads Connected. The JSON says `joined`.
+    #[tokio::test]
+    async fn a_connection_that_has_not_joined_reads_not_joined_yet() {
+        for (state, word) in [("invited", "Not joined yet"), ("joined", "Connected")] {
+            let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if path.ends_with("/join") && method == "GET" {
+                    return Ok(json!({"status": state}));
+                }
+                standard(method, path, body)
+            };
+            let (api, fake) = api_with(OutputFormat::Text, handler);
+            let listed = said(run(&api, CrewCommand::Status).await.expect("status"));
+            assert!(
+                listed[0].contains(&format!("bob@hpc · {word} · ")),
+                "{listed:#?}"
+            );
+            if state == "invited" {
+                assert!(
+                    fake.broker_calls().is_empty(),
+                    "a non-member's workspace is not read"
+                );
+            }
+            let (api, _) = api_with(OutputFormat::Json, handler);
+            let Reply::Show(value, _) = run(&api, CrewCommand::Status).await.expect("status")
+            else {
+                panic!("a value");
+            };
+            assert_eq!(value["connections"][0]["joined"], state == "joined");
+            let (api, _) = api_with(OutputFormat::Text, handler);
+            let shown = said(
+                run(&api, CrewCommand::Connections(ConnectionCommand::Show))
+                    .await
+                    .expect("shown"),
+            );
+            assert!(
+                shown[0].contains(&format!("  Status: {word}")),
+                "{shown:#?}"
+            );
+        }
+    }
+
+    /// RES2-N2: a connection whose workspace server has stopped saving says so in `status` and
+    /// `connections show`, and tells its host what to run; nothing is said while it saves.
+    #[tokio::test]
+    async fn a_server_that_stopped_saving_is_said_before_anyone_writes() {
+        let stopped = |host: bool| {
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                match (method, path) {
+                    ("GET", "/crew/connections") => {
+                        return Ok(json!({"connections": [{
+                            "id": CONNECTION, "name": "UCSF HPC", "ssh_target": "bob@hpc",
+                            "server_label": "hpc", "workspace_id": "w", "status": "connected",
+                            "mode": "private",
+                            "server_storage": {"state": "storage_failed", "code": "storage_full", "since": 1_700_000_000}
+                        }]}));
+                    }
+                    (_, path) if path.ends_with("/join") => return Ok(json!({"status": "joined"})),
+                    _ => {}
+                }
+                if !host
+                    && body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot")
+                {
+                    let mut snapshot = snapshot();
+                    snapshot["actor"] = json!({"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001});
+                    return Ok(snapshot);
+                }
+                standard(method, path, body)
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, stopped(true));
+        let shown = said(run(&api, CrewCommand::Status).await.expect("status")).join("\n");
+        assert!(
+            shown.contains(&format!("\n  {}", output::SERVER_STOPPED_SAVING)),
+            "{shown}"
+        );
+        assert!(shown.contains("  You host this workspace. Free space on hpc, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."), "{shown}");
+        let (api, _) = api_with(OutputFormat::Text, stopped(false));
+        let shown = said(
+            run(&api, CrewCommand::Connections(ConnectionCommand::Show))
+                .await
+                .expect("shown"),
+        )
+        .join("\n");
+        assert!(shown.contains(output::SERVER_STOPPED_SAVING), "{shown}");
+        assert!(!shown.contains("You host"), "a member: {shown}");
+        // A server that saves (or an older daemon that does not say) adds nothing.
+        let (api, _) = api_with(OutputFormat::Text, standard);
+        let shown = said(run(&api, CrewCommand::Status).await.expect("status")).join("\n");
+        assert!(!shown.contains("stopped saving"), "{shown}");
+    }
+
+    /// SETUPHPC2-F-A: a refused connect to a login on this machine says what a member on the
+    /// server itself must fix, with the code and OpenSSH's words, in `connect` and `join`; a
+    /// login elsewhere keeps the ordinary sentences.
+    #[tokio::test]
+    async fn a_same_host_connect_failure_says_what_to_fix_on_this_machine() {
+        let refusing = |target: &'static str, code: &'static str| {
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                match (method, path) {
+                    ("GET", "/crew/connections") => {
+                        return Ok(
+                            json!({"connections": [{"id": CONNECTION, "name": "patel-hpc", "ssh_target": target, "workspace_id": "w", "status": "disconnected"}]}),
+                        );
+                    }
+                    (_, path) if path.ends_with("/connect") => {
+                        return Err(FakeRefusal {
+                            status: 400,
+                            code: Some(code.into()),
+                            broker_code: None,
+                            institution_refusal: None,
+                            connection_institution: None,
+                            message: "Couldn't sign in as crew_iris on this machine.".into(),
+                            detail: Some(
+                                "crew_iris@localhost: Permission denied (publickey).".into(),
+                            ),
+                            modes: None,
+                            fields: Default::default(),
+                        }
+                        .into());
+                    }
+                    (_, path) if path.ends_with("/join") => {
+                        return Err(refuse(409, Some(NOT_CONNECTED), LEGACY_DISCONNECTED));
+                    }
+                    _ => {}
+                }
+                standard(method, path, body)
+            }
+        };
+        let shown =
+            |error: &anyhow::Error| failure(error, OutputFormat::Text, "req-1", false).to_string();
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing("crew_iris@localhost", "crew_ssh_key_refused"),
+        );
+        let error = run(&api, CrewCommand::Connect).await.expect_err("refused");
+        assert_eq!(
+            shown(&error),
+            "Couldn't sign in as crew_iris on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.\n  Code: crew_ssh_key_refused\n  Details: crew_iris@localhost: Permission denied (publickey)."
+        );
+        let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+        assert_eq!(body["code"], "crew_ssh_key_refused");
+        assert_eq!(
+            body["detail"],
+            "crew_iris@localhost: Permission denied (publickey)."
+        );
+
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing("crew_iris@127.0.0.1", "crew_ssh_host_key_unknown"),
+        );
+        let error = run(&api, CrewCommand::Join(JoinArgs { no_wait: true }))
+            .await
+            .expect_err("refused");
+        assert!(shown(&error).starts_with("127.0.0.1's host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.\n  Code: crew_ssh_host_key_unknown"), "{}", shown(&error));
+
+        // Another server keeps the sentence for a server someone else runs.
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing("crew_iris@hpc.ucsf.edu", "crew_ssh_key_refused"),
+        );
+        let error = run(&api, CrewCommand::Connect).await.expect_err("refused");
+        assert!(
+            shown(&error).starts_with("The server refused this computer's SSH key."),
+            "{}",
+            shown(&error)
+        );
+        for target in ["localhost", "bob@LOCALHOST", "bob@[::1]", "bob@127.0.0.2"] {
+            assert!(output::loopback_login(target).is_some(), "{target}");
+        }
+        for target in [
+            "hpc",
+            "bob@hpc.ucsf.edu",
+            "bob@10.0.0.1",
+            "localhost.example.org",
+        ] {
+            assert!(output::loopback_login(target).is_none(), "{target}");
+        }
     }
 
     /// SF-F3: a host saving their own workspace reads host words in the preview, not an
@@ -7860,7 +8470,7 @@ mod tests {
         args.yes = false;
         let error = run(
             &api,
-            CrewCommand::Connections(ConnectionCommand::JoinInvitation(args)),
+            CrewCommand::Connections(ConnectionCommand::JoinInvitation(Box::new(args))),
         )
         .await
         .expect_err("no terminal");
