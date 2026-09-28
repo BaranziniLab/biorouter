@@ -76,7 +76,7 @@ Crew runs in the desktop app and in the `biorouter crew` commands, not in a `bio
 ## Get started
 
 1. **[Download Biorouter](https://biorouter.ucsf.edu/download)** for macOS, Windows, or Linux.
-2. **Choose a model.** UCSF users can select **Versa API Azure** or **Versa API Bedrock** under Institutional Models. For local inference, choose **Llama Server** and download a model. You can also connect a commercial provider.
+2. **Choose a model.** UCSF users can select **Versa API Azure** or **Versa API Bedrock** on the **Institutional** tab. For local inference, choose **Llama Server** and download a model. You can also connect a commercial provider.
 3. **Start a chat.** Add a paper or dataset, or install an agent from BAAM.
 
 For example, attach a few papers and ask:
