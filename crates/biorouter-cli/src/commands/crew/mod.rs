@@ -503,7 +503,8 @@ fn outcome_uncertain(error: &anyhow::Error) -> bool {
 
 /// A daemon refusal said for a person without the `Daemon returned N:` prefix: an outcome the
 /// daemon could not confirm (the retry line follows it), a request it never sent, and the
-/// institution and privacy-mode refusals (W2-DMN-9), said from their details, naming both sides.
+/// model's institution and privacy-mode refusals (W2-DMN-9), said from their details, naming
+/// both sides. Any other institution refusal is the daemon's own sentence ([`is_model_refusal`]).
 fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> {
     let (code, message) = refusal_code_and_message(cause)?;
     let own = || {
@@ -520,8 +521,10 @@ fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> 
         INSTITUTION_MISMATCH => {
             let details = refusal_institution_details(cause);
             match details.and_then(|details| details["model"].as_str()) {
-                Some(model) => Some(output::institution_refusal_text(model, details)),
-                None => own(),
+                Some(model) if is_model_refusal(message, refusal_connection_institution(cause)) => {
+                    Some(output::institution_refusal_text(model, details))
+                }
+                _ => own(),
             }
         }
         MODE_MISMATCH => match refusal_modes(cause) {
@@ -556,6 +559,32 @@ fn refusal_institution_details<'a>(
         return refused.institution_refusal.as_ref();
     }
     None
+}
+
+/// The connection's institution beside an institution refusal about the connection, not the
+/// model.
+fn refusal_connection_institution<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a str> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return refused.connection_institution.as_deref();
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return refused.connection_institution.as_deref();
+    }
+    None
+}
+
+/// Whether an institution refusal is the model refusal (`check_provider`'s "…the model's
+/// resolved affiliation…"), which is said from its details, naming the model and whom it is
+/// approved for. Admission's refusal of a connection set to another institution ("This
+/// connection is for stanford, but lab belongs to ucsf.") carries the same details, but
+/// `connection_institution` beside them marks it: it refuses before any model is judged, so a
+/// sentence about the model would contradict itself and advise a local model that is refused
+/// too. That one is the daemon's own sentence, as the desktop shows it.
+fn is_model_refusal(message: &str, connection_institution: Option<&str>) -> bool {
+    message.contains(AFFILIATION_REFUSAL) || connection_institution.is_none()
 }
 
 /// A privacy-mode refusal's connection mode and the mode the request required.
@@ -4440,6 +4469,7 @@ mod tests {
         pub(super) code: Option<String>,
         pub(super) broker_code: Option<String>,
         pub(super) institution_refusal: Option<Value>,
+        pub(super) connection_institution: Option<String>,
         pub(super) message: String,
         pub(super) detail: Option<String>,
         pub(super) modes: Option<(String, String)>,
@@ -4463,6 +4493,7 @@ mod tests {
             code: code.map(str::to_owned),
             broker_code: None,
             institution_refusal: None,
+            connection_institution: None,
             message: message.to_owned(),
             detail: None,
             modes: None,
@@ -4478,6 +4509,7 @@ mod tests {
             code: Some("crew_request_refused".into()),
             broker_code: Some(broker_code.into()),
             institution_refusal: None,
+            connection_institution: None,
             message: message.to_owned(),
             detail: None,
             modes: None,
@@ -6443,6 +6475,7 @@ mod tests {
                         code: Some("crew_request_refused".into()),
                         broker_code: None,
                         institution_refusal: details.clone(),
+                        connection_institution: None,
                         message: DAEMON.into(),
                         detail: None,
                         modes: None,
@@ -6867,6 +6900,7 @@ mod tests {
                     code: Some("crew_ssh_auth_required".into()),
                     broker_code: None,
                     institution_refusal: None,
+                    connection_institution: None,
                     message: TRANSPORT.into(),
                     detail: Some(
                         "bob@hpc: Permission denied (publickey,password).\nsecond line".into(),
@@ -7069,7 +7103,10 @@ mod tests {
     /// their details, naming both sides, and keep their codes.
     #[tokio::test]
     async fn institution_and_mode_refusals_name_both_sides() {
-        let typed = |code: &'static str, details: Option<Value>, modes: Option<(&str, &str)>| {
+        let typed = |code: &'static str,
+                     message: &'static str,
+                     details: Option<Value>,
+                     modes: Option<(&str, &str)>| {
             let modes = modes.map(|(actual, expected)| (actual.to_owned(), expected.to_owned()));
             move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
                 if path.ends_with("/grant")
@@ -7081,7 +7118,8 @@ mod tests {
                         code: Some(code.into()),
                         broker_code: None,
                         institution_refusal: details.clone(),
-                        message: "Crew refused this.".into(),
+                        connection_institution: None,
+                        message: message.into(),
                         detail: None,
                         modes: modes.clone(),
                     }
@@ -7091,9 +7129,15 @@ mod tests {
             }
         };
         let details = json!({"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "okafor-lab", "workspace_institution": "stanford"});
+        // The daemon's model refusal as `check_provider` words it (`crew/institution.rs`).
         let (api, _) = api_with(
             OutputFormat::Text,
-            typed("crew_institution_mismatch", Some(details), None),
+            typed(
+                "crew_institution_mismatch",
+                "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution",
+                Some(details),
+                None,
+            ),
         );
         let error = run(
             &api,
@@ -7116,7 +7160,12 @@ mod tests {
 
         let (api, _) = api_with(
             OutputFormat::Text,
-            typed("crew_mode_mismatch", None, Some(("private", "public"))),
+            typed(
+                "crew_mode_mismatch",
+                "Crew refused this.",
+                None,
+                Some(("private", "public")),
+            ),
         );
         let error = run(
             &api,
@@ -7137,6 +7186,80 @@ mod tests {
         );
         assert!(!shown.contains("privacy changed"), "{shown}");
         assert_eq!(error_code(&error).as_deref(), Some("crew_mode_mismatch"));
+    }
+
+    /// W2-CLI-7: admission refuses a connection set to another institution than the
+    /// workspace's before it judges any model, and its refusal carries the model's details as
+    /// well as `connection_institution`. That is the daemon's own sentence, as the desktop
+    /// prints it, never the model sentence: "gpt-5.5 is approved for ucsf. lab uses ucsf."
+    /// contradicts itself, and its advice (a local model) is refused too.
+    #[tokio::test]
+    async fn a_connection_set_to_another_institution_keeps_the_daemons_sentence() {
+        // `crew/institution.rs` admission, for a connection set to stanford in lab (ucsf).
+        const SENTENCE: &str = "This connection is for stanford, but lab belongs to ucsf.";
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path.ends_with("/grant") || path.ends_with("/runs") && method == "POST" {
+                return Err(FakeRefusal {
+                    status: 400,
+                    code: Some(INSTITUTION_MISMATCH.into()),
+                    broker_code: None,
+                    institution_refusal: Some(json!({
+                        "model": "gpt-5.5",
+                        "approved_for": ["ucsf"],
+                        "workspace": "lab",
+                        "workspace_institution": "ucsf",
+                    })),
+                    connection_institution: Some("stanford".into()),
+                    message: SENTENCE.into(),
+                    detail: None,
+                    modes: None,
+                }
+                .into());
+            }
+            standard(method, path, body)
+        };
+        let grant = CrewCommand::Grants(GrantCommand::Grant {
+            session: SESSION.into(),
+            channel: "methods".into(),
+            context_channels: Vec::new(),
+        });
+        let start = CrewCommand::Tasks(TaskCommand::Start {
+            channel: "#methods".into(),
+            prompt: TextInput {
+                text: Some("Summarize".into()),
+                input: None,
+            },
+            provider: "versa_azure".into(),
+            model: "gpt-5.5".into(),
+            context_channels: Vec::new(),
+            allow_posting: true,
+        });
+        for (name, command) in [("grants grant", grant), ("tasks start", start)] {
+            let (api, _) = api_with(OutputFormat::Text, handler);
+            let error = run(&api, command).await.expect_err(name);
+            let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+            assert_eq!(shown, SENTENCE, "{name}");
+            assert!(!shown.contains("approved for"), "{name}: {shown}");
+            assert!(!shown.contains("local model"), "{name}: {shown}");
+            assert_eq!(
+                error_code(&error).as_deref(),
+                Some(INSTITUTION_MISMATCH),
+                "{name}"
+            );
+        }
+        // The same details under the model refusal's words are still the model sentence, and
+        // so is a daemon's model refusal that names no connection institution.
+        for message in [
+            "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution",
+            "Crew refused this model.",
+        ] {
+            assert!(is_model_refusal(message, None), "{message}");
+        }
+        assert!(is_model_refusal(
+            "Crew institution does not match the model's resolved affiliation; choose a local model or a model approved for this institution",
+            Some("stanford"),
+        ));
+        assert!(!is_model_refusal(SENTENCE, Some("stanford")));
     }
 
     #[test]

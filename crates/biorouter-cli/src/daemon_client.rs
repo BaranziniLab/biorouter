@@ -24,6 +24,11 @@ pub struct DaemonRefusal {
     /// The daemon's `institution_refusal` beside its institution refusal: the model, who
     /// approved it, the workspace and its institution, for the desktop's sentence (Q2-76).
     pub institution_refusal: Option<Value>,
+    /// The daemon's `connection_institution` beside an institution refusal about this
+    /// computer's connection rather than the model (admission's "This connection is for …,
+    /// but … belongs to …."). That refusal carries the model's details too, so this is what
+    /// tells the two apart; it is never printed.
+    pub connection_institution: Option<String>,
     message: String,
     /// The daemon's `detail`: OpenSSH's own words beside a failed connect, each line made
     /// terminal-safe on its own so the lines stay lines.
@@ -270,6 +275,12 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
             .and_then(|value| value.get("institution_refusal"))
             .filter(|details| details.is_object())
             .cloned(),
+        connection_institution: value
+            .and_then(|value| value.get("connection_institution"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|institution| !institution.is_empty())
+            .map(|institution| terminal_safe(&institution.chars().take(128).collect::<String>())),
         message: terminal_safe(&message.chars().take(1024).collect::<String>()),
     }
 }
@@ -2172,6 +2183,53 @@ mod tests {
             "fallback",
         );
         assert_eq!(older.institution_refusal, None, "only an object is kept");
+        assert_eq!(
+            refusal.connection_institution, None,
+            "the model refusal names none"
+        );
+    }
+
+    /// W2-CLI-7: admission's refusal of a connection set to another institution carries the
+    /// model's details as well, and `connection_institution` is what marks it as being about
+    /// the connection, so it is kept beside them.
+    #[test]
+    fn a_connection_institution_refusal_keeps_the_connections_institution() {
+        const SENTENCE: &str = "This connection is for stanford, but lab belongs to ucsf.";
+        let details = serde_json::json!({
+            "model": "gpt-5.5",
+            "approved_for": ["ucsf"],
+            "workspace": "lab",
+            "workspace_institution": "ucsf",
+        });
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_institution_mismatch",
+                "error": SENTENCE,
+                "connection_institution": "stanford",
+                "institution_refusal": details,
+            })),
+            "fallback",
+        );
+        assert_eq!(refusal.connection_institution.as_deref(), Some("stanford"));
+        assert_eq!(refusal.institution_refusal.as_ref(), Some(&details));
+        assert_eq!(refusal.message(), SENTENCE);
+        for absent in [
+            serde_json::json!(""),
+            serde_json::json!(7),
+            serde_json::json!(null),
+        ] {
+            let refusal = daemon_refusal(
+                400,
+                Some(&serde_json::json!({
+                    "code": "crew_institution_mismatch",
+                    "error": SENTENCE,
+                    "connection_institution": absent,
+                })),
+                "fallback",
+            );
+            assert_eq!(refusal.connection_institution, None, "{absent}");
+        }
     }
 
     #[test]
