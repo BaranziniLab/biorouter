@@ -1109,7 +1109,7 @@ That's the whole thing. The launcher:
 3. reuses the `biorouterd` it started last time, or starts one on the first
    free port,
 4. asks that daemon for a one-time link to the app, and
-5. opens the link in your browser.
+5. opens the link in your browser, and prints it in the terminal too.
 
 A daemon serves an app only to a browser that opened such a link, and hands one
 out only to a caller that knows the daemon's secret, so another account on the
@@ -1120,6 +1120,14 @@ daemon's port and secret, readable by you alone, in
 `BIOROUTERD_PORT` and `BIOROUTER_SERVER__SECRET_KEY` to its port and secret. The
 link works once and for a few minutes; after that the browser keeps the app
 open until the daemon restarts. Run the launcher again for a new link.
+
+The link opens the app for whoever uses it first, so the launcher never puts it
+on a command line, which other accounts on the computer can read. It writes the
+link into a small page only you can read, in
+`~/.config/biorouter/app-launcher/open`, and opens that page, which sends the
+browser on to the app. A browser installed as a snap package cannot read that
+folder; if yours shows an error instead of the app, open the address the
+terminal printed.
 
 No Node, no `npm install`, no build step. You need Biorouter installed with a
 provider configured (`biorouter configure`), unless this is a **fat** export,
