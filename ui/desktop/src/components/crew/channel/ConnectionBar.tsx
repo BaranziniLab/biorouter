@@ -3,7 +3,7 @@ import { AlertTriangle, KeyRound, LoaderCircle, X } from '../../icons/app-icons'
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
-import { parseRefusal, refusalText } from '../dialogs/refusals';
+import { parseRefusal, refusalText, type RefusalViewer } from '../dialogs/refusals';
 import { useJoinContext } from '../onboarding/joinContext';
 import { sshUsername } from '../onboarding/joinText';
 import { serverLabel } from '../sidebar/sidebarView';
@@ -43,12 +43,13 @@ function useHeldFor(active: boolean, delayMs: number): boolean {
  * and never a bare `code: ` prefix (a `name_taken: …` reached this bar verbatim once the dialog that
  * caused it had closed, T-08).
  */
-export function actionErrorText(message: string, host = ''): string {
+export function actionErrorText(message: string, host = '', viewer: RefusalViewer = {}): string {
   // The transport's own record of a dropped link never reaches a person (R-4): it says the outcome
   // is unknown, so the sentence says so too.
   if (MACHINE_TEXT.test(message) && /Crew SSH failure|child_before_cleanup/.test(message))
     return connectionBarCopy.linkLost(host);
-  const words = refusalText(message);
+  // The host reads what the host can do, not "ask the host" (MSG2-N6).
+  const words = refusalText(message, viewer);
   const refusal = parseRefusal(words);
   if (!refusal.code) return words;
   const sentence = refusal.sentence.trim();
@@ -314,7 +315,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             </Button>
           }
         >
-          <p>{actionErrorText(actionError.message, host)}</p>
+          <p>{actionErrorText(actionError.message, host, { isHost: crew.isHost })}</p>
         </Note>
       )}
 

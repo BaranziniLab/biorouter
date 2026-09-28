@@ -203,7 +203,9 @@ export function CreateChannelDialog({ teamId, onClose }: CreateChannelDialogProp
         <p id={consequenceId} className="text-supporting text-text-muted">
           {nameRuleCopy.consequence}
         </p>
-        {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
+        {error && !nameError ? (
+          <ErrorNote text={refusalText(error, { isHost: crew.isHost })} />
+        ) : null}
       </form>
     </ModalShell>
   );

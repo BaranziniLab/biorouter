@@ -196,7 +196,13 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             />
           </Field>
           {error ? (
-            <ErrorNote text={directAdd ? directAddRefusalText(error) : refusalText(error)} />
+            <ErrorNote
+              text={
+                directAdd
+                  ? directAddRefusalText(error)
+                  : refusalText(error, { isHost: crew.isHost })
+              }
+            />
           ) : null}
         </form>
       </ModalShell>
@@ -252,7 +258,9 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
         <p id={consequenceId} className="text-supporting text-text-muted">
           {nameRuleCopy.teamConsequence}
         </p>
-        {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
+        {error && !nameError ? (
+          <ErrorNote text={refusalText(error, { isHost: crew.isHost })} />
+        ) : null}
       </form>
     </ModalShell>
   );

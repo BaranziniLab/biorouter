@@ -134,10 +134,18 @@ const FULL_BUT_HOST_CAN_ADMINISTER_TEXT =
  * so one sentence for every `quota_exceeded` would be wrong for it. `device_conflict` has only a
  * technical text, so every one is reworded.
  */
+/**
+ * Who reads a refusal, where the words differ by it: the host is told what the host can do, not
+ * to ask the host (MSG2-N6). Absent: the member's words, which every surface said before.
+ */
+export interface RefusalViewer {
+  isHost?: boolean;
+}
+
 const REWORDED: readonly {
   code: string;
   matches(sentence: string): boolean;
-  words(sentence: string): string;
+  words(sentence: string, viewer: RefusalViewer): string;
 }[] = [
   {
     code: 'identity_conflict',
@@ -153,12 +161,16 @@ const REWORDED: readonly {
   {
     code: 'quota_exceeded',
     matches: (sentence) => STORAGE_FULL_TEXT.test(sentence),
-    words: () => refusalCopy.storageFull,
+    words: (_sentence, viewer) =>
+      viewer.isHost ? refusalCopy.storageFullHost : refusalCopy.storageFull,
   },
   {
     code: 'quota_exceeded',
     matches: (sentence) => FULL_BUT_HOST_CAN_ADMINISTER_TEXT.test(sentence),
-    words: () => refusalCopy.fullButHostCanAdminister,
+    words: (_sentence, viewer) =>
+      viewer.isHost
+        ? refusalCopy.fullButHostCanAdministerHost
+        : refusalCopy.fullButHostCanAdminister,
   },
   {
     code: 'rate_limited',
@@ -170,15 +182,18 @@ const REWORDED: readonly {
 /** A name some object the viewer may not even see already holds (naming design D5). */
 const NAME_TAKEN_CODES = new Set(['name_conflict', 'name_taken']);
 
-/** The words for a refusal no dialog rewrites: the copy deck's or the broker's sentence, else verbatim. */
-export function refusalText(message: string): string {
+/**
+ * The words for a refusal no dialog rewrites: the copy deck's or the broker's sentence, else
+ * verbatim. `viewer` picks the host's words where they differ (MSG2-N6).
+ */
+export function refusalText(message: string, viewer: RefusalViewer = {}): string {
   const refusal = parseRefusal(message);
   if (!refusal.text) return dialogErrorCopy.fallback;
   if (refusal.code) {
     const reworded = REWORDED.find(
       (entry) => entry.code === refusal.code && entry.matches(refusal.sentence)
     );
-    if (reworded) return reworded.words(refusal.sentence);
+    if (reworded) return reworded.words(refusal.sentence, viewer);
     if (SENTENCE_CODES.has(refusal.code) && readsAsSentence(refusal.sentence))
       return refusal.sentence;
   }

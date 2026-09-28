@@ -95,6 +95,12 @@ export const composerCopy = {
   storageFailedHost:
     'The workspace server can’t save messages right now. Restart Crew on the server, then send again.',
   /**
+   * `storage_full`, or the host's disk full as a post was written (`No space left on device`), said
+   * to the host: a restart alone would stall again, so space comes first (MSG2-N6). A member is
+   * told as for any storage failure (`storageFailed`), since what they do is the same.
+   */
+  diskFullHost: 'The server is out of disk space. Free space on it, then restart Crew there.',
+  /**
    * `forbidden: attachment provenance cannot be dropped`: a file uploaded in another channel.
    * `file` and `channel` (`#name`) when this computer knows them.
    */

@@ -296,6 +296,21 @@ describe('storage-full fixtures', () => {
     expect(broker).not.toContain(`"${text}"`);
   });
 
+  /** MSG2-N6: the host of a full workspace was told to ask the host. */
+  it('tells the host what the host can do, and a member to ask the host', () => {
+    for (const [label, text, shown] of full) {
+      const hostWords = refusalText(text, { isHost: true });
+      expect(hostWords, label).toBe(
+        shown === refusalCopy.storageFull
+          ? refusalCopy.storageFullHost
+          : refusalCopy.fullButHostCanAdministerHost
+      );
+      expect(hostWords, label).not.toMatch(/ask the host/i);
+      expect(refusalText(text, { isHost: false }), label).toBe(shown);
+      expect(refusalText(text), label).toBe(shown);
+    }
+  });
+
   it('matches every quota_exceeded text in the broker that means the workspace is full', () => {
     // Any new state or journal limit text the broker gains must be worded, not shown raw.
     const texts = [

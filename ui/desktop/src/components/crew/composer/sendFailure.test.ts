@@ -74,6 +74,34 @@ describe('a refused post in words for a person', () => {
     expect(failure.text).toBe(composerCopy.storageFailedHost);
   });
 
+  /**
+   * MSG2-N6: the host of a full workspace was told to "ask the host", and the host of a server out
+   * of disk space to restart Crew, which stalls again without space.
+   */
+  it.each([
+    [
+      'a full workspace',
+      'quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported',
+      refusalCopy.fullButHostCanAdministerHost,
+    ],
+    [
+      'a workspace past its supported size',
+      'quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported',
+      refusalCopy.storageFullHost,
+    ],
+    ['the message count limit', 'quota_exceeded: message limit', refusalCopy.storageFullHost],
+    [
+      'a server out of disk space',
+      'storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.',
+      composerCopy.diskFullHost,
+    ],
+  ])('tells the host what the host can do about %s', (_label, text, words) => {
+    expect(sendFailure(brokerRefusal(text), { ...context, isHost: true }).text).toBe(words);
+    expect(words).not.toMatch(/ask the host/i);
+    // A member is still told to ask the host.
+    expect(sendFailure(brokerRefusal(text), context).text).not.toBe(words);
+  });
+
   it('names the host generically when the viewer cannot see who that is', () => {
     const failure = sendFailure(
       brokerRefusal('storage_failed: restart and recover before further mutations'),

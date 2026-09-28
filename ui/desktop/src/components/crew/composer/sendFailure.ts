@@ -48,9 +48,14 @@ function refusalWords(failure: Error, context: SendFailureContext): string {
   const sentence = refusal.sentence;
   if (code === 'invalid_params' && /^message too long\b/i.test(sentence))
     return composerCopy.tooLong;
-  if (code === 'storage_failed' || code === 'storage_full' || DISK_FULL.test(message))
+  // For the host, a full disk and a failed write are two things to do: space freed first, or a
+  // restart (MSG2-N6). A member asks the host either way.
+  const diskFull = code === 'storage_full' || DISK_FULL.test(message);
+  if (diskFull || code === 'storage_failed')
     return context.isHost
-      ? composerCopy.storageFailedHost
+      ? diskFull
+        ? composerCopy.diskFullHost
+        : composerCopy.storageFailedHost
       : composerCopy.storageFailed(context.host);
   if (code === 'forbidden' && /^attachment provenance\b/i.test(sentence))
     return composerCopy.fileElsewhere(context.fileName, context.fileChannel);
@@ -59,15 +64,17 @@ function refusalWords(failure: Error, context: SendFailureContext): string {
   if (code === 'channel_archived') return composerCopy.archivedRefusal;
   if (code === 'quota_exceeded') {
     // A quota the broker words for a person ("You have used your share…") stays as written, and a
-    // full workspace reads the dialogs' sentence. Any other quota a post can meet (the message
-    // limit, a limit newer than this renderer) means the same to the person: it is full.
-    const words = refusalText(message);
-    return words === refusal.text ? refusalCopy.storageFull : words;
+    // full workspace reads the dialogs' sentence, the host's own when the host sent it (MSG2-N6).
+    // Any other quota a post can meet (the message limit, a limit newer than this renderer) means
+    // the same to the person: it is full.
+    const words = refusalText(message, { isHost: context.isHost });
+    if (words !== refusal.text) return words;
+    return context.isHost ? refusalCopy.storageFullHost : refusalCopy.storageFull;
   }
   if (failure instanceof CrewHttpError && failure.code === CREW_NOT_SENT)
     return composerCopy.notSent;
   if (!brokerCode && isTransportText(message)) return composerCopy.notReached;
-  if (code && refusal.text !== sentence) return refusalText(message);
+  if (code && refusal.text !== sentence) return refusalText(message, { isHost: context.isHost });
   return message || crewActionCopy.actionFallback;
 }
 

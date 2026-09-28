@@ -196,7 +196,9 @@ export function RenameDialog({ target, targetId, onClose }: RenameDialogProps) {
             <Input {...inputProps} />
           )}
         </Field>
-        {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
+        {error && !nameError ? (
+          <ErrorNote text={refusalText(error, { isHost: crew.isHost })} />
+        ) : null}
       </form>
     </ModalShell>
   );

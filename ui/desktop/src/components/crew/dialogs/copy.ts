@@ -720,6 +720,15 @@ export const refusalCopy = {
    */
   fullButHostCanAdminister:
     'This workspace is full. Reading still works, and the host can still remove members and change its privacy, but nothing else can change. Ask the host about starting a new workspace.',
+  /**
+   * `storageFull` said to the host, who is the one to start a new workspace (MSG2-N6): the member
+   * sentence told the host to ask the host.
+   */
+  storageFullHost:
+    'This workspace has grown past the size Crew supports and cannot take more changes. To keep working together, start a new workspace.',
+  /** `fullButHostCanAdminister` said to the host (MSG2-N6). */
+  fullButHostCanAdministerHost:
+    'This workspace is full. Reading still works, and you can still remove members and change its privacy. To keep posting, start a new workspace.',
   /** `rate_limited: too many live challenges`. */
   tooManyAttempts: 'Too many attempts at once. Wait a minute, then try again.',
 } as const;

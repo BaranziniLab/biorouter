@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { CrewWorkspaceUsage } from '../crewApi';
-import { fullnessNeedsAttention, fullnessRose, workspaceFullness } from './workspaceFullness';
+import { MESSAGE_MAX_BYTES } from '../composer/sendFailure';
+import {
+  fullnessNeedsAttention,
+  fullnessRose,
+  ROOM_FOR_ONE_POST_BYTES,
+  workspaceFullness,
+} from './workspaceFullness';
 
 const MIB = 1024 * 1024;
 
@@ -25,14 +31,31 @@ describe('workspaceFullness (W2-UIW-20)', () => {
     expect(workspaceFullness(usage(15 * MIB))).toEqual({ percent: 100, level: 'full' });
   });
 
-  it('warns at 80%, urgently at 95%, and says full only when posting stops', () => {
+  it('warns at 80%, urgently at 95%, and says full once a message of the largest size is refused', () => {
     const room = 15 * MIB;
     expect(workspaceFullness(usage(Math.floor(room * 0.79)))?.level).toBe('ok');
     expect(workspaceFullness(usage(Math.ceil(room * 0.8)))?.level).toBe('warn');
     expect(workspaceFullness(usage(Math.ceil(room * 0.95)))?.level).toBe('urgent');
-    // One byte short is never "100% full".
-    expect(workspaceFullness(usage(room - 1))).toEqual({ percent: 99, level: 'urgent' });
+    // Room for one more post of the largest size is never "100% full".
+    expect(workspaceFullness(usage(room - ROOM_FOR_ONE_POST_BYTES))).toEqual({
+      percent: 99,
+      level: 'urgent',
+    });
+    // MSG2-N6: floored, less room than one post read "99% full" while posts were refused.
+    expect(workspaceFullness(usage(room - ROOM_FOR_ONE_POST_BYTES + 1))).toEqual({
+      percent: 100,
+      level: 'full',
+    });
+    expect(workspaceFullness(usage(room - 1))).toEqual({ percent: 100, level: 'full' });
     expect(workspaceFullness(usage(room + 1))).toEqual({ percent: 100, level: 'full' });
+    // The journal the same.
+    expect(workspaceFullness(usage(MIB, 1008 * MIB - ROOM_FOR_ONE_POST_BYTES + 1))?.level).toBe(
+      'full'
+    );
+  });
+
+  it('counts room for a message of the largest size, 64 KB and what the broker keeps with it', () => {
+    expect(ROOM_FOR_ONE_POST_BYTES).toBeGreaterThan(MESSAGE_MAX_BYTES);
   });
 
   it('reads the fuller of the state and the journal', () => {
@@ -46,7 +69,7 @@ describe('workspaceFullness (W2-UIW-20)', () => {
       state_bytes: 13 * MIB,
       state_limit: 16 * MIB,
       journal_bytes: 0,
-      journal_limit: 1,
+      journal_limit: 1024 * MIB,
     };
     expect(workspaceFullness(bare)).toEqual({ percent: 81, level: 'warn' });
   });
