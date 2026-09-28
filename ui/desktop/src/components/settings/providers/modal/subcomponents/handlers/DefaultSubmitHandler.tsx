@@ -1,5 +1,6 @@
 import { checkProvider, type CheckProviderRequest } from '../../../../../../api';
 import { userActionHeaders } from '../../../../../../utils/userAction';
+import { isBrowserSurface } from '../../../../../../utils/surface';
 import { coerceConfigKeyValue } from '../../../configKeyValue';
 
 /**
@@ -101,9 +102,15 @@ export const providerConfigSubmitHandler = async (
     return [{ parameter, value }];
   });
 
-  // W2-PRV-2: checked BEFORE anything is saved. Only a save that carries a
-  // credential is checked this way; the rest is saved and built as before.
-  if (writes.some(({ parameter }) => parameter.secret === true)) {
+  // W2-PRV-2: checked BEFORE anything is saved, whenever the provider holds a
+  // credential: a save that carries a new key, and (in the app) one that moves a
+  // host or endpoint the saved key will be sent to. A browser served by
+  // `biorouter serve` cannot prove a person, so there the daemon refuses a
+  // candidate that moves a saved key, and only a save carrying the key is
+  // checked. A provider with no credential is saved and built as before.
+  const carriesKey = writes.some(({ parameter }) => parameter.secret === true);
+  const holdsKey = parameters.some((parameter) => parameter.secret === true);
+  if (writes.length > 0 && (carriesKey || (holdsKey && !isBrowserSurface()))) {
     await checkCandidateCredentials(
       provider.name,
       Object.fromEntries(writes.map(({ parameter, value }) => [parameter.name, String(value)]))

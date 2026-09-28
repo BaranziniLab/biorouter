@@ -243,4 +243,16 @@ describe('providerConfigSubmitHandler checks a credential before saving it', () 
     expect(check).toHaveBeenCalledTimes(1);
     expect(check.mock.calls[0][0].body).toEqual({ provider: 'databricks' });
   });
+
+  it('checks a new host against the saved key before saving it', async () => {
+    await providerConfigSubmitHandler(upsert, anthropic, {
+      ANTHROPIC_HOST: 'https://gateway.example',
+    });
+    expect(check.mock.calls[0][0].body).toEqual({
+      provider: 'anthropic',
+      live: true,
+      candidate: { ANTHROPIC_HOST: 'https://gateway.example' },
+    });
+    expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
+  });
 });

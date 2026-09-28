@@ -1812,10 +1812,12 @@ pub async fn update_custom_provider(
         (status = 400, description = "The provider could not be built from the saved (or \
                                       candidate) settings, or a candidate named a setting this \
                                       provider does not declare"),
-        (status = 401, description = "With `live` set: the provider rejected the credentials. \
-                                      The body is its message"),
         (status = 403, description = "`live` or `candidate` from a caller that could not prove a \
-                                      person asked, on a daemon that holds a user-action key"),
+                                      person asked, on a daemon that holds a user-action key; or, \
+                                      on one that holds none, a candidate that would send a saved \
+                                      secret to a setting it names"),
+        (status = 422, description = "With `live` set: the provider rejected the credentials. \
+                                      The body is its message"),
     )
 )]
 pub async fn check_provider(
@@ -1832,13 +1834,10 @@ pub async fn check_provider(
     // daemon secret (which a public chat's shell can recover) send a SAVED key
     // to a host of its choosing, so both need the same proof of a person the
     // other credential writes do. A daemon holding no user-action key (`serve`)
-    // cannot check one; there `/config/upsert` plus a chat already reaches the
-    // same place, so nothing new is opened.
-    if let Some(refusal) = credential_check_refusal(
-        live,
-        candidate.is_some(),
-        &biorouter_server::auth::user_action_proof(&headers),
-    ) {
+    // cannot check one, so there a candidate may not move a saved secret at all
+    // (`saved_secret_refusal`).
+    let proof = biorouter_server::auth::user_action_proof(&headers);
+    if let Some(refusal) = credential_check_refusal(live, candidate.is_some(), &proof) {
         return Err(refusal);
     }
     let metadata = get_providers()
@@ -1847,7 +1846,15 @@ pub async fn check_provider(
         .map(|(metadata, _)| metadata)
         .find(|metadata| metadata.name == provider);
     let overrides = match candidate {
-        Some(values) => candidate_overrides(metadata.as_ref(), &provider, values)?,
+        Some(values) => {
+            let overrides = candidate_overrides(metadata.as_ref(), &provider, values)?;
+            if !matches!(proof, biorouter_server::auth::UserActionProof::Proven) {
+                if let Some(refusal) = saved_secret_refusal(metadata.as_ref(), &overrides) {
+                    return Err(refusal);
+                }
+            }
+            overrides
+        }
         None => HashMap::new(),
     };
     let has_secret = metadata
@@ -1863,8 +1870,10 @@ pub async fn check_provider(
             .await
             .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
         if live && has_secret {
+            // 422, not 401: a 401 from this daemon means its own secret was
+            // wrong (`check_token`), and this is the provider's answer.
             if let Some(refusal) = live_credential_refusal(&display_name, built.as_ref()).await {
-                return Err((StatusCode::UNAUTHORIZED, refusal));
+                return Err((StatusCode::UNPROCESSABLE_ENTITY, refusal));
             }
         }
         Ok(())
@@ -1891,6 +1900,39 @@ fn credential_check_refusal(
         })
 }
 
+/// On a daemon that cannot prove a person (no user-action key), a candidate may
+/// not change where a SAVED secret goes: one naming any non-secret setting (a
+/// host, an endpoint) must also supply every secret the provider declares, so
+/// the check sends only what the caller typed. Otherwise a caller holding only
+/// the daemon secret could point any provider's host at itself and have the
+/// daemon send that provider's saved key there, which neither `/config/upsert`
+/// nor a chat reaches for a provider the session is not bound to.
+fn saved_secret_refusal(
+    metadata: Option<&ProviderMetadata>,
+    overrides: &HashMap<String, String>,
+) -> Option<(StatusCode, String)> {
+    let metadata = metadata?;
+    let names_a_setting = metadata
+        .config_keys
+        .iter()
+        .any(|key| !key.secret && overrides.contains_key(&key.name.to_uppercase()));
+    let supplies_every_secret = metadata
+        .config_keys
+        .iter()
+        .filter(|key| key.secret)
+        .all(|key| overrides.contains_key(&key.name.to_uppercase()));
+    (names_a_setting && !supplies_every_secret).then(|| {
+        (
+            StatusCode::FORBIDDEN,
+            format!(
+                "Checking a new {} setting with a saved key is the user's decision, and this \
+                 daemon cannot confirm the request came from one. Supply the key as well.",
+                metadata.display_name
+            ),
+        )
+    })
+}
+
 /// A candidate's values as the task-local overrides the check runs under, or
 /// the refusal. Only settings `provider` declares are accepted: a check is
 /// about this provider, and an override of anything else (the master privacy
@@ -1908,16 +1950,25 @@ fn candidate_overrides(
     };
     let mut overrides = HashMap::new();
     for (key, value) in values {
-        let declared = metadata
+        let Some(declared) = metadata
             .config_keys
             .iter()
-            .any(|declared| declared.name.eq_ignore_ascii_case(&key));
-        if !declared {
+            .find(|declared| declared.name.eq_ignore_ascii_case(&key))
+        else {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("'{key}' is not a setting of {}.", metadata.display_name),
             ));
-        }
+        };
+        // An override is read the way an environment variable is (JSON, then
+        // true/false, then a number), but a secret is saved as a string. So a
+        // secret goes in as a JSON string literal, or an all-digit key would be
+        // read as a number and fail to build a provider it would have run.
+        let value = if declared.secret {
+            serde_json::to_string(&value).unwrap_or(value)
+        } else {
+            value
+        };
         overrides.insert(key.to_uppercase(), value);
     }
     Ok(overrides)
@@ -2234,7 +2285,7 @@ mod tests {
         .expect("a declared key is a candidate");
         assert_eq!(
             overrides.get("ANTHROPIC_API_KEY").map(String::as_str),
-            Some("sk-ant-x")
+            Some("\"sk-ant-x\"")
         );
 
         for foreign in [
@@ -2251,6 +2302,45 @@ mod tests {
             assert_eq!(refusal.0, StatusCode::BAD_REQUEST, "{foreign}");
         }
         assert!(candidate_overrides(None, "nope", HashMap::new()).is_err());
+    }
+
+    /// Review of W2-PRV-2: where no person can be proven, a candidate that moves
+    /// a setting (a host) must bring every secret with it, so no SAVED key goes
+    /// to a host the caller named. And a secret candidate stays a string.
+    #[test]
+    fn an_unproven_candidate_cannot_send_a_saved_key_elsewhere() {
+        use biorouter::providers::base::ConfigKey;
+        let mut metadata = ProviderMetadata::empty();
+        metadata.display_name = "OpenAI".to_string();
+        metadata.config_keys = vec![
+            ConfigKey::new("OPENAI_API_KEY", true, true, None),
+            ConfigKey::new("OPENAI_HOST", true, false, Some("https://api.openai.com")),
+        ];
+        let host_only = HashMap::from([(
+            "OPENAI_HOST".to_string(),
+            "https://attacker.example".to_string(),
+        )]);
+        assert_eq!(
+            saved_secret_refusal(Some(&metadata), &host_only).map(|r| r.0),
+            Some(StatusCode::FORBIDDEN)
+        );
+        let with_key = HashMap::from([
+            ("OPENAI_HOST".to_string(), "https://gw.example".to_string()),
+            ("OPENAI_API_KEY".to_string(), "\"sk-typed\"".to_string()),
+        ]);
+        assert!(saved_secret_refusal(Some(&metadata), &with_key).is_none());
+        let key_only = HashMap::from([("OPENAI_API_KEY".to_string(), "\"sk\"".to_string())]);
+        assert!(saved_secret_refusal(Some(&metadata), &key_only).is_none());
+
+        let overrides = candidate_overrides(
+            Some(&metadata),
+            "openai",
+            HashMap::from([("OPENAI_API_KEY".to_string(), "123456".to_string())]),
+        )
+        .unwrap();
+        let read_back: serde_json::Value =
+            serde_json::from_str(&overrides["OPENAI_API_KEY"]).unwrap();
+        assert_eq!(read_back, serde_json::json!("123456"));
     }
 
     /// A stand-in whose model listing answers what each test needs.

@@ -552,40 +552,56 @@ fn prompt_unlisted_model(
 /// rejected had already replaced the working one. Captured before the first
 /// write, and put back when the provider refuses what was typed.
 struct PreviousProviderSettings {
+    config: &'static Config,
+    /// `(name, secret, stored value)`. A setting whose store could not be read
+    /// at capture is left out: restoring from a failed read would delete a key
+    /// that was there all along.
     keys: Vec<(String, bool, Option<Value>)>,
+    /// Put the settings back if the dialog is left without [`Self::keep`]:
+    /// an error or an interrupt part-way through leaves nothing half-replaced.
+    armed: bool,
 }
 
 impl PreviousProviderSettings {
     /// The stored value of every setting in `keys`, from the config file and
     /// the secret store only: an environment variable is not a saved value.
-    fn capture(config: &Config, keys: &[biorouter::providers::base::ConfigKey]) -> Self {
-        let values = config.all_values().unwrap_or_default();
+    fn capture(config: &'static Config, keys: &[biorouter::providers::base::ConfigKey]) -> Self {
+        let values = config.all_values().ok();
         let secrets = if keys.iter().any(|key| key.secret) {
-            config.all_secrets().unwrap_or_default()
+            config.all_secrets().ok()
         } else {
-            HashMap::new()
+            Some(HashMap::new())
         };
         Self {
+            config,
             keys: keys
                 .iter()
-                .map(|key| {
-                    let stored = if key.secret {
-                        secrets.get(&key.name)
+                .filter_map(|key| {
+                    let store = if key.secret {
+                        secrets.as_ref()
                     } else {
-                        values.get(&key.name)
-                    };
-                    (key.name.clone(), key.secret, stored.cloned())
+                        values.as_ref()
+                    }?;
+                    Some((key.name.clone(), key.secret, store.get(&key.name).cloned()))
                 })
                 .collect(),
+            armed: true,
         }
+    }
+
+    /// The new settings stand: nothing will be put back.
+    fn keep(&mut self) {
+        self.armed = false;
     }
 
     /// Put back every setting that changed since [`Self::capture`], removing
     /// one that did not exist then. Returns whether anything was put back.
-    fn restore(&self, config: &Config) -> anyhow::Result<bool> {
-        let values = config.all_values().unwrap_or_default();
+    fn restore(&mut self) -> anyhow::Result<bool> {
+        self.armed = false;
+        let config = self.config;
+        let values = config.all_values()?;
         let secrets = if self.keys.iter().any(|(_, secret, _)| *secret) {
-            config.all_secrets().unwrap_or_default()
+            config.all_secrets()?
         } else {
             HashMap::new()
         };
@@ -613,13 +629,23 @@ impl PreviousProviderSettings {
     }
 
     /// [`Self::restore`], said to the person, after the provider refused.
-    fn restore_after_refusal(&self, config: &Config, display_name: &str) -> anyhow::Result<()> {
-        if self.restore(config)? {
+    fn restore_after_refusal(&mut self, display_name: &str) -> anyhow::Result<()> {
+        if self.restore()? {
             let _ = cliclack::log::info(format!(
                 "Your previous {display_name} settings were kept; nothing you typed was saved."
             ));
         }
         Ok(())
+    }
+}
+
+impl Drop for PreviousProviderSettings {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = self.restore() {
+                tracing::warn!("could not put the previous provider settings back: {error}");
+            }
+        }
     }
 }
 
@@ -688,7 +714,7 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
 
     // W2-PRV-2: before the first write, so a key the provider refuses below
     // never replaces the one that worked.
-    let previous = PreviousProviderSettings::capture(config, &provider_meta.config_keys);
+    let mut previous = PreviousProviderSettings::capture(config, &provider_meta.config_keys);
 
     // Configure required provider keys
     for key in &provider_meta.config_keys {
@@ -863,7 +889,7 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
         Ok(provider) => provider,
         Err(error) => {
             spin.stop(style("The provider could not be set up").red());
-            previous.restore_after_refusal(config, &provider_meta.display_name)?;
+            previous.restore_after_refusal(&provider_meta.display_name)?;
             return Err(error);
         }
     };
@@ -877,7 +903,7 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     let model: String = match models_res {
         Err(e) => {
             // Provider hook error
-            previous.restore_after_refusal(config, &provider_meta.display_name)?;
+            previous.restore_after_refusal(&provider_meta.display_name)?;
             cliclack::outro(style(e.to_string()).on_red().white())?;
             return Ok(false);
         }
@@ -903,13 +929,14 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     match test_provider_configuration(provider_name, &model, toolshim_enabled, toolshim_model).await
     {
         Ok(()) => {
+            previous.keep();
             config.set_biorouter_provider_and_model(provider_name, &model)?;
             print_config_file_saved()?;
             Ok(true)
         }
         Err(e) => {
             spin.stop(style(e.to_string()).red());
-            previous.restore_after_refusal(config, &provider_meta.display_name)?;
+            previous.restore_after_refusal(&provider_meta.display_name)?;
             cliclack::outro(style("Failed to configure provider: init chat completion request with tool did not succeed.").on_red().white())?;
             Ok(false)
         }
@@ -2524,11 +2551,13 @@ mod previous_provider_settings_tests {
     #[test]
     fn a_refused_setup_leaves_the_saved_settings_as_they_were() {
         let dir = tempfile::TempDir::new().unwrap();
-        let config = Config::new_with_file_secrets(
-            dir.path().join("config.yaml"),
-            dir.path().join("secrets.yaml"),
-        )
-        .unwrap();
+        let config: &'static Config = Box::leak(Box::new(
+            Config::new_with_file_secrets(
+                dir.path().join("config.yaml"),
+                dir.path().join("secrets.yaml"),
+            )
+            .unwrap(),
+        ));
         config
             .set_secret("W2PRV2_PROBE_API_KEY", &"working-key")
             .unwrap();
@@ -2541,7 +2570,7 @@ mod previous_provider_settings_tests {
             ConfigKey::new("W2PRV2_PROBE_ORG", false, false, None),
         ];
 
-        let previous = PreviousProviderSettings::capture(&config, &keys);
+        let mut previous = PreviousProviderSettings::capture(config, &keys);
         config
             .set_secret("W2PRV2_PROBE_API_KEY", &"typo-key")
             .unwrap();
@@ -2550,7 +2579,7 @@ mod previous_provider_settings_tests {
             .unwrap();
         config.set_param("W2PRV2_PROBE_ORG", "new-org").unwrap();
 
-        assert!(previous.restore(&config).unwrap());
+        assert!(previous.restore().unwrap());
         assert_eq!(
             config.get_secret::<String>("W2PRV2_PROBE_API_KEY").unwrap(),
             "working-key"
@@ -2562,6 +2591,45 @@ mod previous_provider_settings_tests {
         assert!(config.get_param::<String>("W2PRV2_PROBE_ORG").is_err());
 
         // Nothing changed since: nothing to put back.
-        assert!(!previous.restore(&config).unwrap());
+        assert!(!previous.restore().unwrap());
+    }
+
+    /// An interrupt or error part-way through the dialog drops the capture
+    /// without `keep`, and that puts the settings back too.
+    #[test]
+    fn leaving_the_dialog_early_puts_the_settings_back() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config: &'static Config = Box::leak(Box::new(
+            Config::new_with_file_secrets(
+                dir.path().join("config.yaml"),
+                dir.path().join("secrets.yaml"),
+            )
+            .unwrap(),
+        ));
+        config
+            .set_secret("W2PRV2_DROP_API_KEY", &"working-key")
+            .unwrap();
+        let keys = vec![ConfigKey::new("W2PRV2_DROP_API_KEY", true, true, None)];
+        {
+            let _previous = PreviousProviderSettings::capture(config, &keys);
+            config
+                .set_secret("W2PRV2_DROP_API_KEY", &"half-typed")
+                .unwrap();
+        }
+        assert_eq!(
+            config.get_secret::<String>("W2PRV2_DROP_API_KEY").unwrap(),
+            "working-key"
+        );
+        {
+            let mut previous = PreviousProviderSettings::capture(config, &keys);
+            config
+                .set_secret("W2PRV2_DROP_API_KEY", &"accepted")
+                .unwrap();
+            previous.keep();
+        }
+        assert_eq!(
+            config.get_secret::<String>("W2PRV2_DROP_API_KEY").unwrap(),
+            "accepted"
+        );
     }
 }
