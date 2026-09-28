@@ -6,6 +6,7 @@ import {
   nameKey,
   personLabel,
   personLayout,
+  withJoinerNames,
   type CrewPerson,
   type PeopleDirectory,
 } from '../identity';
@@ -362,13 +363,16 @@ export function peopleInOrder(
  * Q4-32): what an Add people with no one left to add shows instead of an empty picker, and what
  * "Members of {team}" lists. A team's owner is its creator; with no owner known, the host leads.
  * `extra` are principal IDs the caller knows were just added, before the next state frame lists
- * them.
+ * them. With `workspaceId`, each person who joined without choosing a name carries the name on
+ * their server account (`withJoinerNames`), and is sorted by it: named after the sort, Gina Rossi
+ * was placed by `crew_gina` and landed last (SC2-N3).
  */
 export function targetMembers(
   snapshot: Snapshot | null | undefined,
   dir: PeopleDirectory,
   target: PickerTarget,
-  extra: Iterable<string> = []
+  extra: Iterable<string> = [],
+  workspaceId?: string | null
 ): CrewPerson[] {
   const team =
     target.kind === 'team' ? snapshot?.teams.find((item) => item.id === target.teamId) : undefined;
@@ -383,7 +387,8 @@ export function targetMembers(
     const person = dir.byId(id);
     if (person && !person.isFormer) people.push(person);
   }
-  return peopleInOrder(people, (team ? team.created_by : channel?.owner_id) || null);
+  const named = workspaceId === undefined ? people : withJoinerNames(people, workspaceId);
+  return peopleInOrder(named, (team ? team.created_by : channel?.owner_id) || null);
 }
 
 /**

@@ -214,6 +214,50 @@ describe('AddPeopleDialog and its checklist', () => {
     }
   });
 
+  /**
+   * SC2-N3: "Already in {team}" was sorted before the names on server accounts stood in, so Gina
+   * Rossi was placed as `crew_gina` and landed last, below the fold.
+   */
+  it('lists who is already in the team by the names it shows', async () => {
+    const gina = {
+      id: 'person-gina',
+      uid: 1006,
+      username: 'crew_gina',
+      nickname: 'crew_gina',
+      display_name: 'crew_gina',
+    };
+    const zoe = { id: 'person-zoe', uid: 1007, username: 'zoe', nickname: 'Zoe Hart' };
+    rememberJoinerNames({
+      workspace: makeSnapshot().workspace,
+      pending_joins: [{ username: 'crew_gina', full_name: 'Gina Rossi' }],
+    });
+    try {
+      const everyone = [alice.id, bob.id, carol.id, dan.id, gina.id, zoe.id];
+      const snapshot = makeSnapshot({
+        principals: [...makeSnapshot().principals, gina, zoe],
+        teams: [{ ...makeSnapshot().teams[0], members: everyone }],
+      });
+      renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+        snapshot,
+      });
+      const dialog = await screen.findByRole('dialog');
+      const members = within(dialog).getByRole('region', { name: /^Already in/ });
+      const names = within(members)
+        .getAllByRole('listitem')
+        .map((row) => row.querySelector('[data-person-context]')?.textContent ?? '');
+      // The owner leads (who is also you); then by the name each row shows.
+      expect(names.slice(1)).toEqual([
+        expect.stringContaining('Bob Lee'),
+        expect.stringContaining('Carol Diaz'),
+        expect.stringContaining('Dan Wu'),
+        expect.stringContaining('Gina Rossi'),
+        expect.stringContaining('Zoe Hart'),
+      ]);
+    } finally {
+      forgetJoinerNames();
+    }
+  });
+
   it('names a member by @username alone when no server-account name was ever seen', async () => {
     forgetJoinerNames();
     const henry = { id: 'person-henry', uid: 1005, username: 'crew_henry', nickname: 'crew_henry' };

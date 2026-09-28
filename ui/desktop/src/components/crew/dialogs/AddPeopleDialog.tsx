@@ -352,9 +352,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       ? copy.historyChannel(place)
       : copy.historyTeam(general ? channelName(general) : '#general', choices.length > 1);
   const members =
-    message || membersView
-      ? withJoinerNames(targetMembers(snapshot, dir, pickerTarget, added), workspaceId)
-      : [];
+    message || membersView ? targetMembers(snapshot, dir, pickerTarget, added, workspaceId) : [];
   // Named as the host knows them (QA Q4-42): "Jack Moreno (@crew_jack)", as Let in named them.
   const inviteesLine =
     invitees.length > 0
