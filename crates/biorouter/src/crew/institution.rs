@@ -104,6 +104,24 @@ pub(super) fn merge<'a>(values: impl IntoIterator<Item = &'a str>) -> Result<Opt
     Ok(values.into_iter().next())
 }
 
+/// A connection saved for `given`, refused because its workspace, `label`, belongs to `theirs`,
+/// as the workspace's signed `hello` says (T3-BE-4). Every task and grant on such a connection
+/// would be refused `crew_institution_mismatch` at admission, while the connection read as set;
+/// the save is refused instead, with the institution to use. `given` and `theirs` are
+/// normalized.
+pub(super) fn save_mismatch(given: &str, label: &str, theirs: &str) -> anyhow::Error {
+    CrewRefusal::new(
+        refusal::INSTITUTION_MISMATCH,
+        format!(
+            "This connection is for {given}, but {label} belongs to {theirs}. Use {theirs} here."
+        ),
+    )
+    .with("connection_institution", json!(given))
+    .with("workspace_institution", json!(theirs))
+    .with("workspace", json!(label))
+    .into()
+}
+
 pub(super) fn check_provider(
     tier: ProviderTier,
     affiliation: Option<ModelAffiliation>,

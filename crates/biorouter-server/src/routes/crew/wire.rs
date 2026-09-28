@@ -244,6 +244,10 @@ pub struct CrewError {
     /// `crew_institution_mismatch` on a save: the institution the save gave.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub institution: Option<String>,
+    /// `crew_institution_mismatch` on a save whose institution is not the workspace's: the
+    /// workspace's own institution, which its host fixed, and the one to use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_institution: Option<String>,
     /// `crew_institution_mismatch` when connections to one workspace disagree: every
     /// institution they name.
     #[serde(skip_serializing_if = "Option::is_none")]

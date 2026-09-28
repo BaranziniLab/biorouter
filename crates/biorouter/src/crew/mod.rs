@@ -2550,6 +2550,20 @@ impl CrewManager {
                 .filter_map(|c| c.institution_id.as_deref())
                 .chain(input.institution_id.as_deref()),
         )?;
+        // The workspace's own institution is fixed by its host, and admission refuses a
+        // connection for another (T3-BE-4); a save that would set one is refused here instead,
+        // when a signed `hello` from this workspace says which it is. One not known yet is
+        // accepted as it always was.
+        if let Some(given) = institution_id.as_deref() {
+            if let Some((label, theirs)) = self.workspace_institution(
+                r,
+                &input.workspace_id,
+                &input.workspace_public_key,
+                given,
+            ) {
+                return Err(institution::save_mismatch(given, &label, &theirs));
+            }
+        }
         for c in r
             .connections
             .iter_mut()
@@ -2582,6 +2596,36 @@ impl CrewManager {
             device_id,
             public_key,
         })
+    }
+    /// The workspace pinned as `workspace_id` and `workspace_public_key`, as a person calls it,
+    /// and its institution, when a signed (v2) `hello` from it says the institution is another
+    /// than `given`: the hello of any saved connection to that workspace this daemon has
+    /// verified since it connected. `None` when none says, or all agree.
+    fn workspace_institution(
+        &self,
+        r: &Registry,
+        workspace_id: &str,
+        workspace_public_key: &str,
+        given: &str,
+    ) -> Option<(String, String)> {
+        r.connections
+            .iter()
+            .filter(|c| {
+                c.workspace_id == workspace_id && c.workspace_public_key == workspace_public_key
+            })
+            .find_map(|c| {
+                let hello = self
+                    .broker_hello(&c.id)
+                    .filter(|hello| hello.signature_version >= 2)?;
+                let theirs = institution::normalize(hello.institution_id.as_deref()?).ok()?;
+                (theirs != given).then(|| {
+                    let label = hello
+                        .workspace_name
+                        .filter(|name| biorouter_crew::workspace_name_valid(name))
+                        .unwrap_or_else(|| plain_label(&c.name));
+                    (label, theirs)
+                })
+            })
     }
     async fn save_inner(&self, id: Option<&str>, mut input: SaveConnection) -> Result<Connection> {
         Self::validate_connection(&input)?;
@@ -10380,6 +10424,110 @@ done
             .await
             .unwrap();
         assert_eq!(moved.institution_id.as_deref(), Some("ucsd"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-4: the workspace's own institution is fixed by its host. A save that gives a
+    /// connection another one, while a signed `hello` from the workspace says which it is, is
+    /// refused with the one to use, and nothing is written; every task and grant on it used to
+    /// be refused at admission while the connection read as set. The workspace's institution
+    /// saved again, one not known yet (no signed `hello`, or a v1 one) and the DAEMON-3 change
+    /// all still save.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connections_institution_must_be_its_workspaces_when_that_is_known() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("workspace-institution");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let workspace = "45454545-4545-4545-8545-454545454545";
+        let input = |institution: &str| SaveConnection {
+            preparation_id: None,
+            name: "okafor-lab".into(),
+            ssh_target: "mallory@crew.example.org".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-workspace-institution.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "45".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Private,
+            institution_id: Some(institution.into()),
+        };
+        let saved = manager.save(input("ucsf")).await.unwrap();
+        // Not known yet: any institution saves, as before.
+        let unknown = manager.update(&saved.id, input("ucsd")).await.unwrap();
+        assert_eq!(unknown.institution_id.as_deref(), Some("ucsd"));
+
+        let hello = |version: u8, institution: Option<&str>| BrokerHello {
+            signature_version: version,
+            capabilities: vec![],
+            workspace_name: Some("okafor-lab".into()),
+            mode: (version >= 2).then_some(ClusterMode::Private),
+            institution_id: institution.map(str::to_owned),
+            policy_epoch: (version >= 2).then_some(1),
+            storage: None,
+        };
+        // Only a v2 signature covers the institution; a v1 `hello` says nothing about it.
+        manager
+            .brokers
+            .lock()
+            .unwrap()
+            .insert(saved.id.clone(), hello(1, None));
+        manager.update(&saved.id, input("ucsf")).await.unwrap();
+
+        manager
+            .brokers
+            .lock()
+            .unwrap()
+            .insert(saved.id.clone(), hello(2, Some("stanford-synthetic")));
+        let on_disk = fs::read(root.join("manager").join("connections.json")).unwrap();
+        let refused = manager.update(&saved.id, input("UCSD")).await.unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "This connection is for ucsd, but okafor-lab belongs to stanford-synthetic. Use \
+             stanford-synthetic here."
+        );
+        let typed = CrewRefusal::find(&refused).expect("typed");
+        assert_eq!(typed.code(), "crew_institution_mismatch");
+        assert_eq!(
+            typed.fields(),
+            &[
+                ("connection_institution", json!("ucsd")),
+                ("workspace_institution", json!("stanford-synthetic")),
+                ("workspace", json!("okafor-lab")),
+            ]
+        );
+        assert_eq!(
+            fs::read(root.join("manager").join("connections.json")).unwrap(),
+            on_disk,
+            "nothing was written"
+        );
+        assert_eq!(
+            manager
+                .connection(&saved.id)
+                .await
+                .unwrap()
+                .institution_id
+                .as_deref(),
+            Some("ucsf")
+        );
+
+        // The workspace's own saves, in any case the equivalence admission uses accepts.
+        let matching = manager
+            .update(&saved.id, input("Stanford-Synthetic"))
+            .await
+            .unwrap();
+        assert_eq!(
+            matching.institution_id.as_deref(),
+            Some("stanford-synthetic")
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -1075,6 +1075,11 @@ export type CrewError = {
      * `crew_channel_not_in_workspace`.
      */
     workspace?: string | null;
+    /**
+     * `crew_institution_mismatch` on a save whose institution is not the workspace's: the
+     * workspace's own institution, which its host fixed, and the one to use.
+     */
+    workspace_institution?: string | null;
 };
 
 /**
@@ -7460,7 +7465,7 @@ export type CrewSaveConnectionData = {
 
 export type CrewSaveConnectionErrors = {
     /**
-     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`), or when the institution is not the workspace's own, as its host fixed it (`connection_institution`, `workspace_institution`, `workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved
      */
     400: CrewError;
     /**
@@ -7589,7 +7594,7 @@ export type CrewUpdateConnectionData = {
 
 export type CrewUpdateConnectionErrors = {
     /**
-     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`), or when the institution is not the workspace's own, as its host fixed it (`connection_institution`, `workspace_institution`, `workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read
      */
     400: CrewError;
     /**
