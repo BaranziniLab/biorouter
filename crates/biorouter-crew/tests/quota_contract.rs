@@ -6,8 +6,8 @@
 //!   size included), an idempotency cache that ages out and is bounded per member, and headroom
 //!   for the host's administrative operations.
 //! - BROKER-2: snapshot sections other members can grow (references, invitations, runs) and
-//!   the worker's context manifest stay within the frame limit; a repeat invitation renews
-//!   rather than adds.
+//!   the worker's context manifest and message pages stay within the frame limit; a repeat
+//!   invitation renews rather than adds.
 //! - BROKER-4: per-member shares of attachments, teams, channels and references, and
 //!   unfinished uploads that expire.
 #![cfg(unix)]
@@ -1117,6 +1117,109 @@ fn the_context_manifest_stays_under_the_frame_limit() {
     );
     assert!(messages.len() < 21);
     assert_eq!(manifest["restricted"], true);
+}
+
+#[test]
+fn another_members_largest_posts_never_stop_an_agent_reading_its_channel() {
+    let mut ws = Workspace::new("worker-history-bound");
+    let mut mallory = ws.enroll(MALLORY, "mallory", 21);
+    let (team, general) = ws.host_team("agents");
+    ws.host_adds_to_team(&mut mallory, &team);
+    // Twenty of the largest bodies a message may have (quotes escape to twice their size),
+    // well within Mallory's share: 2.5 MiB, where one frame is 1 MiB.
+    for _ in 0..20 {
+        ws.call_ok(
+            &mut mallory,
+            "message.post",
+            json!({"channel_id": general, "body": "\"".repeat(65_536)}),
+        );
+    }
+    let newest = ws.host_ok(
+        "message.post",
+        json!({"channel_id": general, "body": "newest"}),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let params = run_params(&ws, &general);
+    let credential = ws.host_ok("run.create", params)["credential"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let read = |ws: &mut Workspace, method: &str, params: Value| {
+        let response = worker_call(ws, host_uid(), &credential, method, params);
+        assert!(frame_len(&response) < MAX_FRAME, "{}", frame_len(&response));
+        ok(response)
+    };
+    let ids = |page: &Value| -> Vec<String> {
+        page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // What every agent task reads first: its destination's newest 50.
+    let page = read(
+        &mut ws,
+        "messages.history",
+        json!({"channel_id": general, "limit": 50, "latest": true}),
+    );
+    let mut seen = ids(&page);
+    assert_eq!(seen.last(), Some(&newest), "the newest messages are kept");
+    assert!(seen.len() < 21);
+    assert_eq!(page["truncated"], true);
+    assert_eq!(page["cursor"], json!(newest));
+    // The rest is still there, before the first message of each page.
+    loop {
+        let page = read(
+            &mut ws,
+            "messages.history",
+            json!({"channel_id": general, "limit": 50, "latest": true, "before": seen[0]}),
+        );
+        let older = ids(&page);
+        if older.is_empty() {
+            break;
+        }
+        seen.splice(0..0, older);
+    }
+    assert_eq!(seen.len(), 21);
+
+    // Paging forward from the start reaches the same messages in the same order.
+    let mut forward: Vec<String> = Vec::new();
+    let mut cursor = Value::Null;
+    loop {
+        let mut params = json!({"channel_id": general, "limit": 50});
+        if !cursor.is_null() {
+            params["after"] = cursor.clone();
+        }
+        let page = read(&mut ws, "messages.history", params);
+        let next = ids(&page);
+        if next.is_empty() {
+            break;
+        }
+        forward.extend(next);
+        cursor = page["cursor"].clone();
+    }
+    assert_eq!(forward, seen);
+
+    // Search pages are bounded the same way.
+    let page = read(
+        &mut ws,
+        "messages.search",
+        json!({"channel_id": general, "query": "\"", "limit": 50, "latest": true}),
+    );
+    assert_eq!(page["truncated"], true);
+
+    // A person's page is not cut short: a client offers an older page when the one it has is
+    // full, so it is refused as too large at the frame and asked again for fewer.
+    let page = ws.host_ok(
+        "messages.history",
+        json!({"channel_id": general, "limit": 50, "latest": true}),
+    );
+    assert_eq!(page["messages"].as_array().unwrap().len(), 21);
+    assert!(page.get("truncated").is_none());
 }
 
 #[test]

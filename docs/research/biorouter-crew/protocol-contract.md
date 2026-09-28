@@ -76,7 +76,7 @@ Cached results are retained, not kept forever: each is kept for one day, and eac
 | `transfer.accept` | channel_id | Channel; owner changes, immutable created_by retained |
 | `membership.revoke` | channel_id, principal_id, optional expected_username | Channel; current owner required, cannot remove self |
 | `message.post` | channel_id, body, optional attachments, personal_mode | Message; mode missing/unknown conservatively marks contribution restricted |
-| `messages.history` | channel_id, optional after, before, limit, latest | `{messages,cursor}`; limit defaults 100, maximum 200 |
+| `messages.history` | channel_id, optional after, before, limit, latest | `{messages,cursor}`; limit defaults 100, maximum 200. An agent's page is also cut to 640 KiB of messages and then carries `truncated: true` ([below](#workspace-quotas)) |
 | `messages.search` | channel_id, query, optional after, before, limit, latest | same, authorized literal case-insensitive text search |
 | `policy.set` | mode (`private`/`public`) | Workspace; host-device only, increments policy epoch |
 
@@ -243,7 +243,7 @@ Free text is bounded where it is stored: attachment names, reference paths and l
 
 Worker attachment uploads bind `Blob.run_id` to the admitted run, fix the destination to that run's channel, and inherit every selected source channel and restriction. Chunk and finish refuse human uploads and other runs' uploads, including those of the same owner. Remote-derived uploads and projections remain restricted even in a Public workspace. Exact retries of an already committed terminal projection can recover their acknowledgment after terminal revocation, but only while UID, active identity, expiry, policy epoch and all memberships still match; no new operation is authorized.
 
-`messages.history` and `messages.search` accept `latest:true` to return the newest authorized window in ascending order. The default remains forward cursor paging. `channel.read` resolves an authorized opaque message token to a monotonically increasing internal read watermark. Snapshot exposes a visible message token or `null` for each read position, plus counts of authorized newer messages from other principals. There is no push/OS notification facility yet.
+`messages.history` and `messages.search` accept `latest:true` to return the newest authorized window in ascending order. The default remains forward cursor paging. An agent's page (a worker credential) also stops at 640 KiB of messages, keeping the newest of a latest window and the oldest of a forward page, and then carries `truncated: true`: a latest window continues `before` its first message, a forward page after `cursor`. Every agent task starts by reading its destination's newest 50 messages, and without this bound one member's large posts would stop every agent in the channel from starting, for everyone. A person's page is never cut short, because a client offers an older page only when the one it has is full; past the 1 MiB frame it is refused `response_too_large`, and the desktop and the observation stream ask again for half as many. `channel.read` resolves an authorized opaque message token to a monotonically increasing internal read watermark. Snapshot exposes a visible message token or `null` for each read position, plus counts of authorized newer messages from other principals. There is no push/OS notification facility yet.
 
 
 ### Large dataset references

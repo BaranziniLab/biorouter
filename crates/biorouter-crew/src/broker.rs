@@ -704,6 +704,10 @@ const MEMBER_JOURNAL_QUOTA: &str = "quota_exceeded: You have made as many change
 const SNAPSHOT_SECTION_BYTES: usize = 64 * 1024;
 /// A worker's `context.manifest` carries at most this many serialized bytes of messages.
 const CONTEXT_MANIFEST_BYTES: usize = 640 * 1024;
+/// A worker's `messages.history` or `messages.search` page carries at most this many
+/// serialized bytes of messages, and always at least one: a single message stays under the
+/// frame limit even at the workspace's attachment and reference limits.
+const WORKER_HISTORY_BYTES: usize = CONTEXT_MANIFEST_BYTES;
 /// A message body's JSON form: twice its 65,536-byte limit, what quotes and backslashes can
 /// double it to. Only control characters escape to more.
 const MESSAGE_ESCAPED_BYTES: usize = 2 * 65_536;
@@ -2472,22 +2476,42 @@ impl Broker {
                 && self.visible(s, actor, m)
                 && m.body.to_lowercase().contains(&query)
         });
-        let messages: Vec<_> = if p.get("latest").and_then(Value::as_bool) == Some(true) {
-            let mut latest: Vec<_> = matching.rev().take(limit).collect();
-            latest.reverse();
-            latest
+        let latest = p.get("latest").and_then(Value::as_bool) == Some(true);
+        // Nearest the page's anchor first: the newest for a latest window, the oldest after a
+        // cursor.
+        let mut messages: Vec<_> = if latest {
+            matching.rev().take(limit).collect()
         } else {
             matching.take(limit).collect()
         };
+        // An agent's page is bounded in bytes as well: every agent task starts by reading its
+        // destination's newest 50, and what other members post there must never push that
+        // past the frame limit, or no one's agent could start in the channel. The messages
+        // nearest the anchor that fit are kept and `truncated` says the rest were left out: a
+        // latest window continues `before` its first message, any other page after `cursor`.
+        // A person's page is not cut short, since a client offers an older page only when the
+        // one it has is full: past the frame limit the request is refused `response_too_large`,
+        // and the client asks for fewer.
+        let mut truncated = false;
+        if actor.run.is_some() {
+            let asked = messages.len();
+            messages = within(messages, WORKER_HISTORY_BYTES);
+            truncated = messages.len() < asked;
+        }
+        if latest {
+            messages.reverse();
+        }
         let cursor = messages
             .last()
             .map(|message| message.id.clone())
             .or_else(|| p.get("after").and_then(Value::as_str).map(str::to_owned));
         let (people, channel_names) = self.message_names(s, actor, messages.iter().copied());
         let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
-        Ok(
-            json!({"messages":messages,"cursor":cursor,"people":people,"channel_names":channel_names}),
-        )
+        let mut page = json!({"messages":messages,"cursor":cursor,"people":people,"channel_names":channel_names});
+        if truncated {
+            page["truncated"] = json!(true);
+        }
+        Ok(page)
     }
     fn read_run_remote_scope(&self, actor: &Actor, _req: &Request) -> Result<Value> {
         let run = actor
