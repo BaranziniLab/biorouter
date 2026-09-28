@@ -8,6 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
+import { CrewHttpError } from '../crewApi';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { ConnectionSettingsDialog } from './ConnectionSettingsDialog';
 import { confirmCopy, connectionSettingsCopy } from './copy';
@@ -245,6 +246,87 @@ describe('ConnectionSettingsDialog', () => {
     save();
     expect(await screen.findAllByText('ssh_target is not valid')).toHaveLength(1);
     expect(screen.getByRole('alert')).toHaveTextContent('ssh_target is not valid');
+  });
+
+  // DW-04: "Identity file must be an absolute path" rendered only as the dialog's one note, at the
+  // end of the scroll body, 140px below the view; the field was not marked, and nothing moved.
+  it('says a relative or ~ identity file under its field before sending, and marks it invalid', async () => {
+    const { crew } = renderSettings({ identity_file: '/home/alice/.ssh/id_ed25519' });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    fireEvent.change(field, { target: { value: '~/.ssh/id_ed25519' } });
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.identityFileAbsolute);
+    expect(field).toBeInvalid();
+    save();
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: '/home/alice/.ssh/id_rsa' } });
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toBeValid();
+  });
+
+  it('opens Advanced and focuses a hidden identity file the save would send wrong', async () => {
+    const { crew } = renderSettings({ identity_file: '/home/alice/.ssh/id_ed25519' });
+    fireEvent.change(await screen.findByLabelText(connectionSettingsCopy.identityFile), {
+      target: { value: 'id_ed25519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText(connectionSettingsCopy.identityFile)).toBeNull()
+    );
+    save();
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+  });
+
+  it('puts the daemon’s field refusal under its field, focused, instead of a note at the end', async () => {
+    const { crew } = renderSettings();
+    crew.updateConnection.mockRejectedValueOnce(
+      new Error('Daemon returned 400: Invalid ProxyJump route')
+    );
+    save();
+    const field = await screen.findByLabelText(connectionSettingsCopy.jumpHosts);
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.jumpHostsInvalid);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/ProxyJump/)).toBeNull();
+    // Editing the value takes the refusal away.
+    fireEvent.change(field, { target: { value: 'gateway' } });
+    await waitFor(() => expect(field).not.toHaveAttribute('aria-invalid'));
+  });
+
+  // SF-F4 (a): "Crew aliases have different institutions; use a separately verified cluster
+  // connection" for a person with one connection.
+  it('says an institution refusal under Institution, naming both institutions', async () => {
+    const { crew } = renderSettings();
+    crew.updateConnection.mockRejectedValueOnce(
+      new Error(
+        'Daemon returned 400: Crew aliases have different institutions; use a separately verified cluster connection'
+      )
+    );
+    fireEvent.change(await screen.findByLabelText('Institution'), {
+      target: { value: 'stanford' },
+    });
+    save();
+    const text = connectionSettingsCopy.institutionMismatch('stanford', 'lab', 'ucsf');
+    expect(text).toBe('This connection is for stanford, but lab belongs to ucsf. Use ucsf here.');
+    const field = screen.getByLabelText('Institution');
+    await waitFor(() => expect(field).toHaveAccessibleDescription(text));
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.queryByText(/aliases|cluster/)).toBeNull();
+  });
+
+  it('keeps a coded institution refusal’s own sentence', async () => {
+    const { crew } = renderSettings();
+    const sentence = 'This connection is for stanford, but lab belongs to ucsf.';
+    crew.updateConnection.mockRejectedValueOnce(
+      new CrewHttpError(sentence, 400, 'crew_institution_mismatch')
+    );
+    save();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Institution')).toHaveAccessibleDescription(sentence)
+    );
   });
 
   it('opens Advanced by itself only when the record uses something inside it', async () => {

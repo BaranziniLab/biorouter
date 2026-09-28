@@ -44,6 +44,28 @@ export const connectionSettingsCopy = {
   remoteRoot: 'Remote work folder',
   remoteRootPlaceholder: '/home/you/project',
   remoteRootPattern: 'Use an absolute path that starts with /.',
+  /**
+   * Under Identity file, typed or refused by the daemon ("Identity file must be an absolute path"):
+   * a path starting with `~` is refused too, since the daemon never expands it (DW-04).
+   */
+  identityFileAbsolute:
+    'Use the key file’s full path, starting with /. A path starting with ~ isn’t accepted.',
+  /** The daemon's other field refusals on a save, each under its own field (DW-04). */
+  nameLength: 'Use a connection name of 1 to 120 characters.',
+  loginInvalid:
+    'Use a server login or SSH alias: letters, numbers and _ . / : @ % -, not starting with a dash.',
+  jumpHostsInvalid:
+    'Use SSH aliases or user@host names for jump hosts, separated by commas, without spaces or shell characters.',
+  /**
+   * Under Institution when the daemon refuses it (SF-F4): a connection's institution must be the
+   * workspace's, which never changes once set. The daemon's own words are kept when it wrote them
+   * for a person (`crew_institution_mismatch`); an older daemon's "Crew aliases have different
+   * institutions…" is said as this.
+   */
+  institutionMismatch: (typed: string, workspace: string, institution: string) =>
+    `This connection is for ${typed}, but ${workspace} belongs to ${institution}. Use ${institution} here.`,
+  institutionMismatchUnknown: (workspace: string) =>
+    `This connection’s institution has to be the one ${workspace} belongs to, which can’t be changed.`,
   remoteExecution: 'Let my agent run commands in this folder',
   remoteExecutionNeedsFolder: 'Set a remote work folder first.',
   portRange: 'Use a port from 1 to 65535.',

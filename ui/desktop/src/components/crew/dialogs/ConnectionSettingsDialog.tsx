@@ -16,7 +16,15 @@ import type { ErrorSource, SaveConnectionInput } from '../state/types';
 import { copyText } from './clipboard';
 import { MakeConnectionPublicDialog, CrewConfirmation } from './confirmations';
 import { connectionSettingsCopy as copy } from './copy';
-import { DialogErrorNote, Field, helpId, RadioRows, useDismissOwnError } from './fields';
+import {
+  DialogErrorNote,
+  Field,
+  helpId,
+  RadioRows,
+  useCustomValidity,
+  useDialogError,
+  useDismissOwnError,
+} from './fields';
 import { groupedFingerprint, useWorkspaceKeyFingerprint } from './fingerprint';
 import { ABSOLUTE_PATH_PATTERN, INSTITUTION_FIELD_PATTERN } from './nameRules';
 import { useCloseWhenMissing } from './useCloseWhenMissing';
@@ -41,7 +49,10 @@ interface ConnectionForm {
   institution: string;
 }
 
-type AdvancedField = 'port' | 'remote_root';
+type AdvancedField = 'port' | 'identity_file' | 'proxy_jump' | 'remote_root';
+
+/** A field a save refusal is about, which then says it under itself (DW-04). */
+type RefusedField = 'name' | 'login' | 'institution' | AdvancedField;
 
 function formFrom(connection: CrewConnection): ConnectionForm {
   return {
@@ -78,11 +89,64 @@ function portProblem(port: string): boolean {
   return !Number.isInteger(value) || value < 1 || value > 65535;
 }
 
-/** The first Advanced field the browser would refuse, checked while Advanced is closed. */
+/**
+ * Identity file's problem, as the daemon judges it (`validate_connection`: an absolute path), or
+ * null. A `~` is not expanded by the daemon, so `~/.ssh/id_ed25519` is refused as well (DW-04).
+ */
+function identityProblem(path: string): string | null {
+  const value = path.trim();
+  return value && !value.startsWith('/') ? copy.identityFileAbsolute : null;
+}
+
+/** Remote work folder's problem, or null. */
+function rootProblem(path: string): string | null {
+  const value = path.trim();
+  return value && !value.startsWith('/') ? copy.remoteRootPattern : null;
+}
+
+/** The first Advanced field that would be refused, checked while Advanced is closed. */
 function hiddenProblem(form: ConnectionForm): AdvancedField | null {
   if (portProblem(form.port)) return 'port';
-  if (form.remote_root.trim() && !form.remote_root.trim().startsWith('/')) return 'remote_root';
+  if (identityProblem(form.identity_file)) return 'identity_file';
+  if (rootProblem(form.remote_root)) return 'remote_root';
   return null;
+}
+
+/**
+ * The field a daemon refusal of a save is about, and what it says there (DW-04): each of
+ * `validate_connection`'s refusals, and the institution refusal (by its code, or an older daemon's
+ * words). `null` for any other refusal, which the dialog's one note says.
+ */
+function refusedField(
+  error: { message: string; code?: string } | null,
+  typedInstitution: string,
+  workspace: string,
+  workspaceInstitution: string | null
+): { field: RefusedField; text: string } | null {
+  if (!error) return null;
+  const text = error.message.replace(/^Daemon returned \d+: /, '');
+  if (/^Identity file must be/i.test(text))
+    return { field: 'identity_file', text: copy.identityFileAbsolute };
+  if (/^Connection name must/i.test(text)) return { field: 'name', text: copy.nameLength };
+  if (/^SSH target must/i.test(text)) return { field: 'login', text: copy.loginInvalid };
+  if (/^Invalid ProxyJump route/i.test(text))
+    return { field: 'proxy_jump', text: copy.jumpHostsInvalid };
+  const institutionRefused =
+    error.code === 'crew_institution_mismatch' ||
+    /have different institutions|institutions differ|resolved affiliation/i.test(text);
+  if (!institutionRefused) return null;
+  const worded =
+    error.code === 'crew_institution_mismatch' &&
+    /[.!?]$/.test(text) &&
+    !/have different institutions|resolved affiliation/i.test(text);
+  return {
+    field: 'institution',
+    text: worded
+      ? text
+      : workspaceInstitution && typedInstitution && typedInstitution !== workspaceInstitution
+        ? copy.institutionMismatch(typedInstitution, workspace, workspaceInstitution)
+        : copy.institutionMismatchUnknown(workspace),
+  };
 }
 
 /**
@@ -163,7 +227,7 @@ export function ConnectionSettingsDialog({ connectionId, onClose }: ConnectionSe
 }
 
 function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onClose(): void }) {
-  const { crew, workspace, phrase } = useDialogView(saved.id);
+  const { crew, workspace, phrase, snapshot } = useDialogView(saved.id);
   const formId = React.useId();
   const ids = {
     name: `${formId}-name`,
@@ -206,19 +270,67 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
     input.setSelectionRange(input.value.length, input.value.length);
   };
 
-  const update = <K extends keyof ConnectionForm>(key: K, value: ConnectionForm[K]) =>
+  // A field refusal is about the value it refused: editing the form takes it away.
+  const update = <K extends keyof ConnectionForm>(key: K, value: ConnectionForm[K]) => {
+    if (refusedRef.current) dismissOwnError();
     setForm((current) => ({ ...current, [key]: value }));
+  };
+  const refusedRef = React.useRef(false);
+
+  const fieldId = React.useMemo<Record<RefusedField, string>>(
+    () => ({
+      name: `${formId}-name`,
+      login: `${formId}-login`,
+      institution: `${formId}-institution`,
+      port: `${formId}-port`,
+      identity_file: `${formId}-identity`,
+      proxy_jump: `${formId}-jump`,
+      remote_root: `${formId}-root`,
+    }),
+    [formId]
+  );
+  // A save refusal about one field is said under it, the field marked invalid and focused (DW-04).
+  const saveError = useDialogError(SOURCE);
+  const refused = refusedField(
+    saveError ? { message: saveError, code: crew.error?.code } : null,
+    form.institution.trim(),
+    workspace,
+    snapshot?.workspace.institution_id ?? null
+  );
+  refusedRef.current = refused !== null;
+  const refusedHere = (field: RefusedField) => (refused?.field === field ? refused.text : null);
+  const identityError = identityProblem(form.identity_file) ?? refusedHere('identity_file');
+  const rootError = rootProblem(form.remote_root);
+  const identityRef = useCustomValidity<HTMLInputElement>(identityProblem(form.identity_file));
+  const rootRef = useCustomValidity<HTMLInputElement>(rootProblem(form.remote_root));
 
   // A hidden field that would fail: open Advanced, then focus the field once it has mounted.
   React.useEffect(() => {
     if (!focusField || !advancedOpen) return;
-    const node = document.getElementById(focusField === 'port' ? ids.port : ids.root);
+    const node = document.getElementById(fieldId[focusField]);
     if (node instanceof HTMLInputElement) {
       node.focus();
       node.reportValidity();
       setFocusField(null);
     }
-  }, [focusField, advancedOpen, ids.port, ids.root]);
+  }, [focusField, advancedOpen, fieldId]);
+
+  // The daemon refused a field: take the person there, opening Advanced for one inside it.
+  const refusedFieldName = refused?.field ?? null;
+  React.useEffect(() => {
+    if (!refusedFieldName) return;
+    if (refusedFieldName === 'identity_file' || refusedFieldName === 'proxy_jump') {
+      if (!advancedOpen) {
+        setAdvancedOpen(true);
+        return;
+      }
+    }
+    const node = document.getElementById(fieldId[refusedFieldName]);
+    if (node instanceof HTMLInputElement) {
+      node.focus();
+      node.scrollIntoView?.({ block: 'nearest' });
+    }
+  }, [refusedFieldName, saveError, advancedOpen, fieldId]);
 
   const save = (body: SaveConnectionInput, source: ErrorSource) =>
     crew
@@ -255,7 +367,10 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
   };
 
   const root = form.remote_root.trim();
-  const institutionError = institutionInvalid ? copy.institutionPattern : undefined;
+  const institutionError =
+    (institutionInvalid ? copy.institutionPattern : null) ??
+    refusedHere('institution') ??
+    undefined;
   const institutionHelper = form.institution ? undefined : copy.institutionHelper;
 
   return (
@@ -297,10 +412,12 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
       }
     >
       <form id={formId} onSubmit={submit} className="flex flex-col gap-4 py-3">
-        <Field id={ids.name} label={copy.name}>
+        <Field id={ids.name} label={copy.name} error={refusedHere('name') ?? undefined}>
           <Input
             id={ids.name}
             ref={nameRef}
+            aria-invalid={refusedHere('name') ? true : undefined}
+            aria-describedby={refusedHere('name') ? helpId(ids.name) : undefined}
             // Focused by React as it mounts, before the dialog's focus scope would move focus to
             // the first field and select it, so the caret goes where `placeCaretAtEnd` puts it.
             autoFocus
@@ -313,7 +430,12 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
             onChange={(event) => update('name', event.target.value)}
           />
         </Field>
-        <Field id={ids.login} label={copy.login} helper={loginHelper}>
+        <Field
+          id={ids.login}
+          label={copy.login}
+          helper={loginHelper}
+          error={refusedHere('login') ?? undefined}
+        >
           <Input
             id={ids.login}
             required
@@ -321,7 +443,8 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
             spellCheck={false}
             translate="no"
             placeholder={copy.loginPlaceholder}
-            aria-describedby={loginHelper ? helpId(ids.login) : undefined}
+            aria-invalid={refusedHere('login') ? true : undefined}
+            aria-describedby={loginHelper || refusedHere('login') ? helpId(ids.login) : undefined}
             value={form.ssh_target}
             onChange={(event) => update('ssh_target', event.target.value)}
           />
@@ -352,7 +475,7 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
               spellCheck={false}
               translate="no"
               placeholder={copy.institutionPlaceholder}
-              aria-invalid={institutionInvalid || undefined}
+              aria-invalid={institutionError ? true : undefined}
               aria-describedby={
                 institutionError || institutionHelper ? helpId(ids.institution) : undefined
               }
@@ -394,34 +517,46 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
                 onChange={(event) => update('port', event.target.value)}
               />
             </Field>
-            <Field id={ids.identity} label={copy.identityFile}>
+            <Field id={ids.identity} label={copy.identityFile} error={identityError ?? undefined}>
               <Input
                 id={ids.identity}
+                ref={identityRef}
                 autoComplete="off"
                 spellCheck={false}
                 placeholder={copy.identityFilePlaceholder}
+                aria-invalid={identityError ? true : undefined}
+                aria-describedby={identityError ? helpId(ids.identity) : undefined}
                 value={form.identity_file}
                 onChange={(event) => update('identity_file', event.target.value)}
               />
             </Field>
-            <Field id={ids.jump} label={copy.jumpHosts}>
+            <Field
+              id={ids.jump}
+              label={copy.jumpHosts}
+              error={refusedHere('proxy_jump') ?? undefined}
+            >
               <Input
                 id={ids.jump}
                 autoComplete="off"
                 spellCheck={false}
                 placeholder={copy.jumpHostsPlaceholder}
+                aria-invalid={refusedHere('proxy_jump') ? true : undefined}
+                aria-describedby={refusedHere('proxy_jump') ? helpId(ids.jump) : undefined}
                 value={form.proxy_jump}
                 onChange={(event) => update('proxy_jump', event.target.value)}
               />
             </Field>
-            <Field id={ids.root} label={copy.remoteRoot}>
+            <Field id={ids.root} label={copy.remoteRoot} error={rootError ?? undefined}>
               <Input
                 id={ids.root}
+                ref={rootRef}
                 autoComplete="off"
                 spellCheck={false}
                 pattern={ABSOLUTE_PATH_PATTERN}
                 title={copy.remoteRootPattern}
                 placeholder={copy.remoteRootPlaceholder}
+                aria-invalid={rootError ? true : undefined}
+                aria-describedby={rootError ? helpId(ids.root) : undefined}
                 value={form.remote_root}
                 onChange={(event) => update('remote_root', event.target.value)}
               />
@@ -449,7 +584,8 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
           <WorkspaceDetails connection={saved} fingerprint={fingerprint} />
         </Disclosure>
 
-        <DialogErrorNote source={SOURCE} />
+        {/* A refusal about one field is said under that field instead (DW-04). */}
+        {refused ? null : <DialogErrorNote source={SOURCE} />}
       </form>
 
       {confirmBody ? (

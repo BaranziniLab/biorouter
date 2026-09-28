@@ -183,11 +183,20 @@ export function DialogErrorNote({
   const crew = useCrew();
   const here = useCrewErrorSlot(source);
   useDismissErrorOnClose(source);
-  if (!here || !crew.error) return null;
+  const note = React.useRef<HTMLDivElement>(null);
+  const message = here ? (crew.error?.message ?? null) : null;
+  // At the end of a scrolling dialog body it can be below the view, so Save looked like it did
+  // nothing (DW-04): bring it into view as it appears, without moving focus off the control.
+  React.useEffect(() => {
+    if (message) note.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [message]);
+  if (!message) return null;
   return (
-    <Note tone="danger" role="alert" icon={AlertTriangle} className={className}>
-      <span>{render(crew.error.message)}</span>
-    </Note>
+    <div ref={note} className={className}>
+      <Note tone="danger" role="alert" icon={AlertTriangle}>
+        <span>{render(message)}</span>
+      </Note>
+    </div>
   );
 }
 
