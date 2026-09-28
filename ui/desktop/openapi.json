@@ -1291,7 +1291,20 @@
           },
           "required": true
         },
-        "responses": {}
+        "responses": {
+          "200": {
+            "description": "The provider could be built, and with `live` set its credentials were not rejected"
+          },
+          "400": {
+            "description": "The provider could not be built from the saved (or candidate) settings, or a candidate named a setting this provider does not declare"
+          },
+          "403": {
+            "description": "`live` or `candidate` from a caller that could not prove a person asked, on a daemon that holds a user-action key; or, on one that holds none, a live check or a candidate that names a setting, without typing the key it would be checked with"
+          },
+          "422": {
+            "description": "With `live` set: the provider rejected the credentials. The body is its message"
+          }
+        }
       }
     },
     "/config/custom-providers": {
@@ -1403,6 +1416,9 @@
           },
           "404": {
             "description": "Provider not found"
+          },
+          "409": {
+            "description": "Refused: the update moves the provider to a new URL while keeping its saved key or headers, and the request carried no proof it came from the user"
           },
           "500": {
             "description": "Internal server error"
@@ -1912,13 +1928,13 @@
             }
           },
           "403": {
-            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"
           },
           "404": {
             "description": "Configuration key not found"
           },
           "409": {
-            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user"
+            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user. Also a key that decides where a provider sends its requests and credentials, when something other than its default is stored"
           },
           "500": {
             "description": "Internal server error"
@@ -2003,13 +2019,13 @@
             }
           },
           "400": {
-            "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'"
+            "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 1"
           },
           "403": {
-            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
           },
           "409": {
-            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode"
+            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode. Also a key that decides where a provider sends its requests and credentials (a host, an endpoint), when the write would change what it resolves to"
           },
           "500": {
             "description": "Internal server error"
@@ -2050,7 +2066,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Authentication session",
+            "description": "The sign-in",
             "required": true,
             "schema": {
               "type": "string"
@@ -2059,10 +2075,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The sign-in, stopped, and its connection disconnected",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewCancelled"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: no such sign-in for this controller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2074,12 +2112,14 @@
         "tags": [
           "Crew"
         ],
+        "summary": "The sign-in's terminal, as a WebSocket: binary frames carry the terminal's bytes; text",
+        "description": "frames carry `{\"type\":\"input\",\"data\"}` and `{\"type\":\"resize\",\"cols\",\"rows\"}` from the client\nand `{\"type\":\"exit\",\"exit_code\",\"authenticated\"}` or `{\"type\":\"error\",\"code\",\"error\"}` from\nthe daemon, where `code` is `crew_handoff_failed` (signed in, but Crew did not start behind\nit), `crew_workspace_identity_mismatch`, `authentication_handoff_failed` (the sign-in was\nreplaced or closed) or `authentication_attach_failed` (the terminal could not be attached).",
         "operationId": "crew_authentication_terminal",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Authentication session",
+            "description": "The sign-in",
             "required": true,
             "schema": {
               "type": "string"
@@ -2088,7 +2128,27 @@
         ],
         "responses": {
           "101": {
-            "description": "Human-authorized terminal websocket"
+            "description": "The human-authorized terminal WebSocket"
+          },
+          "400": {
+            "description": "`crew_request_refused`: no such sign-in for this controller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
           }
         }
       }
@@ -2098,13 +2158,35 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "list_connections",
+        "operationId": "crew_list_connections",
         "responses": {
           "200": {
-            "description": "`connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only",
+            "description": "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewConnectionList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: Crew's saved settings could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2114,21 +2196,65 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "save_connection",
+        "operationId": "crew_save_connection",
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/SaveConnection"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The saved connection",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewConnectionView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2163,18 +2289,22 @@
             }
           },
           "400": {
-            "description": "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body in the wrong shape, or `crew_request_refused` with a fixed sentence for any other failure",
+            "description": "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body that is not JSON, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be saved, or `crew_request_refused` with a fixed sentence for any other failure",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
@@ -2182,7 +2312,39 @@
             "description": "`crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2194,12 +2356,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "remove_connection",
+        "operationId": "crew_remove_connection",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2208,10 +2370,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Removed, with its keys. A workspace that is online is asked to end the connection's grants",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewConnectionRemoved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: no saved connection has that ID, or it could not be removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2221,12 +2405,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "update_connection",
+        "operationId": "crew_update_connection",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2236,17 +2420,61 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/SaveConnection"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The connection as saved. A save that would change nothing changes nothing, and answers the connection as it stands; a save that keeps the route of a connected connection reconnects it",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewConnectionView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2258,12 +2486,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "authentication_plan",
+        "operationId": "crew_authentication_plan",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2272,10 +2500,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The command that signs in to the connection's server in a terminal",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationPlan"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: no saved connection has that ID, or it cannot be signed in to this way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2292,7 +2542,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Saved Crew connection",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2311,10 +2561,62 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The sign-in, ready for its terminal",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticationSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a connection that can't be signed in to this way, a sign-in already under way for another controller, or one that could not start; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2326,12 +2628,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "connect",
+        "operationId": "crew_connect",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2340,18 +2642,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The connection, connected and verified against its pinned workspace key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewConnectionView"
+                }
               }
             }
           },
           "400": {
-            "description": "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message and `detail`, when present, OpenSSH's own bounded words for Copy details",
+            "description": "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message, `detail`, when present, OpenSSH's own bounded words for Copy details, and `host`, when present, the host the failure concerns (a jump host's included). Otherwise `crew_institution_mismatch` when the workspace's connections disagree about its institution, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused`",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2363,12 +2679,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "disconnect",
+        "operationId": "crew_disconnect",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2377,10 +2693,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Disconnected. Disconnecting a connection that is not connected changes nothing",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewDisconnected"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2399,7 +2737,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Crew connection ID",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2408,10 +2746,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The chats and tasks holding a grant on this connection, and the earlier grants whose revocation the workspace has not confirmed yet",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewGrantList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_profile_refused`: no saved connection has that ID, or the grants could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2457,26 +2817,32 @@
             }
           },
           "400": {
-            "description": "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)",
+            "description": "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, a typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "404": {
-            "description": "`crew_connection_not_found`",
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
@@ -2484,7 +2850,19 @@
             "description": "`crew_not_connected`: connect first",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2520,26 +2898,32 @@
             }
           },
           "400": {
-            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer",
+            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "404": {
-            "description": "`crew_connection_not_found`",
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
@@ -2547,7 +2931,19 @@
             "description": "`crew_not_connected`: connect first",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2581,26 +2977,32 @@
             }
           },
           "400": {
-            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer",
+            "description": "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), a failed sign-in handoff (`crew_handoff_failed`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "404": {
-            "description": "`crew_connection_not_found`",
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
@@ -2608,7 +3010,19 @@
             "description": "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The claim did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace applied it is not known; claiming again is safe) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2620,12 +3034,14 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "observe",
+        "summary": "Watch a connection's workspace, and one channel of it, as the person: NDJSON frames until",
+        "description": "the observation ends.",
+        "operationId": "crew_observe",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Saved Crew connection",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2644,11 +3060,91 @@
         },
         "responses": {
           "200": {
-            "description": "Bounded NDJSON room events (one schema instance per line)",
+            "description": "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed",
             "content": {
               "application/x-ndjson": {
                 "schema": {
                   "$ref": "#/components/schemas/ObserveEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid`: a body that is not JSON, or a channel or cursor that is empty, longer than 128 bytes, or a cursor without its channel",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_connection_not_found`: no saved connection has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`observer_capacity_reached`: too many observations are open on this daemon",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`crew_request_refused`: Crew could not start on this daemon",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
                 }
               }
             }
@@ -2661,12 +3157,14 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "request",
+        "summary": "Send one Crew protocol request to the workspace as the person, and answer the workspace's",
+        "description": "own result.",
+        "operationId": "crew_request",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2685,10 +3183,72 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The workspace's own answer, forwarded unchanged",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewWorkspaceAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` (with `broker_code` when the workspace itself refused), `crew_mode_mismatch` (`actual_mode`, `expected_mode`: the request required the other privacy mode; nothing was sent), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace applied it is not known; retry with `request_id`, its idempotency key, to apply it at most once) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2700,12 +3260,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "list_runs",
+        "operationId": "crew_list_runs",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2714,10 +3274,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "This computer's tasks on the connection, newest first",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewRunList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: the task ledger could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2727,12 +3309,13 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "start_run",
+        "summary": "Start an agent task that posts its result in a channel, under a grant the workspace admits.",
+        "operationId": "crew_start_run",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2751,10 +3334,82 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The task, running. The same `request_id` with the same request answers the same task again",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RunView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active, a model Crew cannot isolate) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2766,12 +3421,12 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "cancel_run",
+        "operationId": "crew_cancel_run",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2780,7 +3435,7 @@
           {
             "name": "run_id",
             "in": "path",
-            "description": "Crew run_id",
+            "description": "One of this computer's tasks on it",
             "required": true,
             "schema": {
               "type": "string"
@@ -2789,10 +3444,113 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Stopped here, and the workspace confirmed revoking the task's grant; or the task had already ended (`already_finished`). Stopping the task's remote jobs is not confirmed",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewRunCancellation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_refused`: a run ID of another shape, a task that is not this computer's on this connection, or a ledger that could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Stopped here, not confirmed: `crew_revocation_unconfirmed` (the workspace has not confirmed revoking the grant; retry to confirm it) or `crew_cancel_persistence_failed` (the task's status could not be saved; inspect the task before retrying)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/crew/connections/{id}/sessions/{session_id}/context": {
+      "get": {
+        "tags": [
+          "Crew"
+        ],
+        "summary": "The context a chat's grant reads, as the workspace lists it (`context.manifest`).",
+        "operationId": "crew_profile_context",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The saved connection",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "The chat or task holding the grant",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The workspace's own manifest of the grant's context, forwarded unchanged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewWorkspaceAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_profile_refused` for a chat with no Crew grant, a grant that stopped or is on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2804,12 +3562,14 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "grant_session",
+        "summary": "Give a chat access to a channel (`/crew`): the workspace admits a run for it, and the chat",
+        "description": "gets the Crew tools, bound to its model.",
+        "operationId": "crew_grant_session",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew id",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
@@ -2818,7 +3578,7 @@
           {
             "name": "session_id",
             "in": "path",
-            "description": "Crew session_id",
+            "description": "The chat to grant access to",
             "required": true,
             "schema": {
               "type": "string"
@@ -2837,76 +3597,110 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The chat's grant",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewSessionGrant"
+                }
               }
-            }
-          }
-        }
-      }
-    },
-    "/crew/connections/{id}/sessions/{session}/context": {
-      "get": {
-        "tags": [
-          "Crew"
-        ],
-        "operationId": "crew_profile_context",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Crew connection ID",
-            "required": true,
-            "schema": {
-              "type": "string"
             }
           },
-          {
-            "name": "session",
-            "in": "path",
-            "description": "Session ID",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a chat that is busy, not open, or can't use Crew, or a grant the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_session_unavailable`: the chat is out of this caller's reach",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_model_fixed`: the chat already has Crew access bound to another model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
         }
       }
     },
-    "/crew/connections/{id}/sessions/{session}/revoke": {
+    "/crew/connections/{id}/sessions/{session_id}/revoke": {
       "post": {
         "tags": [
           "Crew"
         ],
         "summary": "Revoke a chat's or task's grant (RV-D1, RV-D3). The grant stops on this device first,",
-        "description": "and is saved, before the workspace is asked; so:\n\n- 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped\nhere and confirmed by the workspace. `run` is the workspace's revoked run.\n- 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon\nasks the workspace again by itself at every reconnect until it confirms (F3), and the\ngrants list says when it has; retrying asks at once.\n- 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500\n[`REVOCATION_NOT_SAVED`]: not revoked, or not durably.\n\nA ledger task's session is stopped through the task cancel path, so its ledger entry reads\n`cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds\n`task_status`. The request body, if any, is ignored.",
+        "description": "and is saved, before the workspace is asked; so:\n\n- 200 [`CrewRevocation`]: stopped here and confirmed by the workspace. `run` is the\nworkspace's revoked run.\n- 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon\nasks the workspace again by itself at every reconnect until it confirms (F3), and the\ngrants list says when it has; retrying asks at once.\n- 404 [`GRANT_NOT_FOUND`], 409 [`GRANT_OTHER_CONNECTION`] or [`GRANT_REPLACED`], 500\n[`REVOCATION_NOT_SAVED`]: not revoked, or not durably.\n\nA ledger task's session is stopped through the task cancel path, so its ledger entry reads\n`cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds\n`task_status`. The request body, if any, is ignored.",
         "operationId": "crew_profile_revoke",
         "parameters": [
           {
             "name": "id",
             "in": "path",
-            "description": "Crew connection ID",
+            "description": "The saved connection",
             "required": true,
             "schema": {
               "type": "string"
             }
           },
           {
-            "name": "session",
+            "name": "session_id",
             "in": "path",
-            "description": "Session ID",
+            "description": "The chat or task holding the grant",
             "required": true,
             "schema": {
               "type": "string"
@@ -2915,10 +3709,72 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Stopped here and confirmed by the workspace. A task's grant adds `task_status`, and `task_status_error` when the task's status could not be saved",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewRevocation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_profile_refused`: the revocation could not be asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`crew_grant_not_found`: the chat holds no Crew grant on this computer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`crew_grant_other_connection`: the chat's grant is on another connection; `crew_grant_replaced`: the chat was granted access again while this grant was being revoked, and the new grant is live",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "`crew_revocation_not_saved`: stopped on this device, but the stop could not be saved, so a restart would honor the grant again. Retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`crew_revocation_unconfirmed`: stopped here and saved (`stopped_on_this_device`), not yet confirmed by the workspace (`remote_revocation_confirmed: false`; `detail` says why). Biorouter asks the workspace again by itself; retrying asks at once. A task's grant adds `task_status` and `task_status_error`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2933,10 +3789,32 @@
         "operationId": "crew_profile_credentials",
         "responses": {
           "200": {
-            "description": "",
+            "description": "Where this profile keeps its Crew keys, and whether that store can be used now",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_profile_refused`: the credential store's state could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2952,17 +3830,71 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/SecretBody"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The vault, created and unlocked; this profile keeps its Crew keys in it from now on",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body other than `{passphrase}`; `detail` says what",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2977,10 +3909,32 @@
         "operationId": "crew_profile_lock",
         "responses": {
           "200": {
-            "description": "",
+            "description": "The vault, locked; locking a locked vault changes nothing",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_profile_refused`: the vault could not be locked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -2996,17 +3950,71 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/SecretBody"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The vault, unlocked",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body other than `{passphrase}`; `detail` says what",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3018,13 +4026,35 @@
         "tags": [
           "Crew"
         ],
-        "operationId": "prepare_device",
+        "operationId": "crew_prepare_device",
         "responses": {
           "200": {
-            "description": "",
+            "description": "A new device key, or the one this profile already prepared. Save the connection with its `preparation_id`",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PreparedDevice"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The key could not be saved: `crew_credential_store_unavailable` (no keyring service answers and there is no Crew vault), `crew_credential_store_refused` (the keyring did not let Biorouter use it), or `crew_request_refused`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3040,17 +4070,71 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/FileRequest"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The selection, as a capability a transfer is started with. A download's destination may still wait for confirmation (`approval_pending`)",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/FileCapability"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when the connection is in the other privacy mode than the one sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3067,7 +4151,7 @@
           {
             "name": "capability_id",
             "in": "path",
-            "description": "Unused file selection capability",
+            "description": "A file selection that will not be used",
             "required": true,
             "schema": {
               "type": "string"
@@ -3076,10 +4160,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "Given back, whether or not it was still pending",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewFileDiscarded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_transfer_refused`: the transfer service is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3096,7 +4202,7 @@
           {
             "name": "capability_id",
             "in": "path",
-            "description": "Pending file selection capability",
+            "description": "A download's pending file selection",
             "required": true,
             "schema": {
               "type": "string"
@@ -3105,10 +4211,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The selection, confirmed",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/FileCapability"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_transfer_refused` for a selection that expired, is not a download's, or whose connection policy changed (select the file again); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3145,18 +4273,22 @@
             }
           },
           "400": {
-            "description": "`crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses",
+            "description": "`crew_request_invalid`: a body that is not JSON, or a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
@@ -3164,7 +4296,29 @@
             "description": "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3192,7 +4346,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)",
+            "description": "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`, `crew_host_start_timed_out` or `crew_host_start_cancelled`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3202,18 +4356,22 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "404": {
-            "description": "`crew_host_start_not_found`",
+            "description": "`crew_host_start_not_found`: no such run on this computer",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3238,26 +4396,32 @@
         ],
         "responses": {
           "200": {
-            "description": "`{\"cancelled\": true}`; stopping a finished run changes nothing",
+            "description": "Stopped; stopping a finished run changes nothing",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewCancelled"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "404": {
-            "description": "`crew_host_start_not_found`",
+            "description": "`crew_host_start_not_found`: no such run on this computer",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3271,7 +4435,7 @@
         ],
         "summary": "Resolve typed names (`@bob`, `analysis-lab`, `#methods`, `analysis-lab/methods`, a saved",
         "description": "connection's name) to IDs, against the person's own workspace snapshot and this device's\nsaved connections (naming design D7). It names a connection, not a chat, so proof of a\nperson is its gate. The answer is a lookup, never a permission: the broker authorizes every\nmutation that uses it.",
-        "operationId": "resolve",
+        "operationId": "crew_resolve",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3294,26 +4458,72 @@
             }
           },
           "400": {
-            "description": "Invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`), or no connection named while several are saved (`crew_connection_required`)",
+            "description": "`crew_request_invalid` for a body that is not JSON; invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`, with `kind` and `text`), no connection named while several are saved (`crew_connection_required`), or the workspace's snapshot could not be read (`crew_request_refused`, with `broker_code` when the workspace refused)",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "403": {
-            "description": "No proof that a person asked",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           },
           "409": {
-            "description": "The connection matches more than one saved connection (`ambiguous_name`, with `candidates`)",
+            "description": "The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`)",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked for the snapshot: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it). Nothing changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3326,12 +4536,56 @@
           "Crew"
         ],
         "operationId": "crew_transfer_list",
+        "parameters": [
+          {
+            "name": "connection_id",
+            "in": "query",
+            "description": "Only this saved connection's transfers.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "description": "Only this channel's transfers.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "This computer's transfers",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewTransferList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_transfer_refused`: the transfer service is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3345,17 +4599,81 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/StartRequest"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The transfer, recorded and under way (or the transfer this `request_id` already started)",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a file selection that expired or does not match, a transfer the workspace refused, or an idempotency key of another transfer; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3371,14 +4689,83 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/PreviewRequest"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "Digest-verified bounded image"
+            "description": "The image's bytes, verified against the attachment's digest and bounded in size, with its own media type (`image/png`, `image/jpeg`, `image/gif` or `image/webp`)",
+            "content": {
+              "image/*": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewPreviewImage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an attachment that is not an image, too large to preview, not in that channel, or refused by the workspace; `crew_mode_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
           }
         }
       }
@@ -3393,7 +4780,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Transfer ID",
+            "description": "The transfer",
             "required": true,
             "schema": {
               "type": "string"
@@ -3402,10 +4789,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The transfer as this computer records it",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_transfer_refused`: no transfer has that ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3420,7 +4829,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Transfer ID",
+            "description": "The transfer",
             "required": true,
             "schema": {
               "type": "string"
@@ -3428,7 +4837,7 @@
           }
         ],
         "requestBody": {
-          "description": "",
+          "description": "A download's cleanup approval, to delete its partial file",
           "content": {
             "application/json": {
               "schema": {
@@ -3445,10 +4854,62 @@
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The record, removed after any authorized cleanup. The workspace's attachments and published downloads are not deleted",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/CrewTransferForgotten"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, one still under way, or a cleanup approval that does not match it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3465,7 +4926,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Transfer ID",
+            "description": "The transfer",
             "required": true,
             "schema": {
               "type": "string"
@@ -3474,10 +4935,32 @@
         ],
         "responses": {
           "200": {
-            "description": "",
+            "description": "The transfer, paused",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_transfer_refused`: no transfer has that ID, or it cannot be paused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -3494,7 +4977,7 @@
           {
             "name": "id",
             "in": "path",
-            "description": "Transfer ID",
+            "description": "The transfer",
             "required": true,
             "schema": {
               "type": "string"
@@ -3504,17 +4987,81 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/Resume"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "",
+            "description": "The transfer, under way again from where it stopped",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, a selection that does not match it, or a step the workspace refused; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`crew_request_invalid`: the body is larger than the route takes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "`crew_request_invalid`: the body is not sent as `application/json`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
               }
             }
           }
@@ -7855,6 +9402,35 @@
           }
         }
       },
+      "AdmissionLabels": {
+        "type": "object",
+        "description": "The display names of a run's identifiers, captured under the person's action when the\nrun is admitted (naming design D13 and D14). Never authority: every check still compares\nthe IDs, and the labels are not refreshed afterwards.",
+        "required": [
+          "workspace",
+          "destination"
+        ],
+        "properties": {
+          "destination": {
+            "$ref": "#/components/schemas/ChannelLabel"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChannelLabel"
+            },
+            "description": "Every channel the run may read, the destination included, in the run's order."
+          },
+          "workspace": {
+            "type": "string",
+            "description": "The workspace's own name, or this device's name for the connection when the\nworkspace has none."
+          },
+          "you": {
+            "type": "string",
+            "description": "The person the agent acts for: `Display name (@username)`, or `@username` when they\nnever set a display name of their own (D13). `None` when the snapshot named no actor.",
+            "nullable": true
+          }
+        }
+      },
       "AffiliationInstitution": {
         "type": "object",
         "description": "One institution, as a surface that has to *print* it needs it (issue #56,\nDR-26).\n\nBoth halves travel, and neither is derivable from the other. The `id` is the\nnormalised slug — what `registry.json` publishes, what `baam.html`'s\n`data-affiliation` carries, what every cross-affiliation warning prints and\nwhat a user quotes in a support conversation. The `display_name` is what the\nregistry publishes for it, and is **absent** for an institution the registry\ndoes not know.\n\n⚠ **An absent display name is not an error and must never render as\nnothing.** Task 47 rules that an affiliation naming an unpublished\ninstitution is a *mismatch* whose raw id is surfaced; dropping the row\nbecause it has no pretty name would make a real constraint disappear from the\none surface a user can see it on. This mirrors `privacy::affiliation::label`,\nwhich falls back to the bare id for exactly that reason.",
@@ -8065,6 +9641,57 @@
         "description": "What the vendor CLI's credential store says right now.\n\n`SignedInWithApiKey` is a distinct state rather than an error: the CLI works,\nbut the run bills a metered API account instead of the subscription, which is\nthe entire thing this feature exists to avoid. The user is told, rather than\nsilently getting a bill.",
         "discriminator": {
           "propertyName": "state"
+        }
+      },
+      "AuthenticationPlan": {
+        "type": "object",
+        "description": "How to sign in to a connection's server in a terminal (`POST /crew/connections/{id}/auth-plan`).",
+        "required": [
+          "program",
+          "args",
+          "connection_id",
+          "authentication_id"
+        ],
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "authentication_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "program": {
+            "type": "string"
+          }
+        }
+      },
+      "AuthenticationSession": {
+        "type": "object",
+        "description": "A prepared terminal sign-in (`POST /crew/connections/{id}/authentication`). Open its\nterminal with the same controller.",
+        "required": [
+          "authentication_id",
+          "connection_id",
+          "controller_id",
+          "instance_id"
+        ],
+        "properties": {
+          "authentication_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "controller_id": {
+            "type": "string"
+          },
+          "instance_id": {
+            "type": "string"
+          }
         }
       },
       "Author": {
@@ -8587,6 +10214,28 @@
           "manual"
         ]
       },
+      "ChannelLabel": {
+        "type": "object",
+        "description": "One channel's display name.",
+        "required": [
+          "channel_id",
+          "label"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string",
+            "description": "`#methods`."
+          },
+          "team": {
+            "type": "string",
+            "description": "The channel's team, when the snapshot showed it; qualifies `#general` and its kin.",
+            "nullable": true
+          }
+        }
+      },
       "ChatRequest": {
         "type": "object",
         "required": [
@@ -8675,6 +10324,18 @@
           "provider"
         ],
         "properties": {
+          "candidate": {
+            "type": "object",
+            "description": "W2-PRV-2. Values to check BEFORE they are saved: keys this provider\ndeclares, applied as task-local overrides for the check only\n(`with_config_overrides`, the mechanism provider auto-detection uses).\nNothing is written, so a rejected key never replaces a working one.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "live": {
+            "type": "boolean",
+            "description": "W2-PRV-2. Also make one cheap authenticated call (listing the provider's\nmodels, bounded at [`LIVE_CHECK_TIMEOUT`]) and refuse the check when the\nprovider rejects the credentials. Constructing a provider makes no\nnetwork call, so without this a wrong key passed. A provider with no\nsecret, or with no live model listing, is checked as before."
+          },
           "provider": {
             "type": "string"
           }
@@ -8928,6 +10589,107 @@
           }
         }
       },
+      "Connection": {
+        "type": "object",
+        "description": "A connection saved on this computer, as the registry keeps it.",
+        "required": [
+          "id",
+          "name",
+          "ssh_target",
+          "socket_path",
+          "owner_uid",
+          "workspace_id",
+          "workspace_public_key",
+          "remote_execution",
+          "cluster_connection_id",
+          "mode",
+          "policy_epoch",
+          "status",
+          "device_id",
+          "public_key"
+        ],
+        "properties": {
+          "cluster_connection_id": {
+            "type": "string"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "identity_file": {
+            "type": "string",
+            "nullable": true
+          },
+          "institution_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "last_error": {
+            "type": "string",
+            "description": "Why the connection last failed or dropped, for a person; `null` when it has not.",
+            "nullable": true
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ClusterMode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "owner_uid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "proxy_jump": {
+            "type": "string",
+            "nullable": true
+          },
+          "public_key": {
+            "type": "string"
+          },
+          "remote_execution": {
+            "type": "boolean",
+            "description": "Always sent; the default only reads a registry saved before it was kept."
+          },
+          "remote_root": {
+            "type": "string",
+            "nullable": true
+          },
+          "socket_path": {
+            "type": "string"
+          },
+          "ssh_target": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "`connected` or `disconnected`."
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "workspace_public_key": {
+            "type": "string"
+          }
+        }
+      },
       "Content": {
         "oneOf": [
           {
@@ -9066,6 +10828,32 @@
           }
         }
       },
+      "CredentialStatus": {
+        "type": "object",
+        "description": "Where this profile keeps its Crew keys, and whether that store can be used now\n(`GET /crew/credentials`, and the vault routes' answers).",
+        "required": [
+          "backend",
+          "initialized",
+          "locked",
+          "available"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "Whether `backend` can keep a Crew key on this computer now. Only the OS keyring can be\nunavailable: a headless Linux node often has no Secret Service, and every key write then\nfails (W2-DMN-1). `backend` itself keeps its three values, which clients validate."
+          },
+          "backend": {
+            "type": "string",
+            "description": "`keyring` (the OS keyring), `encrypted_vault` (the Crew vault) or `file` (a development\nprofile with the keyring disabled)."
+          },
+          "initialized": {
+            "type": "boolean"
+          },
+          "locked": {
+            "type": "boolean"
+          }
+        }
+      },
       "Credibility": {
         "type": "object",
         "required": [
@@ -9129,6 +10917,448 @@
           "personal"
         ]
       },
+      "CrewCancelled": {
+        "type": "object",
+        "description": "A stop that has nothing more to say: `DELETE /crew/host/start/{job_id}` and\n`DELETE /crew/authentication/{id}`.",
+        "required": [
+          "cancelled"
+        ],
+        "properties": {
+          "cancelled": {
+            "type": "boolean",
+            "description": "Always `true`. Stopping something that already ended changes nothing."
+          }
+        }
+      },
+      "CrewConnectionList": {
+        "type": "object",
+        "description": "`GET /crew/connections`.",
+        "required": [
+          "connections"
+        ],
+        "properties": {
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CrewConnectionView"
+            },
+            "description": "Every connection saved on this computer."
+          }
+        }
+      },
+      "CrewConnectionRemoved": {
+        "type": "object",
+        "description": "`DELETE /crew/connections/{id}`.",
+        "required": [
+          "removed"
+        ],
+        "properties": {
+          "removed": {
+            "type": "boolean",
+            "description": "Always `true`."
+          }
+        }
+      },
+      "CrewConnectionView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Connection"
+          },
+          {
+            "type": "object",
+            "required": [
+              "server_label"
+            ],
+            "properties": {
+              "last_error_code": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/CrewErrorCode"
+                  }
+                ],
+                "nullable": true
+              },
+              "server_label": {
+                "type": "string",
+                "description": "What to call the connection's server on screen (D-ALIAS): the person's own SSH alias\nfor its address when one maps to it, else the host. Display only, and never saved, so\nit never enters the connection's binding or an invitation."
+              }
+            }
+          }
+        ],
+        "description": "A saved connection as the routes answer it: its saved fields, plus what to call its server\nand, when the daemon has one, the code behind `last_error`."
+      },
+      "CrewDisconnected": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/disconnect`.",
+        "required": [
+          "disconnected"
+        ],
+        "properties": {
+          "disconnected": {
+            "type": "boolean",
+            "description": "Always `true`."
+          }
+        }
+      },
+      "CrewError": {
+        "type": "object",
+        "description": "A Crew route's refusal: `code` and `error` always, and beside them only the fields that\nrefusal names. Branch on `code`, never on `error`, which is written for a person.",
+        "required": [
+          "code",
+          "error"
+        ],
+        "properties": {
+          "actual_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "broker_code": {
+            "type": "string",
+            "description": "The workspace's own refusal code, when `code` is `crew_request_refused` because the\nworkspace refused (`name_taken`, `forbidden`, `response_too_large`, ...).",
+            "nullable": true
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`ambiguous_name`: every saved connection the name matches, as a person reads them.",
+            "nullable": true
+          },
+          "code": {
+            "$ref": "#/components/schemas/CrewErrorCode"
+          },
+          "connection": {
+            "type": "string",
+            "description": "`crew_institution_mismatch` on a save: the other saved connection to the same\nworkspace, by its name.",
+            "nullable": true
+          },
+          "connection_id": {
+            "type": "string",
+            "description": "The saved connection a `crew_invitation_conflict` or `crew_connection_exists` concerns.",
+            "nullable": true
+          },
+          "connection_institution": {
+            "type": "string",
+            "description": "`crew_institution_mismatch` on a save: that connection's institution.",
+            "nullable": true
+          },
+          "detail": {
+            "type": "string",
+            "description": "Diagnostic words for \"Copy details\", never shown by default: OpenSSH's own bounded\nwords for an SSH failure, a request reader's diagnostic for `crew_request_invalid`, or\nwhy the workspace has not confirmed a revocation.",
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "description": "One plain sentence for a person."
+          },
+          "expected_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "host": {
+            "type": "string",
+            "description": "The SSH hop an SSH failure concerns, a jump host's included.",
+            "nullable": true
+          },
+          "institution": {
+            "type": "string",
+            "description": "`crew_institution_mismatch` on a save: the institution the save gave.",
+            "nullable": true
+          },
+          "institution_refusal": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CrewInstitutionRefusal"
+              }
+            ],
+            "nullable": true
+          },
+          "institutions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`crew_institution_mismatch` when connections to one workspace disagree: every\ninstitution they name.",
+            "nullable": true
+          },
+          "kind": {
+            "allOf": [
+              {
+                "type": "string",
+                "description": "What a selector names.",
+                "enum": [
+                  "person",
+                  "former_person",
+                  "team",
+                  "channel",
+                  "connection",
+                  "attachment"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "missing": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InvitationMissing"
+              }
+            ],
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why `crew_invitation_invalid` refused a paste: the invitation codec's own code,\n`invalid_choice`, or `missing`.",
+            "nullable": true
+          },
+          "remote_revocation_confirmed": {
+            "type": "boolean",
+            "description": "`crew_revocation_unconfirmed`: `false`; the daemon asks the workspace again by itself.",
+            "nullable": true
+          },
+          "request_id": {
+            "type": "string",
+            "description": "`crew_outcome_unknown`: the request's idempotency key. Retrying with it is applied at\nmost once.",
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string",
+            "description": "A revocation refusal: the grant's run.",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
+            "description": "A revocation refusal: the chat or task whose grant it concerns.",
+            "nullable": true
+          },
+          "ssh_code": {
+            "type": "string",
+            "description": "`crew_outcome_unknown` and `crew_not_sent`: the SSH failure's code when one caused it.",
+            "nullable": true
+          },
+          "stopped_on_this_device": {
+            "type": "boolean",
+            "description": "`crew_revocation_unconfirmed`: `true`; the grant is stopped here and the stop is saved.",
+            "nullable": true
+          },
+          "task_status": {
+            "type": "string",
+            "description": "A task's revocation: the task's status after the stop (`cancelled`,\n`cancellation_unconfirmed`, ...).",
+            "nullable": true
+          },
+          "task_status_error": {
+            "type": "string",
+            "description": "A task's revocation: why its status could not be saved.",
+            "nullable": true
+          },
+          "text": {
+            "type": "string",
+            "description": "`unknown_name` and `ambiguous_name`: the name as sent.",
+            "nullable": true
+          },
+          "workspace": {
+            "type": "string",
+            "description": "The workspace as a person calls it: `crew_reconnecting`, `crew_public_model_refused`,\n`crew_channel_not_in_workspace`.",
+            "nullable": true
+          }
+        }
+      },
+      "CrewErrorCode": {
+        "type": "string",
+        "description": "Every code a Crew answer carries: a refusal's `code`, a saved connection's\n`last_error_code`, and a host-start run's `error.code`. Each route's responses say which it\nanswers and when. A client branches on these, never on a refusal's words, so the generated\nclient names every one; `openapi_contract_tests` fails on a code a Crew source answers that\nis missing here, and on one listed here that nothing answers any more.",
+        "enum": [
+          "crew_user_action_required",
+          "crew_human_authority_unavailable",
+          "crew_request_invalid",
+          "crew_request_refused",
+          "crew_credential_store_unavailable",
+          "crew_credential_store_refused",
+          "crew_connection_not_found",
+          "crew_connection_required",
+          "crew_not_connected",
+          "crew_membership_ended",
+          "crew_ssh_auth_required",
+          "crew_ssh_key_refused",
+          "crew_ssh_host_key_unknown",
+          "crew_ssh_host_key_changed",
+          "crew_ssh_unreachable",
+          "crew_ssh_failed",
+          "crew_bridge_missing",
+          "crew_broker_not_running",
+          "crew_handoff_failed",
+          "crew_workspace_identity_mismatch",
+          "crew_not_sent",
+          "crew_outcome_unknown",
+          "crew_reconnecting",
+          "crew_mode_mismatch",
+          "crew_institution_mismatch",
+          "crew_public_model_refused",
+          "crew_channel_not_in_workspace",
+          "crew_model_fixed",
+          "crew_typed_run_required",
+          "crew_invalid_selector",
+          "unknown_name",
+          "ambiguous_name",
+          "crew_idempotency_conflict",
+          "crew_start_outcome_unknown",
+          "crew_cancel_persistence_failed",
+          "crew_session_unavailable",
+          "crew_revocation_unconfirmed",
+          "crew_revocation_not_saved",
+          "crew_grant_not_found",
+          "crew_grant_other_connection",
+          "crew_grant_replaced",
+          "crew_profile_refused",
+          "crew_transfer_refused",
+          "crew_file_is_credential",
+          "crew_file_name_hidden",
+          "crew_folder_shared",
+          "crew_destination_is_folder",
+          "crew_destination_exists",
+          "crew_file_is_program",
+          "observer_capacity_reached",
+          "crew_invitation_invalid",
+          "crew_invitation_conflict",
+          "crew_connection_exists",
+          "crew_join_unsupported",
+          "crew_join_not_approved",
+          "crew_join_code_mismatch",
+          "crew_join_not_invited",
+          "crew_join_expired",
+          "crew_join_replaced",
+          "crew_join_account_changed",
+          "crew_join_device_conflict",
+          "crew_join_identity_conflict",
+          "crew_join_refused",
+          "crew_host_setup_unknown",
+          "crew_host_setup_used",
+          "crew_host_start_busy",
+          "crew_host_start_not_found",
+          "crew_host_start_timed_out",
+          "crew_host_start_cancelled"
+        ]
+      },
+      "CrewFileDiscarded": {
+        "type": "object",
+        "description": "`DELETE /crew/files/{capability_id}`.",
+        "required": [
+          "discarded"
+        ],
+        "properties": {
+          "discarded": {
+            "type": "boolean",
+            "description": "Always `true`, whether or not the selection was still pending."
+          }
+        }
+      },
+      "CrewGrantList": {
+        "type": "object",
+        "description": "`GET /crew/connections/{id}/grants`.",
+        "required": [
+          "grants",
+          "replaced_grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CrewGrantView"
+            },
+            "description": "The chats and tasks holding a grant on this connection."
+          },
+          "replaced_grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CrewGrantView"
+            },
+            "description": "Earlier grants whose revocation the workspace has not confirmed yet (F3). The daemon\nkeeps asking by itself."
+          }
+        }
+      },
+      "CrewGrantView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/GrantRow"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "allOf": [
+                  {
+                    "type": "string",
+                    "description": "Whether a grant belongs to a chat connected with /crew or to an agent task started from\nCrew.",
+                    "enum": [
+                      "chat",
+                      "task"
+                    ]
+                  }
+                ],
+                "nullable": true
+              },
+              "session_name": {
+                "type": "string",
+                "description": "The chat's title; `null` when the chat is gone or untitled, and always for a replaced\ngrant, whose ID may name a different chat now.",
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "One grant, as `GET /crew/connections/{id}/grants` lists it: the registry's row, and what\nthe route adds for display. Nothing here decides a revocation."
+      },
+      "CrewInstitutionRefusal": {
+        "type": "object",
+        "description": "What a `crew_institution_mismatch` for a model names beside its sentence\n(`biorouter::crew::institution_refusal_details`).",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "approved_for": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The institutions that approved the model; `null` when it states none.",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "description": "The model, as requested."
+          },
+          "workspace": {
+            "type": "string",
+            "description": "The workspace's signed name, else the saved connection's name.",
+            "nullable": true
+          },
+          "workspace_institution": {
+            "type": "string",
+            "description": "The workspace's institution.",
+            "nullable": true
+          }
+        }
+      },
+      "CrewPreviewImage": {
+        "type": "string",
+        "format": "binary",
+        "description": "`POST /crew/transfers/preview`: the image's bytes, verified against the attachment's\ndigest, with its own media type."
+      },
       "CrewRequest": {
         "type": "object",
         "required": [
@@ -9145,6 +11375,150 @@
           }
         },
         "additionalProperties": false
+      },
+      "CrewRevocation": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/sessions/{session_id}/revoke`: a grant stopped here and\nconfirmed by the workspace. One the workspace did not confirm is refused instead\n(`crew_revocation_unconfirmed`).",
+        "required": [
+          "revoked",
+          "session_id",
+          "run_id",
+          "remote_revocation_confirmed",
+          "run"
+        ],
+        "properties": {
+          "remote_revocation_confirmed": {
+            "type": "boolean",
+            "description": "Always `true`."
+          },
+          "revoked": {
+            "type": "boolean",
+            "description": "Always `true`."
+          },
+          "run": {
+            "type": "object",
+            "description": "The workspace's revoked run, as it answered `run.revoke`."
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "task_status": {
+            "type": "string",
+            "description": "A task's grant: the task's status after the stop.",
+            "nullable": true
+          },
+          "task_status_error": {
+            "type": "string",
+            "description": "A task's grant: why its status could not be saved.",
+            "nullable": true
+          }
+        }
+      },
+      "CrewRunCancellation": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/runs/{run_id}/cancel`: what stopping one of this computer's\ntasks did. A stop the workspace did not confirm is refused instead\n(`crew_revocation_unconfirmed`), so a 200 is a stop that took effect.",
+        "required": [
+          "cancelled",
+          "status"
+        ],
+        "properties": {
+          "already_finished": {
+            "type": "boolean",
+            "description": "`true`: the task had already ended, so nothing was stopped or revoked. Absent\notherwise.",
+            "nullable": true
+          },
+          "cancelled": {
+            "type": "boolean",
+            "description": "The task's status is `cancelled` now."
+          },
+          "message": {
+            "type": "string",
+            "description": "What the stop did, for a person. Absent when the task had already ended.",
+            "nullable": true
+          },
+          "remote_revocation_confirmed": {
+            "type": "boolean",
+            "description": "`true`: the workspace confirmed revoking the task's grant. Absent when the task had\nalready ended.",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "description": "The task's status: `cancelled`, or the status a task that had already ended kept\n(`completed`, `failed`)."
+          }
+        }
+      },
+      "CrewRunList": {
+        "type": "object",
+        "description": "`GET /crew/connections/{id}/runs`.",
+        "required": [
+          "runs"
+        ],
+        "properties": {
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunView"
+            },
+            "description": "This computer's tasks on the connection, newest first."
+          }
+        }
+      },
+      "CrewSessionGrant": {
+        "type": "object",
+        "description": "`POST /crew/connections/{id}/sessions/{session_id}/grant`: the chat's new grant.",
+        "required": [
+          "run_id",
+          "session_id"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "description": "The grant's run at the workspace."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat the grant is for."
+          }
+        }
+      },
+      "CrewTransferForgotten": {
+        "type": "object",
+        "description": "`DELETE /crew/transfers/{id}`.",
+        "required": [
+          "forgotten",
+          "message"
+        ],
+        "properties": {
+          "forgotten": {
+            "type": "boolean",
+            "description": "Always `true`."
+          },
+          "message": {
+            "type": "string",
+            "description": "What forgetting did, for a person."
+          }
+        }
+      },
+      "CrewTransferList": {
+        "type": "object",
+        "description": "`GET /crew/transfers`.",
+        "required": [
+          "transfers"
+        ],
+        "properties": {
+          "transfers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Receipt"
+            }
+          }
+        }
+      },
+      "CrewWorkspaceAnswer": {
+        "description": "The workspace's own answer, forwarded unchanged: a protocol request's result\n(`POST /crew/connections/{id}/request`) or a chat's context manifest. Its shape is the\nCrew broker protocol's, not this API's."
       },
       "CrossAffiliationGrantRequest": {
         "type": "object",
@@ -9469,6 +11843,14 @@
             "minimum": 0
           }
         }
+      },
+      "Direction": {
+        "type": "string",
+        "description": "Which way a Crew transfer moves a file.",
+        "enum": [
+          "upload",
+          "download"
+        ]
       },
       "DivergeSessionRequest": {
         "type": "object",
@@ -10092,6 +12474,107 @@
           }
         }
       },
+      "FileCapability": {
+        "type": "object",
+        "description": "A file selection the person made, as `POST /crew/files` and its confirm route answer it:\nthe capability a transfer is started with, and what was chosen.",
+        "required": [
+          "capability_id",
+          "name",
+          "target_exists",
+          "approval_pending"
+        ],
+        "properties": {
+          "approval_pending": {
+            "type": "boolean",
+            "description": "A download's destination still waits for the person's confirmation."
+          },
+          "capability_id": {
+            "type": "string",
+            "description": "Pass it as `file_capability`. It expires five minutes after the selection."
+          },
+          "name": {
+            "type": "string",
+            "description": "The file's name."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The source's size in bytes; `null` for a download's destination.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "target_exists": {
+            "type": "boolean",
+            "description": "A download's destination already exists and will be replaced."
+          }
+        }
+      },
+      "FilePurpose": {
+        "type": "string",
+        "description": "What a file selection is for: a transfer, or approving the cleanup of a download's\npartial file.",
+        "enum": [
+          "transfer",
+          "cleanup"
+        ]
+      },
+      "FileRequest": {
+        "type": "object",
+        "description": "A local file the person chose (`POST /crew/files`): the source of an upload, or the\ndestination of a download.",
+        "required": [
+          "connection_id",
+          "channel_id",
+          "direction",
+          "path"
+        ],
+        "properties": {
+          "approval_pending": {
+            "type": "boolean"
+          },
+          "blob_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "expected_mode": {
+            "allOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "public",
+                  "private"
+                ]
+              }
+            ],
+            "nullable": true
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/FilePurpose"
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "transfer_id": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "FromInvitationRequest": {
         "type": "object",
         "description": "`POST /crew/connections/from-invitation`: the pasted invitation and the person's choices on\nthe Join screen. Every choice is optional; an absent one takes the invitation's.",
@@ -10123,6 +12606,11 @@
             "type": "boolean",
             "description": "`true`: parse and describe it, and save nothing."
           },
+          "replace": {
+            "type": "string",
+            "description": "The preview's `replaceable_connection_id`, to save this invitation in place of that\nconnection (same workspace, another login, never connected). It is removed with its key.",
+            "nullable": true
+          },
           "username": {
             "type": "string",
             "description": "The joiner's account name on the server. Default: the username the host invited.",
@@ -10136,8 +12624,11 @@
         "description": "What `POST /crew/connections/from-invitation` answers: exactly one of the two fields.",
         "properties": {
           "connection": {
-            "type": "object",
-            "description": "The saved connection, pinned exactly as the invitation says (or the one this computer\nalready had for the same workspace and settings), in the shape `GET /crew/connections`\nlists.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Connection"
+              }
+            ],
             "nullable": true
           },
           "preview": {
@@ -10177,6 +12668,80 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "GrantRow": {
+        "type": "object",
+        "description": "One row of the grants list ([`CrewManager::session_grant_rows`]): the grant stored under\n`session_id`. The HTTP grants list answers these rows, so this type is that wire shape.",
+        "required": [
+          "session_id",
+          "run_id",
+          "connection_id",
+          "channel_id",
+          "source_channels",
+          "policy_epoch",
+          "expired"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string",
+            "description": "The channel the grant may post in."
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "expired": {
+            "type": "boolean",
+            "description": "Stopped on this device: revoked, ended, or its connection was removed."
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the workspace ends the grant on its own, in Unix seconds; `null` for a grant\nrecorded before that was kept.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "labels": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdmissionLabels"
+              }
+            ],
+            "nullable": true
+          },
+          "policy_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The connection's policy epoch when the grant was made.",
+            "minimum": 0
+          },
+          "remote_revocation_confirmed": {
+            "type": "boolean",
+            "description": "`false` only while the daemon is still asking the workspace to confirm a revocation,\n`true` once it has, and `null` for a live grant or a stop whose standing is not a\nrevocation this device sent (see `revocation`).",
+            "nullable": true
+          },
+          "revocation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Revocation"
+              }
+            ],
+            "nullable": true
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string",
+            "description": "The chat or task the grant is stored under."
+          },
+          "source_channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every channel the grant may read."
           }
         }
       },
@@ -11018,7 +13583,7 @@
         "properties": {
           "existing_connection_id": {
             "type": "string",
-            "description": "A connection on this computer that already pins this workspace.",
+            "description": "A connection on this computer that already pins this workspace, and is the one to use:\nit signs in as the login saving would use, or it has connected before.",
             "nullable": true
           },
           "fingerprint": {
@@ -11044,6 +13609,14 @@
           },
           "invitee_username": {
             "type": "string",
+            "nullable": true
+          },
+          "login_mismatch": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LoginMismatch"
+              }
+            ],
             "nullable": true
           },
           "missing": {
@@ -11077,6 +13650,11 @@
           },
           "proxy_jump": {
             "type": "string",
+            "nullable": true
+          },
+          "replaceable_connection_id": {
+            "type": "string",
+            "description": "A connection on this computer that pins this workspace under another login and has\nnever connected (someone else's invitation, say). Saving with `replace` set to it\nreplaces it; it is never offered as the one to open (W2-DMN-3).",
             "nullable": true
           },
           "server": {
@@ -11777,6 +14355,24 @@
           "path": {
             "type": "string",
             "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
+          }
+        }
+      },
+      "LoginMismatch": {
+        "type": "object",
+        "description": "The invitation's account and the one this computer's SSH settings sign in as.",
+        "required": [
+          "config_user",
+          "invitee"
+        ],
+        "properties": {
+          "config_user": {
+            "type": "string",
+            "description": "The `User` the person's SSH settings give for this server."
+          },
+          "invitee": {
+            "type": "string",
+            "description": "The account the invitation names."
           }
         }
       },
@@ -13062,9 +15658,14 @@
               },
               "runs": {
                 "type": "array",
-                "items": {}
+                "items": {
+                  "$ref": "#/components/schemas/RunView"
+                },
+                "description": "This computer's tasks on the connection: every live one, and the newest finished\nones of each channel."
               },
-              "snapshot": {},
+              "snapshot": {
+                "description": "The person's own `workspace.snapshot`, as the workspace answered it. Its shape is the\nCrew broker protocol's."
+              },
               "type": {
                 "type": "string",
                 "enum": [
@@ -13426,6 +16027,7 @@
       },
       "Prepare": {
         "type": "object",
+        "description": "Open a terminal sign-in for a saved connection.",
         "required": [
           "request_id",
           "controller_id",
@@ -13452,6 +16054,26 @@
         },
         "additionalProperties": false
       },
+      "PreparedDevice": {
+        "type": "object",
+        "description": "A device key prepared for a new connection (`POST /crew/devices/prepare`). Save the\nconnection with its `preparation_id`.",
+        "required": [
+          "preparation_id",
+          "public_key",
+          "device_id"
+        ],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "preparation_id": {
+            "type": "string"
+          },
+          "public_key": {
+            "type": "string"
+          }
+        }
+      },
       "PreviewBody": {
         "type": "object",
         "required": [
@@ -13466,6 +16088,27 @@
             "type": "string"
           }
         }
+      },
+      "PreviewRequest": {
+        "type": "object",
+        "description": "An image attachment to preview (`POST /crew/transfers/preview`).",
+        "required": [
+          "connection_id",
+          "channel_id",
+          "blob_id"
+        ],
+        "properties": {
+          "blob_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "PreviewResponse": {
         "type": "object",
@@ -13597,6 +16240,8 @@
           "title_template",
           "long",
           "short",
+          "settings_title",
+          "settings",
           "acknowledged"
         ],
         "properties": {
@@ -13607,6 +16252,13 @@
           "long": {
             "type": "string",
             "description": "The long form: the blocking dialog and the settings panel."
+          },
+          "settings": {
+            "type": "string"
+          },
+          "settings_title": {
+            "type": "string",
+            "description": "Settings > App > Privacy's heading and long form: about non-private\nmodels as a class, never \"this model\" or \"this chat\" (W2-PRV-14). The\npanel shows it whatever model is bound, beside that model's tier."
           },
           "short": {
             "type": "string",
@@ -14061,6 +16713,88 @@
           "normal",
           "deep"
         ]
+      },
+      "Receipt": {
+        "type": "object",
+        "description": "A transfer as this computer records it, and as every transfer route answers it. The\nfields after `error` are the daemon's own bookkeeping for resuming and cleaning up; a\nclient reads only `destination_identity` of them.",
+        "required": [
+          "id",
+          "request_id",
+          "connection_id",
+          "channel_id",
+          "direction",
+          "name",
+          "size",
+          "sha256",
+          "offset",
+          "state",
+          "binding"
+        ],
+        "properties": {
+          "binding": {
+            "type": "string"
+          },
+          "blob_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "destination_identity": {
+            "type": "string",
+            "nullable": true
+          },
+          "destination_selection": {
+            "type": "string",
+            "nullable": true
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "initial_target": {
+            "type": "object",
+            "nullable": true
+          },
+          "intent": {
+            "type": "string"
+          },
+          "local_selection": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string"
+          }
+        }
       },
       "RecoverContinuationAction": {
         "type": "string",
@@ -14721,6 +17455,7 @@
       },
       "Resume": {
         "type": "object",
+        "description": "A new file selection for a transfer (`POST /crew/transfers/{id}/resume`), or the cleanup\napproval for a download's partial file (`DELETE /crew/transfers/{id}`).",
         "required": [
           "file_capability"
         ],
@@ -14840,6 +17575,15 @@
           }
         }
       },
+      "Revocation": {
+        "type": "string",
+        "description": "Where a grant that stopped on this device stands with the workspace.",
+        "enum": [
+          "unconfirmed",
+          "confirmed",
+          "ended_by_workspace"
+        ]
+      },
       "Role": {
         "oneOf": [
           {
@@ -14863,6 +17607,7 @@
       },
       "RunView": {
         "type": "object",
+        "description": "One of this computer's Crew tasks (`POST /crew/connections/{id}/runs`), as its task ledger\nkeeps it and every route and `state` frame answers it.",
         "required": [
           "run_id",
           "connection_id",
@@ -14872,20 +17617,23 @@
         ],
         "properties": {
           "channel_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The channel the task posts its result in."
           },
           "connection_id": {
             "type": "string"
           },
           "error": {
             "type": "string",
+            "description": "Why the task stopped or what is unconfirmed, for a person; `null` otherwise.",
             "nullable": true
           },
           "run_id": {
             "type": "string"
           },
           "session_id": {
-            "type": "string"
+            "type": "string",
+            "description": "The task's own conversation on this computer."
           },
           "started_at": {
             "type": "integer",
@@ -14895,7 +17643,8 @@
             "minimum": 0
           },
           "status": {
-            "type": "string"
+            "type": "string",
+            "description": "`starting`, `running`, `waiting_for_approval`, `completed`, `failed`, `cancelled`,\n`cancellation_pending`, `cancellation_unconfirmed`, `interrupted` (the daemon restarted\nwhile it ran) or `outcome_not_durable` (its outcome could not be saved)."
           }
         }
       },
@@ -14944,6 +17693,77 @@
             "type": "string"
           }
         }
+      },
+      "SaveConnection": {
+        "type": "object",
+        "description": "A connection to save or edit (`POST /crew/connections`, `PATCH /crew/connections/{id}`).",
+        "required": [
+          "name",
+          "ssh_target",
+          "socket_path",
+          "owner_uid",
+          "workspace_id",
+          "workspace_public_key"
+        ],
+        "properties": {
+          "cluster_connection_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "identity_file": {
+            "type": "string",
+            "nullable": true
+          },
+          "institution_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "mode": {
+            "$ref": "#/components/schemas/ClusterMode"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner_uid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "preparation_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "proxy_jump": {
+            "type": "string",
+            "nullable": true
+          },
+          "remote_execution": {
+            "type": "boolean"
+          },
+          "remote_root": {
+            "type": "string",
+            "nullable": true
+          },
+          "socket_path": {
+            "type": "string"
+          },
+          "ssh_target": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "workspace_public_key": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "SaveWorkflowRequest": {
         "type": "object",
@@ -15079,6 +17899,20 @@
             "type": "string"
           }
         }
+      },
+      "SecretBody": {
+        "type": "object",
+        "description": "The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing\nelse. It must differ from the human approval secret.",
+        "required": [
+          "passphrase"
+        ],
+        "properties": {
+          "passphrase": {
+            "type": "string",
+            "format": "password"
+          }
+        },
+        "additionalProperties": false
       },
       "SecretDestination": {
         "oneOf": [
@@ -16146,6 +18980,39 @@
         "discriminator": {
           "propertyName": "kind"
         }
+      },
+      "StartRequest": {
+        "type": "object",
+        "description": "Start a transfer with a file selection the person made (`POST /crew/transfers`).",
+        "required": [
+          "request_id",
+          "connection_id",
+          "channel_id",
+          "direction",
+          "file_capability"
+        ],
+        "properties": {
+          "blob_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "channel_id": {
+            "type": "string"
+          },
+          "connection_id": {
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "file_capability": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       },
       "StartRunRequest": {
         "type": "object",

@@ -27,7 +27,12 @@ pub enum ObserveEvent {
         connection_mode: super::ClusterMode,
         connection_policy_epoch: u64,
         connection_institution_id: Option<String>,
+        /// The person's own `workspace.snapshot`, as the workspace answered it. Its shape is the
+        /// Crew broker protocol's.
         snapshot: Value,
+        /// This computer's tasks on the connection: every live one, and the newest finished
+        /// ones of each channel.
+        #[schema(value_type = Vec<RunView>)]
         runs: Vec<Value>,
         /// How each person the snapshot names is shown, keyed by principal ID. Absent from a
         /// daemon that predates it; clients then compute their own.
@@ -73,6 +78,28 @@ pub enum ObserveEvent {
         error: String,
         clear: bool,
     },
+}
+
+/// One of this computer's Crew tasks (`POST /crew/connections/{id}/runs`), as its task ledger
+/// keeps it and every route and `state` frame answers it.
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
+pub struct RunView {
+    pub run_id: String,
+    pub connection_id: String,
+    /// The channel the task posts its result in.
+    pub channel_id: String,
+    /// The task's own conversation on this computer.
+    pub session_id: String,
+    /// `starting`, `running`, `waiting_for_approval`, `completed`, `failed`, `cancelled`,
+    /// `cancellation_pending`, `cancellation_unconfirmed`, `interrupted` (the daemon restarted
+    /// while it ran) or `outcome_not_durable` (its outcome could not be saved).
+    pub status: String,
+    /// Why the task stopped or what is unconfirmed, for a person; `null` otherwise.
+    pub error: Option<String>,
+    /// When this device admitted the task, in Unix milliseconds. Absent from a run recorded
+    /// before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
 }
 
 /// One entry of the `people` map the broker returns beside messages (`messages.history`).

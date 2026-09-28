@@ -22,25 +22,31 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+/// What a file selection is for: a transfer, or approving the cleanup of a download's
+/// partial file.
+#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FilePurpose {
     #[default]
     Transfer,
     Cleanup,
 }
-#[derive(Clone, Deserialize, Serialize)]
+/// A local file the person chose (`POST /crew/files`): the source of an upload, or the
+/// destination of a download.
+#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileRequest {
     #[serde(default)]
     pub approval_pending: bool,
     #[serde(default)]
+    #[schema(inline)]
     pub expected_mode: Option<biorouter::crew::ClusterMode>,
     #[serde(default)]
     pub purpose: FilePurpose,
     pub connection_id: String,
     pub channel_id: String,
     pub direction: Direction,
+    #[schema(value_type = String)]
     pub path: PathBuf,
     #[serde(default)]
     pub overwrite: bool,
@@ -49,7 +55,8 @@ pub struct FileRequest {
     #[serde(default)]
     pub request_id: Option<String>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+/// Start a transfer with a file selection the person made (`POST /crew/transfers`).
+#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartRequest {
     pub request_id: String,
@@ -59,7 +66,10 @@ pub struct StartRequest {
     pub file_capability: String,
     pub blob_id: Option<String>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+/// A transfer as this computer records it, and as every transfer route answers it. The
+/// fields after `error` are the daemon's own bookkeeping for resuming and cleaning up; a
+/// client reads only `destination_identity` of them.
+#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct Receipt {
     pub id: String,
     pub request_id: String,
@@ -83,6 +93,7 @@ pub struct Receipt {
     #[serde(default)]
     destination_selection: Option<String>,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     initial_target: Option<local_files::TargetApproval>,
 }
 struct Capability {
@@ -98,7 +109,22 @@ struct Capability {
     request_id: Option<String>,
     replay_receipt_id: Option<String>,
 }
-fn capability_result(id: &str, cap: &Capability) -> Value {
+/// A file selection the person made, as `POST /crew/files` and its confirm route answer it:
+/// the capability a transfer is started with, and what was chosen.
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+pub struct FileCapability {
+    /// Pass it as `file_capability`. It expires five minutes after the selection.
+    pub capability_id: String,
+    /// The file's name.
+    pub name: String,
+    /// The source's size in bytes; `null` for a download's destination.
+    pub size: Option<u64>,
+    /// A download's destination already exists and will be replaced.
+    pub target_exists: bool,
+    /// A download's destination still waits for the person's confirmation.
+    pub approval_pending: bool,
+}
+fn capability_result(id: &str, cap: &Capability) -> FileCapability {
     let exists = matches!(
         &cap.selection,
         Selection::Destination {
@@ -106,8 +132,13 @@ fn capability_result(id: &str, cap: &Capability) -> Value {
             ..
         }
     );
-    json!({"capability_id":id,"name":cap.selection.name(),"size":cap.selection.size(),
-        "target_exists":exists,"approval_pending":cap.approval_pending})
+    FileCapability {
+        capability_id: id.to_owned(),
+        name: cap.selection.name().to_owned(),
+        size: cap.selection.size(),
+        target_exists: exists,
+        approval_pending: cap.approval_pending,
+    }
 }
 #[derive(Default)]
 struct State {
@@ -234,7 +265,7 @@ impl TransferService {
         state.poisoned = false;
         Ok(())
     }
-    pub async fn register(&self, request: FileRequest) -> Result<Value> {
+    pub async fn register(&self, request: FileRequest) -> Result<FileCapability> {
         let _selection = self
             .selection_slots
             .try_acquire()
@@ -331,7 +362,7 @@ impl TransferService {
         }
         Ok(())
     }
-    pub async fn confirm(&self, capability_id: &str) -> Result<Value> {
+    pub async fn confirm(&self, capability_id: &str) -> Result<FileCapability> {
         let connection_id = {
             let state = self.state.lock().await;
             state
@@ -1134,7 +1165,8 @@ fn validate_cleanup_partial(file: &std::fs::File, size: u64) -> Result<()> {
     Ok(())
 }
 
-#[derive(Deserialize)]
+/// An image attachment to preview (`POST /crew/transfers/preview`).
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewRequest {
     pub connection_id: String,

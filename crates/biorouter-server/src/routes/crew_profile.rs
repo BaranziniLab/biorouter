@@ -1,3 +1,6 @@
+use super::crew::wire::{
+    CrewGrantKind, CrewGrantList, CrewGrantView, CrewJson, CrewRevocation, CrewWorkspaceAnswer,
+};
 use super::crew::{cancel_owned_session, owned_run_views, OwnedCancellation};
 use crate::state::AppState;
 use axum::{
@@ -7,7 +10,10 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use biorouter::crew::{manager, CrewManager, CrewRefusal, RevocationUnconfirmed, RevokeOutcome};
+use biorouter::crew::{
+    manager, CredentialStatus, CrewManager, CrewRefusal, GrantRow, RevocationUnconfirmed,
+    RevokeOutcome,
+};
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -88,7 +94,7 @@ impl IntoResponse for Refusal {
         (self.status, Json(Value::Object(body))).into_response()
     }
 }
-type Result = std::result::Result<Json<Value>, Refusal>;
+type Result<T> = std::result::Result<Json<T>, Refusal>;
 /// Every route here acts for the person, so every one needs their proof. The daemon secret,
 /// a stated capability and the chat's own tier are none of them.
 fn person(headers: &HeaderMap) -> std::result::Result<(), Refusal> {
@@ -107,10 +113,13 @@ fn person(headers: &HeaderMap) -> std::result::Result<(), Refusal> {
     }
 }
 
-#[derive(Deserialize)]
+/// The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing
+/// else. It must differ from the human approval secret.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretBody {
     #[serde(deserialize_with = "secret")]
+    #[schema(value_type = String, format = Password)]
     passphrase: Zeroizing<String>,
 }
 fn secret<'de, D: serde::Deserializer<'de>>(
@@ -119,22 +128,68 @@ fn secret<'de, D: serde::Deserializer<'de>>(
     String::deserialize(deserializer).map(Zeroizing::new)
 }
 
-#[utoipa::path(get, operation_id = "crew_profile_credentials", path="/crew/credentials", responses((status=200,body=Value)),tag="Crew")]
-pub async fn credentials(headers: HeaderMap) -> Result {
+#[utoipa::path(
+    get,
+    operation_id = "crew_profile_credentials",
+    path = "/crew/credentials",
+    responses(
+        (status = 200, description = "Where this profile keeps its Crew keys, and whether that store can be used now", body = CredentialStatus),
+        (status = 400, description = "`crew_profile_refused`: the credential store's state could not be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn credentials(headers: HeaderMap) -> Result<CredentialStatus> {
     person(&headers)?;
-    Ok(Json(
-        serde_json::to_value(manager()?.credential_status().await?).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(manager()?.credential_status().await?))
 }
-#[utoipa::path(post, operation_id = "crew_profile_init", path="/crew/credentials/init",request_body=Value,responses((status=200,body=Value)),tag="Crew")]
-pub async fn init(headers: HeaderMap, Json(body): Json<SecretBody>) -> Result {
+#[utoipa::path(
+    post,
+    operation_id = "crew_profile_init",
+    path = "/crew/credentials/init",
+    request_body = SecretBody,
+    responses(
+        (status = 200, description = "The vault, created and unlocked; this profile keeps its Crew keys in it from now on", body = CredentialStatus),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body other than `{passphrase}`; `detail` says what", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn init(
+    headers: HeaderMap,
+    CrewJson(body): CrewJson<SecretBody>,
+) -> Result<CredentialStatus> {
     change_secret(headers, body, true).await
 }
-#[utoipa::path(post, operation_id = "crew_profile_unlock", path="/crew/credentials/unlock",request_body=Value,responses((status=200,body=Value)),tag="Crew")]
-pub async fn unlock(headers: HeaderMap, Json(body): Json<SecretBody>) -> Result {
+#[utoipa::path(
+    post,
+    operation_id = "crew_profile_unlock",
+    path = "/crew/credentials/unlock",
+    request_body = SecretBody,
+    responses(
+        (status = 200, description = "The vault, unlocked", body = CredentialStatus),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body other than `{passphrase}`; `detail` says what", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn unlock(
+    headers: HeaderMap,
+    CrewJson(body): CrewJson<SecretBody>,
+) -> Result<CredentialStatus> {
     change_secret(headers, body, false).await
 }
-async fn change_secret(headers: HeaderMap, body: SecretBody, initialize: bool) -> Result {
+async fn change_secret(
+    headers: HeaderMap,
+    body: SecretBody,
+    initialize: bool,
+) -> Result<CredentialStatus> {
     person(&headers)?;
     if headers.get("X-User-Action").and_then(|h| h.to_str().ok()) == Some(body.passphrase.as_str())
     {
@@ -152,18 +207,24 @@ async fn change_secret(headers: HeaderMap, body: SecretBody, initialize: bool) -
     } else {
         crew.unlock_vault(body.passphrase).await?;
     }
-    Ok(Json(
-        serde_json::to_value(crew.credential_status().await?).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(crew.credential_status().await?))
 }
-#[utoipa::path(post, operation_id = "crew_profile_lock",path="/crew/credentials/lock",responses((status=200,body=Value)),tag="Crew")]
-pub async fn lock(headers: HeaderMap) -> Result {
+#[utoipa::path(
+    post,
+    operation_id = "crew_profile_lock",
+    path = "/crew/credentials/lock",
+    responses(
+        (status = 200, description = "The vault, locked; locking a locked vault changes nothing", body = CredentialStatus),
+        (status = 400, description = "`crew_profile_refused`: the vault could not be locked", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn lock(headers: HeaderMap) -> Result<CredentialStatus> {
     person(&headers)?;
     let crew = manager()?;
     crew.lock_vault().await?;
-    Ok(Json(
-        serde_json::to_value(crew.credential_status().await?).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(crew.credential_status().await?))
 }
 
 /// The chats and tasks holding a grant on this connection (RV-D2). Each row adds, to what
@@ -182,14 +243,25 @@ pub async fn lock(headers: HeaderMap) -> Result {
 /// `replaced_grants` rows (earlier grants kept until the workspace confirms their revocation,
 /// F3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a
 /// different conversation, whose title would mislabel the grant.
-#[utoipa::path(get, operation_id = "crew_profile_grants",path="/crew/connections/{id}/grants",params(("id"=String,Path,description="Crew connection ID")),responses((status=200,body=Value)),tag="Crew")]
+#[utoipa::path(
+    get,
+    operation_id = "crew_profile_grants",
+    path = "/crew/connections/{id}/grants",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "The chats and tasks holding a grant on this connection, and the earlier grants whose revocation the workspace has not confirmed yet", body = CrewGrantList),
+        (status = 400, description = "`crew_profile_refused`: no saved connection has that ID, or the grants could not be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn grants(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result {
+) -> Result<CrewGrantList> {
     person(&headers)?;
-    let mut listed = manager()?.session_grants(&id).await?;
+    let listed = manager()?.session_grant_rows(&id).await?;
     let tasks: Option<HashSet<(String, String)>> = match owned_run_views(&id).await {
         Ok(views) => Some(
             views
@@ -202,41 +274,36 @@ pub async fn grants(
             None
         }
     };
-    for (list, named) in [("grants", true), ("replaced_grants", false)] {
-        let Some(rows) = listed.get_mut(list).and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for row in rows.iter_mut() {
-            let Some(fields) = row.as_object_mut() else {
-                continue;
-            };
-            let session = text_field(fields, "session_id");
-            let run = text_field(fields, "run_id");
-            let kind = tasks.as_ref().map(|tasks| {
-                if tasks.contains(&(session.clone(), run)) {
-                    "task"
-                } else {
-                    "chat"
-                }
-            });
-            fields.insert("kind".into(), json!(kind));
-            let name = if named {
-                session_name(&state, &session).await
+    let kind = |grant: &GrantRow| {
+        tasks.as_ref().map(|tasks| {
+            if tasks.contains(&(grant.session_id.clone(), grant.run_id.clone())) {
+                CrewGrantKind::Task
             } else {
-                None
-            };
-            fields.insert("session_name".into(), json!(name));
-            fields.entry("expires_at").or_insert(Value::Null);
-        }
+                CrewGrantKind::Chat
+            }
+        })
+    };
+    let mut grants = Vec::with_capacity(listed.grants.len());
+    for grant in listed.grants {
+        grants.push(CrewGrantView {
+            kind: kind(&grant),
+            session_name: session_name(&state, &grant.session_id).await,
+            grant,
+        });
     }
-    Ok(Json(listed))
-}
-fn text_field(fields: &Map<String, Value>, key: &str) -> String {
-    fields
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned()
+    let replaced_grants = listed
+        .replaced_grants
+        .into_iter()
+        .map(|grant| CrewGrantView {
+            kind: kind(&grant),
+            session_name: None,
+            grant,
+        })
+        .collect();
+    Ok(Json(CrewGrantList {
+        grants,
+        replaced_grants,
+    }))
 }
 /// The conversation's title, or `None` when it cannot be read or has none.
 async fn session_name(state: &AppState, session: &str) -> Option<String> {
@@ -252,8 +319,27 @@ async fn session_name(state: &AppState, session: &str) -> Option<String> {
         .filter(|name| !name.trim().is_empty())
 }
 
-#[utoipa::path(get, operation_id = "crew_profile_context",path="/crew/connections/{id}/sessions/{session}/context",params(("id"=String,Path,description="Crew connection ID"),("session"=String,Path,description="Session ID")),responses((status=200,body=Value)),tag="Crew")]
-pub async fn context(headers: HeaderMap, Path((id, session)): Path<(String, String)>) -> Result {
+/// The context a chat's grant reads, as the workspace lists it (`context.manifest`).
+#[utoipa::path(
+    get,
+    operation_id = "crew_profile_context",
+    path = "/crew/connections/{id}/sessions/{session_id}/context",
+    params(
+        ("id" = String, Path, description = "The saved connection"),
+        ("session_id" = String, Path, description = "The chat or task holding the grant")
+    ),
+    responses(
+        (status = 200, description = "The workspace's own manifest of the grant's context, forwarded unchanged", body = CrewWorkspaceAnswer),
+        (status = 400, description = "`crew_profile_refused` for a chat with no Crew grant, a grant that stopped or is on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn context(
+    headers: HeaderMap,
+    Path((id, session)): Path<(String, String)>,
+) -> Result<CrewWorkspaceAnswer> {
     person(&headers)?;
     let crew = manager()?;
     let metadata = crew
@@ -263,17 +349,17 @@ pub async fn context(headers: HeaderMap, Path((id, session)): Path<(String, Stri
     if metadata.connection_id != id {
         return Err(anyhow::anyhow!("Session belongs to a different Crew connection").into());
     }
-    Ok(Json(
+    Ok(Json(CrewWorkspaceAnswer(
         crew.worker_request(&session, "context.manifest", json!({}))
             .await?,
-    ))
+    )))
 }
 
 /// Revoke a chat's or task's grant (RV-D1, RV-D3). The grant stops on this device first,
 /// and is saved, before the workspace is asked; so:
 ///
-/// - 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped
-///   here and confirmed by the workspace. `run` is the workspace's revoked run.
+/// - 200 [`CrewRevocation`]: stopped here and confirmed by the workspace. `run` is the
+///   workspace's revoked run.
 /// - 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon
 ///   asks the workspace again by itself at every reconnect until it confirms (F3), and the
 ///   grants list says when it has; retrying asks at once.
@@ -283,8 +369,29 @@ pub async fn context(headers: HeaderMap, Path((id, session)): Path<(String, Stri
 /// A ledger task's session is stopped through the task cancel path, so its ledger entry reads
 /// `cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds
 /// `task_status`. The request body, if any, is ignored.
-#[utoipa::path(post, operation_id = "crew_profile_revoke",path="/crew/connections/{id}/sessions/{session}/revoke",params(("id"=String,Path,description="Crew connection ID"),("session"=String,Path,description="Session ID")),responses((status=200,body=Value)),tag="Crew")]
-pub async fn revoke(headers: HeaderMap, Path((id, session)): Path<(String, String)>) -> Result {
+#[utoipa::path(
+    post,
+    operation_id = "crew_profile_revoke",
+    path = "/crew/connections/{id}/sessions/{session_id}/revoke",
+    params(
+        ("id" = String, Path, description = "The saved connection"),
+        ("session_id" = String, Path, description = "The chat or task holding the grant")
+    ),
+    responses(
+        (status = 200, description = "Stopped here and confirmed by the workspace. A task's grant adds `task_status`, and `task_status_error` when the task's status could not be saved", body = CrewRevocation),
+        (status = 400, description = "`crew_profile_refused`: the revocation could not be asked for", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_grant_not_found`: the chat holds no Crew grant on this computer", body = CrewError),
+        (status = 409, description = "`crew_grant_other_connection`: the chat's grant is on another connection; `crew_grant_replaced`: the chat was granted access again while this grant was being revoked, and the new grant is live", body = CrewError),
+        (status = 500, description = "`crew_revocation_not_saved`: stopped on this device, but the stop could not be saved, so a restart would honor the grant again. Retry", body = CrewError),
+        (status = 503, description = "`crew_revocation_unconfirmed`: stopped here and saved (`stopped_on_this_device`), not yet confirmed by the workspace (`remote_revocation_confirmed: false`; `detail` says why). Biorouter asks the workspace again by itself; retrying asks at once. A task's grant adds `task_status` and `task_status_error`", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn revoke(
+    headers: HeaderMap,
+    Path((id, session)): Path<(String, String)>,
+) -> Result<CrewRevocation> {
     person(&headers)?;
     let crew = manager()?;
     let Some(metadata) = crew.run_metadata(&session).await else {
@@ -335,9 +442,11 @@ pub async fn revoke(headers: HeaderMap, Path((id, session)): Path<(String, Strin
     };
     let answer = chat_revoked(session, metadata.run_id, outcome);
     match finished_task {
-        Some(status) => answer.map(|Json(mut body)| {
-            body["task_status"] = json!(status);
-            Json(body)
+        Some(status) => answer.map(|Json(body)| {
+            Json(CrewRevocation {
+                task_status: Some(status),
+                ..body
+            })
         }),
         None => answer,
     }
@@ -349,8 +458,16 @@ fn grant_not_found() -> Refusal {
         "No Crew grant for this session.",
     )
 }
-fn revoked(session_id: String, run_id: String, run: Value) -> Value {
-    json!({"revoked":true,"session_id":session_id,"run_id":run_id,"remote_revocation_confirmed":true,"run":run})
+fn revoked(session_id: String, run_id: String, run: Value) -> CrewRevocation {
+    CrewRevocation {
+        revoked: true,
+        session_id,
+        run_id,
+        remote_revocation_confirmed: true,
+        run,
+        task_status: None,
+        task_status_error: None,
+    }
 }
 fn unconfirmed(session_id: String, run_id: String, remote_error: &anyhow::Error) -> Refusal {
     Refusal::new(
@@ -364,7 +481,11 @@ fn unconfirmed(session_id: String, run_id: String, remote_error: &anyhow::Error)
     .with("stopped_on_this_device", true)
     .with("remote_revocation_confirmed", false)
 }
-fn chat_revoked(session_id: String, run_id: String, outcome: RevokeOutcome) -> Result {
+fn chat_revoked(
+    session_id: String,
+    run_id: String,
+    outcome: RevokeOutcome,
+) -> Result<CrewRevocation> {
     match outcome {
         RevokeOutcome {
             remote_confirmed: true,
@@ -388,7 +509,7 @@ async fn task_revoked(
     status: String,
     revocation: anyhow::Result<Value>,
     persistence_error: Option<String>,
-) -> Result {
+) -> Result<CrewRevocation> {
     let task_fields = |refusal: Refusal| {
         let refusal = refusal.with("task_status", status.clone());
         match &persistence_error {
@@ -397,14 +518,11 @@ async fn task_revoked(
         }
     };
     match revocation {
-        Ok(run) => {
-            let mut body = revoked(session_id, run_id, run);
-            body["task_status"] = json!(status);
-            if let Some(error) = &persistence_error {
-                body["task_status_error"] = json!(error);
-            }
-            Ok(Json(body))
-        }
+        Ok(run) => Ok(Json(CrewRevocation {
+            task_status: Some(status),
+            task_status_error: persistence_error,
+            ..revoked(session_id, run_id, run)
+        })),
         Err(error) => match error.downcast_ref::<RevocationUnconfirmed>() {
             Some(unconfirmed_here) => Err(task_fields(unconfirmed(
                 session_id,
@@ -447,11 +565,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/crew/credentials/lock", post(lock))
         .route("/crew/connections/{id}/grants", get(grants))
         .route(
-            "/crew/connections/{id}/sessions/{session}/context",
+            "/crew/connections/{id}/sessions/{session_id}/context",
             get(context),
         )
         .route(
-            "/crew/connections/{id}/sessions/{session}/revoke",
+            "/crew/connections/{id}/sessions/{session_id}/revoke",
             post(revoke),
         )
         .layer(DefaultBodyLimit::max(8 * 1024))
@@ -520,7 +638,7 @@ mod tests {
         )
         .unwrap_or_else(|_| panic!("a confirmed revoke was refused"));
         assert_eq!(
-            body,
+            serde_json::to_value(body).unwrap(),
             json!({"revoked":true,"session_id":"session-1","run_id":"run-1","remote_revocation_confirmed":true,"run":{"id":"run-1","revoked":true}})
         );
     }
@@ -631,6 +749,7 @@ mod tests {
         )
         .await
         .unwrap_or_else(|_| panic!("a confirmed task revoke was refused"));
+        let confirmed = serde_json::to_value(confirmed).unwrap();
         assert_eq!(confirmed["revoked"], json!(true));
         assert_eq!(confirmed["remote_revocation_confirmed"], json!(true));
         assert_eq!(confirmed["task_status"], "cancelled");

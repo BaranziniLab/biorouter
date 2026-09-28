@@ -68,7 +68,8 @@ pub enum ClusterMode {
     #[default]
     Private,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A connection to save or edit (`POST /crew/connections`, `PATCH /crew/connections/{id}`).
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveConnection {
     #[serde(default)]
@@ -92,7 +93,8 @@ pub struct SaveConnection {
     #[serde(default)]
     pub institution_id: Option<String>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A connection saved on this computer, as the registry keeps it.
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct Connection {
     pub id: String,
     #[serde(default)]
@@ -108,19 +110,24 @@ pub struct Connection {
     pub workspace_public_key: String,
     #[serde(default)]
     pub remote_root: Option<String>,
+    /// Always sent; the default only reads a registry saved before it was kept.
     #[serde(default)]
+    #[schema(required = true)]
     pub remote_execution: bool,
     pub cluster_connection_id: String,
     pub mode: ClusterMode,
     #[serde(default)]
     pub institution_id: Option<String>,
     pub policy_epoch: u64,
+    /// `connected` or `disconnected`.
     pub status: String,
+    /// Why the connection last failed or dropped, for a person; `null` when it has not.
     pub last_error: Option<String>,
     pub device_id: String,
     pub public_key: String,
 }
-#[derive(Serialize)]
+/// How to sign in to a connection's server in a terminal (`POST /crew/connections/{id}/auth-plan`).
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AuthenticationPlan {
     pub program: String,
     pub args: Vec<String>,
@@ -174,9 +181,9 @@ struct Scope {
 }
 
 /// Where a grant that stopped on this device stands with the workspace.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
-enum Revocation {
+pub enum Revocation {
     /// Stopped here; the workspace has not yet confirmed `run.revoke`. The daemon asks it
     /// again by itself whenever the connection comes back, until it does (F3).
     Unconfirmed,
@@ -189,14 +196,6 @@ enum Revocation {
 }
 
 impl Revocation {
-    /// The grants list's words for it.
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Unconfirmed => "unconfirmed",
-            Self::Confirmed => "confirmed",
-            Self::EndedByWorkspace => "ended_by_workspace",
-        }
-    }
     /// How much the workspace is known to have said: a confirmation (or the workspace's own
     /// refusal of the run) is never forgotten for a later "not yet".
     fn rank(revocation: Option<Self>) -> u8 {
@@ -241,7 +240,7 @@ impl Scope {
 /// The display names of a run's identifiers, captured under the person's action when the
 /// run is admitted (naming design D13 and D14). Never authority: every check still compares
 /// the IDs, and the labels are not refreshed afterwards.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdmissionLabels {
     /// The person the agent acts for: `Display name (@username)`, or `@username` when they
     /// never set a display name of their own (D13). `None` when the snapshot named no actor.
@@ -257,7 +256,7 @@ pub struct AdmissionLabels {
 }
 
 /// One channel's display name.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ChannelLabel {
     pub channel_id: String,
     /// `#methods`.
@@ -716,20 +715,68 @@ fn heard_here<'a>(here: &'a Registry, session: &str, run_id: &str) -> Option<&'a
                 .map(|kept| &kept.scope)
         })
 }
-/// One row of the grants list ([`CrewManager::session_grants`]): the grant stored under
-/// `session`. Where a stop stands with the workspace (F3): `remote_revocation_confirmed` is
-/// `false` only while the daemon is still asking the workspace to confirm it, `true` once it
-/// has, and `null` for a live grant or a stop whose standing is not a revocation this device
-/// sent (see `revocation`).
-fn grant_row(session: &str, scope: &Scope) -> Value {
+/// One row of the grants list ([`CrewManager::session_grant_rows`]): the grant stored under
+/// `session_id`. The HTTP grants list answers these rows, so this type is that wire shape.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct GrantRow {
+    /// The chat or task the grant is stored under.
+    pub session_id: String,
+    pub run_id: String,
+    pub connection_id: String,
+    /// The channel the grant may post in.
+    pub channel_id: String,
+    /// Every channel the grant may read.
+    pub source_channels: Vec<String>,
+    /// The connection's policy epoch when the grant was made.
+    pub policy_epoch: u64,
+    /// Stopped on this device: revoked, ended, or its connection was removed.
+    pub expired: bool,
+    /// When the workspace ends the grant on its own, in Unix seconds; `null` for a grant
+    /// recorded before that was kept.
+    pub expires_at: Option<u64>,
+    /// The names the person saw when granting (D14); `null` when none were recorded.
+    pub labels: Option<AdmissionLabels>,
+    /// Where a stopped grant stands with the workspace (F3, D-1); `null` for a live grant and
+    /// for a stop whose standing is not known.
+    pub revocation: Option<Revocation>,
+    /// `false` only while the daemon is still asking the workspace to confirm a revocation,
+    /// `true` once it has, and `null` for a live grant or a stop whose standing is not a
+    /// revocation this device sent (see `revocation`).
+    pub remote_revocation_confirmed: Option<bool>,
+}
+
+/// A connection's grants ([`CrewManager::session_grant_rows`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionGrants {
+    /// The grant each chat or task holds.
+    pub grants: Vec<GrantRow>,
+    /// Earlier grants kept until the workspace confirms their revocation (F3).
+    pub replaced_grants: Vec<GrantRow>,
+}
+
+fn grant_row(session: &str, scope: &Scope) -> GrantRow {
     let confirmed = match scope.revocation {
         Some(Revocation::Unconfirmed) => Some(false),
         Some(Revocation::Confirmed) => Some(true),
         Some(Revocation::EndedByWorkspace) | None => None,
     };
-    json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels,"revocation":scope.revocation.map(Revocation::as_str),"remote_revocation_confirmed":confirmed})
+    GrantRow {
+        session_id: session.to_owned(),
+        run_id: scope.run_id.clone(),
+        connection_id: scope.connection_id.clone(),
+        channel_id: scope.channel_id.clone(),
+        source_channels: scope.source_channels.clone(),
+        policy_epoch: scope.epoch,
+        expired: scope.expired,
+        expires_at: scope.expires_at,
+        labels: scope.labels.clone(),
+        revocation: scope.revocation,
+        remote_revocation_confirmed: confirmed,
+    }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A device key prepared for a new connection (`POST /crew/devices/prepare`). Save the
+/// connection with its `preparation_id`.
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct PreparedDevice {
     pub preparation_id: String,
     pub public_key: String,
@@ -1706,6 +1753,11 @@ impl CrewManager {
     /// of their own, after every chat's current grant, so a reader that looks a chat up by its
     /// id in `grants` never finds one of them.
     pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
+        Ok(json!(self.session_grant_rows(connection_id).await?))
+    }
+    /// The grants each chat and task holds on `connection_id`, and the earlier grants kept
+    /// for their revocation, as the HTTP grants list answers them.
+    pub async fn session_grant_rows(&self, connection_id: &str) -> Result<SessionGrants> {
         // As another process saved them (CROSSCUT-1).
         self.refresh_registry().await;
         self.connection(connection_id).await?;
@@ -1729,7 +1781,7 @@ impl CrewManager {
                 grants.push(grant_row(&session, &scope));
             }
         }
-        let replaced: Vec<Value> = self
+        let replaced_grants: Vec<GrantRow> = self
             .registry
             .lock()
             .await
@@ -1738,7 +1790,10 @@ impl CrewManager {
             .filter(|kept| kept.scope.connection_id == connection_id)
             .map(|kept| grant_row(&kept.session_id, &kept.scope))
             .collect();
-        Ok(json!({ "grants": grants, "replaced_grants": replaced }))
+        Ok(SessionGrants {
+            grants,
+            replaced_grants,
+        })
     }
     /// Write `registry` over the saved one as it stands, for a test that plays another
     /// process's save (or seeds one). Production writes go through

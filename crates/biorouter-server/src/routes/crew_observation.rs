@@ -23,6 +23,8 @@ use std::{
 use tokio::sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use super::crew::wire::{CrewError, CrewJson, REQUEST_INVALID_CODE};
+
 const MAX_FRAME: usize = 1_048_576;
 /// Finished runs a `state` frame lists per channel, newest first. Live runs are always listed.
 const FINISHED_RUNS_PER_CHANNEL: usize = 20;
@@ -623,25 +625,63 @@ async fn idle_wait(cancel: &CancellationToken) -> Result<()> {
     }
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/observe", params(("id" = String, Path, description = "Saved Crew connection")), request_body = ObserveRequest, responses((status = 200, description = "Bounded NDJSON room events (one schema instance per line)", body = ObserveEvent, content_type = "application/x-ndjson")), tag = "Crew")]
+/// A refusal of `POST …/observe`, before any frame: its status, and a code, as every Crew
+/// refusal carries one. A refusal without a code reads to the desktop as a daemon too old to
+/// have the route.
+fn observe_refusal(status: StatusCode, code: &str, error: &str) -> (StatusCode, Json<CrewError>) {
+    (
+        status,
+        Json(CrewError {
+            code: code.into(),
+            error: error.into(),
+            ..CrewError::default()
+        }),
+    )
+}
+
+/// Watch a connection's workspace, and one channel of it, as the person: NDJSON frames until
+/// the observation ends.
+#[utoipa::path(
+    post,
+    operation_id = "crew_observe",
+    path = "/crew/connections/{id}/observe",
+    params(("id" = String, Path, description = "The saved connection")),
+    request_body = ObserveRequest,
+    responses(
+        (status = 200, description = "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed", body = ObserveEvent, content_type = "application/x-ndjson"),
+        (status = 400, description = "`crew_request_invalid`: a body that is not JSON, or a channel or cursor that is empty, longer than 128 bytes, or a cursor without its channel", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 429, description = "`observer_capacity_reached`: too many observations are open on this daemon", body = CrewError),
+        (status = 503, description = "`crew_request_refused`: Crew could not start on this daemon", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn observe(
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(request): Json<ObserveRequest>,
-) -> Result<Response, (StatusCode, Json<Value>)> {
+    CrewJson(request): CrewJson<ObserveRequest>,
+) -> Result<Response, (StatusCode, Json<CrewError>)> {
     person(&headers).map_err(|_| {
         // A daemon with no approval key says so in the words every Crew route uses there
         // (CROSSCUT-5), with the code the interface reads.
-        let refusal = match user_action_proof(&headers) {
-            UserActionProof::NoKeyInstalled => json!({
-                "code": super::crew_authentication::HUMAN_AUTHORITY_UNAVAILABLE_CODE,
-                "error": super::crew_authentication::no_human_authority(
-                    "Verified human Crew authority is required"
+        match user_action_proof(&headers) {
+            UserActionProof::NoKeyInstalled => observe_refusal(
+                StatusCode::FORBIDDEN,
+                super::crew_authentication::HUMAN_AUTHORITY_UNAVAILABLE_CODE,
+                super::crew_authentication::no_human_authority(
+                    "Verified human Crew authority is required",
                 ),
-            }),
-            _ => json!({"error": "Verified human Crew authority is required"}),
-        };
-        (StatusCode::FORBIDDEN, Json(refusal))
+            ),
+            _ => observe_refusal(
+                StatusCode::FORBIDDEN,
+                super::crew_authentication::USER_ACTION_REQUIRED_CODE,
+                "Verified human Crew authority is required",
+            ),
+        }
     })?;
     if request
         .channel_id
@@ -653,30 +693,34 @@ pub async fn observe(
             .is_some_and(|v| v.is_empty() || v.len() > 128)
         || (request.after.is_some() && request.channel_id.is_none())
     {
-        return Err((
+        return Err(observe_refusal(
             StatusCode::BAD_REQUEST,
-            Json(json!({"error":"Invalid room observation selection"})),
+            REQUEST_INVALID_CODE,
+            "Invalid room observation selection",
         ));
     }
     let permit = SLOTS.clone().try_acquire_owned().map_err(|_| {
-        (
+        observe_refusal(
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({"error":"Too many room observers"})),
+            "observer_capacity_reached",
+            "Too many room observers",
         )
     })?;
     let connection = manager()
         .map_err(|_| {
-            (
+            observe_refusal(
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error":"Crew unavailable"})),
+                super::crew_authentication::REQUEST_REFUSED_CODE,
+                "Crew unavailable",
             )
         })?
         .connection(&id)
         .await
         .map_err(|_| {
-            (
+            observe_refusal(
                 StatusCode::NOT_FOUND,
-                Json(json!({"error":"Crew connection unavailable"})),
+                super::crew_authentication::CONNECTION_NOT_FOUND_CODE,
+                "Crew connection unavailable",
             )
         })?;
     let binding = connection_binding(&connection).unwrap();
@@ -1851,7 +1895,7 @@ mod tests {
         let result = observe(
             HeaderMap::new(),
             Path("missing-connection".into()),
-            Json(ObserveRequest {
+            CrewJson(ObserveRequest {
                 channel_id: Some("channel".into()),
                 after: None,
                 initial: Initial::Latest,
@@ -1860,7 +1904,17 @@ mod tests {
         .await;
         let (status, Json(body)) = result.expect_err("missing proof must refuse");
         assert_eq!(status, StatusCode::FORBIDDEN);
-        assert!(body["error"].as_str().unwrap().contains("human"));
+        assert!(body.error.contains("human"));
+        // Coded like every Crew refusal, so the desktop never reads it as an outdated daemon.
+        assert!(
+            [
+                "crew_user_action_required",
+                "crew_human_authority_unavailable"
+            ]
+            .contains(&body.code.as_str()),
+            "an unproven observation was refused with {}",
+            body.code
+        );
     }
 }
 

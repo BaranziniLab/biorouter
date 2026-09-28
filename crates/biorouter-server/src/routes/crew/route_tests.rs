@@ -2,6 +2,7 @@
 //! failures, the broker's refusal code on an unclassified refusal, the task title set after
 //! admission, and the task conversation's first message.
 use super::names::{SelectorInput, SelectorKind};
+use super::wire::CrewJson;
 use super::{
     connect_refusal, host_start, host_start_cancel, host_start_refusal, host_start_state,
     institution_refusal_details, resolve, task_brief, task_context_message, task_title,
@@ -9,7 +10,6 @@ use super::{
 };
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
 use biorouter::crew::{AdmissionLabels, ChannelLabel, SshFailure, SshFailureKind};
 use serde_json::{json, Value};
 
@@ -44,7 +44,7 @@ async fn resolve_requires_proof_of_a_person_before_it_looks_anything_up() {
             }],
         },
     ] {
-        let refusal = match resolve(HeaderMap::new(), Json(body)).await {
+        let refusal = match resolve(HeaderMap::new(), CrewJson(body)).await {
             Err(refusal) => refusal,
             Ok(_) => panic!("resolve answered without proof of a person"),
         };
@@ -522,7 +522,7 @@ async fn host_start_needs_a_person_at_every_door() {
         );
     };
     let body = json!({"preparation_id": "p", "workspace_name": "lab", "ssh_target": "a@b"});
-    match host_start(HeaderMap::new(), Json(body)).await {
+    match host_start(HeaderMap::new(), CrewJson(body)).await {
         Err(refusal) => proofless(refusal).await,
         Ok(_) => panic!("started without proof of a person"),
     }

@@ -126,7 +126,9 @@ static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<AuthSession>>>> =
     LazyLock::new(Default::default);
 static INSTANCE: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
 
-#[derive(Clone, Serialize)]
+/// A prepared terminal sign-in (`POST /crew/connections/{id}/authentication`). Open its
+/// terminal with the same controller.
+#[derive(Clone, Serialize, utoipa::ToSchema)]
 pub struct AuthenticationSession {
     pub authentication_id: String,
     pub connection_id: String,

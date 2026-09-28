@@ -26,8 +26,13 @@ const MAX_ID_BYTES: usize = 512;
 const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
 const MAX_PASSPHRASE_BYTES: usize = 1024;
 
-#[derive(Serialize)]
+/// Where this profile keeps its Crew keys, and whether that store can be used now
+/// (`GET /crew/credentials`, and the vault routes' answers).
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CredentialStatus {
+    /// `keyring` (the OS keyring), `encrypted_vault` (the Crew vault) or `file` (a development
+    /// profile with the keyring disabled).
+    #[schema(value_type = String)]
     pub backend: &'static str,
     pub initialized: bool,
     pub locked: bool,

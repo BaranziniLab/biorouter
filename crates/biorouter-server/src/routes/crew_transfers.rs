@@ -7,11 +7,17 @@ use biorouter_server::auth::{user_action_proof, UserActionProof};
 use biorouter_server::crew::local_files::{
     CredentialRefusal, SelectionRefusal, CREDENTIAL_REFUSAL_CODE,
 };
-use biorouter_server::crew::transfers::{service, FileRequest, PreviewRequest, StartRequest};
+use biorouter_server::crew::transfers::{
+    service, FileCapability, FileRequest, PreviewRequest, Receipt, StartRequest,
+};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
-type TransferResult = Result<Json<Value>, TransferError>;
+use super::crew::wire::{
+    CrewFileDiscarded, CrewJson, CrewPreviewImage, CrewTransferForgotten, CrewTransferList,
+};
+
+type TransferResult<T> = Result<Json<T>, TransferError>;
 /// The code every refusal carries unless it has a more specific one.
 const TRANSFER_REFUSED_CODE: &str = "crew_transfer_refused";
 pub struct TransferError(StatusCode, String, &'static str);
@@ -77,35 +83,115 @@ fn human(headers: &HeaderMap) -> Result<(), TransferError> {
 }
 /// Every transfer route acts for the person.
 const HUMAN_ACTION_REQUIRED: &str = "A verified human action is required for local file and transfer access; agent grants and API keys do not authorize it";
-#[utoipa::path(post, operation_id = "crew_transfer_register_file", path = "/crew/files", request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn register_file(headers: HeaderMap, Json(body): Json<FileRequest>) -> TransferResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_transfer_register_file",
+    path = "/crew/files",
+    request_body = FileRequest,
+    responses(
+        (status = 200, description = "The selection, as a capability a transfer is started with. A download's destination may still wait for confirmation (`approval_pending`)", body = FileCapability),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when the connection is in the other privacy mode than the one sent", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn register_file(
+    headers: HeaderMap,
+    CrewJson(body): CrewJson<FileRequest>,
+) -> TransferResult<FileCapability> {
     human(&headers)?;
     Ok(Json(service().await?.register(body).await?))
 }
-#[utoipa::path(post, operation_id = "crew_transfer_confirm_file", path = "/crew/files/{capability_id}/confirm", params(("capability_id" = String, Path, description = "Pending file selection capability")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn confirm_file(headers: HeaderMap, Path(capability_id): Path<String>) -> TransferResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_transfer_confirm_file",
+    path = "/crew/files/{capability_id}/confirm",
+    params(("capability_id" = String, Path, description = "A download's pending file selection")),
+    responses(
+        (status = 200, description = "The selection, confirmed", body = FileCapability),
+        (status = 400, description = "`crew_transfer_refused` for a selection that expired, is not a download's, or whose connection policy changed (select the file again); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn confirm_file(
+    headers: HeaderMap,
+    Path(capability_id): Path<String>,
+) -> TransferResult<FileCapability> {
     human(&headers)?;
     Ok(Json(service().await?.confirm(&capability_id).await?))
 }
-#[utoipa::path(delete, operation_id = "crew_transfer_discard_file", path = "/crew/files/{capability_id}", params(("capability_id" = String, Path, description = "Unused file selection capability")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn discard_file(headers: HeaderMap, Path(capability_id): Path<String>) -> TransferResult {
+#[utoipa::path(
+    delete,
+    operation_id = "crew_transfer_discard_file",
+    path = "/crew/files/{capability_id}",
+    params(("capability_id" = String, Path, description = "A file selection that will not be used")),
+    responses(
+        (status = 200, description = "Given back, whether or not it was still pending", body = CrewFileDiscarded),
+        (status = 400, description = "`crew_transfer_refused`: the transfer service is unavailable", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn discard_file(
+    headers: HeaderMap,
+    Path(capability_id): Path<String>,
+) -> TransferResult<CrewFileDiscarded> {
     human(&headers)?;
-    Ok(Json(service().await?.discard(&capability_id).await?))
+    service().await?.discard(&capability_id).await?;
+    Ok(Json(CrewFileDiscarded { discarded: true }))
 }
-#[utoipa::path(post, operation_id = "crew_transfer_start", path = "/crew/transfers", request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn start(headers: HeaderMap, Json(body): Json<StartRequest>) -> TransferResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_transfer_start",
+    path = "/crew/transfers",
+    request_body = StartRequest,
+    responses(
+        (status = 200, description = "The transfer, recorded and under way (or the transfer this `request_id` already started)", body = Receipt),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a file selection that expired or does not match, a transfer the workspace refused, or an idempotency key of another transfer; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn start(
+    headers: HeaderMap,
+    CrewJson(body): CrewJson<StartRequest>,
+) -> TransferResult<Receipt> {
     human(&headers)?;
-    Ok(Json(
-        serde_json::to_value(service().await?.start(body).await?).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(service().await?.start(body).await?))
 }
-#[derive(Deserialize)]
+/// Which transfers `GET /crew/transfers` lists; every one when neither is given.
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct Filter {
+    /// Only this saved connection's transfers.
     connection_id: Option<String>,
+    /// Only this channel's transfers.
     channel_id: Option<String>,
 }
-#[utoipa::path(get, operation_id = "crew_transfer_list", path = "/crew/transfers", responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn list(headers: HeaderMap, Query(filter): Query<Filter>) -> TransferResult {
+#[utoipa::path(
+    get,
+    operation_id = "crew_transfer_list",
+    path = "/crew/transfers",
+    params(Filter),
+    responses(
+        (status = 200, description = "This computer's transfers", body = CrewTransferList),
+        (status = 400, description = "`crew_transfer_refused`: the transfer service is unavailable", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn list(
+    headers: HeaderMap,
+    Query(filter): Query<Filter>,
+) -> TransferResult<CrewTransferList> {
     human(&headers)?;
     let transfers: Vec<_> = service()
         .await?
@@ -123,71 +209,131 @@ pub async fn list(headers: HeaderMap, Query(filter): Query<Filter>) -> TransferR
                     .is_none_or(|id| id == &receipt.channel_id)
         })
         .collect();
-    Ok(Json(json!({"transfers":transfers})))
+    Ok(Json(CrewTransferList { transfers }))
 }
-#[utoipa::path(get, operation_id = "crew_transfer_status", path = "/crew/transfers/{id}", params(("id" = String, Path, description = "Transfer ID")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn status(headers: HeaderMap, Path(id): Path<String>) -> TransferResult {
+#[utoipa::path(
+    get,
+    operation_id = "crew_transfer_status",
+    path = "/crew/transfers/{id}",
+    params(("id" = String, Path, description = "The transfer")),
+    responses(
+        (status = 200, description = "The transfer as this computer records it", body = Receipt),
+        (status = 400, description = "`crew_transfer_refused`: no transfer has that ID", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn status(headers: HeaderMap, Path(id): Path<String>) -> TransferResult<Receipt> {
     human(&headers)?;
-    Ok(Json(
-        serde_json::to_value(service().await?.get(&id).await?).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(service().await?.get(&id).await?))
 }
+/// A new file selection for a transfer (`POST /crew/transfers/{id}/resume`), or the cleanup
+/// approval for a download's partial file (`DELETE /crew/transfers/{id}`).
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resume {
     file_capability: String,
 }
-#[utoipa::path(post, operation_id = "crew_transfer_resume", path = "/crew/transfers/{id}/resume", params(("id" = String, Path, description = "Transfer ID")), request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
+#[utoipa::path(
+    post,
+    operation_id = "crew_transfer_resume",
+    path = "/crew/transfers/{id}/resume",
+    params(("id" = String, Path, description = "The transfer")),
+    request_body = Resume,
+    responses(
+        (status = 200, description = "The transfer, under way again from where it stopped", body = Receipt),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, a selection that does not match it, or a step the workspace refused; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn resume(
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<Resume>,
-) -> TransferResult {
+    CrewJson(body): CrewJson<Resume>,
+) -> TransferResult<Receipt> {
     human(&headers)?;
     Ok(Json(
-        serde_json::to_value(service().await?.resume(&id, &body.file_capability).await?)
-            .map_err(anyhow::Error::from)?,
+        service().await?.resume(&id, &body.file_capability).await?,
     ))
 }
-#[utoipa::path(post, operation_id = "crew_transfer_pause", path = "/crew/transfers/{id}/pause", params(("id" = String, Path, description = "Transfer ID")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn pause(headers: HeaderMap, Path(id): Path<String>) -> TransferResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_transfer_pause",
+    path = "/crew/transfers/{id}/pause",
+    params(("id" = String, Path, description = "The transfer")),
+    responses(
+        (status = 200, description = "The transfer, paused", body = Receipt),
+        (status = 400, description = "`crew_transfer_refused`: no transfer has that ID, or it cannot be paused", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn pause(headers: HeaderMap, Path(id): Path<String>) -> TransferResult<Receipt> {
     human(&headers)?;
-    Ok(Json(
-        serde_json::to_value(service().await?.pause(&id).await?).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(service().await?.pause(&id).await?))
 }
-#[utoipa::path(delete, operation_id = "crew_transfer_forget", path = "/crew/transfers/{id}", params(("id" = String, Path, description = "Transfer ID")), responses((status = 200, body = Value)), tag = "Crew")]
+#[utoipa::path(
+    delete,
+    operation_id = "crew_transfer_forget",
+    path = "/crew/transfers/{id}",
+    params(("id" = String, Path, description = "The transfer")),
+    request_body(content = Option<Resume>, description = "A download's cleanup approval, to delete its partial file", content_type = "application/json"),
+    responses(
+        (status = 200, description = "The record, removed after any authorized cleanup. The workspace's attachments and published downloads are not deleted", body = CrewTransferForgotten),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, one still under way, or a cleanup approval that does not match it", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn forget(
     headers: HeaderMap,
     Path(id): Path<String>,
-    body: Option<Json<Resume>>,
-) -> TransferResult {
+    body: Option<CrewJson<Resume>>,
+) -> TransferResult<CrewTransferForgotten> {
     human(&headers)?;
     service()
         .await?
-        .forget(&id, body.as_ref().map(|body| body.file_capability.as_str()))
+        .forget(
+            &id,
+            body.as_ref().map(|body| body.0.file_capability.as_str()),
+        )
         .await?;
-    Ok(Json(
-        json!({"forgotten":true,"message":"Receipt removed after authorized partial cleanup. Remote attachments and published downloads are not deleted."}),
-    ))
+    Ok(Json(CrewTransferForgotten {
+        forgotten: true,
+        message: "Receipt removed after authorized partial cleanup. Remote attachments and published downloads are not deleted.".into(),
+    }))
 }
-#[utoipa::path(post, operation_id = "crew_transfer_preview", path = "/crew/transfers/preview", request_body = Value, responses((status = 200, description = "Digest-verified bounded image")), tag = "Crew")]
+#[utoipa::path(
+    post,
+    operation_id = "crew_transfer_preview",
+    path = "/crew/transfers/preview",
+    request_body = PreviewRequest,
+    responses(
+        (status = 200, description = "The image's bytes, verified against the attachment's digest and bounded in size, with its own media type (`image/png`, `image/jpeg`, `image/gif` or `image/webp`)", body = CrewPreviewImage, content_type = "image/*"),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an attachment that is not an image, too large to preview, not in that channel, or refused by the workspace; `crew_mode_mismatch`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn preview(
     headers: HeaderMap,
-    Json(body): Json<PreviewRequest>,
+    CrewJson(body): CrewJson<PreviewRequest>,
 ) -> Result<Response, TransferError> {
     human(&headers)?;
     let (media_type, bytes) = service().await?.preview(body).await?;
-    Ok((
-        [
-            ("content-type", media_type),
-            ("cache-control", "no-store"),
-            ("x-content-type-options", "nosniff"),
-            ("content-security-policy", "default-src 'none'; sandbox"),
-        ],
-        bytes,
-    )
-        .into_response())
+    Ok(CrewPreviewImage(bytes).answer(media_type))
 }
 pub fn routes() -> Router {
     Router::new()
@@ -206,6 +352,7 @@ pub fn routes() -> Router {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+    use serde_json::Value;
 
     #[test]
     fn transfer_operations_require_verified_human_action() {

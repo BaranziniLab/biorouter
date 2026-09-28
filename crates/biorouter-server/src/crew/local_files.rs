@@ -13,7 +13,8 @@ pub mod windows;
 pub const CHUNK: usize = 128 * 1024;
 pub const MAX_SIZE: u64 = 1024 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+/// Which way a Crew transfer moves a file.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Upload,

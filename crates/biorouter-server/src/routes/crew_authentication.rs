@@ -29,9 +29,9 @@ use axum::{
     Json, Router,
 };
 use biorouter::crew::authentication::{
-    self, HandoffFailed, InvitationAdvanced, InvitationOutcome, InvitationOverrides,
-    InvitationPreview, InvitationRefusal, InvitationRefused, InvitationText, JoinPerson,
-    JoinRefused, JoinState, JoinStatus, TerminalEvent,
+    self, AuthenticationSession, HandoffFailed, InvitationAdvanced, InvitationOutcome,
+    InvitationOverrides, InvitationPreview, InvitationRefusal, InvitationRefused, InvitationText,
+    JoinPerson, JoinRefused, JoinState, JoinStatus, TerminalEvent,
 };
 use biorouter::crew::{
     manager, ClusterMode, Connection, CrewManager, CrewRefusal, SshFailure, WorkspaceIdentityError,
@@ -42,15 +42,25 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
-type ApiError = (StatusCode, Json<serde_json::Value>);
-fn refused(message: &str) -> ApiError {
-    (StatusCode::FORBIDDEN, Json(json!({"error":message})))
+use super::crew::wire::{CrewCancelled, CrewJson, UNREADABLE_REQUEST};
+
+/// A refusal of the terminal sign-in routes, which only the desktop's main process calls. Each
+/// carries a code, as every Crew refusal does.
+type ApiError = AdmissionRefusal;
+fn refused(code: &'static str, message: &str) -> ApiError {
+    AdmissionRefusal::new(StatusCode::FORBIDDEN, code, message)
 }
+/// The terminal sign-in's proof check: its sentence, with the code of the person gate every
+/// other Crew route answers.
 fn person(headers: &HeaderMap) -> Result<(), ApiError> {
-    if matches!(user_action_proof(headers), UserActionProof::Proven) {
-        Ok(())
-    } else {
-        Err(refused("Verified human Crew authority is required"))
+    const REQUIRED: &str = "Verified human Crew authority is required";
+    match user_action_proof(headers) {
+        UserActionProof::Proven => Ok(()),
+        UserActionProof::Unproven => Err(refused(USER_ACTION_REQUIRED_CODE, REQUIRED)),
+        UserActionProof::NoKeyInstalled => Err(refused(
+            HUMAN_AUTHORITY_UNAVAILABLE_CODE,
+            no_human_authority(REQUIRED),
+        )),
     }
 }
 fn controller(headers: &HeaderMap) -> Result<String, ApiError> {
@@ -58,16 +68,24 @@ fn controller(headers: &HeaderMap) -> Result<String, ApiError> {
     let value = headers
         .get("X-Crew-Controller")
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| refused("Authentication controller required"))?;
-    uuid::Uuid::parse_str(value).map_err(|_| refused("Invalid authentication controller"))?;
+        .ok_or_else(|| refused(REQUEST_INVALID_CODE, "Authentication controller required"))?;
+    uuid::Uuid::parse_str(value)
+        .map_err(|_| refused(REQUEST_INVALID_CODE, "Invalid authentication controller"))?;
     Ok(value.into())
 }
+/// A failed sign-in step: a refusal the core typed keeps its own status, code and fields;
+/// anything else is `crew_request_refused` with the error's text, as before.
 fn failure(error: anyhow::Error) -> ApiError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({"error":error.to_string()})),
-    )
+    match CrewRefusal::find(&error) {
+        Some(refused) => typed_refusal(refused),
+        None => AdmissionRefusal::new(
+            StatusCode::BAD_REQUEST,
+            REQUEST_REFUSED_CODE,
+            error.to_string(),
+        ),
+    }
 }
+/// Open a terminal sign-in for a saved connection.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Prepare {
@@ -83,12 +101,27 @@ enum Input {
     Resize { cols: u16, rows: u16 },
 }
 
-#[utoipa::path(post, operation_id = "crew_authentication_prepare", path = "/crew/connections/{id}/authentication", params(("id" = String, Path, description = "Saved Crew connection")), request_body = Prepare, responses((status = 200, body = serde_json::Value)), tag = "Crew")]
+#[utoipa::path(
+    post,
+    operation_id = "crew_authentication_prepare",
+    path = "/crew/connections/{id}/authentication",
+    params(("id" = String, Path, description = "The saved connection")),
+    request_body = Prepare,
+    responses(
+        (status = 200, description = "The sign-in, ready for its terminal", body = AuthenticationSession),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a connection that can't be signed in to this way, a sign-in already under way for another controller, or one that could not start; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn prepare(
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<Prepare>,
-) -> Result<Json<authentication::AuthenticationSession>, ApiError> {
+    CrewJson(body): CrewJson<Prepare>,
+) -> Result<Json<AuthenticationSession>, ApiError> {
     person(&headers)?;
     authentication::prepare(
         &id,
@@ -101,18 +134,46 @@ pub async fn prepare(
     .map(Json)
     .map_err(failure)
 }
-#[utoipa::path(delete, operation_id = "crew_authentication_cancel", path = "/crew/authentication/{id}", params(("id" = String, Path, description = "Authentication session")), responses((status = 200, body = serde_json::Value)), tag = "Crew")]
+#[utoipa::path(
+    delete,
+    operation_id = "crew_authentication_cancel",
+    path = "/crew/authentication/{id}",
+    params(("id" = String, Path, description = "The sign-in")),
+    responses(
+        (status = 200, description = "The sign-in, stopped, and its connection disconnected", body = CrewCancelled),
+        (status = 400, description = "`crew_request_refused`: no such sign-in for this controller", body = CrewError),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn cancel(
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<CrewCancelled>, ApiError> {
     let controller = controller(&headers)?;
     authentication::cancel_and_disconnect(&id, &controller)
         .await
         .map_err(failure)?;
-    Ok(Json(json!({"cancelled":true})))
+    Ok(Json(CrewCancelled { cancelled: true }))
 }
-#[utoipa::path(get, operation_id = "crew_authentication_terminal", path = "/crew/authentication/{id}/terminal", params(("id" = String, Path, description = "Authentication session")), responses((status = 101, description = "Human-authorized terminal websocket")), tag = "Crew")]
+/// The sign-in's terminal, as a WebSocket: binary frames carry the terminal's bytes; text
+/// frames carry `{"type":"input","data"}` and `{"type":"resize","cols","rows"}` from the client
+/// and `{"type":"exit","exit_code","authenticated"}` or `{"type":"error","code","error"}` from
+/// the daemon, where `code` is `crew_handoff_failed` (signed in, but Crew did not start behind
+/// it), `crew_workspace_identity_mismatch`, `authentication_handoff_failed` (the sign-in was
+/// replaced or closed) or `authentication_attach_failed` (the terminal could not be attached).
+#[utoipa::path(
+    get,
+    operation_id = "crew_authentication_terminal",
+    path = "/crew/authentication/{id}/terminal",
+    params(("id" = String, Path, description = "The sign-in")),
+    responses(
+        (status = 101, description = "The human-authorized terminal WebSocket"),
+        (status = 400, description = "`crew_request_refused`: no such sign-in for this controller", body = CrewError),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn terminal(
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -121,6 +182,7 @@ pub async fn terminal(
     let controller = controller(&headers)?;
     if headers.contains_key("origin") {
         return Err(refused(
+            REQUEST_REFUSED_CODE,
             "Use the native authenticated Crew terminal adapter",
         ));
     }
@@ -375,12 +437,7 @@ fn crew() -> Result<Arc<CrewManager>, AdmissionRefusal> {
 /// extractor's own diagnostic, which can quote a value the client sent back to it, is kept in
 /// `detail` for "Copy details" only.
 fn unreadable_request(status: StatusCode, detail: String) -> AdmissionRefusal {
-    AdmissionRefusal::new(
-        status,
-        REQUEST_INVALID_CODE,
-        "Biorouter couldn't read this request. Update the app or command that sent it, and try again.",
-    )
-    .with("detail", detail)
+    AdmissionRefusal::new(status, REQUEST_INVALID_CODE, UNREADABLE_REQUEST).with("detail", detail)
 }
 
 /// The saved connection `id` names.
@@ -647,7 +704,7 @@ pub struct FromInvitationResponse {
     /// already had for the same workspace and settings), in the shape `GET /crew/connections`
     /// lists.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<Object>)]
+    #[schema(value_type = Option<Connection>)]
     pub connection: Option<Box<Connection>>,
 }
 
@@ -658,9 +715,12 @@ pub struct FromInvitationResponse {
     request_body = FromInvitationRequest,
     responses(
         (status = 200, description = "`preview` for a preview (nothing saved), else `connection`: the saved connection, pinned exactly as the invitation says", body = FromInvitationResponse),
-        (status = 400, description = "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body in the wrong shape, or `crew_request_refused` with a fixed sentence for any other failure", body = Value),
-        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)", body = Value),
-        (status = 409, description = "`crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`", body = Value)
+        (status = 400, description = "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body that is not JSON, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be saved, or `crew_request_refused` with a fixed sentence for any other failure", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 409, description = "`crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -724,10 +784,11 @@ fn invitee(typed: Option<&str>) -> Result<Option<String>, AdmissionRefusal> {
     params(("id" = String, Path, description = "The host's saved Crew connection"), InvitationQuery),
     responses(
         (status = 200, description = "The message to send, and the `brcrew1:` line inside it. Built from this computer's verified connection, the workspace's own word about its name and privacy, and `ssh -G` (never a local alias or the connection's local name)", body = InvitationText),
-        (status = 400, description = "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)", body = Value),
-        (status = 403, description = "No proof that a person asked", body = Value),
-        (status = 404, description = "`crew_connection_not_found`", body = Value),
-        (status = 409, description = "`crew_not_connected`: connect first", body = Value)
+        (status = 400, description = "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, a typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: connect first", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -755,10 +816,11 @@ pub async fn invitation(
     params(("id" = String, Path, description = "The joiner's saved Crew connection")),
     responses(
         (status = 200, description = "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation", body = JoinStatus),
-        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = Value),
-        (status = 403, description = "No proof that a person asked", body = Value),
-        (status = 404, description = "`crew_connection_not_found`", body = Value),
-        (status = 409, description = "`crew_not_connected`: connect first", body = Value)
+        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: connect first", body = CrewError),
+        (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -809,10 +871,11 @@ impl JoinClaimed {
     params(("id" = String, Path, description = "The joiner's saved Crew connection")),
     responses(
         (status = 200, description = "This computer is a member. Idempotent: a member answers this without asking the workspace again", body = JoinClaimed),
-        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = Value),
-        (status = 403, description = "No proof that a person asked", body = Value),
-        (status = 404, description = "`crew_connection_not_found`", body = Value),
-        (status = 409, description = "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`", body = Value)
+        (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), a failed sign-in handoff (`crew_handoff_failed`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
+        (status = 409, description = "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`", body = CrewError),
+        (status = 503, description = "The claim did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace applied it is not known; claiming again is safe) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -846,11 +909,14 @@ mod tests {
     #[test]
     fn controller_requires_human_proof_before_controller_header() {
         let error = controller(&HeaderMap::new()).unwrap_err();
-        assert_eq!(error.0, StatusCode::FORBIDDEN);
-        assert!(error.1["error"]
-            .as_str()
-            .unwrap()
-            .contains("Verified human Crew authority"));
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+        assert!(
+            [USER_ACTION_REQUIRED_CODE, HUMAN_AUTHORITY_UNAVAILABLE_CODE]
+                .contains(&error.code.as_str()),
+            "an unproven sign-in was refused with {}",
+            error.code
+        );
+        assert!(error.error.contains("Verified human Crew authority"));
     }
 
     async fn body_of(refusal: AdmissionRefusal) -> (StatusCode, Value) {

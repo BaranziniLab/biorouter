@@ -7,8 +7,9 @@ use axum::{Json, Router};
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::crew::{
-    cancel_host_start, host_start_status, manager, AdmissionLabels, CrewRefusal, HostStartRefused,
-    HostStartRequest, HostStartStatus, SaveConnection, SshFailure, WorkspaceIdentityError,
+    cancel_host_start, host_start_status, manager, AdmissionLabels, AuthenticationPlan,
+    CrewRefusal, HostStartRefused, HostStartRequest, HostStartStatus, PreparedDevice,
+    SaveConnection, SshFailure, WorkspaceIdentityError,
 };
 use biorouter::model::ModelConfig;
 use biorouter::session::SessionType;
@@ -26,6 +27,13 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) mod names;
 pub use names::{ResolveRequest, ResolveResponse};
+pub mod wire;
+/// Declared in the core's observation contract, which every `state` frame answers.
+pub use biorouter::crew::observation::RunView;
+use wire::{
+    CrewCancelled, CrewConnectionList, CrewConnectionRemoved, CrewConnectionView, CrewDisconnected,
+    CrewJson, CrewRunCancellation, CrewRunList, CrewSessionGrant, CrewWorkspaceAnswer,
+};
 
 const MAX_CONCURRENT_RUNS: usize = 4;
 const MAX_QUEUED_RUN_PROJECTIONS: usize = 256;
@@ -330,7 +338,7 @@ impl IntoResponse for CrewRouteError {
     }
 }
 
-type CrewResult = Result<Json<Value>, CrewRouteError>;
+type CrewResult<T> = Result<Json<T>, CrewRouteError>;
 
 fn require_valid(condition: bool, message: &str) -> Result<(), CrewRouteError> {
     if condition {
@@ -356,51 +364,91 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
     }
 }
 
-/// A saved connection as the routes answer it: the saved fields, plus `server_label`, what to
-/// call its server on screen (D-ALIAS; `biorouter::crew::server_label`). The label is display
-/// only and is never saved, so it never enters the connection's binding or an invitation.
-/// `last_error_code`, when present, types `last_error` (Q3-12: `crew_membership_ended`, this
-/// computer is no longer a member), so a client never has to match the sentence.
-async fn connection_view(connection: &biorouter::crew::Connection) -> anyhow::Result<Value> {
-    let mut value = saved_connection_view(connection, manager()?.last_error_code(connection))?;
-    value["server_label"] =
-        json!(biorouter::crew::server_label(&connection.ssh_target, connection.port).await);
-    Ok(value)
-}
-
-/// [`connection_view`]'s saved fields and error code, without the server label.
-fn saved_connection_view(
+/// A saved connection as the routes answer it ([`CrewConnectionView`]): the saved fields,
+/// plus `server_label`, what to call its server on screen (D-ALIAS;
+/// `biorouter::crew::server_label`), and `last_error_code`, which types `last_error` when the
+/// daemon has a code for it (Q3-12: `crew_membership_ended`), so a client never has to match
+/// the sentence.
+async fn connection_view(
     connection: &biorouter::crew::Connection,
-    last_error_code: Option<&str>,
-) -> anyhow::Result<Value> {
-    let mut value = serde_json::to_value(connection)?;
-    if let Some(code) = last_error_code {
-        value["last_error_code"] = json!(code);
-    }
-    Ok(value)
-}
-
-#[utoipa::path(get, path = "/crew/connections", responses((status = 200, description = "`connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only", body = Value)), tag = "Crew")]
-pub async fn list_connections(headers: HeaderMap) -> CrewResult {
-    require_person(&headers)?;
-    let connections = manager()?.list().await;
-    let views = futures::future::join_all(connections.iter().map(connection_view))
-        .await
-        .into_iter()
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(Json(json!({"connections": views})))
-}
-
-#[utoipa::path(post, path = "/crew/devices/prepare", responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn prepare_device(headers: HeaderMap) -> CrewResult {
-    require_person(&headers)?;
-    Ok(Json(
-        serde_json::to_value(manager()?.prepare_device().await?).map_err(anyhow::Error::from)?,
+) -> anyhow::Result<CrewConnectionView> {
+    let last_error_code = manager()?.last_error_code(connection);
+    let server_label = biorouter::crew::server_label(&connection.ssh_target, connection.port).await;
+    Ok(saved_connection_view(
+        connection,
+        last_error_code,
+        server_label,
     ))
 }
 
-#[utoipa::path(post, path = "/crew/connections", request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn save_connection(headers: HeaderMap, Json(body): Json<Value>) -> CrewResult {
+/// [`connection_view`] from what it looked up.
+fn saved_connection_view(
+    connection: &biorouter::crew::Connection,
+    last_error_code: Option<&str>,
+    server_label: String,
+) -> CrewConnectionView {
+    CrewConnectionView {
+        connection: connection.clone(),
+        last_error_code: last_error_code.map(str::to_owned),
+        server_label,
+    }
+}
+
+#[utoipa::path(
+    get,
+    operation_id = "crew_list_connections",
+    path = "/crew/connections",
+    responses(
+        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`", body = CrewConnectionList),
+        (status = 400, description = "`crew_request_refused`: Crew's saved settings could not be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn list_connections(headers: HeaderMap) -> CrewResult<CrewConnectionList> {
+    require_person(&headers)?;
+    let connections = manager()?.list().await;
+    let connections = futures::future::join_all(connections.iter().map(connection_view))
+        .await
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(Json(CrewConnectionList { connections }))
+}
+
+#[utoipa::path(
+    post,
+    operation_id = "crew_prepare_device",
+    path = "/crew/devices/prepare",
+    responses(
+        (status = 200, description = "A new device key, or the one this profile already prepared. Save the connection with its `preparation_id`", body = PreparedDevice),
+        (status = 400, description = "The key could not be saved: `crew_credential_store_unavailable` (no keyring service answers and there is no Crew vault), `crew_credential_store_refused` (the keyring did not let Biorouter use it), or `crew_request_refused`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn prepare_device(headers: HeaderMap) -> CrewResult<PreparedDevice> {
+    require_person(&headers)?;
+    Ok(Json(manager()?.prepare_device().await?))
+}
+
+#[utoipa::path(
+    post,
+    operation_id = "crew_save_connection",
+    path = "/crew/connections",
+    request_body = SaveConnection,
+    responses(
+        (status = 200, description = "The saved connection", body = CrewConnectionView),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn save_connection(
+    headers: HeaderMap,
+    CrewJson(body): CrewJson<Value>,
+) -> CrewResult<CrewConnectionView> {
     require_person(&headers)?;
     let request: SaveConnection = serde_json::from_value(body).map_err(anyhow::Error::from)?;
     Ok(Json(
@@ -408,12 +456,26 @@ pub async fn save_connection(headers: HeaderMap, Json(body): Json<Value>) -> Cre
     ))
 }
 
-#[utoipa::path(patch, path = "/crew/connections/{id}", params(("id" = String, Path, description = "Crew id")), request_body = Value, responses((status = 200, body = Value)), tag = "Crew")]
+#[utoipa::path(
+    patch,
+    operation_id = "crew_update_connection",
+    path = "/crew/connections/{id}",
+    params(("id" = String, Path, description = "The saved connection")),
+    request_body = SaveConnection,
+    responses(
+        (status = 200, description = "The connection as saved. A save that would change nothing changes nothing, and answers the connection as it stands; a save that keeps the route of a connected connection reconnects it", body = CrewConnectionView),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn update_connection(
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<Value>,
-) -> CrewResult {
+    CrewJson(body): CrewJson<Value>,
+) -> CrewResult<CrewConnectionView> {
     require_person(&headers)?;
     let request: SaveConnection = serde_json::from_value(body).map_err(anyhow::Error::from)?;
     Ok(Json(
@@ -421,15 +483,40 @@ pub async fn update_connection(
     ))
 }
 
-#[utoipa::path(delete, path = "/crew/connections/{id}", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn remove_connection(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
+#[utoipa::path(
+    delete,
+    operation_id = "crew_remove_connection",
+    path = "/crew/connections/{id}",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "Removed, with its keys. A workspace that is online is asked to end the connection's grants", body = CrewConnectionRemoved),
+        (status = 400, description = "`crew_request_refused`: no saved connection has that ID, or it could not be removed", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn remove_connection(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> CrewResult<CrewConnectionRemoved> {
     require_person(&headers)?;
     manager()?.remove(&id).await?;
-    Ok(Json(json!({"removed": true})))
+    Ok(Json(CrewConnectionRemoved { removed: true }))
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/connect", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value), (status = 400, description = "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message, `detail`, when present, OpenSSH's own bounded words for Copy details, and `host`, when present, the host the failure concerns (a jump host's included)", body = Value)), tag = "Crew")]
-pub async fn connect(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_connect",
+    path = "/crew/connections/{id}/connect",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "The connection, connected and verified against its pinned workspace key", body = CrewConnectionView),
+        (status = 400, description = "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message, `detail`, when present, OpenSSH's own bounded words for Copy details, and `host`, when present, the host the failure concerns (a jump host's included). Otherwise `crew_institution_mismatch` when the workspace's connections disagree about its institution, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn connect(headers: HeaderMap, Path(id): Path<String>) -> CrewResult<CrewConnectionView> {
     require_person(&headers)?;
     let connected = manager()?.connect(&id).await.map_err(connect_refusal)?;
     Ok(Json(connection_view(&connected).await?))
@@ -473,20 +560,45 @@ fn connect_refusal(error: anyhow::Error) -> CrewRouteError {
     error.into()
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/disconnect", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn disconnect(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_disconnect",
+    path = "/crew/connections/{id}/disconnect",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "Disconnected. Disconnecting a connection that is not connected changes nothing", body = CrewDisconnected),
+        (status = 400, description = "`crew_request_refused`: no saved connection has that ID", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn disconnect(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> CrewResult<CrewDisconnected> {
     require_person(&headers)?;
     manager()?.disconnect(&id).await?;
-    Ok(Json(json!({"disconnected": true})))
+    Ok(Json(CrewDisconnected { disconnected: true }))
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/auth-plan", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn authentication_plan(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
+#[utoipa::path(
+    post,
+    operation_id = "crew_authentication_plan",
+    path = "/crew/connections/{id}/auth-plan",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "The command that signs in to the connection's server in a terminal", body = AuthenticationPlan),
+        (status = 400, description = "`crew_request_refused`: no saved connection has that ID, or it cannot be signed in to this way", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn authentication_plan(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> CrewResult<AuthenticationPlan> {
     require_person(&headers)?;
-    Ok(Json(
-        serde_json::to_value(manager()?.authentication_plan(&id).await?)
-            .map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(manager()?.authentication_plan(&id).await?))
 }
 
 /// D-HOST's refusals keep their own status and code; anything else is an ordinary refusal.
@@ -511,15 +623,17 @@ fn host_start_refusal(error: anyhow::Error) -> CrewRouteError {
     request_body = HostStartRequest,
     responses(
         (status = 200, description = "The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs", body = HostStartStatus),
-        (status = 400, description = "`crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses", body = Value),
-        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)", body = Value),
-        (status = 409, description = "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once", body = Value)
+        (status = 400, description = "`crew_request_invalid`: a body that is not JSON, or a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 409, description = "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once", body = CrewError)
     ),
     tag = "Crew"
 )]
 pub async fn host_start(
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    CrewJson(body): CrewJson<Value>,
 ) -> Result<Json<HostStartStatus>, CrewRouteError> {
     require_person(&headers)?;
     let request: HostStartRequest = serde_json::from_value(body).map_err(|_| {
@@ -545,9 +659,9 @@ pub async fn host_start(
     path = "/crew/host/start/{job_id}",
     params(("job_id" = String, Path, description = "The run `POST /crew/host/start` answered")),
     responses(
-        (status = 200, description = "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)", body = HostStartStatus),
-        (status = 403, description = "No proof that a person asked", body = Value),
-        (status = 404, description = "`crew_host_start_not_found`", body = Value)
+        (status = 200, description = "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`, `crew_host_start_timed_out` or `crew_host_start_cancelled`)", body = HostStartStatus),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_host_start_not_found`: no such run on this computer", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -572,16 +686,19 @@ pub async fn host_start_state(
     path = "/crew/host/start/{job_id}",
     params(("job_id" = String, Path, description = "The run to stop")),
     responses(
-        (status = 200, description = "`{\"cancelled\": true}`; stopping a finished run changes nothing", body = Value),
-        (status = 403, description = "No proof that a person asked", body = Value),
-        (status = 404, description = "`crew_host_start_not_found`", body = Value)
+        (status = 200, description = "Stopped; stopping a finished run changes nothing", body = CrewCancelled),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 404, description = "`crew_host_start_not_found`: no such run on this computer", body = CrewError)
     ),
     tag = "Crew"
 )]
-pub async fn host_start_cancel(headers: HeaderMap, Path(job_id): Path<String>) -> CrewResult {
+pub async fn host_start_cancel(
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> CrewResult<CrewCancelled> {
     require_person(&headers)?;
     if cancel_host_start(&job_id) {
-        Ok(Json(json!({"cancelled": true})))
+        Ok(Json(CrewCancelled { cancelled: true }))
     } else {
         Err(CrewRouteError::new(
             StatusCode::NOT_FOUND,
@@ -596,10 +713,26 @@ pub async fn host_start_cancel(headers: HeaderMap, Path(job_id): Path<String>) -
 /// saved connections (naming design D7). It names a connection, not a chat, so proof of a
 /// person is its gate. The answer is a lookup, never a permission: the broker authorizes every
 /// mutation that uses it.
-#[utoipa::path(post, path = "/crew/resolve", request_body = ResolveRequest, responses((status = 200, description = "One resolution per selector, in the order sent", body = ResolveResponse), (status = 400, description = "Invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`), or no connection named while several are saved (`crew_connection_required`)", body = Value), (status = 403, description = "No proof that a person asked", body = Value), (status = 409, description = "The connection matches more than one saved connection (`ambiguous_name`, with `candidates`)", body = Value)), tag = "Crew")]
+#[utoipa::path(
+    post,
+    operation_id = "crew_resolve",
+    path = "/crew/resolve",
+    request_body = ResolveRequest,
+    responses(
+        (status = 200, description = "One resolution per selector, in the order sent", body = ResolveResponse),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`, with `kind` and `text`), no connection named while several are saved (`crew_connection_required`), or the workspace's snapshot could not be read (`crew_request_refused`, with `broker_code` when the workspace refused)", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`)", body = CrewError),
+        (status = 503, description = "The workspace could not be asked for the snapshot: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it). Nothing changed", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn resolve(
     headers: HeaderMap,
-    Json(body): Json<ResolveRequest>,
+    CrewJson(body): CrewJson<ResolveRequest>,
 ) -> Result<Json<ResolveResponse>, CrewRouteError> {
     require_person(&headers)?;
     names::validate_request(&body).map_err(resolve_refusal)?;
@@ -672,22 +805,40 @@ fn empty_object() -> Value {
     json!({})
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/request", params(("id" = String, Path, description = "Crew id")), request_body = CrewRequest, responses((status = 200, body = Value)), tag = "Crew")]
+/// Send one Crew protocol request to the workspace as the person, and answer the workspace's
+/// own result.
+#[utoipa::path(
+    post,
+    operation_id = "crew_request",
+    path = "/crew/connections/{id}/request",
+    params(("id" = String, Path, description = "The saved connection")),
+    request_body = CrewRequest,
+    responses(
+        (status = 200, description = "The workspace's own answer, forwarded unchanged", body = CrewWorkspaceAnswer),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` (with `broker_code` when the workspace itself refused), `crew_mode_mismatch` (`actual_mode`, `expected_mode`: the request required the other privacy mode; nothing was sent), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace applied it is not known; retry with `request_id`, its idempotency key, to apply it at most once) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn request(
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<CrewRequest>,
-) -> CrewResult {
+    CrewJson(body): CrewJson<CrewRequest>,
+) -> CrewResult<CrewWorkspaceAnswer> {
     require_person(&headers)?;
     if body.method.starts_with("run.") || body.method.starts_with("worker.") {
         return Err(CrewRouteError::new(StatusCode::FORBIDDEN, "crew_typed_run_required",
             "Use the owned-agent controls. Provider authorization cannot be supplied in a protocol request."));
     }
-    Ok(Json(
+    Ok(Json(CrewWorkspaceAnswer(
         manager()?
             .human_request(&id, &body.method, body.params, body.request_id)
             .await?,
-    ))
+    )))
 }
 
 #[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
@@ -710,20 +861,6 @@ pub struct StartRunRequest {
     pub context_channels: Vec<String>,
     #[serde(default)]
     pub posting_grant: bool,
-}
-
-#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
-pub struct RunView {
-    pub run_id: String,
-    pub connection_id: String,
-    pub channel_id: String,
-    pub session_id: String,
-    pub status: String,
-    pub error: Option<String>,
-    /// When this device admitted the task, in Unix milliseconds. Absent from a run recorded
-    /// before it was kept.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub started_at: Option<u64>,
 }
 
 struct OwnedRun {
@@ -772,13 +909,31 @@ fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
     }
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/runs", params(("id" = String, Path, description = "Crew id")), request_body = StartRunRequest, responses((status = 200, body = Value)), tag = "Crew")]
+/// Start an agent task that posts its result in a channel, under a grant the workspace admits.
+#[utoipa::path(
+    post,
+    operation_id = "crew_start_run",
+    path = "/crew/connections/{id}/runs",
+    params(("id" = String, Path, description = "The saved connection")),
+    request_body = StartRunRequest,
+    responses(
+        (status = 200, description = "The task, running. The same `request_id` with the same request answers the same task again", body = RunView),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active, a model Crew cannot isolate) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another", body = CrewError),
+        (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn start_run(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(body): Json<StartRunRequest>,
-) -> CrewResult {
+    CrewJson(body): CrewJson<StartRunRequest>,
+) -> CrewResult<RunView> {
     require_person(&headers)?;
     require_valid(
         body.posting_grant,
@@ -811,9 +966,7 @@ pub async fn start_run(
                 .and_then(|id| stored.runs.get(id))
                 .map(|run| run.view.clone())
             {
-                return Ok(Json(
-                    serde_json::to_value(view).map_err(anyhow::Error::from)?,
-                ));
+                return Ok(Json(view));
             }
             return Err(CrewRouteError::new(StatusCode::CONFLICT,"crew_start_outcome_unknown","This task was already admitted but setup did not complete. Inspect its conversation and granted runs before deliberately starting a new task."));
         }
@@ -1090,7 +1243,7 @@ async fn launch_run(
     request_key: String,
     provider: Arc<dyn biorouter::providers::base::Provider>,
     permit: OwnedSemaphorePermit,
-) -> CrewResult {
+) -> CrewResult<RunView> {
     let session_id = create_run_session(&state, &ledger, &request_key).await?;
     let agent = state.agent_manager.new_scoped_agent();
     agent.ensure_crew_compatible()?;
@@ -1176,9 +1329,7 @@ async fn launch_run(
             _permit: permit,
         },
     ));
-    Ok(Json(
-        serde_json::to_value(view).map_err(anyhow::Error::from)?,
-    ))
+    Ok(Json(view))
 }
 
 fn remote_operation_detail(method: &str, params: &Value) -> String {
@@ -1841,10 +1992,23 @@ async fn publish_run_finished(ledger: &RunLedger, view: &RunView) {
     );
 }
 
-#[utoipa::path(get, path = "/crew/connections/{id}/runs", params(("id" = String, Path, description = "Crew id")), responses((status = 200, body = Value)), tag = "Crew")]
-pub async fn list_runs(headers: HeaderMap, Path(id): Path<String>) -> CrewResult {
+#[utoipa::path(
+    get,
+    operation_id = "crew_list_runs",
+    path = "/crew/connections/{id}/runs",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "This computer's tasks on the connection, newest first", body = CrewRunList),
+        (status = 400, description = "`crew_request_refused`: the task ledger could not be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn list_runs(headers: HeaderMap, Path(id): Path<String>) -> CrewResult<CrewRunList> {
     require_person(&headers)?;
-    Ok(Json(json!({"runs": owned_run_views(&id).await?})))
+    Ok(Json(CrewRunList {
+        runs: owned_run_views(&id).await?,
+    }))
 }
 
 /// This connection's owned runs, newest first. The ledger is a map, so its order says nothing;
@@ -1952,11 +2116,26 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/runs/{run_id}/cancel", params(("id" = String, Path, description = "Crew id"), ("run_id" = String, Path, description = "Crew run_id")), responses((status = 200, body = Value)), tag = "Crew")]
+#[utoipa::path(
+    post,
+    operation_id = "crew_cancel_run",
+    path = "/crew/connections/{id}/runs/{run_id}/cancel",
+    params(
+        ("id" = String, Path, description = "The saved connection"),
+        ("run_id" = String, Path, description = "One of this computer's tasks on it")
+    ),
+    responses(
+        (status = 200, description = "Stopped here, and the workspace confirmed revoking the task's grant; or the task had already ended (`already_finished`). Stopping the task's remote jobs is not confirmed", body = CrewRunCancellation),
+        (status = 400, description = "`crew_request_refused`: a run ID of another shape, a task that is not this computer's on this connection, or a ledger that could not be read", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 503, description = "Stopped here, not confirmed: `crew_revocation_unconfirmed` (the workspace has not confirmed revoking the grant; retry to confirm it) or `crew_cancel_persistence_failed` (the task's status could not be saved; inspect the task before retrying)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn cancel_run(
     headers: HeaderMap,
     Path((id, run_id)): Path<(String, String)>,
-) -> CrewResult {
+) -> CrewResult<CrewRunCancellation> {
     require_person(&headers)?;
     // No run this daemon started has any other shape (RENDERER-2).
     require_valid(
@@ -2070,12 +2249,16 @@ where
 }
 
 /// The cancel route's answer, unchanged by the factoring.
-fn cancellation_response(outcome: OwnedCancellation) -> CrewResult {
+fn cancellation_response(outcome: OwnedCancellation) -> CrewResult<CrewRunCancellation> {
     let (status, revocation, persistence_error) = match outcome {
         OwnedCancellation::AlreadyFinished(view) => {
-            return Ok(Json(
-                json!({"cancelled":view.status == "cancelled", "already_finished":true,"status":view.status}),
-            ));
+            return Ok(Json(CrewRunCancellation {
+                cancelled: view.status == "cancelled",
+                status: view.status,
+                already_finished: Some(true),
+                remote_revocation_confirmed: None,
+                message: None,
+            }));
         }
         OwnedCancellation::Requested {
             status,
@@ -2092,10 +2275,13 @@ fn cancellation_response(outcome: OwnedCancellation) -> CrewResult {
         return Err(CrewRouteError::new(StatusCode::SERVICE_UNAVAILABLE, "crew_revocation_unconfirmed",
             format!("Local cancellation requested; current status: {status}. Remote grant revocation is unconfirmed: {error}. Retry cancellation to confirm revocation; remote jobs may continue until their enforced timeout.")));
     }
-    Ok(Json(
-        json!({"cancelled":status == "cancelled","status":status,"remote_revocation_confirmed":true,
-        "message":"Local cancellation requested and remote grant revoked. Remote process termination was not confirmed."}),
-    ))
+    Ok(Json(CrewRunCancellation {
+        cancelled: status == "cancelled",
+        status,
+        already_finished: None,
+        remote_revocation_confirmed: Some(true),
+        message: Some("Local cancellation requested and remote grant revoked. Remote process termination was not confirmed.".into()),
+    }))
 }
 
 enum CancelReservation {
@@ -2192,13 +2378,35 @@ pub struct GrantSessionRequest {
     pub context_channels: Vec<String>,
 }
 
-#[utoipa::path(post, path = "/crew/connections/{id}/sessions/{session_id}/grant", params(("id" = String, Path, description = "Crew id"), ("session_id" = String, Path, description = "Crew session_id")), request_body = GrantSessionRequest, responses((status = 200, body = Value)), tag = "Crew")]
+/// Give a chat access to a channel (`/crew`): the workspace admits a run for it, and the chat
+/// gets the Crew tools, bound to its model.
+#[utoipa::path(
+    post,
+    operation_id = "crew_grant_session",
+    path = "/crew/connections/{id}/sessions/{session_id}/grant",
+    params(
+        ("id" = String, Path, description = "The saved connection"),
+        ("session_id" = String, Path, description = "The chat to grant access to")
+    ),
+    request_body = GrantSessionRequest,
+    responses(
+        (status = 200, description = "The chat's grant", body = CrewSessionGrant),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a chat that is busy, not open, or can't use Crew, or a grant the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`", body = CrewError),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_session_unavailable`: the chat is out of this caller's reach", body = CrewError),
+        (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
+        (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
+        (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
+        (status = 409, description = "`crew_model_fixed`: the chat already has Crew access bound to another model", body = CrewError),
+        (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
+    ),
+    tag = "Crew"
+)]
 pub async fn grant_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path((id, session_id)): Path<(String, String)>,
-    Json(body): Json<GrantSessionRequest>,
-) -> CrewResult {
+    CrewJson(body): CrewJson<GrantSessionRequest>,
+) -> CrewResult<CrewSessionGrant> {
     require_person(&headers)?;
     crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
         .await
@@ -2283,9 +2491,10 @@ pub async fn grant_session(
             .await
     })
     .await?;
-    Ok(Json(
-        json!({"run_id": admission.run_id, "session_id": session_id}),
-    ))
+    Ok(Json(CrewSessionGrant {
+        run_id: admission.run_id,
+        session_id,
+    }))
 }
 
 /// Finish setting up a chat's grant the workspace has admitted, or take it back (DAEMON-2).
@@ -2370,6 +2579,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 #[path = "crew/route_tests.rs"]
 mod route_tests;
+
+#[cfg(test)]
+#[path = "crew/openapi_contract_tests.rs"]
+mod openapi_contract_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2872,6 +3085,7 @@ mod tests {
         let Ok(axum::Json(body)) = cancellation_response(outcome) else {
             panic!("a confirmed cancellation is a success");
         };
+        let body = serde_json::to_value(body).unwrap();
         assert_eq!(body["cancelled"], true);
         assert_eq!(body["remote_revocation_confirmed"], true);
     }
@@ -3008,6 +3222,7 @@ mod tests {
         let Ok(axum::Json(body)) = cancellation_response(outcome) else {
             panic!("a finished task is reported, not refused");
         };
+        let body = serde_json::to_value(body).unwrap();
         assert_eq!(body["already_finished"], true);
 
         let (_temp, running, _view) = ledger_fixture("running", false).await;
@@ -3687,13 +3902,24 @@ mod provenance_tests {
             "device_id": "d", "public_key": "p"
         }))
         .unwrap();
-        let ended = saved_connection_view(&connection, Some("crew_membership_ended")).unwrap();
+        let view = |code| {
+            serde_json::to_value(saved_connection_view(
+                &connection,
+                code,
+                "example.test".into(),
+            ))
+            .unwrap()
+        };
+        let ended = view(Some("crew_membership_ended"));
         assert_eq!(ended["last_error_code"], "crew_membership_ended");
         assert_eq!(
             ended["last_error"],
             "This computer is no longer a member of lab."
         );
-        let plain = saved_connection_view(&connection, None).unwrap();
+        // The saved fields sit beside the two the route adds, as they always have.
+        assert_eq!(ended["ssh_target"], "crew@example.test");
+        assert_eq!(ended["server_label"], "example.test");
+        let plain = view(None);
         assert!(plain.get("last_error_code").is_none());
     }
 }
