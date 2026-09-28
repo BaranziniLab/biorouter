@@ -289,17 +289,18 @@ const OLD_CSV: &str = "sample,signal\nS1,99.9\nS2,7.8\n";
 /// `context.manifest`: two messages in `#data`, each sharing a `gina-assay.csv`, with the
 /// broker's `people` map naming their author.
 fn manifest() -> Value {
-    let message = |id: &str, created_at: u64, blob: &str| {
+    let message = |id: &str, created_at: u64, blob: &str, run: Value| {
         json!({"id": id, "sequence": id, "channel_id": "keepalive-channel",
-            "actor_id": "principal-gina", "run_id": null, "body": "Shared a file",
+            "actor_id": "principal-gina", "run_id": run, "body": "Shared a file",
             "created_at": created_at, "restricted": false, "source_channels": [],
             "attachments": [blob], "references": [], "status": null})
     };
+    // The newer post is Gina's agent's (a run's), the older her own.
     json!({
         "run_id": "keepalive-run", "policy_epoch": 1, "source_channels": ["keepalive-channel"],
         "messages": [
-            message("message-new", 1_790_214_527, "blob-new"),
-            message("message-old", 1_790_214_441, "blob-old"),
+            message("message-new", 1_790_214_527, "blob-new", json!("gina-agent-run")),
+            message("message-old", 1_790_214_441, "blob-old", Value::Null),
         ],
         "restricted": false,
         "people": {"principal-gina": {"username": "crew_gina", "display_name": "Gina Rossi", "active": true}},
@@ -941,10 +942,17 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
     grant_worker(&f).await;
     let cap = CallCapability::for_test(ProviderTier::Private, true);
     assert_eq!(f.manager.run_source_line(WORKER), None, "nothing read yet");
-    f.manager
+    let page = f
+        .manager
         .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
         .await
         .unwrap();
+    // W2-DMN-11: the post an agent wrote says so, beside its owner's `actor_id`; a person's
+    // own post is left as it was.
+    assert_eq!(page["messages"][0]["id"], "message-new");
+    assert_eq!(page["messages"][0]["by_agent"], true);
+    assert_eq!(page["messages"][0]["actor_id"], "principal-gina");
+    assert!(page["messages"][1].get("by_agent").is_none());
     assert_eq!(
         f.manager.run_source_line(WORKER),
         None,
@@ -1406,6 +1414,14 @@ async fn a_drop_a_request_finds_first_is_dialled_again_until_the_network_is_back
             .any(|cause| cause.downcast_ref::<SshFailure>().is_some()),
         "{refused:#}"
     );
+    // W2-DMN-7: lost before anything was written, and said so.
+    let typed = super::CrewRefusal::find(&refused).expect("a typed refusal");
+    assert_eq!(typed.code(), "crew_not_sent");
+    assert_eq!(typed.http_status(), 503);
+    assert!(
+        refused.to_string().contains("nothing was sent"),
+        "{refused}"
+    );
     assert_eq!(
         methods_on(&f.root, 1),
         ["hello"],
@@ -1428,10 +1444,14 @@ async fn a_drop_a_request_finds_first_is_dialled_again_until_the_network_is_back
 }
 
 /// Q4-01: a bridge that breaks while carrying a request is a drop that request found. The
-/// request is not sent again (its outcome is unknown); the connection is dialled again on the
-/// same schedule.
+/// request is not sent again; the connection is dialled again.
+///
+/// W2-DMN-6: dialled at once, as a drop the keepalive finds is. The first try used to wait the
+/// schedule's first gap (20 s, then 60 s), and here the gap is a minute: only an immediate dial
+/// reconnects within the five seconds `until` waits. And a read that broke changed nothing, so
+/// neither its answer nor the saved error raises the "submitted operation" alarm.
 #[tokio::test]
-async fn a_bridge_that_breaks_under_a_request_is_dialled_again_later() {
+async fn a_bridge_that_breaks_under_a_request_is_dialled_again_at_once() {
     if !crate::test_sandbox::in_a_process_of_its_own() {
         return;
     }
@@ -1460,6 +1480,127 @@ async fn a_bridge_that_breaks_under_a_request_is_dialled_again_later() {
         "never re-sent"
     );
     assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    drop(f);
+
+    let f = fixture(
+        "request-breaks-now",
+        &["drop-after-1", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_not_sent", "a read changed nothing");
+    assert!(
+        !error.to_string().contains("submitted operation"),
+        "{error}"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// W2-DMN-6: while a broken bridge is being dialled again, a request is told the connection is
+/// coming back (`crew_reconnecting`), not to sign in, and nothing is dialled or written for it.
+/// A bridge that broke under a read leaves the plain "dropped" error, not the alarm about a
+/// submitted operation.
+#[tokio::test]
+async fn a_request_while_a_redial_is_owed_is_told_it_is_reconnecting() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-reconnecting",
+        &["drop-after-1", "unreachable", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    // The immediate dial meets the network still down; the next try is a minute away.
+    let root = f.root.clone();
+    until(async || spawns(&root) == 2).await;
+    let manager = Arc::clone(&f.manager);
+    until(async || !manager.transports.lock().await.contains_key(CONNECTION_ID)).await;
+    assert!(!f.manager.idle_redial.lock().unwrap().is_empty(), "armed");
+    let asked = requests(&f.root).len();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_reconnecting");
+    assert_eq!(typed.http_status(), 503);
+    assert!(error.to_string().starts_with("Reconnecting to "), "{error}");
+    assert!(!error.to_string().contains("authenticate"), "{error}");
+    assert_eq!(spawns(&f.root), 2, "nothing dialled for it");
+    assert_eq!(requests(&f.root).len(), asked, "nothing written for it");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// W2-DMN-7: a request that could have changed something, lost with its frame written, is an
+/// unknown outcome with its request ID, never a refusal; and the saved error keeps the alarm.
+#[tokio::test]
+async fn a_post_lost_in_flight_is_an_unknown_outcome_with_its_request_id() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-unknown",
+        &["drop-after-2", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let error = f
+        .manager
+        .human_request(
+            CONNECTION_ID,
+            "message.post",
+            json!({"channel_id": "keepalive-channel", "body": "hi"}),
+            Some("post-key-1".into()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        methods_on(&f.root, 1),
+        ["hello", "auth.challenge", "message.post"],
+        "the post itself was written"
+    );
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_outcome_unknown");
+    assert_eq!(typed.http_status(), 503);
+    assert!(typed
+        .fields()
+        .iter()
+        .any(|(key, value)| *key == "request_id" && value == "post-key-1"));
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.downcast_ref::<SshFailure>().is_some()),
+        "the SSH failure stays underneath: {error:#}"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await.0 == "connected").await;
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .filter(|(spawn, _)| *spawn == 2)
+            .any(|(_, method)| method == "message.post"),
+        "never re-sent"
+    );
 }
 
 /// Q4-01: a Disconnect during the retries a request armed stops them for good.

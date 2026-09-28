@@ -765,10 +765,11 @@ async fn connection_binding_with_expected(
     expected_mode: Option<biorouter::crew::ClusterMode>,
 ) -> Result<String> {
     let connection = biorouter::crew::manager()?.connection(id).await?;
-    ensure!(
-        expected_mode.is_none_or(|mode| mode == connection.mode),
-        "Crew connection privacy changed; refresh the verified workspace before selecting a file"
-    );
+    // W2-DMN-9: the desktop's verified mode and a terminal's `--expected-mode` both reach
+    // here, so the refusal names both modes and carries `crew_mode_mismatch`.
+    if let Some(expected) = expected_mode.filter(|mode| *mode != connection.mode) {
+        return Err(biorouter::crew::CrewRefusal::mode_mismatch(connection.mode, expected).into());
+    }
     binding_for_connection(&connection)
 }
 fn binding_for_connection(connection: &biorouter::crew::Connection) -> Result<String> {

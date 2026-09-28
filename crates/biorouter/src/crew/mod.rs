@@ -36,6 +36,7 @@ mod registry_lock_tests;
 mod scope_binding_tests;
 pub use credentials::CredentialStatus;
 pub mod refusal;
+pub use institution::{refusal_details as institution_refusal_details, AFFILIATION_REFUSAL};
 pub use refusal::CrewRefusal;
 mod ssh_policy;
 mod transport;
@@ -405,6 +406,107 @@ const ACCESS_CHANGED: &str = "Crew access or settings changed while this was in 
 /// A bridge that failed carrying a request: what was sent may or may not have reached the
 /// workspace.
 const BRIDGE_FAILED: &str = "SSH bridge failed. Reconnect; inspect any submitted operation before retrying because its outcome may be unknown.";
+/// The last error of a bridge that broke under a read: nothing can have changed (W2-DMN-6).
+const READ_DROPPED: &str = "The connection to this workspace dropped.";
+
+/// Whether `method` only reads: whatever became of it, nothing changed at the workspace. An
+/// explicit list, so a method not named here is treated as one that may have changed something.
+/// `channel.read` moves a read position, so it is not one.
+fn is_read_only(method: &str) -> bool {
+    matches!(
+        method,
+        "hello"
+            | "auth.challenge"
+            | "enrollment.pending"
+            | "workspace.snapshot"
+            | "messages.history"
+            | "messages.search"
+            | "context.manifest"
+            | "blob.read"
+            | "blob.status"
+            | "reference.get"
+            | "profile.suggest"
+            | "run.remote_scope"
+            | "remote.list"
+            | "remote.read"
+            | "remote.hash"
+            | "remote.job_status"
+    )
+}
+
+/// Where a request's bridge was lost (W2-DMN-7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lost {
+    /// Before the request was written: a dial, or the challenge ahead of it.
+    BeforeSending,
+    /// With the request written and no answer read.
+    WhileCarrying,
+}
+
+/// A request's failure, typed by what the person can know about it (W2-DMN-7). The transport's
+/// own error stays underneath, so a caller that classifies the SSH failure (connect, the
+/// keepalive's retries) still finds it; the routes answer the refusal on top:
+///
+/// - lost before anything was written, or the bridge said it could not deliver the request:
+///   `crew_not_sent`, nothing reached the workspace;
+/// - a read lost while it was carried: `crew_not_sent` too, since nothing can have changed;
+/// - anything else lost while it was carried: `crew_outcome_unknown` with the request's
+///   idempotency key as `request_id`, so a retry with it is applied at most once.
+///
+/// Both answer 503. Every other error (a refusal the workspace answered, a check here) is
+/// returned as it came. It used to reach the routes as `400 crew_request_refused`, so a post the
+/// workspace had applied read as refused, and a client dropped its "retry with the same request
+/// ID" advice.
+fn lost_request(
+    error: anyhow::Error,
+    lost: Lost,
+    method: &str,
+    request_key: Option<String>,
+    workspace: &str,
+) -> anyhow::Error {
+    if CrewRefusal::find(&error).is_some() {
+        return error;
+    }
+    if keepalive::broker_refusal(&error).is_some_and(|(code, _)| code == "not_delivered") {
+        let refusal = CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!("{workspace}'s server couldn't be reached, so nothing was sent. Try again once Crew reconnects."),
+        )
+        .status(503);
+        return error.context(refusal);
+    }
+    let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+    else {
+        return error;
+    };
+    let ssh_code = failure.api_code();
+    let refusal = match lost {
+        Lost::WhileCarrying if !is_read_only(method) => CrewRefusal::new(
+            refusal::OUTCOME_UNKNOWN,
+            format!(
+                "Crew couldn't confirm whether this reached {workspace}. Check the channel, then retry with the same request ID."
+            ),
+        )
+        .with("request_id", json!(request_key)),
+        Lost::WhileCarrying => CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!(
+                "The connection to {workspace} dropped before it answered. Nothing changed; try again."
+            ),
+        ),
+        Lost::BeforeSending if failure.code == "ssh_sign_in_refused" => CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!("{} Nothing was sent.", failure.description),
+        ),
+        Lost::BeforeSending => CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!("Biorouter couldn't reach {workspace}, so nothing was sent."),
+        ),
+    };
+    error.context(refusal.status(503).with("ssh_code", json!(ssh_code)))
+}
 
 /// Whether a grant stored under a session id is the grant of the chat that holds that id now
 /// (SCOPE-BIND). See [`CrewManager::standing`].
@@ -1115,6 +1217,10 @@ fn hello_nonce() -> String {
 }
 #[cfg(test)]
 pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(None);
+/// What a public model is told when the chat asking for Crew access has used a private one: its
+/// history carries private context a public model must not continue with (W2-DMN-9).
+const ORIGIN_RESTRICTED_PUBLIC: &str = "This chat has used a private model, so a public model can't continue it with Crew context. Choose a private model.";
+
 /// What `crew_credential_store_unavailable` says (W2-DMN-1).
 pub const CREDENTIAL_STORE_UNAVAILABLE_TEXT: &str = "This computer has no keyring service Biorouter can use. Run `biorouter crew credentials init` to keep Crew keys in an encrypted vault, then try again.";
 
@@ -1168,6 +1274,21 @@ pub fn is_run_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+/// Refuse a request that required the privacy mode `expected` (as the caller sent it) of a
+/// connection that is in `actual`. A GUI's verified mode and a terminal's `--expected-mode`
+/// both reach here, so the refusal names both modes rather than guessing that one changed
+/// (W2-DMN-9). An absent `expected` requires nothing.
+fn require_mode(expected: Option<&Value>, actual: ClusterMode) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let expected: ClusterMode = serde_json::from_value(expected.clone())
+        .map_err(|_| anyhow::anyhow!("A Crew privacy mode is either public or private"))?;
+    if expected == actual {
+        return Ok(());
+    }
+    Err(CrewRefusal::mode_mismatch(actual, expected).into())
 }
 pub(super) fn safe_atom(value: &str) -> bool {
     !value.is_empty()
@@ -1960,13 +2081,20 @@ impl CrewManager {
                         .as_deref()
                         .is_some_and(|theirs| theirs != given)
             }) {
-                anyhow::bail!(
-                    "{name} is also saved on this computer for the same workspace, under \
-                     institution {theirs}. Connections to one workspace share one institution, \
-                     so remove {name} before you use {given} here.",
-                    name = other.name,
-                    theirs = other.institution_id.as_deref().unwrap_or_default(),
-                );
+                let theirs = other.institution_id.as_deref().unwrap_or_default();
+                return Err(CrewRefusal::new(
+                    refusal::INSTITUTION_MISMATCH,
+                    format!(
+                        "{name} is also saved on this computer for the same workspace, under \
+                         institution {theirs}. Connections to one workspace share one \
+                         institution, so remove {name} before you use {given} here.",
+                        name = other.name,
+                    ),
+                )
+                .with("connection", json!(other.name))
+                .with("connection_institution", json!(theirs))
+                .with("institution", json!(given))
+                .into());
             }
         }
         let institution_id = institution::merge(
@@ -2374,7 +2502,8 @@ impl CrewManager {
         let transport = self.live_transport(id).await?;
         let (answer, usable) = self.hello_over(id, &c, &pinned, &transport).await;
         if !usable {
-            self.retire_broken_bridge(id, &transport, &answer).await?;
+            self.retire_broken_bridge(id, &transport, "hello", &answer)
+                .await?;
         }
         answer
     }
@@ -2483,7 +2612,7 @@ impl CrewManager {
             ClusterMode::Public
         };
         if let Some(refusal) = Self::mixed_institutions(registry, &groups, c) {
-            return Err(anyhow::anyhow!(refusal));
+            return Err(CrewRefusal::new(refusal::INSTITUTION_MISMATCH, refusal).into());
         }
         let institution_id = institution::merge(
             registry
@@ -2621,18 +2750,25 @@ impl CrewManager {
         self.retire_locked(id, failed, BRIDGE_FAILED).await;
         Ok(())
     }
-    /// [`Self::retire_failed_transport`] for a bridge that broke carrying a request whose
-    /// answer was `answer`. While it was still `id`'s bridge, a network failure also arms the
-    /// keepalive's retries of the connection, never of the request (Q4-01, see
-    /// [`Self::request_bridge_failed`]).
+    /// [`Self::retire_failed_transport`] for a bridge that broke carrying `method`, whose
+    /// answer was `answer`. While it was still `id`'s bridge, a network failure also dials the
+    /// connection again, at once, never the request (Q4-01, W2-DMN-6, see
+    /// [`Self::request_bridge_failed`]). Only a request that could have changed something
+    /// leaves the "inspect any submitted operation" alarm: a read that broke changed nothing.
     async fn retire_broken_bridge<T>(
         &self,
         id: &str,
         failed: &Arc<Mutex<transport::Transport>>,
+        method: &str,
         answer: &Result<T>,
     ) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
-        if self.retire_locked(id, failed, BRIDGE_FAILED).await {
+        let message = if is_read_only(method) {
+            READ_DROPPED
+        } else {
+            BRIDGE_FAILED
+        };
+        if self.retire_locked(id, failed, message).await {
             if let Err(error) = answer {
                 self.request_bridge_failed(id, error);
             }
@@ -2672,14 +2808,24 @@ impl CrewManager {
         true
     }
     async fn transport(&self, id: &str) -> Result<Arc<Mutex<transport::Transport>>> {
-        self.transports
-            .lock()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("Crew connection is disconnected; authenticate and connect in Crew")
-            })
+        if let Some(transport) = self.transports.lock().await.get(id).cloned() {
+            return Ok(transport);
+        }
+        // A bridge that broke is being dialled again by itself: nothing needs signing in, and
+        // the request can be sent again in a moment (W2-DMN-6).
+        if self.redial_pending(id) {
+            let workspace = self.workspace_label(id).await;
+            return Err(CrewRefusal::new(
+                refusal::RECONNECTING,
+                format!("Reconnecting to {workspace}. Nothing was sent; try again in a moment."),
+            )
+            .status(503)
+            .with("workspace", json!(workspace))
+            .into());
+        }
+        Err(anyhow::anyhow!(
+            "Crew connection is disconnected; authenticate and connect in Crew"
+        ))
     }
     pub async fn human_request(
         &self,
@@ -2759,10 +2905,7 @@ impl CrewManager {
         let c = self.connection(id).await?;
         if method == "run.create" {
             let expected = params.as_object_mut().unwrap().remove("expected_mode");
-            ensure!(
-                expected.as_ref().is_none_or(|mode| mode == &json!(c.mode)),
-                "Crew connection privacy changed; refresh the verified workspace before granting agent access"
-            );
+            require_mode(expected.as_ref(), c.mode)?;
             let expected_epoch = params
                 .as_object_mut()
                 .unwrap()
@@ -2786,14 +2929,8 @@ impl CrewManager {
             }
         }
         if matches!(method, "message.post" | "blob.begin") {
-            let mode = json!(c.mode);
-            ensure!(
-                params
-                    .get("personal_mode")
-                    .is_none_or(|expected| expected == &mode),
-                "Crew connection privacy changed; refresh the verified workspace before sending"
-            );
-            params["personal_mode"] = mode;
+            require_mode(params.get("personal_mode"), c.mode)?;
+            params["personal_mode"] = json!(c.mode);
         }
         if params.get("idempotency_key").is_none() {
             params["idempotency_key"] = json!(request_id
@@ -2817,7 +2954,19 @@ impl CrewManager {
         }
         // A bridge that ended, or sat idle long enough for the broker to drop it, is checked
         // (and dialled again without a prompt) before anything is written to it.
-        let transport = self.live_transport(id).await?;
+        let transport = match self.live_transport(id).await {
+            Ok(transport) => transport,
+            Err(error) => {
+                let workspace = self.workspace_label(id).await;
+                return Err(lost_request(
+                    error,
+                    Lost::BeforeSending,
+                    method,
+                    None,
+                    &workspace,
+                ));
+            }
+        };
         let mut locked = transport.lock().await;
         let result = self
             .signed_exchange(&mut locked, &c, method, params, request_id, &signer)
@@ -2825,7 +2974,8 @@ impl CrewManager {
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_broken_bridge(id, &transport, &result).await?;
+            self.retire_broken_bridge(id, &transport, method, &result)
+                .await?;
         }
         // Q3-12: whether the workspace still knows this device (see `keepalive.rs`).
         self.heed_membership(door == SignedDoor::Join, id, method, &result, &transport)
@@ -2851,7 +3001,7 @@ impl CrewManager {
                 && fresh.workspace_public_key == c.workspace_public_key,
             "Crew connection policy changed while this action was queued; review and retry"
         );
-        let challenge = t
+        let challenge = match t
             .request(
                 "auth.challenge",
                 json!({"device_id":c.device_id}),
@@ -2859,7 +3009,21 @@ impl CrewManager {
                 None,
                 None,
             )
-            .await?;
+            .await
+        {
+            Ok(challenge) => challenge,
+            // Only the challenge was lost: the request itself was never written (W2-DMN-7).
+            Err(error) => {
+                let workspace = self.workspace_label(id).await;
+                return Err(lost_request(
+                    error,
+                    Lost::BeforeSending,
+                    method,
+                    None,
+                    &workspace,
+                ));
+            }
+        };
         ensure!(
             challenge["workspace_id"].as_str() == Some(&c.workspace_id),
             "Challenge workspace mismatch"
@@ -2882,14 +3046,29 @@ impl CrewManager {
             canonical(&params)
         ]))?;
         let signature = hex(&signer.sign(&bytes).to_bytes());
-        t.request(
-            method,
-            params,
-            Some(json!({"device_id":c.device_id,"nonce":nonce,"signature":signature})),
-            None,
-            request_id,
-        )
-        .await
+        let request_key = params["idempotency_key"].as_str().map(str::to_owned);
+        match t
+            .request(
+                method,
+                params,
+                Some(json!({"device_id":c.device_id,"nonce":nonce,"signature":signature})),
+                None,
+                request_id,
+            )
+            .await
+        {
+            Ok(answer) => Ok(answer),
+            Err(error) => {
+                let workspace = self.workspace_label(id).await;
+                Err(lost_request(
+                    error,
+                    Lost::WhileCarrying,
+                    method,
+                    request_key,
+                    &workspace,
+                ))
+            }
+        }
     }
 
     /// The run of the chat's grant, including one that is [`Standing::Unconfirmed`] — it is
@@ -2943,7 +3122,7 @@ impl CrewManager {
         let c = self.connection(&s.connection_id).await?;
         self.validate_worker_scope(session, &s, &c).await?;
         Ok(
-            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"labels":s.labels,"naming":"labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.","context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
+            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"labels":s.labels,"naming":NAMING_RULE,"context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
         )
     }
     /// Whether a grant restricts this chat: its own, or one it cannot be confirmed not to
@@ -3004,11 +3183,14 @@ impl CrewManager {
             return Ok(());
         };
         let c = grant_stands(&s, c.as_ref())?;
-        ensure!(
-            tier != ProviderTier::Public
-                || (c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted),
-            "Private Crew context cannot be sent to a public model"
-        );
+        if tier == ProviderTier::Public
+            && !(c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted)
+        {
+            return Err(CrewRefusal::public_model(
+                "This chat's Crew context is private, so a public model can't read it.",
+            )
+            .into());
+        }
         institution::check_provider(tier, affiliation, &s.institution_ids)?;
         Ok(())
     }
@@ -3061,16 +3243,23 @@ impl CrewManager {
             !provider.uses_tool_bridge(),
             "Crew cannot bind a provider with unscoped external tools"
         );
-        ensure!(binds(&scope.provider_binding, provider),"Crew conversation remains bound to its original resolved provider; start a fresh conversation for another model boundary");
+        // Before the tier: a chat's model is fixed by its grant whatever tier the new one has,
+        // and that is the one sentence a person can act on (W2-DMN-10).
+        if !binds(&scope.provider_binding, provider) {
+            return Err(CrewRefusal::model_fixed().into());
+        }
         let connection =
             connection.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
-        ensure!(
-            provider.tier() != ProviderTier::Public
-                || (connection.mode == ClusterMode::Public
-                    && scope.public_provider
-                    && !scope.origin_restricted),
-            "Private Crew context cannot be bound to a public model"
-        );
+        if provider.tier() == ProviderTier::Public
+            && !(connection.mode == ClusterMode::Public
+                && scope.public_provider
+                && !scope.origin_restricted)
+        {
+            return Err(CrewRefusal::public_model(
+                "This chat's Crew context is private, so a public model can't read it.",
+            )
+            .into());
+        }
         institution::check_provider(
             provider.tier(),
             provider.affiliation(),
@@ -3203,12 +3392,9 @@ impl CrewManager {
     ) -> Result<(institution::Admission, AdmissionLabels)> {
         ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let connection = self.connection(id).await?;
-        ensure!(
-            policy
-                .expected_mode
-                .is_none_or(|mode| mode == connection.mode),
-            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
-        );
+        if let Some(expected) = policy.expected_mode.filter(|mode| *mode != connection.mode) {
+            return Err(CrewRefusal::mode_mismatch(connection.mode, expected).into());
+        }
         ensure!(
             policy
                 .expected_policy_epoch
@@ -3216,18 +3402,22 @@ impl CrewManager {
             "Crew connection policy changed; refresh before granting agent access"
         );
         let public = provider.tier() == ProviderTier::Public;
-        ensure!(
-            !public || connection.mode == ClusterMode::Public,
-            "Private cluster blocks public models"
-        );
-        ensure!(
-            !public || !policy.origin_restricted,
-            "Private-origin local conversation cannot be admitted to a public Crew worker"
-        );
+        let workspace = self.workspace_label(id).await;
+        if public && connection.mode != ClusterMode::Public {
+            return Err(CrewRefusal::public_model(format!(
+                "Your connection to {workspace} is Private, so a public model can't read it. \
+                 Choose a private model."
+            ))
+            .with("workspace", json!(workspace))
+            .into());
+        }
+        if public && policy.origin_restricted {
+            return Err(CrewRefusal::public_model(ORIGIN_RESTRICTED_PUBLIC).into());
+        }
         let snapshot = self
             .human_request(id, "workspace.snapshot", json!({}), None)
             .await?;
-        let protected = institution::protected_sources(&snapshot, channel, sources)?;
+        let protected = institution::protected_sources(&snapshot, channel, sources, &workspace)?;
         let mut listed = sources.to_vec();
         if !listed.iter().any(|source| source == channel) {
             listed.push(channel.into());
@@ -3274,15 +3464,26 @@ impl CrewManager {
             .await?;
         let c = admission.connection;
         let institution_ids = admission.institution_ids;
-        ensure!(
-            !public || !origin_restricted,
-            "Private-origin local conversation cannot be admitted to a public Crew worker"
-        );
+        if public && origin_restricted {
+            return Err(CrewRefusal::public_model(ORIGIN_RESTRICTED_PUBLIC).into());
+        }
         institution::check_origin(
             &institution_ids,
             admission.workspace_institution_id.as_deref(),
         )?;
-        institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)?;
+        if let Err(error) =
+            institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)
+        {
+            let workspace = self.workspace_label(id).await;
+            return Err(institution::with_details(error, || {
+                institution::refusal_details(
+                    &provider.get_model_config().model_name,
+                    provider.affiliation(),
+                    Some(workspace),
+                    admission.workspace_institution_id.clone(),
+                )
+            }));
+        }
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
         }
@@ -3475,7 +3676,13 @@ impl CrewManager {
         policy
             .origin_institution_ids
             .extend(previous.institution_ids);
-        ensure!(previous.connection_id == id && previous.channel_id == channel && binds(&previous.provider_binding, provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
+        ensure!(
+            previous.connection_id == id && previous.channel_id == channel,
+            "This chat already has Crew access to another channel. Start a new chat to give it access to this one."
+        );
+        if !binds(&previous.provider_binding, provider) {
+            return Err(CrewRefusal::model_fixed().into());
+        }
         ensure!(
             provider.tier() != ProviderTier::Public || previous.public_provider,
             "Private-origin Crew conversation cannot be rebound to a public model"
@@ -3563,27 +3770,46 @@ impl CrewManager {
         }
         // As every request: a bridge that ended, or sat idle long enough for the broker to drop
         // it, is checked (and dialled again without a prompt) before anything is written.
-        let transport = self.live_transport(&s.connection_id).await?;
+        let transport = match self.live_transport(&s.connection_id).await {
+            Ok(transport) => transport,
+            Err(error) => {
+                let workspace = self.workspace_label(&s.connection_id).await;
+                return Err(lost_request(
+                    error,
+                    Lost::BeforeSending,
+                    method,
+                    None,
+                    &workspace,
+                ));
+            }
+        };
         let mut locked = transport.lock().await;
         self.validate_worker_scope(session, &s, &c).await?;
         let credential = self.read_credential(&format!("run:{session}"))?;
+        let request_key = params["idempotency_key"].as_str().map(str::to_owned);
         let result = locked
             .request(method, params, None, Some(&credential), None)
             .await;
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_broken_bridge(&s.connection_id, &transport, &result)
+            self.retire_broken_bridge(&s.connection_id, &transport, method, &result)
                 .await?;
         }
-        let result = match result {
+        let mut result = match result {
             Ok(result) => result,
-            Err(error) => return Err(self.heed_worker_refusal(session, &s, error).await),
+            Err(error) => {
+                let workspace = self.workspace_label(&s.connection_id).await;
+                let error =
+                    lost_request(error, Lost::WhileCarrying, method, request_key, &workspace);
+                return Err(self.heed_worker_refusal(session, &s, error).await);
+            }
         };
         self.validate_worker_scope(session, &s, &c).await?;
         match method {
             "messages.history" | "messages.search" | "context.manifest" => {
-                self.note_run_context(session, method, &result)
+                self.note_run_context(session, method, &result);
+                mark_agent_posts(&mut result);
             }
             "blob.status" => self.note_run_status(session, &result),
             _ => {}
@@ -3966,7 +4192,7 @@ fn admission_context(context: AdmissionContext<'_>) -> Value {
         "destination_channel_id": context.channel,
         "source_channel_ids": context.sources,
         "labels": context.labels,
-        "naming": "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.",
+        "naming": NAMING_RULE,
         "context_discovery": "The included history covers only the destination channel, not all selected context. Call context.manifest with empty params for recent authorized selected-channel context (up to 200 messages). For more targeted evidence, call messages.search with channel_id and query for each relevant source_channel_id. Do not assume this initial history contains the answer.",
         "history_channel_id": context.channel,
         "remote_files_enabled": context.remote_files_enabled,
@@ -4018,6 +4244,31 @@ fn oldest_first(page: &Value, order: PageOrder) -> (Vec<&Value>, bool) {
     let agrees = times.windows(2).all(|pair| pair[0] <= pair[1]);
     (messages, agrees)
 }
+
+/// Mark each message in a page that an agent wrote: `by_agent: true` beside a non-null `run_id`
+/// (W2-DMN-11). An agent's post carries its owner's `actor_id`, and `people` names only people,
+/// so the model read "Dave Patel: 3 messages" where people see two of them as "Dave Patel's
+/// agent". The page is otherwise unchanged; nothing here reaches the broker.
+fn mark_agent_posts(page: &mut Value) {
+    for message in page
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if message
+            .get("run_id")
+            .and_then(Value::as_str)
+            .is_some_and(|run| !run.is_empty())
+        {
+            message["by_agent"] = json!(true);
+        }
+    }
+}
+
+/// How the model is told to name authors: people as the person sees them, an agent's post as
+/// that person's agent, and never an ID (naming design B5, W2-DMN-11).
+const NAMING_RULE: &str = "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people. A message with by_agent true was written by that person's agent: call it Display name's agent, never the person.";
 
 /// Bounds on what one chat's [`RunReads`] keeps; beyond them nothing more is recorded.
 const MAX_READ_FILES: usize = 32;
@@ -4643,7 +4894,7 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
     ),
     (
         "channel unavailable",
-        "That channel isn't available to you. It may be archived, or you may not be in it.",
+        "You're not in that channel.",
     ),
     (
         "principal unavailable",
@@ -5343,6 +5594,121 @@ mod tests {
         root
     }
 
+    /// W2-DMN-7: a request's lost bridge is typed by where it was lost, with the SSH failure
+    /// kept underneath; anything the workspace answered, or that is not a transport failure,
+    /// passes through untouched.
+    #[test]
+    fn a_lost_request_says_whether_anything_was_sent() {
+        let ssh = || {
+            anyhow::Error::new(SshFailure {
+                kind: SshFailureKind::Other,
+                code: "ssh_eof".into(),
+                status: "exit_0".into(),
+                description: "SSH connection closed".into(),
+                detail: None,
+                host: None,
+            })
+        };
+        let unknown = lost_request(
+            ssh(),
+            Lost::WhileCarrying,
+            "message.post",
+            Some("key-1".into()),
+            "lab",
+        );
+        let typed = CrewRefusal::find(&unknown).unwrap();
+        assert_eq!(typed.code(), "crew_outcome_unknown");
+        assert_eq!(typed.http_status(), 503);
+        assert_eq!(
+            unknown.to_string(),
+            "Crew couldn't confirm whether this reached lab. Check the channel, then retry with the same request ID."
+        );
+        assert!(typed.fields().contains(&("request_id", json!("key-1"))));
+        assert!(unknown
+            .chain()
+            .any(|cause| cause.downcast_ref::<SshFailure>().is_some()));
+
+        let read = lost_request(ssh(), Lost::WhileCarrying, "messages.history", None, "lab");
+        assert_eq!(
+            CrewRefusal::find(&read).map(CrewRefusal::code),
+            Some("crew_not_sent")
+        );
+        assert!(read.to_string().contains("Nothing changed"), "{read}");
+
+        let before = lost_request(ssh(), Lost::BeforeSending, "message.post", None, "lab");
+        assert_eq!(
+            CrewRefusal::find(&before).map(CrewRefusal::code),
+            Some("crew_not_sent")
+        );
+        assert_eq!(
+            before.to_string(),
+            "Biorouter couldn't reach lab, so nothing was sent."
+        );
+
+        let not_delivered = lost_request(
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "not_delivered", "message": "not_delivered: not sent"})
+            ),
+            Lost::WhileCarrying,
+            "message.post",
+            None,
+            "lab",
+        );
+        assert_eq!(
+            CrewRefusal::find(&not_delivered).map(CrewRefusal::code),
+            Some("crew_not_sent")
+        );
+
+        let answered = lost_request(
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "forbidden", "message": "forbidden: channel unavailable"})
+            ),
+            Lost::WhileCarrying,
+            "message.post",
+            None,
+            "lab",
+        );
+        assert!(CrewRefusal::find(&answered).is_none());
+        let plain = lost_request(
+            anyhow::anyhow!("Crew params must be an object"),
+            Lost::BeforeSending,
+            "message.post",
+            None,
+            "lab",
+        );
+        assert_eq!(plain.to_string(), "Crew params must be an object");
+        // An unknown method is treated as one that may have changed something.
+        assert!(!is_read_only("channel.read") && !is_read_only("future.method"));
+    }
+
+    /// W2-DMN-11: only a message with a run behind it is an agent's.
+    #[test]
+    fn only_a_message_with_a_run_is_marked_as_an_agents() {
+        let mut page = json!({"run_id": "reader-run", "messages": [
+            {"id": "a", "run_id": "writer-run"},
+            {"id": "b", "run_id": null},
+            {"id": "c"},
+            {"id": "d", "run_id": ""},
+        ]});
+        mark_agent_posts(&mut page);
+        let marked: Vec<bool> = page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message.get("by_agent") == Some(&json!(true)))
+            .collect();
+        assert_eq!(marked, [true, false, false, false]);
+        assert!(
+            page.get("by_agent").is_none(),
+            "the page's own run is the reader's"
+        );
+        let mut none = json!({"results": []});
+        mark_agent_posts(&mut none);
+        assert_eq!(none, json!({"results": []}));
+    }
+
     /// W2-DMN-1: a keyring with no service behind it (a headless node: "The name is not
     /// activatable") or one that refuses access is the typed refusal that names the vault, on
     /// every Crew key; any other keyring error keeps its own words.
@@ -5459,7 +5825,16 @@ mod tests {
                 .expect_err("a stale private mode must be refused before I/O");
             assert_eq!(
                 mismatch.to_string(),
-                "Crew connection privacy changed; refresh the verified workspace before sending"
+                "Your connection is Public, but this request required Private. Nothing was sent."
+            );
+            let typed = CrewRefusal::find(&mismatch).expect("a typed refusal");
+            assert_eq!(typed.code(), "crew_mode_mismatch");
+            assert_eq!(
+                typed.fields(),
+                &[
+                    ("actual_mode", json!("public")),
+                    ("expected_mode", json!("private"))
+                ]
             );
 
             let missing = manager
@@ -5467,7 +5842,7 @@ mod tests {
                 .await
                 .expect_err("the fixture intentionally has no device credential");
             assert!(
-                !missing.to_string().contains("privacy changed"),
+                CrewRefusal::find(&missing).is_none(),
                 "omitted mode should remain backward-compatible: {missing}"
             );
 
@@ -5481,7 +5856,7 @@ mod tests {
                 .await
                 .expect_err("matching mode reaches the credential boundary in this fixture");
             assert!(
-                !matching.to_string().contains("privacy changed"),
+                CrewRefusal::find(&matching).is_none(),
                 "matching mode was rejected by the privacy guard: {matching}"
             );
         }
@@ -5550,9 +5925,15 @@ mod tests {
                 "a public provider must be refused by a private cluster before manager reservation"
             ),
         };
+        // W2-DMN-9: in the manual's words, naming the workspace, with its own code.
         assert_eq!(
             private_public.to_string(),
-            "Private cluster blocks public models"
+            "Your connection to run mode policy fixture is Private, so a public model can't \
+             read it. Choose a private model."
+        );
+        assert_eq!(
+            CrewRefusal::find(&private_public).map(CrewRefusal::code),
+            Some("crew_public_model_refused")
         );
         assert!(!manager
             .registry
@@ -5579,7 +5960,11 @@ mod tests {
             .expect("a stale private mode must stop admission before signing");
         assert_eq!(
             mismatch.to_string(),
-            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+            "Your connection is Public, but this request required Private. Nothing was sent."
+        );
+        assert_eq!(
+            CrewRefusal::find(&mismatch).map(CrewRefusal::code),
+            Some("crew_mode_mismatch")
         );
 
         let legacy = manager
@@ -5595,7 +5980,7 @@ mod tests {
             .err()
             .expect("the fixture intentionally has no device credential");
         assert!(
-            !legacy.to_string().contains("privacy changed"),
+            CrewRefusal::find(&legacy).is_none(),
             "missing expected_mode must preserve the legacy path: {legacy}"
         );
 
@@ -5617,7 +6002,12 @@ mod tests {
             .expect("a private-origin run must not be admitted to a public provider");
         assert_eq!(
             private_origin.to_string(),
-            "Private-origin local conversation cannot be admitted to a public Crew worker"
+            "This chat has used a private model, so a public model can't continue it with Crew \
+             context. Choose a private model."
+        );
+        assert_eq!(
+            CrewRefusal::find(&private_origin).map(CrewRefusal::code),
+            Some("crew_public_model_refused")
         );
 
         let _ = fs::remove_dir_all(root);
@@ -7272,7 +7662,7 @@ done
         for (error, sentence) in [
             (
                 refused("forbidden", "forbidden: channel unavailable"),
-                "That channel isn't available to you. It may be archived, or you may not be in it.",
+                "You're not in that channel.",
             ),
             (
                 refused("unauthorized", "unauthorized: unknown device"),
@@ -7301,7 +7691,7 @@ done
             (
                 refused("forbidden", "forbidden: channel unavailable")
                     .context("Couldn't start the transfer"),
-                "That channel isn't available to you. It may be archived, or you may not be in it.",
+                "You're not in that channel.",
             ),
         ] {
             assert_eq!(

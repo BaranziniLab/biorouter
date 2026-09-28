@@ -5,8 +5,7 @@ use super::names::{SelectorInput, SelectorKind};
 use super::{
     connect_refusal, host_start, host_start_cancel, host_start_refusal, host_start_state,
     institution_refusal_details, resolve, task_brief, task_context_message, task_title,
-    title_task_session, CrewRouteError, ResolveRequest, INSTITUTION_REFUSAL_MARKER,
-    OWNED_TASK_INSTRUCTIONS,
+    title_task_session, CrewRouteError, ResolveRequest, OWNED_TASK_INSTRUCTIONS,
 };
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
@@ -68,6 +67,7 @@ fn failure(kind: SshFailureKind, detail: Option<&str>) -> SshFailure {
         status: "exit_255".into(),
         description: "SSH closed before the broker answered".into(),
         detail: detail.map(str::to_owned),
+        host: None,
     }
 }
 
@@ -75,10 +75,12 @@ fn failure(kind: SshFailureKind, detail: Option<&str>) -> SshFailure {
 async fn connect_maps_each_ssh_failure_kind_to_its_code_with_the_text_unchanged() {
     for (kind, code) in [
         (SshFailureKind::AuthRequired, "crew_ssh_auth_required"),
+        (SshFailureKind::KeyRefused, "crew_ssh_key_refused"),
         (SshFailureKind::HostKeyUnknown, "crew_ssh_host_key_unknown"),
         (SshFailureKind::HostKeyChanged, "crew_ssh_host_key_changed"),
         (SshFailureKind::Unreachable, "crew_ssh_unreachable"),
         (SshFailureKind::BridgeMissing, "crew_bridge_missing"),
+        (SshFailureKind::BrokerNotRunning, "crew_broker_not_running"),
         (SshFailureKind::Other, "crew_ssh_failed"),
     ] {
         let detail = format!("OpenSSH said something about {code}");
@@ -102,6 +104,26 @@ async fn connect_maps_each_ssh_failure_kind_to_its_code_with_the_text_unchanged(
             "no detail when ssh said nothing"
         );
     }
+}
+
+/// W2-DMN-5: the hop a failure concerns travels beside `detail` as `host`, so a jump host's
+/// unknown key is never shown as the destination's.
+#[tokio::test]
+async fn a_connect_failure_names_the_host_it_concerns() {
+    let mut jump = failure(
+        SshFailureKind::HostKeyUnknown,
+        Some("No ED25519 host key is known for gate"),
+    );
+    jump.host = Some("gate.example.edu".into());
+    let (_, body) = refusal_body(connect_refusal(anyhow::Error::new(jump))).await;
+    assert_eq!(body["code"], "crew_ssh_host_key_unknown");
+    assert_eq!(body["host"], "gate.example.edu");
+    let (_, body) = refusal_body(connect_refusal(anyhow::Error::new(failure(
+        SshFailureKind::HostKeyUnknown,
+        None,
+    ))))
+    .await;
+    assert!(body.get("host").is_none(), "{body}");
 }
 
 #[tokio::test]
@@ -356,6 +378,9 @@ fn owned_task_instructions_keep_the_trust_boundary_and_add_the_naming_rule() {
         "Publish results only to the granted destination.",
         "Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.",
         "do not also post it with run.project",
+        // W2-DMN-11: an agent's post is its owner's agent's, and a narrower grant sees fewer.
+        "A message with by_agent true was written by that person's agent: call it Display name's agent, never the person.",
+        "Messages derived from channels outside this task's access are withheld, so counts can be lower than what people see.",
     ] {
         assert!(
             OWNED_TASK_INSTRUCTIONS.contains(sentence),
@@ -454,9 +479,30 @@ fn the_institution_refusal_names_the_model_its_approvers_and_the_workspace() {
             ["approved_for"],
         Value::Null
     );
-    // The marker is the daemon's own sentence, which the desktop also matches.
-    let source = include_str!("../../../../biorouter/src/crew/institution.rs");
-    assert!(source.contains(INSTITUTION_REFUSAL_MARKER));
+    // The sentence older desktops and terminals match stays the daemon's own.
+    assert!(biorouter::crew::AFFILIATION_REFUSAL.contains("the model's resolved affiliation"));
+}
+
+/// W2-DMN-9: a refusal the core typed reaches every Crew route with its own code, status,
+/// sentence and fields, under a context too, and never as `crew_request_refused`.
+#[tokio::test]
+async fn a_typed_crew_refusal_keeps_its_code_and_fields() {
+    let refused = biorouter::crew::CrewRefusal::mode_mismatch(
+        biorouter::crew::ClusterMode::Private,
+        biorouter::crew::ClusterMode::Public,
+    );
+    let error = anyhow::Error::new(refused).context("while sending");
+    let (status, body) = refusal_body(error.into()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body,
+        json!({
+            "code": "crew_mode_mismatch",
+            "error": "Your connection is Private, but this request required Public. Nothing was sent.",
+            "actual_mode": "private",
+            "expected_mode": "public",
+        })
+    );
 }
 
 /// D-HOST: every "Start it for me" door needs proof that a person asked, before it reads the
@@ -504,4 +550,50 @@ async fn a_host_start_refusal_keeps_its_status_and_code() {
     let (status, body) = refusal_body(host_start_refusal(anyhow::anyhow!("preflight"))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["code"], "crew_request_refused");
+}
+
+/// W2-DMN-7: a request whose bridge was lost after it was written answers 503
+/// `crew_outcome_unknown` with the request ID to retry with, and one lost before anything was
+/// written answers 503 `crew_not_sent`: never `400 crew_request_refused`, which told clients a
+/// post the workspace had applied was refused.
+#[tokio::test]
+async fn a_lost_request_answers_503_with_what_is_known() {
+    let lost = |refusal: biorouter::crew::CrewRefusal| {
+        anyhow::Error::new(failure(SshFailureKind::Other, None)).context(refusal)
+    };
+    let (status, body) = refusal_body(
+        lost(
+            biorouter::crew::CrewRefusal::new(
+                biorouter::crew::refusal::OUTCOME_UNKNOWN,
+                "Crew couldn't confirm whether this reached lab. Check the channel, then retry with the same request ID.",
+            )
+            .status(503)
+            .with("request_id", json!("post-key-1")),
+        )
+        .into(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["code"], "crew_outcome_unknown");
+    assert_eq!(body["request_id"], "post-key-1");
+    let (status, body) = refusal_body(
+        lost(
+            biorouter::crew::CrewRefusal::new(
+                biorouter::crew::refusal::NOT_SENT,
+                "Biorouter couldn't reach lab, so nothing was sent.",
+            )
+            .status(503),
+        )
+        .into(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["code"], "crew_not_sent");
+    // The connect route still classifies the SSH failure underneath.
+    let (status, body) = refusal_body(super::connect_refusal(lost(
+        biorouter::crew::CrewRefusal::new(biorouter::crew::refusal::NOT_SENT, "x").status(503),
+    )))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "crew_ssh_failed");
 }

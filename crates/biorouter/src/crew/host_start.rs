@@ -626,40 +626,27 @@ pub(super) fn ssh_sentence(kind: super::SshFailureKind, stderr: &str, ssh_target
     match kind {
         // Q3-63: a server that refused the key asked for nothing, so "asks for a password or
         // a code" sent people looking for a prompt that never came.
-        Kind::AuthRequired if key_refused(stderr) => {
-            return match ssh_target.rsplit_once('@') {
-                Some((login, server)) if !login.is_empty() && !server.is_empty() => format!(
-                    "{server} didn't accept this computer's SSH key for {login}. Check the server login, or run the commands yourself in a terminal."
-                ),
-                _ => format!(
-                    "{ssh_target} didn't accept this computer's SSH key. Check the server login, or run the commands yourself in a terminal."
-                ),
-            };
+        Kind::KeyRefused => return key_refused_sentence(ssh_target),
+        Kind::AuthRequired if super::transport::key_refused(stderr) => {
+            return key_refused_sentence(ssh_target);
         }
         Kind::AuthRequired => "The server asks for a password or a code, so Biorouter can't sign in for you. Run the commands yourself in a terminal.",
         Kind::HostKeyUnknown => "This computer hasn't connected to the server before. Sign in once in a terminal to check its fingerprint, then try again.",
         Kind::HostKeyChanged => "The server's identity changed since this computer last connected. Check with the server's administrator before you continue.",
         Kind::Unreachable => "Couldn't reach the server. Check the login and your network, then try again.",
-        Kind::BridgeMissing | Kind::Other => "SSH couldn't run the commands. Run them yourself in a terminal to see why.",
+        Kind::BridgeMissing | Kind::BrokerNotRunning | Kind::Other => "SSH couldn't run the commands. Run them yourself in a terminal to see why.",
     }
     .to_owned()
 }
 
-/// Whether OpenSSH's last `Permission denied (…)` names the public-key method and neither of
-/// the two that ask a person something (`password`, `keyboard-interactive`): the server refused
-/// this computer's key and offered no prompt.
-fn key_refused(stderr: &str) -> bool {
-    let Some(methods) = stderr.lines().rev().find_map(|line| {
-        let line = line.to_lowercase();
-        let (_, offered) = line.split_once("permission denied (")?;
-        let (methods, _) = offered.split_once(')')?;
-        Some(methods.to_owned())
-    }) else {
-        return false;
-    };
-    let methods: Vec<&str> = methods.split(',').map(str::trim).collect();
-    methods.contains(&"publickey")
-        && !methods
-            .iter()
-            .any(|method| matches!(*method, "password" | "keyboard-interactive"))
+/// A refused key, said as one, naming the login when the target carries it.
+fn key_refused_sentence(ssh_target: &str) -> String {
+    match ssh_target.rsplit_once('@') {
+        Some((login, server)) if !login.is_empty() && !server.is_empty() => format!(
+            "{server} didn't accept this computer's SSH key for {login}. Check the server login, or run the commands yourself in a terminal."
+        ),
+        _ => format!(
+            "{ssh_target} didn't accept this computer's SSH key. Check the server login, or run the commands yourself in a terminal."
+        ),
+    }
 }

@@ -34,8 +34,7 @@ use biorouter::crew::authentication::{
     JoinRefused, JoinState, JoinStatus, TerminalEvent,
 };
 use biorouter::crew::{
-    manager, ClusterMode, Connection, CrewManager, CrewRefusal, SshFailure,
-    WorkspaceIdentityError,
+    manager, ClusterMode, Connection, CrewManager, CrewRefusal, SshFailure, WorkspaceIdentityError,
 };
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
@@ -439,11 +438,6 @@ async fn core_refusal(
     if let Some(refused) = find_cause::<InvitationRefused>(&error) {
         return invitation_refusal(refused);
     }
-    // A refusal the core typed and worded itself, such as a keyring with no service behind
-    // it (W2-DMN-1): "try again" never helps there, so the fixed sentence must not replace it.
-    if let Some(refused) = CrewRefusal::find(&error) {
-        return typed_refusal(refused);
-    }
     if let Some(refused) = find_cause::<JoinRefused>(&error) {
         if let Some(message) = refused.broker_message() {
             // Debug-formatted, so the workspace's words cannot forge a log line.
@@ -479,8 +473,12 @@ async fn core_refusal(
             failure.api_code(),
             failure.to_string(),
         );
-        return match &failure.detail {
+        let refusal = match &failure.detail {
             Some(detail) => refusal.with("detail", detail),
+            None => refusal,
+        };
+        return match &failure.host {
+            Some(host) => refusal.with("host", host),
             None => refusal,
         };
     }
@@ -490,6 +488,13 @@ async fn core_refusal(
             WORKSPACE_IDENTITY_MISMATCH_CODE,
             error.to_string(),
         );
+    }
+    // A refusal the core typed and worded itself, such as a keyring with no service behind
+    // it (W2-DMN-1): "try again" never helps there, so the fixed sentence must not replace it.
+    // After the SSH and identity classes, which the join screen acts on by their own codes
+    // (a lost request's refusal carries its SSH failure underneath).
+    if let Some(refused) = CrewRefusal::find(&error) {
+        return typed_refusal(refused);
     }
     if let Some(id) = connection_id {
         if crew
@@ -961,6 +966,7 @@ mod tests {
             status: "exit_127".into(),
             description: "SSH connection closed".into(),
             detail: Some("biorouter-crew: No such file or directory".into()),
+            host: None,
         };
         let error = anyhow::Error::new(ssh).context("while reading the join status");
         let (status, body) =

@@ -23,7 +23,7 @@ use crate::session::{session_manager::SessionType, SessionManager};
 use tempfile::TempDir;
 
 const CONNECTION: &str = "provider-identity-connection";
-const REBOUND: &str = "Crew conversation remains bound to its original resolved provider; start a fresh conversation for another model boundary";
+const REBOUND: &str = super::refusal::MODEL_FIXED_TEXT;
 
 /// One device: a session store, a saved chat in it, and a Crew registry that resolves chats
 /// against it, with a connection of the privacy mode a grant to `provider` needs.
@@ -143,7 +143,13 @@ async fn a_llama_server_grant_holds_once_the_server_reports_its_real_window() {
 
     // Another model on the same server is another boundary.
     let other = LlamaCppProvider::managed_for_test(ModelConfig::new_or_fail("gemma4"));
-    assert_eq!(device.check(&other).await.unwrap_err().to_string(), REBOUND);
+    let refused = device.check(&other).await.unwrap_err();
+    assert_eq!(refused.to_string(), REBOUND);
+    // W2-DMN-10: a deliberate refusal a route answers as 409 `crew_model_fixed`, never the
+    // untyped error the model switch answered as a 500.
+    let typed = CrewRefusal::find(&refused).expect("the binding refusal is typed");
+    assert_eq!(typed.code(), "crew_model_fixed");
+    assert_eq!(typed.http_status(), 409);
 }
 
 /// The effort-stamped provider, rebuilt exactly as `Agent::provider_with_effort` rebuilds it.

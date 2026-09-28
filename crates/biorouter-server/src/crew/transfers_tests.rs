@@ -586,10 +586,7 @@ fn a_transfer_the_workspace_refused_ends_failed_with_its_reason() {
         for state in ["starting", "downloading", "uploading"] {
             let (stopped, message) = stopped_transfer(&stopped_receipt(direction, state), &refused);
             assert_eq!(stopped, "failed");
-            assert_eq!(
-                message,
-                "That channel isn't available to you. It may be archived, or you may not be in it."
-            );
+            assert_eq!(message, "You're not in that channel.");
             assert!(!message.contains("Reselect") && !message.contains('{'));
         }
     }
@@ -622,9 +619,7 @@ fn a_transfer_the_workspace_refused_ends_failed_with_its_reason() {
 async fn a_refused_transfer_stays_failed_across_a_restart() {
     let root = private_root();
     let mut receipt = stopped_receipt(Direction::Download, "failed");
-    receipt.error = Some(
-        "That channel isn't available to you. It may be archived, or you may not be in it.".into(),
-    );
+    receipt.error = Some("You're not in that channel.".into());
     let id = receipt.id.clone();
     let mut receipts = serde_json::Map::new();
     receipts.insert(id.clone(), serde_json::to_value(&receipt).unwrap());
@@ -644,6 +639,6 @@ async fn a_refused_transfer_stays_failed_across_a_restart() {
     assert_eq!(reopened.state, "failed");
     assert_eq!(
         reopened.error.as_deref(),
-        Some("That channel isn't available to you. It may be archived, or you may not be in it.")
+        Some("You're not in that channel.")
     );
 }

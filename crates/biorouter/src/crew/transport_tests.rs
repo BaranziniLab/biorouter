@@ -563,7 +563,26 @@ fn legacy_message(code: &str, status: &str, description: &str) -> String {
 
 /// `(case, stderr, exit status, expected kind)` for every fixed OpenSSH text.
 const STDERR_FIXTURES: &[(&str, &str, i32, SshFailureKind)] = &[
-    ("publickey refused", PERMISSION_DENIED, 255, SshFailureKind::AuthRequired),
+    (
+        "publickey refused with a prompt offered",
+        PERMISSION_DENIED,
+        255,
+        SshFailureKind::AuthRequired,
+    ),
+    // W2-DMN-5: a server that offered only the key method can never be answered with a
+    // password or a code.
+    (
+        "publickey refused and nothing else offered",
+        "crew_bob@35.86.127.171: Permission denied (publickey).\r\n",
+        255,
+        SshFailureKind::KeyRefused,
+    ),
+    (
+        "publickey and GSSAPI only",
+        "Permission denied (publickey,gssapi-keyex,gssapi-with-mic).\r\n",
+        255,
+        SshFailureKind::KeyRefused,
+    ),
     (
         "keyboard-interactive only",
         "alice@hpc.example.edu: Permission denied (keyboard-interactive).\r\n",
@@ -673,11 +692,13 @@ const STDERR_FIXTURES: &[(&str, &str, i32, SshFailureKind)] = &[
         126,
         SshFailureKind::BridgeMissing,
     ),
+    // W2-DMN-5 (R-7): SSH connected and the bridge ran, but found no workspace server. A
+    // graceful stop or a reboot leaves no socket; a killed broker leaves one that refuses.
     (
         "a stopped broker is not a missing bridge",
         "Error: No such file or directory (os error 2)\n",
         1,
-        SshFailureKind::Other,
+        SshFailureKind::BrokerNotRunning,
     ),
     // The bridge's own startup errors: SSH connected, so the status is the
     // bridge's (anyhow's `Error: …`, exit 1), and the SSH rules must not read it.
@@ -685,7 +706,19 @@ const STDERR_FIXTURES: &[(&str, &str, i32, SshFailureKind)] = &[
         "a stopped broker's stale socket is not an unreachable host",
         "Error: Connection refused (os error 111)\n",
         1,
-        SshFailureKind::Other,
+        SshFailureKind::BrokerNotRunning,
+    ),
+    (
+        "a stopped broker's stale socket on macOS",
+        "Error: Connection refused (os error 61)\n",
+        1,
+        SshFailureKind::BrokerNotRunning,
+    ),
+    (
+        "the workspace server went away under the bridge",
+        "Error: broker_unavailable: the workspace server closed the connection; reconnect to continue\n",
+        1,
+        SshFailureKind::BrokerNotRunning,
     ),
     (
         "a runtime-directory permission error is not a sign-in failure",
@@ -779,6 +812,7 @@ async fn display_text_is_byte_identical_to_the_untyped_message() {
         status: "running".into(),
         description: "Crew request timed out".into(),
         detail: Some("ssh: connect to host hpc.example.edu port 22: Connection refused".into()),
+        host: None,
     };
     assert_eq!(
         constructed.to_string(),
@@ -956,7 +990,8 @@ async fn control_characters_are_stripped_from_the_detail() {
                  \u{1b}]0;spoofed window title\u{7}banner\u{0}\u{8}text\u{202e}reversed\u{2066}\r\n\
                  fake line\rreal line\r\n\tindented\u{7f}\u{9b}\r\n";
     let failure = ssh_failure_for(noisy.as_bytes(), 255).await;
-    assert_eq!(failure.kind, SshFailureKind::AuthRequired);
+    // Only the key method was offered (W2-DMN-5).
+    assert_eq!(failure.kind, SshFailureKind::KeyRefused);
     let detail = failure.detail.expect("detail");
     assert!(
         detail.chars().all(|c| c == '\n' || !c.is_control()),
@@ -1018,11 +1053,14 @@ fn only_ssh_s_own_status_is_read_by_the_ssh_rules() {
         ChildState::Exited(None),
     ] {
         for text in ssh_level {
-            assert_eq!(
-                classify(state, text),
-                SshFailureKind::Other,
-                "{state:?}: {text}"
-            );
+            // A refused broker socket is the bridge's own report that no workspace server
+            // answers (W2-DMN-5), never an SSH-level failure.
+            let expected = if text.starts_with("Error: Connection refused") {
+                SshFailureKind::BrokerNotRunning
+            } else {
+                SshFailureKind::Other
+            };
+            assert_eq!(classify(state, text), expected, "{state:?}: {text}");
         }
         // The bridge-missing rules are the remote shell's, so they still apply.
         assert_eq!(
@@ -1037,7 +1075,7 @@ fn only_ssh_s_own_status_is_read_by_the_ssh_rules() {
     // The same texts under 255 are ssh's own report.
     assert_eq!(
         classify(ChildState::Exited(Some(255)), ssh_level[0]),
-        SshFailureKind::AuthRequired
+        SshFailureKind::KeyRefused
     );
     assert_eq!(
         classify(ChildState::Exited(Some(255)), ssh_level[4]),
@@ -1050,10 +1088,12 @@ fn every_kind_has_its_api_code() {
     use SshFailureKind::*;
     for (kind, code) in [
         (AuthRequired, "crew_ssh_auth_required"),
+        (KeyRefused, "crew_ssh_key_refused"),
         (HostKeyUnknown, "crew_ssh_host_key_unknown"),
         (HostKeyChanged, "crew_ssh_host_key_changed"),
         (Unreachable, "crew_ssh_unreachable"),
         (BridgeMissing, "crew_bridge_missing"),
+        (BrokerNotRunning, "crew_broker_not_running"),
         (Other, "crew_ssh_failed"),
     ] {
         assert_eq!(kind.api_code(), code);
@@ -1073,23 +1113,48 @@ fn sanitize_and_fit_respect_character_boundaries() {
 
 /// T-53: a key the server refuses before this bridge ever answered reads as a sign-in refusal
 /// that names the server and login, never as an unknown outcome: SSH refuses a key before it
-/// runs the remote command, so no request reached the broker. The kind, and so the typed code
-/// and the sign-in flow, is unchanged, and OpenSSH's words stay in the detail. Once the bridge
-/// has answered, a later failure keeps the unknown-outcome wording.
+/// runs the remote command, so no request reached the broker. OpenSSH's words stay in the
+/// detail. Once the bridge has answered, a later failure keeps the unknown-outcome wording.
+///
+/// W2-DMN-5: what the sentence says depends on what the server offered. Only a server that
+/// offered a password or keyboard-interactive method needs one (`crew_ssh_auth_required`); one
+/// that offered only the key method refused the key (`crew_ssh_key_refused`), and a password
+/// prompt would never appear.
 #[tokio::test]
 async fn a_refused_key_before_any_answer_is_a_plain_sign_in_refusal() {
-    let fixture = tempfile::NamedTempFile::new().unwrap();
-    fs::write(fixture.path(), PERMISSION_DENIED).unwrap();
-    for (login, expected) in [
+    const KEY_ONLY: &str = "crew_bob@52.33.141.141: Permission denied (publickey).\r\n";
+    for (stderr, kind, code, login, expected) in [
         (
+            PERMISSION_DENIED,
+            SshFailureKind::AuthRequired,
+            "crew_ssh_auth_required",
             "crew_dave@52.33.141.141",
-            "Couldn't sign in to 52.33.141.141 as crew_dave: the server refused this computer's SSH key.",
+            "Couldn't sign in to 52.33.141.141 as crew_dave: the server asks for a password or a verification code. Sign in to continue.",
         ),
         (
+            PERMISSION_DENIED,
+            SshFailureKind::AuthRequired,
+            "crew_ssh_auth_required",
+            "lab-server",
+            "Couldn't sign in to lab-server: the server asks for a password or a verification code. Sign in to continue.",
+        ),
+        (
+            KEY_ONLY,
+            SshFailureKind::KeyRefused,
+            "crew_ssh_key_refused",
+            "crew_bob@52.33.141.141",
+            "Couldn't sign in to 52.33.141.141 as crew_bob: the server refused this computer's SSH key.",
+        ),
+        (
+            KEY_ONLY,
+            SshFailureKind::KeyRefused,
+            "crew_ssh_key_refused",
             "lab-server",
             "Couldn't sign in to lab-server: the server refused this computer's SSH key.",
         ),
     ] {
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        fs::write(fixture.path(), stderr).unwrap();
         let mut transport = spawn_peer(
             r#"IFS= read -r line; cat "$1" >&2; exit 255"#,
             Some(fixture.path()),
@@ -1101,8 +1166,8 @@ async fn a_refused_key_before_any_answer_is_a_plain_sign_in_refusal() {
             .expect_err("a refused key fails the exchange");
         transport.close().await;
         let failure = error.downcast_ref::<SshFailure>().cloned().unwrap();
-        assert_eq!(failure.kind, SshFailureKind::AuthRequired);
-        assert_eq!(failure.api_code(), "crew_ssh_auth_required");
+        assert_eq!(failure.kind, kind);
+        assert_eq!(failure.api_code(), code);
         assert_eq!(failure.status, "exit_255");
         assert_eq!(error.to_string(), expected);
         assert_eq!(format!("{error:#}"), expected);
@@ -1111,6 +1176,8 @@ async fn a_refused_key_before_any_answer_is_a_plain_sign_in_refusal() {
             .as_deref()
             .is_some_and(|detail| detail.contains("Permission denied")));
     }
+    let fixture = tempfile::NamedTempFile::new().unwrap();
+    fs::write(fixture.path(), PERMISSION_DENIED).unwrap();
 
     let mut answered = spawn_peer(
         r#"IFS= read -r line; printf '%s\n' '{"id":"first","result":{}}'; IFS= read -r line; cat "$1" >&2; exit 255"#,
@@ -1130,4 +1197,51 @@ async fn a_refused_key_before_any_answer_is_a_plain_sign_in_refusal() {
         error.to_string(),
         legacy_message("ssh_eof", "exit_255", "SSH connection closed")
     );
+}
+
+/// W2-DMN-5: a failure names the hop it concerns, so a jump host's unknown or changed key, or a
+/// jump host that refused the key, is never read as the destination's.
+#[test]
+fn a_failure_names_the_hop_it_concerns() {
+    use super::named_host;
+    for (kind, stderr, host) in [
+        (
+            SshFailureKind::HostKeyUnknown,
+            "No ED25519 host key is known for gate.example.edu and you have requested strict checking.\nHost key verification failed.",
+            Some("gate.example.edu"),
+        ),
+        (
+            SshFailureKind::HostKeyUnknown,
+            "No ED25519 host key is known for [127.0.0.1]:2222 and you have requested strict checking.",
+            Some("[127.0.0.1]:2222"),
+        ),
+        (
+            SshFailureKind::HostKeyUnknown,
+            "Host key verification failed.",
+            None,
+        ),
+        (
+            SshFailureKind::HostKeyChanged,
+            "Host key for hpc.example.edu has changed and you have requested strict checking.\nHost key verification failed.",
+            Some("hpc.example.edu"),
+        ),
+        (
+            SshFailureKind::KeyRefused,
+            "crew_bob@35.86.127.171: Permission denied (publickey).",
+            Some("35.86.127.171"),
+        ),
+        (
+            SshFailureKind::Unreachable,
+            "ssh: connect to host h port 22: Connection refused",
+            None,
+        ),
+        // A name with characters no host has is not passed on.
+        (
+            SshFailureKind::HostKeyUnknown,
+            "No ED25519 host key is known for evil<script> and you have requested strict checking.",
+            None,
+        ),
+    ] {
+        assert_eq!(named_host(kind, stderr).as_deref(), host, "{stderr}");
+    }
 }

@@ -385,7 +385,9 @@ impl CrewManager {
         match self.connect_locked(id).await {
             Ok(_) => Ok(Redial::Reconnected),
             Err(error) => {
-                self.retire_locked(id, failed, &error.to_string()).await;
+                let saved = error.to_string();
+                self.retire_locked(id, failed, &saved).await;
+                self.note_error_code(id, &error, &saved);
                 tracing::info!(connection = id, error = %error, "Crew bridge dropped and could not be dialled again");
                 if worth_retrying(&error) {
                     self.schedule_redials(id);
@@ -397,14 +399,16 @@ impl CrewManager {
 
     /// A request's bridge broke while carrying it, and the caller (holding the lifecycle
     /// guard) just retired it (Q4-01). The request is never sent again: its outcome is unknown,
-    /// and its caller was told so. For a network failure the connection is dialled again later,
-    /// on the same schedule a drop the keepalive finds gets.
+    /// and its caller was told so. For a network failure the connection is dialled again at
+    /// once, as a drop the keepalive finds is, and only a dial that fails waits the growing gaps
+    /// (W2-DMN-6). Before, the first try waited the schedule's 20 s, then 60 s, and every send
+    /// meanwhile was told to authenticate although nothing needed signing in.
     pub(super) fn request_bridge_failed(&self, id: &str, error: &anyhow::Error) {
         if !worth_retrying(error) {
             return;
         }
-        tracing::info!(connection = id, error = %error, "Crew bridge failed while carrying a request; dialling again later");
-        self.schedule_redials(id);
+        tracing::info!(connection = id, error = %error, "Crew bridge failed while carrying a request; dialling again now");
+        self.start_redials(id, true);
     }
 
     /// A person's Connect failed with `error`; the caller still holds the lifecycle guard
@@ -431,6 +435,11 @@ impl CrewManager {
     /// there is never more than one. Nothing is armed for a device the workspace no longer
     /// knows ([`MEMBERSHIP_ENDED`]), or by a manager built without [`CrewManager::shared`].
     pub(super) fn schedule_redials(&self, id: &str) {
+        self.start_redials(id, false);
+    }
+
+    /// [`Self::schedule_redials`], with a first try at once when `now`.
+    fn start_redials(&self, id: &str, now: bool) {
         if self.membership_ended(id) {
             tracing::info!(
                 connection = id,
@@ -445,7 +454,40 @@ impl CrewManager {
             return;
         };
         let token = self.arm_idle_redial(id);
-        runtime.spawn(redial_schedule(manager, id.to_owned(), token));
+        runtime.spawn(redial_schedule(manager, id.to_owned(), token, now));
+    }
+
+    /// Whether `id` is being dialled again by itself: a schedule is armed and no bridge is up.
+    /// A request meanwhile is told so (`crew_reconnecting`), not asked to sign in (W2-DMN-6).
+    pub(super) fn redial_pending(&self, id: &str) -> bool {
+        self.idle_redial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(id)
+    }
+
+    /// Keep `error`'s typed code beside the `last_error` it was saved as (`saved`), so the
+    /// saved connection says why it is down in a code as well as a sentence (W2-DMN-5, CLI-7).
+    /// Only an SSH failure or a workspace that no longer verifies has one; any other error
+    /// leaves the map alone, and a later `last_error` retires the code by not matching it.
+    pub(super) fn note_error_code(&self, id: &str, error: &anyhow::Error, saved: &str) {
+        let code = if error
+            .chain()
+            .any(|cause| cause.is::<WorkspaceIdentityError>())
+        {
+            Some("crew_workspace_identity_mismatch")
+        } else {
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<SshFailure>())
+                .map(SshFailure::api_code)
+        };
+        if let Some(code) = code {
+            self.error_codes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id.to_owned(), (code, saved.to_owned()));
+        }
     }
 
     /// Whether the workspace said this device is no longer a member ([`Self::end_membership`])
@@ -510,11 +552,14 @@ impl CrewManager {
         match self.connect_locked(id).await {
             Ok(_) => Some(Ok(())),
             Err(error) => {
+                let saved = error.to_string();
                 let mut registry = self.registry.lock().await;
                 if let Some(connection) = registry.connections.iter_mut().find(|c| c.id == id) {
                     connection.status = "disconnected".into();
-                    connection.last_error = Some(error.to_string());
+                    connection.last_error = Some(saved.clone());
                 }
+                drop(registry);
+                self.note_error_code(id, &error, &saved);
                 Some(Err(error))
             }
         }
@@ -603,7 +648,7 @@ impl CrewManager {
 
     /// The workspace's name for `id`, as a person would call it: the signed `hello`'s name,
     /// else this device's name for the connection.
-    async fn workspace_label(&self, id: &str) -> String {
+    pub(super) async fn workspace_label(&self, id: &str) -> String {
         if let Some(name) = self
             .broker_hello(id)
             .and_then(|hello| hello.workspace_name)
@@ -678,11 +723,13 @@ impl CrewManager {
 /// about the network, when the schedule is no longer owed (a Disconnect, an edit or removal, a
 /// newer schedule, a pending sign-in), or when the gaps run out; and disarms its own token, never
 /// a newer one.
-async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64) {
-    let Some(gaps) = manager
-        .upgrade()
-        .map(|manager| manager.keepalive_timing().redial_gaps().collect::<Vec<_>>())
-    else {
+async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64, now: bool) {
+    let Some(gaps) = manager.upgrade().map(|manager| {
+        now.then_some(Duration::ZERO)
+            .into_iter()
+            .chain(manager.keepalive_timing().redial_gaps())
+            .collect::<Vec<_>>()
+    }) else {
         return;
     };
     for delay in gaps {

@@ -402,7 +402,8 @@ async fn a_server_that_wants_a_password_is_refused_with_why_and_never_prompts() 
 }
 
 /// Q3-63: a login that refuses this computer's key asked for nothing, so the sentence says the
-/// key was refused and names the login, where it used to say the server wanted a password.
+/// key was refused and names the login, where it used to say the server wanted a password. Its
+/// code says so too (W2-DMN-5).
 #[cfg(unix)]
 #[tokio::test]
 async fn a_server_that_refuses_the_key_says_so_and_names_the_login() {
@@ -415,7 +416,7 @@ async fn a_server_that_refuses_the_key_says_so_and_names_the_login() {
     let done = settled(&first.job_id).await;
     assert_eq!(done.state, HostStartState::Failed);
     let error = done.error.unwrap();
-    assert_eq!(error.code, "crew_ssh_auth_required");
+    assert_eq!(error.code, "crew_ssh_key_refused");
     assert_eq!(
         error.message,
         "lab-server didn't accept this computer's SSH key for crew_alice. Check the server login, or run the commands yourself in a terminal."

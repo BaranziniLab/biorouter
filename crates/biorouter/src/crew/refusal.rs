@@ -95,15 +95,19 @@ impl CrewRefusal {
         &self.fields
     }
 
-    /// The first [`CrewRefusal`] anywhere in `error`'s chain.
+    /// The [`CrewRefusal`] `error` is, carries as a context, or has anywhere in its chain.
+    /// anyhow's own downcast comes first: a refusal added with `.context(…)` sits in a link
+    /// the chain cannot downcast to it.
     pub fn find(error: &anyhow::Error) -> Option<&CrewRefusal> {
-        error
-            .chain()
-            .find_map(|cause| cause.downcast_ref::<CrewRefusal>())
+        error.downcast_ref::<CrewRefusal>().or_else(|| {
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<CrewRefusal>())
+        })
     }
 
     /// [`Self::MODE_MISMATCH`]: the request required `expected` and the connection is `actual`.
-    pub(super) fn mode_mismatch(actual: super::ClusterMode, expected: super::ClusterMode) -> Self {
+    pub fn mode_mismatch(actual: super::ClusterMode, expected: super::ClusterMode) -> Self {
         Self::new(
             MODE_MISMATCH,
             format!(

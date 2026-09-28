@@ -259,6 +259,11 @@ impl PrivacyBarrierBody {
 pub(crate) enum ProviderBindFailure {
     /// A privacy boundary refused the bind — 409, with a body the GUI renders.
     Privacy(Box<PrivacyBarrierBody>),
+    /// A deliberate Crew refusal (`biorouter::crew::CrewRefusal`), such as a Crew chat's
+    /// fixed model (`crew_model_fixed`, W2-DMN-10): its own status and `{code, error}` body.
+    /// It used to fall through to `Internal`, a 500 the desktop answered with "…then try
+    /// again", which can never work.
+    Crew(StatusCode, serde_json::Value),
     /// Anything else — 500, as before.
     Internal(String),
 }
@@ -267,6 +272,7 @@ impl ProviderBindFailure {
     pub(crate) fn status(&self) -> StatusCode {
         match self {
             Self::Privacy(_) => StatusCode::CONFLICT,
+            Self::Crew(status, _) => *status,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -277,9 +283,22 @@ impl IntoResponse for ProviderBindFailure {
         let status = self.status();
         match self {
             Self::Privacy(body) => (status, Json(body)).into_response(),
+            Self::Crew(_, body) => (status, Json(body)).into_response(),
             Self::Internal(message) => (status, message).into_response(),
         }
     }
+}
+
+/// A Crew refusal's `{code, error}` body with its typed fields beside them.
+fn crew_refusal_body(refusal: &biorouter::crew::CrewRefusal) -> serde_json::Value {
+    let mut body: serde_json::Map<String, serde_json::Value> = refusal
+        .fields()
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), value.clone()))
+        .collect();
+    body.insert("code".into(), refusal.code().into());
+    body.insert("error".into(), refusal.message().into());
+    serde_json::Value::Object(body)
 }
 
 /// Classify an `Agent::update_provider` failure.
@@ -309,7 +328,13 @@ pub(crate) fn classify_provider_bind_failure(
                 available_private_providers,
             }))
         }
-        None => ProviderBindFailure::Internal(format!("Failed to update provider: {error}")),
+        None => match biorouter::crew::CrewRefusal::find(error) {
+            Some(refusal) => ProviderBindFailure::Crew(
+                StatusCode::from_u16(refusal.http_status()).unwrap_or(StatusCode::BAD_REQUEST),
+                crew_refusal_body(refusal),
+            ),
+            None => ProviderBindFailure::Internal(format!("Failed to update provider: {error}")),
+        },
     }
 }
 
@@ -3278,6 +3303,25 @@ fn call_tool_boundary_refusal(
         })
 }
 
+/// What a direct call to a Crew tool on a Crew-scoped chat answers (W2-DMN-9).
+pub(crate) const DIRECT_CREW_TOOL_REFUSAL: &str =
+    "Crew tools can be used only by the chat's model, not called directly.";
+
+/// A Crew tool called through `/agent/call_tool` on a chat Crew restricts is refused before
+/// dispatch. The route has no admitted turn, so it dispatches as Public and enforced, and the
+/// Crew extension then refused every such call as "Private Crew context cannot be sent to a
+/// public model", which named a model nobody chose. A Crew tool acts under the chat's grant,
+/// which only the chat's own model holds, so the refusal says that instead. It is at least as
+/// strict as before: a Public grant's tools were reachable here and no longer are.
+fn direct_crew_tool_refusal(tool_name: &str) -> Option<CallToolResponse> {
+    tool_name.starts_with("crew__").then(|| CallToolResponse {
+        content: vec![Content::text(DIRECT_CREW_TOOL_REFUSAL)],
+        structured_content: None,
+        is_error: true,
+        _meta: None,
+    })
+}
+
 #[utoipa::path(
     post,
     path = "/agent/call_tool",
@@ -3307,6 +3351,9 @@ async fn call_tool(
         crew.authorize_session_tool(&payload.session_id, &payload.name)
             .await
             .map_err(|_| StatusCode::FORBIDDEN)?;
+        if let Some(refusal) = direct_crew_tool_refusal(&payload.name) {
+            return Ok(Json(refusal));
+        }
     }
     let arguments = match payload.arguments {
         Value::Object(map) => Some(map),
@@ -5982,6 +6029,34 @@ mod privacy_barrier_tests {
         );
     }
 
+    /// W2-DMN-10: switching a Crew chat to another model is a deliberate refusal, so it is a
+    /// 409 `crew_model_fixed` with its plain sentence, not a 500 the desktop offers to retry.
+    #[test]
+    fn a_crew_chats_fixed_model_is_a_409_with_its_code() {
+        use anyhow::Context;
+        let wrapped = Err::<(), _>(anyhow::Error::new(
+            biorouter::crew::CrewRefusal::new(
+                biorouter::crew::refusal::MODEL_FIXED,
+                biorouter::crew::refusal::MODEL_FIXED_TEXT,
+            )
+            .status(409),
+        ))
+        .context("while switching this chat's model")
+        .unwrap_err();
+        let failure = classify_provider_bind_failure(&wrapped, vec![]);
+        assert_eq!(failure.status(), StatusCode::CONFLICT);
+        let ProviderBindFailure::Crew(_, body) = failure else {
+            panic!("a Crew refusal is neither a privacy barrier nor an internal error");
+        };
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "code": "crew_model_fixed",
+                "error": "This chat's model is fixed by its Crew access. Start a new chat to use another model.",
+            })
+        );
+    }
+
     /// §14.4: the body is what the user reads, and it must not carry
     /// conversation content — only the two tiers and the way forward.
     #[test]
@@ -6436,6 +6511,39 @@ mod gate_c_call_tool_tests {
             ),
             Err(status) => assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR),
         }
+    }
+
+    /// W2-DMN-9: a Crew tool called directly on a Crew-scoped chat is refused up front in
+    /// words about who may use it, not as "cannot be sent to a public model", which the
+    /// route's Public capability made every such call say. Other tools are not touched here.
+    #[test]
+    fn a_direct_crew_tool_call_on_a_crew_chat_says_who_may_use_it() {
+        let refused = super::direct_crew_tool_refusal("crew__request")
+            .expect("a Crew tool is refused before dispatch");
+        assert!(refused.is_error);
+        assert_eq!(
+            text_of(&refused),
+            "Crew tools can be used only by the chat's model, not called directly."
+        );
+        assert!(super::direct_crew_tool_refusal("todo__write").is_none());
+        assert!(super::direct_crew_tool_refusal("crewish__tool").is_none());
+
+        // The refusal runs inside the Crew-scoped branch, after the chat's reach and the
+        // tool allowlist, and before anything is dispatched.
+        let handler = crate::routes::body_of(include_str!("agent.rs"), "async fn call_tool");
+        let scoped = handler
+            .split("if crew.is_scoped_session(&payload.session_id).await {")
+            .nth(1)
+            .expect("the Crew-scoped branch");
+        let branch = scoped.split("\n    }\n").next().unwrap_or(scoped);
+        assert!(
+            branch.contains("direct_crew_tool_refusal(&payload.name)"),
+            "{branch}"
+        );
+        let reach = handler.find("session_reach(").expect("reach");
+        let refusal = handler.find("direct_crew_tool_refusal(").expect("refusal");
+        let dispatch = handler.find(".dispatch_tool_call(").expect("dispatch");
+        assert!(reach < refusal && refusal < dispatch);
     }
 }
 

@@ -159,7 +159,10 @@ impl CredentialVault {
     /// Where Crew keys are kept, and whether that store works. `keyring_answers` is asked only
     /// when the OS keyring is the store: it reads an entry that never exists, so a working
     /// keyring answers "no entry" and one with no service behind it fails.
-    pub(super) fn status(&self, keyring_answers: impl FnOnce() -> bool) -> Result<CredentialStatus> {
+    pub(super) fn status(
+        &self,
+        keyring_answers: impl FnOnce() -> bool,
+    ) -> Result<CredentialStatus> {
         let mut state = self.state()?;
         let selected = self.selected(&mut state)?;
         if selected {
