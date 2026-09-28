@@ -895,6 +895,18 @@ type Unresolved = (&'static str, String);
 /// The code of a selector the resolver answered with something this command cannot use.
 const LOOKUP_FAILED: &str = "crew_lookup_failed";
 
+/// The status the resolver appends to an archived channel's label (`with_archived` in
+/// `routes/crew/names.rs`), which a list shows beside the name.
+const ARCHIVED_LABEL_SUFFIX: &str = " · archived";
+
+/// A team's or channel's label as a sentence names it (MSG2-N5): `#archive-me`, not
+/// `#archive-me · archived`. A sentence that needs the status says it in words ("… is
+/// archived"), and the separator is not ASCII, so kept it would also isolate the whole label.
+fn bare_label(label: &str) -> &str {
+    let label = label.trim();
+    label.strip_suffix(ARCHIVED_LABEL_SUFFIX).unwrap_or(label)
+}
+
 /// One resolution from `POST /crew/resolve`, or why it did not resolve.
 ///
 /// A name no channel or team of yours has is said neutrally (M12): "No channel you're in is
@@ -916,7 +928,10 @@ fn target_from(kind: Kind, text: &str, result: &Value) -> std::result::Result<Ta
             let is_person = matches!(kind, Kind::Person | Kind::FormerPerson);
             Ok(Target {
                 id: id.to_owned(),
-                label: result["label"].as_str().map(str::to_owned),
+                label: result["label"].as_str().map(|label| match kind {
+                    Kind::Channel | Kind::Team => bare_label(label).to_owned(),
+                    Kind::Person | Kind::FormerPerson => label.to_owned(),
+                }),
                 username: result["username"]
                     .as_str()
                     .filter(|_| is_person)
@@ -5373,6 +5388,74 @@ mod tests {
             json!({"channel_id": METHODS, "sequence": "m-9", "idempotency_key": "req-1"})
         );
         assert_eq!(lines, ["Marked #methods as read."]);
+    }
+
+    /// MSG2-N5, CLIDOCS-F1: the resolver labels an archived channel `#archive-me · archived`
+    /// for lists; a sentence names it bare, never repeating its status, and never isolated
+    /// because of the separator: in text and in JSON's `error`.
+    #[tokio::test]
+    async fn an_archived_channel_is_named_bare_in_sentences() {
+        const ARCHIVED: &str = "c4a77e10-0000-4000-8000-00000000000a";
+        let handler = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if path == "/crew/resolve" {
+                let body = body.expect("resolve body");
+                let results: Vec<Value> = body["selectors"]
+                    .as_array()
+                    .expect("selectors")
+                    .iter()
+                    .map(|selector| json!({"status": "resolved", "kind": "channel", "text": selector["text"], "id": ARCHIVED, "label": "#archive-me · archived"}))
+                    .collect();
+                return Ok(json!({"connection": null, "results": results}));
+            }
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("workspace.snapshot") => {
+                    let mut snapshot = snapshot();
+                    snapshot["channels"].as_array_mut().expect("channels").push(json!({"id": ARCHIVED, "team_id": TEAM, "name": "archive-me", "classification": "restricted", "archived": true}));
+                    Ok(snapshot)
+                }
+                Some("message.post" | "channel.rename") => Err(refuse_broker(
+                    "channel_archived",
+                    "channel_archived: channel is read-only",
+                )),
+                _ => standard(method, path, body),
+            }
+        };
+        let send = CrewCommand::Send(SendArgs {
+            channel: "archive-me".into(),
+            text: Some("hi".into()),
+            input: None,
+            attachments: Vec::new(),
+            references: Vec::new(),
+        });
+        let rename = CrewCommand::Channels(ChannelCommand::Rename {
+            channel: "archive-me".into(),
+            name: "renamed".into(),
+        });
+        for (name, command) in [("send", send), ("rename", rename)] {
+            let (api, _) = api_with(OutputFormat::Json, handler);
+            let error = run(&api, command).await.expect_err(name);
+            let text = safe_lines(&error_text(&error));
+            assert_eq!(
+                text, "#archive-me is archived, so it's read-only.",
+                "{name}"
+            );
+            assert!(!text.contains('\u{2068}'), "{name}: {text}");
+            let body = failure_body(&error, &text, "req-1");
+            assert_eq!(body["error"], "#archive-me is archived, so it's read-only.");
+        }
+        let (api, _) = api_with(OutputFormat::Text, handler);
+        let lines = said(
+            run(
+                &api,
+                CrewCommand::Channels(ChannelCommand::MarkRead {
+                    channel: "archive-me".into(),
+                    cursor: None,
+                }),
+            )
+            .await
+            .expect("mark-read"),
+        );
+        assert_eq!(lines, ["Marked #archive-me as read."]);
     }
 
     #[tokio::test]
