@@ -49,6 +49,10 @@ const electron = vi.hoisted(() => {
         on: vi.fn(),
         clearStorageData: vi.fn().mockResolvedValue(undefined),
         closeAllConnections: vi.fn().mockResolvedValue(undefined),
+        cookies: {
+          get: vi.fn().mockResolvedValue([]),
+          remove: vi.fn().mockResolvedValue(undefined),
+        },
       });
     }
     return sessions.get(partition);
@@ -437,6 +441,62 @@ describe('managed app preview handoff', () => {
     expect(target.clearStorageData).toHaveBeenCalledOnce();
     const remote = electron.sessions.get('persist:biorouter-embedded-browser');
     if (remote) expect(remote.clearStorageData).not.toHaveBeenCalled();
+  });
+
+  // W2-HRD-1: the preview holds the app's access cookie, set when it opened the
+  // app's one-time launch link. "Clear site data" is followed by a reload, and a
+  // cleared cookie made that reload answer "Open this app from Biorouter".
+  it('clears what the app stored but keeps its access cookie for the reload', async () => {
+    const context = backend();
+    const appUrl = `${context.baseUrl}/apps/queue-workbench/`;
+    createEmbeddedBrowser(owner, 'a', appUrl, vi.fn(), context);
+    await vi.waitFor(() => expect(electron.views[0].webContents.loadURL).toHaveBeenCalled());
+    const target = electron.views[0].options.webPreferences.session;
+    vi.mocked(target.cookies.get).mockResolvedValueOnce([
+      {
+        name: 'biorouter_app_0f1e',
+        value: 'access',
+        path: '/apps/queue-workbench',
+        httpOnly: true,
+      },
+      { name: 'theme', value: 'dark', path: '/apps/queue-workbench/', httpOnly: false },
+      { name: 'seen', value: '1', httpOnly: false },
+    ] as Electron.Cookie[]);
+
+    expect(await clearEmbeddedBrowserData(owner, 'a')).toBe(true);
+
+    expect(target.clearStorageData).toHaveBeenCalledOnce();
+    const cleared = vi.mocked(target.clearStorageData).mock.calls[0][0];
+    expect(cleared?.origin).toBe(context.baseUrl);
+    expect(cleared?.storages).not.toContain('cookies');
+    expect(cleared?.storages).toEqual(
+      expect.arrayContaining([
+        'localstorage',
+        'indexdb',
+        'cachestorage',
+        'serviceworkers',
+        'filesystem',
+        'websql',
+      ])
+    );
+    // Every cookie the page's script wrote goes; the HttpOnly one the daemon set stays.
+    expect(vi.mocked(target.cookies.remove).mock.calls).toEqual([
+      [appUrl, 'theme'],
+      [`${context.baseUrl}/`, 'seen'],
+    ]);
+    // The toolbar reloads after a clear, and the page still has its cookie.
+    expect(controlEmbeddedBrowser(owner, 'a', 'reload')).toBe(true);
+    expect(electron.views[0].webContents.reload).toHaveBeenCalledOnce();
+  });
+
+  it('still clears everything for a site that is not a managed app', async () => {
+    const context = backend();
+    createEmbeddedBrowser(owner, 'remote', 'https://example.test/page', vi.fn(), context);
+    await vi.waitFor(() => expect(electron.views[0].webContents.loadURL).toHaveBeenCalled());
+    const remote = electron.views[0].options.webPreferences.session;
+    expect(await clearEmbeddedBrowserData(owner, 'remote')).toBe(true);
+    expect(remote.clearStorageData).toHaveBeenCalledWith({ origin: 'https://example.test' });
+    expect(remote.cookies.get).not.toHaveBeenCalled();
   });
 
   it('revokes the transport, view, and its ephemeral storage immediately on abort', async () => {

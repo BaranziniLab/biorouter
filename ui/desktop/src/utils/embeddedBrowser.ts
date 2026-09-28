@@ -637,6 +637,39 @@ export async function captureEmbeddedBrowser(
   return { png: image.toPNG(), width: size.width, height: size.height, sourceRevision: revision };
 }
 
+/** Everything a page stores, except cookies: see `clearManagedAppSiteData`. */
+const MANAGED_APP_SITE_STORAGES: NonNullable<Electron.ClearStorageDataOptions['storages']> = [
+  'filesystem',
+  'indexdb',
+  'localstorage',
+  'shadercache',
+  'websql',
+  'serviceworkers',
+  'cachestorage',
+];
+
+/**
+ * "Clear site data" in a managed app preview.
+ *
+ * Everything the page stored goes, but not the app's access cookie (W2-HRD-1):
+ * the daemon set it when the preview opened the app's one-time launch link, and
+ * it is the preview's credential rather than the page's data. Clearing it made
+ * the reload that follows answer "Open this app from Biorouter" until the
+ * preview was closed and opened again, and that link cannot be opened a second
+ * time. The access cookie is told apart by `HttpOnly`, which only a response can
+ * set, so every cookie the page's own script wrote is still removed. The
+ * session is this app's alone, so everything in it is this app's.
+ */
+async function clearManagedAppSiteData(target: Session, origin: string): Promise<void> {
+  await target.clearStorageData({ origin, storages: MANAGED_APP_SITE_STORAGES });
+  const cookies = await target.cookies.get({});
+  await Promise.all(
+    cookies
+      .filter((cookie) => !cookie.httpOnly)
+      .map((cookie) => target.cookies.remove(`${origin}${cookie.path || '/'}`, cookie.name))
+  );
+}
+
 export async function clearEmbeddedBrowserData(
   window: BrowserWindow,
   viewId: string,
@@ -645,7 +678,9 @@ export async function clearEmbeddedBrowserData(
   const entry = entryFor(window, viewId);
   if (!entry) return false;
   const targetSession = entry.view.webContents.session;
-  if (allOrigins) {
+  if (entry.managed) {
+    await clearManagedAppSiteData(targetSession, entry.managed.scope.origin);
+  } else if (allOrigins) {
     await targetSession.clearStorageData();
   } else {
     const origin = new URL(entry.view.webContents.getURL()).origin;

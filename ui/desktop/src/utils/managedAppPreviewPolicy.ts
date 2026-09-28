@@ -105,8 +105,10 @@ const LAUNCH_TIMEOUT_MS = 15_000;
  * An app's page, bundle and agent socket are served only to a browser holding
  * that app's access cookie (or the secret, which a page cannot send). Opening
  * the link once redeems its single-use token for the cookie inside this
- * preview's own session, and the daemon redirects to the page without the
- * token; reloads and the agent socket then carry the cookie. The link replaces
+ * preview's own session, and the daemon's answer moves on to the page without
+ * the token; reloads and the agent socket then carry the cookie, which is why
+ * "Clear site data" keeps it (`embeddedBrowser`). The link is loaded in-process
+ * and never handed to another program. The link replaces
  * the address the preview was asked for, so a query or fragment on that
  * address is not kept.
  *
