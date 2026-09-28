@@ -1708,3 +1708,119 @@ describe('ToolCallWithResponse hides the guardrail frame from the reader', () =>
     expect(screen.getByText('plain output from an older session')).toBeInTheDocument();
   });
 });
+
+describe('summarizeToolCall: Crew tool rows read as actions (AG-F10)', () => {
+  const result = (value: unknown) => ({
+    status: 'success',
+    value: { content: [{ type: 'text', text: JSON.stringify(value) }] },
+  });
+  const CONNECTION = '0f3c1e2a-5b6d-4e7f-8a9b-0c1d2e3f4a5b';
+
+  it('names the shared file a blob.read returned, never the method or an ID', () => {
+    const call = {
+      name: 'crew__request',
+      arguments: {
+        connection_id: CONNECTION,
+        method: 'blob.read',
+        params: { blob_id: 'b1f0', offset: 0 },
+      },
+    };
+    const label = summarizeToolCall(
+      call,
+      result({ blob: { id: 'b1f0', name: 'slurm-usage-week39.csv' }, offset: 0, text: 'a,b' })
+    );
+    expect(label).toBe('Reading slurm-usage-week39.csv');
+    expect(summarizeToolCall(call)).toBe('Reading a shared file');
+    for (const text of [label, summarizeToolCall(call)]) {
+      expect(text).not.toMatch(/Method|blob\.read|Request|Connection/);
+      expect(text).not.toContain(CONNECTION);
+    }
+  });
+
+  it('names the channel a history, search or context read covered', () => {
+    const names = { channel_names: { 'c-jobs': 'jobs', 'c-gen': 'general' } };
+    expect(
+      summarizeToolCall(
+        {
+          name: 'crew__request',
+          arguments: { method: 'messages.history', params: { channel_id: 'c-jobs' } },
+        },
+        result({ messages: [], ...names })
+      )
+    ).toBe('Reading #jobs');
+    expect(
+      summarizeToolCall(
+        {
+          name: 'crew__request',
+          arguments: { method: 'messages.search', params: { channel_id: 'c-gen', query: 'quota' } },
+        },
+        result({ messages: [], ...names })
+      )
+    ).toBe('Searching #general for quota');
+    expect(
+      summarizeToolCall(
+        { name: 'crew__request', arguments: { method: 'context.manifest', params: {} } },
+        result({ source_channels: ['c-jobs'], messages: [], channel_names: { 'c-jobs': 'jobs' } })
+      )
+    ).toBe('Reading #jobs');
+    expect(
+      summarizeToolCall(
+        { name: 'crew__request', arguments: { method: 'context.manifest', params: {} } },
+        result({ source_channels: ['c-jobs', 'c-gen'], messages: [], ...names })
+      )
+    ).toBe('Reading recent messages from 2 channels');
+    expect(
+      summarizeToolCall({ name: 'crew__request', arguments: { method: 'context.manifest' } })
+    ).toBe('Reading recent channel messages');
+  });
+
+  it('says what a post, a server file and a command do', () => {
+    const request = (method: string, params: Record<string, unknown> = {}) =>
+      summarizeToolCall({ name: 'crew__request', arguments: { method, params } });
+    expect(request('run.project', { body: 'Done', status: 'progress' })).toBe(
+      'Posting an update to the channel'
+    );
+    expect(request('remote.read', { path: 'runs/crew-task.csv' })).toBe(
+      'Reading crew-task.csv on the server'
+    );
+    expect(request('remote.write', { path: 'out/summary.md', text: 'secret' })).toBe(
+      'Writing summary.md on the server'
+    );
+    expect(request('remote.execute', { argv: ['/usr/bin/python3', '-c', 'print(1)'] })).toBe(
+      'Running python3 on the server'
+    );
+    expect(request('remote.list')).toBe('Listing files on the server');
+    expect(request('remote.attach', { path: 'plots/fig1.png' })).toBe(
+      'Sharing fig1.png to the channel'
+    );
+    expect(request('remote.job_status', { job_id: 'j-1' })).toBe('Checking a job on the server');
+    expect(request('something.new')).toBe('Using Crew');
+    expect(summarizeToolCall({ name: 'crew__connections', arguments: {} })).toBe(
+      'Checking this chat’s Crew access'
+    );
+  });
+
+  it('shows no hidden character a member put in a name', () => {
+    expect(
+      summarizeToolCall(
+        { name: 'crew__request', arguments: { method: 'blob.read', params: { blob_id: 'b' } } },
+        result({ blob: { name: 'invoice‮fdp.sh' } })
+      )
+    ).toBe('Reading invoicefdp.sh');
+    expect(
+      summarizeToolCall(
+        {
+          name: 'crew__request',
+          arguments: { method: 'messages.history', params: { channel_id: 'x' } },
+        },
+        result({ channel_names: { x: 'meth​ods' } })
+      )
+    ).toBe('Reading #methods');
+  });
+
+  it('leaves another extension’s request tool to the generic label', () => {
+    expect(summarizeToolCall({ name: 'other__request', arguments: { method: 'blob.read' } })).toBe(
+      'Request · Method: blob.read'
+    );
+  });
+});

@@ -29,6 +29,7 @@ import { NotificationSurface } from './alerts/NotificationSurface';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
+import { stripHiddenCharacters } from '../utils/untrustedText';
 
 /**
  * The tool card's own status vocabulary. `interrupted` extends the shared
@@ -848,6 +849,129 @@ const summarizeSkillsCall = (toolName: string, args: Record<string, unknown>): s
   return null;
 };
 
+/** The first JSON object a tool's text result carries, or null. */
+const resultRecord = (toolResult: unknown): Record<string, unknown> | null => {
+  for (const content of getToolResultContent(toolResult)) {
+    const item = recordOf(content);
+    if (item?.type !== 'text' || typeof item.text !== 'string') continue;
+    try {
+      const parsed = recordOf(JSON.parse(item.text));
+      if (parsed) return parsed;
+    } catch {
+      // A plain-text result (a refusal sentence) names nothing to read from.
+    }
+  }
+  return null;
+};
+
+/** A Crew member chose this name: hidden characters out, one line, bounded. */
+const crewLabel = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  return compactValue(stripHiddenCharacters(value), 64) || null;
+};
+
+const textOf = (value: unknown): string | null =>
+  typeof value === 'string' && value ? value : null;
+
+/** `#name` for a channel ID, from the names a message result carries beside its messages. */
+const crewChannel = (result: Record<string, unknown> | null, channelId: unknown): string | null => {
+  const names = recordOf(result?.channel_names);
+  const id = textOf(channelId);
+  const name =
+    names && id && Object.prototype.hasOwnProperty.call(names, id) ? crewLabel(names[id]) : null;
+  return name ? `#${name.replace(/^#+/, '')}` : null;
+};
+
+/** The one channel a result names, when it names exactly one. */
+const onlyCrewChannel = (result: Record<string, unknown> | null): string | null => {
+  const names = recordOf(result?.channel_names);
+  const ids = names ? Object.keys(names) : [];
+  return ids.length === 1 ? crewChannel(result, ids[0]) : null;
+};
+
+/** A path on the workspace's server, as a row names it: its last segment, visible. */
+const serverFile = (value: unknown): string | null => {
+  const path = textOf(value);
+  return path ? basename(stripHiddenCharacters(path)) || null : null;
+};
+
+/**
+ * A Crew tool call as the action it is (AG-F10). `crew__request` is one tool whose `method`
+ * says what it does and whose target sits inside `params`, so the generic chain read it as "Ran
+ * Request · Method: blob.read", and would have shown a `connection_id` as a raw ID. The file
+ * and channel names come from the result when it carries them; no ID is ever shown.
+ */
+const summarizeCrewCall = (
+  toolName: string,
+  args: Record<string, unknown>,
+  toolResult: unknown
+): string => {
+  if (toolName === 'connections') return 'Checking this chat’s Crew access';
+  if (toolName !== 'request') return 'Using Crew';
+  const params = recordOf(args.params) ?? {};
+  const result = resultRecord(toolResult);
+  switch (args.method) {
+    case 'messages.history': {
+      const channel = crewChannel(result, params.channel_id) ?? onlyCrewChannel(result);
+      return channel ? `Reading ${channel}` : 'Reading channel messages';
+    }
+    case 'messages.search': {
+      const channel =
+        crewChannel(result, params.channel_id) ?? onlyCrewChannel(result) ?? 'channel messages';
+      const query = summarizeSearchQuery(textOf(params.query));
+      return query ? `Searching ${channel} for ${query}` : `Searching ${channel}`;
+    }
+    case 'context.manifest': {
+      const sources = Array.isArray(result?.source_channels) ? result.source_channels : [];
+      const channel = sources.length === 1 ? crewChannel(result, sources[0]) : null;
+      if (channel) return `Reading ${channel}`;
+      return sources.length > 1
+        ? `Reading recent messages from ${sources.length} channels`
+        : 'Reading recent channel messages';
+    }
+    case 'blob.read': {
+      const name = crewLabel(recordOf(result?.blob)?.name);
+      return name ? `Reading ${name}` : 'Reading a shared file';
+    }
+    case 'blob.status': {
+      const name = crewLabel(result?.name);
+      return name ? `Checking ${name}` : 'Checking a shared file';
+    }
+    case 'run.project':
+      return 'Posting an update to the channel';
+    case 'remote.list': {
+      const folder = serverFile(params.path);
+      return folder ? `Listing ${folder} on the server` : 'Listing files on the server';
+    }
+    case 'remote.read': {
+      const file = serverFile(params.path);
+      return file ? `Reading ${file} on the server` : 'Reading a file on the server';
+    }
+    case 'remote.write': {
+      const file = serverFile(params.path);
+      return file ? `Writing ${file} on the server` : 'Writing a file on the server';
+    }
+    case 'remote.hash': {
+      const file = serverFile(params.path);
+      return file ? `Checking ${file} on the server` : 'Checking a file on the server';
+    }
+    case 'remote.execute': {
+      const program = Array.isArray(params.argv) ? serverFile(params.argv[0]) : null;
+      return program ? `Running ${program} on the server` : 'Running a command on the server';
+    }
+    case 'remote.job_status':
+      return 'Checking a job on the server';
+    case 'remote.cancel':
+      return 'Stopping a job on the server';
+    case 'remote.attach': {
+      const file = serverFile(params.path);
+      return file ? `Sharing ${file} to the channel` : 'Sharing a server file to the channel';
+    }
+    default:
+      return 'Using Crew';
+  }
+};
+
 const summarizeBrowserTabs = (args: Record<string, unknown>): string => {
   const action = namedArgument(args, ['action']);
   if (action === 'list') return 'Listing browser tabs';
@@ -933,6 +1057,9 @@ export function summarizeToolCall(toolCall: ToolCallSummaryInput, toolResult?: u
   }
 
   if (toolName === 'browser_tabs') return summarizeBrowserTabs(args);
+
+  // Matched on the FULL prefixed name, so another extension's `request` keeps its own label.
+  if (toolCall.name.startsWith('crew__')) return summarizeCrewCall(toolName, args, toolResult);
 
   // code_execution's module tools and the skills loader carry their targets
   // under argument names (`module_path`, `terms`, `name`) the generic chains
