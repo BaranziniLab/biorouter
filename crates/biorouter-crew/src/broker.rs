@@ -5368,12 +5368,53 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
         "unsupported: bridge requires Linux"
     );
     let root = runtime_root_of(socket)?;
-    let (mut stream, mut reader, _) = open_workspace(root, socket, owner, workspace)?;
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
+    let (stream, reader, _) = open_workspace(root, socket, owner, workspace)?;
+    // Standard input is read through a buffer the relay can see into: it waits on the input
+    // descriptor only when that buffer is empty.
+    use std::os::fd::AsFd;
+    let mut input = BufReader::new(File::from(std::io::stdin().as_fd().try_clone_to_owned()?));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    while let Some(frame) = read_frame(&mut input)? {
+    relay(&mut input, &mut output, stream, reader)
+}
+/// What a bridge answers a request it could not hand to the broker: nothing of it reached the
+/// workspace, so nothing changed and it is safe to send again once reconnected. The member's
+/// daemon can then say "not sent" instead of "the outcome may be unknown".
+const NOT_DELIVERED: &str = "not_delivered: The workspace server was not reachable, so this request was not sent and nothing changed. Reconnect and try again.";
+/// Why a bridge exits when its broker has gone: the member's `ssh` ends with it, which is how
+/// the member's daemon learns, within seconds, that the connection dropped.
+const BROKER_GONE: &str =
+    "broker_unavailable: the workspace server closed the connection; reconnect to continue";
+/// Relay frames between the member's daemon (`input`, `output`) and the broker, until the
+/// daemon closes its end (`Ok`) or the broker goes away (`Err`).
+///
+/// It waits on the daemon **and** the broker together. The broker only ever answers, so while
+/// no request is in flight anything it signals is a hang-up; the bridge then exits at once
+/// (R-5). Waiting on the daemon alone, it noticed a broker that died only when the next
+/// request failed, and the member read "Connected" for up to two and a half minutes. A request
+/// that could not be written to the broker is answered [`NOT_DELIVERED`] before it exits.
+fn relay(
+    input: &mut BufReader<File>,
+    output: &mut impl Write,
+    mut stream: UnixStream,
+    mut reader: BufReader<UnixStream>,
+) -> Result<()> {
+    loop {
+        if input.buffer().is_empty() {
+            let (input_ready, broker_gone) = wait_for_input(input.get_ref(), &stream)?;
+            if broker_gone {
+                // A request already waiting was never sent; say so rather than leave it lost.
+                if input_ready {
+                    if let Some(frame) = read_frame(input)? {
+                        write_not_delivered(output, &frame)?;
+                    }
+                }
+                bail!(BROKER_GONE);
+            }
+        }
+        let Some(frame) = read_frame(input)? else {
+            return Ok(());
+        };
         let request: Request = serde_json::from_slice(&frame)?;
         if request.method.starts_with("remote.") {
             let result = (|| -> Result<Value> {
@@ -5435,14 +5476,71 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
             output.write_all(&bytes)?;
             output.flush()?;
         } else {
-            stream.write_all(&frame)?;
-            stream.flush()?;
+            if stream
+                .write_all(&frame)
+                .and_then(|()| stream.flush())
+                .is_err()
+            {
+                // The frame did not reach the broker whole, and a partial frame is never
+                // processed: nothing was sent.
+                write_not_delivered(output, &frame)?;
+                bail!(BROKER_GONE);
+            }
             let response =
                 read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?;
             output.write_all(&response)?;
             output.flush()?;
         }
     }
+}
+/// Wait until the daemon's `input` has something to read or the broker's `stream` signals
+/// anything at all: `(input_ready, broker_gone)`. Readable, hung up or failed, a broker that
+/// was asked nothing has gone.
+fn wait_for_input(input: &File, stream: &UnixStream) -> Result<(bool, bool)> {
+    loop {
+        let mut fds = [
+            libc::pollfd {
+                fd: input.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stream.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        let input_ready = fds[0].revents != 0;
+        let broker_gone = fds[1].revents != 0;
+        if input_ready || broker_gone {
+            return Ok((input_ready, broker_gone));
+        }
+    }
+}
+/// Answer the request in `frame` with [`NOT_DELIVERED`], under its own ID.
+fn write_not_delivered(output: &mut impl Write, frame: &[u8]) -> Result<()> {
+    let id = serde_json::from_slice::<Value>(frame)
+        .ok()
+        .and_then(|request| request.get("id").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default();
+    let mut bytes = serde_json::to_vec(&Response {
+        id,
+        result: None,
+        error: Some(ProtocolError {
+            code: "not_delivered".into(),
+            message: NOT_DELIVERED.into(),
+        }),
+    })?;
+    bytes.push(b'\n');
+    output.write_all(&bytes)?;
+    output.flush()?;
     Ok(())
 }
 /// `start`, `status` or `stop` a broker for the state directory `root`. `name` (`start` only)
@@ -6260,5 +6358,132 @@ mod status_tests {
         assert!(!error.contains("os error"), "{error}");
         let _ = fs::remove_dir_all(&state);
         let _ = fs::remove_dir_all(&runtime);
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    use std::os::fd::FromRawFd;
+    use std::sync::mpsc;
+
+    /// A pipe standing in for the member's `ssh` stdin: the relay's end, and the writer.
+    fn stdin_pipe() -> (BufReader<File>, File) {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        (BufReader::new(read), write)
+    }
+
+    /// Run the relay against `bridge_side` of a socket pair on its own thread; its result and
+    /// everything it wrote to the daemon arrive on the channel.
+    fn spawn_relay(
+        mut input: BufReader<File>,
+        bridge_side: UnixStream,
+    ) -> mpsc::Receiver<(Result<()>, Vec<u8>)> {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(bridge_side.try_clone().unwrap());
+            let mut output = Vec::new();
+            let result = relay(&mut input, &mut output, bridge_side, reader);
+            let _ = sender.send((result, output));
+        });
+        receiver
+    }
+
+    fn frame(id: &str) -> Vec<u8> {
+        format!("{{\"version\":1,\"id\":\"{id}\",\"method\":\"message.post\",\"params\":{{}}}}\n")
+            .into_bytes()
+    }
+
+    fn not_delivered(output: &[u8], id: &str) {
+        let response: Value = serde_json::from_slice(output).unwrap();
+        assert_eq!(response["id"], id);
+        assert_eq!(response["error"]["code"], "not_delivered");
+        assert_eq!(response["error"]["message"], NOT_DELIVERED);
+    }
+
+    /// R-5: nothing in flight, the broker dies, and the bridge exits within seconds, so the
+    /// member's `ssh` ends and the daemon re-dials instead of reading "Connected".
+    #[test]
+    fn an_idle_bridge_exits_as_soon_as_its_broker_hangs_up() {
+        let (input, _daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        let finished = spawn_relay(input, bridge_side);
+        assert!(
+            finished.recv_timeout(Duration::from_millis(300)).is_err(),
+            "an idle bridge with a live broker keeps running"
+        );
+        drop(broker_side);
+        let (result, output) = finished
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the bridge exits within 2 s of its broker hanging up");
+        assert_eq!(result.unwrap_err().to_string(), BROKER_GONE);
+        assert!(
+            output.is_empty(),
+            "nothing was asked, so nothing is answered"
+        );
+    }
+
+    /// A request already waiting when the broker hung up never reached it: it is answered
+    /// `not_delivered`, not left to read as lost.
+    #[test]
+    fn a_request_waiting_when_the_broker_hangs_up_is_answered_not_delivered() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        drop(broker_side);
+        daemon.write_all(&frame("post-1")).unwrap();
+        let (result, output) = spawn_relay(input, bridge_side)
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result.unwrap_err().to_string(), BROKER_GONE);
+        not_delivered(&output, "post-1");
+    }
+
+    /// A request whose frame the broker can no longer take is answered `not_delivered`, and
+    /// the bridge exits rather than leaving the daemon to guess the outcome.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_request_the_broker_can_no_longer_take_is_answered_not_delivered() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        // The broker stops reading without hanging up: the bridge sees nothing until it
+        // writes, and the write fails.
+        broker_side.shutdown(std::net::Shutdown::Read).unwrap();
+        let finished = spawn_relay(input, bridge_side);
+        daemon.write_all(&frame("post-2")).unwrap();
+        let (result, output) = finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(result.unwrap_err().to_string(), BROKER_GONE);
+        not_delivered(&output, "post-2");
+        drop(broker_side);
+    }
+
+    /// The ordinary relay is unchanged: each request is forwarded and answered in turn, and
+    /// the bridge ends cleanly when the daemon closes its end.
+    #[test]
+    fn requests_are_relayed_until_the_daemon_closes_its_end() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(broker_side.try_clone().unwrap());
+            let mut writer = broker_side;
+            while let Ok(Some(request)) = read_frame(&mut reader) {
+                let request: Value = serde_json::from_slice(&request).unwrap();
+                let answer = json!({"id": request["id"], "result": {"ok": true}});
+                writer.write_all(format!("{answer}\n").as_bytes()).unwrap();
+            }
+        });
+        let finished = spawn_relay(input, bridge_side);
+        daemon.write_all(&frame("one")).unwrap();
+        daemon.write_all(&frame("two")).unwrap();
+        drop(daemon);
+        let (result, output) = finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        result.unwrap();
+        let ids: Vec<Value> = output
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap()["id"].clone())
+            .collect();
+        assert_eq!(ids, vec![json!("one"), json!("two")]);
     }
 }
