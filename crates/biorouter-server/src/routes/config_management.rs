@@ -256,7 +256,8 @@ pub struct DetectableProvidersResponse {
         (status = 200, description = "Configuration value upserted successfully", body = String),
         (status = 400, description = "Refused (issue #56, DR-27): \
                                       `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', \
-                                      'standard' or 'strict'"),
+                                      'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which \
+                                      must be a whole number of at least 1"),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
                                       switch and may only be written from Settings > Privacy, \
                                       with its typed confirmation, or (issue #56, DR-27) \
@@ -435,6 +436,10 @@ pub async fn upsert_config(
         return upsert_mixing_policy(config, &query, &headers).await;
     }
 
+    if let Some(refusal) = config_value_refusal(&query.key, &query.value) {
+        return Err((StatusCode::BAD_REQUEST, refusal));
+    }
+
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
@@ -442,6 +447,31 @@ pub async fn upsert_config(
         Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to upsert key {}", query.key),
+        )),
+    }
+}
+
+/// Why a value cannot be stored under `key`, for the few keys whose shape the
+/// daemon knows, or `None` when it may be written.
+///
+/// `BIOROUTER_MAX_TURNS` is a limit only as a whole number of at least 1.
+/// Settings saved `0` whenever its field was cleared (`Number('')` is 0), and a
+/// stored 0 stopped every new chat before its first model call; a negative
+/// number was stored and silently ignored. The agent now also treats such a
+/// stored value as unset, but refusing it here keeps it out of the file at all.
+fn config_value_refusal(key: &str, value: &Value) -> Option<String> {
+    if key != "BIOROUTER_MAX_TURNS" {
+        return None;
+    }
+    let parsed = match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    match parsed.filter(|turns| *turns >= 1).map(u32::try_from) {
+        Some(Ok(_)) => None,
+        _ => Some(format!(
+            "Max turns must be a whole number of at least 1, so {value} was not saved."
         )),
     }
 }
@@ -2003,6 +2033,42 @@ mod tests {
     use http::HeaderMap;
 
     use super::*;
+
+    /// W2-PRV-10. Settings saved `0` when its Max turns field was cleared, and
+    /// a stored 0 stopped every new chat before its first model call. The write
+    /// path refuses anything that is not a whole number of at least 1, with a
+    /// sentence, and leaves every other key alone.
+    #[test]
+    fn max_turns_below_one_is_refused_with_a_sentence() {
+        use serde_json::json;
+        for refused in [
+            json!(0),
+            json!(-5),
+            json!(""),
+            json!("0"),
+            json!(" -1 "),
+            json!(2.5),
+            json!("many"),
+            json!(null),
+            json!(u64::from(u32::MAX) + 1),
+        ] {
+            let refusal = config_value_refusal("BIOROUTER_MAX_TURNS", &refused)
+                .unwrap_or_else(|| panic!("{refused} was accepted as a max-turns limit"));
+            assert!(
+                refusal.starts_with("Max turns must be a whole number of at least 1"),
+                "{refusal}"
+            );
+        }
+        for accepted in [json!(1), json!(100), json!("250"), json!(u32::MAX)] {
+            assert_eq!(
+                config_value_refusal("BIOROUTER_MAX_TURNS", &accepted),
+                None,
+                "{accepted}"
+            );
+        }
+        // Only the one key is shaped here.
+        assert_eq!(config_value_refusal("SOME_OTHER_KEY", &json!(0)), None);
+    }
 
     /// `GET /config/providers/{name}/models` is named and documented as the model
     /// list, and for nine builtins it answered `[]`.

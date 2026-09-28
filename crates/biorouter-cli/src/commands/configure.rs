@@ -1842,19 +1842,10 @@ pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
         cliclack::input("Set maximum number of agent turns without user input:")
             .placeholder(&current_max_turns.to_string())
             .default_input(&current_max_turns.to_string())
-            .validate(|input: &String| match input.parse::<u32>() {
-                Ok(value) => {
-                    if value < 1 {
-                        Err("Value must be at least 1")
-                    } else {
-                        Ok(())
-                    }
-                }
-                Err(_) => Err("Please enter a valid number"),
-            })
+            .validate(|input: &String| parse_max_turns(input).map(|_| ()))
             .interact()?;
 
-    let max_turns: u32 = max_turns_input.parse()?;
+    let max_turns = parse_max_turns(&max_turns_input).map_err(anyhow::Error::msg)?;
     config.set_param("BIOROUTER_MAX_TURNS", max_turns)?;
 
     cliclack::outro(format!(
@@ -1863,6 +1854,17 @@ pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
     ))?;
 
     Ok(())
+}
+
+/// A max-turns entry as a limit, or the sentence saying why it is not one.
+/// The same rule as Settings and `/config/upsert`: only a whole number of at
+/// least 1, because a stored 0 stops every new chat before its first reply.
+fn parse_max_turns(input: &str) -> Result<u32, &'static str> {
+    match input.trim().parse::<u32>() {
+        Ok(0) => Err("Max turns must be at least 1"),
+        Ok(value) => Ok(value),
+        Err(_) => Err("Enter a whole number of at least 1"),
+    }
 }
 
 /// Handle OpenRouter authentication
@@ -2404,5 +2406,20 @@ mod mode_name_tests {
                 "{retired}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod max_turns_tests {
+    use super::parse_max_turns;
+
+    /// W2-PRV-10: `configure` refuses what Settings and `/config/upsert` refuse.
+    #[test]
+    fn configure_accepts_only_a_whole_number_of_at_least_one() {
+        for refused in ["", "0", "-5", "2.5", "many", "4294967296"] {
+            assert!(parse_max_turns(refused).is_err(), "{refused:?}");
+        }
+        assert_eq!(parse_max_turns("1"), Ok(1));
+        assert_eq!(parse_max_turns(" 250 "), Ok(250));
     }
 }

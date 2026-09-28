@@ -1,9 +1,41 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { Input } from '../../ui/input';
 
+/**
+ * The agent's own default, `biorouter::agents::DEFAULT_MAX_TURNS`, shown when
+ * nothing is saved. This field used to show 1000 while the agent used 100.
+ * `ConversationLimitsDropdown.test.tsx` reads the Rust constant so the two
+ * cannot drift again.
+ */
+export const DEFAULT_MAX_TURNS = 100;
+
+/** The largest value the daemon's `u32` setting can hold. */
+const MAX_TURNS_CEILING = 4_294_967_295;
+
+/**
+ * A max-turns entry as a limit, or `null` when it is not one.
+ *
+ * Only a whole number of at least 1 is a limit. An empty field is NOT 0:
+ * `Number('')` is 0, and saving it made every new chat stop before its first
+ * model call. A negative number was saved too, and silently ignored.
+ */
+export function parseMaxTurns(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const value = Number(trimmed);
+  return value >= 1 && value <= MAX_TURNS_CEILING ? value : null;
+}
+
 interface ConversationLimitsDropdownProps {
-  maxTurns: number;
+  /**
+   * The saved `BIOROUTER_MAX_TURNS` exactly as stored, or `null` when none is
+   * saved. A stored value that is not a limit (0, a negative number) is shown as
+   * it is, so the person can see it and fix it.
+   */
+  maxTurns: number | null;
   onMaxTurnsChange: (value: number) => void;
 }
 
@@ -12,9 +44,37 @@ export const ConversationLimitsDropdown = ({
   onMaxTurnsChange,
 }: ConversationLimitsDropdownProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
+  const shown = maxTurns ?? DEFAULT_MAX_TURNS;
+  const [draft, setDraft] = useState(String(shown));
+
+  // Follow the stored value when it arrives (the read is async) or changes
+  // elsewhere, but never overwrite an entry that already means that value.
+  useEffect(() => {
+    setDraft((current) => (parseMaxTurns(current) === shown ? current : String(shown)));
+  }, [shown]);
 
   const toggleExpanded = () => {
     setIsExpanded(!isExpanded);
+  };
+
+  const draftValue = parseMaxTurns(draft);
+  const storedIsInvalid = maxTurns !== null && parseMaxTurns(String(maxTurns)) === null;
+  // What is wrong with the field, if anything. A stored value that is not a
+  // limit is named as the saved value, so the person knows it came from
+  // before and was not their typing.
+  const message =
+    draftValue !== null
+      ? null
+      : storedIsInvalid && draft === String(maxTurns)
+        ? `The saved value, ${maxTurns}, is not a whole number of at least 1. Enter a new value.`
+        : 'Enter a whole number of at least 1.';
+
+  const handleChange = (text: string) => {
+    setDraft(text);
+    const value = parseMaxTurns(text);
+    if (value !== null) {
+      onMaxTurnsChange(value);
+    }
   };
 
   /**
@@ -57,17 +117,31 @@ export const ConversationLimitsDropdown = ({
       {isExpanded && (
         <div className="biorouter-settings-row flex min-w-0 animate-in items-center justify-between gap-3 px-3 py-2.5 fade-in duration-100">
           <div className="min-w-0 flex-1">
-            <h4 className="text-label text-text-default">Max turns</h4>
+            <h4 className="text-label text-text-default" id="max-turns-label">
+              Max turns
+            </h4>
             <p className="mt-0.5 max-w-md text-supporting text-text-muted">
               Maximum agent turns before Biorouter asks for user input
             </p>
+            {message && (
+              <p
+                className="mt-1 max-w-md text-supporting text-text-danger"
+                id="max-turns-problem"
+                role="alert"
+              >
+                {message}
+              </p>
+            )}
           </div>
           <Input
             type="number"
             min="1"
-            max="10000"
-            value={maxTurns}
-            onChange={(e) => onMaxTurnsChange(Number(e.target.value))}
+            step="1"
+            value={draft}
+            aria-labelledby="max-turns-label"
+            aria-invalid={message ? true : undefined}
+            aria-describedby={message ? 'max-turns-problem' : undefined}
+            onChange={(e) => handleChange(e.target.value)}
             className="w-20"
           />
         </div>
