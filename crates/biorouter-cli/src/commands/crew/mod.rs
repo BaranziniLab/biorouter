@@ -2448,7 +2448,7 @@ async fn enrollment(api: &Api, command: EnrollmentCommand) -> Result<Reply> {
             let joins = snapshot
                 .get("pending_joins")
                 .cloned()
-                .unwrap_or_else(|| json!([]));
+                .ok_or_else(|| no_pending_joins(&snapshot))?;
             let lines = pending_lines(&joins, now());
             api.say(joins, lines)
         }
@@ -2575,6 +2575,23 @@ fn invite_lines(result: &Value, username: &str, invitation: Option<&Value>) -> V
         "When {handle} sends you a code, let them in with: biorouter crew enroll approve {handle} CODE"
     ));
     lines
+}
+
+/// Why a snapshot lists no one waiting to join, when it has no `pending_joins` at all (DW-13).
+/// The broker lists them only to the host, so a member is refused as every other `enroll`
+/// command refuses them; a host's server that leaves them out cannot let people join by name.
+/// Either way it is not an empty queue, which is what "No one is waiting to join." said.
+fn no_pending_joins(snapshot: &Value) -> anyhow::Error {
+    match host_standing(snapshot, None) {
+        HostStanding::HostElsewhereToo { .. } | HostStanding::OnlyHostComputer { .. } => restated(
+            "This workspace's server doesn't support joining by name.",
+            Some("crew_join_by_name_unsupported"),
+        ),
+        HostStanding::NotHost | HostStanding::Unknown => restated(
+            "Only the workspace host can see who is waiting to join.",
+            Some("crew_host_required"),
+        ),
+    }
 }
 
 fn pending_lines(joins: &Value, now: i64) -> Vec<String> {
@@ -6850,6 +6867,53 @@ mod tests {
             ]
         );
         assert_eq!(pending_lines(&json!([]), 0), ["No one is waiting to join."]);
+    }
+
+    /// DW-13: a snapshot without `pending_joins` is not an empty queue. The broker leaves it
+    /// out for anyone but the host, who is refused as every other `enroll` command refuses
+    /// them; a host whose server cannot join by name is told so. Both exit non-zero.
+    #[tokio::test]
+    async fn enroll_pending_without_the_list_says_why_instead_of_an_empty_queue() {
+        let pending = || CrewCommand::Enroll(EnrollmentCommand::Pending);
+        let as_member = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                let mut snapshot = snapshot();
+                snapshot["actor"] =
+                    json!({"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001});
+                return Ok(snapshot);
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Json, as_member);
+        let error = run(&api, pending()).await.expect_err("not the host");
+        assert_eq!(
+            message(&error),
+            "Only the workspace host can see who is waiting to join."
+        );
+        assert_eq!(error_code(&error).as_deref(), Some("crew_host_required"));
+
+        // Alice hosts lab, and her server's snapshot has no list.
+        let (api, _) = api_with(OutputFormat::Text, standard);
+        let error = run(&api, pending()).await.expect_err("no joining by name");
+        assert_eq!(
+            message(&error),
+            "This workspace's server doesn't support joining by name."
+        );
+
+        // The host's own empty list is an empty queue.
+        let empty = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            if body.and_then(|body| body["method"].as_str()) == Some("workspace.snapshot") {
+                let mut snapshot = snapshot();
+                snapshot["pending_joins"] = json!([]);
+                return Ok(snapshot);
+            }
+            standard(method, path, body)
+        };
+        let (api, _) = api_with(OutputFormat::Text, empty);
+        assert_eq!(
+            said(run(&api, pending()).await.expect("an empty queue")),
+            ["No one is waiting to join."]
+        );
     }
 
     #[tokio::test]
