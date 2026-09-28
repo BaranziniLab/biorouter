@@ -43,8 +43,12 @@ use std::io::Read;
 use std::path::PathBuf;
 use tracing::warn;
 
+/// `biorouter --version` prints `biorouter 1.91.2`, as `biorouterd` and `biorouter-crew` print
+/// theirs (SF-F8). It printed ` 1.91.2`, with a leading space and no name, while an empty
+/// `display_name` stood in for the name. A desktop reader pulls the number out with a pattern,
+/// so the name costs it nothing.
 #[derive(Parser)]
-#[command(author, version, display_name = "", about, long_about = None)]
+#[command(name = "biorouter", author, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -2948,8 +2952,19 @@ fn needs_tool_bridge(command: &Option<Command>) -> bool {
     )
 }
 
-pub async fn cli() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+/// The command line, read and checked.
+pub struct CommandLine(Cli);
+
+/// Read the command line. `--help`, `--version` and a usage mistake are answered here and the
+/// process exits, so call this before anything writes to disk: a version probe is the first
+/// thing an install script runs, and it used to create `config.yaml`, stamp the privacy
+/// master-switch record and open a log directory in a home nobody had set up (SF-F8).
+pub fn read_command_line() -> CommandLine {
+    CommandLine(Cli::parse())
+}
+
+pub async fn cli(command_line: CommandLine) -> anyhow::Result<()> {
+    let CommandLine(cli) = command_line;
 
     if !is_shared_conversation(&cli.command) {
         if let Err(e) = crate::project_tracker::update_project_tracker(None, None) {

@@ -40,8 +40,10 @@ use clap::{Parser, Subcommand};
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+/// Named for the binary it is installed as: `biorouterd --version` printed
+/// `biorouter-server 1.91.2`, the package's name, beside `biorouter 1.91.2` (SF-F8).
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "biorouterd", author, version, about, long_about = None)]
 #[command(propagate_version = true)]
 struct Cli {
     #[command(subcommand)]
@@ -148,3 +150,17 @@ fn tune_allocator() {
 
 #[cfg(not(all(feature = "jemalloc", not(target_os = "windows"))))]
 fn tune_allocator() {}
+
+#[cfg(test)]
+mod version_tests {
+    use clap::CommandFactory;
+
+    /// SF-F8: the daemon names itself as it is installed, not by its package's name.
+    #[test]
+    fn the_version_names_the_installed_binary() {
+        assert_eq!(
+            super::Cli::command().render_version(),
+            format!("biorouterd {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+}
