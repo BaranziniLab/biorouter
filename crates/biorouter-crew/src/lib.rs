@@ -368,10 +368,10 @@ fn canonical(value: &Value) -> Value {
 }
 #[cfg(unix)]
 mod broker;
-#[cfg(all(unix, feature = "test-seams"))]
-pub use broker::Quotas;
 #[cfg(unix)]
 pub use broker::{bridge, lifecycle, serve, Account, Broker, Connection, Directory};
+#[cfg(all(unix, feature = "test-seams"))]
+pub use broker::{JournalCall, Quotas};
 
 #[cfg(unix)]
 pub mod remote;

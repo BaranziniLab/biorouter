@@ -522,7 +522,12 @@ pub struct Broker {
     journal: File,
     _lock: File,
     checksum: String,
-    poisoned: bool,
+    /// Set once a journal write or sync failed: the broker then saves nothing more until it is
+    /// restarted (fail-stop), and says so in `hello`, `status` and every refused change.
+    storage_fault: Option<StorageFault>,
+    /// A test's injected journal failure (feature `test-seams`).
+    #[cfg(feature = "test-seams")]
+    injected_journal_fault: Option<(JournalCall, i32)>,
     /// The account database every UID-to-name check goes through.
     directory: Box<dyn Directory + Send>,
     /// Where sibling runtime directories (`crew-<uid>-<hex>/broker.sock`) live: `/tmp`.
@@ -541,6 +546,129 @@ pub struct Broker {
     join_runtime: join::Runtime,
 }
 
+/// Which journal call a test makes fail ([`Broker::inject_journal_fault`]).
+#[cfg(feature = "test-seams")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalCall {
+    /// The record's `write`: nothing of it is saved.
+    Write,
+    /// The `fsync` after it: whether the record was saved is unknown.
+    Sync,
+}
+/// Why the broker stopped saving changes. Kept in memory only: a restart repairs the journal
+/// (a torn tail is set aside) and starts clean.
+#[derive(Clone, Debug)]
+struct StorageFault {
+    /// The disk or the account's quota is full (`ENOSPC`, `EDQUOT`), rather than another
+    /// storage error.
+    full: bool,
+    /// When it happened, in seconds since the Unix epoch.
+    at: u64,
+    /// The operating system's error, for the host's log only. Never sent to a member.
+    detail: String,
+    /// The journal's length before the record that failed.
+    committed: u64,
+    /// Whether the line for it is in `broker.log` yet. A full disk refuses that write too, so
+    /// it is tried again on later requests until space is freed.
+    logged: bool,
+}
+impl StorageFault {
+    fn code(&self) -> &'static str {
+        if self.full {
+            "storage_full"
+        } else {
+            "storage_failed"
+        }
+    }
+    /// The sentence every change is refused with once the broker has stopped saving, and what
+    /// `hello` reports, without its code.
+    fn stopped_sentence(&self) -> &'static str {
+        if self.full {
+            STORAGE_FULL_STOPPED
+        } else {
+            STORAGE_FAILED_STOPPED
+        }
+    }
+    fn refusal(&self) -> anyhow::Error {
+        anyhow!("{}: {}", self.code(), self.stopped_sentence())
+    }
+    /// What the host is told to do, naming the state directory.
+    fn host_instruction(&self, root: &Path) -> String {
+        let first = if self.full {
+            "Free space on this server"
+        } else {
+            "Check this server's storage"
+        };
+        format!(
+            "{first}, then restart Crew: biorouter-crew stop --state-dir {root}, then \
+             biorouter-crew start --state-dir {root}.",
+            root = root.display()
+        )
+    }
+}
+const STORAGE_FULL_STOPPED: &str = "The workspace server ran out of disk space and has stopped saving changes. Reading still works. Ask the host to free space on the server and restart Crew.";
+const STORAGE_FAILED_STOPPED: &str = "The workspace server could not save a change to disk and has stopped saving changes. Reading still works. Ask the host to check the server's storage and restart Crew.";
+const STORAGE_FULL_NOT_SAVED: &str = "storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+const STORAGE_FULL_UNCERTAIN: &str = "storage_full: The workspace server ran out of disk space while saving this change, so it may not have been saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+const STORAGE_FAILED_NOT_SAVED: &str = "storage_failed: The workspace server could not write this change to disk, so it was not saved. Reading still works. Ask the host to check the server's storage and restart Crew.";
+const STORAGE_FAILED_UNCERTAIN: &str = "storage_failed: The workspace server could not confirm this change was saved to disk, so it may not have been saved. Reading still works. Ask the host to check the server's storage and restart Crew.";
+/// A storage error outside the journal (an attachment's file): nothing was recorded, so the
+/// broker keeps saving, and the same request can be sent again once there is space.
+const STORAGE_FULL_RETRY: &str = "storage_full: The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again.";
+const STORAGE_FAILED_RETRY: &str = "storage_failed: The workspace server could not read or write its storage. Ask the host to check the server's storage, then try again.";
+/// Whether `error` means the disk, or the account's disk quota, is full.
+fn is_space_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(code) if code == libc::ENOSPC || code == libc::EDQUOT)
+}
+/// `at` (seconds since the Unix epoch) as UTC, `2026-09-27T21:03:04Z`.
+fn utc_timestamp(at: u64) -> String {
+    let days = at / 86_400;
+    let seconds = at % 86_400;
+    // Howard Hinnant's civil_from_days.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        seconds / 3_600,
+        seconds % 3_600 / 60,
+        seconds % 60
+    )
+}
+/// A refusal as the wire carries it: the code is the message's `code:` prefix, else
+/// `request_denied`. A raw operating-system error (an attachment's file could not be written)
+/// is a storage fault, said in words, never `request_denied` with the OS's own text.
+fn protocol_error(error: &anyhow::Error) -> ProtocolError {
+    let code_of = |message: &str| {
+        message
+            .split(':')
+            .next()
+            .filter(|s| s.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .map(str::to_owned)
+    };
+    let mut message = error.to_string();
+    if code_of(&message).is_none() {
+        if let Some(io) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        {
+            message = if is_space_error(io) {
+                STORAGE_FULL_RETRY
+            } else {
+                STORAGE_FAILED_RETRY
+            }
+            .to_owned();
+        }
+    }
+    let code = code_of(&message).unwrap_or_else(|| "request_denied".to_owned());
+    ProtocolError { code, message }
+}
 /// Collision refusals allowed per actor within [`NAME_REFUSAL_WINDOW_SECS`] before every
 /// name-bearing create or rename is answered with the generic [`NAME_RATE_LIMITED`].
 const NAME_REFUSAL_LIMIT: usize = 10;
@@ -1058,6 +1186,12 @@ impl Broker {
     pub fn set_quotas(&mut self, quotas: Quotas) {
         self.quotas = quotas;
     }
+    /// Make the next journal `call` fail with `errno` (`ENOSPC`, `EIO`, ...), as a full or
+    /// failing disk would. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn inject_journal_fault(&mut self, call: JournalCall, errno: i32) {
+        self.injected_journal_fault = Some((call, errno));
+    }
     /// The authoritative state as JSON, for tests that check what is retained. Test builds
     /// only.
     #[cfg(feature = "test-seams")]
@@ -1133,7 +1267,9 @@ impl Broker {
             journal,
             _lock: lock,
             checksum,
-            poisoned: false,
+            storage_fault: None,
+            #[cfg(feature = "test-seams")]
+            injected_journal_fault: None,
             directory,
             runtime_root: PathBuf::from("/tmp"),
             name_refusals: BTreeMap::new(),
@@ -1160,10 +1296,9 @@ impl Broker {
         operation: &str,
         allowance: Allowance,
     ) -> Result<()> {
-        ensure!(
-            !self.poisoned,
-            "storage_failed: restart and recover before further mutations"
-        );
+        if let Some(fault) = &self.storage_fault {
+            return Err(fault.refusal());
+        }
         let quotas = self.quotas;
         state.sequence = self.state.sequence + 1;
         let after = serde_json::to_value(&state)?;
@@ -1205,7 +1340,8 @@ impl Broker {
         let mut bytes = serde_json::to_vec(&record)?;
         bytes.push(b'\n');
         let length = bytes.len() as u64;
-        let journal = self.journal.metadata()?.len() + length;
+        let committed = self.journal.metadata()?.len();
+        let journal = committed + length;
         ensure!(
             bytes.len() <= 16 * 1024 * 1024 && journal <= quotas.journal_bytes,
             "quota_exceeded: retained audit journal exceeds 1 GiB; preserve the complete store and use a new workspace; in-place audit deletion is not supported"
@@ -1220,18 +1356,87 @@ impl Broker {
             !allowance.member || written.saturating_add(length) <= quotas.member_journal_bytes,
             MEMBER_JOURNAL_QUOTA
         );
-        self.poisoned = true;
-        self.journal.write_all(&bytes)?;
-        self.journal.sync_all()?;
-        sync_dir(&self.root)?;
+        if let Err((written, error)) = self.append_record(&bytes) {
+            return Err(self.stop_saving(written, &error, committed));
+        }
         self.state = state;
         self.checksum = record.checksum;
         *self
             .journal_actor_bytes
             .entry(actor.to_owned())
             .or_default() += length;
-        self.poisoned = false;
         Ok(())
+    }
+    /// Write `bytes` to the journal and make them durable. On failure, whether any of the
+    /// record may have reached the file (`true` once the write itself succeeded) and why.
+    fn append_record(&mut self, bytes: &[u8]) -> std::result::Result<(), (bool, std::io::Error)> {
+        #[cfg(feature = "test-seams")]
+        let injected = self.injected_journal_fault.take();
+        #[cfg(feature = "test-seams")]
+        if let Some((JournalCall::Write, errno)) = injected {
+            return Err((false, std::io::Error::from_raw_os_error(errno)));
+        }
+        self.journal
+            .write_all(bytes)
+            .map_err(|error| (false, error))?;
+        #[cfg(feature = "test-seams")]
+        if let Some((JournalCall::Sync, errno)) = injected {
+            return Err((true, std::io::Error::from_raw_os_error(errno)));
+        }
+        self.journal.sync_all().map_err(|error| (true, error))?;
+        File::open(&self.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| (true, error))
+    }
+    /// Stop saving (fail-stop) after the journal write or sync failed with `error`, tell the
+    /// host in `broker.log`, and return the refusal for the request that hit it. `written`:
+    /// the record's write succeeded, so whether it was saved is unknown. The broker cannot
+    /// know what reached the disk, so nothing is saved again until a restart repairs the
+    /// journal (a torn tail is set aside) and replays what was really written.
+    fn stop_saving(
+        &mut self,
+        written: bool,
+        error: &std::io::Error,
+        committed: u64,
+    ) -> anyhow::Error {
+        let full = is_space_error(error);
+        self.storage_fault = Some(StorageFault {
+            full,
+            at: now(),
+            detail: error.to_string(),
+            committed,
+            logged: false,
+        });
+        self.log_storage_fault();
+        anyhow!(match (full, written) {
+            (true, false) => STORAGE_FULL_NOT_SAVED,
+            (true, true) => STORAGE_FULL_UNCERTAIN,
+            (false, false) => STORAGE_FAILED_NOT_SAVED,
+            (false, true) => STORAGE_FAILED_UNCERTAIN,
+        })
+    }
+    /// Append the line for the storage fault to `broker.log` in the state directory, once.
+    /// Best effort: on a full disk this fails too, and a later request tries again.
+    fn log_storage_fault(&mut self) {
+        let root = &self.root;
+        let Some(fault) = self.storage_fault.as_mut().filter(|fault| !fault.logged) else {
+            return;
+        };
+        let line = format!(
+            "{} {}: Crew stopped saving changes: {}. journal.jsonl held {} bytes before the change that failed. Reading still works. {}\n",
+            utc_timestamp(fault.at),
+            fault.code(),
+            fault.detail,
+            fault.committed,
+            fault.host_instruction(root)
+        );
+        fault.logged = private_file(&root.join("broker.log"), true)
+            .and_then(|mut log| {
+                log.write_all(line.as_bytes())?;
+                log.sync_all()?;
+                Ok(())
+            })
+            .is_ok();
     }
     pub fn workspace(&self) -> &Workspace {
         &self.state.workspace
@@ -1244,20 +1449,11 @@ impl Broker {
                 result: Some(value),
                 error: None,
             },
-            Err(error) => {
-                let message = error.to_string();
-                let code = message
-                    .split(':')
-                    .next()
-                    .filter(|s| s.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
-                    .unwrap_or("request_denied")
-                    .to_owned();
-                Response {
-                    id: request.id,
-                    result: None,
-                    error: Some(ProtocolError { code, message }),
-                }
-            }
+            Err(error) => Response {
+                id: request.id,
+                result: None,
+                error: Some(protocol_error(&error)),
+            },
         }
     }
     fn process(&mut self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Value> {
@@ -1265,6 +1461,7 @@ impl Broker {
             req.version == 1 && !req.id.is_empty() && req.id.len() <= 128,
             "invalid_request: version/id"
         );
+        self.log_storage_fault();
         if req.method == "hello" {
             return self.hello(req);
         }
@@ -1429,10 +1626,9 @@ impl Broker {
             );
             return Ok(saved.result.clone());
         }
-        ensure!(
-            !self.poisoned,
-            "storage_failed: restart and recover before further mutations"
-        );
+        if let Some(fault) = &self.storage_fault {
+            return Err(fault.refusal());
+        }
         let naming = NAME_METHODS.contains(&req.method.as_str());
         if naming {
             // Checked before anything about the name is evaluated, so the answer to a
@@ -1514,7 +1710,7 @@ impl Broker {
             self.commit_with(state, &actor.id, &req.method, allowance)
         })();
         if let Err(error) = committed {
-            if req.method == "blob.begin" && !self.poisoned {
+            if req.method == "blob.begin" && self.storage_fault.is_none() {
                 if let Some(blob_id) = result.get("id").and_then(Value::as_str) {
                     let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
                 }
@@ -1608,9 +1804,21 @@ impl Broker {
             )
             .to_bytes(),
         );
-        Ok(
-            json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
-        )
+        let mut hello = json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]});
+        // Unsigned, for display only: whether this broker is still saving changes. An older
+        // broker sends no `state`, which a client reads as unknown.
+        match &self.storage_fault {
+            None => hello["state"] = json!("running"),
+            Some(fault) => {
+                hello["state"] = json!("storage_failed");
+                hello["storage"] = json!({
+                    "code": fault.code(),
+                    "message": fault.stopped_sentence(),
+                    "since": fault.at,
+                });
+            }
+        }
+        Ok(hello)
     }
     /// What `hello` advertises, in the order it advertises it (the v2 signature covers the
     /// order).
@@ -5261,11 +5469,43 @@ pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> R
                     == info.get("workspace_id"),
                 "identity_mismatch"
             );
-            Ok(info)
+            let hello = response.result.unwrap_or_default();
+            status_answer(root, info, &hello)
         }
         "stop" => stop(root),
         _ => bail!("invalid_command"),
     }
+}
+
+/// What `status` prints for the broker `info` describes, which answered `hello`: the runtime
+/// descriptor with `"state":"running"` and the workspace's name, or, when the broker has
+/// stopped saving changes, a refusal telling the host what to do.
+fn status_answer(root: &Path, mut info: Value, hello: &Value) -> Result<Value> {
+    if hello.get("state").and_then(Value::as_str) == Some("storage_failed") {
+        let full = hello["storage"]["code"].as_str() == Some("storage_full");
+        let fault = StorageFault {
+            full,
+            at: hello["storage"]["since"].as_u64().unwrap_or_default(),
+            detail: String::new(),
+            committed: 0,
+            logged: true,
+        };
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        bail!(
+            "{}: Crew on this server stopped saving changes at {} because {}. Reading still works. {} broker.log in the state directory has the error.",
+            fault.code(),
+            utc_timestamp(fault.at),
+            if full {
+                "the disk is full"
+            } else {
+                "it could not write to its storage"
+            },
+            fault.host_instruction(&root)
+        );
+    }
+    info["state"] = json!("running");
+    info["name"] = hello.get("name").cloned().unwrap_or(Value::Null);
+    Ok(info)
 }
 
 /// How long `start` waits for the broker it launched to answer `hello`.
@@ -5840,12 +6080,185 @@ mod runtime_tests {
         let pinned = root.join(basename('a')).join("broker.sock");
         fake_broker(&root, &basename('b'), 0o777, &workspace, "writable");
         let error = open_workspace(&root, &pinned, uid, &workspace)
-            .err()
-            .expect("no directory of this account's answers for the workspace");
+            .expect_err("no directory of this account's answers for the workspace");
         assert!(
             error.downcast_ref::<std::io::Error>().is_some(),
             "{error:#}"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    fn info() -> Value {
+        json!({"pid": 42, "socket": "/tmp/crew-1000-x/broker.sock", "workspace_id": "w", "host_uid": 1000})
+    }
+
+    /// SF-F7: the restart instructions tell the host to look for `"state":"running"`, so
+    /// `status` says it, with the workspace's name, beside the runtime descriptor.
+    #[test]
+    fn status_says_running_and_names_the_workspace() {
+        let root = std::env::temp_dir();
+        let answer =
+            status_answer(&root, info(), &json!({"state": "running", "name": "lab"})).unwrap();
+        assert_eq!(answer["state"], "running");
+        assert_eq!(answer["name"], "lab");
+        assert_eq!(answer["pid"], 42);
+        assert_eq!(answer["socket"], "/tmp/crew-1000-x/broker.sock");
+        // A workspace with no name yet says so rather than leaving the key out.
+        let unnamed = status_answer(&root, info(), &json!({"state": "running"})).unwrap();
+        assert_eq!(unnamed["state"], "running");
+        assert!(unnamed["name"].is_null());
+    }
+
+    /// R-2: a broker that stopped saving is not reported as healthy. `status` fails, naming the
+    /// cause and the two commands that bring the workspace back.
+    #[test]
+    fn status_of_a_broker_that_stopped_saving_fails_and_says_what_to_run() {
+        let root = std::env::temp_dir();
+        let canonical = fs::canonicalize(&root).unwrap();
+        for (code, cause, first) in [
+            (
+                "storage_full",
+                "the disk is full",
+                "Free space on this server",
+            ),
+            (
+                "storage_failed",
+                "it could not write to its storage",
+                "Check this server's storage",
+            ),
+        ] {
+            let hello = json!({
+                "state": "storage_failed",
+                "storage": {"code": code, "message": "…", "since": 1_790_000_000u64},
+            });
+            let error = status_answer(&root, info(), &hello)
+                .expect_err("a broker that stopped saving is not running")
+                .to_string();
+            assert!(error.starts_with(&format!("{code}: ")), "{error}");
+            for expected in [
+                cause.to_owned(),
+                first.to_owned(),
+                "2026-09-21T14:13:20Z".to_owned(),
+                format!("biorouter-crew stop --state-dir {}", canonical.display()),
+                format!("biorouter-crew start --state-dir {}", canonical.display()),
+            ] {
+                assert!(
+                    error.contains(&expected),
+                    "{expected:?} missing from {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn utc_timestamps_are_civil_dates() {
+        assert_eq!(utc_timestamp(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_timestamp(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc_timestamp(1_790_000_000), "2026-09-21T14:13:20Z");
+        assert_eq!(utc_timestamp(4_107_542_399), "2100-02-28T23:59:59Z");
+    }
+
+    /// A raw operating-system error is a storage fault in words; a coded refusal keeps its
+    /// code, even when an I/O error is its cause.
+    #[test]
+    fn a_raw_os_error_is_worded_as_a_storage_fault() {
+        let full = protocol_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+            libc::ENOSPC,
+        )));
+        assert_eq!(full.code, "storage_full");
+        assert_eq!(full.message, STORAGE_FULL_RETRY);
+        let quota = protocol_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+            libc::EDQUOT,
+        )));
+        assert_eq!(quota.code, "storage_full");
+        let failed = protocol_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+            libc::EIO,
+        )));
+        assert_eq!(failed.code, "storage_failed");
+        assert_eq!(failed.message, STORAGE_FAILED_RETRY);
+        let coded = protocol_error(
+            &anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES))
+                .context("unsafe_storage: cannot read the journal"),
+        );
+        assert_eq!(coded.code, "unsafe_storage");
+        let plain = protocol_error(&anyhow!("forbidden: not yours"));
+        assert_eq!(plain.code, "forbidden");
+        let uncoded = protocol_error(&anyhow!("Something else"));
+        assert_eq!(uncoded.code, "request_denied");
+    }
+
+    /// `status` against a real broker on a real socket: running with its name, then, once it
+    /// stopped saving, a refusal saying so.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn status_of_a_live_broker_follows_its_state() {
+        let short = |label: &str| {
+            let suffix: String = Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(12)
+                .collect();
+            let path = Path::new("/tmp").join(format!("crt-{label}-{suffix}"));
+            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+            path
+        };
+        let state = short("s");
+        let runtime = short("r");
+        let key = hex::encode(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes());
+        let broker =
+            Broker::open_inner(&state, &key, Box::new(SystemDirectory), Some("lab")).unwrap();
+        let socket = runtime.join("broker.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let info = json!({
+            "pid": std::process::id(),
+            "socket": socket,
+            "workspace_id": broker.workspace().id,
+            "host_uid": unsafe { libc::geteuid() },
+            "protocol": 1,
+        });
+        write_runtime(&state, &info).unwrap();
+        let shared = Arc::new(Mutex::new(broker));
+        let serving = Arc::clone(&shared);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let uid = peer_uid(&stream).unwrap();
+                let broker = Arc::clone(&serving);
+                std::thread::spawn(move || serve_client(stream, uid, broker));
+            }
+        });
+
+        let running = lifecycle("status", &state, "", None).unwrap();
+        assert_eq!(running["state"], "running");
+        assert_eq!(running["name"], "lab");
+        assert_eq!(running["workspace_id"], info["workspace_id"]);
+
+        shared.lock().unwrap().storage_fault = Some(StorageFault {
+            full: true,
+            at: now(),
+            detail: "No space left on device (os error 28)".into(),
+            committed: 0,
+            logged: true,
+        });
+        let error = lifecycle("status", &state, "", None)
+            .expect_err("a broker that stopped saving is not running")
+            .to_string();
+        assert!(error.starts_with("storage_full: "), "{error}");
+        assert!(
+            error.contains(&format!(
+                "biorouter-crew start --state-dir {}",
+                fs::canonicalize(&state).unwrap().display()
+            )),
+            "{error}"
+        );
+        assert!(!error.contains("os error"), "{error}");
+        let _ = fs::remove_dir_all(&state);
+        let _ = fs::remove_dir_all(&runtime);
     }
 }
