@@ -122,20 +122,46 @@ describe('FilesTab', () => {
     expect(within(section).queryByRole('progressbar')).toBeNull();
   });
 
-  it('shows a failure in the daemon’s words and offers Resume… from the row menu', async () => {
+  it('reads a stopped transfer as Paused with its reason, and offers Resume… from the row menu (FILES-F4)', async () => {
     mocks.listTransfers.mockResolvedValue([
-      transfer({ state: 'needs_file_selection', error: 'The source file changed.' }),
+      transfer({
+        state: 'needs_file_selection',
+        error: 'Transfer paused. Reselect the original local file or destination to resume.',
+      }),
     ]);
     mocks.resumeTransfer.mockResolvedValue(null);
     renderTab();
-    expect(await screen.findByText('The source file changed.')).toBeInTheDocument();
-    expect(screen.getByText('Failed')).toBeInTheDocument();
+    expect(await screen.findByText('You paused it')).toBeInTheDocument();
+    expect(screen.getByText(/^Paused/)).toBeInTheDocument();
+    expect(screen.queryByText('Failed')).toBeNull();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
     await user.click(await screen.findByRole('menuitem', { name: /Resume…/ }));
     expect(mocks.resumeTransfer).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'transfer-1' })
     );
+  });
+
+  it('shows a stop it does not know in the daemon’s words, still as Paused', async () => {
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'needs_file_selection', error: 'The source file changed.' }),
+    ]);
+    renderTab();
+    expect(await screen.findByText('The source file changed.')).toBeInTheDocument();
+    expect(screen.getByText(/^Paused/)).toBeInTheDocument();
+  });
+
+  it('shows a transfer the workspace refused as Failed, in the daemon’s words, with no Resume…', async () => {
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'failed', error: 'You are no longer a member of #methods.' }),
+    ]);
+    renderTab();
+    expect(await screen.findByText('You are no longer a member of #methods.')).toBeInTheDocument();
+    expect(screen.getByText('Failed')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    expect(await screen.findByRole('menuitem', { name: /Remove from list/ })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /Resume…/ })).toBeNull();
   });
 
   it('attaches a finished upload only after re-reading its shared file', async () => {

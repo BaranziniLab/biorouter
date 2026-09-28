@@ -70,7 +70,7 @@ export function UploadChip({
     presentation.active &&
     presentation.key !== 'pausing' &&
     (presentation.percent ?? 0) >= 1;
-  const canResume = presentation.key === 'paused' || presentation.key === 'failed';
+  const canResume = presentation.key === 'paused';
   const state = starting ? filesCopy.uploading : moving ? `${percent}%` : presentation.word;
   const name = visibleFileText(transfer.name);
   return (
@@ -78,7 +78,7 @@ export function UploadChip({
       variant="chip"
       className="crew-chip max-w-full min-w-0"
       data-transfer-state={presentation.key}
-      title={transfer.error ?? undefined}
+      title={presentation.reason ?? transfer.error ?? undefined}
     >
       {moving && !starting ? (
         <ProgressRing percent={percent} />

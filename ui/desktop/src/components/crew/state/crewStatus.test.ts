@@ -8,6 +8,7 @@ import {
   deriveCrewScreen,
   runStatusPresentation,
   sentenceCaseStatus,
+  transferPauseReason,
   transferStatePresentation,
   type ConnectionStatusInput,
   type CrewScreenInput,
@@ -385,8 +386,21 @@ describe('transfer state words', () => {
     [transfer('downloading', 'download'), 'downloading', 'Downloading 42%', true],
     [transfer('publishing'), 'finishing', 'Finishing…', true],
     [transfer('pause_requested'), 'pausing', 'Pausing…', true],
+    // The daemon's real pause: `needs_file_selection` WITH its recovery sentence (FILES-F4). This
+    // row used `error: null`, a shape the daemon writes only for a receipt reloaded after a
+    // restart, which is why the test passed while a pause read "Failed".
+    [
+      transfer(
+        'needs_file_selection',
+        'upload',
+        'Transfer paused. Reselect the original local file or destination to resume.'
+      ),
+      'paused',
+      'Paused',
+      false,
+    ],
     [transfer('needs_file_selection'), 'paused', 'Paused', false],
-    [transfer('needs_file_selection', 'upload', 'SSH bridge failed'), 'failed', 'Failed', false],
+    [transfer('needs_file_selection', 'upload', 'SSH bridge failed'), 'paused', 'Paused', false],
     [transfer('completed'), 'ready', 'Ready', false],
     [transfer('completed', 'download'), 'saved', 'Saved', false],
     [transfer('failed'), 'failed', 'Failed', false],
@@ -394,6 +408,57 @@ describe('transfer state words', () => {
     [transfer('queued_for_scan'), 'unknown', 'Queued for scan', false],
   ])('%o reads %s', (input, key, word, active) => {
     expect(transferStatePresentation(input)).toMatchObject({ key, word, active });
+  });
+
+  it.each([
+    [
+      'Transfer paused. Reselect the original local file or destination to resume.',
+      'You paused it',
+    ],
+    [
+      'Authenticate and reconnect the saved connection in Crew, then reselect the original local file or destination and resume.',
+      'The connection dropped',
+    ],
+    [
+      'Unlock the Crew credential vault for this daemon session, then reselect the original local file or destination and resume.',
+      'The credential vault is locked',
+    ],
+    [
+      'Two transfers are active; reselect and resume when one finishes',
+      'Two other transfers were running',
+    ],
+    [
+      'The Crew connection or privacy policy changed. Review the connection and inspect any remote effects before starting a new approved transfer.',
+      'The connection’s privacy changed',
+    ],
+    [
+      'Transfer stopped. Reselect the original local file or destination to resume. Inspect any unconfirmed publication before retrying.',
+      'It stopped',
+    ],
+    ['A reason this renderer has not seen', 'A reason this renderer has not seen'],
+  ])('a pause the daemon explains as %j reads "Paused", because: %j', (error, reason) => {
+    expect(
+      transferStatePresentation({
+        state: 'needs_file_selection',
+        direction: 'upload',
+        offset: 42,
+        size: 100,
+        error,
+      })
+    ).toEqual({ key: 'paused', word: 'Paused', active: false, percent: 42, reason });
+  });
+
+  it('gives a paused transfer with no stored reason no reason line', () => {
+    expect(
+      transferStatePresentation({
+        state: 'needs_file_selection',
+        direction: 'download',
+        offset: 0,
+        size: 10,
+        error: null,
+      })
+    ).toEqual({ key: 'paused', word: 'Paused', active: false, percent: 0 });
+    expect(transferPauseReason('   ')).toBeUndefined();
   });
 
   it('bounds the percentage and survives an empty file', () => {

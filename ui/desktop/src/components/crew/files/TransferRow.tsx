@@ -17,10 +17,12 @@ export interface TransferActions {
   onRemove(transfer: CrewTransfer): void;
 }
 
-/** A stopped transfer can be picked up again; a finished or unconfirmed one cannot. */
+/**
+ * A paused transfer can be picked up again. A finished or unconfirmed one cannot, and neither can
+ * a failed one: the workspace refused it, and reselecting the file cannot change that (F-1).
+ */
 export function canResumeTransfer(transfer: CrewTransfer): boolean {
-  const { key } = transferStatePresentation(transfer);
-  return key === 'paused' || key === 'failed';
+  return transferStatePresentation(transfer).key === 'paused';
 }
 
 /**
@@ -80,8 +82,9 @@ function notYetMoving(transfer: CrewTransfer): boolean {
 /**
  * One transfer in the Files tab: direction glyph, name, the state in words ("Uploading 42%",
  * "Paused", "Not confirmed"), a thin bar while it has a position, Pause while it moves and a
- * `⋯` for the rest. Until it has moved 1% it says only "Uploading…" (Q4-16). The daemon's own
- * reason for a failure is shown as written.
+ * `⋯` for the rest. Until it has moved 1% it says only "Uploading…" (Q4-16). A paused transfer
+ * says why in a few words ("You paused it", "The connection dropped") with the daemon's whole
+ * sentence on hover; the daemon's reason for a failure is shown as written.
  */
 export function TransferRow({
   transfer,
@@ -146,7 +149,15 @@ export function TransferRow({
           className="crew-file-row-progress"
         />
       ) : null}
-      {transfer.error ? <p className="crew-file-row-error">{transfer.error}</p> : null}
+      {presentation.key === 'paused' ? (
+        presentation.reason ? (
+          <p className="crew-file-row-reason" title={transfer.error ?? undefined}>
+            {presentation.reason}
+          </p>
+        ) : null
+      ) : transfer.error ? (
+        <p className="crew-file-row-error">{transfer.error}</p>
+      ) : null}
     </li>
   );
 }

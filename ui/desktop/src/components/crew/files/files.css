@@ -394,6 +394,16 @@
   padding-inline: 0;
 }
 
+/* Why a paused transfer stopped ("You paused it"): a quiet line, never the danger ink a
+   failure takes, because a pause is not one (FILES-F4). */
+.crew-file-row-reason {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  overflow-wrap: anywhere;
+}
+
 .crew-files-empty {
   margin: 0;
   color: var(--text-muted);

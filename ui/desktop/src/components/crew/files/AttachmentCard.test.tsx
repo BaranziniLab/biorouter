@@ -6,7 +6,7 @@ import { AttachmentCard, SAVE_PATIENCE_MS, type CrewBlob } from './AttachmentCar
 import { AttachmentIndexProvider } from './attachmentIndex';
 import { cachedBlob, clearBlobCache } from './blobMetadataCache';
 import { filesCopy } from './copy';
-import { TRANSFER_POLL_MS } from './useCrewTransfers';
+import { TRANSFER_PAUSED_POLL_MS, TRANSFER_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
   crewRequest: vi.fn(),
@@ -472,6 +472,50 @@ describe('the one transfers poller (L13)', () => {
     await tick();
     await tick();
     expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps asking, slowly, while a transfer is paused, so a resume from the command line shows (R-8)', async () => {
+    const paused = download('a', {
+      state: 'needs_file_selection',
+      error: 'Transfer paused. Reselect the original local file or destination to resume.',
+    });
+    let transfers: CrewTransfer[] = [paused];
+    mocks.listTransfers.mockImplementation(async () => transfers);
+    render(cards(['a']));
+    await flush();
+    expect(screen.getByText(/Paused/)).toBeInTheDocument();
+    await tick();
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+    // `biorouter crew files resume` on this computer, which nothing here hears.
+    transfers = [download('a', { offset: 600 })];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TRANSFER_PAUSED_POLL_MS - TRANSFER_POLL_MS);
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '60');
+  });
+
+  it('asks again when the window comes back to the front, and not while it is hidden', async () => {
+    mocks.listTransfers.mockResolvedValue([download('a', { state: 'completed' })]);
+    const { unmount } = render(cards(['a']));
+    await flush();
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+    visibility.mockRestore();
+    unmount();
+    // No card left: nothing listens any more.
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
   });
 
   it('stops polling when the last card leaves, and lists afresh for the next one', async () => {

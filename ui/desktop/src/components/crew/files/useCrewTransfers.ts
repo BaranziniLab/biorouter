@@ -4,6 +4,12 @@ import { transferStatePresentation } from '../state/crewStatus';
 
 /** How often the one poller asks again while a transfer is moving. */
 export const TRANSFER_POLL_MS = 2000;
+/**
+ * How often it asks while nothing moves but a transfer is paused. A paused transfer is this
+ * computer's, but the command line can resume, pause or remove it too (`biorouter crew files`),
+ * and the list used to keep "Paused 17%" until the view mounted again (R-8).
+ */
+export const TRANSFER_PAUSED_POLL_MS = 5000;
 
 export interface CrewTransfersState {
   /** Every transfer record this computer keeps for the connection, both directions. */
@@ -29,18 +35,52 @@ interface Entry {
  * One entry per connection, shared by every surface that shows a transfer: the composer's
  * upload chips, each attachment card, the Files tab. That is what makes the poller ONE per
  * view (L13): the legacy layout ran a 2s interval per attachment card, forever. Here the first
- * subscriber lists once, the list is asked again every 2s only while a transfer is active, and
- * the last subscriber to leave stops everything and forgets the records.
+ * subscriber lists once, the list is asked again every 2s while a transfer is active and every
+ * 5s while one is only paused, and the last subscriber to leave stops everything and forgets the
+ * records.
  *
- * Transfer records are this computer's receipts. They move only while a transfer is active or
- * after an action on this computer, and every action here asks for a fresh list, so nothing
- * polls while everything is at rest.
+ * Transfer records are this computer's receipts. They move while a transfer is active, after an
+ * action here (each asks for a fresh list), and after an action from the command line on this
+ * computer, which nothing here hears: so a paused transfer keeps the poller going slowly, and
+ * the window coming back to the front asks again (R-8). Nothing polls once every transfer has
+ * finished.
  */
 const entries = new Map<string, Entry>();
 
 /** Moving bytes or finishing: offer Pause, and keep the poller running. */
 export function isTransferActive(transfer: CrewTransfer): boolean {
   return transferStatePresentation(transfer).active;
+}
+
+/** Stopped but resumable, from here or from the command line: keep the poller running slowly. */
+function isTransferPaused(transfer: CrewTransfer): boolean {
+  return transferStatePresentation(transfer).key === 'paused';
+}
+
+/** When the poller asks next, or `null` when nothing can change without an action here. */
+function pollDelay(transfers: readonly CrewTransfer[]): number | null {
+  if (transfers.some(isTransferActive)) return TRANSFER_POLL_MS;
+  if (transfers.some(isTransferPaused)) return TRANSFER_PAUSED_POLL_MS;
+  return null;
+}
+
+/** The window came back to the front: every connection shown asks again. */
+function refreshAllOnReturn() {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+  for (const [connectionId, entry] of entries) void fetchTransfers(connectionId, entry);
+}
+
+let listeningForReturn = false;
+function listenForReturn(listen: boolean) {
+  if (typeof window === 'undefined' || listen === listeningForReturn) return;
+  listeningForReturn = listen;
+  if (listen) {
+    window.addEventListener('focus', refreshAllOnReturn);
+    document.addEventListener('visibilitychange', refreshAllOnReturn);
+  } else {
+    window.removeEventListener('focus', refreshAllOnReturn);
+    document.removeEventListener('visibilitychange', refreshAllOnReturn);
+  }
 }
 
 function publish(entry: Entry, state: CrewTransfersState) {
@@ -50,11 +90,12 @@ function publish(entry: Entry, state: CrewTransfersState) {
 
 function schedule(connectionId: string, entry: Entry) {
   if (entry.disposed || entry.timer) return;
-  if (!entry.state.transfers.some(isTransferActive)) return;
+  const delay = pollDelay(entry.state.transfers);
+  if (delay === null) return;
   entry.timer = setTimeout(() => {
     entry.timer = null;
     void fetchTransfers(connectionId, entry);
-  }, TRANSFER_POLL_MS);
+  }, delay);
 }
 
 function failureText(failure: unknown): string {
@@ -96,6 +137,7 @@ function subscribeTransfers(connectionId: string, listener: () => void): () => v
   if (!entry) {
     entry = { state: IDLE, listeners: new Set(), timer: null, sequence: 0, disposed: false };
     entries.set(connectionId, entry);
+    listenForReturn(true);
     void fetchTransfers(connectionId, entry);
   }
   const subscribed = entry;
@@ -107,6 +149,7 @@ function subscribeTransfers(connectionId: string, listener: () => void): () => v
     if (subscribed.timer) clearTimeout(subscribed.timer);
     subscribed.timer = null;
     if (entries.get(connectionId) === subscribed) entries.delete(connectionId);
+    if (entries.size === 0) listenForReturn(false);
   };
 }
 

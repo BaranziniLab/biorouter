@@ -276,6 +276,8 @@ export interface TransferStatePresentation {
   active: boolean;
   /** Whole percent for the progress bar, when the state has one. */
   percent?: number;
+  /** Why a paused transfer stopped, in a few words ("You paused it"), when the daemon said. */
+  reason?: string;
 }
 
 export interface TransferStateInput {
@@ -292,9 +294,36 @@ function percentOf(offset: number, size: number): number {
 }
 
 /**
+ * Why a `needs_file_selection` transfer stopped, from the daemon's recovery sentence
+ * (`transfer_recovery_message` in `crates/biorouter-server/src/crew/transfers.rs`), in the few
+ * words a row has room for. A sentence this renderer does not know is shown as it came; none (a
+ * receipt the daemon reloaded after a restart) gives no reason.
+ */
+const PAUSE_REASONS: readonly (readonly [RegExp, string])[] = [
+  [/^Transfer paused\b/, 'You paused it'],
+  [/^Authenticate and reconnect the saved connection\b/, 'The connection dropped'],
+  [/^Unlock the Crew credential vault\b/, 'The credential vault is locked'],
+  [/^Two transfers are active\b/, 'Two other transfers were running'],
+  [/^The Crew connection or privacy policy changed\b/, 'The connection’s privacy changed'],
+  [/^Transfer stopped\b/, 'It stopped'],
+];
+
+export function transferPauseReason(error: string | null | undefined): string | undefined {
+  const text = typeof error === 'string' ? error.trim() : '';
+  if (!text) return undefined;
+  return PAUSE_REASONS.find(([pattern]) => pattern.test(text))?.[1] ?? text;
+}
+
+/**
  * The word a transfer row shows. The daemon's receipt states are `starting`, `uploading`,
- * `downloading`, `publishing`, `pause_requested`, `needs_file_selection` (paused, or stopped by a
- * failure when `error` is set), `completed` and `publication_unconfirmed`.
+ * `downloading`, `publishing`, `pause_requested`, `needs_file_selection`, `failed`, `completed`
+ * and `publication_unconfirmed`.
+ *
+ * `needs_file_selection` is every stop a reselection resumes: the person paused it, the
+ * connection dropped, the vault locked, two other transfers were running. The daemon stores each
+ * with its reason in `error`, a pause included, so it always reads "Paused" with that reason
+ * (FILES-F4: it read "Failed" whenever `error` was set, which for a pause is always). "Failed" is
+ * `failed` alone: a transfer the workspace refused, which reselecting cannot fix.
  */
 export function transferStatePresentation(transfer: TransferStateInput): TransferStatePresentation {
   const percent = percentOf(transfer.offset, transfer.size);
@@ -309,10 +338,16 @@ export function transferStatePresentation(transfer: TransferStateInput): Transfe
       return { key: 'finishing', word: 'Finishing…', active: true };
     case 'pause_requested':
       return { key: 'pausing', word: 'Pausing…', active: true, percent };
-    case 'needs_file_selection':
-      return transfer.error
-        ? { key: 'failed', word: 'Failed', active: false }
-        : { key: 'paused', word: 'Paused', active: false, percent };
+    case 'needs_file_selection': {
+      const reason = transferPauseReason(transfer.error);
+      return {
+        key: 'paused',
+        word: 'Paused',
+        active: false,
+        percent,
+        ...(reason ? { reason } : {}),
+      };
+    }
     case 'completed':
       return transfer.direction === 'upload'
         ? { key: 'ready', word: 'Ready', active: false }
