@@ -7,6 +7,7 @@ import type {
   Snapshot,
   Team,
 } from '../crewApi';
+import type * as Api from '../../../api/types.gen';
 import type { ConnectFailureKind } from './connectFailure';
 import type { ConnectionStatusKey, CrewScreen } from './crewStatus';
 
@@ -70,30 +71,11 @@ export interface CrewDraft {
 }
 
 /** The body the daemon accepts for `POST /crew/connections` and `PATCH /crew/connections/{id}`. */
-export interface SaveConnectionInput {
-  name: string;
-  ssh_target: string;
-  port?: number;
-  identity_file?: string;
-  proxy_jump?: string;
-  socket_path: string;
-  owner_uid: number;
-  workspace_id: string;
-  workspace_public_key: string;
-  cluster_connection_id?: string;
-  remote_root?: string;
-  remote_execution: boolean;
-  mode: 'private' | 'public';
-  institution_id: string | null;
-  preparation_id?: string;
-}
+/** `POST /crew/connections` and `PATCH …/{id}`: the body the daemon's spec declares (CROSSCUT-6). */
+export type SaveConnectionInput = Api.SaveConnection;
 
 /** `POST /crew/devices/prepare`: the prepared (or recovered) hosting identity. */
-export interface PreparedDevice {
-  preparation_id: string;
-  public_key: string;
-  device_id: string;
-}
+export type PreparedDevice = Api.PreparedDevice;
 
 export interface LastConnectFailure {
   kind: ConnectFailureKind;

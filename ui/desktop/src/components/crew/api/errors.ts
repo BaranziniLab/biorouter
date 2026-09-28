@@ -1,24 +1,27 @@
-import { CrewHttpError } from '../crewApi';
+import { CrewHttpError, type CrewErrorCode } from '../crewApi';
 
 // Typed error codes the daemon's Crew routes answer with. The codes are the contract; the message
-// text beside them is the daemon's and may change. Components map a code to their own copy.
+// text beside them is the daemon's and may change. Components map a code to their own copy. Each
+// daemon code `satisfies` the generated `CrewErrorCode`, so a code the daemon renames or stops
+// answering fails to compile here (CROSSCUT-6).
 
 /** Connect: the server wants a password or a verification code (open Sign in). */
-export const CREW_SSH_AUTH_REQUIRED = 'crew_ssh_auth_required';
+export const CREW_SSH_AUTH_REQUIRED = 'crew_ssh_auth_required' satisfies CrewErrorCode;
 /** Connect: the server's host key is not in the person's known-hosts file. */
-export const CREW_SSH_HOST_KEY_UNKNOWN = 'crew_ssh_host_key_unknown';
+export const CREW_SSH_HOST_KEY_UNKNOWN = 'crew_ssh_host_key_unknown' satisfies CrewErrorCode;
 /** Connect: the server's host key changed. Never offer to accept it. */
-export const CREW_SSH_HOST_KEY_CHANGED = 'crew_ssh_host_key_changed';
+export const CREW_SSH_HOST_KEY_CHANGED = 'crew_ssh_host_key_changed' satisfies CrewErrorCode;
 /** Connect: the server could not be resolved or reached. */
-export const CREW_SSH_UNREACHABLE = 'crew_ssh_unreachable';
+export const CREW_SSH_UNREACHABLE = 'crew_ssh_unreachable' satisfies CrewErrorCode;
 /** Connect: any other SSH failure; show the daemon's text. */
-export const CREW_SSH_FAILED = 'crew_ssh_failed';
+export const CREW_SSH_FAILED = 'crew_ssh_failed' satisfies CrewErrorCode;
 /** Connect: `biorouter-crew` is not installed for this account on the server. */
-export const CREW_BRIDGE_MISSING = 'crew_bridge_missing';
+export const CREW_BRIDGE_MISSING = 'crew_bridge_missing' satisfies CrewErrorCode;
 /** Sign-in succeeded but the bridge did not start (treated like a missing bridge). */
-export const CREW_HANDOFF_FAILED = 'crew_handoff_failed';
+export const CREW_HANDOFF_FAILED = 'crew_handoff_failed' satisfies CrewErrorCode;
 /** Connect: the server answered with a different workspace key than the one pinned. */
-export const CREW_WORKSPACE_IDENTITY_MISMATCH = 'crew_workspace_identity_mismatch';
+export const CREW_WORKSPACE_IDENTITY_MISMATCH =
+  'crew_workspace_identity_mismatch' satisfies CrewErrorCode;
 
 /** Every code the connect route (and the sign-in handoff) can classify a failure as. */
 export const CREW_CONNECT_FAILURE_CODES = [
@@ -34,32 +37,33 @@ export const CREW_CONNECT_FAILURE_CODES = [
 export type CrewConnectFailureCode = (typeof CREW_CONNECT_FAILURE_CODES)[number];
 
 /** Revoke (503): stopped on this device, but the workspace has not confirmed it yet. */
-export const CREW_REVOCATION_UNCONFIRMED = 'crew_revocation_unconfirmed';
+export const CREW_REVOCATION_UNCONFIRMED = 'crew_revocation_unconfirmed' satisfies CrewErrorCode;
 /** Revoke (404): this chat has no Crew grant. */
-export const CREW_GRANT_NOT_FOUND = 'crew_grant_not_found';
+export const CREW_GRANT_NOT_FOUND = 'crew_grant_not_found' satisfies CrewErrorCode;
 /** Revoke (409): the grant belongs to a different saved connection. */
-export const CREW_GRANT_OTHER_CONNECTION = 'crew_grant_other_connection';
+export const CREW_GRANT_OTHER_CONNECTION = 'crew_grant_other_connection' satisfies CrewErrorCode;
 /** Any person-gated route (403): the request carried no proof that a person asked for it. */
-export const CREW_USER_ACTION_REQUIRED = 'crew_user_action_required';
+export const CREW_USER_ACTION_REQUIRED = 'crew_user_action_required' satisfies CrewErrorCode;
 /** Any person-gated route (403): this daemon was started without a way to verify a person. */
-export const CREW_HUMAN_AUTHORITY_UNAVAILABLE = 'crew_human_authority_unavailable';
+export const CREW_HUMAN_AUTHORITY_UNAVAILABLE =
+  'crew_human_authority_unavailable' satisfies CrewErrorCode;
 /** Join (S3a): the pasted text is not a Crew invitation. */
-export const CREW_INVITATION_INVALID = 'crew_invitation_invalid';
+export const CREW_INVITATION_INVALID = 'crew_invitation_invalid' satisfies CrewErrorCode;
 /** Join (S3a): the workspace's server does not support joining by invitation. */
-export const CREW_JOIN_UNSUPPORTED = 'crew_join_unsupported';
+export const CREW_JOIN_UNSUPPORTED = 'crew_join_unsupported' satisfies CrewErrorCode;
 /** Join (S3a): the host approved a different device code than this computer's. */
-export const CREW_JOIN_CODE_MISMATCH = 'crew_join_code_mismatch';
+export const CREW_JOIN_CODE_MISMATCH = 'crew_join_code_mismatch' satisfies CrewErrorCode;
 
 /**
  * A request-carrying route (W2-DMN-7, 503): the bridge was lost after the request was written, so
  * whether the workspace applied it is not known. The request's own idempotency key makes sending
  * it again safe.
  */
-export const CREW_OUTCOME_UNKNOWN = 'crew_outcome_unknown';
+export const CREW_OUTCOME_UNKNOWN = 'crew_outcome_unknown' satisfies CrewErrorCode;
 /** A request-carrying route (W2-DMN-7, 503): the bridge was lost before anything was written. */
-export const CREW_NOT_SENT = 'crew_not_sent';
+export const CREW_NOT_SENT = 'crew_not_sent' satisfies CrewErrorCode;
 /** The bridge broke and Biorouter is dialling it again (W2-DMN-6). */
-export const CREW_RECONNECTING = 'crew_reconnecting';
+export const CREW_RECONNECTING = 'crew_reconnecting' satisfies CrewErrorCode;
 
 /**
  * Set by this renderer, never by the daemon: the daemon answered successfully, but not with a body

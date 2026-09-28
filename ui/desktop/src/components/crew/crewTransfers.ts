@@ -142,7 +142,7 @@ export async function cancelUpload(
     wait = (ms) => new Promise((r) => setTimeout(r, ms)),
   }: CancelUploadOptions = {}
 ): Promise<CancelUploadOutcome> {
-  const path = `/transfers/${encodeURIComponent(id)}`;
+  const path = `/transfers/${encodeURIComponent(id)}` as const;
   let receipt = await crewHttp<CrewTransfer>(path);
   if (receipt.direction !== 'upload') throw new Error('Only an upload can be cancelled.');
   if (RUNNING_STATES.includes(receipt.state)) await pauseTransfer(id);

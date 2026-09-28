@@ -1,40 +1,35 @@
+import type * as Api from '../../api/types.gen';
 import type { ObserveEvent, ObserveRequest } from '../../api/types.gen';
 import { client } from '../../api/client.gen';
 import { userActionHeaders } from '../../utils/userAction';
+import type { Loosen, Wire } from './api/parse';
 
-export interface CrewConnection {
-  remote_root?: string;
-  remote_execution: boolean;
-  workspace_public_key: string;
-  public_key: string;
-  device_id: string;
-  id: string;
-  name: string;
-  ssh_target: string;
-  port?: number;
-  identity_file?: string;
-  proxy_jump?: string;
-  socket_path: string;
-  owner_uid: number;
-  workspace_id: string;
-  cluster_connection_id: string;
-  mode: 'private' | 'public';
-  institution_id?: string | null;
-  policy_epoch: number;
-  status: 'disconnected' | 'connected' | 'authentication_required' | 'error';
-  last_error?: string;
-  /**
-   * The typed reason behind `last_error`, when the daemon has one. `crew_membership_ended`: the
-   * workspace refused this computer or its person as no longer a member (Q3-12, Q3-50). The
-   * daemon's keepalive then stops re-dialling it, and the renderer never connects it by itself.
-   */
-  last_error_code?: string;
-  /**
-   * What to call the connection's server on screen (D-ALIAS): the person's own SSH alias for its
-   * address when one maps to it, else the host. Display only; read through `serverLabel`.
-   */
-  server_label?: string;
-}
+// The daemon's own answers are the generated client's types (CROSSCUT-6): a field the daemon
+// renames or retypes fails to compile against the next `npm run generate-api`, which CI runs, rather
+// than reading as absent here.
+
+/** A connection's status as the renderer reads it; the daemon writes `connected` or `disconnected`. */
+export type CrewConnectionStatus =
+  | 'disconnected'
+  | 'connected'
+  | 'authentication_required'
+  | 'error';
+
+/**
+ * A saved connection, as `GET /crew/connections` lists it (`CrewConnectionView`). `last_error_code`
+ * types `last_error` when the daemon has a code for it: `crew_membership_ended`, the workspace
+ * refused this computer or its person as no longer a member (Q3-12, Q3-50), after which the daemon's
+ * keepalive stops re-dialling it and the renderer never connects it by itself. `server_label` is
+ * what to call the server on screen (D-ALIAS), display only and read through `serverLabel`; it is
+ * optional because a daemon from before D-ALIAS does not send it.
+ */
+export type CrewConnection = Loosen<Api.CrewConnectionView, 'server_label'> & {
+  status: CrewConnectionStatus;
+};
+
+/** A code the daemon's Crew routes answer, as its OpenAPI spec declares them. */
+export type CrewErrorCode = Api.CrewErrorCode;
+
 // The snapshot is forwarded by the daemon as an untyped value, so these interfaces are written by
 // hand from docs/research/biorouter-crew/naming-design.md. Every field a broker before S1a/S2a does
 // not send is optional; timestamps are Unix seconds, as the broker writes them.
@@ -301,7 +296,7 @@ export interface CrewRefusalFields {
 /** A host as OpenSSH names one: a name, an address or `[address]:port`, and nothing else. */
 const HOST_SHAPE = /^[A-Za-z0-9._:[\]%-]{1,255}$/;
 
-function refusalFieldsOf(body: Record<string, unknown>): CrewRefusalFields {
+function refusalFieldsOf(body: Wire<Api.CrewError>): CrewRefusalFields {
   const fields: CrewRefusalFields = {};
   if (typeof body.host === 'string' && HOST_SHAPE.test(body.host)) fields.host = body.host;
   const reason = brokerCodeOf(body.reason);
@@ -313,7 +308,7 @@ function refusalFieldsOf(body: Record<string, unknown>): CrewRefusalFields {
   if (expected) fields.expected_mode = expected;
   const refusal = body.institution_refusal;
   if (typeof refusal === 'object' && refusal !== null && !Array.isArray(refusal)) {
-    const record = refusal as Record<string, unknown>;
+    const record = refusal as Wire<Api.CrewInstitutionRefusal>;
     const text = (value: unknown) =>
       typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : undefined;
     const approved = Array.isArray(record.approved_for)
@@ -346,8 +341,8 @@ function connectionIdOf(value: unknown): string | undefined {
 }
 
 function crewHttpErrorFrom(result: unknown, status: number, fallback: string): CrewHttpError {
-  const body =
-    typeof result === 'object' && result !== null ? (result as Record<string, unknown>) : {};
+  const body: Wire<Api.CrewError> =
+    typeof result === 'object' && result !== null ? (result as Wire<Api.CrewError>) : {};
   return new CrewHttpError(
     typeof body.error === 'string' ? body.error : fallback,
     status,
@@ -371,11 +366,75 @@ async function crewHeaders(hasJsonBody: boolean): Promise<Headers> {
   return headers;
 }
 
+/**
+ * The daemon's Crew operations, by the method each is called with, as the generated client names
+ * them. `crewHttp` takes a path only when it fills one of these routes, so a route the daemon
+ * renames or removes fails to compile at every call instead of answering 404 at run time.
+ */
+interface CrewOperations {
+  GET:
+    | Api.CrewListConnectionsData
+    | Api.CrewProfileGrantsData
+    | Api.CrewConnectionInvitationData
+    | Api.CrewConnectionJoinStatusData
+    | Api.CrewListRunsData
+    | Api.CrewProfileContextData
+    | Api.CrewProfileCredentialsData
+    | Api.CrewHostStartStatusData
+    | Api.CrewTransferListData
+    | Api.CrewTransferStatusData;
+  POST:
+    | Api.CrewSaveConnectionData
+    | Api.CrewConnectionFromInvitationData
+    | Api.CrewAuthenticationPlanData
+    | Api.CrewConnectData
+    | Api.CrewDisconnectData
+    | Api.CrewConnectionJoinData
+    | Api.CrewRequestData
+    | Api.CrewStartRunData
+    | Api.CrewCancelRunData
+    | Api.CrewGrantSessionData
+    | Api.CrewProfileRevokeData
+    | Api.CrewProfileInitData
+    | Api.CrewProfileLockData
+    | Api.CrewProfileUnlockData
+    | Api.CrewPrepareDeviceData
+    | Api.CrewHostStartData
+    | Api.CrewResolveData
+    | Api.CrewTransferStartData
+    | Api.CrewTransferPauseData
+    | Api.CrewTransferResumeData;
+  PATCH: Api.CrewUpdateConnectionData;
+  DELETE: Api.CrewRemoveConnectionData | Api.CrewHostStartCancelData | Api.CrewTransferForgetData;
+}
+
+/** A route template with each `{parameter}` filled by one value. */
+type Filled<Path extends string> = Path extends `${infer Head}{${string}}${infer Tail}`
+  ? `${Head}${string}${Filled<Tail>}`
+  : Path;
+/** A `/crew` route as `crewHttp` names it, without its `/crew` prefix. */
+type Relative<Path> = Path extends `/crew${infer Rest}` ? Rest : never;
+/** The paths `crewHttp` sends `method` to: a filled route, with or without a query string. */
+export type CrewPath<M extends keyof CrewOperations> =
+  | Relative<Filled<CrewOperations[M]['url']>>
+  | `${Relative<Filled<CrewOperations[M]['url']>>}?${string}`;
+
+/**
+ * What `crewHttp` takes: a path for one of the daemon's routes, its method (GET when omitted), a
+ * JSON body, and a signal. A path and method that name no route do not compile.
+ */
+export type CrewHttpArguments =
+  | [path: CrewPath<'GET'>, method?: 'GET', body?: undefined, signal?: AbortSignal]
+  | [path: CrewPath<'POST'>, method: 'POST', body?: unknown, signal?: AbortSignal]
+  | [path: CrewPath<'PATCH'>, method: 'PATCH', body?: unknown, signal?: AbortSignal]
+  | [path: CrewPath<'DELETE'>, method: 'DELETE', body?: unknown, signal?: AbortSignal];
+
+/**
+ * Call a daemon Crew route with the daemon secret and the person's `X-User-Action` proof. A refusal
+ * throws a `CrewHttpError` carrying its code and typed fields.
+ */
 export async function crewHttp<T>(
-  path: string,
-  method = 'GET',
-  body?: unknown,
-  signal?: AbortSignal
+  ...[path, method = 'GET', body, signal]: CrewHttpArguments
 ): Promise<T> {
   const config = client.getConfig();
   const headers = await crewHeaders(body !== undefined);
@@ -415,15 +474,12 @@ export function crewRequest<T>(
   );
 }
 
-export interface ObservedRun {
-  run_id: string;
-  channel_id: string;
-  session_id: string;
-  status: string;
-  error?: string;
-  /** When this device admitted the task, in Unix milliseconds. Absent for an older run. */
-  started_at?: number;
-}
+/**
+ * One of this computer's tasks, as a `state` frame and `GET …/runs` list it (`RunView`).
+ * `started_at` (Unix milliseconds) is absent for a run recorded before it was kept. The renderer
+ * reads a run under the connection it observes, so it never needs the run's `connection_id`.
+ */
+export type ObservedRun = Loosen<Api.RunView, 'connection_id'>;
 // The generated union owns the wire contract; these refinements describe validated payloads.
 type ObservationPayload<T> = T extends { type: 'state' }
   ? Omit<T, 'snapshot' | 'runs' | 'labels' | 'capabilities'> & {

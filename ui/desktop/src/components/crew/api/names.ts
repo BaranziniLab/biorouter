@@ -1,6 +1,7 @@
+import type * as Api from '../../../api/types.gen';
 import { crewHttp } from '../crewApi';
 import { outdatedDaemonResponse, unexpectedCrewResponse } from './errors';
-import { isRecord, optionalText, stringArray } from './parse';
+import { optionalText, stringArray, wireOf } from './parse';
 
 // The daemon's name resolver (S1b, D7): `POST /crew/resolve`. It resolves against the person's own
 // workspace snapshot, so it can never name something the person cannot see. The resolver is a
@@ -14,7 +15,7 @@ import { isRecord, optionalText, stringArray } from './parse';
  * selector of that kind with 400 `crew_invalid_selector`. The kind is therefore neither sent nor
  * accepted in an answer.
  */
-export type CrewSelectorKind = 'person' | 'former_person' | 'team' | 'channel' | 'connection';
+export type CrewSelectorKind = Exclude<WireResolution['kind'], 'attachment'>;
 
 const SELECTOR_KINDS: readonly string[] = [
   'person',
@@ -22,7 +23,10 @@ const SELECTOR_KINDS: readonly string[] = [
   'team',
   'channel',
   'connection',
-];
+] satisfies CrewSelectorKind[];
+
+/** One resolution, as the daemon's spec declares it (`ResolveResponse.results`). */
+type WireResolution = Api.ResolveResponse['results'][number];
 
 export interface CrewSelector {
   /** Omit to let the grammar decide: `@bob` is a person, `team/channel` a channel. */
@@ -71,8 +75,9 @@ export interface CrewResolveResult {
   results: CrewResolution[];
 }
 
-function resolutionFrom(value: unknown): CrewResolution | null {
-  if (!isRecord(value)) return null;
+function resolutionFrom(wire: unknown): CrewResolution | null {
+  const value = wireOf<WireResolution>(wire);
+  if (!value) return null;
   const kind = value.kind;
   const text = value.text;
   if (typeof kind !== 'string' || !SELECTOR_KINDS.includes(kind) || typeof text !== 'string')
@@ -122,15 +127,16 @@ export async function resolve(
     connection === undefined ? { selectors } : { connection, selectors },
     signal
   );
-  if (!isRecord(result)) throw outdatedDaemonResponse();
-  if (!Array.isArray(result.results) || result.results.length !== selectors.length)
+  const answer = wireOf<Api.ResolveResponse>(result);
+  if (!answer) throw outdatedDaemonResponse();
+  if (!Array.isArray(answer.results) || answer.results.length !== selectors.length)
     throw unexpectedCrewResponse('a name lookup');
-  const results = result.results.map(resolutionFrom);
+  const results = answer.results.map(resolutionFrom);
   if (results.some((resolution) => resolution === null))
     throw unexpectedCrewResponse('a name lookup');
   let resolvedConnection: CrewResolution | null = null;
   if (connection !== undefined) {
-    resolvedConnection = resolutionFrom(result.connection);
+    resolvedConnection = resolutionFrom(answer.connection);
     if (!resolvedConnection || resolvedConnection.kind !== 'connection')
       throw unexpectedCrewResponse('a name lookup');
   }
