@@ -17,11 +17,11 @@ pub use invitation::{
 };
 pub use names::{
     canonical_channel_name, clean, display_name_claims_username, display_name_valid,
-    is_default_ignorable, is_uuid_shaped, name_key, names_collide, restriction_level_ok,
-    sanitize_channel_name, sanitize_display_name, sanitize_team_name, skeleton_key,
-    strip_ignorable, team_handle, valid_username, validate_display_name, validate_display_name_for,
-    validate_team_name, validate_workspace_name, workspace_name_valid, NameError, NameKind,
-    NameProblem,
+    hidden_in_shared_name, is_default_ignorable, is_uuid_shaped, name_key, names_collide,
+    restriction_level_ok, sanitize_channel_name, sanitize_display_name, sanitize_team_name,
+    shared_name_shows_every_character, skeleton_key, strip_ignorable, team_handle, valid_username,
+    validate_display_name, validate_display_name_for, validate_team_name, validate_workspace_name,
+    workspace_name_valid, NameError, NameKind, NameProblem,
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;

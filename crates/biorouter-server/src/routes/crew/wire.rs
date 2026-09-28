@@ -148,6 +148,7 @@ pub enum CrewErrorCode {
     CrewTransferRefused,
     CrewFileIsCredential,
     CrewFileNameHidden,
+    CrewFileNameInvisible,
     CrewFolderShared,
     CrewDestinationIsFolder,
     CrewDestinationExists,

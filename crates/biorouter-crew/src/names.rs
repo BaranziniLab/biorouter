@@ -544,6 +544,31 @@ pub fn workspace_name_valid(name: &str) -> bool {
     validate_workspace_name(name).is_ok()
 }
 
+/// Whether `c` may not appear in the name of a file shared in a workspace, or a reference's
+/// label (T3-BE-10, T3-BE-11): a character that hides, reorders or spoofs the text around it
+/// (general category Cc, Cf, Zl or Zp), or one that renders as nothing or as a blank the eye
+/// skips: every `Default_Ignorable_Code_Point` (zero-width characters, variation selectors, the
+/// Hangul fillers U+115F, U+1160, U+3164 and U+FFA0) and U+2800 BRAILLE PATTERN BLANK. A run of
+/// fillers pushed a file's real extension (`q3-report.pdf…….command`) off every card that shows
+/// it. Message bodies are not judged by this rule.
+pub fn hidden_in_shared_name(c: char) -> bool {
+    matches!(
+        c.general_category(),
+        GeneralCategory::Control
+            | GeneralCategory::Format
+            | GeneralCategory::LineSeparator
+            | GeneralCategory::ParagraphSeparator
+    ) || is_default_ignorable(c)
+        || c == '\u{2800}'
+}
+
+/// Whether every character of `name` shows as itself ([`hidden_in_shared_name`]): what the
+/// broker requires of a new attachment's name and a reference's label, and what the daemon
+/// checks before it records a transfer.
+pub fn shared_name_shows_every_character(name: &str) -> bool {
+    !name.chars().any(hidden_in_shared_name)
+}
+
 /// A character that renders as nothing or as a control: general category Cc, Cf, Co, Cs, Cn,
 /// Zl or Zp, or `Default_Ignorable_Code_Point`.
 fn is_invisible(c: char) -> bool {

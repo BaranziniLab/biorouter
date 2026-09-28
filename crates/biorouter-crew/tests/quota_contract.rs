@@ -188,13 +188,40 @@ fn free_text_fields_are_bounded_and_printable() {
         ("téxt/plain".to_owned(), "x".to_owned()),
         ("text/plain".to_owned(), "report\u{202e}fdp.exe".to_owned()),
         ("text/plain".to_owned(), "a\u{200b}b".to_owned()),
+        ("text/plain".to_owned(), "x".repeat(256)),
     ] {
         let (code, _) = refused(ws.host_call("blob.begin", begin(&media_type, &name)));
         assert_eq!(code, "invalid_params", "{name:?}");
     }
+    // T3-BE-11: blank-looking characters that are not "format" characters hide a file's real
+    // extension just as well: Hangul fillers (letters that render as nothing), the braille
+    // blank, and every other default-ignorable character.
+    for filler in [
+        '\u{3164}', '\u{115F}', '\u{1160}', '\u{FFA0}', '\u{2800}', '\u{FE0F}', '\u{00AD}',
+    ] {
+        let name = format!("q3-report.pdf{}.command", filler.to_string().repeat(60));
+        let (code, message) = refused(ws.host_call("blob.begin", begin("text/plain", &name)));
+        assert_eq!(code, "invalid_params", "{filler:?}");
+        // T3-BE-10: the refusal reads as a sentence a person can act on.
+        assert_eq!(
+            message,
+            "invalid_params: This file's name has an invisible or formatting character. Rename the file, then share it again.",
+            "{filler:?}"
+        );
+    }
+    let (_, message) = refused(ws.host_call("blob.begin", begin("text/plain", &"x".repeat(256))));
+    assert_eq!(
+        message,
+        "invalid_params: This file's name is longer than 255 bytes. Rename the file, then share it again."
+    );
     ws.host_ok(
         "blob.begin",
         begin("text/csv; charset=utf-8", "results.csv"),
+    );
+    // Names in any script, with spaces and punctuation, are shown as themselves.
+    ws.host_ok(
+        "blob.begin",
+        begin("text/plain", "résumé 日本語 (final) – v2 📁.txt"),
     );
 
     let mut run = run_params(&ws, &general);
@@ -218,6 +245,8 @@ fn free_text_fields_are_bounded_and_printable() {
         (format!("/{}", "p".repeat(4_096)), "data"),
         ("/data/set".to_owned(), "da\u{200b}ta"),
         ("/data/set".to_owned(), "data\u{2028}"),
+        ("/data/set".to_owned(), "data\u{3164}\u{3164}.sh"),
+        ("/data/set".to_owned(), "data\u{2800}"),
     ] {
         let (code, _) = refused(ws.host_call(
             "reference.create",
@@ -225,6 +254,14 @@ fn free_text_fields_are_bounded_and_printable() {
         ));
         assert_eq!(code, "invalid_params", "{path:?} {label:?}");
     }
+    let (_, message) = refused(ws.host_call(
+        "reference.create",
+        json!({"channel_id": general, "path": "/data/set", "label": "set\u{115F}"}),
+    ));
+    assert_eq!(
+        message,
+        "invalid_params: This reference's label has an invisible or formatting character. Choose another label."
+    );
     ws.host_ok(
         "reference.create",
         json!({"channel_id": general, "path": "/data/set 1/\"quoted\" 📁", "label": "Set 1"}),

@@ -4149,7 +4149,7 @@
             }
           },
           "400": {
-            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when the connection is in the other privacy mode than the one sent",
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_file_name_invisible` (a file to share whose name has an invisible or formatting character, or a blank-looking one such as a Hangul filler; rename it), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when the connection is in the other privacy mode than the one sent",
             "content": {
               "application/json": {
                 "schema": {
@@ -11329,6 +11329,7 @@
           "crew_transfer_refused",
           "crew_file_is_credential",
           "crew_file_name_hidden",
+          "crew_file_name_invisible",
           "crew_folder_shared",
           "crew_destination_is_folder",
           "crew_destination_exists",

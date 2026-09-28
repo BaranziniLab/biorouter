@@ -455,6 +455,31 @@ pub const DESTINATION_IS_FOLDER_CODE: &str = "crew_destination_is_folder";
 pub const DESTINATION_EXISTS_CODE: &str = "crew_destination_exists";
 /// The code `POST /crew/files` answers [`SelectionRefusal::Program`] with.
 pub const FILE_IS_PROGRAM_CODE: &str = "crew_file_is_program";
+/// The code `POST /crew/files` answers [`SelectionRefusal::InvisibleName`] with.
+pub const FILE_NAME_INVISIBLE_CODE: &str = "crew_file_name_invisible";
+
+/// A file to share whose name has a character the workspace refuses in a shared name
+/// (`biorouter_crew::hidden_in_shared_name`: a control, format or separator character, anything
+/// default-ignorable, a Hangul filler or the braille blank), with each such character shown as
+/// U+FFFD so the sentence shows where it is and cannot be reordered or hidden by it.
+fn shown_name(name: &str) -> String {
+    let shown: String = name
+        .chars()
+        .map(|c| {
+            if biorouter_crew::hidden_in_shared_name(c) {
+                '\u{FFFD}'
+            } else {
+                c
+            }
+        })
+        .take(255)
+        .collect();
+    if shown.trim().is_empty() {
+        "This file".into()
+    } else {
+        shown
+    }
+}
 
 /// A download destination refused for a reason other than credentials, named so the person
 /// knows what to change (FILES-F3, FILES-F9).
@@ -478,6 +503,10 @@ pub enum SelectionRefusal {
     Exists { name: String },
     /// Q4-55 rule (d): the destination is a program, which a replacement would take over.
     Program { name: String },
+    /// A file to share whose name the workspace would refuse, because a character in it is
+    /// invisible, reorders the text or shows as a blank (T3-BE-10). Refused here, before any
+    /// transfer is recorded; `name` is already [`shown_name`]'s.
+    InvisibleName { name: String },
 }
 
 impl SelectionRefusal {
@@ -489,6 +518,7 @@ impl SelectionRefusal {
             Self::Folder { .. } => DESTINATION_IS_FOLDER_CODE,
             Self::Exists { .. } => DESTINATION_EXISTS_CODE,
             Self::Program { .. } => FILE_IS_PROGRAM_CODE,
+            Self::InvisibleName { .. } => FILE_NAME_INVISIBLE_CODE,
         }
     }
 
@@ -528,6 +558,10 @@ impl std::fmt::Display for SelectionRefusal {
             Self::Program { name } => write!(
                 f,
                 "\u{201c}{name}\u{201d} is a program, and Crew won't replace one. Choose another name."
+            ),
+            Self::InvisibleName { name } => write!(
+                f,
+                "\u{201c}{name}\u{201d} has an invisible or formatting character in its name. Rename the file, then share it again."
             ),
         }
     }
@@ -1214,6 +1248,15 @@ fn select_local(
             let stamp = Stamp::read(&file)?;
             if holds_credential_material(&file)? {
                 return Err(CredentialRefusal::source(path).into());
+            }
+            // The workspace refuses such a name only once the upload has started; refused here,
+            // it never becomes a transfer that fails (T3-BE-10). After the credential checks, so
+            // a credential file is always named as one, whatever its name hides.
+            if !biorouter_crew::shared_name_shows_every_character(&name) {
+                return Err(SelectionRefusal::InvisibleName {
+                    name: shown_name(&name),
+                }
+                .into());
             }
             Ok(Selection::Source { file, stamp, name })
         }
@@ -2567,6 +2610,60 @@ mod settings_destination_tests {
                 drives
             )
             .0
+        );
+    }
+}
+
+/// T3-BE-10: a file whose name the workspace would refuse is refused when it is chosen, with a
+/// sentence and its own code, before any capability or transfer is recorded for it. The
+/// workspace used to refuse it only once the upload had started, as "Attachment display name.",
+/// after the transfer's receipt already existed.
+#[cfg(all(test, unix))]
+mod shared_name_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn a_file_whose_name_hides_characters_is_refused_when_chosen() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        // The folder as it really is: macOS's temporary folder is reached through a link.
+        let folder = temporary.path().canonicalize().unwrap();
+        for (name, shown) in [
+            (
+                format!("q3-report.pdf{}.command", "\u{3164}".repeat(3)),
+                "q3-report.pdf\u{FFFD}\u{FFFD}\u{FFFD}.command".to_owned(),
+            ),
+            (
+                "invoice\u{202e}fdp.sh".to_owned(),
+                "invoice\u{FFFD}fdp.sh".to_owned(),
+            ),
+            ("a\u{200b}b.csv".to_owned(), "a\u{FFFD}b.csv".to_owned()),
+            (
+                "blank\u{2800}.txt".to_owned(),
+                "blank\u{FFFD}.txt".to_owned(),
+            ),
+        ] {
+            let path = folder.join(&name);
+            fs::write(&path, "sample,signal\n").unwrap();
+            let error = match select(&path, Direction::Upload, false) {
+                Ok(_) => panic!("{name:?} was chosen"),
+                Err(error) => error,
+            };
+            let refusal = error
+                .downcast_ref::<SelectionRefusal>()
+                .unwrap_or_else(|| panic!("{name:?}: {error:#}"));
+            assert_eq!(refusal.code(), FILE_NAME_INVISIBLE_CODE);
+            assert_eq!(
+                refusal.to_string(),
+                format!("\u{201c}{shown}\u{201d} has an invisible or formatting character in its name. Rename the file, then share it again.")
+            );
+        }
+        // A name in any script, with spaces and punctuation, is chosen as it is.
+        let path = folder.join("résumé 日本語 (final) – v2.txt");
+        fs::write(&path, "sample,signal\n").unwrap();
+        assert_eq!(
+            select(&path, Direction::Upload, false).unwrap().name(),
+            "résumé 日本語 (final) – v2.txt"
         );
     }
 }

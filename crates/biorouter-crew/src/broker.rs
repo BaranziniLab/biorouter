@@ -4304,8 +4304,7 @@ impl Broker {
                     < self.quotas.member_references,
             "quota_exceeded: You have created as many remote references as one member may."
         );
-        let label = display_text(p, "label", 255)
-            .map_err(|_| anyhow!("invalid_params: reference label"))?;
+        let label = shared_name(p, "label", SharedName::Label)?;
         let reference = RemoteReference {
             id: id(),
             channel_id: channel.into(),
@@ -4365,8 +4364,7 @@ impl Broker {
             sha.len() == 64 && hex::decode(sha)?.len() == 32,
             "invalid_params: sha256"
         );
-        let name = display_text(p, "name", 255)
-            .map_err(|_| anyhow!("invalid_params: attachment display name"))?;
+        let name = shared_name(p, "name", SharedName::File)?;
         let media_type = text(p, "media_type")?;
         ensure!(
             media_type.len() <= 255 && media_type.bytes().all(|b| (0x20..0x7f).contains(&b)),
@@ -4705,6 +4703,39 @@ fn display_text<'a>(p: &'a Value, key: &str, max_bytes: usize) -> Result<&'a str
                     | GeneralCategory::ParagraphSeparator
             )),
         "invalid_params: {key} must be 1 to {max_bytes} bytes without control or invisible formatting characters"
+    );
+    Ok(value)
+}
+
+/// What a [`shared_name`] names, for its refusal.
+#[derive(Clone, Copy)]
+enum SharedName {
+    /// A new attachment's name.
+    File,
+    /// A reference's label.
+    Label,
+}
+
+/// `p[key]`, the name a new attachment is shown by or a reference's label: 1 to 255 bytes, and
+/// every character shown as itself (`hidden_in_shared_name`: no control, format or separator
+/// character, nothing default-ignorable, no Hangul filler or braille blank), so no name can hide
+/// its real extension or pass for another (T3-BE-11). Each refusal is a sentence a person can
+/// act on (T3-BE-10); it used to be `invalid_params: attachment display name`, which clients
+/// printed as "Attachment display name.". Names already stored are not judged again.
+fn shared_name<'a>(p: &'a Value, key: &str, what: SharedName) -> Result<&'a str> {
+    const MAX_BYTES: usize = 255;
+    let value = text(p, key)?;
+    let (subject, fix) = match what {
+        SharedName::File => ("This file's name", "Rename the file, then share it again."),
+        SharedName::Label => ("This reference's label", "Choose another label."),
+    };
+    ensure!(
+        value.len() <= MAX_BYTES,
+        "invalid_params: {subject} is longer than {MAX_BYTES} bytes. {fix}"
+    );
+    ensure!(
+        shared_name_shows_every_character(value),
+        "invalid_params: {subject} has an invisible or formatting character. {fix}"
     );
     Ok(value)
 }
