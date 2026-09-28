@@ -151,6 +151,27 @@ fn failure_body(error: &anyhow::Error, message: &str, request_id: &str) -> Value
     body
 }
 
+/// A failure already said in words for a person, naming what the command knew about it
+/// ([`Api::worded`]). The failure it words is its source, so JSON output keeps the daemon's and
+/// the broker's codes; text output prints only the words.
+#[derive(Debug)]
+struct Worded {
+    sentence: String,
+    source: anyhow::Error,
+}
+
+impl std::fmt::Display for Worded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.sentence)
+    }
+}
+
+impl std::error::Error for Worded {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
 /// A watch the daemon's observer ended: the sentence for a person, and the observer's code
 /// and `clear` for JSON output.
 #[derive(Debug)]
@@ -188,22 +209,25 @@ fn needs_a_terminal(sentence: impl Into<String>) -> anyhow::Error {
 /// the same way, with what to run, then the code the manual's table is keyed on and OpenSSH's
 /// own words (CLI-7), instead of the transport's internal text.
 fn error_text(error: &anyhow::Error) -> String {
-    error
-        .chain()
-        .map(|cause| {
-            if let Some((code, message)) = broker_refusal(cause) {
-                return output::broker_refusal_text(code, message);
-            }
-            if let Some(sentence) = daemon_outcome_sentence(cause) {
-                return sentence;
-            }
+    let mut parts = Vec::new();
+    for cause in error.chain() {
+        // Already worded with everything the command knew: what it words is not said again.
+        if let Some(worded) = cause.downcast_ref::<Worded>() {
+            parts.push(worded.sentence.clone());
+            break;
+        }
+        parts.push(if let Some((code, message)) = broker_refusal(cause) {
+            output::broker_refusal_text(code, message)
+        } else if let Some(sentence) = daemon_sentence(cause) {
+            sentence
+        } else {
             match connect_failure(cause) {
                 Some((code, sentence, detail)) => connect_failure_lines(code, sentence, detail),
                 None => cause.to_string(),
             }
-        })
-        .collect::<Vec<_>>()
-        .join(": ")
+        });
+    }
+    parts.join(": ")
 }
 
 /// A refused connect the daemon typed: its code, the sentence for it, and OpenSSH's words.
@@ -341,6 +365,7 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
         interactive: std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         poll: JOIN_POLL,
         connection_id: tokio::sync::OnceCell::new(),
+        channel_labels: std::sync::Mutex::default(),
     };
     run(&api, command).await?.print(api.format)
 }
@@ -465,26 +490,70 @@ fn outcome_uncertain(error: &anyhow::Error) -> bool {
     }
 }
 
-/// A daemon refusal whose own sentence is what a person needs, without the `Daemon returned
-/// N:` prefix: an outcome the daemon could not confirm (the retry line follows it), and a
-/// request it never sent.
-fn daemon_outcome_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> {
+/// A daemon refusal said for a person without the `Daemon returned N:` prefix: an outcome the
+/// daemon could not confirm (the retry line follows it), a request it never sent, and the
+/// institution and privacy-mode refusals (W2-DMN-9), said from their details, naming both sides.
+fn daemon_sentence(cause: &(dyn std::error::Error + 'static)) -> Option<String> {
     let (code, message) = refusal_code_and_message(cause)?;
+    let own = || {
+        Some(message.trim())
+            .filter(|message| !message.is_empty())
+            .map(str::to_owned)
+    };
     match code {
         NOT_SENT => Some("Nothing was sent; run it again.".to_owned()),
-        OUTCOME_UNKNOWN => Some(
-            Some(message.trim())
-                .filter(|message| !message.is_empty())
-                .map_or_else(
-                    || {
-                        "Crew couldn't confirm whether this reached the workspace. Check the channel before you retry."
-                            .to_owned()
-                    },
-                    str::to_owned,
-                ),
-        ),
+        OUTCOME_UNKNOWN => Some(own().unwrap_or_else(|| {
+            "Crew couldn't confirm whether this reached the workspace. Check the channel before you retry."
+                .to_owned()
+        })),
+        INSTITUTION_MISMATCH => {
+            let details = refusal_institution_details(cause);
+            match details.and_then(|details| details["model"].as_str()) {
+                Some(model) => Some(output::institution_refusal_text(model, details)),
+                None => own(),
+            }
+        }
+        MODE_MISMATCH => match refusal_modes(cause) {
+            Some((actual, expected)) => Some(output::mode_mismatch_text(actual, expected)),
+            None => own(),
+        },
         _ => None,
     }
+}
+
+/// The daemon's code for an institution refusal on any route (W2-DMN-9 a).
+const INSTITUTION_MISMATCH: &str = "crew_institution_mismatch";
+/// The daemon's code for a request whose `--expected-mode` is not the connection's (W2-DMN-9 e).
+const MODE_MISMATCH: &str = "crew_mode_mismatch";
+
+/// An institution refusal's details: the model, who approved it, the workspace and its
+/// institution.
+fn refusal_institution_details<'a>(
+    cause: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a Value> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return refused.institution_refusal.as_ref();
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return refused.institution_refusal.as_ref();
+    }
+    None
+}
+
+/// A privacy-mode refusal's connection mode and the mode the request required.
+fn refusal_modes<'a>(cause: &'a (dyn std::error::Error + 'static)) -> Option<(&'a str, &'a str)> {
+    if let Some(refused) = cause.downcast_ref::<DaemonRefusal>() {
+        return refused.modes();
+    }
+    #[cfg(test)]
+    if let Some(refused) = cause.downcast_ref::<tests::FakeRefusal>() {
+        return refused
+            .modes
+            .as_ref()
+            .map(|(actual, expected)| (actual.as_str(), expected.as_str()));
+    }
+    None
 }
 
 /// A daemon refusal's code and its own text.
@@ -821,6 +890,9 @@ struct Api {
     interactive: bool,
     poll: Duration,
     connection_id: tokio::sync::OnceCell<String>,
+    /// Each channel a selector named, by ID, as the resolver labelled it (`#methods`): what a
+    /// refusal about that channel names.
+    channel_labels: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl Api {
@@ -947,7 +1019,132 @@ impl Api {
             params["idempotency_key"] = json!(self.request_id);
         }
         let body = json!({"method":method,"params":params,"request_id":if mutation {Some(&self.request_id)} else {None}});
-        self.connection_action("request", body).await
+        let answer = self.connection_action("request", body).await;
+        self.worded(answer, &params).await
+    }
+
+    /// A broker read that is only a lookup for a refusal's words: never worded itself.
+    async fn lookup(&self, method: &str, params: Value) -> Option<Value> {
+        let body = json!({"method":method,"params":params,"request_id":null});
+        self.connection_action("request", body).await.ok()
+    }
+
+    /// A refusal that can name more than its own text (DW-11, M20, R-2, FILES-F9), said with
+    /// what this command knows: the channel it acted on, where a shared file came from, and for
+    /// a server that can no longer save, whether the person hosts it. The refusal stays behind
+    /// the words, so JSON output keeps its codes. Any other answer is returned as it is.
+    async fn worded(&self, answer: Result<Value>, params: &Value) -> Result<Value> {
+        let error = match answer {
+            Ok(value) => return Ok(value),
+            Err(error) => error,
+        };
+        let Some((code, message)) = error
+            .chain()
+            .find_map(broker_refusal)
+            .map(|(code, message)| (code.to_owned(), message.to_owned()))
+        else {
+            return Err(error);
+        };
+        let Some(subject) = output::refusal_subject(&code, &message) else {
+            return Err(error);
+        };
+        let place = self.refusal_place(subject, params).await;
+        if place == output::RefusalPlace::default() {
+            return Err(error);
+        }
+        Err(Worded {
+            sentence: output::broker_refusal_text_in(&code, &message, &place),
+            source: error,
+        }
+        .into())
+    }
+
+    /// What `subject` needs named, as far as this command can read it.
+    async fn refusal_place(
+        &self,
+        subject: output::RefusalSubject,
+        params: &Value,
+    ) -> output::RefusalPlace {
+        let mut place = output::RefusalPlace::default();
+        match subject {
+            output::RefusalSubject::Channel => {
+                if let Some(id) = params["channel_id"].as_str() {
+                    place.channel = self.channel_label(id).await;
+                }
+            }
+            output::RefusalSubject::SharedIn(kind) => {
+                place.shared_in = self.shared_in(kind, params).await;
+            }
+            output::RefusalSubject::Storage => {
+                // Reading still works on a server that can no longer save.
+                if let Some(snapshot) = self.lookup("workspace.snapshot", json!({})).await {
+                    let directory = Directory::from_snapshot(&snapshot);
+                    place.host = match host_standing(&snapshot, None) {
+                        HostStanding::NotHost => Some(false),
+                        HostStanding::Unknown => None,
+                        _ => Some(true),
+                    };
+                    place.host_label = output::host_label(&directory);
+                }
+                if let Ok(connection) = self.connection().await {
+                    // The server, not the login: `bob@hpc.ucsf.edu` is on `hpc.ucsf.edu`.
+                    place.server = connection["server_label"]
+                        .as_str()
+                        .or_else(|| {
+                            connection["ssh_target"]
+                                .as_str()
+                                .and_then(|target| target.rsplit('@').next())
+                        })
+                        .map(str::trim)
+                        .filter(|server| !server.is_empty())
+                        .map(safe_text);
+                }
+            }
+        }
+        place
+    }
+
+    /// `#methods` for a channel ID: the resolver's label, else the person's snapshot. `None`
+    /// when neither names it.
+    async fn channel_label(&self, id: &str) -> Option<String> {
+        let known = self
+            .channel_labels
+            .lock()
+            .ok()
+            .and_then(|labels| labels.get(id).cloned());
+        if let Some(label) = known {
+            return Some(name_text(&label));
+        }
+        let snapshot = self.lookup("workspace.snapshot", json!({})).await?;
+        Some(Directory::from_snapshot(&snapshot).channel_label(id))
+            .filter(|label| label.starts_with('#'))
+    }
+
+    /// The channel the first attachment or reference in `params` from another channel was
+    /// shared in (FILES-F9), named from the person's snapshot.
+    async fn shared_in(&self, kind: output::SharedKind, params: &Value) -> Option<String> {
+        let (key, method, field) = match kind {
+            output::SharedKind::Attachment => ("attachments", "blob.status", "blob_id"),
+            output::SharedKind::Reference => ("references", "reference.get", "reference_id"),
+        };
+        let destination = params["channel_id"].as_str();
+        for id in params[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let Some(shared) = self.lookup(method, json!({ field: id })).await else {
+                continue;
+            };
+            match shared["channel_id"].as_str() {
+                Some(channel) if Some(channel) != destination => {
+                    return self.channel_label(channel).await;
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Step `step` of a command that makes several mutations: each gets its own idempotency
@@ -961,7 +1158,8 @@ impl Api {
         let key = format!("{}:{step}", self.request_id);
         params["idempotency_key"] = json!(key);
         let body = json!({"method":method,"params":params,"request_id":key});
-        self.connection_action("request", body).await
+        let answer = self.connection_action("request", body).await;
+        self.worded(answer, &params).await
     }
 
     async fn snapshot(&self) -> Result<Value> {
@@ -1053,7 +1251,14 @@ impl Api {
             for (&index, result) in lookups.iter().zip(results) {
                 let (kind, text) = selectors[index];
                 match target_from(kind, text, result) {
-                    Ok(target) => targets[index] = Some(target),
+                    Ok(target) => {
+                        if let (Kind::Channel, Some(label), Ok(mut labels)) =
+                            (kind, target.label.as_deref(), self.channel_labels.lock())
+                        {
+                            labels.insert(target.id.clone(), label.to_owned());
+                        }
+                        targets[index] = Some(target);
+                    }
                     Err(problem) => problems.push(problem),
                 }
             }
@@ -3444,8 +3649,12 @@ fn institution_refusal(error: anyhow::Error, requested_model: &str) -> anyhow::E
         }
         None
     });
+    // A daemon that types the refusal (`crew_institution_mismatch`) is said by the failure path
+    // from its details, keeping that code; this rewords only an older daemon's sentence.
+    let typed =
+        refusal(&error).and_then(|refused| refused.code).as_deref() == Some(INSTITUTION_MISMATCH);
     match found {
-        Some((message, details)) if message.contains(AFFILIATION_REFUSAL) => restated(
+        Some((message, details)) if !typed && message.contains(AFFILIATION_REFUSAL) => restated(
             output::institution_refusal_text(requested_model, details.as_ref()),
             Some("crew_request_refused"),
         ),
@@ -3813,6 +4022,7 @@ mod tests {
         pub(super) institution_refusal: Option<Value>,
         pub(super) message: String,
         pub(super) detail: Option<String>,
+        pub(super) modes: Option<(String, String)>,
     }
 
     impl std::fmt::Display for FakeRefusal {
@@ -3835,6 +4045,7 @@ mod tests {
             institution_refusal: None,
             message: message.to_owned(),
             detail: None,
+            modes: None,
         }
         .into()
     }
@@ -3849,6 +4060,7 @@ mod tests {
             institution_refusal: None,
             message: message.to_owned(),
             detail: None,
+            modes: None,
         }
         .into()
     }
@@ -3976,6 +4188,7 @@ mod tests {
             interactive: false,
             poll: Duration::ZERO,
             connection_id: tokio::sync::OnceCell::new(),
+            channel_labels: std::sync::Mutex::default(),
         };
         (api, fake)
     }
@@ -4077,10 +4290,7 @@ mod tests {
             fake.broker_call("membership.revoke").expect("remove"),
             json!({"channel_id": METHODS, "principal_id": BOB, "expected_username": "bob", "idempotency_key": "req-1"})
         );
-        assert_eq!(
-            lines,
-            ["Removed \"\u{2068}Bob Lee\u{2069}\" (@bob) from #methods."]
-        );
+        assert_eq!(lines, ["Removed \"Bob Lee\" (@bob) from #methods."]);
         assert!(
             !lines.iter().any(|line| line.contains(BOB)),
             "no ID by default"
@@ -4121,7 +4331,7 @@ mod tests {
                 fake.broker_call("invitation.create").expect("invite"),
                 json!({"kind": kind, "target_id": target, "principal_id": BOB, "expected_username": "bob", "idempotency_key": "req-1"})
             );
-            assert!(lines[0].starts_with("Invited \"\u{2068}Bob Lee\u{2069}\" (@bob) to "));
+            assert!(lines[0].starts_with("Invited \"Bob Lee\" (@bob) to "));
         }
 
         let (api, fake) = api_with(OutputFormat::Json, standard);
@@ -4405,7 +4615,7 @@ mod tests {
         );
         assert_eq!(
             lines,
-            ["Revoked \"\u{2068}Bob Lee\u{2069}\" (@bob). Their membership, devices and agent grants no longer work."]
+            ["Revoked \"Bob Lee\" (@bob). Their membership, devices and agent grants no longer work."]
         );
 
         assert_eq!(
@@ -4646,9 +4856,7 @@ mod tests {
             .expect("pasted")
             .contains("brcrew1:abc"));
         assert!(bodies[1].get("advanced").is_none());
-        assert!(lines.contains(
-            &"  Hosted by \"\u{2068}Alice Chen\u{2069}\" (@alice) on hpc.ucsf.edu".to_owned()
-        ));
+        assert!(lines.contains(&"  Hosted by \"Alice Chen\" (@alice) on hpc.ucsf.edu".to_owned()));
         assert!(lines.contains(&"  Workspace privacy: Private · ucsf".to_owned()));
         assert!(lines.contains(&"  You'll join as Private · ucsf.".to_owned()));
         assert_eq!(
@@ -4829,7 +5037,7 @@ mod tests {
         assert_eq!(
             join_lines(&status, false),
             [
-                "\"\u{2068}Alice Chen\u{2069}\" (@alice) invited you to lab.",
+                "\"Alice Chen\" (@alice) invited you to lab.",
                 "Send Alice this code: 7QK2-M9XA-3JTP-WZ4D"
             ]
         );
@@ -4842,7 +5050,7 @@ mod tests {
         let expired = |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
             if path.ends_with("/join") {
                 return Ok(
-                    json!({"status": "expired", "inviter": {"username": "alice", "display_name": "Alice Chen"}}),
+                    json!({"status": "expired", "inviter": {"username": "alice", "display_name": "Alice Chén"}}),
                 );
             }
             standard(method, path, body)
@@ -4853,12 +5061,12 @@ mod tests {
             .expect_err("expired");
         assert!(message(&error).starts_with("This invitation expired. Ask "));
 
-        // CLI-4: the isolates the CLI put around the name reach the terminal as isolates, and
-        // the JSON error carries the same sentence, never the escape text.
+        // CLI-4: the isolates the CLI put around a name that is not ASCII reach the terminal
+        // as isolates, and the JSON error carries the same sentence, never the escape text.
         let shown = failure(&error, OutputFormat::Text, "req-1", false).to_string();
         assert_eq!(
             shown,
-            "This invitation expired. Ask \"\u{2068}Alice Chen\u{2069}\" (@alice) to invite you again."
+            "This invitation expired. Ask \"\u{2068}Alice Chén\u{2069}\" (@alice) to invite you again."
         );
         let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
         assert!(!body["error"].as_str().unwrap().contains("\\u{"), "{body}");
@@ -5555,6 +5763,7 @@ mod tests {
                         institution_refusal: details.clone(),
                         message: DAEMON.into(),
                         detail: None,
+                        modes: None,
                     }
                     .into());
                 }
@@ -5820,6 +6029,7 @@ mod tests {
                     detail: Some(
                         "bob@hpc: Permission denied (publickey,password).\nsecond line".into(),
                     ),
+                    modes: None,
                 }
                 .into());
             }
@@ -5863,6 +6073,212 @@ mod tests {
             failure(&other, OutputFormat::Text, "req-1", false).to_string(),
             "Daemon returned 404: No such connection."
         );
+    }
+
+    /// A daemon whose broker refuses `method` with `code: text`, as a daemon with `broker_code`
+    /// forwards it; `blob.status` places every attachment in #general.
+    fn refusing(
+        method: &'static str,
+        code: &'static str,
+        text: &'static str,
+    ) -> impl Fn(&str, &str, Option<&Value>) -> Result<Value> {
+        move |method_: &str, path: &str, body: Option<&Value>| match body
+            .and_then(|body| body["method"].as_str())
+        {
+            Some(called) if called == method => Err(refuse_broker(code, text)),
+            Some("blob.status") => {
+                Ok(json!({"id": "b", "channel_id": GENERAL, "name": "counts.csv"}))
+            }
+            _ => standard(method_, path, body),
+        }
+    }
+
+    /// DW-11, M20, FILES-F9: a refusal names the channel the command acted on, and where a
+    /// file came from, in text; JSON keeps both codes.
+    #[tokio::test]
+    async fn a_refusal_names_the_channel_the_command_acted_on() {
+        let shown =
+            |error: &anyhow::Error| failure(error, OutputFormat::Text, "req-1", true).to_string();
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing(
+                "channel.rename",
+                "forbidden",
+                "forbidden: current owner required",
+            ),
+        );
+        let error = run(
+            &api,
+            CrewCommand::Channels(ChannelCommand::Rename {
+                channel: "methods".into(),
+                name: "methods-2".into(),
+            }),
+        )
+        .await
+        .expect_err("not the owner");
+        assert_eq!(shown(&error), "Only #methods's owner can do this.");
+        let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+        assert_eq!(body["code"], "crew_request_refused");
+        assert_eq!(body["broker_code"], "forbidden");
+        assert_eq!(body["error"], "Only #methods's owner can do this.");
+
+        // An ID the resolver never saw is named from the person's snapshot.
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing(
+                "message.post",
+                "channel_archived",
+                "channel_archived: channel is read-only",
+            ),
+        );
+        let send = |channel: &str, attachments: Vec<String>| {
+            CrewCommand::Send(SendArgs {
+                channel: channel.into(),
+                text: Some("hi".into()),
+                input: None,
+                attachments,
+                references: Vec::new(),
+            })
+        };
+        let error = run(&api, send(METHODS, Vec::new()))
+            .await
+            .expect_err("archived");
+        assert_eq!(shown(&error), "#methods is archived, so it's read-only.");
+
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing(
+                "message.post",
+                "forbidden",
+                "forbidden: attachment provenance cannot be dropped",
+            ),
+        );
+        let error = run(&api, send("methods", vec!["b".into()]))
+            .await
+            .expect_err("shared elsewhere");
+        assert_eq!(
+            shown(&error),
+            "That file was shared in #general. Share it there, or upload it again here."
+        );
+    }
+
+    /// R-2: a server that can no longer save tells its host what to do, and a member whom to
+    /// ask; neither is told to "restart and recover".
+    #[tokio::test]
+    async fn a_server_that_cannot_save_tells_the_host_what_to_do_and_members_whom_to_ask() {
+        const WEDGED: &str = "storage_failed: restart and recover before further mutations";
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            refusing("message.post", "storage_failed", WEDGED),
+        );
+        let post = || {
+            CrewCommand::Send(SendArgs {
+                channel: "methods".into(),
+                text: Some("hi".into()),
+                input: None,
+                attachments: Vec::new(),
+                references: Vec::new(),
+            })
+        };
+        let error = run(&api, post()).await.expect_err("wedged");
+        // Alice hosts lab (her UID is the host's), on the server her login names.
+        let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+        assert!(
+            shown.starts_with("The workspace server can't save changes right now. Free space on hpc, then restart Crew there"),
+            "{shown}"
+        );
+
+        let member = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+            match body.and_then(|body| body["method"].as_str()) {
+                Some("workspace.snapshot") => {
+                    let mut snapshot = snapshot();
+                    snapshot["actor"] = json!({"id": BOB, "username": "bob", "display_name": "Bob Lee", "uid": 1001});
+                    Ok(snapshot)
+                }
+                Some("message.post") => Err(refuse_broker("storage_failed", WEDGED)),
+                _ => standard(method, path, body),
+            }
+        };
+        let (api, _) = api_with(OutputFormat::Text, member);
+        let error = run(&api, post()).await.expect_err("wedged");
+        assert_eq!(
+            failure(&error, OutputFormat::Text, "req-1", true).to_string(),
+            "The workspace server can't save changes right now. Ask \"Alice Chen\" (@alice) to restart Crew."
+        );
+    }
+
+    /// SF-F4, DW-12: the daemon's typed institution and privacy-mode refusals are said from
+    /// their details, naming both sides, and keep their codes.
+    #[tokio::test]
+    async fn institution_and_mode_refusals_name_both_sides() {
+        let typed = |code: &'static str, details: Option<Value>, modes: Option<(&str, &str)>| {
+            let modes = modes.map(|(actual, expected)| (actual.to_owned(), expected.to_owned()));
+            move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if path.ends_with("/grant")
+                    || path.ends_with("/request")
+                        && body.and_then(|body| body["method"].as_str()) == Some("message.post")
+                {
+                    return Err(FakeRefusal {
+                        status: 400,
+                        code: Some(code.into()),
+                        broker_code: None,
+                        institution_refusal: details.clone(),
+                        message: "Crew refused this.".into(),
+                        detail: None,
+                        modes: modes.clone(),
+                    }
+                    .into());
+                }
+                standard(method, path, body)
+            }
+        };
+        let details = json!({"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "okafor-lab", "workspace_institution": "stanford"});
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            typed("crew_institution_mismatch", Some(details), None),
+        );
+        let error = run(
+            &api,
+            CrewCommand::Grants(GrantCommand::Grant {
+                session: SESSION.into(),
+                channel: "methods".into(),
+                context_channels: Vec::new(),
+            }),
+        )
+        .await
+        .expect_err("another institution");
+        assert_eq!(
+            failure(&error, OutputFormat::Text, "req-1", true).to_string(),
+            "gpt-5.5 is approved for ucsf. okafor-lab uses stanford. Choose a model approved for it, or a local model."
+        );
+        assert_eq!(
+            error_code(&error).as_deref(),
+            Some("crew_institution_mismatch")
+        );
+
+        let (api, _) = api_with(
+            OutputFormat::Text,
+            typed("crew_mode_mismatch", None, Some(("private", "public"))),
+        );
+        let error = run(
+            &api,
+            CrewCommand::Send(SendArgs {
+                channel: "methods".into(),
+                text: Some("hi".into()),
+                input: None,
+                attachments: Vec::new(),
+                references: Vec::new(),
+            }),
+        )
+        .await
+        .expect_err("the other mode");
+        let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
+        assert_eq!(
+            shown,
+            "Your connection is Private, but this request required Public. Nothing was sent."
+        );
+        assert!(!shown.contains("privacy changed"), "{shown}");
+        assert_eq!(error_code(&error).as_deref(), Some("crew_mode_mismatch"));
     }
 
     #[test]
@@ -6385,9 +6801,11 @@ mod tests {
         assert_eq!(name_text("مختبر"), "\u{2068}مختبر\u{2069}");
         assert_eq!(name_text("a\u{1b}b"), "a\\u{1b}b");
         assert_eq!(channel_text("#methods"), "#methods");
+        // F10: a name that holds no right-to-left text is left bare.
+        assert_eq!(person_text("bob", Some("Bob Lee")), "\"Bob Lee\" (@bob)");
         assert_eq!(
-            person_text("bob", Some("Bob Lee")),
-            "\"\u{2068}Bob Lee\u{2069}\" (@bob)"
+            person_text("dana", Some("דנה לוי")),
+            "\"\u{2068}דנה לוי\u{2069}\" (@dana)"
         );
         assert_eq!(person_text("bob", Some("BOB")), "@bob");
         assert_eq!(shell_word("UCSF HPC"), "'UCSF HPC'");

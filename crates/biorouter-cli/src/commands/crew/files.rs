@@ -81,6 +81,7 @@ async fn upload(api: &Api, channel: &str, file: &Path) -> Result<Value> {
 }
 
 async fn download(api: &Api, blob: &str, output: &Path, overwrite: bool) -> Result<Value> {
+    not_a_folder(output)?;
     let connection = api.connection_id().await?;
     let record = if let Some(previous) = existing_request(api).await? {
         verify_request_scope(&previous, &connection, None, "download", Some(blob))?;
@@ -249,6 +250,26 @@ async fn forget(api: &Api, id: &str, file: Option<&Path>) -> Result<Value> {
         .await
 }
 
+/// `files download --output` names the file to save, never a folder (FILES-F9). A folder, or
+/// a path ending in a separator, is refused before anything is asked of the daemon, which could
+/// only answer that the destination exists, and suggest `--overwrite`, which cannot help.
+fn not_a_folder(output: &Path) -> Result<()> {
+    let text = output.to_string_lossy();
+    let folder = output.is_dir() || text.ends_with(std::path::is_separator);
+    if folder {
+        let example = output.join("counts.csv");
+        return Err(super::restated(
+            format!(
+                "--output {} is a folder. Name the file to save, like --output {}.",
+                super::output::safe_text(&text),
+                super::output::safe_text(&example.to_string_lossy())
+            ),
+            Some("crew_output_is_a_folder"),
+        ));
+    }
+    Ok(())
+}
+
 fn absolute_path(path: &Path) -> Result<String> {
     let path = if path.is_absolute() {
         path.to_owned()
@@ -313,5 +334,31 @@ async fn watch(api: &Api, id: &str) -> Result<Value> {
             () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(json!({"detached":true,"transfer_id":id})); }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::not_a_folder;
+    use crate::daemon_client::Restated;
+
+    /// FILES-F9: a folder is refused before the daemon is asked, in words that say what to do.
+    #[test]
+    fn a_download_to_a_folder_is_refused_before_the_daemon_is_asked() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let with_separator = format!("{}{}", folder.path().display(), std::path::MAIN_SEPARATOR);
+        for output in [folder.path().to_path_buf(), with_separator.into()] {
+            let error = not_a_folder(&output).expect_err("a folder is refused");
+            let refused = error.downcast_ref::<Restated>().expect("said for a person");
+            assert_eq!(refused.code, Some("crew_output_is_a_folder"));
+            let text = error.to_string();
+            assert!(
+                text.contains("is a folder. Name the file to save"),
+                "{text}"
+            );
+            assert!(!text.contains("--overwrite"), "{text}");
+        }
+        assert!(not_a_folder(&folder.path().join("counts.csv")).is_ok());
+        assert!(not_a_folder(std::path::Path::new("./counts.csv")).is_ok());
     }
 }

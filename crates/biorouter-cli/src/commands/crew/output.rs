@@ -7,9 +7,11 @@
 //! `docs/research/biorouter-crew/naming-design.md`).
 //!
 //! A person renders as `"Display name" (@username)`. The display name is text a colleague
-//! chose, so it is quoted, escaped and wrapped in Unicode isolates (U+2068 … U+2069): right-to-
-//! left text inside it cannot reorder the `@username` that follows. When the display name equals
-//! the username, `@username` alone is printed, so the username is on every line either way.
+//! chose, so it is quoted and escaped, and a name that is not ASCII is wrapped in Unicode
+//! isolates (U+2068 … U+2069): right-to-left text inside it cannot reorder the `@username` that
+//! follows. ASCII holds no right-to-left text, so it is printed bare, and a copied name holds no
+//! invisible characters. When the display name equals the username, `@username` alone is
+//! printed, so the username is on every line either way.
 //!
 //! Names come from a [`Directory`]: the value being printed (a snapshot, or a message page's
 //! `people` and `channel_names` maps) plus whatever the caller already knows, such as the
@@ -40,17 +42,39 @@ fn terminal_control(ch: char) -> bool {
     ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
 
+/// Whether a zero-width joiner or non-joiner between `before` and `after` is part of the text
+/// a person sees (M14), so it is printed as itself rather than as `\u{200d}`.
+///
+/// Emoji sequences are joined with U+200D (👩🏽‍🔬, 👨‍👩‍👧‍👦, 🏳️‍🌈), and Persian, Arabic and
+/// the Indic scripts use U+200C and U+200D between letters and marks (می‌خواهم, क्‍ष). Printed
+/// as escape text, every one of them broke. A joiner beside ASCII, or beside whitespace, a
+/// control or another invisible character, stays escaped: there it is invisible and joins
+/// nothing, and `crew\u{200d}_alice` would read as `crew_alice`. A username is ASCII, so no
+/// joiner the rule keeps can touch one.
+///
+/// Kept here rather than by narrowing `biorouter::utils::is_invisible_formatting`, which prompt
+/// labels rely on.
+fn joins_visible_text(before: Option<char>, after: Option<char>) -> bool {
+    let visible = |ch: Option<char>| {
+        ch.is_some_and(|ch| !ch.is_ascii() && !ch.is_whitespace() && !terminal_control(ch))
+    };
+    visible(before) && visible(after)
+}
+
 pub fn safe_text(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|ch| {
-            if terminal_control(ch) {
-                ch.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![ch]
-            }
-        })
-        .collect()
+    let chars: Vec<char> = value.chars().collect();
+    let mut out = String::with_capacity(value.len());
+    for (index, &ch) in chars.iter().enumerate() {
+        let joiner = matches!(ch, '\u{200c}' | '\u{200d}');
+        let before = index.checked_sub(1).map(|at| chars[at]);
+        let after = chars.get(index + 1).copied();
+        if terminal_control(ch) && !(joiner && joins_visible_text(before, after)) {
+            out.extend(ch.escape_default());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 /// [`safe_text`] for text the CLI already made safe once and may have isolated: a balanced
@@ -63,9 +87,13 @@ pub fn safe_text(value: &str) -> String {
 /// balanced pair can only keep what is inside it from reordering what is outside, so passing
 /// it through gives a hostile name nothing: every raw isolate inside a name was escaped when
 /// the name was made safe, and one that is not part of a pair is escaped here.
+///
+/// The text between pairs is made safe as a whole, not a character at a time, so a joiner in
+/// it keeps its neighbours ([`safe_text`]).
 pub fn safe_text_keeping_isolates(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     let mut out = String::with_capacity(value.len());
+    let mut plain = String::new();
     let mut index = 0;
     while index < chars.len() {
         let ch = chars[index];
@@ -75,6 +103,8 @@ pub fn safe_text_keeping_isolates(value: &str) -> String {
                 .iter()
                 .position(|c| matches!(c, '\u{2066}'..='\u{2069}'));
             if let Some(end) = next.filter(|&end| rest[end] == '\u{2069}') {
+                out.push_str(&safe_text(&plain));
+                plain.clear();
                 out.push(ch);
                 out.push_str(&safe_text(&rest[..end].iter().collect::<String>()));
                 out.push('\u{2069}');
@@ -82,9 +112,10 @@ pub fn safe_text_keeping_isolates(value: &str) -> String {
                 continue;
             }
         }
-        out.push_str(&safe_text(ch.encode_utf8(&mut [0; 4])));
+        plain.push(ch);
         index += 1;
     }
+    out.push_str(&safe_text(&plain));
     out
 }
 
@@ -255,9 +286,12 @@ const TECHNICAL_TEXTS: &[(&str, &str)] = &[
         "signed device required",
         "This computer isn't signed in to this workspace.",
     ),
+    // Only a channel the person is not in (or that does not exist) is unavailable: an archived
+    // one stays readable to its members, so "it may be archived" was never the reason (M20).
+    ("channel unavailable", "You're not in that channel."),
     (
-        "channel unavailable",
-        "That channel isn't available to you. It may be archived, or you may not be in it.",
+        "attachment unavailable",
+        "That file isn't available to you. It may have been removed, or you may not be in its channel.",
     ),
     (
         "principal unavailable",
@@ -268,6 +302,132 @@ const TECHNICAL_TEXTS: &[(&str, &str)] = &[
         "This task's access to the workspace has ended.",
     ),
 ];
+
+/// What a refusal can name when the command knows it (DW-11, M20, R-2, FILES-F9): the channel
+/// it acted on, where a shared file came from, whether the person hosts the workspace, and the
+/// server. Every text is already made safe by the caller. Without it the sentence names none of
+/// them and stays true.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RefusalPlace {
+    /// The channel the request named, as a person reads it: `#methods`.
+    pub channel: Option<String>,
+    /// The channel an attachment or remote reference was shared in.
+    pub shared_in: Option<String>,
+    /// Whether the person hosts the workspace, when that could be read.
+    pub host: Option<bool>,
+    /// The host, as a person reads them: `"Alice Chen" (@alice)`.
+    pub host_label: Option<String>,
+    /// The server the workspace runs on.
+    pub server: Option<String>,
+}
+
+/// What a refusal can name, and so what the command should read for it: the channel the
+/// request named, where a shared file came from, or who hosts a server that can no longer save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalSubject {
+    Channel,
+    SharedIn(SharedKind),
+    Storage,
+}
+
+/// What was shared in another channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharedKind {
+    Attachment,
+    Reference,
+}
+
+/// What `code: message` could name that its text does not ([`placed_refusal`]), or `None`.
+pub fn refusal_subject(code: &str, message: &str) -> Option<RefusalSubject> {
+    if matches!(code, "storage_failed" | "storage_full") {
+        return Some(RefusalSubject::Storage);
+    }
+    let text = message
+        .trim()
+        .split_once(": ")
+        .filter(|(prefix, _)| *prefix == code)
+        .map_or(message.trim(), |(_, rest)| rest.trim())
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase();
+    match text.as_str() {
+        "current owner required" | "channel is read-only" => Some(RefusalSubject::Channel),
+        "attachment provenance cannot be dropped" => {
+            Some(RefusalSubject::SharedIn(SharedKind::Attachment))
+        }
+        "reference provenance cannot be dropped" => {
+            Some(RefusalSubject::SharedIn(SharedKind::Reference))
+        }
+        _ => None,
+    }
+}
+
+/// The workspace's host as a person reads them, when the directory names them.
+pub fn host_label(directory: &Directory) -> Option<String> {
+    let host = directory.host_id()?;
+    directory.people.get(host).map(Person::label)
+}
+
+/// A request whose required privacy (`--expected-mode`) is not the connection's (DW-12): both
+/// modes named, and that nothing was sent.
+pub fn mode_mismatch_text(actual: &str, expected: &str) -> String {
+    format!(
+        "Your connection is {}, but this request required {}. Nothing was sent.",
+        mode_word(Some(actual)),
+        mode_word(Some(expected))
+    )
+}
+
+/// The broker's role, archive, provenance and storage refusals in words for a person, naming
+/// what `place` knows. `key` is the refusal's text after its code, lowercase, without a closing
+/// full stop. `None` for any other refusal.
+fn placed_refusal(code: &str, key: &str, place: &RefusalPlace) -> Option<String> {
+    if matches!(code, "storage_failed" | "storage_full") {
+        return Some(storage_refusal(place));
+    }
+    Some(match key {
+        // `manager()`'s check is the host's account, not one of its devices.
+        "workspace host device required"
+        | "human host policy decision required"
+        | "human host decision required"
+        | "only host account can stop broker" => "Only the workspace host can do this.".to_owned(),
+        "current owner required" => match &place.channel {
+            Some(channel) => format!("Only {channel}'s owner can do this."),
+            None => "Only the channel's owner can do this.".to_owned(),
+        },
+        "team owner required" => "Only the team's owner can do this.".to_owned(),
+        "team creator required" => "Only the team's creator can do this.".to_owned(),
+        "channel is read-only" => match &place.channel {
+            Some(channel) => format!("{channel} is archived, so it's read-only."),
+            None => "That channel is archived, so it's read-only.".to_owned(),
+        },
+        "attachment provenance cannot be dropped" => format!(
+            "That file was shared in {}. Share it there, or upload it again here.",
+            place.shared_in.as_deref().unwrap_or("another channel")
+        ),
+        "reference provenance cannot be dropped" => format!(
+            "That remote reference was shared in {}. Share it there, or add it again here.",
+            place.shared_in.as_deref().unwrap_or("another channel")
+        ),
+        _ => return None,
+    })
+}
+
+/// A workspace server that can no longer save (`storage_full` after a full disk or quota,
+/// `storage_failed` after that or any other write fault): every change is refused until the host
+/// restarts Crew, and only the host can (R-2). Reading still works.
+fn storage_refusal(place: &RefusalPlace) -> String {
+    const LEAD: &str = "The workspace server can't save changes right now.";
+    match place.host {
+        Some(true) => format!(
+            "{LEAD} Free space on {}, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir.",
+            place.server.as_deref().unwrap_or("the server")
+        ),
+        _ => format!(
+            "{LEAD} Ask {} to restart Crew.",
+            place.host_label.as_deref().unwrap_or("the host")
+        ),
+    }
+}
 
 /// What a refusal that carried only its code says (`stale_cursor`, with no text of its own).
 fn code_only_sentence(code: &str) -> &'static str {
@@ -319,6 +479,11 @@ fn plain_refusal(code: &str, sentence: &str) -> String {
 /// the same words here; anything else becomes a sentence ([`plain_refusal`]). JSON output keeps
 /// the code as `broker_code`, which is what scripts and support match.
 pub fn broker_refusal_text(code: &str, message: &str) -> String {
+    broker_refusal_text_in(code, message, &RefusalPlace::default())
+}
+
+/// [`broker_refusal_text`], naming what `place` knows about the refusal.
+pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -> String {
     let message = message.trim();
     let sentence = message
         .split_once(": ")
@@ -330,6 +495,10 @@ pub fn broker_refusal_text(code: &str, message: &str) -> String {
         })
         .map_or(message, |(_, rest)| rest.trim());
     let lower = sentence.to_ascii_lowercase();
+    let key = lower.trim().trim_end_matches(['.', '!', '?']);
+    if let Some(placed) = placed_refusal(code, key, place) {
+        return placed;
+    }
     let shown = match (code, username_in(sentence)) {
         ("identity_conflict", named) if lower.starts_with("another active member is @") => {
             identity_conflict(named)
@@ -767,8 +936,14 @@ impl Person {
     }
 }
 
-/// A display name quoted like a string literal, escaped for the terminal and isolated so its
-/// direction cannot leak into the text around it.
+/// A display name quoted like a string literal, escaped for the terminal, and isolated when it
+/// could hold right-to-left text, so its direction cannot leak into the text around it.
+///
+/// A name that is ASCII once escaped holds no right-to-left text, so it is left bare, as
+/// [`display_text`] leaves a team or file name (F10): the isolates are invisible in a terminal
+/// but travel into anything copied, so `"Alice Chen"` failed a search for that very text.
+/// Escaping comes first, so a name's own bidi controls are printed as `\u{…}` text and cannot
+/// make it look ASCII.
 fn quoted_name(name: &str) -> String {
     let mut escaped = String::with_capacity(name.len());
     for ch in name.chars() {
@@ -777,7 +952,12 @@ fn quoted_name(name: &str) -> String {
         }
         escaped.push(ch);
     }
-    format!("\"\u{2068}{}\u{2069}\"", safe_text(&escaped))
+    let text = safe_text(&escaped);
+    if text.is_ascii() {
+        format!("\"{text}\"")
+    } else {
+        format!("\"\u{2068}{text}\u{2069}\"")
+    }
 }
 
 /// A team name or file name: escaped, and isolated when it could hold right-to-left text.
@@ -2319,6 +2499,9 @@ mod tests {
         ] {
             assert_eq!(safe_text_keeping_isolates(hostile), escaped, "{hostile:?}");
         }
+        // M14: a joiner outside the pairs keeps its neighbours too.
+        let joined = "Posted 👩🏽\u{200d}🔬 to \u{2068}#données\u{2069}.";
+        assert_eq!(safe_text_keeping_isolates(joined), joined);
     }
 
     #[test]
@@ -2333,6 +2516,46 @@ mod tests {
         assert!(escaped.contains("\\n"));
         assert!(escaped.contains("\\u{1b}"));
         assert!(escaped.chars().all(|ch| !terminal_control(ch)));
+    }
+
+    /// M14: joiners inside emoji sequences and between letters of scripts that use them print
+    /// as themselves; a joiner anywhere else is escaped, the spoof `crew\u{200d}_alice` first.
+    #[test]
+    fn joiners_print_where_they_join_text_and_are_escaped_everywhere_else() {
+        for kept in [
+            "👩🏽\u{200d}🔬",
+            "👨\u{200d}👩\u{200d}👧\u{200d}👦",
+            "🏳\u{fe0f}\u{200d}🌈",
+            "❤\u{fe0f}\u{200d}🔥",
+            "می\u{200c}خواهم",
+            "क्\u{200d}ष",
+            "क्\u{200c}ष",
+        ] {
+            assert_eq!(safe_text(kept), kept, "{kept:?}");
+        }
+        for (hostile, escaped) in [
+            ("crew\u{200d}_alice", "crew\\u{200d}_alice"),
+            ("ali\u{200c}ce", "ali\\u{200c}ce"),
+            ("\u{200d}🔬", "\\u{200d}🔬"),
+            ("🔬\u{200d}", "🔬\\u{200d}"),
+            ("🔬\u{200d} 🔬", "🔬\\u{200d} 🔬"),
+            ("🔬\u{200d}\u{200d}🔬", "🔬\\u{200d}\\u{200d}🔬"),
+            ("🔬\u{200d}\u{202e}🔬", "🔬\\u{200d}\\u{202e}🔬"),
+            ("é\u{200b}é", "é\\u{200b}é"),
+        ] {
+            assert_eq!(safe_text(hostile), escaped, "{hostile:?}");
+        }
+        // A message body keeps its emoji on every line.
+        let body = plain(&message(
+            "m",
+            ALICE,
+            NOW,
+            "Emoji check: 👩🏽\u{200d}🔬 and می\u{200c}خواهم",
+        ));
+        assert!(
+            body.ends_with("Emoji check: 👩🏽\u{200d}🔬 and می\u{200c}خواهم"),
+            "{body}"
+        );
     }
 
     #[test]
@@ -2428,9 +2651,13 @@ mod tests {
         render_text(value, &options(true, Directory::from_snapshot(snapshot)))
     }
 
-    /// The display-name half of a person label: quoted and isolated.
+    /// The display-name half of a person label: quoted, and isolated only when it is not ASCII.
     fn q(name: &str) -> String {
-        format!("\"\u{2068}{name}\u{2069}\"")
+        if name.is_ascii() {
+            format!("\"{name}\"")
+        } else {
+            format!("\"\u{2068}{name}\u{2069}\"")
+        }
     }
 
     fn alice() -> String {
@@ -3016,18 +3243,29 @@ mod tests {
         let hostile = json!([{"id":"p1","username":"mallory",
             "nickname":"Bob \"Lee\" (@bob)\\\u{202e}gnp.exe\u{2069}\n"}]);
         let text = plain(&hostile);
+        // Every control in the name is printed as escape text, so what is left is ASCII: it
+        // holds no right-to-left text to isolate, and no raw control survives.
         assert_eq!(
             text,
-            "\"\u{2068}Bob \\\"Lee\\\" (@bob)\\\\\\u{202e}gnp.exe\\u{2069}\u{2069}\" (@mallory)"
+            "\"Bob \\\"Lee\\\" (@bob)\\\\\\u{202e}gnp.exe\\u{2069}\" (@mallory)"
         );
-        // One isolate pair, opened and closed by the formatter: the name's own U+2069 was
-        // escaped, so it cannot close the isolate early.
-        assert_eq!(text.matches('\u{2068}').count(), 1);
-        assert_eq!(text.matches('\u{2069}').count(), 1);
-        assert!(!text.contains('\u{202e}'));
+        assert!(!text.contains(['\u{202e}', '\u{2068}', '\u{2069}']));
         assert!(text.ends_with("\" (@mallory)"));
+        // A name with right-to-left text keeps one isolate pair, opened and closed by the
+        // formatter: the name's own U+2069 is escaped, so it cannot close the isolate early.
+        let mixed =
+            plain(&json!([{"id":"p3","username":"eve","nickname":"דנה\u{2069}\u{202e} (@bob)"}]));
+        assert_eq!(
+            mixed,
+            "\"\u{2068}דנה\\u{2069}\\u{202e} (@bob)\u{2069}\" (@eve)"
+        );
+        assert_eq!(mixed.matches('\u{2068}').count(), 1);
+        assert_eq!(mixed.matches('\u{2069}').count(), 1);
         let rtl = plain(&json!([{"id":"p2","username":"dana","nickname":"דנה"}]));
         assert_eq!(rtl, "\"\u{2068}דנה\u{2069}\" (@dana)");
+        // F10: a plain Latin name is printed bare, so a copy of it matches "Alice Chen".
+        let latin = plain(&json!([{"id":"p4","username":"alice","nickname":"Alice Chen"}]));
+        assert_eq!(latin, "\"Alice Chen\" (@alice)");
         let team = plain(
             &json!([{"id":"t","name":"מעבדה","created_by":"p","members":[],"general_channel_id":"g"}]),
         );
@@ -3426,7 +3664,55 @@ mod tests {
         (
             "forbidden",
             "forbidden: channel unavailable",
-            "That channel isn't available to you. It may be archived, or you may not be in it.",
+            "You're not in that channel.",
+        ),
+        // DW-11, M20, FILES-F9: the role, archive and provenance texts in words. With nothing
+        // known about the request, each names what it can and stays true.
+        (
+            "forbidden",
+            "forbidden: workspace host device required",
+            "Only the workspace host can do this.",
+        ),
+        (
+            "forbidden",
+            "forbidden: current owner required",
+            "Only the channel's owner can do this.",
+        ),
+        (
+            "forbidden",
+            "forbidden: team creator required",
+            "Only the team's creator can do this.",
+        ),
+        (
+            "forbidden",
+            "forbidden: team owner required",
+            "Only the team's owner can do this.",
+        ),
+        (
+            "channel_archived",
+            "channel_archived: channel is read-only",
+            "That channel is archived, so it's read-only.",
+        ),
+        (
+            "forbidden",
+            "forbidden: attachment provenance cannot be dropped",
+            "That file was shared in another channel. Share it there, or upload it again here.",
+        ),
+        (
+            "forbidden",
+            "forbidden: reference provenance cannot be dropped",
+            "That remote reference was shared in another channel. Share it there, or add it again here.",
+        ),
+        // R-2: the host's action, never "restart and recover" to someone who cannot restart.
+        (
+            "storage_failed",
+            "storage_failed: restart and recover before further mutations",
+            "The workspace server can't save changes right now. Ask the host to restart Crew.",
+        ),
+        (
+            "storage_full",
+            "storage_full: The workspace server is out of disk space.",
+            "The workspace server can't save changes right now. Ask the host to restart Crew.",
         ),
         (
             "unauthorized",
@@ -3481,6 +3767,89 @@ mod tests {
             "the broker writes {legacy} again: it is no longer legacy"
         );
         assert_eq!(broker_refusal_text("quota_exceeded", &legacy), STORAGE_FULL);
+    }
+
+    /// A reworded text the broker never writes is a check that can never fire, so the role,
+    /// archive and provenance fixtures are read back against the broker's source.
+    #[test]
+    fn each_role_archive_and_provenance_fixture_is_the_brokers_literal_text() {
+        const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
+        for text in [
+            "forbidden: workspace host device required",
+            "forbidden: current owner required",
+            "forbidden: team creator required",
+            "forbidden: team owner required",
+            "channel_archived: channel is read-only",
+            "forbidden: attachment provenance cannot be dropped",
+            "forbidden: reference provenance cannot be dropped",
+        ] {
+            assert!(
+                BROKER.contains(&format!("\"{text}\"")),
+                "{text} is not a literal in broker.rs"
+            );
+            assert!(
+                BROKER_REFUSALS.iter().any(|(_, broker, _)| *broker == text),
+                "{text} has no fixture row"
+            );
+        }
+    }
+
+    /// DW-11, M20, R-2, FILES-F9: what the command knows about the refusal is named in it.
+    #[test]
+    fn a_refusal_names_the_channel_host_and_server_the_command_knows() {
+        let place = RefusalPlace {
+            channel: Some("#methods".into()),
+            shared_in: Some("#raw-data".into()),
+            host: Some(false),
+            host_label: Some("\"Alice Chen\" (@alice)".into()),
+            server: Some("hpc.ucsf.edu".into()),
+        };
+        let said = |code: &str, text: &str, place: &RefusalPlace| {
+            broker_refusal_text_in(code, text, place)
+        };
+        assert_eq!(
+            said("forbidden", "forbidden: current owner required", &place),
+            "Only #methods's owner can do this."
+        );
+        assert_eq!(
+            said(
+                "channel_archived",
+                "channel_archived: channel is read-only",
+                &place
+            ),
+            "#methods is archived, so it's read-only."
+        );
+        assert_eq!(
+            said(
+                "forbidden",
+                "forbidden: attachment provenance cannot be dropped",
+                &place
+            ),
+            "That file was shared in #raw-data. Share it there, or upload it again here."
+        );
+        assert_eq!(
+            said("storage_failed", "storage_failed: restart and recover before further mutations", &place),
+            "The workspace server can't save changes right now. Ask \"Alice Chen\" (@alice) to restart Crew."
+        );
+        let host = RefusalPlace {
+            host: Some(true),
+            ..place.clone()
+        };
+        let text = said(
+            "storage_full",
+            "storage_full: No space left on device.",
+            &host,
+        );
+        assert_eq!(
+            text,
+            "The workspace server can't save changes right now. Free space on hpc.ucsf.edu, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+        );
+        assert!(!text.to_ascii_lowercase().contains("recover"), "{text}");
+        // Only the texts it rewords take the place: another refusal is unchanged.
+        assert_eq!(
+            said("forbidden", "forbidden: channel unavailable", &place),
+            "You're not in that channel."
+        );
     }
 
     #[test]

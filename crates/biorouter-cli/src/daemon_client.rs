@@ -28,6 +28,9 @@ pub struct DaemonRefusal {
     /// The daemon's `detail`: OpenSSH's own words beside a failed connect, each line made
     /// terminal-safe on its own so the lines stay lines.
     detail: Option<String>,
+    /// `actual_mode` and `expected_mode` beside a privacy-mode refusal (`crew_mode_mismatch`):
+    /// the connection's mode and the one the request required.
+    modes: Option<(String, String)>,
 }
 
 impl DaemonRefusal {
@@ -41,6 +44,13 @@ impl DaemonRefusal {
     /// sent them.
     pub fn detail(&self) -> Option<&str> {
         self.detail.as_deref()
+    }
+
+    /// The connection's mode and the mode the request required, beside a privacy-mode refusal.
+    pub fn modes(&self) -> Option<(&str, &str)> {
+        self.modes
+            .as_ref()
+            .map(|(actual, expected)| (actual.as_str(), expected.as_str()))
     }
 }
 
@@ -238,9 +248,19 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
         .and_then(Value::as_str)
         .map(|detail| terminal_safe_lines(&detail.chars().take(4096).collect::<String>()))
         .filter(|detail| !detail.trim().is_empty());
+    // A mode is one of two words: anything else is not one and is dropped, not printed.
+    let mode = |key: &str| {
+        value
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+            .filter(|mode| matches!(*mode, "private" | "public"))
+            .map(str::to_owned)
+    };
+    let modes = mode("actual_mode").zip(mode("expected_mode"));
     DaemonRefusal {
         status,
         detail,
+        modes,
         kind: value
             .and_then(|value| value.get("status").or_else(|| value.get("code")))
             .and_then(Value::as_str)
