@@ -7613,7 +7613,7 @@ mod tests {
         for (details, expected) in [
             (
                 Some(json!({"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "foreign-lab", "workspace_institution": "stanford"})),
-                "gpt-5.5 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model.",
+                "gpt-5.5 is approved for UCSF. foreign-lab uses stanford. Choose a model approved for stanford, or a local model.",
             ),
             (
                 None,
@@ -8861,7 +8861,7 @@ mod tests {
         .expect_err("another institution");
         assert_eq!(
             failure(&error, OutputFormat::Text, "req-1", true).to_string(),
-            "gpt-5.5 is approved for ucsf. okafor-lab uses stanford. Choose a model approved for it, or a local model."
+            "gpt-5.5 is approved for UCSF. okafor-lab uses stanford. Choose a model approved for stanford, or a local model."
         );
         assert_eq!(
             error_code(&error).as_deref(),

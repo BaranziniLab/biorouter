@@ -657,33 +657,51 @@ pub fn institution_refusal_text(requested_model: &str, details: Option<&Value>) 
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|text| !text.is_empty())
-            .map(safe_text)
     };
-    let model = field("model").unwrap_or_else(|| safe_text(requested_model));
-    let workspace = field("workspace").unwrap_or_else(|| "This workspace".to_owned());
+    let model = field("model").map_or_else(|| safe_text(requested_model), safe_text);
+    let workspace = field("workspace").map_or_else(|| "This workspace".to_owned(), safe_text);
     let approved_for: Option<Vec<String>> = details
         .and_then(|details| details.get("approved_for"))
         .and_then(Value::as_array)
         .map(|ids| {
             ids.iter()
                 .filter_map(Value::as_str)
-                .map(safe_text)
+                .map(institution_label)
                 .collect::<Vec<_>>()
         })
         .filter(|ids| !ids.is_empty());
-    const CHOOSE: &str = "Choose a model approved for it, or a local model.";
-    match (field("workspace_institution"), approved_for) {
+    // SF-F4: named as the desktop's `institutionMismatch` names them, the workspace's
+    // institution in the advice too, not "it".
+    match (field("workspace_institution").map(institution_label), approved_for) {
         (Some(institution), Some(approved)) => format!(
-            "{model} is approved for {}. {workspace} uses {institution}. {CHOOSE}",
+            "{model} is approved for {}. {workspace} uses {institution}. Choose a model approved for {institution}, or a local model.",
             approved.join(" and ")
         ),
         (Some(institution), None) => format!(
-            "{model} doesn't say which institution approved it. {workspace} uses {institution}. {CHOOSE}"
+            "{model} doesn't say which institution approved it. {workspace} uses {institution}. Choose a model approved for {institution}, or a local model."
         ),
-        (None, _) => {
-            format!("{model} isn't approved for this workspace's institution. {CHOOSE}")
-        }
+        (None, _) => format!(
+            "{model} isn't approved for this workspace's institution. Choose a model approved for it, or a local model."
+        ),
     }
+}
+
+/// An institution as running text names it, as the desktop's `institutionLabel` does: the name
+/// the model registry publishes for that exact ID (`ucsf` is UCSF), else the ID itself.
+pub fn institution_label(id: &str) -> String {
+    use biorouter::privacy::affiliation::{institution_display_name, InstitutionId};
+    let id = id.trim();
+    // Only a canonical ID can be one the registry names; nothing else is looked up.
+    let canonical = (1..=64).contains(&id.len())
+        && id.starts_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    canonical
+        .then(|| InstitutionId::new(id))
+        .filter(|key| key.as_str() == id)
+        .and_then(institution_display_name)
+        .map_or_else(|| safe_text(id), str::to_owned)
 }
 
 /// The daemon's typed connect failures (`connect_refusal` in `routes/crew.rs`) in words for a
@@ -4979,15 +4997,38 @@ mod tests {
             "workspace": "foreign-lab",
             "workspace_institution": "stanford",
         });
+        // SF-F4: institutions are named as the desktop names them, by the registry's name for
+        // an ID it publishes (ucsf is UCSF) and by the ID otherwise, and the advice names the
+        // workspace's institution rather than "it".
         assert_eq!(
             institution_refusal_text("gpt-5.5-2026-04-24", Some(&details)),
-            "gpt-5.5-2026-04-24 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model."
+            "gpt-5.5-2026-04-24 is approved for UCSF. foreign-lab uses stanford. Choose a model approved for stanford, or a local model."
         );
         let unstated = json!({"model": "private-model", "approved_for": null, "workspace": "lab", "workspace_institution": "ucsf"});
         assert_eq!(
             institution_refusal_text("private-model", Some(&unstated)),
-            "private-model doesn't say which institution approved it. lab uses ucsf. Choose a model approved for it, or a local model."
+            "private-model doesn't say which institution approved it. lab uses UCSF. Choose a model approved for UCSF, or a local model."
         );
+        assert_eq!(
+            institution_label("stanford-synthetic"),
+            "stanford-synthetic"
+        );
+        assert_eq!(
+            institution_label("UCSF"),
+            "UCSF",
+            "not an ID: said as it came"
+        );
+        assert_eq!(institution_label("ucsf-west"), "ucsf-west");
+        // The desktop's own sentences (`agentCopy` in pane/copy.ts), read where both are visible.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/pane/copy.ts");
+        let copy = std::fs::read_to_string(&path).expect("the desktop copy deck");
+        for template in [
+            "`${model} is approved for ${affiliation}. ${workspace} uses ${institution}. Choose a model approved for ${institution}, or a local model.`",
+            "`${model} doesn\u{2019}t say which institution approved it. ${workspace} uses ${institution}. Choose a model approved for ${institution}, or a local model.`",
+        ] {
+            assert!(copy.contains(template), "{template} is not in {}", path.display());
+        }
         // An older daemon sends no details: the model the person asked for, and nothing made up.
         assert_eq!(
             institution_refusal_text("gpt-5.5", None),
