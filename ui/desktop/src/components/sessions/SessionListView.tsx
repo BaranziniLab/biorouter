@@ -1035,10 +1035,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
       // `throwOnError` the client throws that parsed body, a string, so it is
       // shown as it stands. This used to escape the handler, so a refused
       // export did nothing the person could see.
+      //
+      // T3-SH-11: about THIS screen's row, so it goes when the person leaves
+      // the screen (`scope: 'screen'`, like a refused diverge). App-scoped, it
+      // followed them into the chat they opened next and sat over its summary
+      // panel and the corner of the Create workflow dialog.
       console.error('Failed to export session:', error);
       toastError({
         title: "Couldn't export this chat",
         msg: exportFailureMessage(error),
+        scope: 'screen',
       });
       return;
     }

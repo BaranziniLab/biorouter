@@ -88,6 +88,9 @@ describe('SessionListView export refusals', () => {
       expect(mocks.toastError).toHaveBeenCalledWith({
         title: "Couldn't export this chat",
         msg: CREW_EXPORT_REFUSAL,
+        // T3-SH-11: dismissed when the person leaves History, not carried into
+        // the chat they open next.
+        scope: 'screen',
       })
     );
     expect(mocks.exportSession).toHaveBeenCalledWith(
@@ -110,6 +113,7 @@ describe('SessionListView export refusals', () => {
       expect(mocks.toastError).toHaveBeenCalledWith({
         title: "Couldn't export this chat",
         msg: 'The chat could not be read for export. Nothing was downloaded.',
+        scope: 'screen',
       })
     );
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
