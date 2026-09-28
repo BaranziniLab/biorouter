@@ -25,8 +25,8 @@
 //! Routes:
 //!   GET    /apps                      → list app manifests (JSON, secret-key)
 //!   GET    /apps/{id}                 → redirect to /apps/{id}/ (access cookie)
-//!   GET    /apps/{id}/                → assembled index.html (access cookie,
-//!                                       or `?t=` to set it)
+//!   GET    /apps/{id}/                → assembled index.html (access cookie),
+//!                                       or with `?t=` a page that sets it
 //!   GET    /apps/{id}/dist/{*path}    → built bundle files (access cookie)
 //!   GET    /apps/{id}/assets/{*path}  → static assets (access cookie)
 //!   GET    /apps/{id}/agent           → per-app agent WebSocket (access cookie
@@ -169,11 +169,11 @@ async fn redirect_to_slash(Path(id): Path<String>) -> Response {
 ///
 /// Requires the secret: this is how a caller that holds it hands a browser,
 /// which cannot send it, access to one app. The address carries a launch token
-/// that works once and for a few minutes (`auth::mint_app_launch`), because a
-/// URL is handed to `open` and the browser on a command line other accounts may
-/// read. The answer is a path, not a URL, because the daemon does not know which
-/// address the browser will use (a loopback port, a `serve` host, an exported
-/// app's proxy).
+/// that works once and for a few minutes (`auth::mint_app_launch`). Whoever
+/// opens it first gets the app, so a caller must never put it on a command line
+/// (see [`launch_bounce`]). The answer is a path, not a URL, because the daemon
+/// does not know which address the browser will use (a loopback port, a `serve`
+/// host, an exported app's proxy).
 async fn launch_app_route(Path(id): Path<String>) -> Response {
     if validate_artifact_id(&id).is_err() {
         return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
@@ -191,29 +191,65 @@ struct PageQuery {
     t: Option<String>,
 }
 
+/// The answer to a launch link: a page of the app's own origin that sets the
+/// access cookie (when the token redeemed) and moves the browser on to
+/// `/apps/{id}/`, replacing the tokenised address in its history.
+///
+/// ⚠ A `200` page that navigates, not a `303`. The cookie is `SameSite=Strict`,
+/// and a navigation another site started stays cross-site through its
+/// redirects, so a `303` lands on the page without the cookie it just set. Every
+/// launcher opens the link from exactly such a page: `biorouter apps open`, the
+/// exported `run.sh` and `run.ps1`, and the desktop's Applications view never put
+/// the link on a command line, where other accounts on the machine can read it
+/// (`ps`, `/proc/<pid>/cmdline`) and redeem it first. They write it into a file
+/// only this account can read and open that file, and a `file:` page is another
+/// site. The navigation this page starts is same-site, so the cookie goes with
+/// it. A meta refresh rather than a script, because the page's policy allows no
+/// script at all.
+///
+/// The id is a validated app name, so it needs no escaping in the markup.
+fn launch_bounce(id: &str, cookie: Option<String>) -> Response {
+    let page = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <meta http-equiv=\"refresh\" content=\"0;url=/apps/{id}/\">\
+         <title>Opening Biorouter app</title>\
+         <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+         <p>Opening the app. If nothing happens, <a href=\"/apps/{id}/\">open it here</a>.</p>"
+    );
+    let mut bounce = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::REFERRER_POLICY, "no-referrer")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
+             form-action 'none'; frame-ancestors 'none'",
+        );
+    if let Some(cookie) = cookie {
+        bounce = bounce.header(header::SET_COOKIE, cookie);
+    }
+    bounce
+        .body(axum::body::Body::from(page))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 /// GET /apps/{id}/ — the assembled, served index.html.
 ///
 /// With `?t=<launch token>` it is the exchange instead: the single-use token is
-/// redeemed for this app's access cookie and the browser is sent back to the
-/// page without it, so the token does not linger in the address bar or the
-/// `Referer` of anything the page loads. `auth::check_token` has already
-/// admitted the request, by that token, the cookie, or the secret; a token that
-/// is spent, expired or for another app sets nothing.
+/// redeemed for this app's access cookie, and the answer is [`launch_bounce`], a
+/// page of this origin that sends the browser on to the page without the token,
+/// so the token does not linger in the address bar or the `Referer` of anything
+/// the page loads. `auth::check_token` has already admitted the request, by that
+/// token, the cookie, or the secret; a token that is spent, expired or for
+/// another app sets nothing.
 async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> Response {
     if let Some(token) = query.t.as_deref() {
         if validate_artifact_id(&id).is_err() {
             return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
         }
-        let mut redirect = Response::builder()
-            .status(StatusCode::SEE_OTHER)
-            .header(header::LOCATION, format!("/apps/{id}/"))
-            .header(header::CACHE_CONTROL, "no-store");
-        if let Some(cookie) = biorouter_server::auth::redeem_app_launch(&id, token) {
-            redirect = redirect.header(header::SET_COOKIE, cookie);
-        }
-        return redirect
-            .body(axum::body::Body::empty())
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+        let cookie = biorouter_server::auth::redeem_app_launch(&id, token);
+        return launch_bounce(&id, cookie);
     }
     let st = store();
     let manifest = match st.load_manifest(&id) {
@@ -7147,7 +7183,7 @@ mod tests {
     /// W2-HRD-1: the address a browser opens an app at is minted by a caller
     /// holding the secret, for an app that exists, and opening it once trades its
     /// single-use token for an `HttpOnly`, `SameSite=Strict` cookie scoped to that
-    /// app, then sends the browser back to the page without the token.
+    /// app, on a page that sends the browser on to the app without the token.
     #[tokio::test]
     async fn a_launch_link_is_redeemed_once_for_a_cookie_scoped_to_its_app() {
         use axum::extract::{Path, Query};
@@ -7206,13 +7242,36 @@ mod tests {
                 .map(|value| value.to_str().unwrap().to_string())
         };
         let exchanged = exchange(Some(token.clone())).await;
-        assert_eq!(exchanged.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            exchanged.headers().get(header::LOCATION).unwrap(),
-            "/apps/hrd1-launch/",
-            "the token leaves the address bar"
-        );
+        // A page of the app's origin, not a redirect: a launcher opens the link
+        // from a private `file:` page, and a `SameSite=Strict` cookie set on a
+        // redirect that such a page started is not sent to the redirect's target.
+        assert_eq!(exchanged.status(), StatusCode::OK);
+        assert!(exchanged.headers().get(header::LOCATION).is_none());
+        for (name, value) in [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ] {
+            assert_eq!(exchanged.headers().get(&name).unwrap(), value, "{name}");
+        }
+        let policy = exchanged
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(policy.starts_with("default-src 'none';"), "{policy}");
+        assert!(!policy.contains("script-src"), "{policy}");
         let cookie = set_cookie(&exchanged).expect("the first redemption sets the cookie");
+        let bounce = axum::body::to_bytes(exchanged.into_body(), 4096)
+            .await
+            .unwrap();
+        let bounce = String::from_utf8_lossy(&bounce);
+        assert!(
+            bounce.contains(r#"<meta http-equiv="refresh" content="0;url=/apps/hrd1-launch/">"#),
+            "the page moves on to the app, and the token leaves the address bar: {bounce}"
+        );
+        assert!(!bounce.contains(&token), "{bounce}");
         assert!(cookie.starts_with("biorouter_app_"), "{cookie}");
         assert!(
             !cookie.contains(&token),
@@ -7224,7 +7283,7 @@ mod tests {
 
         // Spent, it sets nothing; nor does a token that was never minted.
         let spent = exchange(Some(token)).await;
-        assert_eq!(spent.status(), StatusCode::SEE_OTHER);
+        assert_eq!(spent.status(), StatusCode::OK);
         assert_eq!(set_cookie(&spent), None);
         assert_eq!(set_cookie(&exchange(Some("0".repeat(64))).await), None);
         // Another link for the same app redeems for the same cookie.

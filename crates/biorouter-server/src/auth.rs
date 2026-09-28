@@ -324,12 +324,24 @@ fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCo
 // token in it and drive that app's agent under the owner's account and key, and
 // the 404 for a guessed title slug said which apps existed.
 //
-// Two values, deliberately. The LAUNCH token rides a URL, so it reaches places
-// other accounts may read: the argv of `open`, `xdg-open` and a freshly started
-// browser, and browser history. It is therefore single-use and expires within
-// minutes. The COOKIE value never appears in a URL or on a command line; it
-// lives for the daemon's run, so a reload, the agent socket and every asset keep
-// working after the one redemption.
+// Two values, deliberately. The LAUNCH token rides a URL, into the browser's
+// history and whatever hands the URL to the browser. It is single-use and
+// expires within minutes, so a copy found afterwards opens nothing. The COOKIE
+// value never appears in a URL or on a command line; it lives for the daemon's
+// run, so a reload, the agent socket and every asset keep working after the one
+// redemption.
+//
+// ⚠ Single use does nothing against a reader who is FIRST. Whoever redeems the
+// link gets the cookie, and the victim's browser sees only the refusal below. So
+// a launch link must never go on a command line, where every account on the
+// machine can read it (`ps` on macOS, `/proc/<pid>/cmdline` on Linux) while
+// `open`, `xdg-open` or a starting browser run, and a co-tenant polling for
+// `?t=` outruns the browser. Every opener Biorouter ships writes the link into a
+// file only this account can read and opens the file (`biorouter apps open`,
+// the exported `run.sh` and `run.ps1`, the desktop's Applications view), and
+// the exchange answers with a page rather than a redirect so that works under
+// `SameSite=Strict` (`routes::apps::launch_bounce`). The desktop preview loads
+// the link in-process.
 //
 // ⚠ The stores live HERE, in the lib-only `auth`, and not in `routes::apps`:
 // `src/routes/` is compiled twice (`lib.rs`), so a static there exists once for
@@ -1496,10 +1508,11 @@ mod tests {
         );
     }
 
-    /// A launch link rides a URL, and a URL reaches argv and browser history,
-    /// where other accounts may read it; so it opens once, for a few minutes,
-    /// and only its own app. The cookie value it redeems for is not in it, and is
-    /// the same however many links are redeemed.
+    /// A launch link rides a URL, and a URL outlives its use in browser history;
+    /// so it opens once, for a few minutes, and only its own app. (Keeping it off
+    /// command lines is the openers' job: single use cannot stop a reader who
+    /// redeems it first.) The cookie value it redeems for is not in it, and is the
+    /// same however many links are redeemed.
     #[test]
     fn a_launch_link_opens_once_and_only_until_it_expires() {
         let mut access = AppAccess::default();
