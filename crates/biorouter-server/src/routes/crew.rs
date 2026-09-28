@@ -877,6 +877,7 @@ pub async fn start_run(
 /// institution refusal (`crew_institution_mismatch`) carries beside its sentence (Q2-76,
 /// W2-DMN-9). The core attaches it where the refusal is made, so every route that admits a run
 /// answers it the same way.
+#[cfg(test)]
 pub(super) use biorouter::crew::institution_refusal_details;
 
 async fn create_run_session(
@@ -1637,6 +1638,47 @@ async fn execute_run(
 }
 
 async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<String>) {
+    finish_run_outcome_with(ledger, view, error, |session_id, run_id| async move {
+        manager()?.cancel_run_if_current(&session_id, &run_id).await
+    })
+    .await;
+}
+
+/// Whether the owner's cancel route holds this run's stop: it reserved the cancellation
+/// (`cancellation_pending`) and revokes the grant itself, then records the outcome
+/// (`cancelled` or `cancellation_unconfirmed`). Only that route writes those statuses while
+/// the task still runs.
+async fn owner_stop_in_hand(ledger: &RunLedger, run_id: &str) -> bool {
+    ledger
+        .state
+        .lock()
+        .await
+        .runs
+        .get(run_id)
+        .is_some_and(|run| {
+            matches!(
+                run.view.status.as_str(),
+                "cancellation_pending" | "cancelled" | "cancellation_unconfirmed"
+            )
+        })
+}
+
+/// [`finish_run_outcome`] with its revocation given, so a test can count it.
+///
+/// W2-DMN-13: a Stop wakes this driver, and the cancel route revokes the grant at the same
+/// time. Each used to revoke, so one Stop sent two `run.revoke` requests (three when a re-dial
+/// landed inside it), each journalled by the workspace. While the owner's route holds the
+/// stop, the driver neither revokes nor records an outcome: the route does both.
+async fn finish_run_outcome_with<R, F>(
+    ledger: &RunLedger,
+    view: &RunView,
+    error: Option<String>,
+    revoke: R,
+) where
+    R: FnOnce(String, String) -> F,
+    F: std::future::Future<Output = anyhow::Result<Value>>,
+{
+    let owner_stopping = owner_stop_in_hand(ledger, &view.run_id).await;
     if let Some(error) = error {
         biorouter::session_events::publish(
             &view.session_id,
@@ -1648,7 +1690,7 @@ async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<St
                 provider_kind: None,
             },
         );
-        let revoked = if let Ok(crew) = manager() {
+        if let Ok(crew) = manager() {
             let _ = crew
                 .publish_run(
                     &view.session_id,
@@ -1656,18 +1698,16 @@ async fn finish_run_outcome(ledger: &RunLedger, view: &RunView, error: Option<St
                     "failed",
                 )
                 .await;
-            crew.cancel_run_if_current(&view.session_id, &view.run_id)
-                .await
-                .is_ok()
-        } else {
-            false
-        };
+        }
+        if owner_stopping {
+            return;
+        }
+        let revoked = revoke(view.session_id.clone(), view.run_id.clone())
+            .await
+            .is_ok();
         finish_failed_run(ledger, &view.run_id, error, revoked).await;
-    } else {
-        finish_completed_run_with(ledger, view, |session_id, run_id| async move {
-            manager()?.cancel_run_if_current(&session_id, &run_id).await
-        })
-        .await;
+    } else if !owner_stopping {
+        finish_completed_run_with(ledger, view, revoke).await;
     }
 }
 
@@ -2426,11 +2466,11 @@ mod route_tests;
 mod tests {
     use super::{
         cancel_owned_run_with, cancellation_response, drive_run_events, finish_cancellation,
-        finish_completed_run_with, finish_failed_run, finish_run_outcome, owns_task_run,
-        prepare_run_projection, publish_run_finished, reserve_cancellation, run_with_deadline,
-        settle_confirmed_revocations, transition_run_status, CancelReservation, LedgerState,
-        OwnedCancellation, OwnedRun, RunLedger, RunProjection, RunStatusUpdate, RunView,
-        ToolActivity, COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
+        finish_completed_run_with, finish_failed_run, finish_run_outcome, finish_run_outcome_with,
+        owns_task_run, prepare_run_projection, publish_run_finished, reserve_cancellation,
+        run_with_deadline, settle_confirmed_revocations, transition_run_status, CancelReservation,
+        LedgerState, OwnedCancellation, OwnedRun, RunLedger, RunProjection, RunStatusUpdate,
+        RunView, ToolActivity, COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
     };
     use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
@@ -2968,6 +3008,55 @@ mod tests {
         );
         drop(state);
         assert_eq!(persisted_status(&ledger.path), "completed");
+    }
+
+    /// W2-DMN-13: one Stop sends one `run.revoke`. The cancel route reserves the stop and
+    /// revokes; the driver it wakes, failing ("cancelled by its owner") or finishing, leaves
+    /// both the revocation and the ledger to the route.
+    #[tokio::test]
+    async fn a_stop_the_route_holds_is_revoked_once() {
+        for error in [Some("Task cancelled by its owner.".to_owned()), None] {
+            let (_temp, ledger, view) = ledger_fixture("running", false).await;
+            let route = Revocations::default();
+            let driver = Revocations::default();
+            // The route reserves the cancellation, which wakes the driver.
+            let (session_id, _) = match reserve_cancellation(&ledger, "connection-1", "run-1")
+                .await
+                .expect("an owned run")
+            {
+                CancelReservation::Pending {
+                    session_id,
+                    persistence_error,
+                } => (session_id, persistence_error),
+                CancelReservation::AlreadyFinished(_) => panic!("running"),
+            };
+            let calls = driver.clone();
+            finish_run_outcome_with(&ledger, &view, error.clone(), |session_id, run_id| {
+                calls.lock().unwrap().push((session_id, run_id));
+                async { Ok(json!({"id": "run-1", "revoked": true})) }
+            })
+            .await;
+            assert!(driver.lock().unwrap().is_empty(), "{error:?}");
+            // The route's own revoke and outcome.
+            route
+                .lock()
+                .unwrap()
+                .push((session_id.clone(), "run-1".to_owned()));
+            let (status, _) = finish_cancellation(&ledger, "run-1", true).await;
+            assert_eq!(status, "cancelled");
+            assert_eq!(route.lock().unwrap().len(), 1);
+
+            // Without a Stop in hand, the driver still revokes its own finished or failed run.
+            let (_temp, ledger, view) = ledger_fixture("running", false).await;
+            let calls = driver.clone();
+            finish_run_outcome_with(&ledger, &view, error.clone(), |session_id, run_id| {
+                calls.lock().unwrap().push((session_id, run_id));
+                async { Ok(json!({"id": "run-1", "revoked": true})) }
+            })
+            .await;
+            assert_eq!(driver.lock().unwrap().len(), 1, "{error:?}");
+            driver.lock().unwrap().clear();
+        }
     }
 
     #[tokio::test]

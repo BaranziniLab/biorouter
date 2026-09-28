@@ -1933,6 +1933,102 @@ fn worker_frames(root: &Path) -> usize {
 /// workspace), the list says so, and nothing more is sent under it: no second worker request
 /// and no revocation, because the workspace already refused the run.
 #[tokio::test]
+async fn a_run_its_own_task_ended_is_not_called_a_settings_change() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    // W2-DMN-14: a finished task's terminal post ends its run at the workspace, and a request
+    // just behind it (background compaction) meets `grant_expired`. That is the task ending,
+    // not a policy change, and nothing is stamped on the grant, whose own stop is under way.
+    let f = fixture("task-ended-post", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager
+        .publish_run(WORKER, "progress note", "progress")
+        .await
+        .unwrap();
+    assert!(!f
+        .manager
+        .ended_runs
+        .lock()
+        .unwrap()
+        .contains("keepalive-run"));
+    f.manager
+        .publish_run(WORKER, "the result", "completed")
+        .await
+        .unwrap();
+    assert!(f
+        .manager
+        .ended_runs
+        .lock()
+        .unwrap()
+        .contains("keepalive-run"));
+    drop(f);
+
+    let f = fixture("task-ended", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager.note_run_ended("keepalive-run");
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let refused = f
+        .manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        refused,
+        "This task has ended, so its access to the workspace has ended too."
+    );
+    let kept = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert_eq!(
+        kept.revocation, None,
+        "not stamped as ended by the workspace"
+    );
+}
+
+/// W2-DMN-14: a person's Stop marks the grant before the workspace is asked, so a request
+/// the workspace refuses meanwhile reads as the task ending too.
+#[tokio::test]
+async fn a_run_stopped_here_is_not_called_a_settings_change() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("stopped-here", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .revocation = Some(Revocation::Unconfirmed);
+    let refused = f
+        .manager
+        .heed_worker_refusal(
+            WORKER,
+            &scope,
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "grant_expired", "message": "grant_expired: run revoked, expired or policy changed"})
+            ),
+        )
+        .await
+        .to_string();
+    assert_eq!(
+        refused,
+        "This task has ended, so its access to the workspace has ended too."
+    );
+    assert_eq!(
+        f.manager.registry.lock().await.scopes[WORKER].revocation,
+        Some(Revocation::Unconfirmed)
+    );
+}
+
+#[tokio::test]
 async fn a_run_the_workspace_ended_stops_here_with_the_policy_sentence() {
     if !crate::test_sandbox::in_a_process_of_its_own() {
         return;

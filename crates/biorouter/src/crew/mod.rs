@@ -375,6 +375,12 @@ const GRANT_REVOKED: &str =
 /// workspace refuses the run as ended (`grant_expired`) because its own policy moved (D-1).
 const GRANT_POLICY_CHANGED: &str =
     "Crew settings changed since access was granted. Grant access again from Crew.";
+/// Shown when the workspace refuses a run whose own task ended it: its result was posted, or
+/// its owner stopped it (W2-DMN-14). Its access ended with it; nothing about the settings
+/// changed.
+const TASK_ENDED: &str = "This task has ended, so its access to the workspace has ended too.";
+/// How many ended runs [`CrewManager::ended_runs`] remembers before it starts again.
+const MAX_ENDED_RUNS: usize = 4096;
 /// Shown when the workspace refuses a run whose time ran out (`expires_at` has passed).
 const GRANT_TIMED_OUT: &str =
     "This chat's Crew access has ended. Grant access again from Crew to continue.";
@@ -783,6 +789,12 @@ pub struct CrewManager {
     seen_file: StdMutex<Option<Option<freshness::FileStamp>>>,
     /// What this process could not read of the saved registry, while it cannot (DAEMON-6).
     unreadable: StdMutex<Option<freshness::Unreadable>>,
+    /// Runs whose own task ended them in this process: the workspace was sent the task's
+    /// terminal result, which ends the run there (W2-DMN-14). Memory only, and bounded.
+    ended_runs: StdMutex<HashSet<String>>,
+    /// Runs whose `run.revoke` is on its way to the workspace now, so the retry pass never
+    /// sends a second one beside it (W2-DMN-13). Memory only.
+    revoking: StdMutex<HashSet<String>>,
 }
 /// How long one live admission of a chat's grant by the workspace stands for the provider
 /// uses that are not the reply loop's own model requests ([`CrewManager::check_provider_use`]).
@@ -1411,6 +1423,8 @@ impl CrewManager {
             live_admissions: StdMutex::new(HashMap::new()),
             seen_file: StdMutex::new(Some(seen_file)),
             unreadable: StdMutex::new(unreadable),
+            ended_runs: StdMutex::new(HashSet::new()),
+            revoking: StdMutex::new(HashSet::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -3787,6 +3801,11 @@ impl CrewManager {
         self.validate_worker_scope(session, &s, &c).await?;
         let credential = self.read_credential(&format!("run:{session}"))?;
         let request_key = params["idempotency_key"].as_str().map(str::to_owned);
+        // A task's result or failure, not a progress note: the workspace ends the run with it.
+        let terminal_post = method == "run.project"
+            && params["status"]
+                .as_str()
+                .is_some_and(|status| status != "progress");
         let result = locked
             .request(method, params, None, Some(&credential), None)
             .await;
@@ -3806,6 +3825,9 @@ impl CrewManager {
             }
         };
         self.validate_worker_scope(session, &s, &c).await?;
+        if terminal_post {
+            self.note_run_ended(&s.run_id);
+        }
         match method {
             "messages.history" | "messages.search" | "context.manifest" => {
                 self.note_run_context(session, method, &result);
@@ -3876,6 +3898,13 @@ impl CrewManager {
         if scope.expires_at.is_some_and(|at| at <= now) {
             return anyhow::anyhow!(GRANT_TIMED_OUT);
         }
+        // The run's own task ended it here (W2-DMN-14): a finished task's terminal post ends
+        // the run at the workspace, and a request just behind it (background compaction, a
+        // last tool call) meets `grant_expired`. That is not a policy change, and the grant's
+        // own stop is already on its way, so nothing is stamped here.
+        if self.run_ended_here(session, &scope.run_id).await {
+            return anyhow::anyhow!(TASK_ENDED);
+        }
         let run_id = scope.run_id.clone();
         let stopped = self
             .update_registry_keeping(|registry| {
@@ -3899,6 +3928,43 @@ impl CrewManager {
         self.forget_run_reads(session);
         self.forget_live_admission(session);
         anyhow::anyhow!(GRANT_POLICY_CHANGED)
+    }
+    /// Remember that `run_id`'s own task ended it (see [`Self::ended_runs`]).
+    fn note_run_ended(&self, run_id: &str) {
+        let mut ended = self
+            .ended_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ended.len() >= MAX_ENDED_RUNS {
+            ended.clear();
+        }
+        ended.insert(run_id.to_owned());
+    }
+    /// Whether `session`'s run `run_id` was ended by its own task or stopped by this device:
+    /// its terminal result was posted here, or the chat's grant for that run is stopped here
+    /// (a person's Stop or Revoke marks it before the workspace is asked). A run the workspace
+    /// ended by itself is neither.
+    async fn run_ended_here(&self, session: &str, run_id: &str) -> bool {
+        if self
+            .ended_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(run_id)
+        {
+            return true;
+        }
+        self.registry
+            .lock()
+            .await
+            .scopes
+            .get(session)
+            .is_some_and(|scope| {
+                scope.run_id == run_id
+                    && matches!(
+                        scope.revocation,
+                        Some(Revocation::Unconfirmed | Revocation::Confirmed)
+                    )
+            })
     }
     pub async fn publish_run(&self, session: &str, body: &str, status: &str) -> Result<Value> {
         self.worker_request(session, "run.project", json!({"body":body,"status":status}))
@@ -3950,7 +4016,7 @@ impl CrewManager {
         // flag still stands in memory, which stops this process, and the error says the stop
         // is not yet durable. The saved registry is edited as it is now (D8), so this never
         // writes back a grant another process changed, and no later write here revives it.
-        let (connection_id, run_id) = self
+        let (connection_id, run_id, confirmed) = self
             .update_registry_keeping(|r| {
                 let current = r
                     .scopes
@@ -3963,10 +4029,15 @@ impl CrewManager {
                 current.expired = true;
                 // Until the workspace confirms, the stop is recorded as not yet confirmed, so a
                 // restart still knows to ask again (F3). A confirmation heard earlier stands.
-                if current.revocation != Some(Revocation::Confirmed) {
+                let confirmed = current.revocation == Some(Revocation::Confirmed);
+                if !confirmed {
                     current.revocation = Some(Revocation::Unconfirmed);
                 }
-                Ok((current.connection_id.clone(), current.run_id.clone()))
+                Ok((
+                    current.connection_id.clone(),
+                    current.run_id.clone(),
+                    confirmed,
+                ))
             })
             .await
             .map_err(|error| {
@@ -3974,6 +4045,15 @@ impl CrewManager {
             })??;
         self.forget_run_reads(session);
         self.forget_live_admission(session);
+        // The workspace already confirmed this run's revocation: asking again would only be
+        // journalled there once more (W2-DMN-13), so the confirmation stands as the answer.
+        if confirmed {
+            return Ok(RevokeOutcome {
+                remote_confirmed: true,
+                run: Some(json!({"id": run_id, "revoked": true})),
+                remote_error: None,
+            });
+        }
         Ok(
             match self
                 .confirm_revocation(&connection_id, session, &run_id)
@@ -4018,9 +4098,11 @@ impl CrewManager {
         session: &str,
         run_id: &str,
     ) -> Result<Value> {
-        let run = self
-            .human_request(connection_id, "run.revoke", json!({"run_id":run_id}), None)
-            .await?;
+        let run = {
+            let _in_flight = RevokeInFlight::begin(&self.revoking, run_id);
+            self.human_request(connection_id, "run.revoke", json!({"run_id":run_id}), None)
+                .await?
+        };
         let recorded = self
             .update_registry_keeping(|registry| {
                 if let Some(current) = registry
@@ -4243,6 +4325,35 @@ fn oldest_first(page: &Value, order: PageOrder) -> (Vec<&Value>, bool) {
         .collect();
     let agrees = times.windows(2).all(|pair| pair[0] <= pair[1]);
     (messages, agrees)
+}
+
+/// A `run.revoke` on its way to the workspace, from [`CrewManager::confirm_revocation`] until
+/// its answer (or failure): the retry pass leaves that run alone meanwhile (W2-DMN-13).
+struct RevokeInFlight<'a> {
+    revoking: &'a StdMutex<HashSet<String>>,
+    run_id: String,
+}
+
+impl<'a> RevokeInFlight<'a> {
+    fn begin(revoking: &'a StdMutex<HashSet<String>>, run_id: &str) -> Self {
+        revoking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.to_owned());
+        Self {
+            revoking,
+            run_id: run_id.to_owned(),
+        }
+    }
+}
+
+impl Drop for RevokeInFlight<'_> {
+    fn drop(&mut self) {
+        self.revoking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.run_id);
+    }
 }
 
 /// Mark each message in a page that an agent wrote: `by_agent: true` beside a non-null `run_id`
@@ -5681,6 +5792,42 @@ mod tests {
         assert_eq!(plain.to_string(), "Crew params must be an object");
         // An unknown method is treated as one that may have changed something.
         assert!(!is_read_only("channel.read") && !is_read_only("future.method"));
+    }
+
+    /// W2-DMN-13: a run whose `run.revoke` is on its way is that request's to confirm; the
+    /// retry pass never sends a second one beside it.
+    #[tokio::test]
+    async fn the_retry_pass_leaves_a_revoke_in_flight_alone() {
+        let root = fixture_root("revoke-in-flight");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let connection_id = "revoke-in-flight-connection";
+        let session = "revoke-in-flight-session";
+        let (_, mut scope) = worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        scope.expired = true;
+        scope.revocation = Some(Revocation::Unconfirmed);
+        let run_id = scope.run_id.clone();
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .insert(session.into(), scope);
+        assert_eq!(
+            manager.unconfirmed_revocations(connection_id).await,
+            vec![(session.to_owned(), run_id.clone())]
+        );
+        {
+            let _in_flight = RevokeInFlight::begin(&manager.revoking, &run_id);
+            assert!(manager
+                .unconfirmed_revocations(connection_id)
+                .await
+                .is_empty());
+        }
+        assert_eq!(
+            manager.unconfirmed_revocations(connection_id).await.len(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     /// W2-DMN-11: only a message with a run behind it is an agent's.
@@ -7551,13 +7698,14 @@ done
             .any(|line| line.contains("\"method\":\"run.revoke\"")
                 && line.contains("worker-race-run")));
 
-        // Revoking a revoked grant asks the workspace again (its run.revoke is idempotent),
-        // and the confirming path answers with the run.
+        // Revoking a grant whose revocation the workspace confirmed answers with that
+        // confirmation and asks nothing again: each ask would be journalled there once more
+        // (W2-DMN-13).
         assert_eq!(
             manager.cancel_run("worker-race-session").await.unwrap(),
             revoked_run
         );
-        assert_eq!(logged_methods(&log, "run.revoke"), 2);
+        assert_eq!(logged_methods(&log, "run.revoke"), 1);
         assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
 
         manager.disconnect(connection_id).await.unwrap();

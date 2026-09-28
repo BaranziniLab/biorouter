@@ -238,6 +238,15 @@ impl CrewManager {
         pending.sort();
         let mut seen = HashSet::new();
         pending.retain(|(_, run_id)| seen.insert(run_id.clone()));
+        // A run whose `run.revoke` is on its way now (a person's Stop) is that request's to
+        // confirm; asking beside it sent a second revoke for one Stop (W2-DMN-13). If it fails,
+        // it arms a pass of its own.
+        let in_flight = self
+            .revoking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        pending.retain(|(_, run_id)| !in_flight.contains(run_id));
         pending
     }
 

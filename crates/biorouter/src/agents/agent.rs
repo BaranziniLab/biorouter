@@ -4333,6 +4333,17 @@ async fn run_background_compaction(
                     tracing::warn!("Crew background compaction refused: {error}");
                     return;
                 }
+                // W2-DMN-14: the admission below asks the workspace live (a
+                // `context.manifest` over SSH), so it is asked only when this turn would
+                // really compact. It used to be asked after every turn of a Crew chat, even far
+                // under budget, and a finished task's grant then answered it. The threshold is
+                // read from this device's own store and sends nothing anywhere;
+                // `run_eager_compaction` checks it again before the model call.
+                if !compaction_due(provider.as_ref(), &session_manager, &session_id, threshold)
+                    .await
+                {
+                    return;
+                }
             }
             crew.check_provider_dispatch(&session_id, provider.as_ref())
                 .await
@@ -4385,6 +4396,33 @@ async fn run_background_compaction(
             warn!("BR-12: eager compaction failed for session {session_id}: {e}");
         }
     }
+}
+
+/// Whether `session_id`'s stored conversation is over the eager-compaction `threshold`, by the
+/// same check [`crate::context_mgmt::run_eager_compaction`] makes. A store that cannot be read
+/// says yes, so the compaction runs as it would have and reports the failure itself.
+async fn compaction_due(
+    provider: &dyn Provider,
+    session_manager: &SessionManager,
+    session_id: &str,
+    threshold: f64,
+) -> bool {
+    let Ok(session) = session_manager.get_session(session_id, true).await else {
+        return true;
+    };
+    let Some(stored) = session.conversation.as_ref() else {
+        return false;
+    };
+    let conversation = crate::conversation::without_bedrock_reasoning(stored);
+    crate::context_mgmt::check_if_compaction_needed(
+        provider,
+        &conversation,
+        Some(threshold),
+        &session,
+        None,
+    )
+    .await
+    .unwrap_or(true)
 }
 
 /// Fire a Pre/PostCompact hook without an `Agent` receiver. Split out of
@@ -23732,5 +23770,69 @@ mod max_turns_setting_tests {
         );
         assert_eq!(configured_max_turns(Some(json!(true))), None);
         assert_eq!(configured_max_turns(Some(json!(3))), Some(3));
+    }
+}
+
+#[cfg(test)]
+mod crew_compaction_order_tests {
+    use super::*;
+    use crate::session::session_manager::SessionType;
+
+    /// W2-DMN-14: whether a turn would compact is read from this device's own store, so the
+    /// live Crew admission (a `context.manifest` over SSH) is asked only when it would.
+    #[tokio::test]
+    async fn compaction_is_due_only_over_the_threshold() {
+        let data = tempfile::TempDir::new().unwrap();
+        let store = SessionManager::new(data.path().to_path_buf());
+        let session = store
+            .create_session(data.path().to_path_buf(), "chat".into(), SessionType::User)
+            .await
+            .unwrap();
+        store
+            .add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            data.path()
+                .join("unused.json")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap();
+        let limit = provider.get_model_config().context_limit();
+        store
+            .update(&session.id)
+            .total_tokens(Some(1_000))
+            .apply()
+            .await
+            .unwrap();
+        assert!(!compaction_due(&provider, &store, &session.id, 0.8).await);
+        store
+            .update(&session.id)
+            .total_tokens(Some(i32::try_from(limit).unwrap_or(i32::MAX)))
+            .apply()
+            .await
+            .unwrap();
+        assert!(compaction_due(&provider, &store, &session.id, 0.8).await);
+        // Compaction switched off is never due.
+        assert!(!compaction_due(&provider, &store, &session.id, 0.0).await);
+    }
+
+    /// W2-DMN-14: in the background compaction, a Crew chat's threshold check comes before
+    /// the live admission, and the admission still comes before anything is compacted.
+    #[test]
+    fn a_crew_chat_is_admitted_only_when_it_would_compact() {
+        let source = include_str!("agent.rs");
+        let body = source
+            .split("async fn run_background_compaction(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nasync fn compaction_due(").next())
+            .expect("run_background_compaction");
+        let due = body.find("compaction_due(").expect("the threshold check");
+        let admitted = body
+            .find(".check_provider_dispatch(")
+            .expect("the Crew admission");
+        let compacted = body.find("run_eager_compaction(").expect("the compaction");
+        assert!(due < admitted && admitted < compacted, "{body}");
     }
 }
