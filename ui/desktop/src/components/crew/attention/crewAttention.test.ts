@@ -1,6 +1,8 @@
 import { createElement } from 'react';
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import fixture from '../daemonSourceLine.cases.json';
+import { isProvenanceLine } from '../timeline/bodyText';
 import { MessageBody } from '../timeline/MessageBody';
 import {
   ATTENTION_POLL_MS,
@@ -106,6 +108,61 @@ describe('mentionsUser agrees with the timeline', () => {
 
   it('reads the name as the timeline does, trimmed', () => {
     expect(mentionsUser('hi @crew_bob', ' crew_bob ')).toBe(true);
+  });
+});
+
+/**
+ * CLIDOCS-F2: an agent's post ends with the daemon's provenance line, which names whose file the
+ * run read ("Source: …, shared by Gina Rossi (@crew_gina)."). It mentions no one, in the timeline
+ * or in a notification; it did both, for everyone whose file an agent read. The bodies are the
+ * daemon's own output (`daemonSourceLine.cases.json`, read only).
+ */
+describe('the daemon’s provenance line mentions no one', () => {
+  const cases: { name: string; line: string; posted: string }[] = fixture.cases;
+  const marked = (body: string, username: string, agentPost: boolean) => {
+    const { container, unmount } = render(
+      createElement(MessageBody, {
+        body,
+        mention: username,
+        mentionLabelId: 'timeline-mention',
+        agentPost,
+      })
+    );
+    const found = container.querySelector('#timeline-mention') !== null;
+    unmount();
+    return found;
+  };
+
+  it.each(cases)('$name', ({ line, posted }) => {
+    expect(isProvenanceLine(line)).toBe(true);
+    for (const [, username] of line.matchAll(/@([A-Za-z0-9._-]*[A-Za-z0-9_-])/g)) {
+      expect(mentionsUser(posted, username, true)).toBe(false);
+      expect(marked(posted, username, true)).toBe(false);
+      // The same words from a person, or anywhere above the line, still mention them.
+      expect(mentionsUser(posted, username, false)).toBe(true);
+      expect(mentionsUser(`@${username}, see this.\n\n${line}`, username, true)).toBe(true);
+    }
+  });
+
+  it('keeps a Source line the model wrote above the daemon’s: those are the model’s words', () => {
+    const body =
+      'Done.\n\nSource: `FAKE.csv`, shared by @crew_bob.\n\nNo shared file was read for this result.';
+    expect(mentionsUser(body, 'crew_bob', true)).toBe(true);
+    expect(marked(body, 'crew_bob', true)).toBe(true);
+  });
+
+  it('tells the notification as the timeline does', () => {
+    const [first] = cases.filter((item) => item.line.includes('@crew_gina'));
+    const notice = attentionNotice({
+      workspace: 'w',
+      channel: '#c',
+      username: 'crew_gina',
+      viewerId: 'p-gina',
+      added: 1,
+      messages: [{ actor_id: 'p-dave', run_id: 'run-1', body: first.posted }],
+      people: { 'p-dave': { username: 'crew_dave', display_name: 'Dave' } },
+    });
+    expect(notice.title).toBe('1 new message in w');
   });
 });
 

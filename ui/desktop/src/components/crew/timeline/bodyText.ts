@@ -15,7 +15,11 @@ import { timelineCopy } from './copy';
  * 2. **A mention of the viewer is marked** (QA M2): `@{their username}`, in any case, as a whole
  *    word, outside code and link text, becomes a `crew-md-mention` chip. When the body holds one,
  *    a hidden "mentions you" span with `mentionLabelId` is added at its end, which the row names
- *    itself by (`aria-labelledby`), and the row's stylesheet gives the row its accent.
+ *    itself by (`aria-labelledby`), and the row's stylesheet gives the row its accent. In an
+ *    agent's post, the daemon's own provenance line at its end (`Source: … shared by Jack Moreno
+ *    (@crew_jack).`, `crates/biorouter/src/crew/source_line.rs`) names whose file the run read,
+ *    never whom the post is for: it is drawn as it is and mentions no one (CLIDOCS-F2), or everyone
+ *    whose file an agent read was "mentioned" and notified every time.
  *
  * Both are judged on what is drawn side by side, not one parsed text node at a time. Emphasis,
  * strike-through, inline code and a link's words sit on the line with no gap around them, so the
@@ -45,6 +49,38 @@ export interface BodyTextOptions {
   mention: string | null;
   /** The ID of the hidden "mentions you" span the row is named by, when it wants one. */
   mentionLabelId: string | null;
+  /**
+   * The body is an agent's post (it carries a `run_id`), which ends with the daemon's provenance
+   * line: that last paragraph mentions no one ({@link isProvenanceLine}). Absent: false.
+   */
+  agentPost?: boolean;
+}
+
+/**
+ * How the daemon's provenance line begins (`with_source_line` in `source_line.rs`, and the lines
+ * `crew/mod.rs` builds): the files the run read (`Source: …`, `Sources: …`), or that it read none
+ * (`No shared file was read for this result.` / `… for this post.`).
+ */
+const PROVENANCE_LINE = /^(?:Sources?:\s|No shared file was read for this (?:result|post)\.)/;
+
+/** Whether `text`, a paragraph's words, is the daemon's provenance line. */
+export function isProvenanceLine(text: string): boolean {
+  return PROVENANCE_LINE.test(text.trimStart());
+}
+
+/**
+ * The daemon's provenance line of an agent's post: its last block, when that is a paragraph that
+ * reads as one. The daemon always writes it last, after a blank line, so nothing the model wrote
+ * can come after it; a "Source:" line the model wrote above it is the model's, and is read as
+ * any other words are.
+ */
+function provenanceParagraph(tree: BodyNode): BodyNode | null {
+  const blocks = (tree.children ?? []).filter(
+    (child) => !(child.type === 'text' && typeof child.value === 'string' && !child.value.trim())
+  );
+  const last = blocks[blocks.length - 1];
+  if (!last || last.type !== 'element' || last.tagName !== 'p') return null;
+  return isProvenanceLine(bodyNodeText(last, true)) ? last : null;
 }
 
 /** A character a username is written in (`names.rs`); its last character is never a dot. */
@@ -173,7 +209,7 @@ interface Piece {
  * every inline element. A block element ends the run around it and starts its own. `pre` is
  * skipped: a code block draws and copies its own text.
  */
-function gatherRuns(tree: BodyNode): Piece[][] {
+function gatherRuns(tree: BodyNode, unmarked: BodyNode | null = null): Piece[][] {
   const runs: Piece[][] = [[]];
   const endRun = () => {
     if (runs[runs.length - 1].length > 0) runs.push([]);
@@ -188,7 +224,7 @@ function gatherRuns(tree: BodyNode): Piece[][] {
       }
       if (child.type !== 'element') continue;
       const tag = child.tagName ?? '';
-      const inner = marking && !NO_MENTION.has(tag);
+      const inner = marking && !NO_MENTION.has(tag) && child !== unmarked;
       if (tag === 'br') run.push({ text: '\n', marking: false });
       else if (OBJECT.has(tag)) run.push({ text: OBJECT_CHARACTER, marking: false });
       else if (BLOCK.has(tag)) {
@@ -299,10 +335,12 @@ function replaceNodes(node: BodyNode, replacements: Map<BodyNode, BodyNode[]>): 
  * raw node is replaced by the same text nodes and escapes as any other text, and react-markdown
  * finds no raw node left to convert.
  */
-function rewriteTree(tree: BodyNode, pattern: RegExp | null): boolean {
+function rewriteTree(tree: BodyNode, pattern: RegExp | null, agentPost: boolean): boolean {
   const replacements = new Map<BodyNode, BodyNode[]>();
   let mentioned = false;
-  for (const run of gatherRuns(tree)) if (rewriteRun(run, pattern, replacements)) mentioned = true;
+  const unmarked = agentPost ? provenanceParagraph(tree) : null;
+  for (const run of gatherRuns(tree, unmarked))
+    if (rewriteRun(run, pattern, replacements)) mentioned = true;
   replaceNodes(tree, replacements);
   return mentioned;
 }
@@ -314,7 +352,7 @@ function rewriteTree(tree: BodyNode, pattern: RegExp | null): boolean {
 export function rehypeCrewBodyText(options: BodyTextOptions) {
   const pattern = mentionPattern(options.mention);
   return (tree: BodyNode) => {
-    const mentioned = rewriteTree(tree, pattern);
+    const mentioned = rewriteTree(tree, pattern, options.agentPost === true);
     if (mentioned && options.mentionLabelId && Array.isArray(tree.children)) {
       tree.children.push({
         type: 'element',

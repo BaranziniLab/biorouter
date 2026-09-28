@@ -364,7 +364,12 @@ export function MessageRow({
         ) : (
           entry.restrictedMarker && <RestrictedMarker />
         )}
-        <MessageBody body={message.body} mention={mention} mentionLabelId={mentionLabel} />
+        <MessageBody
+          body={message.body}
+          mention={mention}
+          mentionLabelId={mentionLabel}
+          agentPost={group.agent}
+        />
         {renderAttachments?.(message, { active })}
       </div>
     </div>

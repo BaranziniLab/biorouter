@@ -88,9 +88,14 @@ const MENTION_PROBE_ID = 'crew-attention-mentions-you';
  * says "mentioned you" while the channel marks nothing is the failure this prevents.
  *
  * `username` is the viewer's username as the snapshot gives it; one that is not a valid username
- * mentions nobody, as in the timeline.
+ * mentions nobody, as in the timeline. `agentPost`: the body is an agent's post (it carries a
+ * `run_id`), whose closing provenance line mentions no one, as in the timeline (CLIDOCS-F2).
  */
-export function mentionsUser(body: unknown, username: string | null | undefined): boolean {
+export function mentionsUser(
+  body: unknown,
+  username: string | null | undefined,
+  agentPost = false
+): boolean {
   if (typeof body !== 'string' || typeof username !== 'string' || !mentionPattern(username))
     return false;
   // Every mention holds `@username` in some case (the timeline's pattern trims the name and
@@ -109,7 +114,10 @@ export function mentionsUser(body: unknown, username: string | null | undefined)
       remarkPlugins: MESSAGE_REMARK_PLUGINS,
       rehypePlugins: [
         // The step reads and writes only the node fields it declares; the casts are to unified's tree.
-        [rehypeCrewBodyText as never, { mention: username, mentionLabelId: MENTION_PROBE_ID }],
+        [
+          rehypeCrewBodyText as never,
+          { mention: username, mentionLabelId: MENTION_PROBE_ID, agentPost },
+        ],
         probe as never,
       ],
     });
@@ -161,7 +169,8 @@ function mentionsViewer(
   viewerId: string | null
 ): boolean {
   if (!message.run_id && viewerId !== null && message.actor_id === viewerId) return false;
-  return mentionsUser(message.body, username);
+  // An agent's post ends with the daemon's provenance line, which mentions no one (CLIDOCS-F2).
+  return mentionsUser(message.body, username, Boolean(message.run_id));
 }
 
 /**

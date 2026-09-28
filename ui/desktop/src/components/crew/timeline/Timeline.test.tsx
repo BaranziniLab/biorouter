@@ -672,6 +672,43 @@ describe('mentions and hidden characters in rows', () => {
     expect(screen.getAllByText('@Alice')[0]).toHaveClass('crew-md-mention');
   });
 
+  /**
+   * CLIDOCS-F2: an agent's result ends with the daemon's line naming whose file it read, and that
+   * person was marked as mentioned in every result that read their file.
+   */
+  it('never names a row by the daemon’s Source line, which still shows the name', () => {
+    const source = 'Source: `plate.csv`, shared by Alice Chen (@alice) at 2:20 AM UTC-7.';
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 't', actor_id: ID.bob, run_id: ID.runB, body: 'Task: Sum the plate' }),
+          message({
+            id: 'result',
+            actor_id: ID.bob,
+            run_id: ID.runB,
+            body: `The totals are 1.80.\n\n${source}`,
+          }),
+          message({
+            id: 'asked',
+            actor_id: ID.bob,
+            run_id: ID.runB,
+            body: `@alice, the totals are 1.80.\n\n${source}`,
+            at: new Date(2026, 8, 22, 10, 40),
+          }),
+        ],
+      })
+    );
+    const named = screen
+      .getAllByRole('group')
+      .filter((row) => row.hasAttribute('data-crew-row'))
+      .map((row) => /mentions you$/.test(row.getAttribute('aria-labelledby') ? nameOf(row) : ''));
+    expect(named).toEqual([false, false, true]);
+    // The line is drawn as it is, the name in it plain.
+    expect(screen.getAllByText(/shared by Alice Chen \(@alice\)/)).toHaveLength(2);
+    expect(document.querySelectorAll('.crew-md-mention')).toHaveLength(1);
+  });
+
   it('shows the hidden characters of an agent’s tool update', async () => {
     const { container } = renderWithController(
       <Timeline />,

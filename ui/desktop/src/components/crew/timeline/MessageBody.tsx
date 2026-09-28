@@ -802,6 +802,11 @@ export interface CrewMarkdownProps {
   mention?: string | null;
   /** The ID of the hidden "mentions you" label the row names itself by, when it wants one. */
   mentionLabelId?: string | null;
+  /**
+   * An agent's post: its last paragraph, the daemon's provenance line, mentions no one
+   * (`bodyText.ts`, CLIDOCS-F2).
+   */
+  agentPost?: boolean;
 }
 
 /** The markdown alone, unfolded. Memoized on its props: a timeline re-renders often. */
@@ -809,11 +814,12 @@ export const CrewMarkdown = memo(function CrewMarkdown({
   text,
   mention = null,
   mentionLabelId = null,
+  agentPost = false,
 }: CrewMarkdownProps) {
   const rehypePlugins = useMemo<NonNullable<Options['rehypePlugins']>>(
     // The step reads and writes only the node fields it declares; the cast is to unified's tree.
-    () => [[rehypeCrewBodyText as never, { mention, mentionLabelId }]],
-    [mention, mentionLabelId]
+    () => [[rehypeCrewBodyText as never, { mention, mentionLabelId, agentPost }]],
+    [mention, mentionLabelId, agentPost]
   );
   return (
     <div className="crew-md text-body text-text-default">
@@ -838,10 +844,13 @@ export function MessageBody({
   body,
   mention = null,
   mentionLabelId = null,
+  agentPost = false,
 }: {
   body: string;
   mention?: string | null;
   mentionLabelId?: string | null;
+  /** An agent's post, which ends with the daemon's provenance line (`CrewMarkdownProps`). */
+  agentPost?: boolean;
 }) {
   const text = typeof body === 'string' ? body : '';
   const { shouldClamp, label } = useMemo(() => describeMessageLength(text), [text]);
@@ -860,7 +869,12 @@ export function MessageBody({
         data-clamped={clamped ? 'true' : undefined}
         style={style}
       >
-        <CrewMarkdown text={text} mention={mention} mentionLabelId={mentionLabelId} />
+        <CrewMarkdown
+          text={text}
+          mention={mention}
+          mentionLabelId={mentionLabelId}
+          agentPost={agentPost}
+        />
       </div>
       {shouldClamp && (
         <div className="crew-message-fold">
