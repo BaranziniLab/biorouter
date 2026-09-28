@@ -465,6 +465,16 @@ pub async fn upsert_config(
     if let Some(refusal) = config_value_refusal(&query.key, &query.value) {
         return Err((StatusCode::BAD_REQUEST, refusal));
     }
+    if names_a_provider(&query.key) {
+        let registered: Vec<String> = get_providers()
+            .await
+            .into_iter()
+            .map(|(metadata, _)| metadata.name)
+            .collect();
+        if let Some(refusal) = unknown_provider_refusal(&query.key, &query.value, &registered) {
+            return Err((StatusCode::BAD_REQUEST, refusal));
+        }
+    }
 
     let result = config.set(&query.key, &query.value, query.is_secret);
 
@@ -673,6 +683,38 @@ fn config_value_refusal(key: &str, value: &Value) -> Option<String> {
             "Max turns must be a whole number of at least 1, so {value} was not saved."
         )),
     }
+}
+
+/// Whether `key` holds a provider NAME: the one new chats start on, or the
+/// lead half of a lead/worker pair.
+fn names_a_provider(key: &str) -> bool {
+    key.eq_ignore_ascii_case("BIOROUTER_PROVIDER")
+        || key.eq_ignore_ascii_case("BIOROUTER_LEAD_PROVIDER")
+}
+
+/// Why `value` cannot be stored under a key that names a provider (see
+/// [`names_a_provider`]), or `None` when it names one of `registered`: the
+/// built-in, declarative and custom providers this daemon can build.
+///
+/// T3-SH-7. Settings' "Edit configuration" writes through `/config/upsert`, and
+/// it saved `BIOROUTER_PROVIDER: bogus_provider_qa` with "Configuration
+/// updated". Every new chat then failed to start, and the app raised the
+/// non-private-model disclosure for a provider that does not exist.
+/// `/config/set_provider` already refuses such a name, by building the provider.
+fn unknown_provider_refusal(key: &str, value: &Value, registered: &[String]) -> Option<String> {
+    let name = value.as_str().map(str::trim).unwrap_or_default();
+    if !name.is_empty() && registered.iter().any(|known| known == name) {
+        return None;
+    }
+    let shown = if name.is_empty() {
+        value.to_string()
+    } else {
+        format!("'{name}'")
+    };
+    Some(format!(
+        "{shown} is not a provider Biorouter can use, so {key} was not changed. Choose a \
+         provider in Settings > Models."
+    ))
 }
 
 /// The mixing-policy arm of [`upsert_config`], split out so that handler stays
@@ -3654,6 +3696,86 @@ mod tests {
         assert_eq!(config_value_refusal("SOME_OTHER_KEY", &json!(0)), None);
     }
 
+    /// T3-SH-7: Edit configuration saved any provider name, and every new chat
+    /// then failed to start.
+    #[test]
+    fn a_provider_name_must_be_one_this_daemon_can_build() {
+        use serde_json::json;
+        let registered = ["openai".to_string(), "versa_azure".to_string()];
+        for key in [
+            "BIOROUTER_PROVIDER",
+            "BIOROUTER_LEAD_PROVIDER",
+            "biorouter_provider",
+        ] {
+            assert!(names_a_provider(key), "{key}");
+            for accepted in [json!("openai"), json!(" versa_azure ")] {
+                assert_eq!(
+                    unknown_provider_refusal(key, &accepted, &registered),
+                    None,
+                    "{key} = {accepted}"
+                );
+            }
+            for refused in [
+                json!("bogus_provider_qa"),
+                json!("OpenAI"),
+                json!(""),
+                json!(null),
+                json!(3),
+            ] {
+                let refusal = unknown_provider_refusal(key, &refused, &registered)
+                    .unwrap_or_else(|| panic!("{key} = {refused} was accepted"));
+                assert!(
+                    refusal.contains("is not a provider Biorouter can use"),
+                    "{refusal}"
+                );
+                assert!(refusal.contains(key), "{refusal}");
+            }
+        }
+        let refusal = unknown_provider_refusal(
+            "BIOROUTER_PROVIDER",
+            &json!("bogus_provider_qa"),
+            &registered,
+        )
+        .expect("refused");
+        assert!(
+            refusal.starts_with("'bogus_provider_qa' is not a provider"),
+            "{refusal}"
+        );
+        // Only the keys that name a provider are checked.
+        assert!(!names_a_provider("BIOROUTER_MODEL"));
+        assert!(!names_a_provider("OPENAI_HOST"));
+    }
+
+    /// The route asks the registry before it writes, and after every privacy
+    /// gate, so a refused name never reaches the file and an unproven caller is
+    /// still told about the proof first.
+    #[test]
+    fn upsert_refuses_an_unknown_provider_before_it_writes() {
+        let source = include_str!("config_management.rs");
+        let (_, body) = source
+            .split_once("pub async fn upsert_config(")
+            .expect("upsert_config");
+        let (body, _) = body.split_once("\n}\n").expect("the function's end");
+        // Without comments: a comment that names a write is not one.
+        let body = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let refused_at = body
+            .find("unknown_provider_refusal(")
+            .expect("upsert_config checks provider names");
+        let written_at = body.find("config.set(").expect("upsert_config writes");
+        let gated_at = body
+            .find("destination_change_refusal(")
+            .expect("upsert_config has its destination gate");
+        let capability_at = body
+            .find("is_capability_key(")
+            .expect("upsert_config has its capability gate");
+        assert!(refused_at < written_at);
+        assert!(capability_at < refused_at && gated_at < refused_at);
+    }
+
     /// `GET /config/providers/{name}/models` is named and documented as the model
     /// list, and for nine builtins it answered `[]`.
     ///
@@ -4651,5 +4773,30 @@ mod destination_route_tests {
             .await
             .expect("the person's own removal lands");
         assert!(stored(ENDPOINT).is_none());
+
+        // T3-SH-7: even the person's own write of a provider name has to name
+        // one this daemon can build, or no new chat could start.
+        let (status, sentence) = upsert_config(
+            headers_with(Some(TEST_USER_ACTION_KEY)),
+            write("BIOROUTER_PROVIDER", "bogus_provider_qa", false),
+        )
+        .await
+        .expect_err("a provider nobody registered is refused");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            sentence.contains("'bogus_provider_qa' is not a provider"),
+            "{sentence}"
+        );
+        assert!(
+            stored("BIOROUTER_PROVIDER").is_none(),
+            "nothing was written"
+        );
+        let _ = upsert_config(
+            headers_with(Some(TEST_USER_ACTION_KEY)),
+            write("BIOROUTER_PROVIDER", "openai", false),
+        )
+        .await
+        .expect("a registered provider is saved");
+        assert_eq!(stored("BIOROUTER_PROVIDER"), Some(Value::from("openai")));
     }
 }
