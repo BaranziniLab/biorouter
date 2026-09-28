@@ -53,6 +53,16 @@ pub const NOT_CONNECTED: &str = "crew_not_connected";
 /// words go in `detail`, never in the sentence.
 pub const REGISTRY_UNREADABLE: &str = "crew_registry_unreadable";
 
+/// `crew_grant_ended`: the chat's or task's Crew access has ended, so the request was refused
+/// here (T3-BE-7). `reason` says why: [`GRANT_ENDED_SETTINGS_CHANGED`] when Crew's settings moved
+/// since access was granted, else [`GRANT_ENDED`]'s plain `ended` (removed, timed out, or its
+/// task finished). Either way, granting access again is the way on.
+pub const GRANT_ENDED: &str = "crew_grant_ended";
+/// `crew_grant_ended`'s `reason` when Crew's settings changed since access was granted.
+pub const GRANT_ENDED_SETTINGS_CHANGED: &str = "settings_changed";
+/// `crew_grant_ended`'s `reason` for any other end: removed, timed out, or its task finished.
+pub const GRANT_ENDED_ENDED: &str = "ended";
+
 /// [`NOT_CONNECTED`]'s sentence. Kept byte for byte: the desktop's transport matchers, a chat's
 /// turn error and a transfer's recovery advice all still read it.
 pub const NOT_CONNECTED_TEXT: &str =
@@ -150,9 +160,17 @@ impl CrewRefusal {
     /// [`REGISTRY_UNREADABLE`], answered `409`: `sentence` for the person, and the reader's
     /// `error` as `detail` for "Copy details", control characters removed and bounded.
     pub(super) fn registry_unreadable(sentence: &str, error: &serde_json::Error) -> Self {
-        Self::new(REGISTRY_UNREADABLE, sentence)
+        Self::new(REGISTRY_UNREADABLE, sentence).status(409).with(
+            "detail",
+            serde_json::json!(bounded_detail(&error.to_string())),
+        )
+    }
+
+    /// [`GRANT_ENDED`], answered `409`, with `reason` and the sentence the chat already reads.
+    pub(super) fn grant_ended(reason: &'static str, sentence: &str) -> Self {
+        Self::new(GRANT_ENDED, sentence)
             .status(409)
-            .with("detail", serde_json::json!(bounded_detail(&error.to_string())))
+            .with("reason", serde_json::json!(reason))
     }
 
     /// [`MODEL_FIXED`], answered `409`.

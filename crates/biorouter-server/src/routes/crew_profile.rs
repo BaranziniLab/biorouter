@@ -331,9 +331,9 @@ async fn session_name(state: &AppState, session: &str) -> Option<String> {
     ),
     responses(
         (status = 200, description = "The workspace's own manifest of the grant's context, forwarded unchanged", body = CrewWorkspaceAnswer),
-        (status = 400, description = "`crew_profile_refused` for a chat with no Crew grant, a grant that stopped or is on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read", body = CrewError),
+        (status = 400, description = "`crew_profile_refused` for a chat with no Crew grant, a grant on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
-        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent; `crew_grant_ended`: the grant has ended, with `reason` `settings_changed` (Crew's settings changed since access was granted) or `ended` (removed, timed out, or its task finished); grant access again to continue", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"

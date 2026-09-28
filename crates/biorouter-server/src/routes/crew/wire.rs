@@ -141,6 +141,7 @@ pub enum CrewErrorCode {
     CrewGrantNotFound,
     CrewGrantOtherConnection,
     CrewGrantReplaced,
+    CrewGrantEnded,
     // The credential vault.
     CrewProfileRefused,
     // Files and transfers.
@@ -201,8 +202,9 @@ pub struct CrewError {
     /// The saved connection a `crew_invitation_conflict` or `crew_connection_exists` concerns.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
-    /// Why `crew_invitation_invalid` refused a paste: the invitation codec's own code,
-    /// `invalid_choice`, or `missing`.
+    /// Why `crew_invitation_invalid` refused a paste (the invitation codec's own code,
+    /// `invalid_choice`, or `missing`), or why `crew_grant_ended` ended the grant
+    /// (`settings_changed` or `ended`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// With `reason: missing`: what the invitation lacks.

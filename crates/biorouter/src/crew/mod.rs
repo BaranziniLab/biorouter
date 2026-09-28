@@ -235,6 +235,14 @@ impl Scope {
             GRANT_REVOKED
         }
     }
+    /// [`Self::stopped_text`], typed `crew_grant_ended` with its reason (T3-BE-7).
+    fn stopped(&self) -> CrewRefusal {
+        if self.revocation == Some(Revocation::EndedByWorkspace) {
+            CrewRefusal::grant_ended(refusal::GRANT_ENDED_SETTINGS_CHANGED, GRANT_POLICY_CHANGED)
+        } else {
+            CrewRefusal::grant_ended(refusal::GRANT_ENDED_ENDED, GRANT_REVOKED)
+        }
+    }
 }
 
 /// The display names of a run's identifiers, captured under the person's action when the
@@ -4031,9 +4039,19 @@ impl CrewManager {
             !method.starts_with("remote.") || !s.public_provider,
             "Public models cannot access remote files/jobs"
         );
-        ensure!(!s.expired, s.stopped_text());
+        // Typed, so a client can word an ended grant itself; the sentence is the one the chat
+        // already reads (T3-BE-7).
+        if s.expired {
+            return Err(s.stopped().into());
+        }
         let c = self.connection(&s.connection_id).await?;
-        ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
+        if s.epoch != c.policy_epoch {
+            return Err(CrewRefusal::grant_ended(
+                refusal::GRANT_ENDED_SETTINGS_CHANGED,
+                GRANT_POLICY_CHANGED,
+            )
+            .into());
+        }
         ensure!(params.is_object(), "Crew params must be an object");
         if let Some(channel) = params.get("channel_id").and_then(Value::as_str) {
             ensure!(
@@ -4162,14 +4180,14 @@ impl CrewManager {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
         if scope.expires_at.is_some_and(|at| at <= now) {
-            return anyhow::anyhow!(GRANT_TIMED_OUT);
+            return CrewRefusal::grant_ended(refusal::GRANT_ENDED_ENDED, GRANT_TIMED_OUT).into();
         }
         // The run's own task ended it here (W2-DMN-14): a finished task's terminal post ends
         // the run at the workspace, and a request just behind it (background compaction, a
         // last tool call) meets `grant_expired`. That is not a policy change, and the grant's
         // own stop is already on its way, so nothing is stamped here.
         if self.run_ended_here(session, &scope.run_id).await {
-            return anyhow::anyhow!(TASK_ENDED);
+            return CrewRefusal::grant_ended(refusal::GRANT_ENDED_ENDED, TASK_ENDED).into();
         }
         let run_id = scope.run_id.clone();
         let stopped = self
@@ -4193,7 +4211,7 @@ impl CrewManager {
         }
         self.forget_run_reads(session);
         self.forget_live_admission(session);
-        anyhow::anyhow!(GRANT_POLICY_CHANGED)
+        CrewRefusal::grant_ended(refusal::GRANT_ENDED_SETTINGS_CHANGED, GRANT_POLICY_CHANGED).into()
     }
     /// Remember that `run_id`'s own task ended it (see [`Self::ended_runs`]).
     fn note_run_ended(&self, run_id: &str) {
@@ -8788,6 +8806,127 @@ done
                 "refusals speak of access, not of runs and grants: {text}"
             );
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-7: a worker request on a grant that ended (the context route's, among others) is
+    /// refused typed, `crew_grant_ended` with `409` and a `reason`, so a client can say what to do
+    /// in its own words. The sentence is the one the chat already reads.
+    #[tokio::test]
+    async fn an_ended_grant_is_refused_as_crew_grant_ended_with_its_reason() {
+        let root = fixture_root("grant-ended-typed");
+        let (connection, scope) = worker_race_connection(
+            "16161616-1616-4616-8616-161616161616",
+            ClusterMode::Public,
+            3,
+            false,
+        );
+        let manager = CrewManager::new(root.clone()).unwrap();
+        {
+            let mut registry = manager.registry.lock().await;
+            registry.connections.push(connection);
+            registry
+                .scopes
+                .insert("worker-race-session".into(), scope.clone());
+        }
+        let context = || async {
+            manager
+                .worker_request("worker-race-session", "context.manifest", json!({}))
+                .await
+                .unwrap_err()
+        };
+        let typed = |error: &anyhow::Error| {
+            let found = CrewRefusal::find(error).expect("typed");
+            assert_eq!(found.code(), "crew_grant_ended", "{error}");
+            assert_eq!(found.http_status(), 409);
+            let [("reason", reason)] = found.fields() else {
+                panic!("only a reason: {:?}", found.fields());
+            };
+            (error.to_string(), reason.as_str().unwrap().to_owned())
+        };
+
+        // Crew's settings moved since the grant: the connection's policy epoch is newer.
+        manager.registry.lock().await.connections[0].policy_epoch = 4;
+        assert_eq!(
+            typed(&context().await),
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                "settings_changed".to_owned()
+            )
+        );
+        manager.registry.lock().await.connections[0].policy_epoch = 3;
+
+        // Removed here.
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("worker-race-session")
+            .unwrap()
+            .expired = true;
+        assert_eq!(
+            typed(&context().await),
+            (GRANT_REVOKED.to_owned(), "ended".to_owned())
+        );
+
+        // Ended by the workspace because its policy moved (D-1).
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("worker-race-session")
+            .unwrap()
+            .revocation = Some(Revocation::EndedByWorkspace);
+        assert_eq!(
+            typed(&context().await),
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                "settings_changed".to_owned()
+            )
+        );
+
+        // The workspace's own `grant_expired`, as the worker path reads it.
+        let expired = || {
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "grant_expired", "message": "grant_expired: run revoked, expired or policy changed"})
+            )
+        };
+        let ended = manager
+            .heed_worker_refusal("worker-race-session", &scope, expired())
+            .await;
+        assert_eq!(
+            typed(&ended),
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                "settings_changed".to_owned()
+            )
+        );
+        let timed_out = Scope {
+            expires_at: Some(1),
+            ..scope.clone()
+        };
+        let ended = manager
+            .heed_worker_refusal("worker-race-session", &timed_out, expired())
+            .await;
+        assert_eq!(
+            typed(&ended),
+            (GRANT_TIMED_OUT.to_owned(), "ended".to_owned())
+        );
+        // Anything else the workspace refused passes through untyped, as it came.
+        let other = manager
+            .heed_worker_refusal(
+                "worker-race-session",
+                &scope,
+                anyhow::anyhow!(
+                    "Crew broker refused request: {}",
+                    json!({"code": "forbidden", "message": "forbidden"})
+                ),
+            )
+            .await;
+        assert!(CrewRefusal::find(&other).is_none(), "{other}");
         let _ = fs::remove_dir_all(root);
     }
 

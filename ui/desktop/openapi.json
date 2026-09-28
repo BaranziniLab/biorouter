@@ -3565,7 +3565,7 @@
             }
           },
           "400": {
-            "description": "`crew_profile_refused` for a chat with no Crew grant, a grant that stopped or is on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read",
+            "description": "`crew_profile_refused` for a chat with no Crew grant, a grant on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read",
             "content": {
               "application/json": {
                 "schema": {
@@ -3585,7 +3585,7 @@
             }
           },
           "409": {
-            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent",
+            "description": "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent; `crew_grant_ended`: the grant has ended, with `reason` `settings_changed` (Crew's settings changed since access was granted) or `ended` (removed, timed out, or its task finished); grant access again to continue",
             "content": {
               "application/json": {
                 "schema": {
@@ -11215,7 +11215,7 @@
           },
           "reason": {
             "type": "string",
-            "description": "Why `crew_invitation_invalid` refused a paste: the invitation codec's own code,\n`invalid_choice`, or `missing`.",
+            "description": "Why `crew_invitation_invalid` refused a paste (the invitation codec's own code,\n`invalid_choice`, or `missing`), or why `crew_grant_ended` ended the grant\n(`settings_changed` or `ended`).",
             "nullable": true
           },
           "remote_revocation_confirmed": {
@@ -11316,6 +11316,7 @@
           "crew_grant_not_found",
           "crew_grant_other_connection",
           "crew_grant_replaced",
+          "crew_grant_ended",
           "crew_profile_refused",
           "crew_transfer_refused",
           "crew_file_is_credential",
