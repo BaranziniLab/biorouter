@@ -1066,22 +1066,36 @@ describe('AgentTaskPane', () => {
       );
     });
 
-    it('stays quiet on an older page, whose later messages are not loaded', async () => {
+    it('stays quiet on an older window, whose later messages are not loaded', async () => {
       const user = userEvent.setup();
-      // The live tail shares counts.csv; the page before it (answered by `messages.history`) is
-      // empty, and short of a full page, so it reads as the channel's start.
+      // The live tail shares counts.csv. Older pages are added above it (QA M6) until the window
+      // is full and its newest end, the message sharing counts.csv, gives way.
       installFiles({ 'blob-1': 'counts.csv' });
+      const history = mocks.crewRequest.getMockImplementation();
+      let pages = 0;
+      mocks.crewRequest.mockImplementation(
+        async (id: string, method: string, params?: Record<string, unknown>) => {
+          if (method !== 'messages.history') return history?.(id, method, params);
+          pages += 1;
+          return {
+            messages: Array.from({ length: 200 }, (_, index) => message(`old-${pages}-${index}`)),
+            cursor: null,
+          };
+        }
+      );
       installObserver({ messages: [{ ...message('5'), attachments: ['blob-1'] }] });
       renderCrew(Layout);
       await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
       const task = await openAgent(user);
-      act(() => currentCrew().loadOlder());
-      await waitFor(() => expect(currentCrew().historyBefore).not.toBeNull());
-      await waitFor(() => expect(currentCrew().messagesLoaded).toBe(true));
-      expect(currentCrew().messages).toHaveLength(0);
+      for (const size of [201, 401, 600]) {
+        act(() => currentCrew().loadOlder());
+        await waitFor(() => expect(currentCrew().messages).toHaveLength(size));
+      }
+      expect(currentCrew().historyBefore).not.toBeNull();
+      expect(currentCrew().messages.some((item) => item.id === message('5').id)).toBe(false);
       fireEvent.change(task, { target: { value: 'Average counts.csv' } });
       await act(async () => undefined);
-      // counts.csv is shared, in a message this page does not hold.
+      // counts.csv is shared, in a message this window does not hold.
       expect(fileWarning()).toBeNull();
     });
 
