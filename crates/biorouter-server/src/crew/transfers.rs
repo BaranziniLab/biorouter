@@ -80,8 +80,12 @@ pub struct Receipt {
     pub size: u64,
     pub sha256: String,
     pub offset: u64,
+    /// The workspace's attachment, once an upload has one or for a download; `null` before.
+    #[schema(required = true)]
     pub blob_id: Option<String>,
     pub state: String,
+    /// Why the transfer stopped, for a person; `null` otherwise.
+    #[schema(required = true)]
     pub error: Option<String>,
     binding: String,
     #[serde(default)]

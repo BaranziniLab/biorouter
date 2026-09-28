@@ -4017,13 +4017,19 @@ export type ReasoningEffort = 'quick' | 'normal' | 'deep';
  */
 export type Receipt = {
     binding: string;
-    blob_id?: string | null;
+    /**
+     * The workspace's attachment, once an upload has one or for a download; `null` before.
+     */
+    blob_id: string | null;
     channel_id: string;
     connection_id: string;
     destination_identity?: string | null;
     destination_selection?: string | null;
     direction: Direction;
-    error?: string | null;
+    /**
+     * Why the transfer stopped, for a person; `null` otherwise.
+     */
+    error: string | null;
     id: string;
     initial_target?: {
         [key: string]: unknown;

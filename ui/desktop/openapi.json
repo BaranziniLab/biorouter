@@ -16727,7 +16727,9 @@
           "size",
           "sha256",
           "offset",
+          "blob_id",
           "state",
+          "error",
           "binding"
         ],
         "properties": {
@@ -16736,6 +16738,7 @@
           },
           "blob_id": {
             "type": "string",
+            "description": "The workspace's attachment, once an upload has one or for a download; `null` before.",
             "nullable": true
           },
           "channel_id": {
@@ -16757,6 +16760,7 @@
           },
           "error": {
             "type": "string",
+            "description": "Why the transfer stopped, for a person; `null` otherwise.",
             "nullable": true
           },
           "id": {

@@ -1,22 +1,28 @@
+import type * as Api from '../../api/types.gen';
 import { crewHttp } from './crewApi';
 import { unwrapIpcError } from '../../utils/ipcError';
 
-export type TransferDirection = 'upload' | 'download';
-export interface CrewTransfer {
-  id: string;
-  request_id: string;
-  connection_id: string;
-  channel_id: string;
-  direction: TransferDirection;
-  name: string;
-  size: number;
-  sha256: string;
-  offset: number;
-  blob_id: string | null;
-  state: string;
-  error: string | null;
-  destination_identity?: string | null;
-}
+export type TransferDirection = Api.Direction;
+/**
+ * A transfer as the daemon records it (`Receipt`), without the daemon's own bookkeeping for
+ * resuming and cleaning up, of which only `destination_identity` is read here.
+ */
+export type CrewTransfer = Pick<
+  Api.Receipt,
+  | 'id'
+  | 'request_id'
+  | 'connection_id'
+  | 'channel_id'
+  | 'direction'
+  | 'name'
+  | 'size'
+  | 'sha256'
+  | 'offset'
+  | 'blob_id'
+  | 'state'
+  | 'error'
+  | 'destination_identity'
+>;
 export interface FileSelectionRequest {
   expected_mode?: 'private' | 'public';
   purpose?: 'transfer' | 'cleanup';

@@ -10,6 +10,8 @@ import {
 import type { CrewGrantKind, CrewGrantRevocation, CrewSessionGrant } from './api/grants';
 import type { CrewInvitationMissing, CrewJoinState } from './api/join';
 import type { CrewSelectorKind } from './api/names';
+import type { CrewTransfer, TransferDirection } from './crewTransfers';
+import type { HostStartState } from './onboarding/hostStart';
 import type { Wire } from './api/parse';
 import * as errors from './api/errors';
 
@@ -71,6 +73,12 @@ describe('Crew answers on the generated types', () => {
     expectTypeOf<CrewSelectorKind>().toEqualTypeOf<
       'person' | 'former_person' | 'team' | 'channel' | 'connection'
     >();
+    expectTypeOf<CrewTransfer['blob_id']>().toEqualTypeOf<string | null>();
+    expectTypeOf<CrewTransfer['destination_identity']>().toEqualTypeOf<
+      Api.Receipt['destination_identity']
+    >();
+    expectTypeOf<TransferDirection>().toEqualTypeOf<Api.Direction>();
+    expectTypeOf<HostStartState>().toEqualTypeOf<Api.HostStartState>();
   });
 
   it('names only the fields a daemon answer declares', () => {

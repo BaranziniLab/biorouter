@@ -1,6 +1,7 @@
+import type * as Api from '../../../api/types.gen';
 import { crewHttp } from '../crewApi';
 import { outdatedDaemonResponse, unexpectedCrewResponse } from '../api/errors';
-import { isRecord } from '../api/parse';
+import { wireOf } from '../api/parse';
 
 /**
  * "Start it for me" (D-HOST): the Host dialog's second step asks the daemon to run the start
@@ -24,7 +25,7 @@ export interface HostStartInput {
   proxy_jump: string | null;
 }
 
-export type HostStartState = 'running' | 'finished' | 'failed';
+export type HostStartState = Api.HostStartState;
 
 /** What the output says, read as a paste is read. */
 export type HostStartResult =
@@ -48,14 +49,15 @@ export interface HostStartRun {
 /** How often a running start is read again. */
 export const HOST_START_POLL_MS = 500;
 
-const STATES: readonly string[] = ['running', 'finished', 'failed'];
+const STATES: readonly string[] = ['running', 'finished', 'failed'] satisfies HostStartState[];
 
 function text(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
-function resultFrom(value: unknown): HostStartResult | null {
-  if (!isRecord(value)) return null;
+function resultFrom(wire: unknown): HostStartResult | null {
+  const value = wireOf<Api.StartOutput>(wire);
+  if (!value) return null;
   if (value.kind === 'found') {
     const found = text(value.text);
     return found ? { kind: 'found', text: found } : null;
@@ -71,17 +73,19 @@ function resultFrom(value: unknown): HostStartResult | null {
  * A run as the daemon answered it, or a refusal: a body that is not a run is never read as one. An
  * older daemon that answers a route it does not have with a web page is reported as outdated.
  */
-export function hostStartRunFrom(value: unknown): HostStartRun {
-  if (!isRecord(value)) throw outdatedDaemonResponse();
+export function hostStartRunFrom(wire: unknown): HostStartRun {
+  const value = wireOf<Api.HostStartStatus>(wire);
+  if (!value) throw outdatedDaemonResponse();
   const jobId = text(value.job_id);
   const command = text(value.command);
   const state = text(value.state);
   if (!jobId || command === null || !state || !STATES.includes(state)) {
     throw unexpectedCrewResponse('a host start');
   }
+  const failure = wireOf<Api.HostStartError>(value.error);
   const error =
-    isRecord(value.error) && text(value.error.code) && text(value.error.message)
-      ? { code: value.error.code as string, message: value.error.message as string }
+    failure && text(failure.code) && text(failure.message)
+      ? { code: failure.code as string, message: failure.message as string }
       : null;
   return {
     jobId,
@@ -95,14 +99,15 @@ export function hostStartRunFrom(value: unknown): HostStartRun {
 
 /** Start the host setup's commands on the server. Answers the run already under way, if one is. */
 export async function startHostRun(input: HostStartInput): Promise<HostStartRun> {
-  const body: HostStartInput = {
+  // The route refuses a field it does not take, so the body is checked against its schema.
+  const body = {
     preparation_id: input.preparation_id,
     workspace_name: input.workspace_name,
     ssh_target: input.ssh_target,
     port: input.port,
     identity_file: input.identity_file,
     proxy_jump: input.proxy_jump,
-  };
+  } satisfies Api.HostStartRequest;
   return hostStartRunFrom(await crewHttp<unknown>('/host/start', 'POST', body));
 }
 
