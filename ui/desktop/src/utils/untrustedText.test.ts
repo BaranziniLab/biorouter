@@ -119,6 +119,50 @@ describe('revealHiddenCharacters', () => {
       'invoice\u{200F}.exe\u{200E}\u{61C}',
       3,
     ],
+    // Every other character that draws nothing, taken by category, not only the three
+    // zero-width characters the first version knew: each of these left `@crew_bob` looking whole.
+    ['a zero-width non-joiner inside a handle', '@cre\u{200C}w_bob', 1],
+    ['a zero-width joiner inside a handle', '@cre\u{200D}w_bob', 1],
+    ['an invisible separator inside a handle', '@cre\u{2063}w_bob', 1],
+    ['the invisible operators', 'a\u{2061}b\u{2062}c\u{2064}d', 3],
+    ['the Mongolian vowel separator inside a handle', '@cre\u{180E}w_bob', 1],
+    ['the deprecated format characters', 'a\u{206A}b\u{206F}c', 2],
+    ['the combining grapheme joiner', 'cre\u{34F}w_bob', 1],
+    ['a variation selector between ASCII letters', 'cre\u{FE0F}w_bob and cre\u{FE00}w', 2],
+    ['an ideographic variation selector between ASCII letters', 'cre\u{E0100}w_bob', 1],
+    ['a soft hyphen between ASCII letters', 'cre\u{AD}w_bob', 1],
+    ['a Hangul filler beside a name', '@crew\u{3164}bob', 1],
+    ['a run of invisible characters, each one', 'cre\u{200B}\u{200C}\u{200D}w_bob', 3],
+    [
+      'an invisible character between two visible escapes, looked through to the letters',
+      'cre\u{202E}\u{200C}\u{202C}w',
+      3,
+    ],
+    ['a joiner between a Thai word and a domain', 'ดู\u{200D}ucsf.edu', 1],
+    ['a zero-width space inside a domain written in another script', 'пример\u{200B}сайт.рф', 1],
+    ['a keycap selector with no keycap after it', 'cre1\u{FE0F}w', 1],
+    [
+      'a direction mark inside a handle, in a message with right-to-left words',
+      'שלום @cre\u{200F}w_bob and cre\u{200E}w_\u{200F}bob',
+      3,
+    ],
+    // Text hidden in text, for an agent to read where no person can.
+    [
+      'a run of zero-width characters between spaces',
+      'hello \u{200B}\u{200C}\u{200B}\u{200C} there',
+      4,
+    ],
+    [
+      'variation selectors after an emoji, past the first',
+      '\u{1F600}\u{FE00}\u{E0101}\u{E0102}!',
+      2,
+    ],
+    [
+      'a flag whose tags spell more than a subdivision',
+      '\u{1F3F4}\u{E0069}\u{E0067}\u{E006E}\u{E006F}\u{E0072}\u{E0065}\u{E0020}\u{E0061}\u{E007F}',
+      9,
+    ],
+    ['a flag spelled in capital tags', '\u{1F3F4}\u{E0047}\u{E0042}\u{E0053}\u{E007F}', 4],
   ])('shows %s', (_label, value, count) => {
     const segments = revealHiddenCharacters(value);
     expect(segments.filter((part) => part.kind === 'hidden')).toHaveLength(count);
@@ -128,6 +172,7 @@ describe('revealHiddenCharacters', () => {
   it.each([
     ['a Hebrew paragraph', 'שלום לכולם, הפגישה בשעה 3.'],
     ['the direction marks of right-to-left text', 'שלום\u{200F} (C++)\u{200E} مرحبا\u{61C}'],
+    ['a mark after a Latin word before its full stop', 'אני משתמש ב-Windows\u{200E}. תודה'],
     [
       'an emoji joiner sequence',
       'scientist \u{1F469}\u{1F3FD}\u{200D}\u{1F52C} and family \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}',
@@ -135,7 +180,21 @@ describe('revealHiddenCharacters', () => {
     ['a zero-width non-joiner in Persian', 'می\u{200C}خواهم'],
     ['a zero-width space between Thai words', 'สวัสดี\u{200B}ครับ'],
     ['a subdivision flag', 'go \u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}!'],
-    ['tabs, newlines and a soft hyphen', 'a\tb\nc\r\nd\u{AD}e'],
+    ['a state flag', 'from \u{1F3F4}\u{E0075}\u{E0073}\u{E0074}\u{E0078}\u{E007F}'],
+    ['the emoji smuggling test’s one selector', '\u{1F600}\u{FE0F} ok'],
+    ['tabs and newlines', 'a\tb\nc\r\nd'],
+    ['a soft hyphen between letters of another script', 'авто\u{AD}мобиль'],
+    ['a joiner in an Indic conjunct', 'क्\u{200D}ष'],
+    ['an emoji presentation selector', 'love \u{2764}\u{FE0F}it, \u{A9}\u{FE0F}2026'],
+    [
+      'a joiner sequence with a selector inside',
+      'heart on fire \u{2764}\u{FE0F}\u{200D}\u{1F525}go',
+    ],
+    ['a keycap', 'press 1\u{FE0F}\u{20E3} or #\u{FE0F}\u{20E3} now'],
+    ['an ideographic variation selector', '葛\u{E0100}城'],
+    ['an emoji in a handle-like token', '@bob\u{1F469}\u{200D}\u{1F52C} \u{2764}\u{FE0F}@lab.org'],
+    ['an Arabic number sign before ASCII digits', 'total \u{600}123'],
+    ['a Mongolian free variation selector between Mongolian letters', 'ᠠ\u{180B}ᠢ'],
   ])('leaves %s alone', (_label, value) => {
     expect(revealHiddenCharacters(value)).toEqual([{ kind: 'text', text: value }]);
   });
@@ -157,6 +216,52 @@ describe('revealHiddenCharacters', () => {
 
   it('returns nothing for nothing', () => {
     expect(revealHiddenCharacters('')).toEqual([]);
+  });
+
+  /**
+   * It runs on the renderer's main thread each time a row mounts, on up to 64 KB (the broker's
+   * limit) that somebody else chose. The first version rescanned the whole token for every
+   * zero-width character and the whole tag run for every tag, so one message stalled every viewer:
+   * 21,800 zero-width spaces took 8 s, `@crew_bob` and 21,700 of them 20 s, a flag and 16,290 tags
+   * 4 s. One pass takes a few milliseconds; the bound leaves room for a loaded machine and none
+   * for a quadratic scan.
+   */
+  describe('within a bounded time, on a 64 KB body built to be slow', () => {
+    const LIMIT_BYTES = 64 * 1024;
+    const bytes = (value: string) => new TextEncoder().encode(value).length;
+    /** `unit` repeated to just under the broker's limit. */
+    const fill = (unit: string, lead = '') =>
+      lead + unit.repeat(Math.floor((LIMIT_BYTES - bytes(lead)) / bytes(unit)));
+
+    it.each([
+      ['zero-width spaces alone', fill('\u{200B}'), 'hidden'],
+      ['a letter and a zero-width space', fill('a\u{200B}'), 'hidden'],
+      ['a letter and a word joiner', fill('a\u{2060}'), 'hidden'],
+      ['a handle, then zero-width spaces', fill('\u{200B}', '@crew_bob'), 'hidden'],
+      ['a domain, then zero-width non-joiners', fill('\u{200C}', 'ucsf.edu'), 'hidden'],
+      ['tag characters alone', fill('\u{E0041}'), 'hidden'],
+      ['a black flag, then tag characters', fill('\u{E0067}', '\u{1F3F4}'), 'hidden'],
+      // Far more tags than a subdivision's code: shown, flag or not.
+      [
+        'a black flag, tag characters and a cancel tag',
+        `${fill('\u{E0067}', '\u{1F3F4}').slice(0, -2)}\u{E007F}`,
+        'hidden',
+      ],
+      ['an emoji, then variation selectors', fill('\u{E0100}', '\u{1F600}'), 'hidden'],
+      ['Thai words and zero-width spaces', fill('สวัสดี\u{200B}'), 'text'],
+      ['a plain line', fill('a'), 'text'],
+    ])('%s', (_label, value, kind) => {
+      expect(bytes(value)).toBeLessThanOrEqual(LIMIT_BYTES);
+      expect(bytes(value)).toBeGreaterThan(LIMIT_BYTES - 64);
+      const started = performance.now();
+      const segments = revealHiddenCharacters(value);
+      const elapsed = performance.now() - started;
+      expect(segments.map((part) => (part.kind === 'text' ? part.text : part.raw)).join('')).toBe(
+        value
+      );
+      expect(segments.some((part) => part.kind === kind)).toBe(true);
+      expect(elapsed).toBeLessThan(750);
+    });
   });
 });
 
