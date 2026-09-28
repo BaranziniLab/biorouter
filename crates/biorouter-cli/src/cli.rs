@@ -1511,14 +1511,17 @@ enum Command {
     },
 
     /// Start or resume interactive chat sessions
-    ///
-    /// ⚠ `sessions` is an alias, and it is not cosmetic. `session_watch.rs`'s
-    /// own error message told users to run `biorouter sessions watch <id>`, the
-    /// BR-71 plan wrote `biorouter sessions …` in roughly forty places, and
-    /// `docs/cli/command-reference.md` printed it — while the plural was never a
-    /// registered command, so every one of those instructions ended in
-    /// `unrecognized subcommand 'sessions'`. Registering it makes the
-    /// instructions true rather than making forty documents wrong.
+    //
+    // ⚠ `sessions` is an alias, and it is not cosmetic. `session_watch.rs`'s
+    // own error message told users to run `biorouter sessions watch <id>`, the
+    // BR-71 plan wrote `biorouter sessions …` in roughly forty places, and
+    // `docs/cli/command-reference.md` printed it — while the plural was never a
+    // registered command, so every one of those instructions ended in
+    // `unrecognized subcommand 'sessions'`. Registering it makes the
+    // instructions true rather than making forty documents wrong.
+    //
+    // A `//` comment, not `///`: clap turns a doc comment into the command's long
+    // help, and this note printed on every `biorouter session --help` (AG-F8).
     #[command(
         about = "Start or resume interactive chat sessions",
         visible_aliases = ["s", "sessions"]
@@ -3078,6 +3081,37 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    /// AG-F8: `--help` is for the people who run the command. A doc comment on a command
+    /// becomes its long help unless `long_about` is set, so a maintainer's note there (`⚠`, a
+    /// source file, a plan ID, a repository path) reached every `biorouter session --help`.
+    /// This walks every command's long help, so a note that leaks again anywhere is caught.
+    #[test]
+    fn no_command_help_prints_a_maintainers_note() {
+        fn walk(command: &mut clap::Command, path: &str, leaks: &mut Vec<String>) {
+            let internal =
+                regex::Regex::new(r"⚠|\b[\w-]+\.rs\b|\b(?:BR|SD|DR|QA)-\d|\bdocs/|\bcrates/")
+                    .expect("the marker pattern compiles");
+            let help = command.render_long_help().to_string();
+            if let Some(found) = internal.find(&help) {
+                leaks.push(format!("{path}: {}", found.as_str()));
+            }
+            let names: Vec<String> = command
+                .get_subcommands()
+                .map(|sub| sub.get_name().to_owned())
+                .collect();
+            for name in names {
+                if let Some(sub) = command.find_subcommand_mut(&name) {
+                    walk(sub, &format!("{path} {name}"), leaks);
+                }
+            }
+        }
+        let mut leaks = Vec::new();
+        let mut root = command_tree();
+        root.build();
+        walk(&mut root, "biorouter", &mut leaks);
+        assert!(leaks.is_empty(), "internal notes in --help: {leaks:#?}");
+    }
 
     #[test]
     fn shared_daemon_options_parse_on_session_and_run_without_starting_tool_bridge() {
