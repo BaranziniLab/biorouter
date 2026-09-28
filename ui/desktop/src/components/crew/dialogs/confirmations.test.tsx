@@ -210,6 +210,26 @@ describe('CrewConfirmation', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('says what removing a connection costs, and never that the workspace can simply be added again', async () => {
+    const { crew } = renderConfirm({ action: 'remove-connection', connectionId: connection.id });
+    const dialog = await screen.findByRole('alertdialog', {
+      name: confirmCopy.removeConnection.title('lab'),
+    });
+    const description = confirmCopy.removeConnection.description;
+    expect(within(dialog).getByText(description)).toBeInTheDocument();
+    // The device key is deleted and the member stays enrolled, so the old invitation cannot
+    // bring the workspace back: only the host adding this computer does.
+    expect(description).not.toMatch(/add it again/i);
+    expect(description).toMatch(/deletes this computer’s key/);
+    expect(description).toMatch(/the host has to add this computer/);
+    // A host removing it from their last computer ends the host controls for good.
+    expect(description).toMatch(/If you host it and no other computer of yours still has it/);
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    });
+    await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith(connection.id));
+  });
+
   it('closes rather than confirm a removal it has no username for', async () => {
     const { onClose } = renderConfirm({ action: 'remove-person', principalId: 'person-unknown' });
     await waitFor(() => expect(onClose).toHaveBeenCalled());

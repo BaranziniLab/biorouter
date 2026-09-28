@@ -550,10 +550,16 @@ export const confirmCopy = {
     description: 'They’ll lose access to its messages and files. You can invite them again.',
     confirm: 'Remove',
   },
+  /**
+   * Removing deletes this computer's device key, and the member stays enrolled, so the old
+   * invitation cannot bring the workspace back (`docs/crew/command-line.md`, "Change or remove a
+   * saved connection"). A host who removes it from their last computer loses the host controls
+   * for good (`docs/crew/hosting-a-workspace.md`, "Limits of the host role").
+   */
   removeConnection: {
     title: (workspace: string) => `Remove ${workspace} from this computer?`,
     description:
-      'Chats connected to it lose access. Your messages stay on the server, and you can add it again.',
+      'It disconnects, ends every chat’s access through it and deletes this computer’s key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. If you host it and no other computer of yours still has it, nobody can let people in, change its privacy or remove anyone there again.',
     confirm: 'Remove',
   },
   stopTask: {
