@@ -62,7 +62,7 @@ export function WorkspaceAgentAccess({ className }: WorkspaceAgentAccessProps) {
         status={grants.status}
         error={grants.error}
         onRetryLoad={grants.refetch}
-        emptyText={accessCopy.emptyWorkspace(workspace)}
+        emptyText={(past) => accessCopy.emptyWorkspace(workspace, past)}
         onOpen={onOpen}
         onRevoke={(row) => grants.revoke(row.connectionId, row.sessionId)}
         onStop={onStop}

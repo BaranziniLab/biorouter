@@ -183,7 +183,10 @@ describe('chat access: grant', () => {
     expect(paneNode).not.toHaveTextContent(/nothing else/);
 
     fireEvent.click(within(paneNode).getByRole('button', { name: 'Advanced' }));
-    const methods = await within(paneNode).findByRole('checkbox', { name: 'Lab / #methods' });
+    // AG-F17: a channel no other team shares a name with is named as Ask my agent names it, without
+    // its team; "Lab / #methods" on every row said the team where it told nothing apart.
+    const methods = await within(paneNode).findByRole('checkbox', { name: '#methods' });
+    expect(within(paneNode).queryByRole('checkbox', { name: /\// })).toBeNull();
     // Archived channels are not offered.
     expect(within(paneNode).queryByRole('checkbox', { name: /old-notes/ })).toBeNull();
     fireEvent.click(methods);

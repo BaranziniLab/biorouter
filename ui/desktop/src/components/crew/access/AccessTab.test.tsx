@@ -517,6 +517,31 @@ describe('the Access tab', () => {
     // Q4-29: the empty state starts at the panel's edge too.
     expect(how.parentElement).not.toHaveClass('px-3');
   });
+
+  it('says “now”, not “yet”, when only past access is listed below the empty state', async () => {
+    // AG-F17: "None of your chats can post in #general yet." sat directly above "Show past access
+    // (2)", which says some once could.
+    setup({
+      runs: [],
+      grants: () => [
+        grantRow({ session_id: 'old-chat', session_name: 'Old chat', expired: true }),
+        grantRow({ session_id: 'late-chat', session_name: 'Late chat', expires_at: past() }),
+      ],
+    });
+    expect(
+      await screen.findByText('None of your chats can post in #general now.')
+    ).toBeInTheDocument();
+    expect(screen.getByText(accessCopy.empty('#general', true))).toBeInTheDocument();
+    expect(screen.queryByText(accessCopy.empty('#general'))).toBeNull();
+    expect(screen.getByRole('button', { name: accessCopy.showOld(2) })).toBeInTheDocument();
+  });
+
+  it('keeps “yet” in Workspace settings when nothing was ever listed', async () => {
+    setup({ runs: [], grants: () => [] }, WorkspaceLayout);
+    expect(await screen.findByText(accessCopy.emptyWorkspace('lab'))).toBeInTheDocument();
+    expect(accessCopy.emptyWorkspace('lab')).toMatch(/ yet\.$/);
+    expect(accessCopy.emptyWorkspace('lab', true)).toBe('None of your chats can post in lab now.');
+  });
 });
 
 /**

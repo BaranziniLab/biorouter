@@ -56,7 +56,9 @@ export function AccessTab({ className }: AccessTabProps) {
         status={grants.status}
         error={grants.error}
         onRetryLoad={grants.refetch}
-        emptyText={accessCopy.empty(channel ? channelName(channel) : accessCopy.unknownChannel)}
+        emptyText={(past) =>
+          accessCopy.empty(channel ? channelName(channel) : accessCopy.unknownChannel, past)
+        }
         onOpen={onOpen}
         onRevoke={(row) => grants.revoke(row.connectionId, row.sessionId)}
         onStop={onStop}

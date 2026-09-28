@@ -24,10 +24,10 @@ import { Note } from '../../ui/note';
 import {
   PersonName,
   channelName,
+  channelNamesAcrossTeams,
   connectionNames,
   identityCopy,
   sanitizeDisplayText,
-  teamName,
   usePeopleDirectory,
   type DaemonPersonLabels,
 } from '../identity';
@@ -637,16 +637,12 @@ function AlsoRead({
       (snapshot?.channels ?? []).filter((item) => item.id !== currentChannelId && !item.archived),
     [snapshot, currentChannelId]
   );
-  const labels = useMemo(() => {
-    // "Team / #channel" on every row: the list spans teams.
-    const teams = new Map((snapshot?.teams ?? []).map((team) => [team.id, team]));
-    return new Map(
-      candidates.map((item) => [
-        item.id,
-        `${teamName(teams.get(item.team_id))} / ${channelName(item)}`,
-      ])
-    );
-  }, [snapshot, candidates]);
+  // The team only where two teams have a channel by that name, as Ask my agent names the same list
+  // (AG-F17): "Patel Group / #general" on every row said the team where it told nothing apart.
+  const labels = useMemo(
+    () => channelNamesAcrossTeams(snapshot?.channels ?? [], snapshot?.teams ?? []),
+    [snapshot]
+  );
   if (candidates.length === 0) return null;
   const chosen = contextChannels.filter((id) => candidates.some((item) => item.id === id));
   return (
@@ -668,7 +664,7 @@ function AlsoRead({
                 )
               }
             />
-            <span className="min-w-0 truncate">{labels.get(item.id)}</span>
+            <span className="min-w-0 truncate">{labels.get(item.id) ?? channelName(item)}</span>
           </label>
         ))}
       </fieldset>

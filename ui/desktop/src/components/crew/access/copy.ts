@@ -158,8 +158,11 @@ export const accessCopy = {
   // The list holds this computer's own chats and tasks, never anyone else's agents: from a
   // member's seat "No chats or agents can post" was false whenever another person's agent posts
   // there (live QA round 3, Q3-29). It says whose, and how to connect one.
-  empty: (channel: string) => `None of your chats can post in ${channel} yet.`,
-  emptyWorkspace: (workspace: string) => `None of your chats can post in ${workspace} yet.`,
+  // With past rows listed below it, "yet" read as if nothing ever had (AG-F17): it says "now".
+  empty: (channel: string, past = false) =>
+    `None of your chats can post in ${channel} ${past ? 'now' : 'yet'}.`,
+  emptyWorkspace: (workspace: string, past = false) =>
+    `None of your chats can post in ${workspace} ${past ? 'now' : 'yet'}.`,
   /** Follows `empty`: a chat is connected from inside it. `/crew` is drawn as code. */
   emptyHow: 'To connect one, open that chat and type /crew.',
   untitled: 'Untitled chat',

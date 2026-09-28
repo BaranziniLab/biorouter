@@ -17,8 +17,11 @@ export interface AccessListProps {
   /** The list failure to show, with Retry. */
   error?: string | null;
   onRetryLoad(): void;
-  /** The empty-state sentence ("None of your chats can post in #methods yet."). */
-  emptyText: string;
+  /**
+   * The empty-state sentence ("None of your chats can post in #methods yet."), told whether past
+   * rows are listed below it, where "yet" would be false ("…now.").
+   */
+  emptyText(hasPast: boolean): string;
   /** Open the chat or the task's conversation. */
   onOpen(row: AccessRow): void;
   /** Revoke a chat's grant (or retry a revoke that stopped only on this device). Never throws. */
@@ -241,14 +244,14 @@ export function AccessList({
   } else if (status === 'failed') {
     body = null;
   } else if (rows.length === 0) {
-    body = <EmptyAccess text={emptyText} className={inset} />;
+    body = <EmptyAccess text={emptyText(false)} className={inset} />;
   } else {
     body = (
       <>
         {current.length > 0 ? (
           <ul className={shellClass}>{current.map(renderRow)}</ul>
         ) : (
-          <EmptyAccess text={emptyText} className={inset} />
+          <EmptyAccess text={emptyText(old.length > 0)} className={inset} />
         )}
         {old.length > 0 ? (
           <Disclosure label={accessCopy.showOld(old.length)}>
