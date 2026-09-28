@@ -1,5 +1,5 @@
 import { NavigateFunction } from 'react-router-dom';
-import { Workflow } from '../api/types.gen';
+import { Workflow, type SessionClassification } from '../api/types.gen';
 import type { UserAttachment } from '../types/message';
 
 export type View =
@@ -39,6 +39,13 @@ export type ViewOptions = {
   shareToken?: string;
   resumeSessionId?: string;
   pendingScheduleDeepLink?: string;
+  /**
+   * The route to go back to when a detour ends: the provider catalog opened
+   * from a chat's model picker returns there (W2-PRV-5).
+   */
+  returnTo?: string;
+  /** The tier of the chat `resumeSessionId` names, for a picker opened on its behalf. */
+  privacyTier?: SessionClassification;
 };
 
 export const navigateWithViewTransition = (

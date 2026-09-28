@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type Model from '../modelInterface';
 import {
   ALSO_FOR_NEW_CHATS_HINT,
   ALSO_FOR_NEW_CHATS_LABEL,
@@ -365,7 +366,7 @@ describe('SwitchModelModal — what the switch changes', () => {
    * started-chat scope and holds the pick for it, instead of rewriting the model
    * every new chat starts on.
    */
-  const renderUnsent = (onChooseForUnsentChat: ReturnType<typeof vi.fn>) =>
+  const renderUnsent = (onChooseForUnsentChat: (model: Model) => void) =>
     render(
       <SwitchModelModal
         sessionId={null}

@@ -17,7 +17,12 @@ import { Select } from '../../../ui/Select';
 import { useConfig } from '../../../ConfigContext';
 import { CREW_MODEL_FIXED_TEXT, useModelAndProvider } from '../../../ModelAndProviderContext';
 import { useChatCrewAccessState } from '../../../crew/access/chatCrewAccess';
-import type { View } from '../../../../utils/navigationUtils';
+import type { View, ViewOptions } from '../../../../utils/navigationUtils';
+import {
+  codingAgentStatusOnce,
+  isCodingAgentProviderId,
+  saveCodingAgentCommand,
+} from '../../../onboarding/codingAgentControls';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { AffiliationBadge } from '../../../ui/AffiliationBadge';
@@ -221,10 +226,24 @@ const renderModelOptionLabel = (
   );
 };
 
+/**
+ * Where "Use other provider" sends the catalog back to, and for which chat.
+ * HashRouter: the screen the dialog was opened on is the hash, without its `#`.
+ */
+export function configureProvidersReturn(
+  sessionId: string | null,
+  privacyTier: SessionClassification | undefined
+): ViewOptions {
+  const returnTo = window.location.hash.replace(/^#/, '') || '/';
+  return sessionId
+    ? { returnTo, resumeSessionId: sessionId, ...(privacyTier ? { privacyTier } : {}) }
+    : { returnTo };
+}
+
 type SwitchModelModalProps = {
   sessionId: string | null;
   onClose: () => void;
-  setView: (view: View) => void;
+  setView: (view: View, options?: ViewOptions) => void;
   onModelSelected?: (model: string) => void;
   initialProvider?: string | null;
   initialModel?: string | null;
@@ -260,7 +279,7 @@ export const SwitchModelModal = ({
   privacyTier,
   onChooseForUnsentChat,
 }: SwitchModelModalProps) => {
-  const { getProviders, getProviderModels, read } = useConfig();
+  const { getProviders, getProviderModels, read, upsert } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
   /**
    * W2-PRV-15. A chat with Crew access keeps the model its access was granted
@@ -307,6 +326,14 @@ export const SwitchModelModal = ({
   const [providerInputValue, setProviderInputValue] = useState('');
   const [modelInputValue, setModelInputValue] = useState('');
   const loadedProvidersRef = useRef(false);
+  /**
+   * W2-PRV-5 — coding agents the catalog shows as Ready (installed, signed in on
+   * the person's subscription) whose command key was never saved. The daemon
+   * reports such an agent unconfigured until "Use <agent>" writes that key, so
+   * this list dropped a signed-in Codex without a word. It is offered here, and
+   * choosing it makes the same one write before the switch.
+   */
+  const [connectOnChoose, setConnectOnChoose] = useState<ReadonlySet<string>>(new Set());
 
   /**
    * The providers this chat may not be switched to (§14.2, Gate A's pre-flight).
@@ -593,6 +620,15 @@ export const SwitchModelModal = ({
         modelObj = { name: model, provider: provider, subtext: providerDisplayName } as Model;
       }
 
+      // W2-PRV-5: a signed-in agent chosen here before "Use <agent>" was ever
+      // pressed gets that button's one write first, or the bind would name a
+      // provider the daemon still reports as not set up.
+      if (modelObj.provider && connectOnChoose.has(modelObj.provider)) {
+        const kind = modelObj.provider;
+        if (isCodingAgentProviderId(kind)) {
+          await saveCodingAgentCommand(upsert, kind);
+        }
+      }
       // A refusal whose sentence is the whole answer (a Crew chat's fixed
       // model) comes back here instead of as a toast, and is shown as it is:
       // "then try again" can never work for it (W2-PRV-15).
@@ -723,6 +759,52 @@ export const SwitchModelModal = ({
             label: 'Use other provider',
           },
         ]);
+
+        // W2-PRV-5. After the list is on screen, not before it: learning which
+        // agents are signed in may spawn their CLIs (once per renderer; see
+        // `codingAgentStatusOnce`), and nothing else here should wait for it.
+        const unconnected = providersResponse.filter(
+          (row) =>
+            isCodingAgentProviderId(row.name) && !row.is_configured && !row.unavailable_reason
+        );
+        if (unconnected.length > 0 && !isBrowserSurface()) {
+          void (async () => {
+            try {
+              const status = await codingAgentStatusOnce();
+              const ready = unconnected.filter((row) =>
+                status.agents.some(
+                  (agent) =>
+                    agent.providerId === row.name && agent.auth.state === 'signed_in_subscription'
+                )
+              );
+              if (ready.length === 0) return;
+              setActiveProviders((current) => [
+                ...current,
+                ...ready.filter((row) => !current.some((known) => known.name === row.name)),
+              ]);
+              setConnectOnChoose(new Set(ready.map((row) => row.name)));
+              setProviderOptions((current) => {
+                const readyOption = (name: string) => {
+                  const found = ready.find((row) => row.name === name);
+                  return found ? { value: found.name, label: found.metadata.display_name } : null;
+                };
+                // A row already there is the one the dialog opened on, marked
+                // "not set up" (`PROVIDER_NOT_SET_UP`); it is set up enough now.
+                const rest = current
+                  .filter((option) => option.value !== 'configure_providers')
+                  .map((option) => readyOption(option.value) ?? option);
+                const add = ready
+                  .filter((row) => !current.some((option) => option.value === row.name))
+                  .map((row) => ({ value: row.name, label: row.metadata.display_name }));
+                const other = current.filter((option) => option.value === 'configure_providers');
+                return [...rest, ...add, ...other];
+              });
+            } catch (error: unknown) {
+              // The list without them is what it always was.
+              console.error('Failed to read coding-agent status:', error);
+            }
+          })();
+        }
       } catch (error: unknown) {
         console.error('Failed to query providers:', error);
       }
@@ -1052,8 +1134,16 @@ export const SwitchModelModal = ({
                     const option = newValue as { value: string; label: string } | null;
                     setProviderInputValue('');
                     if (option?.value === 'configure_providers') {
-                      // Navigate to ConfigureProviders view
-                      setView('ConfigureProviders');
+                      // W2-PRV-5: the catalog is a detour, not a destination.
+                      // It carries where it was opened from (and, from a chat,
+                      // that chat and its tier), so a provider set up there
+                      // comes back here and its model is chosen for this chat.
+                      // It used to land on Settings > Models with no way back,
+                      // and set the model every new chat starts on.
+                      setView(
+                        'ConfigureProviders',
+                        configureProvidersReturn(sessionId, privacyTier)
+                      );
                       onClose(); // Close the current modal
                     } else {
                       setProvider(option?.value || null);

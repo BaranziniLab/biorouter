@@ -14,6 +14,7 @@ import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import type { View } from '../../../utils/navigationUtils';
+import type { SessionClassification } from '../../../api';
 import {
   AI_AGENT_PROVIDER_IDS,
   getOrderedProviderGroups,
@@ -98,6 +99,14 @@ interface ProviderCatalogProps {
   configuredProvider?: string | null;
   /** A route hint (`?tab=public`), which outranks every computed default. */
   initialTab?: string | null;
+  /**
+   * W2-PRV-5. The chat whose model picker opened this catalog ("Use other
+   * provider"), and its tier. The model step that follows a setup then
+   * switches THAT chat, with the chat's own scope and pre-flight, instead of
+   * the model every new chat starts on.
+   */
+  chatSessionId?: string | null;
+  chatPrivacyTier?: SessionClassification;
 }
 
 /**
@@ -213,6 +222,8 @@ export default function ProviderCatalog({
   onCommercialSuccess,
   configuredProvider,
   initialTab,
+  chatSessionId = null,
+  chatPrivacyTier,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
 
@@ -675,7 +686,8 @@ export default function ProviderCatalog({
       )}
       {showSwitchModelModal && (
         <SwitchModelModal
-          sessionId={null}
+          sessionId={chatSessionId}
+          privacyTier={chatPrivacyTier}
           onClose={() => setShowSwitchModelModal(false)}
           setView={handleSetView}
           onModelSelected={onModelSelected}

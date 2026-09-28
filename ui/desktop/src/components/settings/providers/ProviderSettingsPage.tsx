@@ -4,7 +4,7 @@ import { ScrollArea } from '../../ui/scroll-area';
 import BackButton from '../../ui/BackButton';
 import ProviderCatalog from './ProviderCatalog';
 import { useConfig } from '../../ConfigContext';
-import { ProviderDetails } from '../../../api';
+import { ProviderDetails, type SessionClassification } from '../../../api';
 import { createNavigationHandler } from '../../../utils/navigationUtils';
 import { persistDetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
@@ -14,12 +14,17 @@ interface ProviderSettingsProps {
   onClose: () => void;
   isOnboarding: boolean;
   onProviderLaunched?: (model?: string) => void;
+  /** W2-PRV-5: the chat whose model picker opened this page; see `ProviderCatalog`. */
+  chatSessionId?: string | null;
+  chatPrivacyTier?: SessionClassification;
 }
 
 export default function ProviderSettings({
   onClose,
   isOnboarding,
   onProviderLaunched,
+  chatSessionId,
+  chatPrivacyTier,
 }: ProviderSettingsProps) {
   const { getProviders, read, upsert } = useConfig();
   const navigate = useNavigate();
@@ -132,6 +137,8 @@ export default function ProviderSettings({
               onCommercialSuccess={handleCommercialSuccess}
               configuredProvider={configuredProvider}
               initialTab={tabHint}
+              chatSessionId={chatSessionId}
+              chatPrivacyTier={chatPrivacyTier}
             />
           )}
         </div>

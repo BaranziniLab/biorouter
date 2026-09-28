@@ -59,6 +59,8 @@ vi.mock('../subcomponents/SwitchModelModal', () => ({
     return null;
   },
 }));
+/** Read through a function, so TypeScript does not narrow it after a reset. */
+const lastSwitchProps = (): Record<string, unknown> | null => switchModal.props;
 vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
@@ -240,7 +242,7 @@ describe('the chip where there is no chat yet', () => {
 
     fireEvent.click(await screen.findByText('Change model'));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
-    expect(switchModal.props?.onChooseForUnsentChat).toBe(choose);
+    expect(lastSwitchProps()?.onChooseForUnsentChat).toBe(choose);
   });
 
   it('gives Home\u2019s switch no unsent chat to hold a pick for', async () => {
@@ -249,6 +251,6 @@ describe('the chip where there is no chat yet', () => {
     await openDropdown();
     fireEvent.click(await screen.findByText('Change model'));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
-    expect(switchModal.props?.onChooseForUnsentChat).toBeUndefined();
+    expect(lastSwitchProps()?.onChooseForUnsentChat).toBeUndefined();
   });
 });

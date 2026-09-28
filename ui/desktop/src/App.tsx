@@ -57,6 +57,7 @@ import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import ApplicationsView from './components/applications/ApplicationsView';
 import NotFoundView from './components/NotFoundView';
 import { View, ViewOptions } from './utils/navigationUtils';
+import ConfigureProvidersRoute from './components/settings/providers/ConfigureProvidersRoute';
 
 import { useNavigation } from './hooks/useNavigation';
 import { errorMessage } from './utils/conversionUtils';
@@ -262,19 +263,6 @@ const PermissionRoute = () => {
         }
       }}
     />
-  );
-};
-
-const ConfigureProvidersRoute = () => {
-  const navigate = useNavigate();
-
-  return (
-    <div className="w-screen h-screen bg-background-default">
-      <ProviderSettings
-        onClose={() => navigate('/settings', { state: { section: 'models' } })}
-        isOnboarding={false}
-      />
-    </div>
   );
 };
 

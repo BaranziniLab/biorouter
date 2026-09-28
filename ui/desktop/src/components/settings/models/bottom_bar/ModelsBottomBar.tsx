@@ -5,7 +5,7 @@ import { NO_MODEL_CHIP_LABEL, hasNoModelConfigured } from '../../../composerNoPr
 import { SwitchModelModal } from '../subcomponents/SwitchModelModal';
 import { usePendingChatModel } from '../pendingChatModel';
 import { LeadWorkerSettings } from '../subcomponents/LeadWorkerSettings';
-import { View } from '../../../../utils/navigationUtils';
+import { View, type ViewOptions } from '../../../../utils/navigationUtils';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -69,7 +69,7 @@ export const NEW_CHATS_MODEL_NOTE =
 interface ModelsBottomBarProps {
   sessionId: string | null;
   dropdownRef: React.RefObject<HTMLDivElement>;
-  setView: (view: View) => void;
+  setView: (view: View, options?: ViewOptions) => void;
   alerts: Alert[];
   /** Hide the inline alert green-dot when the context window indicator is
    * surfaced separately (e.g. in the picker popover's dedicated row). */
