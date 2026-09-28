@@ -2417,7 +2417,8 @@ impl CrewManager {
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_failed_transport(id, &transport).await?;
+            self.retire_failed_transport(id, &transport, method, &result)
+                .await?;
         }
         result
     }

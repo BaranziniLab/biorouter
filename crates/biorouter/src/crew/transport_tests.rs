@@ -447,8 +447,9 @@ async fn stale_failed_transport_cannot_retire_a_newer_replacement() {
         .await
         .insert(connection_id.into(), replacement.clone());
 
+    let lost: anyhow::Result<serde_json::Value> = Err(anyhow::anyhow!("answer lost"));
     manager
-        .retire_failed_transport(connection_id, &failed)
+        .retire_failed_transport(connection_id, &failed, "message.post", &lost)
         .await
         .unwrap();
 
@@ -473,7 +474,7 @@ async fn stale_failed_transport_cannot_retire_a_newer_replacement() {
 
     replacement.lock().await.unusable = true;
     manager
-        .retire_failed_transport(connection_id, &replacement)
+        .retire_failed_transport(connection_id, &replacement, "message.post", &lost)
         .await
         .unwrap();
     assert!(!manager.transports.lock().await.contains_key(connection_id));
@@ -557,7 +558,8 @@ async fn ssh_failure_for(stderr: &[u8], exit: i32) -> SshFailure {
 }
 
 fn legacy_message(code: &str, status: &str, description: &str) -> String {
-    // The exact format string the transport used before failures were typed.
+    // The exact format string the transport used before failures were typed, which a failure
+    // whose outcome is unknown still reads as, byte for byte (T3-BE-1).
     format!("Crew SSH failure [{code}; child_before_cleanup={status}]: {description}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying")
 }
 
@@ -813,11 +815,58 @@ async fn display_text_is_byte_identical_to_the_untyped_message() {
         description: "Crew request timed out".into(),
         detail: Some("ssh: connect to host hpc.example.edu port 22: Connection refused".into()),
         host: None,
+        outcome_unknown: true,
     };
     assert_eq!(
         constructed.to_string(),
         legacy_message("ssh_timeout", "running", "Crew request timed out")
     );
+    // T3-BE-1: a failure that lost no change keeps the prefix renderers key on and says
+    // nothing about an unknown outcome.
+    let nothing_lost = SshFailure {
+        outcome_unknown: false,
+        ..constructed
+    };
+    assert_eq!(
+        nothing_lost.to_string(),
+        "Crew SSH failure [ssh_timeout; child_before_cleanup=running]: Crew request timed out"
+    );
+}
+
+/// T3-BE-1: only a request that could have changed something, whose answer was lost, leaves
+/// its outcome unknown. A `hello` (a dial or a heartbeat) or a read that breaks says so with
+/// the same prefix and without the advice to inspect history, which every idle member's saved
+/// error used to carry after a workspace server merely stopped.
+#[tokio::test]
+async fn only_a_lost_change_leaves_its_outcome_unknown() {
+    for (method, unknown) in [
+        ("hello", false),
+        ("messages.history", false),
+        ("message.post", true),
+        ("run.project", true),
+    ] {
+        let mut transport = spawn_peer(r#"IFS= read -r line; exit 255"#, None);
+        let error = transport
+            .request(method, request_params(), None, None, None)
+            .await
+            .expect_err("a peer that exits must fail the exchange");
+        transport.close().await;
+        let failure = error
+            .downcast_ref::<SshFailure>()
+            .cloned()
+            .expect("a typed SshFailure");
+        assert_eq!(failure.outcome_unknown, unknown, "{method}");
+        let text = failure.to_string();
+        assert!(
+            text.starts_with("Crew SSH failure [ssh_eof; child_before_cleanup="),
+            "{text}"
+        );
+        assert_eq!(
+            text.contains("Submitted operation outcome may be unknown"),
+            unknown,
+            "{method}: {text}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1188,8 +1237,16 @@ async fn a_refused_key_before_any_answer_is_a_plain_sign_in_refusal() {
         .request("hello", request_params(), None, None, Some("first".into()))
         .await
         .unwrap();
+    // A change written to a bridge that had answered: not a sign-in refusal, and its outcome is
+    // unknown (T3-BE-1).
     let error = answered
-        .request("hello", request_params(), None, None, Some("second".into()))
+        .request(
+            "message.post",
+            request_params(),
+            None,
+            None,
+            Some("second".into()),
+        )
         .await
         .expect_err("the bridge went away");
     answered.close().await;

@@ -2026,6 +2026,64 @@ async fn a_server_that_stopped_saving_is_shown_on_the_connection() {
     f.manager.disconnect(CONNECTION_ID).await.unwrap();
 }
 
+/// T3-BE-1: a bridge that broke under a request is retired with the alarm about a submitted
+/// operation only when a change was written and its answer lost. A post answered `crew_not_sent`
+/// (only its challenge was lost) or `crew_reconnecting`, and a failure that lost no change,
+/// leave the plain "dropped" error.
+#[tokio::test]
+async fn only_a_lost_change_leaves_the_submitted_operation_alarm() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("bridge-loss-message", &["serve"], quiet()).await;
+    let ssh = |outcome_unknown| {
+        anyhow::Error::new(SshFailure {
+            kind: SshFailureKind::Other,
+            code: "ssh_eof".into(),
+            status: "exit_255".into(),
+            description: "SSH connection closed".into(),
+            detail: None,
+            host: None,
+            outcome_unknown,
+        })
+    };
+    let typed = |code: &'static str| {
+        ssh(code == super::refusal::OUTCOME_UNKNOWN)
+            .context(super::CrewRefusal::new(code, "typed").status(503))
+    };
+    for (method, answer, alarm) in [
+        ("message.post", typed(super::refusal::NOT_SENT), false),
+        ("message.post", typed(super::refusal::RECONNECTING), false),
+        ("message.post", typed(super::refusal::OUTCOME_UNKNOWN), true),
+        ("run.project", ssh(false), false),
+        ("run.project", ssh(true), true),
+        ("run.project", anyhow::anyhow!("of no known kind"), true),
+        (
+            "messages.history",
+            anyhow::anyhow!("of no known kind"),
+            false,
+        ),
+    ] {
+        f.manager.connect(CONNECTION_ID).await.unwrap();
+        let bridge = f.manager.transports.lock().await[CONNECTION_ID].clone();
+        let answer: Result<Value> = Err(answer);
+        f.manager
+            .retire_broken_bridge(CONNECTION_ID, &bridge, method, &answer)
+            .await
+            .unwrap();
+        let (state, saved) = status(&f.manager).await;
+        assert_eq!(state, "disconnected");
+        let saved = saved.expect("why it is down");
+        assert_eq!(
+            saved.contains("inspect any submitted operation"),
+            alarm,
+            "{method} answered {:#}: {saved}",
+            answer.as_ref().unwrap_err()
+        );
+        f.manager.disarm_idle_redial(CONNECTION_ID);
+    }
+}
+
 /// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`
 /// and drops the next request, as a relay that resets new sessions would) is never dialled in a
 /// tight loop. The drop a request finds is dialled at once; that dial's membership check breaks
@@ -2409,6 +2467,11 @@ async fn a_workspace_server_that_restarts_is_reconnected_by_itself() {
     let manager = Arc::clone(&f.manager);
     until(async || error_code(&manager).await == Some("crew_broker_not_running")).await;
     assert_eq!(status(&f.manager).await.0, "disconnected");
+    // T3-BE-1: a dial that met no server lost nothing, so its saved error says nothing about a
+    // submitted operation, and keeps the prefix renderers read.
+    let saved = status(&f.manager).await.1.expect("why it is down");
+    assert!(saved.starts_with("Crew SSH failure ["), "{saved}");
+    assert!(!saved.contains("Submitted operation"), "{saved}");
     assert!(
         !f.manager.idle_redial.lock().unwrap().is_empty(),
         "the retries are armed"

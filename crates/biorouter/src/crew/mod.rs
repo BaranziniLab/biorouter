@@ -469,6 +469,35 @@ const BRIDGE_FAILED: &str = "SSH bridge failed. Reconnect; inspect any submitted
 /// The last error of a bridge that broke under a read: nothing can have changed (W2-DMN-6).
 const READ_DROPPED: &str = "The connection to this workspace dropped.";
 
+/// The last error of a bridge that broke carrying `method`, whose answer was `answer`
+/// (T3-BE-1). [`BRIDGE_FAILED`], which asks the person to inspect what was submitted, only when a
+/// change was written and its answer lost: `crew_outcome_unknown`, an SSH failure that says so,
+/// or an error of no known kind for a method that could have changed something. A read, a
+/// request lost before it was written (`crew_not_sent`: only its challenge was lost, or the
+/// bridge could not deliver it) and anything that was answered changed nothing:
+/// [`READ_DROPPED`]. It used to follow the method alone, so a post answered `crew_not_sent` left
+/// the alarm.
+fn bridge_loss_message<T>(method: &str, answer: &Result<T>) -> &'static str {
+    let Err(error) = answer else {
+        return READ_DROPPED;
+    };
+    let lost = match CrewRefusal::find(error) {
+        Some(refused) => refused.code() == refusal::OUTCOME_UNKNOWN,
+        None => match error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        {
+            Some(failure) => failure.outcome_unknown,
+            None => !is_read_only(method),
+        },
+    };
+    if lost {
+        BRIDGE_FAILED
+    } else {
+        READ_DROPPED
+    }
+}
+
 /// Whether `method` only reads: whatever became of it, nothing changed at the workspace. An
 /// explicit list, so a method not named here is treated as one that may have changed something.
 /// `channel.read` moves a read position, so it is not one.
@@ -3129,22 +3158,27 @@ impl CrewManager {
         }
         Ok(())
     }
-    async fn retire_failed_transport(
+    /// Retire `failed`, a bridge that broke carrying `method`, whose answer was `answer`, while
+    /// it is still `id`'s bridge, with [`bridge_loss_message`]. Dials nothing.
+    async fn retire_failed_transport<T>(
         &self,
         id: &str,
         failed: &Arc<Mutex<transport::Transport>>,
+        method: &str,
+        answer: &Result<T>,
     ) -> Result<()> {
         // Callers release the transport mutex before taking lifecycle ownership.
         // Connect/update/remove hold this same guard while replacing publication.
         let _lifecycle = self.connection_guard(id).await?;
-        self.retire_locked(id, failed, BRIDGE_FAILED).await;
+        self.retire_locked(id, failed, bridge_loss_message(method, answer))
+            .await;
         Ok(())
     }
     /// [`Self::retire_failed_transport`] for a bridge that broke carrying `method`, whose
     /// answer was `answer`. While it was still `id`'s bridge, a network failure also dials the
     /// connection again, at once, never the request (Q4-01, W2-DMN-6, see
-    /// [`Self::request_bridge_failed`]). Only a request that could have changed something
-    /// leaves the "inspect any submitted operation" alarm: a read that broke changed nothing.
+    /// [`Self::request_bridge_failed`]). Only a request whose outcome was lost leaves the
+    /// "inspect any submitted operation" alarm ([`bridge_loss_message`]).
     async fn retire_broken_bridge<T>(
         &self,
         id: &str,
@@ -3153,11 +3187,7 @@ impl CrewManager {
         answer: &Result<T>,
     ) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
-        let message = if is_read_only(method) {
-            READ_DROPPED
-        } else {
-            BRIDGE_FAILED
-        };
+        let message = bridge_loss_message(method, answer);
         if self.retire_locked(id, failed, message).await {
             if let Err(error) = answer {
                 self.request_bridge_failed(id, error);
@@ -6485,6 +6515,7 @@ mod tests {
                 description: "SSH connection closed".into(),
                 detail: None,
                 host: None,
+                outcome_unknown: false,
             })
         };
         let unknown = lost_request(

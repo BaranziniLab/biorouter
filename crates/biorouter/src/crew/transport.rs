@@ -115,9 +115,10 @@ impl SshFailureKind {
 }
 
 /// A fatal SSH transport failure. `Display` is the stable, stderr-free message
-/// (it is persisted as `last_error` and matched by older renderers); `detail`
-/// carries OpenSSH's own bounded, control-stripped words for "Copy details"
-/// only and is deliberately absent from both `Display` and `Debug`.
+/// (it is persisted as `last_error` and matched by older renderers by its
+/// `Crew SSH failure [` prefix); `detail` carries OpenSSH's own bounded,
+/// control-stripped words for "Copy details" only and is deliberately absent
+/// from both `Display` and `Debug`.
 #[derive(Clone)]
 pub struct SshFailure {
     pub kind: SshFailureKind,
@@ -133,6 +134,12 @@ pub struct SshFailure {
     /// whose host key is unknown or changed (a jump host's included), or the one that refused
     /// the key. `None` when no line names a host (W2-DMN-5).
     pub host: Option<String>,
+    /// A request that could have changed something at the workspace was written to the bridge
+    /// and its answer was lost, so whether the workspace applied it is not known. Only then does
+    /// `Display` add the advice to inspect history before retrying (T3-BE-1): a failed dial, a
+    /// heartbeat or a read lost nothing, and every idle member's saved error used to claim an
+    /// operation may have been submitted after the workspace server merely stopped.
+    pub outcome_unknown: bool,
 }
 
 impl SshFailure {
@@ -148,9 +155,15 @@ impl fmt::Display for SshFailure {
         }
         write!(
             f,
-            "Crew SSH failure [{}; child_before_cleanup={}]: {}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying",
+            "Crew SSH failure [{}; child_before_cleanup={}]: {}",
             self.code, self.status, self.description
-        )
+        )?;
+        if self.outcome_unknown {
+            f.write_str(
+                "; reconnect. Submitted operation outcome may be unknown; inspect history before retrying",
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -165,6 +178,7 @@ impl fmt::Debug for SshFailure {
             .field("detail_bytes", &self.detail.as_ref().map_or(0, String::len))
             // Read from stderr like `detail`, so only whether there is one reaches a log.
             .field("names_host", &self.host.is_some())
+            .field("outcome_unknown", &self.outcome_unknown)
             .finish()
     }
 }
@@ -502,6 +516,9 @@ impl Transport {
         let result =
             tokio::time::timeout(Duration::from_secs(45), self.exchange(&bytes, &id)).await;
         self.last_activity = std::time::SystemTime::now();
+        // From here a failure may have lost the answer to a request already written: only one
+        // that could have changed something leaves its outcome unknown (T3-BE-1).
+        let carried_a_change = !super::is_read_only(method);
         match result {
             Ok(Ok(v)) => {
                 self.unusable = false;
@@ -513,9 +530,12 @@ impl Transport {
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("Crew response has no result"))
             }
-            Ok(Err(failure)) => Err(self.fatal_failure(failure).await),
+            Ok(Err(failure)) => Err(self.fatal_failure(failure, carried_a_change).await),
             Err(_) => Err(self
-                .fatal_failure(WireFailure::new("ssh_timeout", "Crew request timed out"))
+                .fatal_failure(
+                    WireFailure::new("ssh_timeout", "Crew request timed out"),
+                    carried_a_change,
+                )
                 .await),
         }
     }
@@ -582,7 +602,11 @@ impl Transport {
         }
         Ok(response)
     }
-    async fn fatal_failure(&mut self, failure: WireFailure) -> anyhow::Error {
+    async fn fatal_failure(
+        &mut self,
+        failure: WireFailure,
+        carried_a_change: bool,
+    ) -> anyhow::Error {
         // Capture exit status before our own cleanup: a cleanup signal must not
         // be misreported as the cause. A closed pipe means ssh is on its way
         // out, so give its own status a bounded moment to land first.
@@ -600,6 +624,7 @@ impl Transport {
         self.stderr.settle(STDERR_GRACE).await;
         let stderr = self.stderr.snapshot();
         let mut classified = classify_failure(failure.code, failure.description, state, &stderr);
+        classified.outcome_unknown = carried_a_change;
         if matches!(
             classified.kind,
             SshFailureKind::AuthRequired | SshFailureKind::KeyRefused
@@ -667,6 +692,7 @@ fn classify_failure(
         description: description.into(),
         detail: failure_detail(kind, &text),
         host: named_host(kind, &text),
+        outcome_unknown: false,
     }
 }
 

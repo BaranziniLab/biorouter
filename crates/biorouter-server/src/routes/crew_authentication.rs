@@ -1042,6 +1042,7 @@ mod tests {
             description: "SSH connection closed".into(),
             detail: Some("biorouter-crew: No such file or directory".into()),
             host: None,
+            outcome_unknown: false,
         };
         let error = anyhow::Error::new(ssh).context("while reading the join status");
         let (status, body) =

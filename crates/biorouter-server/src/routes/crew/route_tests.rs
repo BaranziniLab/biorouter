@@ -68,6 +68,7 @@ fn failure(kind: SshFailureKind, detail: Option<&str>) -> SshFailure {
         description: "SSH closed before the broker answered".into(),
         detail: detail.map(str::to_owned),
         host: None,
+        outcome_unknown: false,
     }
 }
 
