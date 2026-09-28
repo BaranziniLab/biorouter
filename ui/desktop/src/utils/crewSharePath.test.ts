@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CREW_DEFAULT_SAVE_NAME,
-  CREW_DESTINATION_IS_FOLDER,
   CREW_FILE_NAME_HIDDEN,
   CREW_FOLDER_SHARED,
   CREW_MODE_MISMATCH,
@@ -856,16 +855,17 @@ describe('CrewSheetGate (FILES-F2)', () => {
 });
 
 describe('crewFileRefusal: the codes that say what to change (W2-HRD-4, DW-12)', () => {
-  it('names a leading-dot file name, a shared folder and a folder chosen as the file', () => {
+  it('names a leading-dot file name and a shared folder', () => {
     expect(crewFileRefusal({ code: CREW_FILE_NAME_HIDDEN }, 'download', '.Rprofile')).toBe(
       "“.Rprofile” starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot."
     );
     expect(crewFileRefusal({ code: CREW_FOLDER_SHARED }, 'download', 'counts.csv')).toBe(
       "Choose a folder owned by your account that other accounts can't change."
     );
-    expect(crewFileRefusal({ code: CREW_DESTINATION_IS_FOLDER }, 'download', 'results')).toBe(
-      '“results” is a folder. Choose a file name to save to.'
-    );
+    // The daemon's other download refusals name the path they refuse, in its own words.
+    expect(
+      crewFileRefusal({ code: 'crew_destination_is_folder' }, 'download', 'results')
+    ).toBeUndefined();
   });
 
   it('makes a hidden character in the chosen name visible', () => {
@@ -909,6 +909,23 @@ describe('crewFileRefusal: the codes that say what to change (W2-HRD-4, DW-12)',
         'a.csv'
       )
     ).toBeUndefined();
+  });
+});
+
+describe('the download refusal codes are the daemon’s (W2-HRD-4)', () => {
+  it('keeps each code and sentence word for word', () => {
+    const rust = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../crates/biorouter-server/src/crew/local_files.rs'
+      ),
+      'utf8'
+    );
+    expect(rust).toContain(`pub const FILE_NAME_HIDDEN_CODE: &str = "${CREW_FILE_NAME_HIDDEN}";`);
+    expect(rust).toContain(`pub const FOLDER_SHARED_CODE: &str = "${CREW_FOLDER_SHARED}";`);
+    const [, rest] = crewShareCopy.nameHidden('{name}').split('{name}');
+    expect(rust).toContain(`"\\u{201c}{name}\\u{201d}${rest.slice(1)}"`);
+    expect(rust).toContain(`"${crewShareCopy.folderShared}"`);
   });
 });
 

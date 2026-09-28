@@ -75,8 +75,6 @@ export const CREW_FILE_IS_CREDENTIAL = 'crew_file_is_credential';
 export const CREW_FILE_NAME_HIDDEN = 'crew_file_name_hidden';
 /** A download into a folder another account owns or can change (`/tmp`, a shared folder). */
 export const CREW_FOLDER_SHARED = 'crew_folder_shared';
-/** A download whose chosen destination is a folder, not a file name. */
-export const CREW_DESTINATION_IS_FOLDER = 'crew_destination_is_folder';
 /**
  * The connection's privacy mode is not the one the renderer verified and sent as
  * `expected_mode`. The daemon names both (`actual_mode`, `expected_mode`). Keyed on the code, never
@@ -122,8 +120,6 @@ export const crewShareCopy = {
     `“${name}” starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot.`,
   /** `crew_folder_shared`, the daemon's sentence (W2-HRD-4). */
   folderShared: "Choose a folder owned by your account that other accounts can't change.",
-  /** `crew_destination_is_folder`. */
-  destinationIsFolder: (name: string) => `“${name}” is a folder. Choose a file name to save to.`,
   daemonRefused: (name: string) =>
     `Crew couldn't take "${name}". Check that the file is readable, then drop it again.`,
   /**
@@ -185,8 +181,10 @@ function modeMismatchSentence(body: Record<string, unknown>, context: CrewFileRe
  * - the credential floor (Q3-01) and, for a download, the settings locations beside it (Q4-55):
  *   an upload names the file (made visible), a download names no file, because the refusal is
  *   about the folder;
- * - a download named with a leading dot, into a folder other accounts can change, or onto a
- *   folder (W2-HRD-4), each naming what to change;
+ * - a download named with a leading dot, or into a folder other accounts can change
+ *   (W2-HRD-4), each naming what to change (the daemon's other download refusals, a folder given
+ *   as the file, an existing file, a program, name the path they refuse, and the picker shows
+ *   them in the daemon's words);
  * - a connection whose privacy mode is not the one the request expected (DW-12), naming both.
  *
  * `name` is the file this process chose or read, never the daemon's text.
@@ -208,8 +206,6 @@ export function crewFileRefusal(
       return crewShareCopy.nameHidden(visibleText(name) || 'This name');
     case CREW_FOLDER_SHARED:
       return crewShareCopy.folderShared;
-    case CREW_DESTINATION_IS_FOLDER:
-      return crewShareCopy.destinationIsFolder(visibleText(name) || 'That name');
     case CREW_MODE_MISMATCH:
       return modeMismatchSentence(body, context);
     default:
