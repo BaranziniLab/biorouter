@@ -302,6 +302,17 @@ export const letInCopy = {
     `Code saved. ${who} is in as soon as ${who}’s Crew checks in; you can close this.`,
   /** Replaces `approved` once the directory shows the person as a member. */
   joined: (who: string, workspace: string) => `${who} joined ${workspace}`,
+  /**
+   * A member adding another computer (SC2-N6): the title's name is followed by this, "Let Henry
+   * Ito’s new computer into chen-lab", since the person is in the workspace already.
+   */
+  deviceOf: '’s new computer',
+  deviceSubmit: (who: string) => `Let ${who}’s new computer in`,
+  /** `approved`, for another computer of a member. */
+  deviceApproved: (who: string) =>
+    `Code saved. ${who}’s new computer is in as soon as it checks in; you can close this.`,
+  /** Replaces `deviceApproved` once the computer checked in and its waiting row went. */
+  deviceJoined: (who: string, workspace: string) => `${who}’s new computer is in ${workspace}`,
   /** An older broker: the team is an invitation the person accepts in Crew. */
   addToTeam: (who: string, team: string) => `Invite ${who} to ${team}`,
   /**

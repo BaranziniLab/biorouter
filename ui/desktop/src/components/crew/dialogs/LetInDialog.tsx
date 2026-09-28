@@ -134,6 +134,12 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   const fingerprintHex = useWorkspaceKeyFingerprint(saved?.workspace_public_key);
   const fingerprint = fingerprintHex ? groupedFingerprint(fingerprintHex) : null;
   const join = snapshot?.pending_joins?.find((item) => item.username === username) ?? null;
+  // Whether the view lists the waiting joins at all: a view without them says nothing about
+  // whether this one is still waiting.
+  const joinsListed = Array.isArray(snapshot?.pending_joins);
+  // Back from a mismatch to the code field, which takes the focus (SC2-N10).
+  const codeInput = React.useRef<HTMLInputElement>(null);
+  const [refocusCode, setRefocusCode] = React.useState(false);
   const offered = joinerPerson(username, join?.full_name);
   // The name on their server account, kept once seen: their `pending_joins` row — the only place
   // it comes from — is gone the moment they join, and the dialog must not lose it then (QA Q3-35).
@@ -259,16 +265,28 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
     approve(code, replacing);
   };
 
+  // A member letting in another computer (SC2-N6): they are in the workspace already, so the
+  // dialog is about that computer, from its title to the sentence that says it is in. Fixed at
+  // approval, as `memberBefore`, so it does not change under the host.
+  const addingDevice = approval ? approval.memberBefore : member !== null;
+
   // "Let Gina Rossi into ito-lab": the heading in its one face, no monospace handle inside it (QA
   // Q4-38). The handle — the one name nobody can choose — is the subtitle's first word, so the host
   // still checks WHO this is: "@crew_gina · name on the server account" where the title's name is
   // that account's, "@crew_gina" alone where it is one they chose. Without a name, the handle is
-  // the title's and there is no subtitle.
+  // the title's and there is no subtitle. Another computer of a member: "Let Henry Ito’s new
+  // computer into chen-lab".
   const title = (
     <>
-      {copy.titlePrefix} <bdi translate="no">{fullName ?? handle}</bdi> {copy.title(workspace)}
+      {copy.titlePrefix} <bdi translate="no">{fullName ?? handle}</bdi>
+      {addingDevice ? copy.deviceOf : null} {copy.title(workspace)}
     </>
   );
+  React.useEffect(() => {
+    if (!refocusCode || approval) return;
+    setRefocusCode(false);
+    codeInput.current?.focus();
+  }, [refocusCode, approval]);
   const subtitle = fullName ? (
     <>
       <bdi translate="no">{handle}</bdi>
@@ -281,7 +299,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
   ) : null;
 
   if (approval) {
-    const joined = !approval.memberBefore && member !== null;
+    // A new member has joined once the directory shows them. Another computer of a member has once
+    // its waiting row is gone from a view that lists them: the broker drops it as that computer
+    // checks in with the saved code (SC2-N6). Only a member could be told "joined"; a device add
+    // said "Code saved" for good.
+    const joined = approval.memberBefore ? joinsListed && join === null : member !== null;
     const newMismatch = !joined && join !== null && mismatches > approval.mismatchesBefore;
     // Fixed the first time the member id is known, which is before any team control can act (they
     // all wait for it), so nothing this dialog did can be in the set. Adjusting state during
@@ -403,6 +425,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                     onClick={() => {
                       dismissOwnError();
                       setApproval(null);
+                      setRefocusCode(true);
                     }}
                   >
                     {copy.enterAgain}
@@ -419,6 +442,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                 first={first}
                 workspace={workspace}
                 steady={promote}
+                device={approval.memberBefore}
               />
             )
           }
@@ -486,7 +510,11 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             {copy.cancel}
           </Button>
           <Button type="submit" form={formId} disabled={approving || !complete}>
-            {replacing ? copy.replace : copy.submit(first)}
+            {replacing
+              ? copy.replace
+              : addingDevice
+                ? copy.deviceSubmit(first)
+                : copy.submit(first)}
           </Button>
         </>
       }
@@ -509,6 +537,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             error={showProblem ? problem : undefined}
           >
             <DeviceCodeInput
+              ref={codeInput}
               id={codeId}
               required
               value={code}
@@ -561,6 +590,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
             first={first}
             workspace={workspace}
             steady={upcoming.promote}
+            device={addingDevice}
             fingerprint={fingerprint}
             offers={upcoming.teams.map((team) => ({
               team,
@@ -612,6 +642,7 @@ export function SavedViewBody({
   first,
   workspace,
   steady = false,
+  device = false,
   fingerprint,
   offers,
   hint,
@@ -628,6 +659,8 @@ export function SavedViewBody({
   workspace: string;
   /** For `sizer`: whether a joiner is expected, as `SavedCodeStatus` takes it. */
   steady?: boolean;
+  /** For `sizer`: another computer of a member, as `SavedCodeStatus` takes it. */
+  device?: boolean;
   fingerprint: string | null;
   offers: readonly TeamOffer[];
   hint: string | null;
@@ -644,7 +677,14 @@ export function SavedViewBody({
       style={holdHeight ? { minHeight: holdHeight } : undefined}
     >
       {sizer ? (
-        <SavedCodeStatus joined={false} first={first} workspace={workspace} steady={steady} sizer />
+        <SavedCodeStatus
+          joined={false}
+          first={first}
+          workspace={workspace}
+          steady={steady}
+          device={device}
+          sizer
+        />
       ) : (
         status
       )}
@@ -728,16 +768,19 @@ export function SavedCodeStatus({
   first,
   workspace,
   steady,
+  device = false,
   sizer = false,
 }: {
   joined: boolean;
   first: string;
   workspace: string;
   steady: boolean;
+  /** Another computer of a member (SC2-N6): the sentences are about that computer. */
+  device?: boolean;
   sizer?: boolean;
 }) {
-  const approvedText = copy.approved(first);
-  const joinedText = copy.joined(first, workspace);
+  const approvedText = device ? copy.deviceApproved(first) : copy.approved(first);
+  const joinedText = device ? copy.deviceJoined(first, workspace) : copy.joined(first, workspace);
   if (sizer) {
     return (
       <div className="crew-steady">
