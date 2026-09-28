@@ -29,7 +29,7 @@ import {
 } from '../identity';
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
-import { postDestination, type CrewDraftState } from './crewSend';
+import type { CrewDraftState } from './crewSend';
 import { isMembershipEnded } from './connectFailure';
 import {
   forgetConnectionDrafts,
@@ -340,8 +340,8 @@ export interface CrewObservation {
   observationFailure(message: string, code?: string): void;
   /**
    * Keep the composer's body as the selected channel's unsent draft (`draftStash`), written
-   * under its last verified view, before a selection clears it. Attachments, references and
-   * context channels are never kept.
+   * under its last verified view, before a selection clears it, with the message attempt that goes
+   * with it (RENDERER-4). Attachments, references and context channels are never kept.
    */
   stashDraft(): void;
   /**
@@ -407,7 +407,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setReferences,
     contextChannels,
     setContextChannels,
-    pendingMessages,
+    attemptFor,
+    restoreBody,
     selectedSources,
     clearDraft,
   } = draft;
@@ -511,7 +512,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
    * only when that view offers the channel, and only when nothing the draft was written under
    * moved in it (`draftScopeChanged` against the kept scope). The body only. The kept entry stays
    * until the channel's first frame takes it, so leaving again before then loses nothing; that
-   * frame checks the scope once more (`restoredDraft`).
+   * frame checks the scope once more (`restoredDraft`). The attempt kept with it comes back with
+   * it, so sending it again goes under the key it was first sent with (RENDERER-4).
    */
   const putDraftBack = useCallback(
     (connection: string, channel: string): boolean => {
@@ -525,12 +527,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         draftScopeChanged(kept.scope, frame, channel, [])
       )
         return false;
-      setBody(kept.body);
+      restoreBody(connection, channel, kept.body, kept.attempt);
       draftHasContent.current = true;
       restoredDraft.current = { connectionId: connection, channelId: channel, scope: kept.scope };
       return true;
     },
-    [setBody]
+    [restoreBody]
   );
   const restoreDraft = useCallback(
     (channel: string): boolean => {
@@ -545,8 +547,14 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const verifiedScope = useRef<DraftScope | null>(null);
   const stashCurrentDraft = useCallback(() => {
     const current = selection.current;
-    stashDraft(current.connectionId, current.channelId, current.body, verifiedScope.current);
-  }, []);
+    stashDraft(
+      current.connectionId,
+      current.channelId,
+      current.body,
+      verifiedScope.current,
+      attemptFor(current.connectionId, current.channelId)
+    );
+  }, [attemptFor]);
   /**
    * SECURITY-SENSITIVE (human review). Every clearing of the protected view clears the view kept
    * across unmounts too (Q4-04), except a refresh's (and the moment a loss is being decided, which
@@ -634,7 +642,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       });
       if (outcome.clearDraft) {
         // Access or privacy changed: no draft kept for this workspace may come back either.
-        clearDraft(selection.current.connectionId);
+        clearDraft();
         forgetConnectionDrafts(selection.current.connectionId);
       }
       recoveringFrom.current = null;
@@ -704,7 +712,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     previousConnection.current = connectionId;
     // The state still holds the old connection's channel and body in this commit.
     if (previous && previous !== connectionId)
-      stashDraft(previous, channelId, body, verifiedScope.current);
+      stashDraft(previous, channelId, body, verifiedScope.current, attemptFor(previous, channelId));
     generation.current += 1;
     cancelRecovery();
     recoveringFrom.current = null;
@@ -787,7 +795,13 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       previous.connectionId === connectionId &&
       previous.channelId !== channelId
     )
-      stashDraft(connectionId, previous.channelId, body, verifiedScope.current);
+      stashDraft(
+        connectionId,
+        previous.channelId,
+        body,
+        verifiedScope.current,
+        attemptFor(connectionId, previous.channelId)
+      );
     historyPage.current = null;
     setHistoryBefore(null);
     setHistoryPageSize(null);
@@ -860,7 +874,6 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       forgetRememberedView(connectionId);
       restoredDraft.current = null;
       historyPage.current = null;
-      pendingMessages.current.delete(postDestination(connectionId, channelId));
       setMessages([]);
       setMessagesLoaded(false);
       setBody('');
@@ -986,7 +999,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   draftScopeChanged(putBack.scope, frame, channelId, []))
               ) {
                 const hadContent = draftHasContent.current;
-                clearDraft(connectionId);
+                clearDraft();
                 forgetConnectionDrafts(connectionId);
                 if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
@@ -1033,7 +1046,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                 kept.scope.connectionId === frame.connection_id &&
                 !draftScopeChanged(kept.scope, frame, channelId, [])
               ) {
-                setBody(kept.body);
+                restoreBody(connectionId, channelId, kept.body, kept.attempt);
                 draftHasContent.current = true;
               }
               // Named from the last view that still had it: this one no longer does.
@@ -1157,9 +1170,9 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     namesFor,
     verifiedHere,
     clearDraft,
+    restoreBody,
     generation,
     selectedSources,
-    pendingMessages,
     reportError,
     resetSurfaces,
     onVerifiedFrame,

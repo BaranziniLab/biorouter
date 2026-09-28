@@ -1980,4 +1980,236 @@ describe('a post still on its way when the person moves to another channel (REND
     expect(crew.error).toEqual({ message: 'Slow down', source: 'composer' });
     expect(crew.draft.body).toBe('stay');
   });
+
+  it('keeps a failed post’s key through an edit that is undone', async () => {
+    let posts = 0;
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method !== 'message.post') return {};
+      posts += 1;
+      if (posts === 1) throw new CrewHttpError('The computer did not answer in time', 504);
+      return { sequence: `m-${posts}` };
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('for #general'));
+    await act(async () => {
+      await crew.send();
+    });
+    act(() => crew.setBody('for #general, and more'));
+    act(() => crew.setBody('for #general'));
+    await act(async () => {
+      await crew.send();
+    });
+    const sent = messagePosts();
+    expect(sent).toHaveLength(2);
+    // The same payload to the same channel: the first may have been committed.
+    expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key);
+  });
+
+  it('lets a taken post’s key go at the first edit, so the same words written anew are new', async () => {
+    const { post, sent } = await postHereThenReturn();
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    expect(crew.draft.body).toBe('for #methods');
+    act(() => crew.setBody('for #methods!'));
+    act(() => crew.setBody('for #methods'));
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    // Reused, the broker would answer with the first message and post nothing.
+    expect(posts[2].idempotency_key).not.toBe(posts[0].idempotency_key);
+  });
+
+  describe('when Crew is left and opened again (U1, U2)', () => {
+    /** In #methods, the post of "for #methods" is sent; `answer` decides each post's answer. */
+    async function sendInMethods(answer: (posts: number) => Promise<unknown>) {
+      let posts = 0;
+      mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+        if (method !== 'message.post') return {};
+        posts += 1;
+        return answer(posts);
+      });
+      const first = renderController();
+      await opened(channel.id);
+      act(() => crew.selectChannel(methods.id));
+      await opened(methods.id);
+      act(() => crew.setBody('for #methods'));
+      let sent!: Promise<void>;
+      act(() => {
+        sent = crew.send();
+      });
+      await waitFor(() => expect(crew.isPending('send')).toBe(true));
+      return { first, sent };
+    }
+
+    /** Crew opened again, on #methods (the channel it remembers). */
+    async function openedAgain() {
+      renderController();
+      await opened(methods.id);
+    }
+
+    it('sends a refused post again under its key (U2)', async () => {
+      const { first, sent } = await sendInMethods(async (posts) => {
+        if (posts === 1) throw new CrewHttpError('The computer did not answer in time', 504);
+        return { sequence: `m-${posts}` };
+      });
+      await act(async () => {
+        await sent;
+      });
+      expect(crew.error?.source).toBe('composer');
+      first.unmount();
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts.map((item) => item.channel_id)).toEqual([methods.id, methods.id]);
+      // The 504 may have come after the broker committed it: the same message, not a second.
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+    });
+
+    it('holds Send while the post is still on its way, then sends under its key (U1)', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      // The first post is on its way still: this screen holds Send, and a press posts nothing.
+      expect(crew.isPending('send')).toBe(true);
+      await act(async () => {
+        await crew.send();
+      });
+      expect(messagePosts()).toHaveLength(1);
+
+      await act(async () => {
+        post.reject(new CrewHttpError('The computer did not answer in time', 504));
+        await sent;
+      });
+      // Told to the screen open now, in its composer, since the words are its.
+      expect(crew.error).toEqual({
+        message: 'The computer did not answer in time',
+        source: 'composer',
+      });
+      expect(crew.isPending('send')).toBe(false);
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+    });
+
+    it('keeps the words and their key when the post is taken after Crew was opened again', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      await act(async () => {
+        post.resolve({ sequence: 'm-1' });
+        await sent;
+      });
+      expect(crew.error).toBeNull();
+      expect(crew.draft.body).toBe('for #methods');
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      // Sending the kept words again is the message already taken: the broker answers with it.
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+      expect(crew.draft.body).toBe('');
+    });
+
+    it('keeps the words and their key when the post is refused while Crew is closed', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+      await act(async () => {
+        post.reject(new CrewHttpError('The computer did not answer in time', 504));
+        await sent;
+      });
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      expect(crew.isPending('send')).toBe(false);
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+    });
+
+    it('forgets the words and their key when the post is taken while Crew is closed', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+      await act(async () => {
+        post.resolve({ sequence: 'm-1' });
+        await sent;
+      });
+      expect(stashedDraft(connection.id, methods.id)).toBeUndefined();
+
+      await openedAgain();
+      expect(crew.draft.body).toBe('');
+      act(() => crew.setBody('for #methods'));
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      // The same words written again are a new message, under a key the broker has not seen.
+      expect(posts[1].idempotency_key).not.toBe(posts[0].idempotency_key);
+    });
+
+    it('keeps with the words a digest of the post and its key, never its files or references', async () => {
+      // Every post goes unanswered in time, so the words and their attempt stay.
+      const { first, sent } = await sendInMethods(async () => {
+        throw new CrewHttpError('The computer did not answer in time', 504);
+      });
+      await act(async () => {
+        await sent;
+      });
+      first.unmount();
+      mocks.crewRequest.mockClear();
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      act(() => {
+        crew.addAttachment({ id: 'blob-1', name: 'counts.csv' });
+        crew.addReference({ id: 'ref-1', label: '/data/run-1' });
+      });
+      await act(async () => {
+        await crew.send();
+      });
+      // Another payload (files and a reference now): another key.
+      const withFiles = messagePosts()[0];
+      act(() => crew.selectChannel(analysis.id));
+      await opened(analysis.id);
+
+      const kept = stashedDraft(connection.id, methods.id);
+      expect(Object.keys(kept ?? {}).sort()).toEqual(['attempt', 'body', 'scope']);
+      const attempt = kept?.attempt?.current;
+      expect(Object.keys(attempt ?? {}).sort()).toEqual(['digest', 'key']);
+      expect(attempt?.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(attempt?.key).toBe(withFiles.idempotency_key);
+      expect(JSON.stringify(kept?.attempt)).not.toMatch(/blob-1|ref-1|for #methods/);
+    });
+  });
 });

@@ -18,6 +18,12 @@ import type { DraftScope } from './observationFailure';
  *      before it came back.
  *    - The rail marks a channel that holds one (Q3-09) through `useChannelHasDraft`: whether a
  *      body is kept, never the body itself.
+ *    - With the message attempt made for that very body, when it was sent and no answer cleared it
+ *      (RENDERER-4): the idempotency key it went with, so sending it again after coming back is the
+ *      same message to the broker, never a second one. The attempt is kept in the entry itself, so
+ *      it is kept exactly as long as the body is and every door that forgets the body forgets it.
+ *      It holds a SHA-256 digest of what was posted and the key, never the attachment or
+ *      reference IDs themselves.
  * 2. **The last channel** the person chose, per connection: the channel ID only, in memory and in
  *    `localStorage` (`crew:lastChannel:<connectionId>`), so Crew reopens where they were instead
  *    of on the team's first channel. It only ever picks among the channels a verified view offers.
@@ -28,10 +34,34 @@ export const DRAFT_STASH_MAX_ENTRIES = 50;
 /** The largest body kept, in UTF-8 bytes. A longer one is not kept. */
 export const DRAFT_STASH_MAX_BODY_BYTES = 64 * 1024;
 
+/** One `message.post` attempt: a digest of what it carried, and the idempotency key it used. */
+export interface MessageAttempt {
+  /** SHA-256, as hex, of the post's fingerprint; never the attachment or reference IDs. */
+  digest: string;
+  key: string;
+  /**
+   * The broker took the post after the composer that sent it had moved on, and the words were
+   * still held: sending them again is this message. The first write to them lets it go.
+   */
+  delivered?: boolean;
+}
+
+/**
+ * The attempt that belongs to one text, wherever that text is: the composer, or this stash. The
+ * same object goes with the text from one to the other, so a post that fills it in once its
+ * fingerprint is known reaches the text even when the text was put aside meanwhile (a channel
+ * switch, or leaving Crew, while the post was being prepared).
+ */
+export interface DraftAttempt {
+  current: MessageAttempt | null;
+}
+
 export interface StashedDraft {
   body: string;
   /** What the draft was written under: the last verified view of its channel. */
   scope: DraftScope;
+  /** The attempt made for this very body, when it was sent and no answer cleared it. */
+  attempt?: DraftAttempt;
 }
 
 const drafts = new Map<string, StashedDraft>();
@@ -67,17 +97,20 @@ function bodyBytes(body: string): number {
 }
 
 /**
- * Keep `body` as the unsent draft of `channelId` on `connectionId`, written under `scope`.
+ * Keep `body` as the unsent draft of `channelId` on `connectionId`, written under `scope`, with
+ * `attempt` when one was made for this very body.
  *
  * Nothing is kept — and nothing already kept is touched — for an empty body, a missing
  * connection or channel, or a scope that is not the last verified view of this very channel on
- * this very connection. A body over the size bound replaces nothing and is dropped.
+ * this very connection. A body over the size bound replaces nothing and is dropped, and its
+ * attempt with it.
  */
 export function stashDraft(
   connectionId: string,
   channelId: string,
   body: string,
-  scope: DraftScope | null
+  scope: DraftScope | null,
+  attempt?: DraftAttempt | null
 ): void {
   if (!connectionId || !channelId || !body.trim()) return;
   if (!scope || scope.connectionId !== connectionId || scope.channel?.id !== channelId) return;
@@ -87,7 +120,7 @@ export function stashDraft(
     if (replaced) notifyDrafts();
     return;
   }
-  drafts.set(key, { body, scope });
+  drafts.set(key, attempt ? { body, scope, attempt } : { body, scope });
   while (drafts.size > DRAFT_STASH_MAX_ENTRIES) {
     const oldest = drafts.keys().next().value;
     if (oldest === undefined) break;
@@ -112,14 +145,15 @@ export function takeStashedDraft(
   return entry;
 }
 
-/** Forget the kept draft of one channel (it was sent, or the channel was lost). */
+/** Forget the kept draft of one channel, and its attempt (it was sent, or the channel was lost). */
 export function forgetStashedDraft(connectionId: string, channelId: string): void {
   if (drafts.delete(draftKey(connectionId, channelId))) notifyDrafts();
 }
 
 /**
- * Forget every kept draft of a connection: its privacy or access changed, or it was removed.
- * With `keep`, a draft stays only if its channel passes (a verified view still offers it).
+ * Forget every kept draft of a connection, and their attempts: its privacy or access changed, or
+ * it was removed. With `keep`, a draft stays only if its channel passes (a verified view still
+ * offers it).
  */
 export function forgetConnectionDrafts(
   connectionId: string,

@@ -1,7 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { composerCopy } from '../composer/copy';
-import type { CrewMessage } from '../crewApi';
+import { CrewHttpError, type CrewMessage } from '../crewApi';
 import { clearBlobCache } from '../files/blobMetadataCache';
 import { filesCopy } from '../files/copy';
 import { installResizeObserverStub } from '../test/crewTestUtils';
@@ -159,5 +159,75 @@ describe('a post with a file, from Send to its arrival', () => {
     // Named from the kept answer, never "Attachment" while it asks again.
     expect(within(shared).getByText('counts.csv')).toBeInTheDocument();
     expect(within(shared).queryByText(filesCopy.attachment)).toBeNull();
+  });
+});
+
+/**
+ * A post still on its way when the person leaves Crew and opens it again (RENDERER-4, U1). The
+ * screen opened again gets the words back from the kept draft, and must treat the post as on its
+ * way: Send held, no second post beside the first, no "Sending…" row for a draft it never sent,
+ * and a retry under the key the words were first sent with.
+ */
+describe('a post still on its way when Crew is opened again', () => {
+  function heldPost() {
+    let answer!: { resolve: (value: unknown) => void; reject: (reason: unknown) => void };
+    const first = new Promise<unknown>((resolve, reject) => {
+      answer = { resolve, reject };
+    });
+    const keys: string[] = [];
+    daemon.state.request = (method, params) => {
+      if (method !== 'message.post') return undefined;
+      keys.push(String(params.idempotency_key));
+      return keys.length === 1 ? first : { sequence: `sequence-${keys.length}` };
+    };
+    return { answer, keys };
+  }
+
+  /** Send the words from #general, leave Crew while the post is out, and open Crew again. */
+  async function sendThenReopen(keys: string[]) {
+    const left = renderCrew();
+    const composer = await channelReady();
+    fireEvent.change(composer, { target: { value: sent } });
+    fireEvent.click(screen.getByRole('button', { name: composerCopy.send }));
+    await waitFor(() => expect(keys).toHaveLength(1));
+    left.unmount();
+    renderCrew();
+    const again = await channelReady();
+    await waitFor(() => expect(again).toHaveValue(sent));
+    return again;
+  }
+
+  it('holds Send, and sends the words again under their key once the post is refused', async () => {
+    const { answer, keys } = heldPost();
+    const again = await sendThenReopen(keys);
+    expect(again).toHaveAttribute('readonly');
+    expect(screen.getByRole('button', { name: composerCopy.send })).toHaveAttribute(
+      'aria-busy',
+      'true'
+    );
+    fireEvent.keyDown(again, { key: 'Enter', code: 'Enter', keyCode: 13 });
+    expect(keys).toHaveLength(1);
+
+    await act(async () => {
+      answer.reject(new CrewHttpError('The computer did not answer in time', 504));
+    });
+    expect(await screen.findByText('The computer did not answer in time')).toBeInTheDocument();
+    await waitFor(() => expect(again).not.toHaveAttribute('readonly'));
+    expect(pendingRow()).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: composerCopy.send }));
+    await waitFor(() => expect(keys).toHaveLength(2));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it('draws no “Sending…” row for a post it did not send, when that post is taken', async () => {
+    const { answer, keys } = heldPost();
+    const again = await sendThenReopen(keys);
+    await act(async () => {
+      answer.resolve({ sequence: 'sequence-1' });
+    });
+    await waitFor(() => expect(again).not.toHaveAttribute('readonly'));
+    // The words stay where the person was told they are kept; nothing stands in for a post.
+    expect(again).toHaveValue(sent);
+    expect(pendingRow()).toBeNull();
   });
 });

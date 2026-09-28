@@ -84,6 +84,33 @@ describe('the draft stash', () => {
     expect(Object.keys(stashedDraft('conn-1', 'general') ?? {}).sort()).toEqual(['body', 'scope']);
   });
 
+  it('keeps a message attempt with its body, and forgets it with the body', () => {
+    const attempt = { current: { digest: 'a'.repeat(64), key: 'key-1' } };
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    expect(Object.keys(stashedDraft('conn-1', 'general') ?? {}).sort()).toEqual([
+      'attempt',
+      'body',
+      'scope',
+    ]);
+    // Handed back with the body, as the same object, so a post answered later still reaches it.
+    expect(takeStashedDraft('conn-1', 'general')?.attempt).toBe(attempt);
+
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    // The same channel kept again with a text that has no attempt: the old attempt goes.
+    stashDraft('conn-1', 'general', 'written anew', scope('general'), null);
+    expect(stashedDraft('conn-1', 'general')?.attempt).toBeUndefined();
+
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    stashDraft('conn-1', 'general', 'x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1), scope('general'));
+    expect(stashedDraft('conn-1', 'general')).toBeUndefined();
+
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    stashDraft('conn-1', 'methods', 'sent too', scope('methods'), { current: null });
+    forgetStashedDraft('conn-1', 'general');
+    forgetConnectionDrafts('conn-1', () => false);
+    expect(stashedDraftCount()).toBe(0);
+  });
+
   it('drops a body over the size bound rather than cutting it, and the older draft with it', () => {
     stashDraft('conn-1', 'general', 'short', scope('general'));
     const tooLong = 'é'.repeat(DRAFT_STASH_MAX_BODY_BYTES / 2 + 1); // two bytes each in UTF-8

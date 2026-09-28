@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -12,7 +13,12 @@ import { clearPublishedTransfers } from '../crewTransfers';
 import { refreshCrewTransfers } from '../files/useCrewTransfers';
 import { channelName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
-import { forgetStashedDraft } from './draftStash';
+import {
+  forgetStashedDraft,
+  resetBetweenTests,
+  type DraftAttempt,
+  type MessageAttempt,
+} from './draftStash';
 import { failureCode, failureMessage } from './observationFailure';
 import type {
   ActionKey,
@@ -23,15 +29,23 @@ import type {
   ObservedPrivacy,
 } from './types';
 
-/** One `message.post` attempt: the payload it carried and the idempotency key it went with. */
-export interface MessageAttempt {
-  fingerprint: string;
-  key: string;
-}
-
-/** The composer's unsent content, each channel's idempotency attempt and single flight. */
+/**
+ * The composer's unsent content, and the idempotency attempt that goes with its text.
+ *
+ * The attempt belongs to the text, not to the component (RENDERER-4). It is one object
+ * ({@link DraftAttempt}) that moves with the text: into the draft stash when the text is put aside
+ * (a channel switch, a connection switch, leaving Crew) and back when the text comes back. So the
+ * key lasts exactly as long as the text can be sent again, whichever screen holds it: a Crew opened
+ * again sends the text it gets back under the key it was first sent with.
+ */
 export interface CrewDraftState {
   body: string;
+  /**
+   * Write the composer's text. Emptying it lets its attempt go (no text, nothing to send again),
+   * and so does any write to a text whose post was already taken (`delivered`): the same words
+   * written anew are a new message. Otherwise the attempt stays, and the next send decides by
+   * comparing what it would post with what the attempt was made for.
+   */
   setBody: Dispatch<SetStateAction<string>>;
   attachments: DraftFile[];
   setAttachments: Dispatch<SetStateAction<DraftFile[]>>;
@@ -40,30 +54,22 @@ export interface CrewDraftState {
   contextChannels: string[];
   setContextChannels: Dispatch<SetStateAction<string[]>>;
   /**
-   * Each destination's ({@link postDestination}) message attempt, whose idempotency key a retry of
-   * the same payload to the same channel reuses. One per destination, like `sendingMessage`,
-   * because posts to two channels can be on their way at once (RENDERER-4): a single slot let a
-   * post in #analysis replace #methods' attempt, so a retry in #methods drew a new key and the
-   * broker posted the same message twice. An entry lasts while the text it was made for can still
-   * be sent again from its channel's composer, and no longer (see {@link createSend}).
+   * The attempt that goes with the composer's text, when that text is `channelId`'s on
+   * `connectionId`: what is kept beside the text when it is put aside.
    */
-  pendingMessages: MutableRefObject<Map<string, MessageAttempt>>;
+  attemptFor(connectionId: string, channelId: string): DraftAttempt | null;
   /**
-   * The destinations ({@link postDestination}) with a `message.post` in flight, read and written
-   * synchronously: Enter and Send share it, so a channel posts one message at a time. A post in
-   * one channel never holds another channel's composer (RENDERER-4).
+   * The attempt a post of the composer's text to `channelId` goes with: the text's own, else a new,
+   * empty one that becomes the text's. Synchronous, so the text carries it from the moment Send is
+   * pressed, even if it is put aside before the post is on its way.
    */
-  sendingMessage: MutableRefObject<Set<string>>;
-  /** The same destinations, as state: what a render asks to know whether its channel is posting. */
-  postingTo: ReadonlySet<string>;
-  setPosting(destination: string, posting: boolean): void;
+  claimAttempt(connectionId: string, channelId: string): DraftAttempt;
+  /** Put a kept draft back into the composer, with the attempt it was kept with. */
+  restoreBody(connectionId: string, channelId: string, body: string, attempt?: DraftAttempt): void;
   /** The context channels the observer checks against each verified snapshot. */
   selectedSources: MutableRefObject<string[]>;
-  /**
-   * Clear the body, attachments, references and context channels, and forget every unanswered
-   * attempt on `connectionId`: that connection's drafts are being thrown away with this one.
-   */
-  clearDraft(connectionId: string): void;
+  /** Clear the body (and its attempt), attachments, references and context channels. */
+  clearDraft(): void;
   addAttachment(file: DraftFile): void;
   removeAttachment(id: string): void;
   addReference(reference: DraftReference): void;
@@ -71,38 +77,59 @@ export interface CrewDraftState {
   clearBodyIfEquals(seed: string): void;
 }
 
+/** The attempt that goes with the composer's text, and the channel that text belongs to. */
+interface ComposerAttempt {
+  destination: string;
+  attempt: DraftAttempt;
+}
+
 export function useCrewDraft(): CrewDraftState {
-  const [body, setBody] = useState('');
+  const [body, setBodyState] = useState('');
   const [attachments, setAttachments] = useState<DraftFile[]>([]);
   const [references, setReferences] = useState<DraftReference[]>([]);
   const [contextChannels, setContextChannels] = useState<string[]>([]);
-  const pendingMessages = useRef(new Map<string, MessageAttempt>());
-  const sendingMessage = useRef(new Set<string>());
-  const [postingTo, setPostingTo] = useState<ReadonlySet<string>>(() => new Set());
-  const setPosting = useCallback(
-    (destination: string, posting: boolean) =>
-      setPostingTo((current) => {
-        if (current.has(destination) === posting) return current;
-        const next = new Set(current);
-        if (posting) next.add(destination);
-        else next.delete(destination);
-        return next;
-      }),
+  const composerAttempt = useRef<ComposerAttempt | null>(null);
+  // The body as last rendered, for the one write that decides by it (`clearBodyIfEquals`).
+  const bodyNow = useRef(body);
+  bodyNow.current = body;
+  const setBody = useCallback((value: SetStateAction<string>) => {
+    const held = composerAttempt.current;
+    if (held && (value === '' || held.attempt.current?.delivered)) composerAttempt.current = null;
+    setBodyState(value);
+  }, []);
+  const attemptFor = useCallback((connectionId: string, channelId: string) => {
+    const held = composerAttempt.current;
+    return held?.destination === postDestination(connectionId, channelId) ? held.attempt : null;
+  }, []);
+  const claimAttempt = useCallback(
+    (connectionId: string, channelId: string) => {
+      const held = attemptFor(connectionId, channelId);
+      if (held) return held;
+      const attempt: DraftAttempt = { current: null };
+      composerAttempt.current = { destination: postDestination(connectionId, channelId), attempt };
+      return attempt;
+    },
+    [attemptFor]
+  );
+  const restoreBody = useCallback(
+    (connectionId: string, channelId: string, text: string, attempt?: DraftAttempt) => {
+      composerAttempt.current = attempt
+        ? { destination: postDestination(connectionId, channelId), attempt }
+        : null;
+      setBodyState(text);
+    },
     []
   );
   const selectedSources = useRef(contextChannels);
   useEffect(() => {
     selectedSources.current = contextChannels;
   }, [contextChannels]);
-  const clearDraft = useCallback((connectionId: string) => {
+  const clearDraft = useCallback(() => {
     setBody('');
     setAttachments([]);
     setReferences([]);
     setContextChannels([]);
-    for (const destination of [...pendingMessages.current.keys()])
-      if (destinationConnection(destination) === connectionId)
-        pendingMessages.current.delete(destination);
-  }, []);
+  }, [setBody]);
   const addAttachment = useCallback(
     (file: DraftFile) =>
       setAttachments((items) =>
@@ -122,10 +149,11 @@ export function useCrewDraft(): CrewDraftState {
     (id: string) => setReferences((items) => items.filter((item) => item.id !== id)),
     []
   );
-  const clearBodyIfEquals = useCallback(
-    (seed: string) => setBody((current) => (current === seed ? '' : current)),
-    []
-  );
+  const clearBodyIfEquals = useCallback((seed: string) => {
+    // The text left for somewhere else (a task's prompt): its attempt does not go with it.
+    if (bodyNow.current === seed) composerAttempt.current = null;
+    setBodyState((current) => (current === seed ? '' : current));
+  }, []);
   return {
     body,
     setBody,
@@ -135,10 +163,9 @@ export function useCrewDraft(): CrewDraftState {
     setReferences,
     contextChannels,
     setContextChannels,
-    pendingMessages,
-    sendingMessage,
-    postingTo,
-    setPosting,
+    attemptFor,
+    claimAttempt,
+    restoreBody,
     selectedSources,
     clearDraft,
     addAttachment,
@@ -154,9 +181,103 @@ export function postDestination(connectionId: string, channelId: string): string
   return `${connectionId}\n${channelId}`;
 }
 
-/** The connection a {@link postDestination} key names. */
-function destinationConnection(destination: string): string {
-  return destination.slice(0, destination.indexOf('\n'));
+// ---------------------------------------------------------------------------------------------
+// Posts on their way
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The destinations ({@link postDestination}) with a `message.post` on its way, each with the
+ * flight that holds it. Module scope, not a component's: a post outlives the Crew screen that sent
+ * it (the person can leave Crew while it is out), and a Crew opened again must hold that channel's
+ * Send until the answer comes, rather than let a second post go out beside the first. A post in
+ * one channel never holds another channel's Send (RENDERER-4).
+ */
+const postsInFlight = new Map<string, object>();
+const flightListeners = new Set<() => void>();
+
+function notifyFlights(): void {
+  for (const listener of [...flightListeners]) listener();
+}
+
+function subscribeFlights(listener: () => void): () => void {
+  flightListeners.add(listener);
+  return () => {
+    flightListeners.delete(listener);
+  };
+}
+
+/** Start a post to `destination`: its flight, or null while another is on its way there. */
+function beginPost(destination: string): object | null {
+  if (postsInFlight.has(destination)) return null;
+  const flight = {};
+  postsInFlight.set(destination, flight);
+  notifyFlights();
+  return flight;
+}
+
+/** The post `flight` was for has its answer. */
+function endPost(destination: string, flight: object): void {
+  if (postsInFlight.get(destination) !== flight) return;
+  postsInFlight.delete(destination);
+  notifyFlights();
+}
+
+/**
+ * Whether a post to `channelId` on `connectionId` is on its way, sent from this Crew screen or from
+ * an earlier one.
+ */
+export function usePostInFlight(connectionId: string, channelId: string): boolean {
+  const destination = postDestination(connectionId, channelId);
+  const read = useCallback(() => postsInFlight.has(destination), [destination]);
+  return useSyncExternalStore(subscribeFlights, read, read);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Crew screens open now
+// ---------------------------------------------------------------------------------------------
+
+/** A Crew screen a post's refusal can be told to: what it shows, and its error slot. */
+interface SendScreen {
+  selection: MutableRefObject<{ connectionId: string; channelId: string }>;
+  reportError(message: string, source?: ErrorSource, code?: string): void;
+}
+
+/** The Crew screens open now, newest last. */
+const openScreens: SendScreen[] = [];
+
+/**
+ * Keep this Crew screen among the open ones while it is mounted, so a refusal of a post an earlier
+ * screen sent (the person left Crew while it was out, and came back) is told here rather than to
+ * the screen that is gone.
+ */
+export function useOpenSendScreen(
+  selection: SendScreen['selection'],
+  reportError: SendScreen['reportError']
+): void {
+  useEffect(() => {
+    const screen: SendScreen = { selection, reportError };
+    openScreens.push(screen);
+    return () => {
+      const index = openScreens.indexOf(screen);
+      if (index >= 0) openScreens.splice(index, 1);
+    };
+  }, [selection, reportError]);
+}
+
+/** The screen to tell about a post sent from `selection`'s screen: it if open, else the newest. */
+function screenToTell(selection: SendScreen['selection']): SendScreen | null {
+  return (
+    openScreens.find((screen) => screen.selection === selection) ??
+    openScreens[openScreens.length - 1] ??
+    null
+  );
+}
+
+/** SHA-256, as hex, of a post's fingerprint: what an attempt keeps instead of the post itself. */
+async function fingerprintDigest(fingerprint: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(fingerprint));
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 export interface CrewSendContext {
@@ -169,7 +290,10 @@ export interface CrewSendContext {
   snapshot: Snapshot | null;
   observedPrivacy: ObservedPrivacy | null;
   generation: MutableRefObject<number>;
-  /** The connection and channel selected now, as of the latest render. */
+  /**
+   * The connection and channel selected now, as of the latest render. Also this screen's identity
+   * among the open ones ({@link useOpenSendScreen}).
+   */
   selection: MutableRefObject<{ connectionId: string; channelId: string }>;
   historyPage: MutableRefObject<string | null>;
   setHistoryBefore: Dispatch<SetStateAction<string | null>>;
@@ -193,32 +317,31 @@ export interface CrewSendContext {
 /**
  * Post the composer's draft to the selected channel.
  *
- * Single flight: a second Enter or Send while a post is in flight does nothing. The send is not
- * optimistic: the draft stays until the broker answers, and a retry of an unchanged payload to the
- * same channel reuses the same idempotency key, while any change rotates it. The attempt belongs to
- * its channel, so a post elsewhere in between never takes the key away (RENDERER-4). Success
- * clears only what was sent and never refreshes the verified workspace. Posting while a history
- * page is shown returns to the live tail.
+ * Single flight: a second Enter or Send while a post to the same channel is on its way does
+ * nothing, even from a Crew screen opened after the one that sent it. The send is not optimistic:
+ * the draft stays until the broker answers, and a retry of an unchanged payload to the same channel
+ * reuses the same idempotency key, while any change rotates it. Success clears only what was sent
+ * and never refreshes the verified workspace. Posting while a history page is shown returns to the
+ * live tail.
  *
- * The attempt lasts exactly as long as its text can be sent again from a composer. An answer to
- * the composer that sent it clears the text and the attempt together. An answer after the view
- * moved on (the person left the channel and came back, or its updates were observed again) changes
- * nothing in the composer, so the text the person was told is kept is still there, and so is its
- * key: sending it again is the same message to the broker, never a second one. An answer while the
- * person is in another channel forgets that channel's kept draft, so the text cannot come back,
- * and the attempt goes with it: kept, its key would stand in for the next message written there
- * with the same words, and the broker would take that new message for this one.
+ * The key goes with the text (see {@link CrewDraftState}), so it lasts exactly as long as the text
+ * can be sent again. An answer to the composer that sent it clears the text, and the attempt goes
+ * with it. An answer after that composer moved on forgets the text kept aside for the channel (it
+ * cannot come back over the conversation), and the attempt with it. A composer that still holds
+ * the words (the person came back, or the view was observed again) keeps them, as they were told,
+ * and their attempt, marked delivered: sending them again is this message to the broker, never a
+ * second one, and the first edit lets it go, so the same words written anew are a new message.
  *
  * A post also reads the channel up to the posted message (Q3-10), silently, so the person's own
  * message never sits under the "New" rule. And the transfer records it forgot are re-listed at
  * once (Q3-03), so the Files tab stops calling a sent file "not sent" without waiting for a remount.
  *
- * A post belongs to the channel it was sent in (RENDERER-4). Single flight is per channel, so a
- * person who sends in #methods and moves to #analysis can write and send there while #methods'
- * post is still on its way. If that post is then refused, the composer on screen is not the one
- * that sent it: the refusal goes to the connection bar, naming #methods, whose kept draft still
- * holds the text. While the person is still in the channel it went to, it shows in the composer
- * as before.
+ * A post belongs to the channel it was sent in (RENDERER-4). A person who sends in #methods and
+ * moves to #analysis can write and send there while #methods' post is still on its way. If that
+ * post is then refused, the composer on screen is not the one that sent it: the refusal goes to the
+ * connection bar, naming #methods, whose kept draft still holds the text. While the person is still
+ * in the channel it went to, it shows in the composer as before. When the screen that sent it has
+ * closed, the refusal is told to the Crew screen open now, if any.
  */
 export function createSend(context: CrewSendContext): () => Promise<void> {
   const {
@@ -239,21 +362,21 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
     act,
     reportError,
   } = context;
-  const { body, attachments, references, pendingMessages, sendingMessage } = draft;
+  const { body, attachments, references } = draft;
   const destination = postDestination(connectionId, channelId);
-  /** The person is still in the channel this post went to. */
-  const stillHere = () =>
-    selection.current.connectionId === connectionId && selection.current.channelId === channelId;
   return async () => {
     if (
       busy ||
-      sendingMessage.current.has(destination) ||
+      postsInFlight.has(destination) ||
       channel?.archived ||
       (!body.trim() && attachments.length === 0 && references.length === 0)
     )
       return;
-    sendingMessage.current.add(destination);
-    draft.setPosting(destination, true);
+    const flight = beginPost(destination);
+    if (!flight) return;
+    // Claimed before anything is awaited: if the text is put aside while the post is prepared,
+    // this attempt goes with it and is filled in wherever it is.
+    const attempt = draft.claimAttempt(connectionId, channelId);
     try {
       await act('composer', 'send', async () => {
         if (!snapshot || observedPrivacy?.connectionId !== connectionId)
@@ -266,23 +389,38 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
           attachments: attachments.map((item) => item.id),
           references: references.map((item) => item.id),
         };
-        const fingerprint = JSON.stringify({ connectionId, ...payload });
-        const kept = pendingMessages.current.get(destination);
-        const attempt: MessageAttempt =
-          kept?.fingerprint === fingerprint ? kept : { fingerprint, key: crypto.randomUUID() };
-        pendingMessages.current.set(destination, attempt);
+        const digest = await fingerprintDigest({ connectionId, ...payload });
+        const made: MessageAttempt =
+          attempt.current?.digest === digest
+            ? attempt.current
+            : { digest, key: crypto.randomUUID() };
+        attempt.current = made;
         let posted: unknown;
         try {
           posted = await request<unknown>(
             'message.post',
-            { ...payload, idempotency_key: attempt.key },
+            { ...payload, idempotency_key: made.key },
             { mutation: true }
           );
         } catch (failure) {
-          if (stillHere()) throw failure;
+          const screen = screenToTell(selection);
+          // No Crew screen is open: the words wait in the kept draft for the person's return.
+          if (!screen) return;
+          const there = screen.selection.current;
+          const inDestination =
+            there.connectionId === connectionId && there.channelId === channelId;
+          if (screen.selection === selection && inDestination) throw failure;
+          if (inDestination) {
+            screen.reportError(
+              failureMessage(failure, crewActionCopy.actionFallback),
+              'composer',
+              failureCode(failure)
+            );
+            return;
+          }
           // The composer on screen belongs to another channel now: say which post failed, in the
           // connection bar, rather than above a draft that was never sent.
-          reportError(
+          screen.reportError(
             crewActionCopy.sendFailedIn(
               channelName(channel),
               failureMessage(failure, crewActionCopy.actionFallback)
@@ -307,19 +445,15 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
           if (current === generation.current)
             reportError(crewActionCopy.sendTransferRecordKept, 'composer');
         }
-        // Sent: no earlier draft kept for this channel may come back over the conversation.
+        // Sent: no earlier draft kept for this channel may come back over the conversation, and
+        // its attempt goes with it.
         forgetStashedDraft(connectionId, channelId);
-        const retire = () => {
-          if (pendingMessages.current.get(destination) === attempt)
-            pendingMessages.current.delete(destination);
-        };
         if (current !== generation.current) {
-          // Elsewhere, the text is gone with the kept draft just forgotten: the attempt goes too.
-          // Here again, the composer still holds it, and keeps the key for sending it again.
-          if (!stillHere()) retire();
+          // A composer that still holds these words keeps them and this attempt, as delivered.
+          if (attempt.current === made) attempt.current = { ...made, delivered: true };
           return;
         }
-        retire();
+        attempt.current = null;
         if (historyPage.current !== null) {
           historyPage.current = null;
           setHistoryBefore(null);
@@ -334,8 +468,16 @@ export function createSend(context: CrewSendContext): () => Promise<void> {
         );
       });
     } finally {
-      sendingMessage.current.delete(destination);
-      draft.setPosting(destination, false);
+      endPost(destination, flight);
     }
   };
 }
+
+/** Forget every post on its way (vitest only): one left unanswered must not hold the next Send. */
+function resetPostsInFlightForTests(): void {
+  if (postsInFlight.size === 0) return;
+  postsInFlight.clear();
+  notifyFlights();
+}
+
+resetBetweenTests(resetPostsInFlightForTests);

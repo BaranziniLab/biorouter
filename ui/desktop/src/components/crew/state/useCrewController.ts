@@ -3,7 +3,7 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
-import { createSend, postDestination, useCrewDraft } from './crewSend';
+import { createSend, useCrewDraft, useOpenSendScreen, usePostInFlight } from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
 import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
@@ -707,8 +707,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   // The selection a post's answer is compared with: a post refused after the person moved on is
   // reported where they are, naming its channel (RENDERER-4). Written as the render runs, like
   // `arrivalActions` below, so an answer never reads a selection older than the one on screen.
+  // While mounted, this is also the screen told of a refusal of a post an earlier screen sent.
   const selection = useRef({ connectionId, channelId });
   selection.current = { connectionId, channelId };
+  useOpenSendScreen(selection, reportError);
   const send = createSend({
     draft,
     busy: actions.busyExcept('send'),
@@ -730,7 +732,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
 
   // `send` is pending only in the channel whose post is on its way (RENDERER-4): a post left
   // behind in #methods neither makes #analysis' composer read-only nor draws a "Sending…" there.
-  const postingHere = draft.postingTo.has(postDestination(connectionId, channelId));
+  // A post an earlier Crew screen sent counts too: it holds this channel's Send until it answers.
+  const postingHere = usePostInFlight(connectionId, channelId);
   const isPendingHere = useCallback(
     (key: ActionKey) => (key === 'send' ? postingHere : isPending(key)),
     [postingHere, isPending]

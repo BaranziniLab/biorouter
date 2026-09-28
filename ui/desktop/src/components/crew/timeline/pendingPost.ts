@@ -131,7 +131,15 @@ export function usePendingPost(
     const was = wasPosting.current;
     wasPosting.current = posting;
     const { crew: now, messages: list, key: here } = latest.current;
-    if (posting && !was) {
+    // A post needs something to send. An empty draft that reads "posting" did not send it: that
+    // post came from a Crew screen closed since, and is on its way still (RENDERER-4).
+    const hasContent =
+      Boolean(now.draft.body.trim()) ||
+      now.draft.attachments.length > 0 ||
+      now.draft.references.length > 0;
+    if (posting && !was && !hasContent) {
+      attempt.current = null;
+    } else if (posting && !was) {
       attempt.current = {
         key: here,
         body: now.draft.body,
