@@ -787,9 +787,10 @@ describe('requests, intents and the composer seams', () => {
 });
 
 describe('keeping one live observer', () => {
+  // Named to sort after "Lab": with nothing chosen, Crew opens the first team by name (setup F6).
   const imaging = {
     id: 'team-2',
-    name: 'Imaging',
+    name: 'Microscopy Imaging',
     created_by: actor.id,
     members: [actor.id],
     general_channel_id: 'channel-2',
@@ -817,7 +818,7 @@ describe('keeping one live observer', () => {
         snapshot: { ...snapshot, teams: [imaging], channels: [imagingGeneral] },
       })
     );
-    await waitFor(() => expect(crew.team?.name).toBe('Imaging'));
+    await waitFor(() => expect(crew.team?.name).toBe(imaging.name));
     await waitFor(() => expect(crew.channelId).toBe(imagingGeneral.id));
   });
 
@@ -951,9 +952,10 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
     name: 'methods',
     classification: 'public_safe' as const,
   };
+  // Named to sort after "Lab": with nothing chosen, Crew opens the first team by name (setup F6).
   const imaging = {
     id: 'team-2',
-    name: 'Imaging',
+    name: 'Microscopy Imaging',
     created_by: actor.id,
     members: [actor.id],
     general_channel_id: 'channel-2',
@@ -1009,7 +1011,7 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
     act(() => crew.selectChannel(imagingGeneral.id));
     await opened(imagingGeneral.id);
     expect(crew.teamId).toBe(imaging.id);
-    expect(crew.team?.name).toBe('Imaging');
+    expect(crew.team?.name).toBe(imaging.name);
     // Frames that follow keep it there.
     await act(async () => {
       await crew.refresh();
