@@ -197,6 +197,28 @@ describe('chat access: grant', () => {
     );
   });
 
+  /**
+   * HPC-N2: the consent listed Read and Post while the chat, with a private model, wrote files and
+   * ran commands in the connection's remote work folder.
+   */
+  it.each([
+    [true, accessCopy.folderRun('/home/crew_erin/crew-work')],
+    [false, accessCopy.folderFiles('/home/crew_erin/crew-work')],
+  ])('lists the remote work folder the chat reaches (commands: %s)', async (run, line) => {
+    setup({
+      grants: () => [],
+      connection: { remote_root: '/home/crew_erin/crew-work', remote_execution: run },
+    });
+    await waitFor(() => expect(pane()).toHaveTextContent('This chat will be able to'));
+    expect(pane()).toHaveTextContent(line);
+  });
+
+  it('lists no folder for a connection that has none', async () => {
+    setup({ grants: () => [] });
+    await waitFor(() => expect(pane()).toHaveTextContent('This chat will be able to'));
+    expect(pane().querySelector('[data-crew-access-folder]')).toBeNull();
+  });
+
   it('sends the channels chosen under Advanced as extra context', async () => {
     setup({});
     const paneNode = await openPaneFromNote(accessCopy.noteReviewName);

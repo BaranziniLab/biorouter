@@ -610,9 +610,20 @@ function ConnectionSettingsForm({ saved, onClose }: { saved: CrewConnection; onC
                 id={ids.execution}
                 checked={Boolean(root) && form.remote_execution}
                 disabled={!root}
+                aria-describedby={root ? `${ids.execution}-help` : undefined}
                 onCheckedChange={(checked) => update('remote_execution', checked)}
               />
             </div>
+            {/* What a command there cannot do (HPC-N1), before the person turns it on. */}
+            {root ? (
+              <p
+                id={`${ids.execution}-help`}
+                className="-mt-1 text-supporting text-text-muted"
+                data-crew-remote-execution-help=""
+              >
+                {copy.remoteExecutionHelp}
+              </p>
+            ) : null}
           </div>
         </Disclosure>
 

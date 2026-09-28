@@ -63,6 +63,15 @@ export const accessCopy = {
   /** The same, when no verified view names the person (the workspace is offline, F2). */
   post: (channel: string) => `Post in ${channel}`,
   posts: (channel: string) => `Posts in ${channel}`,
+  /**
+   * The connection's remote work folder, which a chat with a model that is not public reaches as a
+   * task does (HPC-N2): the consent listed only Read and Post while the chat wrote files and ran
+   * commands there. `path` is the folder as saved.
+   */
+  folderFiles: (path: string) => `Read and write files in ${path}`,
+  folderRun: (path: string) => `Read and write files, and run commands, in ${path}`,
+  foldersFiles: (path: string) => `Reads and writes files in ${path}`,
+  foldersRun: (path: string) => `Reads and writes files, and runs commands, in ${path}`,
   expiry: 'Access ends when you revoke it, or after an hour.',
   /**
    * The consent's facts (AG-F1): the workspace, and the chat's model with its tier. Access binds

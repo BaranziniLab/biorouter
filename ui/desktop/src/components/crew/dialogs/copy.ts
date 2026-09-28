@@ -84,6 +84,12 @@ export const connectionSettingsCopy = {
   institutionMismatchUnknown: (workspace: string) =>
     `This connection’s institution has to be the one ${workspace} belongs to, which can’t be changed.`,
   remoteExecution: 'Let my agent run commands in this folder',
+  /**
+   * Under the toggle (HPC-N1): a command there runs confined, with no network, no other processes
+   * and no user lookups, so an agent asked to submit a cluster job found out only by trying.
+   */
+  remoteExecutionHelp:
+    'Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there.',
   remoteExecutionNeedsFolder: 'Set a remote work folder first.',
   portRange: 'Use a port from 1 to 65535.',
   /** Its own disclosure, closed until opened, whatever Advanced holds (QA T-33). */

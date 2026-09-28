@@ -466,6 +466,10 @@ describe('ConnectionSettingsDialog', () => {
       target: { value: '/home/alice/project' },
     });
     expect(execution).toBeEnabled();
+    // HPC-N1: what a command there cannot do, said before the person turns it on.
+    expect(execution).toHaveAccessibleDescription(connectionSettingsCopy.remoteExecutionHelp);
+    expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/no network/);
+    expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/sbatch/);
   });
 
   it('keeps Workspace details closed, even when Advanced opens by itself', async () => {

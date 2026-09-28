@@ -475,6 +475,26 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // Whose agent the chat posts as, at the authority point (AG-F1): its posts appear as "Dave
   // Patel's agent", never as Dave. Only for this connection's grants.
   const me = dir.me ? <PersonName person={dir.me} context="authority" dir={dir} agent you /> : null;
+  // The connection's remote work folder, which the daemon opens to a chat whose model is not
+  // public, commands included when the connection allows them (HPC-N2). Said unless the model is
+  // known to be public: a consent that says too much is safer than one that says too little.
+  const folder =
+    sameConnection && controller.connection?.remote_root && chatProvider?.resolved_tier !== 'public'
+      ? {
+          path: controller.connection.remote_root,
+          run: controller.connection.remote_execution === true,
+        }
+      : null;
+  const folderLine = (future: boolean) =>
+    folder
+      ? future
+        ? folder.run
+          ? accessCopy.folderRun(folder.path)
+          : accessCopy.folderFiles(folder.path)
+        : folder.run
+          ? accessCopy.foldersRun(folder.path)
+          : accessCopy.foldersFiles(folder.path)
+      : null;
   const summaryLines = (future: boolean, where: string, extras: string[], who: ReactNode) => (
     <ul className="flex flex-col gap-1 text-secondary text-text-default">
       <li>
@@ -497,6 +517,11 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           accessCopy.posts(where)
         )}
       </li>
+      {folder ? (
+        <li data-crew-access-folder="">
+          <bdi translate="no">{folderLine(future)}</bdi>
+        </li>
+      ) : null}
     </ul>
   );
 
