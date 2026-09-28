@@ -17,4 +17,4 @@ for app in "$SRC"/*/; do
   rm -rf "$STORE/$id/dist"   # force a rebuild against the current SDK
   echo "installed $id"
 done
-echo "Done. Start 'biorouterd agent' and open http://127.0.0.1:3000/apps/<id>/"
+echo "Done. Open one with: biorouter apps open <id>"

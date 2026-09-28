@@ -226,8 +226,10 @@ biorouter apps serve <id>        # ensure a daemon is up; print the URL; stay fo
 ```
 
 Daemon management is minimal: it health-checks `BIOROUTER_PORT` (default 3000) via
-the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
-`biorouterd agent`. In-terminal rendering of an app is out of scope.
+the auth-exempt `GET /status`, reuses a running daemon whose secret it knows (one
+`apps open` started, or one `BIOROUTER_SERVER__SECRET_KEY` names), else spawns
+`biorouterd agent` with a secret of its own, and opens the app's one-time launch
+link. In-terminal rendering of an app is out of scope.
 
 ## Testing story
 
@@ -287,8 +289,10 @@ the auth-exempt `GET /status`, reuses a running daemon, else best-effort spawns
     applies model/extensions/skills/KB/persona, runs `agent.reply`, streams
     `message`/`thought`/`tool`/`done`/`error` frames)
   - `POST /apps/{id}/build`, `DELETE /apps/{id}`
-  - Browser-facing GETs under `/apps` are exempt from the secret-key middleware
-    (a browser tab can't send the header); the daemon binds localhost only.
+  - Browser-facing GETs under `/apps` take the app's access cookie instead of the
+    secret (a browser tab can't send the header). `POST /apps/{id}/launch`, with
+    the secret, answers a one-time link that sets it. Loopback is not one account,
+    so these routes are no longer exempt (W2-HRD-1).
 - **Frontend** — `ui/desktop/src/components/applications/ApplicationsView.tsx` +
   an "Applications" sidebar entry under Knowledge. Lists built apps; Launch opens
   the app URL in the default browser via the existing `openExternal` IPC.

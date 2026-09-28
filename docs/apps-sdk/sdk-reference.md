@@ -504,7 +504,9 @@ The system prompt states that everything between `<app-data>` … `</app-data>` 
 1. If an `Origin` header is present it must be the app page's own origin — the request's `Host` in scheme, host and port (`origin_matches_host`), the scheme being `https` only when a proxy in front sends `X-Forwarded-Proto: https`. A page on any other origin is refused, another loopback port included; that is the v2 design's exact-origin pinning. A non-browser client with no `Origin` passes this gate.
 2. `?token=` must equal the app's **per-app socket token** — 16 random bytes as 32 hex chars (`ws_token_for`), minted lazily into the served page, kept in memory **per daemon run** (never on disk).
 
-A page from a previous daemon run reconnects with a stale token, gets a 403, and must reload. Browser-facing GET `/apps/*` routes are secret-exempt (a tab cannot send the header; the daemon binds loopback only); mutating verbs (`POST /build`, `POST /vault`, `DELETE`) still require the secret.
+Before either gate, the daemon's own authentication must pass (W2-HRD-1). A browser tab cannot send the secret-key header, so an app's page, bundle, assets, model catalog, run state and socket accept instead that app's **access cookie**: `POST /apps/<id>/launch`, which needs the secret, answers a one-time link (`/apps/<id>/?t=<token>`, good once and for five minutes), and opening it sets an `HttpOnly`, `SameSite=Strict` cookie scoped to `/apps/<id>` and lands on the page. Without the cookie or the secret, every `/apps/*` request gets the same 401 whether or not the app exists. An `Origin` header is never treated as proof. On a `biorouter serve` daemon the served interface's own cookie opens its apps too. Mutating verbs (`POST /build`, `POST /vault`, `DELETE`), `GET /apps` and `GET /apps/<id>/export` still require the secret.
+
+A page from a previous daemon run reconnects with a stale cookie and token and is refused: open the app again from Biorouter for a new link.
 
 ### Sanitization
 
