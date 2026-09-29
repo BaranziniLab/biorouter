@@ -494,6 +494,26 @@ fn reconnecting_sentence(workspace: &str, wait: Option<std::time::Duration>) -> 
     }
 }
 
+/// Every method a scoped Crew worker (a chat's or task's grant) may send.
+const WORKER_METHODS: [&str; 16] = [
+    "messages.history",
+    "messages.search",
+    "context.manifest",
+    "run.project",
+    "blob.read",
+    "blob.status",
+    "blob.begin",
+    "blob.chunk",
+    "blob.finish",
+    "remote.list",
+    "remote.read",
+    "remote.write",
+    "remote.hash",
+    "remote.execute",
+    "remote.job_status",
+    "remote.cancel",
+];
+
 /// The last error of a bridge that broke carrying `method`, whose answer was `answer`
 /// (T3-BE-1). [`BRIDGE_FAILED`], which asks the person to inspect what was submitted, only when a
 /// change was written and its answer lost: `crew_outcome_unknown`, an SSH failure that says so,
@@ -1637,10 +1657,6 @@ pub fn is_run_id(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
-/// Refuse a request that required the privacy mode `expected` (as the caller sent it) of a
-/// connection that is in `actual`. A GUI's verified mode and a terminal's `--expected-mode`
-/// both reach here, so the refusal names both modes rather than guessing that one changed
-/// (W2-DMN-9). An absent `expected` requires nothing.
 /// The privacy in force for a connection in `own` mode to a workspace in `workspace` mode
 /// (T3-BE-5), the manual's definition and what every surface reports as the effective mode:
 /// Private when either is, since a workspace that is Private for everyone restricts every
@@ -1653,8 +1669,10 @@ fn effective_mode(own: ClusterMode, workspace: Option<ClusterMode>) -> ClusterMo
         own
     }
 }
-/// Whether a request that required `expected` may go ahead on a connection in `own` mode to a
-/// workspace in `workspace` mode. It may when `expected` is the privacy in force
+/// Refuse a request that required the privacy mode `expected` (as the caller sent it) of a
+/// connection in `own` mode to a workspace in `workspace` mode. A GUI's verified mode and a
+/// terminal's `--expected-mode` both reach here, so the refusal names both modes rather than
+/// guessing that one changed (W2-DMN-9). The request may go ahead when `expected` is the privacy in force
 /// ([`effective_mode`], T3-BE-5: `--expected-mode private` from a personal Public connection in
 /// a workspace that is Private for everyone used to be refused, although every surface said
 /// Private), or the connection's own mode, which is what the desktop sends as the mode it last
@@ -2556,43 +2574,13 @@ impl CrewManager {
         } else {
             input.mode
         };
-        // The connection being edited is judged by its new institution alone, as its mode is
-        // above: its saved one is what the edit replaces. Counting it made every change of
-        // institution a conflict with itself (DAEMON-3), refused as "aliases" there were none
-        // of. Another connection to the same workspace still has to agree, and is named
-        // when it does not.
-        if let Some(given) = input.institution_id.as_deref() {
-            if let Some(other) = r.connections.iter().find(|c| {
-                c.cluster_connection_id == cluster
-                    && Some(c.id.as_str()) != id
-                    && c.institution_id
-                        .as_deref()
-                        .is_some_and(|theirs| theirs != given)
-            }) {
-                return Err(other_institution_refusal(other, given));
-            }
-        }
-        let institution_id = institution::merge(
-            r.connections
-                .iter()
-                .filter(|c| c.cluster_connection_id == cluster && Some(c.id.as_str()) != id)
-                .filter_map(|c| c.institution_id.as_deref())
-                .chain(input.institution_id.as_deref()),
+        let institution_id = self.saved_institution(
+            r,
+            id,
+            &cluster,
+            input.institution_id.as_deref(),
+            (&input.workspace_id, &input.workspace_public_key),
         )?;
-        // The workspace's own institution is fixed by its host, and admission refuses a
-        // connection for another (T3-BE-4); a save that would set one is refused here instead,
-        // when a signed `hello` from this workspace says which it is. One not known yet is
-        // accepted as it always was.
-        if let Some(given) = institution_id.as_deref() {
-            if let Some((label, theirs)) = self.workspace_institution(
-                r,
-                &input.workspace_id,
-                &input.workspace_public_key,
-                given,
-            ) {
-                return Err(institution::save_mismatch(given, &label, &theirs));
-            }
-        }
         for c in r
             .connections
             .iter_mut()
@@ -2625,6 +2613,53 @@ impl CrewManager {
             device_id,
             public_key,
         })
+    }
+    /// The institution a connection saved into `cluster` gets from a save that gives
+    /// `requested`, refused when another saved connection to the same workspace (DAEMON-3) or
+    /// the workspace itself (T3-BE-4, `workspace` is its pinned ID and key) says another one.
+    fn saved_institution(
+        &self,
+        r: &Registry,
+        id: Option<&str>,
+        cluster: &str,
+        requested: Option<&str>,
+        workspace: (&str, &str),
+    ) -> Result<Option<String>> {
+        // The connection being edited is judged by its new institution alone, as its mode is
+        // above: its saved one is what the edit replaces. Counting it made every change of
+        // institution a conflict with itself (DAEMON-3), refused as "aliases" there were none
+        // of. Another connection to the same workspace still has to agree, and is named
+        // when it does not.
+        if let Some(given) = requested {
+            if let Some(other) = r.connections.iter().find(|c| {
+                c.cluster_connection_id == *cluster
+                    && Some(c.id.as_str()) != id
+                    && c.institution_id
+                        .as_deref()
+                        .is_some_and(|theirs| theirs != given)
+            }) {
+                return Err(other_institution_refusal(other, given));
+            }
+        }
+        let institution_id = institution::merge(
+            r.connections
+                .iter()
+                .filter(|c| c.cluster_connection_id == *cluster && Some(c.id.as_str()) != id)
+                .filter_map(|c| c.institution_id.as_deref())
+                .chain(requested),
+        )?;
+        // The workspace's own institution is fixed by its host, and admission refuses a
+        // connection for another (T3-BE-4); a save that would set one is refused here instead,
+        // when a signed `hello` from this workspace says which it is. One not known yet is
+        // accepted as it always was.
+        if let Some(given) = institution_id.as_deref() {
+            if let Some((label, theirs)) =
+                self.workspace_institution(r, workspace.0, workspace.1, given)
+            {
+                return Err(institution::save_mismatch(given, &label, &theirs));
+            }
+        }
+        Ok(institution_id)
     }
     /// The workspace pinned as `workspace_id` and `workspace_public_key`, as a person calls it,
     /// and its institution, when a signed (v2) `hello` from it says the institution is another
@@ -3456,14 +3491,20 @@ impl CrewManager {
             }
         }
         if matches!(method, "message.post" | "blob.begin") {
-            require_mode(
-                params.get("personal_mode"),
-                c.mode,
-                self.signed_workspace_mode(id),
-            )?;
-            // The workspace combines the connection's own mode with its own; it is always told
-            // the connection's.
-            params["personal_mode"] = json!(c.mode);
+            let expected = params.get("personal_mode").cloned();
+            require_mode(expected.as_ref(), c.mode, self.signed_workspace_mode(id))?;
+            // The workspace combines the connection's own mode with its own, and is told the
+            // connection's; a request that required Private is told Private (T3-BE-5), so it is
+            // restricted even when the workspace stopped being Private for everyone since its
+            // last `hello` said it was.
+            let required_private = expected
+                .and_then(|mode| serde_json::from_value::<ClusterMode>(mode).ok())
+                == Some(ClusterMode::Private);
+            params["personal_mode"] = json!(if required_private {
+                ClusterMode::Private
+            } else {
+                c.mode
+            });
         }
         if params.get("idempotency_key").is_none() {
             params["idempotency_key"] = json!(request_id
@@ -3953,6 +3994,14 @@ impl CrewManager {
         let snapshot = self
             .human_request(id, "workspace.snapshot", json!({}), None)
             .await?;
+        // Asked again of the workspace's mode as this snapshot has it, whose policy epoch the
+        // workspace checks when the run is created: an expectation the `hello` met a while ago
+        // is not met by a workspace that allows Public now (T3-BE-5).
+        require_mode(
+            policy.expected_mode.map(|mode| json!(mode)).as_ref(),
+            connection.mode,
+            serde_json::from_value(snapshot["workspace"]["mode"].clone()).ok(),
+        )?;
         let protected = institution::protected_sources(&snapshot, channel, sources, &workspace)?;
         let mut listed = sources.to_vec();
         if !listed.iter().any(|source| source == channel) {
@@ -4251,25 +4300,7 @@ impl CrewManager {
         mut params: Value,
     ) -> Result<Value> {
         ensure!(
-            [
-                "messages.history",
-                "messages.search",
-                "context.manifest",
-                "run.project",
-                "blob.read",
-                "blob.status",
-                "blob.begin",
-                "blob.chunk",
-                "blob.finish",
-                "remote.list",
-                "remote.read",
-                "remote.write",
-                "remote.hash",
-                "remote.execute",
-                "remote.job_status",
-                "remote.cancel"
-            ]
-            .contains(&method),
+            WORKER_METHODS.contains(&method),
             "Operation unavailable to a scoped Crew worker"
         );
         let s = self.scope(session).await?;
@@ -4355,12 +4386,26 @@ impl CrewManager {
         if terminal_post {
             self.note_run_ended(&s.run_id);
         }
+        self.note_worker_answer(session, method, remote_path, &c, &mut result)
+            .await;
+        Ok(result)
+    }
+    /// What a worker request's answer adds to the chat's reads, for its provenance line: the
+    /// names and times a message read showed, a file's name, a work-folder path read (T3-BE-8).
+    async fn note_worker_answer(
+        &self,
+        session: &str,
+        method: &str,
+        remote_path: Option<String>,
+        c: &Connection,
+        result: &mut Value,
+    ) {
         match method {
             "messages.history" | "messages.search" | "context.manifest" => {
-                self.note_run_context(session, method, &result);
-                mark_agent_posts(&mut result);
+                self.note_run_context(session, method, result);
+                mark_agent_posts(result);
             }
-            "blob.status" => self.note_run_status(session, &result),
+            "blob.status" => self.note_run_status(session, result),
             "remote.read" => {
                 if let Some(path) = remote_path {
                     let server = server_label::server_label(&c.ssh_target, c.port).await;
@@ -4369,7 +4414,6 @@ impl CrewManager {
             }
             _ => {}
         }
-        Ok(result)
     }
     async fn validate_worker_scope(
         &self,

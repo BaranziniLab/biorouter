@@ -2160,6 +2160,81 @@ async fn only_a_lost_change_leaves_the_submitted_operation_alarm() {
     }
 }
 
+/// T3-BE-5 (review): an expectation met by the workspace's last `hello` is met again where it
+/// could have gone stale. A post that required Private is told to the workspace as Private, so
+/// it is restricted even if the workspace stopped being Private for everyone since; and a task
+/// that required Private is judged again against the snapshot admission reads, whose policy
+/// epoch the workspace checks, so one that allows Public now is refused before any run exists.
+#[tokio::test]
+async fn an_expectation_met_by_a_stale_hello_is_held_where_it_counts() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("mode-in-force-stale", &["serve"], quiet()).await;
+    allow_grants(&f.root);
+    let (_store, chat, _incarnation) = saved_chat(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    // The last signed `hello` said Private for everyone; the snapshot says it allows Public.
+    let mut hello = f.manager.broker_hello(CONNECTION_ID).unwrap();
+    hello.signature_version = 2;
+    hello.mode = Some(ClusterMode::Private);
+    f.manager
+        .brokers
+        .lock()
+        .unwrap()
+        .insert(CONNECTION_ID.into(), hello);
+
+    let posted_mode = |root: &Path| {
+        frames(root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "message.post")
+            .last()
+            .map(|frame| frame["params"]["personal_mode"].clone())
+    };
+    for (expected, told) in [("private", "private"), ("public", "public")] {
+        f.manager
+            .human_request(
+                CONNECTION_ID,
+                "message.post",
+                json!({"channel_id": "keepalive-channel", "body": "x", "personal_mode": expected}),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(posted_mode(&f.root), Some(json!(told)), "{expected}");
+    }
+
+    let asked = requests(&f.root).len();
+    let refused = f
+        .manager
+        .begin_run_with_policy(
+            &chat,
+            CONNECTION_ID,
+            "keepalive-channel",
+            vec![],
+            &TurnProvider,
+            RunPolicy {
+                expected_mode: Some(ClusterMode::Private),
+                ..RunPolicy::default()
+            },
+        )
+        .await
+        .err()
+        .expect("the workspace allows Public now");
+    assert_eq!(
+        super::CrewRefusal::find(&refused).map(super::CrewRefusal::code),
+        Some("crew_mode_mismatch"),
+        "{refused:#}"
+    );
+    assert!(
+        !requests(&f.root)[asked..]
+            .iter()
+            .any(|(_, method)| method == "run.create"),
+        "no run was asked for"
+    );
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
 /// T3-BE-15: while the workspace's server is not running (the host stopped or restarted it, or
 /// its computer rebooted), the daemon tries again at a steady short interval instead of the
 /// growing gaps, so a server the host started again is noticed within that interval. Members
