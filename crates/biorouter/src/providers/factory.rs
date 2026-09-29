@@ -140,16 +140,34 @@ pub async fn providers() -> Vec<(ProviderMetadata, ProviderType)> {
 }
 
 pub async fn refresh_custom_providers() -> Result<()> {
+    // The files are read and parsed before the live registry is touched, and
+    // the old entries are replaced under ONE write lock. This used to take the
+    // lock twice, once to remove the custom providers and once to load them
+    // again, so a new chat started between the two found its custom provider
+    // missing ("Unknown provider"). `/config/upsert` re-reads on an unknown
+    // provider name, which makes that window reachable from any settings write.
+    // A failed read still leaves the registry as it always has: the custom
+    // entries removed and nothing half-loaded in their place.
+    let loaded = {
+        let mut fresh = ProviderRegistry::new();
+        load_custom_providers_into_registry(&mut fresh).map(|()| fresh)
+    };
     let registry = get_registry().await;
-    registry.write().unwrap().remove_custom_providers();
-
-    if let Err(e) = load_custom_providers_into_registry(&mut registry.write().unwrap()) {
-        tracing::warn!("Failed to refresh custom providers: {}", e);
-        return Err(e);
+    let mut live = registry.write().unwrap();
+    live.remove_custom_providers();
+    match loaded {
+        Ok(fresh) => {
+            live.entries.extend(fresh.entries);
+            drop(live);
+            tracing::info!("Custom providers refreshed");
+            Ok(())
+        }
+        Err(e) => {
+            drop(live);
+            tracing::warn!("Failed to refresh custom providers: {}", e);
+            Err(e)
+        }
     }
-
-    tracing::info!("Custom providers refreshed");
-    Ok(())
 }
 
 async fn get_from_registry(name: &str) -> Result<ProviderEntry> {
@@ -1635,5 +1653,33 @@ pub(crate) mod tests {
                 continue;
             }
         }
+    }
+
+    /// A new chat started while the custom providers are re-read must never find
+    /// its provider missing. The refresh used to take the registry's write lock
+    /// twice, removing the custom entries under the first and loading them again
+    /// under the second, and a reader between the two got "Unknown provider".
+    #[test]
+    fn a_refresh_swaps_the_custom_providers_under_one_write_lock() {
+        let source = include_str!("factory.rs");
+        let (_, body) = source
+            .split_once("pub async fn refresh_custom_providers(")
+            .expect("refresh_custom_providers");
+        let (body, _) = body.split_once("\n}\n").expect("the function's end");
+        let code = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(code.matches(".write()").count(), 1, "{code}");
+        // The files are read before the lock is taken, not while it is held.
+        let loaded_at = code
+            .find("load_custom_providers_into_registry(")
+            .expect("the refresh loads the files");
+        let locked_at = code.find(".write()").expect("the refresh takes the lock");
+        let removed_at = code
+            .find("remove_custom_providers()")
+            .expect("the refresh removes the old entries");
+        assert!(loaded_at < locked_at && locked_at < removed_at, "{code}");
     }
 }
