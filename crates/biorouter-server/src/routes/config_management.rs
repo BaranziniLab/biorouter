@@ -465,27 +465,8 @@ pub async fn upsert_config(
     if let Some(refusal) = config_value_refusal(&query.key, &query.value) {
         return Err((StatusCode::BAD_REQUEST, refusal));
     }
-    if names_a_provider(&query.key) {
-        let registered = || async {
-            get_providers()
-                .await
-                .into_iter()
-                .map(|(metadata, _)| metadata.name)
-                .collect::<Vec<String>>()
-        };
-        if unknown_provider_refusal(&query.key, &query.value, &registered().await).is_some() {
-            // A custom provider another process added (`biorouter configure`)
-            // is on disk but not yet in this daemon's registry: read the
-            // custom providers again before calling the name unknown.
-            if let Err(error) = biorouter::providers::refresh_custom_providers().await {
-                tracing::warn!("could not re-read custom providers: {error}");
-            }
-            if let Some(refusal) =
-                unknown_provider_refusal(&query.key, &query.value, &registered().await)
-            {
-                return Err((StatusCode::BAD_REQUEST, refusal));
-            }
-        }
+    if let Some(refusal) = provider_name_refusal(&query.key, &query.value).await {
+        return Err((StatusCode::BAD_REQUEST, refusal));
     }
 
     let result = config.set(&query.key, &query.value, query.is_secret);
@@ -702,6 +683,36 @@ fn config_value_refusal(key: &str, value: &Value) -> Option<String> {
 fn names_a_provider(key: &str) -> bool {
     key.eq_ignore_ascii_case("BIOROUTER_PROVIDER")
         || key.eq_ignore_ascii_case("BIOROUTER_LEAD_PROVIDER")
+}
+
+/// Why [`upsert_config`] refuses to store `value` under `key` because it names
+/// no provider this daemon can build, or `None` when it may be written (and
+/// always for a key that does not name a provider).
+///
+/// Split out of the handler so it stays under `clippy::too_many_lines`. No
+/// behaviour change: the handler calls this after every privacy gate and
+/// before it writes, as it did when the check was inline.
+///
+/// A custom provider another process added (`biorouter configure`) is on disk
+/// but not yet in this daemon's registry, so the custom providers are read
+/// again once before a name is called unknown.
+async fn provider_name_refusal(key: &str, value: &Value) -> Option<String> {
+    if !names_a_provider(key) {
+        return None;
+    }
+    let registered = || async {
+        get_providers()
+            .await
+            .into_iter()
+            .map(|(metadata, _)| metadata.name)
+            .collect::<Vec<String>>()
+    };
+    // `?` returns `None` here: a registered name may be written.
+    unknown_provider_refusal(key, value, &registered().await)?;
+    if let Err(error) = biorouter::providers::refresh_custom_providers().await {
+        tracing::warn!("could not re-read custom providers: {error}");
+    }
+    unknown_provider_refusal(key, value, &registered().await)
 }
 
 /// Why `value` cannot be stored under a key that names a provider (see
@@ -3923,7 +3934,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let refused_at = body
-            .find("unknown_provider_refusal(")
+            .find("provider_name_refusal(")
             .expect("upsert_config checks provider names");
         let written_at = body.find("config.set(").expect("upsert_config writes");
         let gated_at = body
@@ -3934,6 +3945,29 @@ mod tests {
             .expect("upsert_config has its capability gate");
         assert!(refused_at < written_at);
         assert!(capability_at < refused_at && gated_at < refused_at);
+
+        // And the helper it calls is the registry check, re-read once before a
+        // name is called unknown, and its answer is the refusal the route gives.
+        let (_, helper) = source
+            .split_once("async fn provider_name_refusal(")
+            .expect("provider_name_refusal");
+        let (helper, _) = helper.split_once("\n}\n").expect("the helper's end");
+        let first = helper
+            .find("unknown_provider_refusal(")
+            .expect("the helper asks the registry");
+        let reread = helper
+            .find("refresh_custom_providers(")
+            .expect("the helper re-reads custom providers");
+        let last = helper
+            .rfind("unknown_provider_refusal(")
+            .expect("the helper asks again");
+        assert!(first < reread && reread < last, "{helper}");
+        assert!(
+            helper
+                .trim_end()
+                .ends_with("unknown_provider_refusal(key, value, &registered().await)"),
+            "the second answer is the refusal: {helper}"
+        );
     }
 
     /// `GET /config/providers/{name}/models` is named and documented as the model
