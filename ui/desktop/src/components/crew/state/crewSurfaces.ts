@@ -47,6 +47,9 @@ export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
  * is in, the workspace's own privacy) until the view verifies again, rather than drawing from a
  * directory that names nobody as the host. It closes when the view is gone for good
  * (`protected-cleared`, which a failed re-verification sends, a lost channel, another connection).
+ * The reconnect inside the save itself is never taken for that: an end while this window's save of
+ * the connection is on its way is left to the save and decided only once it is back
+ * (`leaveEndToSave`, T3-UI-15).
  */
 export function survivesRefresh(dialog: DialogIntent): boolean {
   return dialog.kind === 'workspace-settings';

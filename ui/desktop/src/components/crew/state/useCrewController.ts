@@ -47,6 +47,7 @@ import type {
   CrewControllerOptions,
   CrewJoinStatus,
   PaneIntent,
+  SaveConnectionInput,
 } from './types';
 
 export type * from './types';
@@ -141,10 +142,24 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     markConnectionsFailed,
     loadConnections,
     saveConnection,
-    updateConnection,
+    updateConnection: patchConnection,
     removeConnection,
     prepareHostingDevice,
   } = useCrewConnections(generation);
+  /**
+   * This window's saves of each connection that are on their way, by connection (T3-UI-15), and
+   * whether any of them began while the saved record said connected. The daemon disconnects, saves
+   * and connects again inside a save of a connected connection (`CrewManager::update`), so an
+   * observation that ends meanwhile is that save's doing, and the observer leaves it to the save.
+   * A save of a connection that was not connected reconnects nothing, and leaves nothing.
+   */
+  const savesInFlight = useRef(new Map<string, { saves: number; reconnects: boolean }>());
+  const connectionSaving = useCallback(
+    (id: string) => savesInFlight.current.get(id)?.reconnects === true,
+    []
+  );
+  const connectionsNow = useRef(connections);
+  connectionsNow.current = connections;
   const [teamId, setTeamId] = useState('');
   const [channelId, setChannelId] = useState('');
   const draft = useCrewDraft();
@@ -225,6 +240,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     keepLastVerifiedView,
     joinStatus,
     onConnectionLost,
+    connectionSaving,
     reopenPane: openSurfacePane,
   });
   const {
@@ -246,6 +262,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     refreshError,
     refreshErrorCode,
     reverifying,
+    awaitingSave,
     verifiedViews,
     lastVerified,
     setSnapshot,
@@ -258,7 +275,40 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     restoring,
     lostDrafts,
     dismissLostDraft,
+    leaveEndToSave,
+    saveSettled,
   } = observation;
+
+  /**
+   * The full-body PATCH (L18), counted while it is on its way so an observation end it causes is
+   * not decided as a lost connection (T3-UI-15). When the last save of the connection is back,
+   * whether it succeeded or failed, an end left to it is observed again (`saveSettled`), after the
+   * list is read again; a caller's own `refresh()` right after replaces that.
+   */
+  const updateConnection = useCallback(
+    async (id: string, input: SaveConnectionInput) => {
+      const saves = savesInFlight.current;
+      const before = saves.get(id);
+      const connected = connectionsNow.current.some(
+        (item) => item.id === id && item.status === 'connected'
+      );
+      saves.set(id, {
+        saves: (before?.saves ?? 0) + 1,
+        reconnects: before?.reconnects === true || connected,
+      });
+      try {
+        return await patchConnection(id, input);
+      } finally {
+        const entry = saves.get(id);
+        if (entry && entry.saves > 1) saves.set(id, { ...entry, saves: entry.saves - 1 });
+        else {
+          saves.delete(id);
+          saveSettled(id);
+        }
+      }
+    },
+    [patchConnection, saveSettled]
+  );
 
   // The daemon is dialling the selected connection again by itself (RES2-N5): a request was
   // answered `crew_reconnecting`, the one way it says so. Kept, with when it was first said, until
@@ -690,6 +740,14 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         decided();
         return;
       }
+      // This window's own save of the connection is on its way (T3-UI-15): the record read inside
+      // it says `disconnected` while the daemon connects again, which is the save's doing. As with
+      // a generation move, nothing is decided here; the save's own list read and refresh settle it.
+      if (connectionSaving(lostId)) {
+        decided();
+        leaveEndToSave(lostId);
+        return;
+      }
       // A membership the workspace ended is final: nothing is observed again or followed for it.
       const ended = isMembershipEnded(record);
       if (record?.status === 'connected' && !ended && takeQuietReobserve(lostId, Date.now())) {
@@ -720,7 +778,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
    * runs, for a membership the workspace ended, or for a connection the person disconnected in this
    * window (`wasDisconnectedHere`): the daemon never re-dials a Disconnect, so there is nothing to
    * follow. A record this window sees connected forgets that Disconnect, so a later drop is
-   * followed again.
+   * followed again. Nor while the view's end is left to this window's own save (T3-UI-15): the
+   * record reads disconnected inside the save because the daemon is connecting it again there; a
+   * save that leaves it disconnected is followed once it is back.
    */
   const savedStatus = savedConnection?.status;
   const savedMembershipEnded = isMembershipEnded(savedConnection);
@@ -733,9 +793,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     if (connectionsState !== 'loaded' || !connectionId) return;
     if (savedStatus !== 'disconnected' || savedMembershipEnded) return;
     if (lossPending === connectionId || offlineFollow.current) return;
-    if (wasDisconnectedHere(connectionId)) return;
+    if (awaitingSave || wasDisconnectedHere(connectionId)) return;
     followLatest.current(connectionId);
-  }, [connectionsState, connectionId, savedStatus, savedMembershipEnded, lossPending]);
+  }, [
+    connectionsState,
+    connectionId,
+    savedStatus,
+    savedMembershipEnded,
+    lossPending,
+    awaitingSave,
+  ]);
 
   /**
    * The connection bar's Retry (Q2-01), which the person presses: read the saved record first,
@@ -1052,6 +1119,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       // A loss still being decided reads "Checking connection" (Q4-07), not "Updating…".
       reverifying: reverifying && lossPending !== connectionId,
       reconnecting: isReconnecting,
+      awaitingSave,
     }),
     screen: deriveCrewScreen({
       connectionsState,
@@ -1065,6 +1133,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       observationError: Boolean(refreshError),
       notJoined,
       reconnecting: isReconnecting,
+      awaitingSave,
     }),
     effectivePrivacy:
       shownVerified && snapshot && observedPrivacy

@@ -343,6 +343,14 @@ export interface CrewObservationContext {
    */
   onConnectionLost?(connectionId: string, end: ObservationEnd): void;
   /**
+   * Whether this window's own save of `connectionId` (`updateConnection`) is on its way. The
+   * daemon disconnects, saves and connects again inside that one request (`CrewManager::update`),
+   * so while it runs the saved record reads `disconnected` and the observer ends with
+   * `policy_changed` or `observation_refused`: the save's doing, not a dropped connection. Such an
+   * end is left to the save (`saveSettled`) rather than decided (T3-UI-15). Absent: never saving.
+   */
+  connectionSaving?(connectionId: string): boolean;
+  /**
    * Open the details pane the person left open on this connection, when Crew comes back to its
    * remembered view (Q4-04). Absent: the pane stays closed.
    */
@@ -386,6 +394,12 @@ export interface CrewObservation {
   /** A verified view ended for a recoverable reason and is being observed again by itself. */
   reverifying: boolean;
   /**
+   * The selected connection's view ended while this window's save of it is on its way, and the
+   * end is left to that save (T3-UI-15): the saved record's `disconnected` meanwhile is the save's
+   * doing, not news.
+   */
+  awaitingSave: boolean;
+  /**
    * How many verified `state` frames this observer has shown: a count that only grows. A post in
    * doubt waits for later ones before it says it could not be confirmed (QA R-4).
    */
@@ -420,6 +434,18 @@ export interface CrewObservation {
   /** Unsent words of channels the person lost, offered for copying until dismissed (QA M10). */
   lostDrafts: readonly LostDraft[];
   dismissLostDraft(id: number): void;
+  /**
+   * Leave the end of `connectionId`'s observation to this window's save of it, which is on its way
+   * (T3-UI-15): nothing is decided or reported for it, and `saveSettled` observes it again. The
+   * loss handler calls this when its decision lands while such a save runs.
+   */
+  leaveEndToSave(connectionId: string): void;
+  /**
+   * This window's saves of `connectionId` are all back. An end left to them is observed again now,
+   * unless something observed again or stopped observing since (the save's own `refresh()` does);
+   * that new observation decides it by the saved record as it now stands.
+   */
+  saveSettled(connectionId: string): void;
 }
 
 /**
@@ -460,6 +486,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     keepLastVerifiedView,
     joinStatus = null,
     onConnectionLost,
+    connectionSaving,
     reopenPane,
   } = context;
   const {
@@ -609,6 +636,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   useEffect(() => {
     onConnectionLostRef.current = onConnectionLost;
   }, [onConnectionLost]);
+  const connectionSavingRef = useRef(connectionSaving);
+  useEffect(() => {
+    connectionSavingRef.current = connectionSaving;
+  }, [connectionSaving]);
   /** This app session knew the connection's computer: a verified view, or a `joined` answer. */
   const verifiedHere = useCallback(
     (id: string) => connectionVerifiedThisSession(id) || joinStatusRef.current === 'joined',
@@ -819,6 +850,46 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     [cancelRecovery, loadConnections]
   );
 
+  /**
+   * An end left to this window's save of the connection (T3-UI-15), with the generation it left,
+   * until the save is back. Nothing observes again meanwhile: a re-observation inside the save
+   * reads the record `disconnected` and meets no transport, which is how a loss was decided there
+   * and Workspace settings closed while its own Make private reconnected.
+   */
+  const endLeftToSave = useRef<{ connectionId: string; generation: number } | null>(null);
+  /**
+   * The connection whose view ended into this window's save of it, for what is drawn meanwhile:
+   * the saved record reads `disconnected` inside the save, and that is the save's doing, so the
+   * status says "Updating…" rather than "Offline" beside a Connect for a reconnect the save is
+   * already making. Cleared once the save is back, a verified view arrives, a failure is shown, or
+   * the person stops observing or picks another connection.
+   */
+  const [awaitingSave, setAwaitingSave] = useState<string | null>(null);
+  const leaveEndToSave = useCallback(
+    (id: string) => {
+      cancelRecovery();
+      recoveringFrom.current = null;
+      endLeftToSave.current = { connectionId: id, generation: generation.current };
+      setAwaitingSave(id);
+    },
+    [cancelRecovery, generation]
+  );
+  const saveSettled = useCallback(
+    (id: string) => {
+      setAwaitingSave((current) => (current === id ? null : current));
+      const left = endLeftToSave.current;
+      if (!left || left.connectionId !== id) return;
+      endLeftToSave.current = null;
+      // A refresh, a selection or a Disconnect since moved the generation: that decides instead.
+      if (left.generation !== generation.current || selection.current.connectionId !== id) return;
+      // Queued, not started: the save's caller usually refreshes as soon as it is back, and a
+      // refresh cancels this (`cancelRecovery`), so the connection is observed once. A caller that
+      // does not (a rename) gets it here, after the list is read again.
+      scheduleReobservation(0);
+    },
+    [generation, scheduleReobservation]
+  );
+
   const observationFailure = useCallback(
     (message: string, code?: string) => {
       cancelRecovery();
@@ -835,6 +906,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         forgetLostDrafts(selection.current.connectionId);
       }
       recoveringFrom.current = null;
+      setAwaitingSave(null);
       setReverifying(false);
       setRefreshErrorCode(code ?? null);
       setRefreshError(outcome.text);
@@ -877,6 +949,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const stopObserving = useCallback(() => {
     cancelRecovery();
     recoveringFrom.current = null;
+    endLeftToSave.current = null;
+    setAwaitingSave(null);
     observer.current?.abort();
     generation.current += 1;
     clearProtectedState();
@@ -913,6 +987,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     generation.current += 1;
     cancelRecovery();
     recoveringFrom.current = null;
+    endLeftToSave.current = null;
+    setAwaitingSave(null);
     recovery.current.budget = { attempts: [], all: [] };
     lastFrame.current = null;
     setSnapshot(null);
@@ -1127,6 +1203,25 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       const believedConnected =
         verifiedHere(connectionId) &&
         (status === 'connected' || recoveringFrom.current === connectionId);
+      // SECURITY-SENSITIVE (human review). This window's own save of the connection is on its way
+      // (T3-UI-15): the daemon drops the bridge, saves and connects again inside it, so an end a
+      // reconnect explains is the save's, and the save's own list read and refresh settle it
+      // (`saveSettled`). Nothing verified stays on screen and nothing is decided: no loss, no
+      // error, no dialog closed. An answer about access or the person (`mayBeConnectionLoss`
+      // false) is not the save's, and is shown below.
+      if (
+        !ownFailure &&
+        verifiedHere(connectionId) &&
+        mayBeConnectionLoss(code) &&
+        connectionSavingRef.current?.(connectionId) === true
+      ) {
+        leaveEndToSave(connectionId);
+        clearProtectedState('refresh');
+        setRefreshError('');
+        setRefreshErrorCode(null);
+        setReverifying(true);
+        return;
+      }
       if (
         lost &&
         believedConnected &&
@@ -1274,6 +1369,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               lastFrame.current = { connectionId, snapshot: frame.snapshot };
               recovery.current.budget.attempts = [];
               recoveringFrom.current = null;
+              // A verified view answers an end left to a save (T3-UI-15): nothing is left to it.
+              if (endLeftToSave.current?.connectionId === connectionId)
+                endLeftToSave.current = null;
+              setAwaitingSave((current) => (current === connectionId ? null : current));
               noteConnectionVerified(connectionId);
               setVerifiedViews((count) => count + 1);
               setReverifying(false);
@@ -1405,6 +1504,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     observationFailure,
     cancelRecovery,
     scheduleReobservation,
+    leaveEndToSave,
     clearProtectedState,
     namesFor,
     verifiedHere,
@@ -1657,6 +1757,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     refreshError,
     refreshErrorCode,
     reverifying,
+    awaitingSave: awaitingSave !== null && awaitingSave === connectionId,
     verifiedViews,
     lastVerified,
     setSnapshot,
@@ -1670,5 +1771,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     restoring,
     lostDrafts,
     dismissLostDraft,
+    leaveEndToSave,
+    saveSettled,
   };
 }

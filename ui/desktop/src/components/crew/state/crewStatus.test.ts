@@ -106,6 +106,25 @@ describe('deriveConnectionStatus, row by row', () => {
     expect(status({ observationError: true })).toBe('updates-unavailable');
   });
 
+  it('reads "Updating…", never "Offline", while the view’s end is left to this window’s own save (T3-UI-15)', () => {
+    // The daemon drops the bridge and connects again inside the save: its record says
+    // disconnected meanwhile, and that is the save's doing.
+    expect(status({ awaitingSave: true, reverifying: true, connection: disconnected })).toBe(
+      'updating'
+    );
+    expect(status({ awaitingSave: true, reverifying: true })).toBe('updating');
+    // Once the save is back the record decides, as ever.
+    expect(status({ reverifying: true, connection: disconnected })).toBe('offline');
+    // A failure shown, a trust failure and a verified view are what they always were.
+    expect(status({ awaitingSave: true, connection: disconnected, observationError: true })).toBe(
+      'offline'
+    );
+    expect(status({ awaitingSave: true, lastConnectFailure: failure('host_key_changed') })).toBe(
+      'cant-verify'
+    );
+    expect(status({ awaitingSave: true, verified: true })).toBe('connected');
+  });
+
   it('reads "Sign-in needed" after a connect that failed with crew_ssh_auth_required', () => {
     expect(status({ connection: disconnected, lastConnectFailure: failure('auth_required') })).toBe(
       'sign-in-needed'
@@ -299,6 +318,19 @@ describe('deriveCrewScreen, row by row', () => {
 
   it('is checking, never welcome or join, while an enrolled connection waits for its first snapshot', () => {
     expect(screen({})).toBe('checking');
+  });
+
+  it('is checking, never offline and its Connect, while the view’s end is left to this window’s own save (T3-UI-15)', () => {
+    expect(screen({ awaitingSave: true, connection: disconnected })).toBe('checking');
+    expect(screen({ connection: disconnected })).toBe('offline');
+    // A failure shown, a trust failure and a verified view are what they always were.
+    expect(screen({ awaitingSave: true, connection: disconnected, observationError: true })).toBe(
+      'offline'
+    );
+    expect(screen({ awaitingSave: true, lastConnectFailure: failure('host_key_unknown') })).toBe(
+      'trust'
+    );
+    expect(screen({ awaitingSave: true, view: workspace, channelId: 'channel-1' })).toBe('channel');
   });
 
   it('is no-team for a verified workspace with no teams', () => {

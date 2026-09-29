@@ -80,6 +80,13 @@ export interface ConnectionStatusInput {
    * "Offline" and "Updates unavailable". Absent: false.
    */
   reconnecting?: boolean;
+  /**
+   * The verified view ended while this window's own save of the connection is on its way, and the
+   * end is left to that save (T3-UI-15). The daemon drops the bridge, saves and connects again
+   * inside the save, so the saved record's `disconnected` meanwhile is the save's doing: read as a
+   * connected connection being updated, never "Offline". Absent: false.
+   */
+  awaitingSave?: boolean;
 }
 
 /**
@@ -102,7 +109,7 @@ export function deriveConnectionStatus(input: ConnectionStatusInput): Connection
   if (input.reconnecting === true) return 'reconnecting';
   if (inFlight) return 'connecting';
   if (notJoined) return 'not-joined';
-  if (connection.status === 'connected') {
+  if (connection.status === 'connected' || (input.awaitingSave === true && !observationError)) {
     if (observationError) return 'updates-unavailable';
     return reverifying ? 'updating' : 'checking';
   }
@@ -161,6 +168,11 @@ export interface CrewScreenInput {
    * stopped" one. Absent: false.
    */
   reconnecting?: boolean;
+  /**
+   * The view ended into this window's own save of the connection (T3-UI-15): the neutral checking
+   * screen while the save reconnects, never the offline one and its Connect. Absent: false.
+   */
+  awaitingSave?: boolean;
 }
 
 /** Exactly one main-area screen for the controller's state. Pure and table-tested. */
@@ -186,6 +198,7 @@ export function deriveCrewScreen(input: CrewScreenInput): CrewScreen {
   if (failure === 'auth_required' && !input.signInOpen) return 'sign-in';
   if (isNotSetUpFailure(failure)) return 'not-set-up';
   if (input.notJoined) return 'join';
+  if (input.awaitingSave === true && !input.observationError) return 'checking';
   // Mirrors the status table: an observation error pauses updates only on a connection the
   // daemon calls connected. The observer also runs for a saved-disconnected connection (after an
   // app restart or a dropped SSH bridge), and the daemon answers it with an error frame; showing

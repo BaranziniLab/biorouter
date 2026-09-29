@@ -293,7 +293,11 @@ export interface CrewController {
   reloadConnections?(): void;
   /** POST, reload the list and select the saved connection. Throws on failure. */
   saveConnection(input: SaveConnectionInput): Promise<CrewConnection>;
-  /** Full-body PATCH (L18) and reload the list. Throws on failure. */
+  /**
+   * Full-body PATCH (L18) and reload the list. Throws on failure. The daemon reconnects inside
+   * it, so an observation end meanwhile is left to it and observed again once it is back, never
+   * decided as a lost connection (T3-UI-15).
+   */
   updateConnection(id: string, input: SaveConnectionInput): Promise<CrewConnection>;
   /** DELETE and reload the list. Throws on failure. */
   removeConnection(id: string): Promise<void>;
