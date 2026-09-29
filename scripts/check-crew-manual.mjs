@@ -173,6 +173,7 @@ const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
 const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
 const BAR_COPY = 'ui/desktop/src/components/crew/channel/copy.ts';
 const INSTITUTION_RS = 'crates/biorouter/src/crew/institution.rs';
+const DECLASSIFY_RS = 'crates/biorouter/src/privacy/declassify.rs';
 const LOCAL_FILES_RS = 'crates/biorouter-server/src/crew/local_files.rs';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
@@ -953,6 +954,7 @@ export function checkCrewManual(tree = repoTree()) {
   const barSource = need(BAR_COPY, 'app-sentences');
   const accessSource = need(ACCESS_COPY, 'app-sentences');
   const institutionSource = need(INSTITUTION_RS, 'app-sentences');
+  const declassifySource = need(DECLASSIFY_RS, 'app-sentences');
   const localFilesSource = need(LOCAL_FILES_RS, 'app-sentences');
   const opening = (texts, opens) =>
     texts.map((text) => text.trim()).filter((text) => opens.test(sameQuotes(text)));
@@ -1087,6 +1089,14 @@ export function checkCrewManual(tree = repoTree()) {
       ),
       source: institutionSource,
       requiredIn: [COMMAND_LINE, TROUBLESHOOTING],
+      requiredWhole: true,
+    },
+    {
+      name: `the refusal to make a Crew chat public in ${DECLASSIFY_RS}`,
+      opens: /^This chat read Crew channels\b/,
+      templates: opening(rustLiterals(declassifySource || ''), /^This chat read Crew channels\b/),
+      source: declassifySource,
+      requiredIn: [AGENTS_PAGE],
       requiredWhole: true,
     },
     {

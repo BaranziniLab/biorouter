@@ -1429,6 +1429,20 @@ test('allow-button: the Allow button is named as the pane labels it', () => {
   );
 });
 
+test('app-sentences: the agents page quotes the refusal to make a Crew chat public', () => {
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text.replace(
+          / \*\*Make this chat public\*\* in the chat history is refused with "[^"]*"/,
+          ''
+        ),
+    },
+    'app-sentences',
+    /does not quote the refusal to make a Crew chat public/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

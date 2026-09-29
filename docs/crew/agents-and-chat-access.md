@@ -145,7 +145,7 @@ It cannot use other Biorouter tools (no shell, web or local files), post elsewhe
 
 ### A chat's fixed channel and model
 
-The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. In such a chat, **Switch models** says "This chat's model is fixed by its Crew access. Start a new chat to use another model." and offers no other model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. Exporting the chat and creating a workflow from it are refused too, with a sentence that says why. For other work:
+The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. In such a chat, **Switch models** says "This chat's model is fixed by its Crew access. Start a new chat to use another model." and offers no other model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. Exporting the chat and creating a workflow from it are refused too, with a sentence that says why. **Make this chat public** in the chat history is refused with "This chat read Crew channels, so it can't be made public. Start a new chat for public work." For other work:
 
 1. Start a new chat.
 2. Send it a message.
