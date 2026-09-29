@@ -11,7 +11,7 @@
 > with Goose" item again before acting on it.
 > **Audience:** developers working on BioRouter's agent loop.
 
-BioRouter is an independent project, but Goose was the strongest influence on its design,
+Goose was the strongest influence on BioRouter's design,
 and the two have a similar shape: a Rust core agent crate, a daemon (`goosed` in Goose,
 `biorouterd` in BioRouter), a `ui/desktop` Electron app, hermit and a Justfile. That makes
 this the one report in the folder about the design BioRouter learned most from rather than
