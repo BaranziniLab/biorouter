@@ -1497,6 +1497,33 @@ test('reconnect-timing: the pages say how soon Crew tries again, and quote each 
   );
 });
 
+test('source-line: the agents page quotes the source line for a work-folder file as the daemon writes it (T3-DOC-5)', () => {
+  // The result table as the live check found it: no work-folder form.
+  assertCaught(
+    {
+      [AGENTS]: (text) =>
+        text
+          .replace(/^\| A file in the remote work folder \|.*\n/m, '')
+          .replace(/^\| Shared files and work-folder files \|.*\n/m, '')
+          .replace(
+            / or ``Source: `samples_result\.txt` from the remote work folder on hpc\.``/,
+            ''
+          ),
+    },
+    'source-line',
+    /does not quote a source line naming a work-folder file/
+  );
+  // The daemon rewords the line and the page keeps the old words.
+  assertCaught(
+    {
+      'ui/desktop/src/components/crew/daemonSourceLine.cases.json': (text) =>
+        text.replaceAll('from the remote work folder on hpc', 'in the work folder on hpc'),
+    },
+    'source-line',
+    /quotes "Source: `samples_result\.txt` from the remote work folder on hpc\.", which no case/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

@@ -96,6 +96,8 @@ The agent's reply is posted as the result, and its first line names the file use
 | The newest of several files with one name | The same, plus when it was shared |
 | Several files | "Sources: " and each file |
 | An older copy | "(earlier copy)" and ``A newer copy of `gina-assay.csv` was shared and was not read.`` |
+| A file in the remote work folder | ``Source: `samples_result.txt` from the remote work folder on hpc.``, naming the server as your connection does |
+| Shared files and work-folder files | The shared files first, then ``Also read `samples_result.txt` from the remote work folder on hpc.`` |
 | Nothing | "No shared file was read for this result." |
 
 "Task finished without a text result." means no reply. "(This reply was shortened to fit the channel.)" means a long reply was cut. If the agent used the wrong file, share it or name the copy, then start a new task.
@@ -137,7 +139,7 @@ A "Crew · #methods" chip above the chat's message box opens its Chat access pan
 
 The chat can read and search its channels (the 200 most recent messages at once), read shared files, and post in its one channel. With a Private model it can use the **Remote work folder**, and run commands there when **Let my agent run commands in this folder** is on.
 
-Each post the chat makes ends with a line from Crew, not the model, naming the shared files the chat read since its last post, such as ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).``, or "No shared file was read for this post." That line is always last, so a "Source:" line the model wrote itself sits above it. Trust Crew's line.
+Each post the chat makes ends with a line from Crew, not the model, naming the shared files and the work-folder files the chat read since its last post, such as ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).`` or ``Source: `samples_result.txt` from the remote work folder on hpc.``, or "No shared file was read for this post." when it read neither. That line is always last, so a "Source:" line the model wrote itself sits above it. Trust Crew's line.
 
 The chat sees its channels' messages much as you do, with posts by an agent marked as that person's agent's. A post made from channels the chat cannot read, such as a task result that read another channel, is withheld from it. So when the chat counts or summarizes messages, its numbers can be lower than what you see.
 

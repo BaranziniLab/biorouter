@@ -92,6 +92,8 @@
 //   * `reconnect-timing`: the pages say how soon Crew tries again, in the
 //     keepalive's own figures, and quote each form of the reconnecting
 //     sentence and the member's stopped-server sentence (T3-DOC-6).
+//   * `source-line`: the agents page quotes the daemon's last line for a post
+//     that read a work-folder file, as its render cases write it (T3-DOC-5).
 //   * `allow-button`: the Chat access pane's Allow button is named as the
 //     pane labels it, never with the chat's title it used to carry.
 //   * `refusal-codes` also holds every code the command line gives its own
@@ -178,6 +180,7 @@ const BAR_COPY = 'ui/desktop/src/components/crew/channel/copy.ts';
 const INSTITUTION_RS = 'crates/biorouter/src/crew/institution.rs';
 const DECLASSIFY_RS = 'crates/biorouter/src/privacy/declassify.rs';
 const KEEPALIVE_RS = 'crates/biorouter/src/crew/keepalive.rs';
+const SOURCE_LINE_CASES = 'ui/desktop/src/components/crew/daemonSourceLine.cases.json';
 const LOCAL_FILES_RS = 'crates/biorouter-server/src/crew/local_files.rs';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
@@ -1728,6 +1731,52 @@ export function checkCrewManual(tree = repoTree()) {
           'allow-button',
           `${AGENTS_PAGE} does not name the Chat access pane's **${allow}** button`
         );
+      }
+    }
+  }
+
+  // ── source-line ──────────────────────────────────────────────────────────
+  // The daemon's last line names the work-folder files a post read (T3-BE-8), where it used to
+  // say no shared file was read. The agents page quotes that form as the daemon's own render
+  // cases write it, and every work-folder line it quotes is one of theirs, or a sentence of one.
+  const casesText = need(SOURCE_LINE_CASES, 'source-line');
+  if (casesText !== null) {
+    let cases = [];
+    try {
+      cases = JSON.parse(casesText);
+    } catch {
+      fail('source-line', `${SOURCE_LINE_CASES} is not JSON; update this reader`);
+    }
+    const lines = (Array.isArray(cases) ? cases : cases.cases || [])
+      .map((entry) => entry && entry.line)
+      .filter((line) => typeof line === 'string')
+      .map(sameQuotes);
+    const folderLines = lines.filter((line) => /remote work folder/.test(line));
+    if (folderLines.length === 0) {
+      fail(
+        'source-line',
+        `found no work-folder source line in ${SOURCE_LINE_CASES}; update this reader`
+      );
+    } else {
+      const quoted = pageQuotes(AGENTS_PAGE).map(sameQuotes);
+      if (!quoted.some((phrase) => folderLines.includes(phrase))) {
+        fail(
+          'source-line',
+          `${AGENTS_PAGE} does not quote a source line naming a work-folder file, such as "${folderLines[0]}"`
+        );
+      }
+      for (const { path, blocks } of surfaces) {
+        for (const phrase of quotesOf({ path, blocks }).map(sameQuotes)) {
+          if (
+            /remote work folder on\b/.test(phrase) &&
+            !lines.some((line) => line.includes(phrase))
+          ) {
+            fail(
+              'source-line',
+              `${path} quotes "${phrase}", which no case in ${SOURCE_LINE_CASES} writes`
+            );
+          }
+        }
       }
     }
   }

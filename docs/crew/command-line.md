@@ -322,7 +322,7 @@ biorouter crew tasks start methods --input ./prompt.txt \
 - Each `--context-channel CHANNEL` adds a channel to read, up to 16.
 - The task's access lasts one hour.
 - In a Private workspace, the model must be approved for the workspace's institution, or run locally. See [Agents and chat access](agents-and-chat-access.md).
-- The result ends with a line naming the shared files it read, or saying it read none.
+- The result ends with a line naming the shared files and the remote work folder files it read, or saying it read none.
 
 `tasks list` shows each task, the channel it posts to and its chat session, and `--show-ids` adds the task IDs that `tasks show`, `tasks watch` and `tasks cancel` take. `tasks watch ID` follows one and exits with `0` at every end state, so read the last: `Done`, `Couldn't finish`, `Stopped`, `Interrupted`, `Outcome unknown` or `Stop not confirmed`. Ctrl+C stops watching, not the task.
 
@@ -336,7 +336,7 @@ The desktop app does this with `/crew`, as [Agents and chat access](agents-and-c
 biorouter crew grants grant SESSION_ID methods --context-channel analysis-lab/raw-data
 ```
 
-The first channel is where the chat posts. Each `--context-channel` adds one to read, up to 20 channels in all. `grants list` shows each chat and task with access, its state and time left. `context SESSION_ID` starts with the grant's channels, such as `Access: #methods · also reads #raw-data`, then lists the messages the chat can read, oldest first. Each post the chat makes ends with a line from your daemon naming the shared files it read since its last post, or saying it read none.
+The first channel is where the chat posts. Each `--context-channel` adds one to read, up to 20 channels in all. `grants list` shows each chat and task with access, its state and time left. `context SESSION_ID` starts with the grant's channels, such as `Access: #methods · also reads #raw-data`, then lists the messages the chat can read, oldest first. Each post the chat makes ends with a line from your daemon naming the shared files and the remote work folder files it read since its last post, or saying it read none.
 
 Some workspace changes end every grant and task in the workspace. `grants list` then shows `Ended: Crew settings changed`, and `context` says ``This chat's Crew access ended because Crew settings changed.`` (code `crew_grant_ended`), followed by the `grants grant` command that grants it again. Run that command. [Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access) lists the changes.
 
