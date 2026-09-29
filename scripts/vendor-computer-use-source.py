@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Refresh `vendor/computer-use/source/` and its integrity manifest.
 
-The vendored tree is the PRISTINE upstream at `pin.json`'s commit — patches are
-NOT applied to it. Keeping the two separate is what makes an upstream update
-tractable: the tree is replaced wholesale and the reviewed patches are re-applied
-on top, so a conflict is a real conflict rather than a merge of our edits with
-themselves.
+The included files are unmodified upstream at `pin.json`'s commit; documented
+reference assets are omitted. Patches are NOT applied to the vendored files.
+Keeping the two separate makes an upstream update tractable: the tree is
+replaced wholesale and the reviewed patches are re-applied on top, so a
+conflict is a real conflict rather than a merge of our edits with themselves.
 
 Usage:
     python3 scripts/vendor-computer-use-source.py --from <path-to-upstream-clone>
@@ -24,24 +24,27 @@ SOURCE = VENDOR / "source"
 MANIFEST = VENDOR / "source-manifest.json"
 SCHEMA = 1
 
-# Upstream paths that are deliberately NOT vendored.
-#
-# ⚠ This is a licensing boundary, not a size one. Upstream is MIT, and MIT covers
-# upstream's OWN work — it cannot relicense artwork upstream extracted from
-# somebody else's shipped application for reverse-engineering notes. Copying
-# those into this repository would be asserting a licence upstream never had.
-#
-# Excluding them is safe because they are documentation references, not build
-# inputs: nothing under `apps/` reads them, and the only code that names them
-# lives in `experiments/` and a standalone `scripts/` renderer, neither of which
-# is a built product. The exclusions are recorded in the manifest so the gap is
-# explicit and auditable rather than a silent hole.
+# Upstream paths that are deliberately NOT vendored. The extracted assets are
+# artwork from another vendor's application, outside upstream's MIT licence.
+# The official bundle archives are reference inputs whose LFS objects are not
+# available in this repository. None of these files is a build input. Record
+# each omission in the manifest so an upstream refresh cannot restore it.
 EXCLUDED = [
     (
         "docs/references/codex-computer-use-reverse-engineering/assets/extracted-",
         "assets extracted from a third party's application; upstream's MIT licence "
         "does not extend to them, and they are documentation references rather "
         "than build inputs",
+    ),
+    (
+        ".gitattributes",
+        "only configures Git LFS for the omitted official bundle archives; "
+        "not a build input",
+    ),
+    (
+        "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/",
+        "official plugin archives are unavailable in this repository's Git LFS "
+        "storage and are documentation references rather than build inputs",
     ),
 ]
 

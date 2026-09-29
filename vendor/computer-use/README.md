@@ -1,16 +1,16 @@
 # BioRouter native Computer Use payload
 
-`source/` is a COMPLETE copy of the MIT-licensed upstream project at the commit
-`pin.json` names, committed to this repository. A build reads it and needs no
+`source/` contains the MIT-licensed upstream project at the commit `pin.json`
+names, with documented reference assets omitted. A build reads it and needs no
 network, so an upstream repository that is deleted, force-pushed or altered
 cannot affect BioRouter, and the exact bytes that go into a shipped helper are
 reviewable in this repository's own history.
 
-`source/` is **pristine** — the patches are not applied to it. `patches/` is
-applied in lexical order to a throwaway copy at build time. Keeping the two apart
-is what makes an upstream update tractable: replace the tree wholesale, re-apply
-the reviewed patches on top, and a conflict is a real conflict rather than a
-merge of our own edits with themselves.
+The included files in `source/` are **pristine** — the patches are not applied
+to them. `patches/` is applied in lexical order to a throwaway copy at build
+time. Keeping the two apart makes an upstream update tractable: replace the
+tree wholesale, re-apply the reviewed patches on top, and a conflict is a real
+conflict rather than a merge of our own edits with themselves.
 
 `source-manifest.json` carries a SHA-256 of every vendored file plus one digest
 over the whole tree, and the build verifies it before the bytes become build
@@ -21,12 +21,13 @@ check in CI, and also asserts every manifest file is committable: repository-wid
 tree was first vendored, and a tree that verifies locally while those files never
 reach a fresh clone is worse than one that fails outright.
 
-⚠ **Ten upstream files are deliberately NOT vendored**, listed under `excluded` in
-the manifest with the reason. They are assets upstream extracted from another
-vendor's shipped application for reverse-engineering notes. MIT covers upstream's
-own work; it cannot relicense somebody else's artwork. They are documentation
-references, not build inputs — nothing under `apps/` reads them — and a build is
-byte-identical with and without them (verified).
+The manifest's `excluded` list records files deliberately omitted from upstream.
+Some are artwork extracted from another vendor's application for reverse
+engineering notes; upstream's MIT licence does not cover that artwork. The
+official plugin archive directory and its Git LFS rule are also omitted
+because the ZIP contents are unavailable in this repository's LFS storage.
+They are documentation references, not build inputs. Historical upstream
+documentation under `source/docs/` still describes those archives.
 
 ### Checking for upstream changes
 
