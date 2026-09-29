@@ -445,8 +445,11 @@ launch_page() {{
 open_url() {{
   echo "Opening $APP_ID at http://127.0.0.1:$PORT/apps/$APP_ID/"
   token="${{1#"http://127.0.0.1:$PORT/apps/$APP_ID/?t="}}"
+  # The digits and letters are listed, not written as ranges: macOS's bash 3.2
+  # reads [0-9a-f] by the locale's collation under UTF-8, where it takes
+  # upper-case letters too.
   case "$token" in
-    "$1" | *[!0-9a-f]*) die "not a launch link for $APP_ID; refusing to open it" ;;
+    "$1" | *[!0123456789abcdef]*) die "not a launch link for $APP_ID; refusing to open it" ;;
   esac
   [ "${{#token}}" -eq 64 ] || die "not a launch link for $APP_ID; refusing to open it"
   page="$(launch_page "$1")" || page=""
@@ -2021,10 +2024,16 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
+            // The program goes to Bash as a file, like the syntax check above. Passed with
+            // `-c`, the whole launcher crosses the Windows command line, and Git Bash's
+            // argument parsing re-reads the quotes and glob characters in it: the launch-page
+            // code made it report "unexpected EOF while looking for matching `\"'" there,
+            // while `bash -n` of the same text on disk passed.
             let script =
-                format!("set -euo pipefail\nchmod +x ./biorouterd\n{lib}\nfind_biorouterd");
+                format!("set -euo pipefail\nchmod +x ./biorouterd\n{lib}\nfind_biorouterd\n");
+            std::fs::write(stub_dir.join("check-find-biorouterd.sh"), script).unwrap();
             let out = Command::new(&bash)
-                .args(["-c", &script])
+                .arg("./check-find-biorouterd.sh")
                 .current_dir(&stub_dir)
                 .env_remove("BIOROUTERD_BIN")
                 .env_remove("XDG_CONFIG_HOME")
