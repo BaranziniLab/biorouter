@@ -103,18 +103,18 @@ fn person(headers: &HeaderMap) -> std::result::Result<(), Refusal> {
         UserActionProof::Unproven => Err(Refusal::new(
             StatusCode::FORBIDDEN,
             USER_ACTION_REQUIRED,
-            "Crew profile operations require the existing human approval secret. Authorize this action in the Crew panel or the native Crew CLI.",
+            "Only a person using the Biorouter desktop app or the biorouter crew command can change Crew profile credentials.",
         )),
         UserActionProof::NoKeyInstalled => Err(Refusal::new(
             StatusCode::FORBIDDEN,
             HUMAN_AUTHORITY_UNAVAILABLE,
-            super::crew_authentication::no_human_authority("This daemon cannot verify the human approval secret that Crew profile operations require. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
+            super::crew_authentication::no_human_authority("This daemon cannot verify human Crew actions. Start it from the Biorouter desktop app or with biorouter crew daemon start."),
         )),
     }
 }
 
 /// The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing
-/// else. It must differ from the human approval secret.
+/// else. It must differ from the user-action key the request carries.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretBody {
@@ -150,7 +150,7 @@ pub async fn credentials(headers: HeaderMap) -> Result<CredentialStatus> {
     request_body = SecretBody,
     responses(
         (status = 200, description = "The vault, created and unlocked; this profile keeps its Crew keys in it from now on", body = CredentialStatus),
-        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way", body = CrewError),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the user-action key, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
         (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
@@ -172,7 +172,7 @@ pub async fn init(
     request_body = SecretBody,
     responses(
         (status = 200, description = "The vault, unlocked", body = CredentialStatus),
-        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way", body = CrewError),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the user-action key, a profile with no vault, or another credential operation under way", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
@@ -195,7 +195,7 @@ async fn change_secret(
     if headers.get("X-User-Action").and_then(|h| h.to_str().ok()) == Some(body.passphrase.as_str())
     {
         return Err(anyhow::anyhow!(
-            "The vault passphrase must differ from the human approval secret"
+            "Choose a different vault passphrase."
         )
         .into());
     }
@@ -589,7 +589,7 @@ mod tests {
     fn credential_operations_refuse_without_human_proof() {
         for headers in [HeaderMap::new(), {
             let mut wrong = HeaderMap::new();
-            wrong.insert("X-User-Action", "not-the-approval-secret".parse().unwrap());
+            wrong.insert("X-User-Action", "not-the-user-action-key".parse().unwrap());
             wrong
         }] {
             let refusal = person(&headers).unwrap_err();
@@ -599,7 +599,7 @@ mod tests {
                 "an unproven request was refused with {}",
                 refusal.code
             );
-            assert!(refusal.error.contains("human approval secret"));
+            assert!(refusal.error.contains("biorouter crew"));
         }
     }
 

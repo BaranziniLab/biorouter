@@ -64,10 +64,10 @@ describe('native shared-daemon approval prompt', () => {
   it('returns the hidden prompt answer while keeping it out of argv and filtered environment', async () => {
     const child = new FakeChild();
     mocks.spawn.mockReturnValue(child);
-    const secret = 'approval-secret-for-test';
+    const secret = 'vault-passphrase-for-test';
     process.env.BIOROUTER_TEST_PASSWORD = secret;
 
-    const pending = promptNativeSecret('Shared daemon approval', 'Enter the approval secret');
+    const pending = promptNativeSecret('Unlock Crew encrypted vault', 'Enter the vault passphrase');
     expect(mocks.spawn).toHaveBeenCalledOnce();
     const [program, args, options] = mocks.spawn.mock.calls[0] as [
       string,
@@ -209,11 +209,11 @@ describe('native shared-daemon approval prompt', () => {
 });
 
 /**
- * DOCS-6: the brand is "Biorouter", lowercase r. The approval-secret prompts said "BioRouter", so
- * the manual had to quote a spelling it uses nowhere else, in the one dialog it tells people to
- * trust with a secret. Read at the source: the prompts are native dialogs no test renders.
+ * DOCS-6: the brand is "Biorouter", lowercase r. The daemon prompts of 1.92.0 said "BioRouter", so
+ * the manual had to quote a spelling it uses nowhere else, in a dialog it told people to trust
+ * with a secret. Read at the source: the prompts are native dialogs no test renders.
  */
-describe('native approval prompts spell the brand "Biorouter"', () => {
+describe('native secret prompts spell the brand "Biorouter"', () => {
   const source = (name: string) => readFileSync(join(__dirname, name), 'utf8');
   /** Every string literal in `code`, comments left out. */
   const literals = (code: string) =>
@@ -228,10 +228,11 @@ describe('native approval prompts spell the brand "Biorouter"', () => {
     const calls = [...source('main.ts').matchAll(/promptNativeSecret\(([\s\S]*?)\);/g)].map(
       (match) => match[1]
     );
-    expect(calls.length).toBeGreaterThanOrEqual(4);
+    // The Crew vault's passphrase and its confirmation. The shared daemon asks for no secret.
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     const texts = calls.flatMap(literals);
+    expect(texts.length).toBeGreaterThanOrEqual(4);
     expect(texts.filter((text) => text.includes('BioRouter'))).toEqual([]);
-    expect(texts.filter((text) => text.includes('Biorouter')).length).toBeGreaterThanOrEqual(3);
   });
 
   it('in every sentence nativeSecretPrompt.ts shows', () => {
@@ -299,7 +300,7 @@ describe('native prompt text is plain ASCII', () => {
     const calls = [...source('main.ts').matchAll(/promptNativeSecret\(([\s\S]*?)\);/g)].map(
       (match) => match[1]
     );
-    expect(calls.length).toBeGreaterThanOrEqual(4);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     // eslint-disable-next-line no-control-regex
     expect(calls.filter((call) => /[^\x00-\x7f]/.test(call))).toEqual([]);
   });

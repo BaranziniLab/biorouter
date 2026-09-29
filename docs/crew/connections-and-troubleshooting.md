@@ -35,13 +35,9 @@ The status row shows "Connected", and your channels appear. A failed attempt add
 
 ### When you reopen Biorouter
 
-On a Mac or a Linux computer, quitting Biorouter leaves the background service running and the workspace connected. When you reopen Biorouter, type your approval secret in the window "Connect to existing Biorouter daemon". See [The approval secret](getting-started.md#the-approval-secret). A pending join shows the same code, or finishes by itself.
+On a Mac or a Linux computer, quitting Biorouter leaves the background service running and the workspace connected. When you reopen Biorouter, it connects to the service without asking you anything ([The background service](getting-started.md#the-background-service)). A pending join shows the same code, or finishes by itself.
 
-After your computer restarts, and on Windows after every quit, the service stops. To connect again:
-
-1. Open Biorouter.
-2. On a Mac or a Linux computer, set an approval secret when Biorouter asks.
-3. Choose **Connect to {workspace}**. The status row shows "Connected".
+After your computer restarts, and on Windows after every quit, the service stops. To connect again, open Biorouter and choose **Connect to {workspace}**. The status row shows "Connected".
 
 ### Disconnect from a workspace
 
@@ -185,7 +181,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | "Crew couldn’t confirm whether this reached {workspace}…" | The connection broke after the request left. Check the channel before you repeat the action. |
 | "…no longer a member…" or "…doesn’t recognize this computer any more…" | Your host removed you or this computer. Ask your host. |
 | "{workspace} was removed from this computer, so it can’t be opened." | The workspace was removed here while Crew was open, for example with `biorouter crew connections remove`, and Crew opened another. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account). |
-| "Your Crew vault is locked." | Choose **Unlock**, and enter your vault passphrase, not your approval secret. If it is refused, choose **Unlock** again. See [Use an encrypted vault](privacy-and-security.md#use-an-encrypted-vault). |
+| "Your Crew vault is locked." | Choose **Unlock**, and enter your vault passphrase. If it is refused, choose **Unlock** again. See [Use an encrypted vault](privacy-and-security.md#use-an-encrypted-vault). |
 | "A new device was added to your account…" | Choose **Review**. If you did not add that device, tell your host. |
 
 ### Live update messages
@@ -194,7 +190,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 
 | Message | What to do |
 |---|---|
-| "Biorouter’s background service restarted, so Crew can’t reach your workspaces until Biorouter reconnects." with **Reconnect** | Choose **Reconnect**, the same button as the notice in the app's sidebar, then type the approval secret of the service that runs now, or set a new one if none runs. Crew then loads your workspaces again. |
+| "Biorouter lost its connection to its background service, so Crew can’t reach your workspaces until Biorouter reconnects." with **Reconnect** | Biorouter reconnects by itself. If the message stays, choose **Reconnect**, the same button as the notice in the app's sidebar. Crew then loads your workspaces again. |
 | "Live updates keep stopping…" or "…couldn’t confirm the request came from you." | Choose **Retry**. If it repeats, quit and reopen Biorouter. |
 | "Your access to {workspace} changed." | Choose **Retry**. If it repeats, ask your host. |
 | "You no longer have access to {channel}…" | Ask the channel owner if you need access again. |
@@ -223,7 +219,7 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 | "This connection is for {institution}, but {workspace} belongs to {institution}…", "…is also saved on this computer for the same workspace, under institution…" or "…one computer can't mix institutions on the same server." | Use the workspace's institution in **Connection settings…**, for every workspace on that server, or ask your host. An older background service says "Crew aliases have different institutions…", and an older server "privacy_denied: connection and workspace institutions differ". |
 | "Use the key file’s full path…" under **Identity file** in **Connection settings…**, or "Choose the identity file by its full path." or "Identity file must be an absolute path" when you join | Type the key file's full path, such as `/Users/you/.ssh/id_ed25519` on a Mac or `/home/you/.ssh/id_ed25519` on Linux. A path that starts with `~` is not accepted. Or leave the field empty to sign in with your own SSH settings. |
 | "…needs a newer Biorouter background service…" | See [Replace an old background service](#replace-an-old-background-service). |
-| "Biorouter's background service restarted." with **Reconnect** and **Quit and reopen** | The background service stopped or was replaced while Biorouter was open, for example by `biorouter crew daemon stop`. Choose **Reconnect**, then type the approval secret of the service that runs now, or set a new one if none runs. Nothing you were writing is lost. |
+| "Biorouter couldn't reconnect to its background service." with **Try again** and **Quit and reopen** | The background service stopped or was replaced while Biorouter was open, for example by `biorouter crew daemon stop`, and Biorouter could not reconnect by itself. Choose **Try again**. If it repeats, choose **Quit and reopen**. Nothing you were writing is lost. |
 | "This computer has no keyring service Biorouter can use…" or "This computer's keyring service isn't answering…" | This Linux computer has no working keyring. Before your first workspace, set up [an encrypted vault](privacy-and-security.md#use-an-encrypted-vault), or run `biorouter crew credentials init` ([Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault)). If you already joined, start the keyring again, for example by signing in to the computer's desktop. |
 | "…didn't let Biorouter use this computer's Crew keys…" | Unlock your keyring, or allow access when it asks, then try again. |
 | "The workspace server can’t save messages right now…" | The server's disk is full or failing. If you host the workspace, follow [Server storage full or failing](administration.md#server-storage-full-or-failing). Otherwise, ask your host. |
@@ -235,34 +231,22 @@ Here, **Reconnect** means: choose **Close**, then **Reconnect** in the workspace
 
 ### Replace an old background service
 
-After a Biorouter update, the background service that was already running stays the old version. On a Mac or Linux computer, quitting and reopening Biorouter does not replace it, because Biorouter connects to the service that is still running. So these messages stay, even though some of them say to quit and reopen Biorouter:
+After a Biorouter update, the background service that was already running is still the old version until Biorouter replaces it. These messages mean the old service is still running:
 
 - "This feature needs a newer Biorouter background service…"
 - "Start it for me needs a newer Biorouter background service…"
 - "This daemon cannot verify human Crew actions…"
 
-To replace the service on a Mac or Linux computer:
+To replace the service on a Mac or Linux computer, quit Biorouter and open it again. Biorouter stops the old service and starts a new one, and the action that showed the message then works. Replacing the service stops running agent tasks and file transfers, so check them afterward.
 
-1. Quit Biorouter.
-2. Restart your computer.
-3. Open Biorouter, and set your approval secret when it asks ([The approval secret](getting-started.md#the-approval-secret)).
-
-The action that showed the message now works. The restart stops running agent tasks and file transfers, so check them afterward.
-
-If you use the `biorouter` command, you can end the service without a restart:
-
-1. Run `biorouter crew daemon stop`.
-2. Type your approval secret. The command prints "Biorouter daemon stopped."
-3. If Biorouter is open, it asks "Biorouter's background service restarted. Reconnect?". Choose **Reconnect**, and set an approval secret for the new service. If Biorouter is closed, open it, and it asks you to set an approval secret.
-
-After "This daemon cannot verify human Crew actions…" that command is refused, so follow [If you forget the approval secret](command-line.md#if-you-forget-the-approval-secret) instead.
+If you use only the `biorouter` command, run `biorouter crew daemon stop`, then run your command again. It starts a new service.
 
 On Windows, quitting Biorouter stops the service, so quit Biorouter and open it again.
 
 ## Related documentation
 
 - [Crew user manual](README.md): every page.
-- [Getting started](getting-started.md): the approval secret and a tour of the Crew view.
+- [Getting started](getting-started.md): the background service and a tour of the Crew view.
 - [Joining a workspace](joining-a-workspace.md): verifying the server.
 - [Hosting a workspace](hosting-a-workspace.md): restarting Crew on the server.
 - [Privacy and security](privacy-and-security.md): privacy, keys and the vault.

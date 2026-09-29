@@ -37,27 +37,41 @@ describe('DaemonRestartNotice (R-1)', () => {
     expect(screen.queryByTestId('daemon-restart-notice')).toBeNull();
   });
 
-  it('says the service restarted, with a working Reconnect and Quit and reopen', async () => {
+  it('says reconnecting failed, with a working Try again and Quit and reopen', async () => {
     const { bridge } = installBridge('lost');
     render(<DaemonRestartNotice />);
-    expect(await screen.findByText(daemonNoticeCopy.restarted)).toBeInTheDocument();
+    expect(await screen.findByText(daemonNoticeCopy.failed)).toBeInTheDocument();
     expect(screen.getByText(daemonNoticeCopy.consequence)).toBeInTheDocument();
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'Reconnect' }));
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
     expect(bridge.reconnectDaemon).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: 'Quit and reopen' }));
     expect(bridge.restartApp).toHaveBeenCalledTimes(1);
   });
 
-  it('follows the main process: reconnecting, then gone once attached', async () => {
+  it('shows nothing while the app reconnects on its own', async () => {
     const { emit } = installBridge('attached');
     render(<DaemonRestartNotice />);
     await act(async () => undefined);
+    emit('reconnecting');
+    expect(screen.queryByTestId('daemon-restart-notice')).toBeNull();
+    emit('attached');
+    expect(screen.queryByTestId('daemon-restart-notice')).toBeNull();
+  });
+
+  it('follows the main process after a failure: Try again runs, then gone once attached', async () => {
+    const { emit } = installBridge('attached');
+    render(<DaemonRestartNotice />);
+    await act(async () => undefined);
+    emit('reconnecting');
     emit('lost');
-    expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled();
     emit('reconnecting');
     expect(screen.getByRole('button', { name: 'Reconnecting…' })).toBeDisabled();
     emit('attached');
+    expect(screen.queryByTestId('daemon-restart-notice')).toBeNull();
+    // A later automatic reconnect is silent again.
+    emit('reconnecting');
     expect(screen.queryByTestId('daemon-restart-notice')).toBeNull();
   });
 

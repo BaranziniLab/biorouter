@@ -354,12 +354,12 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
         UserActionProof::Unproven => Err(CrewRouteError::new(
             StatusCode::FORBIDDEN,
             "crew_user_action_required",
-            "Authorize this action in the Crew panel or native Crew CLI with your human approval secret. Agent tools use their separate task grant.",
+            "Only a person using the Biorouter desktop app or the biorouter crew command can do this. Agent tools use their separate task grant.",
         )),
         UserActionProof::NoKeyInstalled => Err(CrewRouteError::new(
             StatusCode::FORBIDDEN,
             "crew_human_authority_unavailable",
-            super::crew_authentication::no_human_authority("This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
+            super::crew_authentication::no_human_authority("This daemon cannot verify human Crew actions. Start it from the Biorouter desktop app or with biorouter crew daemon start."),
         )),
     }
 }

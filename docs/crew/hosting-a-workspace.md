@@ -20,7 +20,7 @@ The workspace is stored in your account, in `~/.local/share/biorouter-crew/` und
 
 | You need | Details |
 |---|---|
-| Biorouter on your computer | The first time it opens, you choose an [approval secret](getting-started.md#the-approval-secret). |
+| Biorouter on your computer | See [Installation and setup](../getting-started/installation.md). |
 | A login on a Linux server Crew can run on | Ask IT whether the server is 64 bit Intel or AMD Linux (x86_64) with glibc 2.31 or newer, whether your home folder is on local disk and writable only by you, and whether its name always reaches the same machine. If not, use one machine's name. See [Check a server before you host](administration.md#check-a-server-before-you-host). |
 | SSH access | For **Start it for me**, the server must accept this computer's SSH key, a key pair IT often sets up, without a password or a code. |
 | The server's fingerprint | A value that starts with `SHA256:`, from IT. |
@@ -233,8 +233,7 @@ You can add members to teams and channels that someone else owns, if you are in 
 The team dialog lists only people not in the team yet. To add someone already in the team to a channel you are in but do not own, use a terminal ([Add people to teams and channels](command-line.md#add-people-to-teams-and-channels)):
 
 1. Open a terminal on your own computer.
-2. Run `biorouter crew members add @bob --channel '#methods'`.
-3. Type your approval secret. It prints a line such as `Added "Bob Lee" (@bob) to #methods.`
+2. Run `biorouter crew members add @bob --channel '#methods'`. It prints a line such as `Added "Bob Lee" (@bob) to #methods.`
 
 ## Manage the workspace
 

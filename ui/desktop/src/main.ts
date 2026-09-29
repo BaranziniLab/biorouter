@@ -1,5 +1,4 @@
 import { developmentProfileRoot } from './developmentProfile';
-import { createDevelopmentApprovalReader } from './developmentApprovalInput';
 import { createCrewDaemonTerminal } from './crewDaemonTerminal';
 import { closeNativeSecretPrompt, promptNativeSecret } from './nativeSecretPrompt';
 import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
@@ -45,7 +44,6 @@ import {
   checkServerStatus,
   startBiorouterd,
   getBiorouterCliBinaryPath,
-  validateDaemonApprovalSecret,
   type SharedDaemonLink,
 } from './biorouterd';
 import {
@@ -1389,8 +1387,6 @@ interface ChatWindowOptions {
   resumeSessionTitle?: string;
 }
 
-let readDevelopmentApprovalSecret: (() => Promise<string>) | undefined;
-
 // A secure prompt's dialog is its own process (zenity, osascript, PowerShell). Close it when the
 // app quits, so a SIGTERM during the prompt does not leave a dialog on screen with no app behind
 // it. `appWillQuit` also tells the fatal startup handler not to open an error dialog for a prompt
@@ -1402,60 +1398,14 @@ app.on('will-quit', () => {
 });
 process.once('exit', closeNativeSecretPrompt);
 
-const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
-  if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
-  const secret = await promptNativeSecret(
-    'Set approval secret for shared Biorouter daemon',
-    'Enter a secret you hold independently, using 32 to 4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
-  );
-  if (secret === undefined)
-    throw new Error(
-      'Shared daemon startup cancelled. No daemon was started. Reopen the app when ready to supply your approval secret.'
-    );
-  validateDaemonApprovalSecret(secret);
-  const confirmation = await promptNativeSecret(
-    'Confirm shared daemon approval secret',
-    'Enter the same independently held approval secret again. Biorouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
-  );
-  if (confirmation === undefined)
-    throw new Error('Shared daemon startup cancelled. No daemon was started.');
-  if (confirmation !== secret)
-    throw new Error(
-      'Approval secrets did not match. No daemon was started. Reopen the app to try again.'
-    );
-  return secret;
-};
-
-/** The approval secret of a daemon this app did not start: asked for, never read from disk. */
-const requestExistingDaemonApprovalSecret = async (runtime: {
-  profileId: string;
-  instanceId: string;
-  userActionInstalled: boolean;
-}): Promise<string | undefined> => {
-  if (!runtime.userActionInstalled)
-    throw new Error(
-      'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
-    );
-  if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
-  const key = await promptNativeSecret(
-    'Connect to existing Biorouter daemon',
-    `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32 to 4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
-  );
-  if (!key)
-    throw new Error(
-      'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
-    );
-  validateDaemonApprovalSecret(key);
-  return key;
-};
-
 // ─── Reattaching after the shared daemon restarts (R-1) ───────────────────────────────────────
 //
 // The shared daemon outlives the app, and a restart (a crash, `biorouter crew daemon stop`, a
 // CLI that started a new one) always brings a new instance, which the proxy refuses to follow.
-// This is the one place that notices, asks the person once, and reattaches the same local
-// address to the new instance when they agree. Every window is told where things stand over
-// `daemon-connection`, and the sidebar offers Reconnect and Quit and Reopen from then on.
+// This is the one place that notices and reattaches the same local address to the new instance,
+// on its own and without asking anything. Every window is told where things stand over
+// `daemon-connection`; only when reconnecting keeps failing does a window say so and offer Try
+// Again and Quit and Reopen.
 
 // M2: the dock badge across windows, and the one limit on Crew notifications.
 const crewAttentionBadges = new AttentionBadges();
@@ -1497,20 +1447,6 @@ function showWindowPrompt(options: Electron.MessageBoxOptions) {
 }
 
 const daemonReattach = createDaemonReattachController({
-  ask: async () => {
-    const { response } = await showWindowPrompt({
-      type: 'warning',
-      title: 'Background service restarted',
-      message: "Biorouter's background service restarted. Reconnect?",
-      detail:
-        "Chats and Crew can't reach it until Biorouter reconnects. Reconnecting asks for the approval secret you set for the background service. Quit and Reopen connects again when Biorouter opens.",
-      buttons: ['Reconnect', 'Quit and Reopen', 'Not Now'],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true,
-    });
-    return response === 0 ? 'reconnect' : response === 1 ? 'restart' : 'later';
-  },
   reportFailure: async (message) => {
     const { response } = await showWindowPrompt({
       type: 'error',
@@ -1608,8 +1544,6 @@ const createChat = async (
         dir: app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
-        requestNewUserActionKey: requestNewDaemonApprovalSecret,
-        requestUserActionKey: requestExistingDaemonApprovalSecret,
       })
     : await startBiorouterd({
         app,
@@ -1618,18 +1552,16 @@ const createChat = async (
         dir: dir || app.getPath('home'),
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
-        requestNewUserActionKey: requestNewDaemonApprovalSecret,
-        requestUserActionKey: requestExistingDaemonApprovalSecret,
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
   // A new window after the shared daemon restarted would otherwise open onto a proxy that
-  // refuses every request, fail its readiness check and quit the app: ask first (R-1).
+  // refuses every request, fail its readiness check and quit the app: reconnect first (R-1).
   let daemonAttached = true;
   if (biorouterdResult.sharedDaemon) {
     watchSharedDaemon(biorouterdResult.sharedDaemon);
     if (daemonReattach.state() !== 'attached' || (await biorouterdResult.sharedDaemon.probe()))
-      daemonAttached = await daemonReattach.lost({ ask: true });
+      daemonAttached = await daemonReattach.lost();
   }
   // Per-window working dir — NOT the shared daemon's spawn cwd. In the
   // per-window (non-shared) path this equals biorouterdResult.workingDir.
@@ -1813,8 +1745,8 @@ const createChat = async (
     retainBackend(mainWindow.id, biorouterdProcess);
   }
 
-  // A window opened while the person chose not to reconnect yet opens anyway: its sidebar
-  // says what happened and offers Reconnect, where a failed readiness check would quit the app.
+  // A window opened while reconnecting keeps failing opens anyway: its sidebar says what
+  // happened and offers Try Again, where a failed readiness check would quit the app.
   const serverReady = daemonAttached ? await checkServerStatus(biorouterdClient, errorLog) : true;
   if (!serverReady) {
     const isUsingExternalBackend = settings.externalBiorouterd?.enabled;
@@ -5048,8 +4980,8 @@ function registerCliInstallHandlers() {
         passphrase = await promptNativeSecret(
           action === 'init' ? 'Initialize Crew encrypted vault' : 'Unlock Crew encrypted vault',
           action === 'init'
-            ? 'Choose a new vault passphrase for this fresh Crew profile. This is separate from the daemon approval secret. Existing keyring identities are not migrated.'
-            : "Enter this Crew vault's passphrase. This is separate from the daemon approval secret."
+            ? 'Choose a new vault passphrase for this fresh Crew profile. Existing keyring identities are not migrated.'
+            : "Enter this Crew vault's passphrase."
         );
         if (passphrase === undefined) return { cancelled: true };
         if (Buffer.byteLength(passphrase, 'utf8') > 1024)
@@ -6158,22 +6090,10 @@ function installDefaultSessionOnlyHooks(): void {
 }
 
 async function appMain() {
-  readDevelopmentApprovalSecret = createDevelopmentApprovalReader({
-    args: process.argv,
-    isPackaged: app.isPackaged,
-    developmentProfileRoot,
-    testDriverEnabled: Boolean(process.env.ENABLE_PLAYWRIGHT),
-    sharedDaemonEnabled: isSharedDaemonEnabled() && !loadSettings().externalBiorouterd?.enabled,
-    input: process.stdin,
-    inputIsPipe: () => {
-      const stat = fsSync.fstatSync(0);
-      return stat.isFIFO() || stat.isSocket();
-    },
-    validate: validateDaemonApprovalSecret,
-  });
-  // The development auto-confirm for a dropped Crew file: the approval stdin's gate
-  // above, plus its own explicit switch. It fails closed (the native dialog stays on)
-  // and never throws, and says why when a set switch is ignored.
+  // The development auto-confirm for a dropped Crew file: an unpackaged app, a validated
+  // development profile, ENABLE_PLAYWRIGHT, shared daemon mode, and its own explicit switch. It
+  // fails closed (the native dialog stays on) and never throws, and says why when a set switch
+  // is ignored.
   const crewShareAutoConfirmGate = resolveDevAutoConfirmShare({
     value: process.env[DEV_AUTO_CONFIRM_SHARE_ENV],
     isPackaged: app.isPackaged,
@@ -6755,8 +6675,8 @@ async function appMain() {
     app.exit(0);
   });
 
-  // R-1: where the app stands with the shared daemon, and the sidebar's Reconnect. A reconnect
-  // asks the person for the approval secret natively; the renderer never sees or sends one.
+  // R-1: where the app stands with the shared daemon, and the sidebar's Try Again. A reconnect
+  // reads the saved user-action key in this process; the renderer never sees or sends one.
   ipcMain.handle('daemon-connection:get', () => daemonReattach.state());
   ipcMain.handle('daemon-connection:reconnect', () => daemonReattach.reconnect());
 

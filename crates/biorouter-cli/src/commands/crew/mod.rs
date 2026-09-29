@@ -366,6 +366,7 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
         expected_workspace_policy_epoch,
         no_start,
         approval_key_stdin,
+        passphrase_stdin,
         output_format,
         show_ids,
         request_id,
@@ -391,7 +392,7 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
             CredentialCommand::Lock => "lock",
         };
         return emit_with(
-            &crate::daemon_client::credentials_control(action, approval_key_stdin).await?,
+            &crate::daemon_client::credentials_control(action, approval_key_stdin, passphrase_stdin).await?,
             output_format,
             &HumanOptions::new(show_ids),
         );
@@ -3265,7 +3266,7 @@ enum Confirmation {
 
 /// A revoke by name is a decision about a person, so it is confirmed by typing their
 /// `@username` again: on the terminal, or with `--confirm` when there is none to ask in
-/// (`--approval-key-stdin` has already used stdin). A revoke by ID is for scripts and never asks.
+/// (a script's stdin is not one). A revoke by ID is for scripts and never asks.
 fn revoke_confirmation(
     username: &str,
     label: &str,

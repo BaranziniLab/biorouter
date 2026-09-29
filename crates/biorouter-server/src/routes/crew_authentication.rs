@@ -413,12 +413,12 @@ fn person_refusal(proof: UserActionProof) -> Option<AdmissionRefusal> {
         UserActionProof::Unproven => Some(AdmissionRefusal::new(
             StatusCode::FORBIDDEN,
             USER_ACTION_REQUIRED_CODE,
-            "Authorize this action in the Crew panel or native Crew CLI with your human approval secret. Agent tools use their separate task grant.",
+            "Only a person using the Biorouter desktop app or the biorouter crew command can do this. Agent tools use their separate task grant.",
         )),
         UserActionProof::NoKeyInstalled => Some(AdmissionRefusal::new(
             StatusCode::FORBIDDEN,
             HUMAN_AUTHORITY_UNAVAILABLE_CODE,
-            no_human_authority("This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
+            no_human_authority("This daemon cannot verify human Crew actions. Start it from the Biorouter desktop app or with biorouter crew daemon start."),
         )),
     }
 }

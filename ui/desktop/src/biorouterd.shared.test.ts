@@ -5,16 +5,33 @@ import type { PathLike, Stats } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  spawn: vi.fn(),
-  discover: vi.fn(),
-  verify: vi.fn(),
-  createProxy: vi.fn(),
-  logInfo: vi.fn(),
-  logError: vi.fn(),
-  logWarn: vi.fn(),
-  logDebug: vi.fn(),
-}));
+/**
+ * The shared daemon needs no secret from anyone. The app mints a user-action key for a daemon it
+ * starts and saves it in the private key file; for a daemon that is already running it reads that
+ * file. A daemon it cannot use (no saved key, a refused key, another version) is stopped and
+ * replaced. No path here may ever reach a native secret prompt.
+ */
+const mocks = vi.hoisted(() => {
+  class DaemonKeyRefusedError extends Error {}
+  return {
+    DaemonKeyRefusedError,
+    spawn: vi.fn(),
+    discover: vi.fn(),
+    verify: vi.fn(),
+    createProxy: vi.fn(),
+    daemonVersion: vi.fn(),
+    readKey: vi.fn(),
+    writeKey: vi.fn(),
+    removeKey: vi.fn(),
+    verifyAccess: vi.fn(),
+    stop: vi.fn(),
+    prompt: vi.fn(),
+    logInfo: vi.fn(),
+    logError: vi.fn(),
+    logWarn: vi.fn(),
+    logDebug: vi.fn(),
+  };
+});
 
 const isBiorouterdPath = (value: PathLike): boolean => {
   const name = value.toString();
@@ -46,14 +63,37 @@ vi.mock('./utils/logger', () => ({
   },
 }));
 
+// A tripwire: nothing on the daemon path may ask a person for a secret.
+vi.mock('./nativeSecretPrompt', () => ({
+  promptNativeSecret: mocks.prompt,
+  closeNativeSecretPrompt: vi.fn(),
+}));
+
 vi.mock('./biorouterdSingleton', () => ({ isSharedDaemonEnabled: () => true }));
 vi.mock('./daemonRuntime', () => ({
   createDaemonProxy: mocks.createProxy,
+  daemonLossOf: (error: { code?: string; syscall?: string } | null) =>
+    error?.syscall === 'connect' && ['ENOENT', 'ECONNREFUSED'].includes(error.code ?? '')
+      ? 'gone'
+      : undefined,
+  daemonVersion: mocks.daemonVersion,
+  DaemonKeyRefusedError: mocks.DaemonKeyRefusedError,
   discoverDaemonRuntime: mocks.discover,
+  generateUserActionKey: () => 'k'.repeat(64),
+  readUserActionKey: mocks.readKey,
+  removeUserActionKey: mocks.removeKey,
+  stopProfileDaemon: mocks.stop,
   verifyDaemonRuntime: mocks.verify,
+  verifyHumanAuthorizedAccess: mocks.verifyAccess,
+  writeUserActionKey: mocks.writeKey,
 }));
 
-import { startBiorouterd, validateDaemonApprovalSecret } from './biorouterd';
+import { startBiorouterd } from './biorouterd';
+
+const APP_VERSION = '1.92.1';
+const MINTED = 'k'.repeat(64);
+const SAVED = 'a'.repeat(64);
+const digest = (value: string) => createHash('sha256').update(value).digest('hex') + '\n';
 
 const runtime = {
   version: 1 as const,
@@ -64,11 +104,19 @@ const runtime = {
   api_secret: 'daemon-secret-123456',
   user_action_installed: true,
 };
+const fresh = {
+  ...runtime,
+  instance_id: '33333333-3333-4333-8333-333333333333',
+  pid: 99,
+  api_secret: 'daemon-secret-fresh-123456',
+};
 
 const makeApp = () =>
   ({
     isPackaged: false,
+    getVersion: () => APP_VERSION,
     on: vi.fn(),
+    once: vi.fn(),
     removeListener: vi.fn(),
   }) as unknown as App;
 
@@ -100,167 +148,216 @@ const successfulProxy = () => {
 };
 
 const successfulFetch = () => {
-  const fetchMock = vi.fn().mockResolvedValue({
-    ok: true,
-    body: { cancel: vi.fn() },
-  });
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, body: { cancel: vi.fn() } });
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 };
 
-describe('shared daemon approval-key admission', () => {
+const start = (app = makeApp()) =>
+  startBiorouterd({
+    app,
+    serverSecret: 'server-secret',
+    userActionKey: 'renderer-proof',
+    dir: process.cwd(),
+  });
+
+/** A running daemon that is replaced, then a fresh child that publishes itself. */
+const expectReplaced = async (reason: RegExp) => {
+  const child = makeChild(fresh.pid);
+  mocks.spawn.mockReturnValue(child);
+  mocks.discover.mockReturnValueOnce(runtime).mockReturnValue(fresh);
+  successfulProxy();
+  successfulFetch();
+
+  await start();
+
+  expect(mocks.stop).toHaveBeenCalledWith(runtime);
+  expect(mocks.logWarn).toHaveBeenCalledWith(expect.stringMatching(reason));
+  expect(mocks.spawn).toHaveBeenCalledTimes(1);
+  expect(mocks.stop.mock.invocationCallOrder[0]).toBeLessThan(
+    mocks.spawn.mock.invocationCallOrder[0]
+  );
+  expect(child.stdin.write).toHaveBeenCalledWith(digest(MINTED));
+  expect(mocks.writeKey).toHaveBeenCalledWith(fresh, MINTED);
+  expect(mocks.createProxy).toHaveBeenCalledWith(
+    fresh,
+    'server-secret',
+    'renderer-proof',
+    MINTED,
+    undefined
+  );
+};
+
+describe('shared daemon attachment without an approval secret', () => {
   beforeEach(() => {
-    mocks.spawn.mockReset();
-    mocks.discover.mockReset();
+    for (const mock of [
+      mocks.spawn,
+      mocks.discover,
+      mocks.createProxy,
+      mocks.writeKey,
+      mocks.removeKey,
+      mocks.prompt,
+    ])
+      mock.mockReset();
     mocks.verify.mockReset().mockResolvedValue(undefined);
-    mocks.createProxy.mockReset();
+    mocks.daemonVersion.mockReset().mockResolvedValue(APP_VERSION);
+    mocks.readKey.mockReset().mockResolvedValue(SAVED);
+    mocks.verifyAccess.mockReset().mockResolvedValue(undefined);
+    mocks.stop.mockReset().mockResolvedValue(undefined);
     mocks.logInfo.mockClear();
     mocks.logError.mockClear();
     mocks.logWarn.mockClear();
     mocks.logDebug.mockClear();
   });
 
-  afterEach(() => vi.unstubAllGlobals());
-
-  it.each([
-    ['too short', '!'.repeat(31)],
-    ['too long', '!'.repeat(4097)],
-    ['space', '!'.repeat(31) + ' '],
-    ['unicode', '!'.repeat(31) + 'é'],
-    ['newline', '!'.repeat(31) + '\n'],
-  ])('rejects an approval secret with %s before any daemon spawn', async (_label, secret) => {
-    mocks.discover.mockReturnValue(undefined);
-    const app = makeApp();
-    await expect(
-      startBiorouterd({
-        app,
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: async () => secret,
-      })
-    ).rejects.toThrow(/Approval secret/);
-    expect(mocks.spawn).not.toHaveBeenCalled();
+  afterEach(() => {
+    // Whatever happened, nobody was asked for a secret.
+    expect(mocks.prompt).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
-  it('refuses a cancelled new-daemon approval prompt before spawn', async () => {
-    mocks.discover.mockReturnValue(undefined);
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: async () => undefined,
-      })
-    ).rejects.toThrow(/startup cancelled/i);
-    expect(mocks.spawn).not.toHaveBeenCalled();
-  });
-
-  it('refuses a new shared daemon when no approval callback is provided', async () => {
-    mocks.discover.mockReturnValue(undefined);
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-      })
-    ).rejects.toThrow(/startup cancelled/i);
-    expect(mocks.spawn).not.toHaveBeenCalled();
-  });
-
-  it('writes only the SHA-256 digest for a newly started shared daemon and detaches without killing it', async () => {
-    const secret = '!'.repeat(32);
-    const child = makeChild(runtime.pid);
+  it('first launch: mints a key, sends only its digest, saves the key and detaches without killing the daemon', async () => {
+    const child = makeChild(fresh.pid);
     mocks.spawn.mockReturnValue(child);
-    mocks.discover.mockReturnValueOnce(undefined).mockReturnValue(runtime);
+    mocks.discover.mockReturnValueOnce(undefined).mockReturnValue(fresh);
     const proxy = successfulProxy();
     successfulFetch();
     const app = makeApp();
-    const result = await startBiorouterd({
-      app,
-      serverSecret: 'server-secret',
-      userActionKey: 'renderer-proof',
-      dir: process.cwd(),
-      requestNewUserActionKey: async () => secret,
-    });
+    const result = await start(app);
 
-    expect(child.stdin.write).toHaveBeenCalledWith(
-      createHash('sha256').update(secret).digest('hex') + '\n'
+    expect(child.stdin.write).toHaveBeenCalledTimes(1);
+    expect(child.stdin.write).toHaveBeenCalledWith(digest(MINTED));
+    expect(child.stdin.write).not.toHaveBeenCalledWith(expect.stringContaining(MINTED));
+    expect(child.stdin.end).toHaveBeenCalled();
+    expect(mocks.writeKey).toHaveBeenCalledWith(fresh, MINTED);
+    expect(mocks.writeKey.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.createProxy.mock.invocationCallOrder[0]
     );
-    expect(child.stdin.write).not.toHaveBeenCalledWith(expect.stringContaining(secret));
     expect(mocks.createProxy).toHaveBeenCalledWith(
-      runtime,
+      fresh,
       'server-secret',
       'renderer-proof',
-      secret,
+      MINTED,
       undefined
     );
-    expect((mocks.spawn.mock.calls[0]?.[2] as { stdio: string[] }).stdio).toEqual([
-      'pipe',
-      'ignore',
-      'ignore',
-    ]);
+    const spawnOptions = mocks.spawn.mock.calls[0]?.[2] as {
+      stdio: string[];
+      env: Record<string, string>;
+    };
+    expect(spawnOptions.stdio).toEqual(['pipe', 'ignore', 'ignore']);
+    expect(spawnOptions.env.BIOROUTER_SHARED_DAEMON).toBe('1');
+    expect(JSON.stringify(mocks.spawn.mock.calls[0])).not.toContain(MINTED);
+    expect(mocks.stop).not.toHaveBeenCalled();
     expect(result.process.kill?.()).toBe(true);
     expect(proxy.close).toHaveBeenCalledTimes(1);
     expect(child.kill).not.toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalledTimes(1);
   });
 
-  it('uses the existing-daemon prompt, never the new-daemon prompt, and closes the proxy on refusal', async () => {
+  it('attaches silently to a running daemon of this version with the saved key', async () => {
     mocks.discover.mockReturnValue(runtime);
-    const proxy = successfulProxy();
-    const wrongSecret = '!'.repeat(33);
-    const fetchMock = vi.fn((_: string, init?: RequestInit) => {
-      expect((init?.headers as Record<string, string>)['X-User-Action']).toBe('');
-      return Promise.resolve({ ok: false, body: { cancel: vi.fn() } });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const requestNew = vi.fn(async () => '!'.repeat(32));
-    const requestExisting = vi.fn(async () => wrongSecret);
-
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: requestNew,
-        requestUserActionKey: requestExisting,
-      })
-    ).rejects.toThrow(/did not accept human-authorized access/);
-    expect(requestNew).not.toHaveBeenCalled();
-    expect(requestExisting).toHaveBeenCalledWith({
-      profileId: runtime.profile_id,
-      instanceId: runtime.instance_id,
-      userActionInstalled: true,
-    });
+    successfulProxy();
+    successfulFetch();
+    await start();
+    expect(mocks.readKey).toHaveBeenCalledWith(runtime);
+    expect(mocks.verifyAccess).toHaveBeenCalledWith(runtime, SAVED);
     expect(mocks.createProxy).toHaveBeenCalledWith(
       runtime,
       'server-secret',
-      undefined,
-      wrongSecret,
+      'renderer-proof',
+      SAVED,
       undefined
     );
-    expect(proxy.close).toHaveBeenCalledTimes(1);
+    expect(mocks.spawn).not.toHaveBeenCalled();
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(mocks.writeKey).not.toHaveBeenCalled();
+  });
+
+  it('replaces a daemon with no saved key (one an earlier Biorouter started with a typed secret)', async () => {
+    mocks.readKey.mockResolvedValue(undefined);
+    await expectReplaced(/no saved user-action key/);
+    expect(mocks.verifyAccess).not.toHaveBeenCalled();
+  });
+
+  it('replaces a daemon that refuses the saved key', async () => {
+    mocks.verifyAccess.mockRejectedValue(new mocks.DaemonKeyRefusedError('refused'));
+    await expectReplaced(/refused the saved user-action key/);
+  });
+
+  it('replaces a daemon of another version, so an update takes effect on the next launch', async () => {
+    mocks.daemonVersion.mockResolvedValue('1.92.0');
+    await expectReplaced(/version 1\.92\.0 and this app is version 1\.92\.1/);
+    expect(mocks.readKey).not.toHaveBeenCalled();
+  });
+
+  it('replaces a daemon that was started without any user-action key', async () => {
+    mocks.discover.mockReturnValueOnce({ ...runtime, user_action_installed: false });
+    const child = makeChild(fresh.pid);
+    mocks.spawn.mockReturnValue(child);
+    mocks.discover.mockReturnValue(fresh);
+    successfulProxy();
+    successfulFetch();
+    await start();
+    expect(mocks.stop).toHaveBeenCalledWith({ ...runtime, user_action_installed: false });
+    expect(mocks.writeKey).toHaveBeenCalledWith(fresh, MINTED);
+  });
+
+  it('does not start a second daemon when the old one could not be stopped', async () => {
+    mocks.readKey.mockResolvedValue(undefined);
+    mocks.discover.mockReturnValue(runtime);
+    mocks.stop.mockRejectedValue(new Error('Biorouter could not stop the old background service'));
+    await expect(start()).rejects.toThrow(/could not stop the old background service/);
     expect(mocks.spawn).not.toHaveBeenCalled();
   });
 
-  it('refuses an existing daemon without an installed proof before asking for a secret', async () => {
-    mocks.discover.mockReturnValue({ ...runtime, user_action_installed: false });
+  it('starts a new daemon, stopping nothing, when the descriptor is left over from one that is gone', async () => {
+    const child = makeChild(fresh.pid);
+    mocks.spawn.mockReturnValue(child);
+    mocks.verify.mockImplementation(async (target: { instance_id: string }) => {
+      if (target.instance_id === runtime.instance_id)
+        throw Object.assign(new Error('connect ECONNREFUSED'), {
+          code: 'ECONNREFUSED',
+          syscall: 'connect',
+        });
+    });
+    // The leftover descriptor is still there while the child starts.
+    mocks.discover.mockReturnValueOnce(runtime).mockReturnValueOnce(runtime).mockReturnValue(fresh);
+    successfulProxy();
     successfulFetch();
-    const requestExisting = vi.fn(async () => '!'.repeat(32));
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestUserActionKey: requestExisting,
-      })
-    ).rejects.toThrow(/no installed human approval proof/);
-    expect(requestExisting).not.toHaveBeenCalled();
-    expect(mocks.createProxy).not.toHaveBeenCalled();
+    await start();
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(mocks.writeKey).toHaveBeenCalledTimes(1);
+    expect(mocks.writeKey).toHaveBeenCalledWith(fresh, MINTED);
   });
 
-  it('waits for a new child to publish readiness and leaves an already-exited child alone', async () => {
-    const child = makeChild(runtime.pid);
+  it('attaches to the daemon another starter won the race with, through its saved key', async () => {
+    const child = makeChild(fresh.pid);
+    mocks.spawn.mockReturnValue(child);
+    let discoveries = 0;
+    mocks.discover.mockImplementation(() => {
+      discoveries += 1;
+      if (discoveries === 1) return undefined;
+      // Our child lost the profile lock and exited; the winner published itself.
+      child.exitCode = 1;
+      return runtime;
+    });
+    successfulProxy();
+    successfulFetch();
+    await start();
+    expect(mocks.writeKey).not.toHaveBeenCalled();
+    expect(mocks.readKey).toHaveBeenCalledWith(runtime);
+    expect(mocks.createProxy).toHaveBeenCalledWith(
+      runtime,
+      'server-secret',
+      'renderer-proof',
+      SAVED,
+      undefined
+    );
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('reports a child that exited before publishing and leaves it alone', async () => {
+    const child = makeChild(fresh.pid);
     mocks.spawn.mockReturnValue(child);
     let discoveries = 0;
     mocks.discover.mockImplementation(() => {
@@ -268,17 +365,9 @@ describe('shared daemon approval-key admission', () => {
       if (discoveries === 2) child.exitCode = 1;
       return undefined;
     });
-
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: async () => '!'.repeat(32),
-      })
-    ).rejects.toThrow(/failed to start/i);
-    expect(discoveries).toBe(2);
+    await expect(start()).rejects.toThrow(/failed to start/i);
     expect(child.kill).not.toHaveBeenCalled();
+    expect(mocks.writeKey).not.toHaveBeenCalled();
   });
 
   it('reports a spawn failure from a child with no pid without attempting termination', async () => {
@@ -289,35 +378,24 @@ describe('shared daemon approval-key admission', () => {
       return child;
     });
     mocks.discover.mockReturnValue(undefined);
-
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: async () => '!'.repeat(32),
-      })
-    ).rejects.toThrow(/failed to start/i);
+    await expect(start()).rejects.toThrow(/failed to start/i);
     expect(child?.pid).toBeUndefined();
-    expect(child?.signalCode).toBeNull();
     expect(child?.kill).not.toHaveBeenCalled();
   });
 
-  it('stops an owned child after readiness attach refusal with bounded graceful cleanup', async () => {
-    const child = makeChild(runtime.pid);
+  it('removes the saved key and stops its own child when the new daemon refuses the connection', async () => {
+    const child = makeChild(fresh.pid);
     mocks.spawn.mockReturnValue(child);
-    mocks.discover.mockReturnValueOnce(undefined).mockReturnValue(runtime);
-    successfulProxy();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, body: { cancel: vi.fn() } }));
-
-    await expect(
-      startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: async () => '!'.repeat(32),
-      })
-    ).rejects.toThrow(/did not accept human-authorized access/);
+    mocks.discover.mockReturnValueOnce(undefined).mockReturnValue(fresh);
+    const proxy = successfulProxy();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 403, body: { cancel: vi.fn() } })
+    );
+    await expect(start()).rejects.toThrow(/refused this app's connection/);
+    expect(mocks.writeKey).toHaveBeenCalledWith(fresh, MINTED);
+    expect(mocks.removeKey).toHaveBeenCalledWith(fresh);
+    expect(proxy.close).toHaveBeenCalledTimes(1);
     expect(child.kill).toHaveBeenCalledWith('SIGINT');
     expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
   });
@@ -325,19 +403,16 @@ describe('shared daemon approval-key admission', () => {
   it('escalates an owned child that ignores SIGINT and reports the cleanup deadline', async () => {
     vi.useFakeTimers();
     try {
-      const child = makeChild(runtime.pid);
+      const child = makeChild(fresh.pid);
       child.kill.mockImplementation(() => true);
       mocks.spawn.mockReturnValue(child);
-      mocks.discover.mockReturnValueOnce(undefined).mockReturnValue(runtime);
+      mocks.discover.mockReturnValueOnce(undefined).mockReturnValue(fresh);
       successfulProxy();
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, body: { cancel: vi.fn() } }));
-      const pending = startBiorouterd({
-        app: makeApp(),
-        serverSecret: 'server-secret',
-        dir: process.cwd(),
-        requestNewUserActionKey: async () => '!'.repeat(32),
-      });
-      const observed = pending.catch((error: Error) => error);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: false, status: 403, body: { cancel: vi.fn() } })
+      );
+      const observed = start().catch((error: Error) => error);
       await vi.advanceTimersByTimeAsync(100);
       await vi.advanceTimersByTimeAsync(3000);
       await expect(observed).resolves.toMatchObject({
@@ -348,25 +423,5 @@ describe('shared daemon approval-key admission', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-});
-
-describe('approval secret validator boundaries', () => {
-  it('accepts printable ASCII at both supported boundaries', () => {
-    expect(() => validateDaemonApprovalSecret('!'.repeat(32))).not.toThrow();
-    expect(() => validateDaemonApprovalSecret('~'.repeat(4096))).not.toThrow();
-  });
-
-  it.each([
-    ['missing', undefined],
-    ['too short', '!'.repeat(31)],
-    ['too long', '!'.repeat(4097)],
-    ['trailing LF', `${'!'.repeat(32)}\n`],
-    ['trailing CR', `${'!'.repeat(32)}\r`],
-    ['trailing CRLF', `${'!'.repeat(32)}\r\n`],
-    ['line separator', `${'!'.repeat(32)}\u2028`],
-    ['paragraph separator', `${'!'.repeat(32)}\u2029`],
-  ])('rejects %s', (_label, value) => {
-    expect(() => validateDaemonApprovalSecret(value)).toThrow();
   });
 });

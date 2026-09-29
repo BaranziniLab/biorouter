@@ -3,14 +3,25 @@ import fs from 'node:fs';
 import http, { type Server } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import {
   createDaemonProxy,
+  DaemonKeyRefusedError,
   daemonRuntimePath,
+  daemonVersion,
   discoverDaemonRuntime,
+  generateUserActionKey,
+  readUserActionKey,
+  removeUserActionKey,
+  stopProfileDaemon,
   type DaemonRuntime,
+  type StopDaemonDeps,
+  type StopSignal,
+  userActionKeyPath,
   verifyDaemonRuntime,
+  verifyHumanAuthorizedAccess,
+  writeUserActionKey,
 } from './daemonRuntime';
 
 const PROFILE_ID = '11111111-1111-4111-8111-111111111111';
@@ -74,6 +85,11 @@ async function unixFixture(): Promise<Fixture> {
     if (parsed.pathname === '/daemon/identity') {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify(identity));
+      return;
+    }
+    if (parsed.pathname === '/system_info') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ app_version: '9.8.7', os: 'test' }));
       return;
     }
     if (parsed.pathname === '/stream') {
@@ -367,7 +383,7 @@ describe.sequential('shared daemon runtime and pinned Unix proxy', () => {
 
 /**
  * A stand-in for a daemon instance on the profile's socket: its identity, its own secret, and
- * the approval secret its person-gated routes take (as the raw `X-User-Action`, which the daemon
+ * the user-action key its person-gated routes take (as the raw `X-User-Action`, which the daemon
  * hashes and compares with its installed digest).
  */
 async function instanceOn(
@@ -440,8 +456,8 @@ describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
 
   const INSTANCE_B = '44444444-4444-4444-8444-444444444444';
   const SECRET_B = 'daemon-secret-of-the-new-instance-b';
-  const APPROVAL_A = 'approval-secret-of-instance-a-0123456789';
-  const APPROVAL_B = 'approval-secret-of-instance-b-9876543210';
+  const APPROVAL_A = 'user-action-key-of-instance-a-0123456789';
+  const APPROVAL_B = 'user-action-key-of-instance-b-9876543210';
   const get = (proxy: { baseUrl: string }, headers: Record<string, string> = {}) =>
     responseText(proxy.baseUrl + '/crew/echo', {
       headers: { 'X-Secret-Key': DESKTOP_SECRET, Origin: RENDERER_ORIGIN, ...headers },
@@ -504,14 +520,14 @@ describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
       pid: process.pid + 1,
       api_secret: SECRET_B,
     };
-    // A wrong approval secret changes nothing.
-    await expect(proxy.retarget(runtimeB, 'not-the-approval-secret-of-b-000000')).rejects.toThrow(
-      /did not accept that approval secret/
+    // A key B refuses changes nothing.
+    await expect(proxy.retarget(runtimeB, 'not-the-key-of-instance-b-0000000000')).rejects.toThrow(
+      DaemonKeyRefusedError
     );
     expect(proxy.instanceId()).toBe(INSTANCE_ID);
     expect((await get(proxy)).response.status).toBe(502);
 
-    // The person reattached with B's approval secret: the same address now reaches B.
+    // The app reattached with B's saved key: the same address now reaches B.
     const baseUrl = proxy.baseUrl;
     await proxy.retarget(runtimeB, APPROVAL_B);
     expect(proxy.baseUrl).toBe(baseUrl);
@@ -576,5 +592,246 @@ describe.sequential('a shared daemon that restarts under the app (R-1)', () => {
     ).rejects.toThrow(/another Biorouter profile/);
     proxy.close();
     await expect(proxy.retarget(current.runtime, APPROVAL_A)).rejects.toThrow(/closed/);
+  });
+});
+
+describe.sequential('the user-action key file', () => {
+  let previousRoot: string | undefined;
+  let fixture: Fixture | undefined;
+
+  beforeEach(() => {
+    previousRoot = process.env.BIOROUTER_PATH_ROOT;
+  });
+  afterEach(async () => {
+    if (fixture) await fixture.close();
+    fixture = undefined;
+    if (previousRoot === undefined) delete process.env.BIOROUTER_PATH_ROOT;
+    else process.env.BIOROUTER_PATH_ROOT = previousRoot;
+  });
+
+  const noGrace = { graceMs: 0 };
+
+  it('sits beside runtime.json and holds a fresh 64-digit hex key', async () => {
+    fixture = await unixFixture();
+    expect(userActionKeyPath()).toBe(
+      path.join(path.dirname(daemonRuntimePath()), 'user-action-key.json')
+    );
+    const first = generateUserActionKey();
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(generateUserActionKey()).not.toBe(first);
+  });
+
+  it('round-trips atomically as a private 0600 record bound to the instance', async () => {
+    const current = (fixture = await unixFixture());
+    const key = generateUserActionKey();
+    writeUserActionKey(current.runtime, key);
+    const stat = fs.lstatSync(userActionKeyPath());
+    expect(stat.isFile()).toBe(true);
+    expect(stat.mode & 0o777).toBe(0o600);
+    expect(JSON.parse(fs.readFileSync(userActionKeyPath(), 'utf8'))).toEqual({
+      version: 1,
+      profile_id: PROFILE_ID,
+      instance_id: INSTANCE_ID,
+      pid: process.pid,
+      key,
+    });
+    // No temporary file left behind.
+    expect(
+      fs.readdirSync(path.dirname(userActionKeyPath())).filter((name) => name.endsWith('.tmp'))
+    ).toEqual([]);
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBe(key);
+    // A second write replaces it.
+    const next = generateUserActionKey();
+    writeUserActionKey(current.runtime, next);
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBe(next);
+  });
+
+  it('refuses to write anything but a 64-digit hex key', async () => {
+    const current = (fixture = await unixFixture());
+    expect(() => writeUserActionKey(current.runtime, 'x'.repeat(64))).toThrow();
+    expect(fs.existsSync(userActionKeyPath())).toBe(false);
+  });
+
+  it('ignores a record for another instance, pid or profile, or with extra fields', async () => {
+    const current = (fixture = await unixFixture());
+    const key = generateUserActionKey();
+    writeUserActionKey(current.runtime, key);
+    const other = { ...current.runtime, instance_id: '55555555-5555-4555-8555-555555555555' };
+    await expect(readUserActionKey(other, noGrace)).resolves.toBeUndefined();
+    await expect(
+      readUserActionKey({ ...current.runtime, pid: current.runtime.pid + 1 }, noGrace)
+    ).resolves.toBeUndefined();
+    await expect(
+      readUserActionKey(
+        { ...current.runtime, profile_id: '99999999-9999-4999-8999-999999999999' },
+        noGrace
+      )
+    ).resolves.toBeUndefined();
+    const record = JSON.parse(fs.readFileSync(userActionKeyPath(), 'utf8'));
+    fs.writeFileSync(userActionKeyPath(), JSON.stringify({ ...record, extra: true }), {
+      mode: 0o600,
+    });
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+    fs.writeFileSync(userActionKeyPath(), JSON.stringify({ ...record, key: 'A'.repeat(64) }), {
+      mode: 0o600,
+    });
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+  });
+
+  it('refuses a key file that is not private: readable by others, a symbolic link or a hard link', async () => {
+    const current = (fixture = await unixFixture());
+    const key = generateUserActionKey();
+    writeUserActionKey(current.runtime, key);
+    const target = userActionKeyPath();
+    fs.chmodSync(target, 0o644);
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+    fs.chmodSync(target, 0o600);
+
+    fs.linkSync(target, target + '.alias');
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+    fs.rmSync(target + '.alias');
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBe(key);
+
+    const real = path.join(current.root, 'elsewhere.json');
+    fs.renameSync(target, real);
+    fs.symlinkSync(real, target);
+    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+  });
+
+  it('waits for a starter that writes the key just after the daemon publishes', async () => {
+    const current = (fixture = await unixFixture());
+    const key = generateUserActionKey();
+    setTimeout(() => writeUserActionKey(current.runtime, key), 150);
+    await expect(
+      readUserActionKey(current.runtime, { graceMs: 2000, intervalMs: 25 })
+    ).resolves.toBe(key);
+  });
+
+  it('removes the saved key only while it belongs to the instance named', async () => {
+    const current = (fixture = await unixFixture());
+    writeUserActionKey(current.runtime, generateUserActionKey());
+    removeUserActionKey({
+      ...current.runtime,
+      instance_id: '55555555-5555-4555-8555-555555555555',
+    });
+    expect(fs.existsSync(userActionKeyPath())).toBe(true);
+    removeUserActionKey(current.runtime);
+    expect(fs.existsSync(userActionKeyPath())).toBe(false);
+  });
+
+  it('reads the daemon version over the verified socket, and tells a refused key from other failures', async () => {
+    const current = (fixture = await unixFixture());
+    await expect(daemonVersion(current.runtime)).resolves.toBe('9.8.7');
+    // The fixture answers /crew/connections 200 whatever the key.
+    await expect(verifyHumanAuthorizedAccess(current.runtime, 'k'.repeat(64))).resolves.toBe(
+      undefined
+    );
+    await new Promise<void>((resolve) => current.server.close(() => resolve()));
+    fs.rmSync(current.socketPath, { force: true });
+    const b = await instanceOn(
+      current.socketPath,
+      { instance_id: INSTANCE_ID, pid: process.pid },
+      DAEMON_SECRET,
+      'the-right-key'
+    );
+    try {
+      await expect(verifyHumanAuthorizedAccess(current.runtime, 'the-wrong-key')).rejects.toThrow(
+        DaemonKeyRefusedError
+      );
+      await expect(verifyHumanAuthorizedAccess(current.runtime, 'the-right-key')).resolves.toBe(
+        undefined
+      );
+    } finally {
+      await b.stop();
+    }
+  });
+});
+
+describe('stopping a daemon this app cannot use', () => {
+  const runtime: DaemonRuntime = {
+    version: 1,
+    profile_id: PROFILE_ID,
+    instance_id: INSTANCE_ID,
+    pid: 4242,
+    endpoint: { kind: 'unix', path: '/nonexistent/daemon.sock' },
+    api_secret: DAEMON_SECRET,
+    user_action_installed: true,
+  };
+  const esrch = () => Object.assign(new Error('no such process'), { code: 'ESRCH' });
+
+  /** A process that exits `exitsAfter` signals (of those given) after they are sent. */
+  const fakeProcess = (options: {
+    name?: string;
+    exitsOn?: StopSignal[];
+  }): StopDaemonDeps & { signals: (StopSignal | 0)[] } => {
+    let alive = true;
+    let clock = 0;
+    const signals: (StopSignal | 0)[] = [];
+    return {
+      signals,
+      kill: (_pid, signal) => {
+        if (!alive) throw esrch();
+        if (signal !== 0) {
+          signals.push(signal);
+          if (options.exitsOn?.includes(signal)) alive = false;
+        }
+      },
+      processName: async () => (alive ? (options.name ?? 'biorouterd') : undefined),
+      wait: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+    };
+  };
+
+  it('verifies the instance, checks the name, then sends SIGTERM', async () => {
+    const deps = fakeProcess({ exitsOn: ['SIGTERM'] });
+    const verify = vi.fn(async () => undefined);
+    await stopProfileDaemon(runtime, deps, verify);
+    expect(verify).toHaveBeenCalledWith(runtime);
+    expect(deps.signals).toEqual(['SIGTERM']);
+  });
+
+  it('sends SIGKILL only after 15 seconds of SIGTERM being ignored', async () => {
+    const deps = fakeProcess({ exitsOn: ['SIGKILL'] });
+    await stopProfileDaemon(runtime, deps, async () => undefined);
+    expect(deps.signals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(deps.now()).toBeGreaterThanOrEqual(15000);
+  });
+
+  it('says so when even SIGKILL leaves the process running', async () => {
+    const deps = fakeProcess({});
+    await expect(stopProfileDaemon(runtime, deps, async () => undefined)).rejects.toThrow(
+      'Biorouter could not stop the old background service (process 4242). Quit it, then open Biorouter again.'
+    );
+  });
+
+  it('never signals a process that is not biorouterd', async () => {
+    const deps = fakeProcess({ name: 'bash', exitsOn: ['SIGTERM'] });
+    await expect(stopProfileDaemon(runtime, deps, async () => undefined)).rejects.toThrow(
+      /not a Biorouter background service/
+    );
+    expect(deps.signals).toEqual([]);
+  });
+
+  it('never signals when the socket answers as another instance', async () => {
+    const deps = fakeProcess({ exitsOn: ['SIGTERM'] });
+    const { DaemonIdentityChangedError } = await import('./daemonRuntime');
+    await expect(
+      stopProfileDaemon(runtime, deps, async () => {
+        throw new DaemonIdentityChangedError();
+      })
+    ).rejects.toThrow(DaemonIdentityChangedError);
+    expect(deps.signals).toEqual([]);
+  });
+
+  it('does nothing when the daemon is already gone', async () => {
+    const deps = fakeProcess({ exitsOn: ['SIGTERM'] });
+    deps.kill(runtime.pid, 'SIGTERM');
+    deps.signals.length = 0;
+    await stopProfileDaemon(runtime, deps, async () => {
+      throw Object.assign(new Error('connect ENOENT'), { code: 'ENOENT', syscall: 'connect' });
+    });
+    expect(deps.signals).toEqual([]);
   });
 });

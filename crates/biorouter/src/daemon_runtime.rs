@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use zeroize::{Zeroize, Zeroizing};
 
 pub const VERSION: u32 = 1;
 pub const SHARED_ENV: &str = "BIOROUTER_SHARED_DAEMON";
@@ -63,6 +64,135 @@ pub fn runtime_directory() -> PathBuf {
 }
 pub fn descriptor_path() -> PathBuf {
     runtime_directory().join("runtime.json")
+}
+
+/// The file that holds the running shared daemon's user-action key, beside `runtime.json`.
+pub const USER_ACTION_KEY_FILE: &str = "user-action-key.json";
+
+pub fn user_action_key_path() -> PathBuf {
+    runtime_directory().join(USER_ACTION_KEY_FILE)
+}
+
+/// The key a person's own launchers (the desktop app and `biorouter crew`) send as
+/// `X-User-Action` to the shared daemon. Whoever starts the daemon generates it, hands the
+/// daemon only its SHA-256 digest on stdin, and saves the key here so every later launcher
+/// of the same user connects without asking anything. The daemon never writes this file; it
+/// removes it on exit when the record names its own instance.
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserActionKeyRecord {
+    pub version: u32,
+    pub profile_id: String,
+    pub instance_id: String,
+    pub pid: u32,
+    pub key: String,
+}
+
+impl Drop for UserActionKeyRecord {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+/// A new user-action key: 32 random bytes from the OS, as 64 lowercase hex characters.
+pub fn generate_user_action_key() -> Zeroizing<String> {
+    use rand::{rngs::OsRng, RngCore};
+    let mut bytes = Zeroizing::new([0u8; 32]);
+    OsRng.fill_bytes(bytes.as_mut());
+    Zeroizing::new(lower_hex(bytes.as_ref()))
+}
+
+/// What the daemon receives on stdin for `key`: its SHA-256 digest in lowercase hex.
+pub fn user_action_digest_hex(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    lower_hex(&Sha256::digest(key.as_bytes()))
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn is_user_action_key(key: &str) -> bool {
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Save `key` for the daemon `descriptor` describes, privately (0600 in the 0700 runtime
+/// directory) and atomically.
+pub fn write_user_action_key(descriptor: &Descriptor, key: &str) -> Result<()> {
+    ensure!(is_user_action_key(key), "Invalid user-action key");
+    private_directory(&runtime_directory())?;
+    let record = UserActionKeyRecord {
+        version: VERSION,
+        profile_id: descriptor.profile_id.clone(),
+        instance_id: descriptor.instance_id.clone(),
+        pid: descriptor.pid,
+        key: key.to_owned(),
+    };
+    write_private(&user_action_key_path(), &record)
+}
+
+/// The saved key for the daemon `descriptor` describes. `None` when there is no file, or the
+/// file belongs to another daemon instance or profile; an error when the file exists but is
+/// not a private, well formed record.
+pub fn read_user_action_key(descriptor: &Descriptor) -> Result<Option<Zeroizing<String>>> {
+    let path = user_action_key_path();
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(_) => (),
+    }
+    let record: UserActionKeyRecord = read_private(&path)?;
+    ensure!(
+        record.version == VERSION && is_user_action_key(&record.key),
+        "The saved user-action key is not valid"
+    );
+    let matches = record.profile_id == descriptor.profile_id
+        && record.instance_id == descriptor.instance_id
+        && record.pid == descriptor.pid;
+    Ok(matches.then(|| Zeroizing::new(record.key.clone())))
+}
+
+/// Remove the saved key if it names daemon instance `instance_id`, and only then.
+pub fn remove_user_action_key(instance_id: &str) {
+    if read_private::<UserActionKeyRecord>(&user_action_key_path())
+        .is_ok_and(|record| record.instance_id == instance_id)
+    {
+        let _ = std::fs::remove_file(user_action_key_path());
+    }
+}
+
+/// True when process `pid` is running a program named `biorouterd`, so a launcher can check
+/// a descriptor's pid before it signals it.
+pub fn process_is_biorouterd(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // `comm`, not `exe`: after a package upgrade `exe` gains " (deleted)".
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .is_ok_and(|name| name.trim_end_matches('\n') == "biorouterd")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let Ok(pid) = libc::c_int::try_from(pid) else {
+            return false;
+        };
+        let length = unsafe {
+            libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32)
+        };
+        if length <= 0 {
+            return false;
+        }
+        buffer.truncate(length as usize);
+        use std::os::unix::ffi::OsStrExt;
+        Path::new(std::ffi::OsStr::from_bytes(&buffer))
+            .file_name()
+            .is_some_and(|name| name == "biorouterd")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 pub fn private_directory(path: &Path) -> Result<()> {
@@ -313,5 +443,6 @@ impl Drop for RuntimeOwner {
             let Endpoint::Unix { path } = &self.descriptor.endpoint;
             let _ = std::fs::remove_file(path);
         }
+        remove_user_action_key(&self.descriptor.instance_id);
     }
 }

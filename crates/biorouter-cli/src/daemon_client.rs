@@ -253,27 +253,23 @@ where
 pub const DAEMON_NOT_RUNNING: &str = "No Biorouter daemon is running for this profile.";
 /// The JSON code beside [`DAEMON_NOT_RUNNING`].
 pub const DAEMON_NOT_RUNNING_CODE: &str = "crew_daemon_not_running";
-/// An approval secret the running daemon did not accept.
-pub const WRONG_APPROVAL_SECRET: &str = "That approval secret doesn't match the running Biorouter daemon. Type the secret you chose when it started.";
-/// The JSON code beside [`WRONG_APPROVAL_SECRET`].
-pub const WRONG_APPROVAL_SECRET_CODE: &str = "crew_approval_secret_mismatch";
+/// A running daemon this command cannot use and, under `--no-start`, may not replace: it was
+/// started by an older Biorouter, or its saved user-action key is missing or refused.
+pub const DAEMON_NEEDS_RESTART: &str = "The running Biorouter daemon was started by an older version of Biorouter, so this command cannot use it. Run biorouter crew daemon stop, then run this command again.";
+/// The JSON code beside [`DAEMON_NEEDS_RESTART`].
+pub const DAEMON_NEEDS_RESTART_CODE: &str = "crew_daemon_needs_restart";
+/// How long a reader waits for the starter of a just published daemon to save its key.
+#[cfg(unix)]
+const KEY_FILE_GRACE: Duration = Duration::from_secs(5);
 /// Crew from a terminal needs the shared daemon's Unix socket.
 pub const PLATFORM_UNSUPPORTED: &str =
     "Shared Crew daemon IPC is unavailable on this platform. biorouter crew runs on macOS and Linux.";
 /// The JSON code beside [`PLATFORM_UNSUPPORTED`].
 pub const PLATFORM_UNSUPPORTED_CODE: &str = "crew_platform_unsupported";
 /// A hidden prompt with no terminal to show it on.
-const SECRET_NEEDS_A_TERMINAL: &str = "Biorouter needs a terminal to ask for this secret without showing it. In a script, add --approval-key-stdin and send the secret as the first line of standard input.";
-/// The prompt when a command is about to start a new daemon.
-const NEW_DAEMON_SECRET_PROMPT: &str = "No Biorouter daemon is running for this profile, so this command starts one. Choose its Crew approval secret (32 to 4096 printable ASCII characters, no spaces):";
-/// The prompt of `daemon start`.
-const START_DAEMON_SECRET_PROMPT: &str = "Choose the Crew approval secret for the new Biorouter daemon (32 to 4096 printable ASCII characters, no spaces):";
-const APPROVAL_SECRET_AGAIN: &str = "Type the same approval secret again:";
-const APPROVAL_SECRETS_DIFFER: &str =
-    "The two approval secrets don't match. No daemon was started.";
-const NEW_VAULT_PASSPHRASE: &str =
-    "New vault passphrase (different from the Crew approval secret):";
-const VAULT_PASSPHRASE: &str = "Vault passphrase (different from the Crew approval secret):";
+const SECRET_NEEDS_A_TERMINAL: &str = "Biorouter needs a terminal to ask for the vault passphrase without showing it. In a script, add --passphrase-stdin and send the passphrase as the first line of standard input.";
+const NEW_VAULT_PASSPHRASE: &str = "New vault passphrase:";
+const VAULT_PASSPHRASE: &str = "Vault passphrase:";
 const VAULT_PASSPHRASE_AGAIN: &str = "Type the same vault passphrase again:";
 const VAULT_PASSPHRASES_DIFFER: &str = "The two passphrases don't match. The vault was not set up.";
 
@@ -287,19 +283,22 @@ pub fn require_supported_platform(unix: bool) -> Result<()> {
     }
 }
 
-/// The daemon's answer to a proof it did not accept, in words: the approval secret is wrong.
-/// Anything else is left as it is.
-fn wrong_approval_secret(error: anyhow::Error) -> anyhow::Error {
-    let wrong = error
+/// True when the daemon refused the user-action key itself (as opposed to anything else going
+/// wrong): the daemon holds a different key, so this command cannot use it.
+fn key_refused(error: &anyhow::Error) -> bool {
+    error
         .downcast_ref::<DaemonRefusal>()
         .is_some_and(|refused| {
-            refused.status == 403 && refused.kind.as_deref() == Some("crew_user_action_required")
-        });
-    if wrong {
-        Restated::new(WRONG_APPROVAL_SECRET, Some(WRONG_APPROVAL_SECRET_CODE)).into()
-    } else {
-        error
-    }
+            refused.status == 403
+                && matches!(
+                    refused.kind.as_deref(),
+                    Some("crew_user_action_required" | "crew_human_authority_unavailable")
+                )
+        })
+}
+
+fn daemon_needs_restart() -> anyhow::Error {
+    Restated::new(DAEMON_NEEDS_RESTART, Some(DAEMON_NEEDS_RESTART_CODE)).into()
 }
 
 fn daemon_not_running() -> anyhow::Error {
@@ -447,45 +446,63 @@ impl CrewClient {
         Self::connect_with_input(no_start, false).await
     }
 
+    /// Connect to this profile's shared daemon with the user-action key its starter saved,
+    /// asking nothing. A daemon this command cannot use (started by an older Biorouter, or
+    /// its key missing or refused) is stopped and replaced, unless `no_start` forbids it.
+    /// `approval_key_stdin` is accepted for compatibility: the first line of standard input
+    /// is read and ignored.
     pub async fn connect_with_input(no_start: bool, approval_key_stdin: bool) -> Result<Self> {
-        let descriptor = match discover_shared_daemon().await? {
-            Some(descriptor) => descriptor,
-            None => {
-                if no_start {
-                    return Err(Restated::new(
-                        format!("{DAEMON_NOT_RUNNING} Start one with biorouter crew daemon start, then run this command again."),
-                        Some(DAEMON_NOT_RUNNING_CODE),
-                    )
-                    .into());
-                }
-                // This secret becomes the new daemon's, for as long as it runs: say so, and
-                // ask twice on a terminal, so a typo cannot become a secret nobody knows.
-                let proof = choose_approval_secret(
-                    NEW_DAEMON_SECRET_PROMPT,
-                    approval_key_stdin,
-                    read_secret,
-                )
-                .await?;
-                let descriptor = start_daemon(&proof).await?;
-                return Ok(Self { descriptor, proof });
+        discard_legacy_approval_line(approval_key_stdin).await?;
+        if let Some(descriptor) = discover_shared_daemon().await? {
+            if let Some(client) = Self::with_saved_key(descriptor.clone()).await? {
+                return Ok(client);
             }
-        };
-        ensure!(
-            descriptor.user_action_installed,
-            "This daemon has no human approval authority; restart it with the trusted Crew terminal launcher"
-        );
-        let proof = read_approval_secret(
-            "Crew approval secret (printable ASCII, no spaces):",
-            approval_key_stdin,
-        )
-        .await?;
-        let client = Self { descriptor, proof };
-        // This request only proves the secret, so a refused proof means a wrong secret.
-        client
-            .request("GET", "/crew/connections", None)
-            .await
-            .map_err(wrong_approval_secret)?;
-        Ok(client)
+            if no_start {
+                return Err(daemon_needs_restart());
+            }
+            stop_by_signal(&descriptor).await?;
+        } else if no_start {
+            return Err(Restated::new(
+                format!("{DAEMON_NOT_RUNNING} Start one with biorouter crew daemon start, then run this command again."),
+                Some(DAEMON_NOT_RUNNING_CODE),
+            )
+            .into());
+        }
+        start_daemon().await
+    }
+
+    /// A client for the running daemon `descriptor`, with its saved key, when that key exists
+    /// and the daemon accepts it; `None` when this command cannot use the daemon.
+    async fn with_saved_key(descriptor: Descriptor) -> Result<Option<Self>> {
+        #[cfg(not(unix))]
+        {
+            let _ = descriptor;
+            bail!("Shared Crew daemon IPC is unavailable on this platform");
+        }
+        #[cfg(unix)]
+        {
+            if !descriptor.user_action_installed {
+                return Ok(None);
+            }
+            // The starter saves the key right after the daemon publishes, so a daemon that
+            // appeared a moment ago may not have one yet.
+            let deadline = tokio::time::Instant::now() + KEY_FILE_GRACE;
+            let proof = loop {
+                match daemon_runtime::read_user_action_key(&descriptor) {
+                    Ok(Some(key)) => break key,
+                    Ok(None) | Err(_) if tokio::time::Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Ok(None) | Err(_) => return Ok(None),
+                }
+            };
+            let client = Self { descriptor, proof };
+            match client.request("GET", "/crew/connections", None).await {
+                Ok(_) => Ok(Some(client)),
+                Err(error) if key_refused(&error) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
     }
 
     pub async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
@@ -617,7 +634,7 @@ impl CrewClient {
                 status.as_u16(),
                 value.as_ref(),
                 std::str::from_utf8(&bytes)
-                    .unwrap_or("Request refused; check the daemon and approval secret"),
+                    .unwrap_or("Request refused; check the daemon"),
             )
             .into());
         }
@@ -664,7 +681,7 @@ impl CrewClient {
             let response = send_when_ready(&mut sender, request, Duration::from_secs(180)).await?;
             ensure!(
                 response.status().is_success(),
-                "Crew observer refused ({}); check the connection, daemon and approval secret",
+                "Crew observer refused ({}); check the connection and daemon",
                 response.status()
             );
             ensure!(
@@ -1192,19 +1209,37 @@ fn validate_terminal_upgrade(
     Ok(())
 }
 
-async fn read_approval_secret(prompt: &'static str, from_stdin: bool) -> Result<Zeroizing<String>> {
-    let secret = read_secret(prompt, from_stdin).await?;
-    validate_approval_secret(&secret)?;
-    Ok(secret)
+/// `--approval-key-stdin` is kept so scripts written for 1.92.0 still run: when it is set and
+/// standard input is not a terminal, the first line (the approval secret those scripts send) is
+/// read once per process and ignored. The vault passphrase, if any, is the next line, as before.
+async fn discard_legacy_approval_line(approval_key_stdin: bool) -> Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DISCARDED: AtomicBool = AtomicBool::new(false);
+    if !approval_key_stdin
+        || std::io::stdin().is_terminal()
+        || DISCARDED.swap(true, Ordering::SeqCst)
+    {
+        return Ok(());
+    }
+    tokio::task::spawn_blocking(|| -> Result<()> {
+        let mut stdin = std::io::stdin().lock();
+        for _ in 0..4097 {
+            let mut byte = Zeroizing::new([0u8]);
+            if stdin.read(byte.as_mut())? == 0 || byte[0] == b'\n' {
+                break;
+            }
+        }
+        Ok(())
+    })
+    .await?
 }
 
-/// A new secret, chosen now: read once, checked, and on a terminal read again and compared,
-/// because a hidden typo would become a secret nobody knows. From stdin the script supplies
+/// A new vault passphrase, chosen now: read once, and on a terminal read again and compared,
+/// because a hidden typo would become a passphrase nobody knows. From stdin the script supplies
 /// one line and owns its correctness, as it does for every other line it sends.
 async fn new_secret<R, F>(
     prompts: [&'static str; 3],
     from_stdin: bool,
-    validate: fn(&str) -> Result<()>,
     mut read: R,
 ) -> Result<Zeroizing<String>>
 where
@@ -1213,31 +1248,11 @@ where
 {
     let [prompt, again, differ] = prompts;
     let secret = read(prompt, from_stdin).await?;
-    validate(&secret)?;
     if !from_stdin {
         let repeated = read(again, from_stdin).await?;
         ensure!(secret.as_str() == repeated.as_str(), "{differ}");
     }
     Ok(secret)
-}
-
-/// The approval secret of a daemon about to start.
-async fn choose_approval_secret<R, F>(
-    prompt: &'static str,
-    from_stdin: bool,
-    read: R,
-) -> Result<Zeroizing<String>>
-where
-    R: FnMut(&'static str, bool) -> F,
-    F: std::future::Future<Output = Result<Zeroizing<String>>>,
-{
-    new_secret(
-        [prompt, APPROVAL_SECRET_AGAIN, APPROVAL_SECRETS_DIFFER],
-        from_stdin,
-        validate_approval_secret,
-        read,
-    )
-    .await
 }
 
 /// The passphrase for `credentials init` (asked twice on a terminal) or `unlock` (once).
@@ -1258,7 +1273,6 @@ where
                 VAULT_PASSPHRASES_DIFFER,
             ],
             from_stdin,
-            |_| Ok(()),
             read,
         )
         .await
@@ -1271,14 +1285,6 @@ where
 /// `Ok` when a hidden prompt can be shown, else the refusal that exits with the usage status.
 fn secret_prompt_possible(terminal: bool) -> Result<(), needs_terminal::NeedsTerminal> {
     needs_terminal::require(terminal, SECRET_NEEDS_A_TERMINAL)
-}
-fn validate_approval_secret(secret: &str) -> Result<()> {
-    ensure!(
-        (32..=4096).contains(&secret.len())
-            && secret.bytes().all(|byte| (0x21..=0x7e).contains(&byte)),
-        "Crew approval secrets must contain 32–4096 printable ASCII characters without spaces; vault passphrases may contain Unicode"
-    );
-    Ok(())
 }
 
 async fn read_secret(prompt: &'static str, from_stdin: bool) -> Result<Zeroizing<String>> {
@@ -1475,7 +1481,7 @@ async fn request(
             return Err(daemon_refusal(
                 status.as_u16(),
                 Some(&value),
-                "Request refused; check the shared daemon and approval secret",
+                "Request refused; check the shared daemon",
             )
             .into());
         }
@@ -1483,21 +1489,22 @@ async fn request(
     }
 }
 
-async fn start_daemon(proof: &Zeroizing<String>) -> Result<Descriptor> {
+/// Start this profile's shared daemon: generate its user-action key, hand the daemon only the
+/// key's digest on stdin, and once the daemon has published itself save the key beside its
+/// runtime record, so every later launcher connects without asking anything. When another
+/// launcher started a daemon at the same moment and won the profile, connect to that one.
+async fn start_daemon() -> Result<CrewClient> {
     #[cfg(not(unix))]
     {
-        let _ = proof;
         bail!("Shared Crew daemon IPC is unavailable on this platform");
     }
     #[cfg(unix)]
     {
-        use sha2::{Digest, Sha256};
         use std::process::Stdio;
         use tokio::io::AsyncWriteExt;
-        validate_approval_secret(proof)?;
         ensure!(
             discover_shared_daemon().await?.is_none(),
-            "A shared daemon already owns this profile; connect to it using its existing approval secret"
+            "A Biorouter daemon is already running for this profile."
         );
         let binary = std::env::current_exe()?
             .parent()
@@ -1508,6 +1515,7 @@ async fn start_daemon(proof: &Zeroizing<String>) -> Result<Descriptor> {
             "biorouterd must be installed alongside biorouter for shared Crew startup"
         );
         daemon_runtime::private_directory(&daemon_runtime::runtime_directory())?;
+        let proof = daemon_runtime::generate_user_action_key();
         let mut command = tokio::process::Command::new(binary);
         command
             .arg("agent")
@@ -1530,10 +1538,7 @@ async fn start_daemon(proof: &Zeroizing<String>) -> Result<Descriptor> {
             .stdin
             .take()
             .context("New daemon has no startup pipe")?;
-        let digest: String = Sha256::digest(proof.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let digest = daemon_runtime::user_action_digest_hex(&proof);
         if let Err(error) = pipe.write_all(format!("{digest}\n").as_bytes()).await {
             child.kill().await.ok();
             child.wait().await.ok();
@@ -1541,9 +1546,17 @@ async fn start_daemon(proof: &Zeroizing<String>) -> Result<Descriptor> {
         }
         drop(pipe);
         for _ in 0..300 {
-            if let Some(status) = child.try_wait()? {
+            if child.try_wait()?.is_some() {
+                // Another launcher's daemon may have taken the profile first; use it.
+                if let Some(descriptor) = discover_shared_daemon().await? {
+                    if descriptor.pid != child_pid {
+                        if let Some(client) = CrewClient::with_saved_key(descriptor).await? {
+                            return Ok(client);
+                        }
+                    }
+                }
                 bail!(
-                    "Shared daemon exited during startup ({status}); inspect the profile and installed daemon"
+                    "The Biorouter daemon exited while starting; inspect the profile and installed daemon"
                 );
             }
             if let Ok(descriptor) = daemon_runtime::read_descriptor() {
@@ -1551,20 +1564,21 @@ async fn start_daemon(proof: &Zeroizing<String>) -> Result<Descriptor> {
                     && descriptor.user_action_installed
                     && verify_identity(&descriptor).await.is_ok()
                 {
-                    if let Err(error) = request(
-                        &descriptor,
-                        Some(proof.as_str()),
-                        "GET",
-                        "/crew/connections",
-                        None,
-                    )
-                    .await
-                    {
+                    let client = CrewClient { descriptor, proof };
+                    let ready = match daemon_runtime::write_user_action_key(
+                        &client.descriptor,
+                        &client.proof,
+                    ) {
+                        Ok(()) => client.request("GET", "/crew/connections", None).await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = ready {
                         child.kill().await.ok();
                         child.wait().await.ok();
+                        daemon_runtime::remove_user_action_key(&client.descriptor.instance_id);
                         return Err(error);
                     }
-                    return Ok(descriptor);
+                    return Ok(client);
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1575,6 +1589,66 @@ async fn start_daemon(proof: &Zeroizing<String>) -> Result<Descriptor> {
             "The daemon did not establish authenticated shared readiness; only the newly started child was stopped"
         )
     }
+}
+
+/// Stop the verified daemon `descriptor` describes without its key: it runs as this same user,
+/// so a signal is enough. The pid is signalled only while it still belongs to a process named
+/// `biorouterd` and the daemon still answers with this identity.
+async fn stop_by_signal(descriptor: &Descriptor) -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        let _ = descriptor;
+        bail!("Shared daemon shutdown is unavailable on this platform");
+    }
+    #[cfg(unix)]
+    {
+        let could_not_stop = || {
+            anyhow::anyhow!(
+                "Biorouter could not stop the old background service (process {}). Stop that process, then run this command again.",
+                descriptor.pid
+            )
+        };
+        let pid = libc::pid_t::try_from(descriptor.pid).map_err(|_| could_not_stop())?;
+        verify_identity(descriptor)
+            .await
+            .context("The running Biorouter daemon could not be verified, so it was not stopped")?;
+        if !daemon_runtime::process_is_biorouterd(descriptor.pid) {
+            return Err(could_not_stop());
+        }
+        let gone = || {
+            let alive = unsafe { libc::kill(pid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH);
+            !alive || owner_lock_is_free()
+        };
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        for _ in 0..150 {
+            if gone() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        if daemon_runtime::process_is_biorouterd(descriptor.pid) {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        for _ in 0..30 {
+            if gone() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err(could_not_stop())
+    }
+}
+
+/// True when no daemon holds this profile's owner lock. The probe lock is released before this
+/// returns, so a daemon started next can take it.
+#[cfg(unix)]
+fn owner_lock_is_free() -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(owner) = open_daemon_owner_lock() else {
+        return false;
+    };
+    unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
 #[cfg(unix)]
@@ -1667,26 +1741,34 @@ pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Va
             None => Err(daemon_not_running()),
         },
         "start" => {
+            discard_legacy_approval_line(approval_key_stdin).await?;
             ensure!(
                 discover_shared_daemon().await?.is_none(),
-                "A Biorouter daemon is already running for this profile, with the approval secret it was started with. Stop it first with biorouter crew daemon stop to choose a new one."
+                "A Biorouter daemon is already running for this profile. Stop it first with biorouter crew daemon stop."
             );
-            let proof =
-                choose_approval_secret(START_DAEMON_SECRET_PROMPT, approval_key_stdin, read_secret)
-                    .await?;
-            let descriptor = start_daemon(&proof).await?;
-            Ok(serde_json::to_value(descriptor.identity())?)
+            let client = start_daemon().await?;
+            Ok(serde_json::to_value(client.descriptor.identity())?)
         }
         "stop" => {
-            let client = CrewClient::connect_with_input(true, approval_key_stdin).await?;
-            client
-                .request(
-                    "POST",
-                    "/daemon/stop",
-                    Some(json!({"instance_id":client.descriptor.instance_id})),
-                )
-                .await?;
-            wait_for_daemon_stop(&client.descriptor).await
+            discard_legacy_approval_line(approval_key_stdin).await?;
+            let Some(descriptor) = discover_shared_daemon().await? else {
+                return Err(daemon_not_running());
+            };
+            // With the saved key the daemon stops itself; a daemon started by an older
+            // Biorouter, or one whose key is gone, is stopped with a signal instead.
+            match CrewClient::with_saved_key(descriptor.clone()).await? {
+                Some(client) => {
+                    client
+                        .request(
+                            "POST",
+                            "/daemon/stop",
+                            Some(json!({"instance_id":client.descriptor.instance_id})),
+                        )
+                        .await?;
+                }
+                None => stop_by_signal(&descriptor).await?,
+            }
+            wait_for_daemon_stop(&descriptor).await
         }
         _ => bail!("Unknown daemon action"),
     }
@@ -1714,7 +1796,14 @@ fn no_vault_to_unlock(status: &Value) -> Result<()> {
     Err(Restated::new(sentence, Some(NO_VAULT_TO_UNLOCK_CODE)).into())
 }
 
-pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Result<Value> {
+/// `credentials` commands. The vault passphrase comes from the first line of standard input with
+/// `passphrase_stdin`, or the line after the ignored approval line with `approval_key_stdin`
+/// (how 1.92.0 scripts send it), else from a hidden prompt.
+pub async fn credentials_control(
+    action: &str,
+    approval_key_stdin: bool,
+    passphrase_stdin: bool,
+) -> Result<Value> {
     let client = CrewClient::connect_with_input(true, approval_key_stdin).await?;
     match action {
         "status" => client.request("GET", "/crew/credentials", None).await,
@@ -1726,11 +1815,12 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
                 let status = client.request("GET", "/crew/credentials", None).await?;
                 no_vault_to_unlock(&status)?;
             }
-            let passphrase = vault_passphrase(action, approval_key_stdin, read_secret).await?;
-            ensure!(
-                passphrase.as_str() != client.proof.as_str(),
-                "The vault passphrase must differ from the human approval secret"
-            );
+            let passphrase = vault_passphrase(
+                action,
+                approval_key_stdin || passphrase_stdin,
+                read_secret,
+            )
+            .await?;
             client
                 .request(
                     "POST",
@@ -1746,15 +1836,14 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        choose_approval_secret, daemon_control, daemon_refusal, no_vault_to_unlock,
-        open_daemon_owner_lock, read_observer_frames, require_supported_platform,
-        secret_prompt_possible, sign_in_possible, sign_in_terminal_size, vault_passphrase,
-        wait_for_daemon_stop, wrong_approval_secret, CrewClient, DaemonRefusal, EventDecoder,
-        Restated, APPROVAL_SECRET_AGAIN, AUTH_NEEDS_A_TERMINAL, DAEMON_NOT_RUNNING,
-        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_DAEMON_SECRET_PROMPT, NEW_VAULT_PASSPHRASE,
-        NO_VAULT_NO_KEYRING, NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES,
-        VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN, WRONG_APPROVAL_SECRET,
-        WRONG_APPROVAL_SECRET_CODE,
+        daemon_control, daemon_refusal, key_refused, no_vault_to_unlock, open_daemon_owner_lock,
+        read_observer_frames, require_supported_platform, secret_prompt_possible,
+        sign_in_possible, sign_in_terminal_size, vault_passphrase, wait_for_daemon_stop,
+        CrewClient, DaemonRefusal, EventDecoder, Restated, AUTH_NEEDS_A_TERMINAL,
+        DAEMON_NEEDS_RESTART, DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING,
+        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING,
+        NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
+        VAULT_PASSPHRASE_AGAIN,
     };
     use crate::commands::needs_terminal::NeedsTerminal;
     use biorouter::crew::observation::ObserveEvent;
@@ -1779,6 +1868,7 @@ mod tests {
         let _ = fs::remove_file(directory.join("owner.lock"));
         let _ = fs::remove_file(directory.join("owner.lock.old"));
         let _ = fs::remove_file(daemon_runtime::descriptor_path());
+        let _ = fs::remove_file(daemon_runtime::user_action_key_path());
         directory
     }
 
@@ -2611,46 +2701,6 @@ mod tests {
         })
     }
 
-    const SECRET: &str = "correct-horse-battery-staple-0123456789";
-
-    /// CLI-3: a new daemon's approval secret is asked for twice at the terminal, a mismatch
-    /// starts nothing, and the first answer is checked before the second is asked for.
-    #[tokio::test]
-    async fn a_new_daemons_secret_is_typed_twice_and_a_typo_starts_nothing() {
-        let (asked, read) = scripted(&[SECRET, SECRET]);
-        let secret = choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, false, read)
-            .await
-            .expect("the same secret twice");
-        assert_eq!(secret.as_str(), SECRET);
-        assert_eq!(
-            *asked.lock().unwrap(),
-            [NEW_DAEMON_SECRET_PROMPT, APPROVAL_SECRET_AGAIN]
-        );
-        assert!(NEW_DAEMON_SECRET_PROMPT.starts_with("No Biorouter daemon is running"));
-
-        let (_, read) = scripted(&[SECRET, "correct-horse-battery-staple-0123456788"]);
-        let error = choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, false, read)
-            .await
-            .expect_err("a typo");
-        assert_eq!(
-            error.to_string(),
-            "The two approval secrets don't match. No daemon was started."
-        );
-
-        let (asked, read) = scripted(&["short"]);
-        choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, false, read)
-            .await
-            .expect_err("too short");
-        assert_eq!(asked.lock().unwrap().len(), 1, "no second prompt");
-
-        // A script sends one line and owns it.
-        let (asked, read) = scripted(&[SECRET]);
-        choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, true, read)
-            .await
-            .expect("one line from stdin");
-        assert_eq!(asked.lock().unwrap().len(), 1);
-    }
-
     /// CLI-2: `credentials init` asks for the new passphrase twice and refuses a mismatch
     /// before anything is sent; `unlock` asks once.
     #[tokio::test]
@@ -2708,31 +2758,77 @@ mod tests {
         assert_eq!(none.detail(), None);
     }
 
-    /// CLI-3: the one refusal the secret check can give is said as a wrong secret.
+    /// A 403 that says the key was not accepted marks the daemon as one this command cannot
+    /// use; any other refusal is an ordinary error.
     #[test]
-    fn a_refused_proof_is_said_as_a_wrong_approval_secret() {
-        let refused = daemon_refusal(
-            403,
-            Some(&serde_json::json!({
-                "code": "crew_user_action_required",
-                "error": "Authorize this action in the Crew panel or native Crew CLI with your human approval secret."
-            })),
+    fn a_refused_key_marks_the_daemon_unusable() {
+        for code in ["crew_user_action_required", "crew_human_authority_unavailable"] {
+            let refused = daemon_refusal(
+                403,
+                Some(&serde_json::json!({"code": code, "error": "x"})),
+                "fallback",
+            );
+            assert!(key_refused(&refused.into()), "{code}");
+        }
+        let other = daemon_refusal(
+            409,
+            Some(&serde_json::json!({"code": "crew_registry_unreadable", "error": "x"})),
             "fallback",
         );
-        let error = wrong_approval_secret(refused.into());
-        assert_eq!(error.to_string(), WRONG_APPROVAL_SECRET);
+        assert!(!key_refused(&other.into()));
+    }
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// A running daemon whose starter saved its key is used with that key, and nothing is
+    /// asked; the key file is private.
+    #[tokio::test]
+    #[serial]
+    async fn a_saved_key_connects_without_asking() {
+        let descriptor = serving_daemon_fixture().await;
+        daemon_runtime::write_user_action_key(&descriptor, KEY).expect("key saves");
+        let mode = fs::metadata(daemon_runtime::user_action_key_path())
+            .expect("key file exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let client = CrewClient::connect_with_input(true, false)
+            .await
+            .expect("connects with the saved key");
+        assert_eq!(client.proof.as_str(), KEY);
+        let _ = fs::remove_file(daemon_runtime::user_action_key_path());
+        let _ = fs::remove_file(daemon_runtime::descriptor_path());
+    }
+
+    /// A running daemon with no saved key for its instance (one an older Biorouter started) is
+    /// refused under `--no-start` with a sentence that says what to do, never a prompt.
+    #[tokio::test]
+    #[serial]
+    async fn a_daemon_without_a_saved_key_needs_a_restart_under_no_start() {
+        let descriptor = serving_daemon_fixture().await;
+        let mut other = descriptor.clone();
+        other.instance_id = "33333333-3333-4333-8333-333333333333".into();
+        daemon_runtime::write_user_action_key(&other, KEY).expect("key saves");
+        let error = match CrewClient::connect_with_input(true, false).await {
+            Ok(_) => panic!("a key for another instance must not be used"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), DAEMON_NEEDS_RESTART);
         assert_eq!(
             error.downcast_ref::<Restated>().and_then(|r| r.code),
-            Some(WRONG_APPROVAL_SECRET_CODE)
+            Some(DAEMON_NEEDS_RESTART_CODE)
         );
+        let _ = fs::remove_file(daemon_runtime::user_action_key_path());
+        let _ = fs::remove_file(daemon_runtime::descriptor_path());
+    }
 
-        let other = daemon_refusal(
-            403,
-            Some(&serde_json::json!({"code": "crew_human_authority_unavailable", "error": "x"})),
-            "fallback",
-        );
-        let error = wrong_approval_secret(other.into());
-        assert!(error.downcast_ref::<DaemonRefusal>().is_some());
+    /// `daemon stop` with nothing running says so and asks for nothing.
+    #[tokio::test]
+    #[serial]
+    async fn stop_with_no_daemon_says_so() {
+        runtime_dir();
+        let error = daemon_control("stop", false).await.expect_err("no daemon");
+        assert_eq!(error.to_string(), DAEMON_NOT_RUNNING);
     }
 
     /// CLI-12: no discovery record, and one a killed daemon left behind, both say that no
@@ -2785,7 +2881,7 @@ mod tests {
         );
         secret_prompt_possible(true).expect("a terminal");
         let refusal: NeedsTerminal = secret_prompt_possible(false).expect_err("no terminal");
-        assert!(refusal.to_string().contains("--approval-key-stdin"));
+        assert!(refusal.to_string().contains("--passphrase-stdin"));
     }
 
     /// SF2-N6: `auth` with no terminal is the usage refusal every other such command gives

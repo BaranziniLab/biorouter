@@ -380,18 +380,15 @@ describe('the development auto-confirm gate in main.ts', () => {
     return main.slice(start, main.indexOf('\n  });', start));
   };
 
-  it('is fed the same four conditions as the development approval stdin', () => {
-    const approval = call('createDevelopmentApprovalReader');
+  it('is fed the four development conditions and its own switch', () => {
     const share = call('resolveDevAutoConfirmShare');
     for (const condition of [
       'isPackaged: app.isPackaged,',
       'developmentProfileRoot,',
       'testDriverEnabled: Boolean(process.env.ENABLE_PLAYWRIGHT),',
       'sharedDaemonEnabled: isSharedDaemonEnabled() && !loadSettings().externalBiorouterd?.enabled,',
-    ]) {
-      expect(approval).toContain(condition);
+    ])
       expect(share).toContain(condition);
-    }
     expect(share).toContain('value: process.env[DEV_AUTO_CONFIRM_SHARE_ENV],');
     expect(crewSharePath.DEV_AUTO_CONFIRM_SHARE_ENV).toBe('BIOROUTER_DEV_AUTO_CONFIRM_SHARE');
   });

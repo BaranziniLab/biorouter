@@ -192,7 +192,6 @@ On member computers, each Biorouter background service listens on a TCP port on 
 - Each member needs the Biorouter app or command line, and the OpenSSH client.
 - On macOS and Linux, the app and command line share one background service per profile, which keeps running after the app closes. The command line needs `biorouterd` beside `biorouter`. On Windows it cannot use the service: `Shared Crew daemon IPC is unavailable on this platform`.
 - A [managed policy](../security/managed-policy.md) with a hook under `hooks` or `allow_project_hooks: true`, or one that does not parse, blocks agent tasks and chat access with "Crew is unavailable with required managed hooks…" or "…the managed policy could not be loaded…". Messages and files still work.
-- Each person also keeps an approval secret. See [Getting started](getting-started.md).
 - Crew keeps device keys in the system keyring, and never in a plain file. A Linux computer with no keyring service (Secret Service), such as a login node reached only over SSH, needs `biorouter crew credentials init` before its first workspace. See [Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault).
 
 ## Where Crew keeps its data
