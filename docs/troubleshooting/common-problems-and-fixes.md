@@ -207,7 +207,7 @@ You can set them either by doing:
 - `export GOOGLE_API_KEY=$YOUR_KEY_HERE` - for the duration of your session
 - in your `~/.bashrc` or `~/.zshrc` - (or equivalents) so it persists on new shell each new session
 
-Then select the `No` option when prompted to save the value to your keyring.
+Then select `No` when `biorouter configure` asks whether to save the value in Biorouter's settings, so the key stays in your environment only.
 
 ```text
 $ biorouter configure
@@ -222,7 +222,7 @@ Welcome to biorouter! Let's get you set up with a provider.
 │
 ◇  GOOGLE_API_KEY is set via environment variable
 │
-◇  Would you like to save this value to your keyring?
+◇  Save this value in Biorouter's settings?
 │  No
 │
 ◇  Enter a model from that provider:

@@ -155,10 +155,10 @@ If you are the host, read [Limits of the host role](hosting-a-workspace.md#limit
 
 ## A server that stopped saving
 
-When the lab server's disk is full or failing, the workspace keeps running but saves no more changes. Once your Crew learns of it, when it next connects to the workspace or a change is refused, the status row still reads "Connected", and the connection bar says "The workspace server has stopped saving changes. Reading still works." Reading channels and files works. Posts, uploads and other changes are refused, and an upload that was running pauses with "The workspace server couldn’t save it".
+When the lab server's disk is full or failing, the workspace keeps running but saves no more changes. Once your Crew learns of it, when it next connects to the workspace or a change is refused, the status row still reads "Connected", and the connection bar says "The workspace server has stopped saving changes. Reading still works." Reading channels and files works. Posts, uploads and other changes are refused, and an upload that was running pauses with "The workspace server couldn’t save it". The app updates the bar when its window comes to the front, so if Biorouter stayed in front the whole time, switch to another window and back to see where the server stands now.
 
 - If you host the workspace, the bar adds "Free space on the server, then restart Crew there." Follow [Server storage full or failing](administration.md#server-storage-full-or-failing). The workspace saves changes again only after the restart.
-- Otherwise, the bar names your host, such as "Ask Alice Chen to free space on the server and restart Crew." Nothing you do on your computer helps. Once the host restarts Crew, Crew connects again by itself, and you can resume paused uploads.
+- Otherwise, the bar names your host, such as "Ask Alice Chen (@alice) to free space on the server and restart Crew." Nothing you do on your computer helps. Once the host restarts Crew, Crew connects again by itself, and you can resume paused uploads.
 
 From a terminal, `biorouter crew status` and `connections show` print the same sentence, and for the host what to run on the server.
 

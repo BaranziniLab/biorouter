@@ -20,15 +20,15 @@ and takes effect immediately — you can change it before or during a session.
 
 ## The four modes
 
-The **Mode** column below is the name shown in the desktop app; **CLI value** is what you pass
-to `/mode`; **Configure name** is how the mode appears in `biorouter configure`.
+The **Mode** column below is the name this guide uses; **Shown as** is the name the desktop
+app's mode picker and `biorouter configure` both show; **CLI value** is what you pass to `/mode`.
 
-| Mode | CLI value | Configure name | Description | Best for |
+| Mode | CLI value | Shown as | Description | Best for |
 |---|---|---|---|---|
-| **Completely Autonomous** | `auto` | Auto Mode | BioRouter can modify files, use extensions, and delete files **without requiring approval** | Users who want **full automation** and seamless integration into their workflow |
-| **Manual Approval** | `approve` | Approve Mode | BioRouter **asks for confirmation** before using any tools or extensions (supports granular tool permissions) | Users who want to **review and approve** every change and tool usage |
-| **Smart Approval** | `smart_approve` | Smart Approve Mode | BioRouter uses a risk-based approach to **automatically approve low-risk actions** and **flag others** for approval (supports granular tool permissions) | Users who want a **balanced mix of autonomy and oversight** based on the action's impact |
-| **Chat Only** | `chat` | Chat Mode | BioRouter **only engages in chat**, with no extension use or file modifications | Users who prefer a **conversational AI experience** for analysis, writing, and reasoning tasks without automation |
+| **Completely Autonomous** | `auto` | Autonomous | BioRouter can modify files, use extensions, and delete files **without requiring approval** | Users who want **full automation** and seamless integration into their workflow |
+| **Manual Approval** | `approve` | Manual | BioRouter **asks for confirmation** before using any tools or extensions (supports granular tool permissions) | Users who want to **review and approve** every change and tool usage |
+| **Smart Approval** | `smart_approve` | Smart | BioRouter uses a risk-based approach to **automatically approve low-risk actions** and **flag others** for approval (supports granular tool permissions) | Users who want a **balanced mix of autonomy and oversight** based on the action's impact |
+| **Chat Only** | `chat` | Chat only | BioRouter **only engages in chat**, with no extension use or file modifications | Users who prefer a **conversational AI experience** for analysis, writing, and reasoning tasks without automation |
 
 > **Warning.** Completely Autonomous (`auto`) is applied by default.
 
@@ -145,58 +145,59 @@ To set the default mode, use `biorouter configure`:
    biorouter configure
    ```
 
-2. Select `biorouter settings` from the menu and press Enter.
+2. Select `Biorouter settings` from the menu and press Enter.
 
    ```text
    ┌ biorouter-configure
    │
    ◆ What would you like to configure?
-   | ○ Configure Providers
-   | ○ Add Extension
-   | ○ Toggle Extensions
-   | ○ Remove Extension
-   | ● biorouter settings (Set the biorouter mode, Tool Output, Tool Permissions, Experiment, biorouter workflow github repo and more)
+   │ ○ Configure Providers
+   │ ○ Custom Providers
+   │ ○ Add Extension
+   │ ○ Toggle Extensions
+   │ ○ Remove Extension
+   │ ● Biorouter settings (Set the mode, tool output, tool permissions, experiments, the workflow GitHub repository and more)
    └
    ```
 
-3. Choose `biorouter mode` from the menu and press Enter.
+3. Choose `Biorouter mode` from the menu and press Enter.
 
    ```text
    ┌   biorouter-configure
    │
    ◇  What would you like to configure?
-   │  biorouter settings 
+   │  Biorouter settings
    │
    ◆  What setting would you like to configure?
-   │  ● biorouter mode (Configure biorouter mode)
-   │  ○ Router Tool Selection Strategy 
-   │  ○ Tool Permission 
-   │  ○ Tool Output 
-   │  ○ Max Turns 
-   │  ○ Toggle Experiment 
-   │  ○ biorouter workflow github repo 
-   │  ○ Scheduler Type 
+   │  ● Biorouter mode (Choose how much Biorouter does without asking)
+   │  ○ Tool Permission
+   │  ○ Tool Output
+   │  ○ Max Turns
+   │  ○ Lead/Worker Model
+   │  ○ Secret Storage
+   │  ○ Toggle Experiment
+   │  ○ Workflow GitHub repository
    └
    ```
 
-4. Choose the biorouter mode you would like to configure.
+4. Choose the mode Biorouter should use.
 
    ```text
    ┌   biorouter-configure
    │
    ◇  What would you like to configure?
-   │  biorouter settings
+   │  Biorouter settings
    │
    ◇  What setting would you like to configure?
-   │  biorouter mode
+   │  Biorouter mode
    │
-   ◆  Which biorouter mode would you like to configure?
-   │  ● Auto Mode (Full file modification, extension usage, edit, create and delete files freely)
-   |  ○ Approve Mode
-   |  ○ Smart Approve Mode    
-   |  ○ Chat Mode
-   |
-   └  Set to Auto Mode - full file modification enabled
+   ◆  Which mode should Biorouter use?
+   │  ● Autonomous (Use tools and edit, create, or delete files without asking first.)
+   │  ○ Manual
+   │  ○ Smart
+   │  ○ Chat only
+   │
+   └  Mode set to Autonomous.
    ```
 
 ## Related documentation

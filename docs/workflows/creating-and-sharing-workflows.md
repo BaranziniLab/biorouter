@@ -265,33 +265,37 @@ You'll see the following prompts:
 ┌  biorouter-configure 
 │
 ◆  What would you like to configure?
-│  ○ Configure Providers 
-│  ○ Add Extension 
-│  ○ Toggle Extensions 
-│  ○ Remove Extension 
+│  ○ Configure Providers
+│  ○ Custom Providers
+│  ○ Add Extension
+│  ○ Toggle Extensions
+│  ○ Remove Extension
 // highlight-start
-│  ● biorouter settings (Set the biorouter mode, Tool Output, Tool Permissions, Experiment, biorouter workflow github repo and more)
+│  ● Biorouter settings (Set the mode, tool output, tool permissions, experiments, the workflow GitHub repository and more)
 // highlight-end
 │
 ◇  What would you like to configure?
-│  biorouter settings 
+│  Biorouter settings
 │
 ◆  What setting would you like to configure?
-│  ○ biorouter mode 
-│  ○ Tool Permission 
-│  ○ Tool Output 
-│  ○ Toggle Experiment 
+│  ○ Biorouter mode
+│  ○ Tool Permission
+│  ○ Tool Output
+│  ○ Max Turns
+│  ○ Lead/Worker Model
+│  ○ Secret Storage
+│  ○ Toggle Experiment
 // highlight-start
-│  ● biorouter workflow github repo (biorouter will pull workflows from this repo if not found locally.)
+│  ● Workflow GitHub repository (Where Biorouter looks for a workflow it does not find on this computer)
 // highlight-end
 └  
 ┌  biorouter-configure 
 │
 ◇  What would you like to configure?
-│  biorouter settings 
+│  Biorouter settings
 │
 ◇  What setting would you like to configure?
-│  biorouter workflow github repo 
+│  Workflow GitHub repository
 │
 ◆  Enter your biorouter workflow GitHub repo (owner/repo): eg: my_org/biorouter-workflows
 // highlight-start

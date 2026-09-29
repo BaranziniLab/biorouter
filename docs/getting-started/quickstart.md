@@ -69,10 +69,11 @@ biorouter will open a browser for you to authenticate with Tetrate, or create a 
    │
    ◆  What would you like to configure?
    │  ● Configure Providers (Change provider or update credentials)
+   │  ○ Custom Providers
    │  ○ Add Extension
    │  ○ Toggle Extensions
    │  ○ Remove Extension
-   │  ○ biorouter settings
+   │  ○ Biorouter settings
    └
    ```
 
