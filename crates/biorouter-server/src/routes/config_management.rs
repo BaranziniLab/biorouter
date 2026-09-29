@@ -466,13 +466,25 @@ pub async fn upsert_config(
         return Err((StatusCode::BAD_REQUEST, refusal));
     }
     if names_a_provider(&query.key) {
-        let registered: Vec<String> = get_providers()
-            .await
-            .into_iter()
-            .map(|(metadata, _)| metadata.name)
-            .collect();
-        if let Some(refusal) = unknown_provider_refusal(&query.key, &query.value, &registered) {
-            return Err((StatusCode::BAD_REQUEST, refusal));
+        let registered = || async {
+            get_providers()
+                .await
+                .into_iter()
+                .map(|(metadata, _)| metadata.name)
+                .collect::<Vec<String>>()
+        };
+        if unknown_provider_refusal(&query.key, &query.value, &registered().await).is_some() {
+            // A custom provider another process added (`biorouter configure`)
+            // is on disk but not yet in this daemon's registry: read the
+            // custom providers again before calling the name unknown.
+            if let Err(error) = biorouter::providers::refresh_custom_providers().await {
+                tracing::warn!("could not re-read custom providers: {error}");
+            }
+            if let Some(refusal) =
+                unknown_provider_refusal(&query.key, &query.value, &registered().await)
+            {
+                return Err((StatusCode::BAD_REQUEST, refusal));
+            }
         }
     }
 
@@ -5019,5 +5031,33 @@ mod destination_route_tests {
         .await
         .expect("a registered provider is saved");
         assert_eq!(stored("BIOROUTER_PROVIDER"), Some(Value::from("openai")));
+
+        // A custom provider added by another process since the daemon started
+        // (its file is on disk, its registry entry is not) is a real provider.
+        let dir = biorouter::config::declarative_providers::custom_providers_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("custom_elsewhere.json"),
+            serde_json::json!({
+                "name": "custom_elsewhere",
+                "engine": "openai",
+                "display_name": "Added elsewhere",
+                "api_key_env": "CUSTOM_ELSEWHERE_API_KEY",
+                "base_url": "https://elsewhere.example/v1",
+                "models": [],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let _ = upsert_config(
+            headers_with(Some(TEST_USER_ACTION_KEY)),
+            write("BIOROUTER_PROVIDER", "custom_elsewhere", false),
+        )
+        .await
+        .expect("a provider on disk is known once the registry is re-read");
+        assert_eq!(
+            stored("BIOROUTER_PROVIDER"),
+            Some(Value::from("custom_elsewhere"))
+        );
     }
 }
