@@ -1,7 +1,59 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 
 let active = false;
+/** The dialog process of the open prompt, so quitting the app can close it (no orphaned dialog). */
+let activeChild: ChildProcess | undefined;
+
+/** Most stderr kept from the dialog helper. Only the answer goes to stdout; stderr is diagnostics. */
+const STDERR_LIMIT = 4096;
+
+export type NativePromptOutcome =
+  | { kind: 'answer'; answer: string }
+  | { kind: 'cancelled' }
+  | { kind: 'failed'; message: string };
+
+/**
+ * How a finished dialog helper maps onto an answer, a cancellation, or a dialog that never
+ * opened. Only Linux can tell the last two apart: zenity exits 1 when the person clicks Cancel
+ * or closes the window, but also when GTK cannot open the display, and exits 255 when it rejects
+ * its own arguments (1.92.0 hit that with non-ASCII prompt text in a C locale). Reporting those
+ * as "cancelled" left the person with no idea what to fix. macOS and Windows keep the old
+ * mapping: any non-zero exit is a cancellation.
+ */
+export function nativePromptOutcome(input: {
+  platform: typeof process.platform;
+  code: number | null;
+  answer: string;
+  stderr: string;
+}): NativePromptOutcome {
+  const { platform, code, answer, stderr } = input;
+  if (code === 0 && answer) return { kind: 'answer', answer };
+  if (platform === 'darwin' || platform === 'win32') return { kind: 'cancelled' };
+  // Exit 0 with nothing typed, and a helper stopped by a signal (the app quitting), are no answer.
+  if (code === 0 || code === null) return { kind: 'cancelled' };
+  if (code === 1 && !/cannot open display/i.test(stderr)) return { kind: 'cancelled' };
+  const detail = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0)
+    ?.slice(0, 200);
+  return {
+    kind: 'failed',
+    message: `Biorouter could not open its secure password dialog (zenity exited with code ${code}${detail ? `: ${detail}` : ''}). Check that zenity is installed and can open a window on this desktop, then reopen the app.`,
+  };
+}
+
+/** Close the open prompt's dialog, if any. Called when the app quits so no dialog outlives it. */
+export function closeNativeSecretPrompt(): void {
+  const child = activeChild;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.kill();
+  } catch {
+    // The dialog already exited; nothing to close.
+  }
+}
 
 /** OS-owned password field: the application renderer never receives the answer.
  * Buffers are cleared; JavaScript strings remain subject to garbage collection
@@ -49,11 +101,12 @@ export async function promptNativeSecret(
     });
     if (!helper)
       throw new Error(
-        'The Linux desktop needs Zenity for its secure password dialog. DEB and RPM packages declare this dependency. AppImage users must make their distribution’s zenity package available before starting or attaching to a shared daemon. Biorouter does not install it automatically.'
+        "The Linux desktop needs Zenity for its secure password dialog. DEB and RPM packages declare this dependency. AppImage users must make their distribution's zenity package available before starting or attaching to a shared daemon. Biorouter does not install it automatically."
       );
     program = helper;
     args = ['--password', `--title=${title}`, `--text=${message}`];
   }
+  const linux = process.platform !== 'darwin' && process.platform !== 'win32';
   active = true;
   try {
     return await new Promise<string | undefined>((resolve, reject) => {
@@ -67,10 +120,16 @@ export async function promptNativeSecret(
       );
       const child = spawn(program, args, {
         env,
-        stdio: ['ignore', 'pipe', 'ignore'],
+        stdio: ['ignore', 'pipe', linux ? 'pipe' : 'ignore'],
         windowsHide: true,
       });
+      activeChild = child;
       const chunks: Buffer[] = [];
+      let stderr = '';
+      child.stderr?.on('data', (chunk: Buffer) => {
+        if (stderr.length < STDERR_LIMIT)
+          stderr += chunk.toString('utf8').slice(0, STDERR_LIMIT - stderr.length);
+      });
       let size = 0;
       let exceeded = false;
       let timedOut = false;
@@ -78,7 +137,7 @@ export async function promptNativeSecret(
         timedOut = true;
         child.kill();
       }, 180000);
-      child.stdout.on('data', (chunk: Buffer) => {
+      child.stdout?.on('data', (chunk: Buffer) => {
         size += chunk.length;
         if (size > 4098) {
           exceeded = true;
@@ -93,7 +152,9 @@ export async function promptNativeSecret(
         chunks.forEach((chunk) => chunk.fill(0));
         reject(
           new Error(
-            'The native secure prompt is unavailable. Install the platform password-dialog helper or use the CLI secure prompt.'
+            linux
+              ? "Biorouter could not start zenity for its secure password dialog. Install your distribution's zenity package, then reopen the app."
+              : 'The native secure prompt is unavailable. Install the platform password-dialog helper or use the CLI secure prompt.'
           )
         );
       });
@@ -112,11 +173,21 @@ export async function promptNativeSecret(
               'The native secure prompt timed out after three minutes. Reopen the app and complete the password dialog to continue.'
             )
           );
-        else if (code !== 0 || !answer) resolve(undefined);
-        else resolve(answer);
+        else {
+          const outcome = nativePromptOutcome({
+            platform: process.platform,
+            code,
+            answer,
+            stderr,
+          });
+          if (outcome.kind === 'answer') resolve(outcome.answer);
+          else if (outcome.kind === 'cancelled') resolve(undefined);
+          else reject(new Error(outcome.message));
+        }
       });
     });
   } finally {
     active = false;
+    activeChild = undefined;
   }
 }

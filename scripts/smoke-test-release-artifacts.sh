@@ -48,16 +48,61 @@ smoke_mac() {
   # artifact, not the keychain.
   mkdir -p "$tmp/Library/Keychains"
   security create-keychain -p "" "$tmp/Library/Keychains/login.keychain-db" 2>/dev/null || true
+  # ⚠ **`--user-data-dir`, because HOME does not move it.** On macOS Electron resolves userData
+  # through the system (~/Library/Application Support/Biorouter), not through $HOME, so without
+  # it the smoke run wrote into the operator's real profile, beside an app they may be using.
+  # The app sets no userData path of its own, and Electron honours the switch (measured on the
+  # Linux build: main.log and the whole profile moved into the given directory).
   HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true \
-    "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu >"$tmp/app.log" 2>&1 &
+    "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu --user-data-dir="$tmp/userData" \
+    >"$tmp/app.log" 2>&1 &
   local pid=$!
-  sleep 12
-  kill -0 "$pid" 2>/dev/null || { sed -n '1,160p' "$tmp/app.log" >&2; die "$arch desktop exited during startup"; }
-  kill "$pid" 2>/dev/null || true
-  sleep 1
-  kill -KILL "$pid" 2>/dev/null || true
-  pkill -KILL -f "$mount/Biorouter.app/Contents/" 2>/dev/null || true
+  local main_log="$tmp/userData/logs/main.log" failure="" tree="" prompt="" child
+  # A first launch starts the shared daemon, which asks for its approval secret in an osascript
+  # dialog, a child of the app. Wait for it, bounded, rather than only for "still alive": an app
+  # stuck at a fatal error box is alive too.
+  for _ in $(seq 1 60); do
+    prompt="$(pgrep -P "$pid" -x osascript 2>/dev/null | head -n 1 || true)"
+    [ -n "$prompt" ] && break
+    kill -0 "$pid" 2>/dev/null || break
+    grep -qs 'Fatal error during startup' "$main_log" && break
+    sleep 0.5
+  done
+  if ! kill -0 "$pid" 2>/dev/null; then
+    failure="$arch desktop exited during startup"
+  elif grep -qs 'Fatal error during startup' "$main_log"; then
+    failure="$arch desktop failed during startup"
+  elif [ -z "$prompt" ]; then
+    failure="$arch desktop showed no approval prompt within 30 s"
+  fi
+  # Every process under the app, the prompt included. The prompt is a separate process, so
+  # killing the app alone (even with SIGKILL) left it on the operator's screen.
+  mac_descendants() {
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null || true); do
+      printf '%s\n' "$c"
+      mac_descendants "$c"
+    done
+  }
+  tree="$(mac_descendants "$pid" | tr '\n' ' ')"
+  # SIGTERM first: the app closes its own prompt on quit. Killing the prompt first would make the
+  # app report a cancelled startup in a modal error box.
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z || break
+    sleep 0.5
+  done
+  if ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z; then
+    [ -n "$failure" ] || failure="$arch desktop did not exit within 20 s of SIGTERM"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
   wait "$pid" 2>/dev/null || true
+  for child in $tree; do kill -KILL "$child" 2>/dev/null || true; done
+  pkill -KILL -f "$mount/Biorouter.app/Contents/" 2>/dev/null || true
+  if [ -n "$failure" ]; then
+    sed -n '1,160p' "$tmp/app.log" >&2
+    if [ -f "$main_log" ]; then sed -n '1,160p' "$main_log" >&2; fi
+  fi
   hdiutil detach "$mount" >/dev/null 2>&1 || {
     sleep 2
     hdiutil detach -force "$mount" >/dev/null
@@ -70,56 +115,49 @@ smoke_mac() {
   # release reported "verification failed" because it could not tidy up.
   chmod -R u+w "$mount" "$tmp" 2>/dev/null || true
   rm -rf "$mount" "$tmp" 2>/dev/null || true
-  log "macOS $arch DMG, CLI, daemon, and desktop startup passed"
+  [ -z "$failure" ] || die "$failure"
+  log "macOS $arch DMG, CLI, daemon, approval prompt, and desktop shutdown passed"
 }
+
+# The desktop checks themselves live in scripts/smoke-linux-desktop.sh, one script run inside
+# both containers so the DEB and RPM checks stay the same. It waits for Xvfb, requires the first
+# launch to be waiting at its approval prompt, requires SIGTERM to end the app both at that prompt
+# and at the fatal error shown when the prompt is closed, and requires the per-window daemon path
+# to start biorouterd and load the window. Every wait inside it is bounded, and `timeout` bounds
+# the whole run, so verify fails with the app's logs instead of hanging.
+LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 
 smoke_deb() {
   local deb="$DESK/out/make/deb/x64/biorouter_${VERSION}_amd64.deb"
   require_file "$deb"
+  require_file "$LINUX_DESKTOP_SMOKE"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    -v "$deb":/pkg/biorouter.deb:ro debian:bookworm-slim bash -euxc '
+    -v "$deb":/pkg/biorouter.deb:ro \
+    -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter.deb xvfb >/dev/null
       /usr/lib/biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
-      HOME=/tmp/biorouter-home BIOROUTER_DISABLE_KEYRING=true \
-        xvfb-run -a /usr/bin/biorouter --no-sandbox >/tmp/biorouter.log 2>&1 &
-      pid=$!
-      sleep 12
-      kill -0 "$pid"
-      kill "$pid" || true
-      sleep 1
-      kill -KILL "$pid" || true
-      wait "$pid" || true
+      timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/biorouter
     '
-  log "Linux desktop DEB, CLI, daemon, and Xvfb startup passed"
+  log "Linux desktop DEB, CLI, daemon, first-launch prompt, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_rpm() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-${VERSION}-1.x86_64.rpm"
   require_file "$rpm"
+  require_file "$LINUX_DESKTOP_SMOKE"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    -v "$rpm":/pkg/biorouter.rpm:ro rockylinux:9 bash -euxc '
+    -v "$rpm":/pkg/biorouter.rpm:ro \
+    -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
       /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
-      Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
-      xvfb=$!
-      export DISPLAY=:99
-      HOME=/tmp/biorouter-home BIOROUTER_DISABLE_KEYRING=true \
-        /usr/bin/Biorouter --no-sandbox >/tmp/biorouter.log 2>&1 &
-      pid=$!
-      sleep 12
-      kill -0 "$pid"
-      kill "$pid"
-      if ! wait "$pid"; then
-        sed -n "1,160p" /tmp/biorouter.log >&2
-        exit 1
-      fi
-      kill "$xvfb" || true
-      wait "$xvfb" || true
+      timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/Biorouter
     '
-  log "Linux desktop RPM, CLI, daemon, Xvfb startup, and desktop shutdown passed"
+  log "Linux desktop RPM, CLI, daemon, first-launch prompt, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_cli_packages() {

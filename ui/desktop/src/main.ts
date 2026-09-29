@@ -1,7 +1,7 @@
 import { developmentProfileRoot } from './developmentProfile';
 import { createDevelopmentApprovalReader } from './developmentApprovalInput';
 import { createCrewDaemonTerminal } from './crewDaemonTerminal';
-import { promptNativeSecret } from './nativeSecretPrompt';
+import { closeNativeSecretPrompt, promptNativeSecret } from './nativeSecretPrompt';
 import { writeConversationId, writeSelectedText } from './utils/conversationClipboard';
 import type {
   MenuItemConstructorOptions,
@@ -121,6 +121,7 @@ import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log, { logStartupFailure } from './utils/logger';
+import { reportFatalStartupError } from './utils/fatalStartupError';
 import { ensureWinShims } from './utils/winShims';
 import { addRecentDir, loadRecentDirs } from './utils/recentDirs';
 import {
@@ -1390,11 +1391,22 @@ interface ChatWindowOptions {
 
 let readDevelopmentApprovalSecret: (() => Promise<string>) | undefined;
 
+// A secure prompt's dialog is its own process (zenity, osascript, PowerShell). Close it when the
+// app quits, so a SIGTERM during the prompt does not leave a dialog on screen with no app behind
+// it. `appWillQuit` also tells the fatal startup handler not to open an error dialog for a prompt
+// that was closed only because the app is quitting.
+let appWillQuit = false;
+app.on('will-quit', () => {
+  appWillQuit = true;
+  closeNativeSecretPrompt();
+});
+process.once('exit', closeNativeSecretPrompt);
+
 const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
   if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
   const secret = await promptNativeSecret(
     'Set approval secret for shared Biorouter daemon',
-    'Enter a secret you hold independently, using 32–4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
+    'Enter a secret you hold independently, using 32 to 4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
   );
   if (secret === undefined)
     throw new Error(
@@ -1427,7 +1439,7 @@ const requestExistingDaemonApprovalSecret = async (runtime: {
   if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
   const key = await promptNativeSecret(
     'Connect to existing Biorouter daemon',
-    `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+    `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32 to 4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
   );
   if (!key)
     throw new Error(
@@ -5037,7 +5049,7 @@ function registerCliInstallHandlers() {
           action === 'init' ? 'Initialize Crew encrypted vault' : 'Unlock Crew encrypted vault',
           action === 'init'
             ? 'Choose a new vault passphrase for this fresh Crew profile. This is separate from the daemon approval secret. Existing keyring identities are not migrated.'
-            : 'Enter this Crew vault’s passphrase. This is separate from the daemon approval secret.'
+            : "Enter this Crew vault's passphrase. This is separate from the daemon approval secret."
         );
         if (passphrase === undefined) return { cancelled: true };
         if (Buffer.byteLength(passphrase, 'utf8') > 1024)
@@ -6942,11 +6954,17 @@ app.whenReady().then(async () => {
     }
     await appMain();
   } catch (error) {
-    // Parentless macOS dialogs run a native modal loop, even with the Promise
-    // API. Complete the fatal log append before displaying the error.
-    logStartupFailure(error);
-    dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
-    app.quit();
+    // Logs synchronously before any dialog. On Linux the dialog is the Promise
+    // one, so SIGTERM still ends the process while it is open; macOS keeps the
+    // synchronous box (see utils/fatalStartupError.ts for both reasons).
+    await reportFatalStartupError(error, {
+      platform: process.platform,
+      logStartupFailure,
+      showErrorBox: (title, content) => dialog.showErrorBox(title, content),
+      showMessageBox: (options) => dialog.showMessageBox(options),
+      quit: () => app.quit(),
+      isQuitting: () => appWillQuit,
+    });
   }
 });
 
