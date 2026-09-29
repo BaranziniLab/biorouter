@@ -232,17 +232,17 @@ describe('PersonName, authority', () => {
   });
 
   /**
-   * Spec rule 5: at an authority point an agent is "{Display name
-   * (@username)}'s agent" — the owner's handle before "'s agent", not after it
-   * as a header draws. Drawn without visible parentheses, like every authority
-   * point.
+   * UXN-10: at an authority point an agent reads as a header's does, "{Display
+   * name}'s agent (@username)", never with the possessive on the username
+   * ("Alice Chen @alice's agent" as drawn). Drawn without visible parentheses,
+   * like every authority point.
    */
-  it('names the viewer’s agent in full at an authority point, handle before "\'s agent"', () => {
+  it('names the viewer’s agent in full at an authority point, as a header does', () => {
     const { container } = render(
       <PersonName person={ID.alice} dir={dir} context="authority" agent you />
     );
-    expect(drawnText(root(container))).toBe("Alice Chen @alice's agent");
-    expect(root(container).textContent).toBe("Alice Chen (@alice)'s agent");
+    expect(drawnText(root(container))).toBe("Alice Chen's agent @alice");
+    expect(root(container).textContent).toBe("Alice Chen's agent (@alice)");
     expect(root(container).textContent).toBe(agentLabel(ID.alice, 'authority', dir, { you: true }));
     expect(screen.getByText('@alice')).toHaveClass('text-supporting', 'text-text-muted');
   });
@@ -473,13 +473,13 @@ describe('the four contexts as strings', () => {
     expect(agentLabel(ID.bob, 'inline', dir)).toBe("Bob Lee's agent");
     expect(agentLabel(ID.bob, 'chip', dir)).toBe("Bob Lee's agent");
     expect(agentLabel(ID.bob, 'header', dir)).toBe("Bob Lee's agent (@bob)");
-    expect(agentLabel(ID.bob, 'authority', dir)).toBe("Bob Lee (@bob)'s agent");
+    expect(agentLabel(ID.bob, 'authority', dir)).toBe("Bob Lee's agent (@bob)");
     expect(agentLabel(ID.spark, 'inline', dir)).toBe("Sam Park (@spark)'s agent");
     expect(agentLabel(ID.carol, 'inline', dir)).toBe("@carol's agent");
     expect(agentLabel(ID.carol, 'authority', dir)).toBe("@carol's agent");
     expect(agentLabel(ID.alice, 'inline', dir, { you: true })).toBe('Your agent');
     expect(agentLabel(ID.alice, 'authority', dir, { you: true })).toBe(
-      "Alice Chen (@alice)'s agent"
+      "Alice Chen's agent (@alice)"
     );
     expect(agentLabel(ID.dan, 'inline', dir)).toBe("Dan Wu's agent · former member");
   });

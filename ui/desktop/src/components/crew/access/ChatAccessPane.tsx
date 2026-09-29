@@ -167,9 +167,8 @@ export function useKnownChatTitle(sessionId: string | null): string | null {
  * pane"; the pane's header, title and close control belong to the details pane).
  *
  * - **No grant:** the consent summary — which chat, what it will be able to read and where it will
- *   post, as whom — with Advanced "Also read", and **Allow “Plot review” to read and post in
- *   #general** (the pinned **Allow this conversation to read and post here** while the chat's title
- *   is unknown).
+ *   post, as whom — with Advanced "Also read", and the pinned **Allow**, whose name never changes
+ *   while it has focus (UXN-10).
  * - **After Allow:** "Connected.", a primary **Back to chat** and **Revoke access**. It does not
  *   navigate by itself (L10), so the person sees where Revoke lives.
  * - **Active:** the summary with its "Active · ends 4:40 PM" badge (plain "Active" only until the
@@ -746,21 +745,18 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         ) : null}
         {errorNote}
         <div className="flex justify-end">
-          {/* It names the chat, and a chat's title can be long: the label wraps rather than
-              overflowing the pane or hiding which chat is being let in. The button's base class is
-              `shrink-0`, so wrapping alone never narrowed it: its one-line width overflowed a
-              328px pane to the left and clipped "Allow" off the front (live QA round 2, Q2-06).
-              It takes the row's width instead, and its lines are centred. */}
+          {/* One word that stays put (UXN-10): naming the chat here wrapped it to two lines and
+              changed its name under keyboard focus when the chat's title arrived. The sentence
+              above, `willBeAble`, names the chat. */}
           <Button
             key="crew-chat-access-allow"
             ref={allowButton}
             onKeyDown={onAllowKeyDown}
             type="submit"
-            className="h-auto min-h-control-md w-full min-w-0 max-w-full whitespace-normal break-words py-1.5 text-center"
             disabled={controller.isPending('grant') || blockText !== null}
             aria-describedby={blockText ? blockId : undefined}
           >
-            {chat && channel ? accessCopy.allowChat(chat, here) : accessCopy.allow}
+            {accessCopy.allow}
           </Button>
         </div>
       </form>

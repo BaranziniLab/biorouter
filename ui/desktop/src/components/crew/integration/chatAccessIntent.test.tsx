@@ -218,11 +218,9 @@ describe('the one hop from a chat, whatever order Crew’s answers arrive in', (
     await act(async () => grants.open());
 
     const pane = await expectPaneOpenOnMethods();
-    expect(
-      await within(pane).findByRole('button', {
-        name: accessCopy.allowChat('Plot review', '#methods'),
-      })
-    ).toBeInTheDocument();
+    expect(await within(pane).findByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+    expect(pane).toHaveTextContent('“Plot review” will be able to');
+    expect(pane).toHaveTextContent('Read #methods');
     // Opening the consent granted nothing.
     expect(
       mocked.crewHttp.mock.calls.filter(([path]) => String(path).endsWith('/grant'))

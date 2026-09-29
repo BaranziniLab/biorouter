@@ -162,7 +162,7 @@ describe('chat access: grant', () => {
 
     expect(paneNode).toHaveTextContent('This chat will be able to');
     expect(paneNode).toHaveTextContent('Read #general');
-    expect(paneNode).toHaveTextContent('Post in #general as Alice Chen (@alice)');
+    expect(paneNode).toHaveTextContent("Post in #general as Alice Chen's agent (@alice)");
     expect(paneNode).toHaveTextContent(accessCopy.expiry);
     expect(within(paneNode).queryByRole('button', { name: accessCopy.revokeButton })).toBeNull();
 
@@ -285,7 +285,7 @@ describe('chat access: an active grant', () => {
     const paneNode = await openPaneFromNote(accessCopy.noteManage);
     expect(paneNode).toHaveTextContent('“Plot review” can');
     expect(paneNode).toHaveTextContent('Reads #general');
-    expect(paneNode).toHaveTextContent('Posts in #general as Alice Chen (@alice)');
+    expect(paneNode).toHaveTextContent("Posts in #general as Alice Chen's agent (@alice)");
     // One badge wording for an active grant (T-55): never "Expires …" here and "Active" there.
     expect(within(paneNode).getByText(/^Active · ends \S/)).toBeInTheDocument();
     expect(paneNode).not.toHaveTextContent(/Expires/);
@@ -342,9 +342,7 @@ describe('chat access: an active grant', () => {
     expect(
       await within(pane()).findByText(accessCopy.paneRevoked('Plot review'))
     ).toBeInTheDocument();
-    expect(
-      within(pane()).getByRole('button', { name: accessCopy.allowChat('Plot review', '#general') })
-    ).toBeInTheDocument();
+    expect(within(pane()).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
   });
 
   it('keeps access when the person chooses Keep access', async () => {
@@ -453,11 +451,7 @@ describe('chat access: other states of the note', () => {
     await waitFor(() => expect(note()).toHaveTextContent(accessCopy.noteExpired('Plot review')));
     const paneNode = await openPaneFromNote(accessCopy.noteGrantAgain);
     expect(paneNode).toHaveTextContent('Crew access for “Plot review” expired.');
-    expect(
-      within(paneNode).getByRole('button', {
-        name: 'Allow “Plot review” to read and post in #general',
-      })
-    ).toBeInTheDocument();
+    expect(within(paneNode).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
   });
 
   /**
@@ -491,7 +485,7 @@ describe('chat access: other states of the note', () => {
     expect(paneNode).toHaveTextContent('Crew access for “Plot review” was revoked.');
     expect(paneNode).not.toHaveTextContent('”’s');
     expect(paneNode).toHaveTextContent('Read #general');
-    expect(paneNode).toHaveTextContent('Post in #general as Alice Chen (@alice)');
+    expect(paneNode).toHaveTextContent("Post in #general as Alice Chen's agent (@alice)");
     expect(paneNode).not.toHaveTextContent('#methods');
   });
 
@@ -504,7 +498,7 @@ describe('chat access: other states of the note', () => {
     );
     expect(note()).toHaveTextContent('“Plot review” already uses #methods.');
     const paneNode = await openPaneFromNote(accessCopy.noteManage);
-    expect(paneNode).toHaveTextContent('Posts in #methods as Alice Chen (@alice)');
+    expect(paneNode).toHaveTextContent("Posts in #methods as Alice Chen's agent (@alice)");
     expect(within(paneNode).queryByRole('button', { name: accessCopy.allow })).toBeNull();
   });
 
@@ -548,25 +542,18 @@ describe('chat access: the consent names the chat before Allow', () => {
     forgetChatAccessIntents();
   });
 
-  it('names a chat this window knows, on the heading and on the Allow button', async () => {
+  it('names a chat this window knows in the sentence above Allow, never on the button', async () => {
     rememberChat(NAMED, 'Greeting exchange');
     installDaemon(mocks, { grants: () => [] });
     renderWithController(Layout, `/crew?sessionId=${NAMED}`);
 
     const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
     expect(paneNode).toHaveTextContent('“Greeting exchange” will be able to');
-    const allow = within(paneNode).getByRole('button', {
-      name: 'Allow “Greeting exchange” to read and post in #general',
-    });
-    expect(within(paneNode).queryByRole('button', { name: accessCopy.allow })).toBeNull();
     expect(paneNode).not.toHaveTextContent('conversation');
-    // A long title wraps inside the pane instead of overflowing it on one fixed-height line.
-    expect(allow).toHaveClass('whitespace-normal', 'h-auto');
-    expect(allow).not.toHaveClass('whitespace-nowrap', 'h-control-md');
-    // Q2-06: and the button takes the pane's width. The base class is `shrink-0`, so wrapping
-    // alone left it at its one-line width, overflowing to the left and clipping "Allow".
-    expect(allow).toHaveClass('w-full', 'max-w-full', 'min-w-0', 'text-center');
-    expect(allow).toHaveTextContent(/^Allow “Greeting exchange” to read and post in #general$/);
+    // UXN-10: one short word. Naming the chat there wrapped the button to two lines.
+    const allow = within(paneNode).getByRole('button', { name: accessCopy.allow });
+    expect(accessCopy.allow).toBe('Allow');
+    expect(allow).toHaveTextContent(/^Allow$/);
 
     fireEvent.click(allow);
     await waitFor(() => expect(callsTo(mocks, NAMED_GRANT, 'POST')).toHaveLength(1));
@@ -600,11 +587,32 @@ describe('chat access: the consent names the chat before Allow', () => {
       })
     );
     expect(await within(pane()).findByText('“Plot review” will be able to')).toBeInTheDocument();
-    expect(
-      within(pane()).getByRole('button', {
-        name: accessCopy.allowChat('Plot review', '#general'),
+    expect(within(pane()).getByRole('button', { name: accessCopy.allow })).toBeInTheDocument();
+  });
+
+  /**
+   * UXN-10: with keyboard focus on it, the button's name changed from "Allow this conversation…"
+   * to "Allow “Ready response request”…" when the chat's title arrived.
+   */
+  it('keeps the focused Allow button’s name when the chat’s title arrives', async () => {
+    installDaemon(mocks, { grants: () => [] });
+    renderWithController(Layout, '/crew?sessionId=chat-renamed');
+    const paneNode = await openPaneFromNote(accessCopy.noteReviewName);
+    const allow = within(paneNode).getByRole('button', { name: accessCopy.allow });
+    act(() => allow.focus());
+    act(() =>
+      announceSessionName({
+        sessionId: 'chat-renamed',
+        name: 'Ready response request',
+        userSetName: false,
+        origin: 'llm',
       })
+    );
+    expect(
+      await within(pane()).findByText('“Ready response request” will be able to')
     ).toBeInTheDocument();
+    expect(within(pane()).getByRole('button', { name: accessCopy.allow })).toBe(allow);
+    expect(allow).toHaveFocus();
   });
 });
 
@@ -645,9 +653,7 @@ describe('chat access: one hop from the ordinary chat', () => {
         accessCopy.paneRevoked('Plot review')
       )
     ).toBeInTheDocument();
-    const allow = within(pane()).getByRole('button', {
-      name: accessCopy.allowChat('Plot review', '#general'),
-    });
+    const allow = within(pane()).getByRole('button', { name: accessCopy.allow });
     // Opening the pane granted nothing.
     expect(callsTo(mocks, GRANT_PATH, 'POST')).toHaveLength(0);
 
@@ -775,11 +781,7 @@ describe('chat access: /crew from a chat with no grant', () => {
     expect(screen.queryByText('Connect “Greeting exchange” to #general?')).toBeNull();
     expect(callsTo(mocks, '/connections/conn-1/sessions/chat-new/grant', 'POST')).toHaveLength(0);
 
-    fireEvent.click(
-      within(paneNode).getByRole('button', {
-        name: accessCopy.allowChat('Greeting exchange', '#general'),
-      })
-    );
+    fireEvent.click(within(paneNode).getByRole('button', { name: accessCopy.allow }));
     await waitFor(() =>
       expect(callsTo(mocks, '/connections/conn-1/sessions/chat-new/grant', 'POST')).toHaveLength(1)
     );
@@ -804,25 +806,18 @@ describe('chat access: /crew from a chat with no grant', () => {
 
 /**
  * Q2-06 (live QA round 2): the Allow button overflowed the 328px pane to the left, and its label
- * read "w “Lab channel greeting” to read and post in #general". jsdom lays nothing out, so the
- * classes that keep it inside the pane are pinned at the source as well as on the rendered button.
+ * read "w “Lab channel greeting” to read and post in #general". UXN-10 took the chat and channel
+ * off the button altogether: its label is the one pinned word, so it neither wraps nor overflows,
+ * nor changes its name under focus. Pinned at the source as well as on the rendered button.
  */
 describe('chat access: the Allow button stays inside the pane', () => {
-  it('declares its full-width, wrapping, centred classes in the source', () => {
+  it('labels Allow with the one pinned word in the source', () => {
     const source = readFileSync(join(__dirname, 'ChatAccessPane.tsx'), 'utf8');
-    const allow = /<Button\s+key="crew-chat-access-allow"[\s\S]*?className="([^"]*)"/.exec(source);
+    const allow = /<Button\s+key="crew-chat-access-allow"[\s\S]*?>\s*([^<]*?)\s*<\/Button>/.exec(
+      source
+    );
     expect(allow, 'the Allow button').not.toBeNull();
-    const classes = (allow?.[1] ?? '').split(/\s+/);
-    for (const name of [
-      'w-full',
-      'max-w-full',
-      'min-w-0',
-      'whitespace-normal',
-      'text-center',
-      'h-auto',
-    ])
-      expect(classes, name).toContain(name);
-    expect(classes).not.toContain('whitespace-nowrap');
+    expect(allow?.[1]).toBe('{accessCopy.allow}');
   });
 });
 
@@ -863,7 +858,7 @@ describe('chat access: one hop lands on the grant’s channel', () => {
     const paneNode = await screen.findByTestId('pane');
     expect(await within(paneNode).findByText('“Plot review” can')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('channel-ready')).toHaveTextContent('methods'));
-    expect(paneNode).toHaveTextContent('Posts in #methods as Alice Chen (@alice)');
+    expect(paneNode).toHaveTextContent("Posts in #methods as Alice Chen's agent (@alice)");
     // The pane says it (Q4-14): the note is not drawn beside it.
     expect(screen.queryByTestId('crew-chat-connect-note')).toBeNull();
     // Settled: the pane stays open.
@@ -881,7 +876,7 @@ describe('chat access: one hop lands on the grant’s channel', () => {
     installDaemon(mocks, { grants: () => [onMethods({ expired: true })] });
     arrive();
     const allow = await within(await screen.findByTestId('pane')).findByRole('button', {
-      name: accessCopy.allowChat('Plot review', '#methods'),
+      name: accessCopy.allow,
     });
     expect(screen.getByTestId('channel-ready')).toHaveTextContent('methods');
     expect(callsTo(mocks, GRANT_PATH, 'POST')).toHaveLength(0);
@@ -1021,9 +1016,7 @@ describe('chat access: focus when the consent opens', () => {
     installDaemon(mocks, { grants: () => [] });
     renderWithController(PaneLayout, '/crew?sessionId=chat-new');
 
-    const allow = await screen.findByRole('button', {
-      name: accessCopy.allowChat('Greeting exchange', '#general'),
-    });
+    const allow = await screen.findByRole('button', { name: accessCopy.allow });
     await waitFor(() => expect(allow).toHaveFocus());
     expect(heading()).not.toHaveFocus();
     expect(heading()).toHaveTextContent(paneCopy.chatAccessTitle);
@@ -1240,8 +1233,9 @@ describe('chat access: the chat’s model and workspace, before Allow', () => {
     expect(pane()).toHaveTextContent(
       'The first access fixes this chat’s workspace, channel and model.'
     );
-    // Posts appear as the agent's, never as the person's own.
-    expect(pane()).toHaveTextContent("Post in #general as Alice Chen (@alice)'s agent");
+    // Posts appear as the agent's, never as the person's own, named as the timeline names it
+    // (UXN-10): "Alice Chen's agent @alice" drawn, never the possessive on the username.
+    expect(pane()).toHaveTextContent("Post in #general as Alice Chen's agent (@alice)");
     expect(allow()).toBeEnabled();
   });
 

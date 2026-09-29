@@ -3,10 +3,9 @@
  * Agents rows of "Sidebar and menus", and "Error strings").
  *
  * Tests import these rather than retyping them. `Review access and posting permission` and
- * `Allow this conversation to read and post here` are pinned: a regression test and the acceptance
- * evidence find the controls by them, so change them only together with those tests. The second is
- * the Allow button's name only while the chat's title is unknown; a chat this window knows by name
- * is named on the button itself (`allowChat`).
+ * `Allow` are pinned: a regression test and the acceptance evidence find the controls by them, so
+ * change them only together with those tests. The Allow button's name never changes: the chat it
+ * lets in is named by the sentence above it, `willBeAble` (UXN-10).
  *
  * A `chat` argument is a conversation's title, already fit to display, or `null` when the daemon
  * does not know it; every sentence that names a chat has a form for that case.
@@ -86,11 +85,12 @@ export const accessCopy = {
     count === 0
       ? `Reads only ${channel}`
       : `Also reads ${count} ${count === 1 ? 'channel' : 'channels'}`,
-  /** Pinned. */
-  allow: 'Allow this conversation to read and post here',
-  /** The Allow button when the chat's title is known: the person sees which chat they let in. */
-  allowChat: (chat: string, channel: string) =>
-    `Allow ${quoted(chat)} to read and post in ${channel}`,
+  /**
+   * Pinned. One short word that stays put (UXN-10): the button used to name the chat and channel,
+   * wrapped to two lines, and changed its name under keyboard focus when the chat's title arrived.
+   * The consent above it names both.
+   */
+  allow: 'Allow',
   connected: 'Connected.',
   backToChat: 'Back to chat',
   openChat: 'Open chat',
