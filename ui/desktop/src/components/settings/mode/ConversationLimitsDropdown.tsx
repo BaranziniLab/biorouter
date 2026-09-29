@@ -70,6 +70,8 @@ export const ConversationLimitsDropdown = ({
   const ownSaves = useRef<number[]>([]);
   const onMaxTurnsChangeRef = useRef(onMaxTurnsChange);
   onMaxTurnsChangeRef.current = onMaxTurnsChange;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
 
   const flushSave = useCallback(() => {
     if (saveTimer.current !== null) {
@@ -79,7 +81,9 @@ export const ConversationLimitsDropdown = ({
     const value = pendingSave.current;
     pendingSave.current = null;
     if (value !== null) {
-      ownSaves.current.push(value);
+      // A save of the value already shown changes nothing, so it never comes
+      // back as a change; recorded, it would swallow a later real one.
+      if (value !== shownRef.current) ownSaves.current.push(value);
       onMaxTurnsChangeRef.current(value);
     }
   }, []);

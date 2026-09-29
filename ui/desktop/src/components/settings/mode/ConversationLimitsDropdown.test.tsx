@@ -149,6 +149,25 @@ describe('Max turns', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Enter a whole number of at least 1.');
   });
 
+  it('a save of the value already shown does not hide a later change from elsewhere', async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ConversationLimitsDropdown maxTurns={40} onMaxTurnsChange={onChange} />
+    );
+    const field = openLimits();
+    // Typed away and back inside one pause: one save, of the value shown.
+    fireEvent.change(field, { target: { value: '4' } });
+    fireEvent.change(field, { target: { value: '40' } });
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(40));
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    // Another window moves it to 100 and back to 40: both are shown.
+    rerender(<ConversationLimitsDropdown maxTurns={100} onMaxTurnsChange={onChange} />);
+    expect(field).toHaveValue(100);
+    rerender(<ConversationLimitsDropdown maxTurns={40} onMaxTurnsChange={onChange} />);
+    expect(field).toHaveValue(40);
+  });
+
   it('saves a valid entry through the config', async () => {
     config.read.mockImplementation(async (key: string) =>
       key === 'BIOROUTER_MAX_TURNS' ? 30 : 'auto'
