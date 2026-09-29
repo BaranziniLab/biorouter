@@ -197,9 +197,10 @@ const FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES: [&str; 2] = [
     "retained audit journal is nearly full",
 ];
 /// [`STORAGE_FULL`] and [`FULL_BUT_HOST_CAN_ADMINISTER`] as the host reads them (MSG2-N6): the
-/// host is the one to ask, so they say what the host can still do.
-const STORAGE_FULL_FOR_HOST: &str = "This workspace has grown past the size Crew supports and cannot take more changes. To keep posting, start a new workspace.";
-const FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST: &str = "This workspace is full. You can still remove members and change its privacy. To keep posting, start a new workspace.";
+/// host is the one to ask, so they say what the host can still do. The desktop's
+/// `refusalCopy.storageFullHost` and `refusalCopy.fullButHostCanAdministerHost`, byte for byte.
+const STORAGE_FULL_FOR_HOST: &str = "This workspace has grown past the size Crew supports and cannot take more changes. To keep working together, start a new workspace.";
+const FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST: &str = "This workspace is full. Reading still works, and you can still remove members and change its privacy. To keep posting, start a new workspace.";
 
 /// Which "this workspace is full" a `quota_exceeded` refusal is, if it is one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4936,6 +4937,9 @@ mod tests {
             DEVICE_CONFLICT,
             IDENTITY_MISMATCH,
             STORAGE_FULL,
+            STORAGE_FULL_FOR_HOST,
+            FULL_BUT_HOST_CAN_ADMINISTER,
+            FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST,
             TOO_MANY_ATTEMPTS,
             IDENTITY_CONFLICT_UNNAMED,
         ] {

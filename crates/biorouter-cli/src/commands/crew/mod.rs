@@ -8794,11 +8794,11 @@ mod tests {
         for (text, host_says) in [
             (
                 "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported",
-                "This workspace is full. You can still remove members and change its privacy. To keep posting, start a new workspace.",
+                "This workspace is full. Reading still works, and you can still remove members and change its privacy. To keep posting, start a new workspace.",
             ),
             (
                 "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported",
-                "This workspace has grown past the size Crew supports and cannot take more changes. To keep posting, start a new workspace.",
+                "This workspace has grown past the size Crew supports and cannot take more changes. To keep working together, start a new workspace.",
             ),
         ] {
             // Alice hosts lab.
