@@ -77,7 +77,7 @@ impl CrewClient {
         }
     }
     fn tools() -> Vec<Tool> {
-        vec![Tool::new("connections", "List the saved connection, destination_channel_id and authorized source_channel_ids admitted to this conversation. Connection details outside your grant are not disclosed.",serde_json::from_value::<JsonObject>(json!({"type":"object","properties":{},"additionalProperties":false})).unwrap()),Tool::new("request","Read channel history, search granted channels, check updates, read an attachment, or post an owned-agent update using the same saved Crew connection. A human must grant the task and destination first. context.manifest with empty params retrieves recent selected-channel context (up to 200 messages); initial history covers only the destination. messages.history and messages.search read one channel per call, named by channel_id from the authorized source_channel_ids in crew__connections (omit it when only one channel is granted); messages.search also requires query. A message with by_agent true was written by that person's agent. Messages derived from channels outside this chat's access are withheld, so counts can be lower than what people see. Omit connection_id to use this conversation's bound connection. Remote paths are relative to the approved SSH directory, never the local task directory. Example: {\"method\":\"remote.read\",\"params\":{\"path\":\"crew-task.csv\"}}. Failed tool calls provide no file contents.",serde_json::from_value::<JsonObject>(json!({"type":"object","required":["method"],"properties":{"connection_id":{"type":"string","description":"Optional exact ID from crew__connections; omit to use the already granted connection. Never invent an ID."},"method":{"type":"string","enum":["messages.history","messages.search","context.manifest","blob.read","run.project","remote.list","remote.read","remote.write","remote.hash","remote.execute","remote.job_status","remote.cancel","remote.attach"]},"params":{"type":"object","properties":{"path":{"type":"string","description":"Path relative to approved remote directory"},"argv":{"type":"array","items":{"type":"string"},"description":"Direct executable and arguments, e.g. [python3,-c,script]; no shell/subprocesses"},"idempotency_key":{"type":"string","description":"Stable unique request key for execution or attachment; retain on uncertain retry"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":60},"job_id":{"type":"string"},"text":{"type":"string","description":"UTF-8 file contents for remote.write"},"data_hex":{"type":"string"},"channel_id":{"type":"string","description":"The channel messages.history or messages.search reads: one of source_channel_ids from crew__connections. Omit it when the grant has only one channel, and that one is read."},"query":{"type":"string"},"after":{"type":"string","description":"Opaque sequence token from a visible message in this channel; never a numeric offset"},"before":{"type":"string","description":"Opaque sequence token for exclusive older-history paging"},"limit":{"type":"integer"},"body":{"type":"string"},"status":{"type":"string","enum":["progress"]},"blob_id":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Byte offset for blob.read; start at 0 and continue from next_offset."},"media_type":{"type":"string"}}}},"additionalProperties":false})).unwrap())]
+        vec![Tool::new("connections", "List the saved connection, destination_channel_id and authorized source_channel_ids admitted to this conversation. Connection details outside your grant are not disclosed.",serde_json::from_value::<JsonObject>(json!({"type":"object","properties":{},"additionalProperties":false})).unwrap()),Tool::new("request","Read channel history, search granted channels, check updates, read an attachment, or post an owned-agent update using the same saved Crew connection. A human must grant the task and destination first. context.manifest with empty params retrieves recent selected-channel context (up to 200 messages); initial history covers only the destination. messages.history and messages.search read one channel per call, named by channel_id from the authorized source_channel_ids in crew__connections (omit it when only one channel is granted); messages.search also requires query. A message with by_agent true was written by that person's agent. Messages derived from channels outside this chat's access are withheld, so counts can be lower than what people see. Omit connection_id to use this conversation's bound connection. Remote paths are relative to the approved SSH directory, never the local task directory. Example: {\"method\":\"remote.read\",\"params\":{\"path\":\"crew-task.csv\"}}. Failed tool calls provide no file contents.",serde_json::from_value::<JsonObject>(json!({"type":"object","required":["method"],"properties":{"connection_id":{"type":"string","description":"Optional exact ID from crew__connections; omit to use the already granted connection. Never invent an ID."},"method":{"type":"string","enum":["messages.history","messages.search","context.manifest","blob.read","run.project","remote.list","remote.read","remote.write","remote.hash","remote.execute","remote.job_status","remote.cancel","remote.attach"]},"params":{"type":"object","properties":{"path":{"type":"string","description":"Path relative to approved remote directory"},"argv":{"type":"array","items":{"type":"string"},"description":"Direct executable and arguments, e.g. [python3,-c,script]. remote.execute runs it confined to the work folder: no shell, no network, it cannot start other programs, and it cannot read /etc or look up users, so cluster tools such as sbatch, squeue, sinfo and scontrol will not run. If one is needed, tell the person instead of retrying."},"idempotency_key":{"type":"string","description":"Stable unique request key for execution or attachment; retain on uncertain retry"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":60},"job_id":{"type":"string"},"text":{"type":"string","description":"UTF-8 file contents for remote.write"},"data_hex":{"type":"string"},"channel_id":{"type":"string","description":"The channel messages.history or messages.search reads: one of source_channel_ids from crew__connections. Omit it when the grant has only one channel, and that one is read."},"query":{"type":"string"},"after":{"type":"string","description":"Opaque sequence token from a visible message in this channel; never a numeric offset"},"before":{"type":"string","description":"Opaque sequence token for exclusive older-history paging"},"limit":{"type":"integer"},"body":{"type":"string"},"status":{"type":"string","enum":["progress"]},"blob_id":{"type":"string"},"offset":{"type":"integer","minimum":0,"description":"Byte offset for blob.read; start at 0 and continue from next_offset."},"media_type":{"type":"string"}}}},"additionalProperties":false})).unwrap())]
     }
 }
 #[async_trait::async_trait]
@@ -312,6 +312,31 @@ mod tests {
             description.contains("Omit it when the grant has only one channel"),
             "{description}"
         );
+    }
+
+    /// T3-BE-9: the schema says what a work-folder command cannot do, so the model does not
+    /// spend a string of calls finding out that cluster tools will not run there.
+    #[test]
+    fn argv_says_what_the_confined_command_cannot_do() {
+        let tools = CrewClient::tools();
+        let request = tools
+            .iter()
+            .find(|tool| tool.name == "request")
+            .expect("the request tool");
+        let argv = request.input_schema["properties"]["params"]["properties"]["argv"]
+            ["description"]
+            .as_str()
+            .expect("described");
+        for limit in [
+            "no network",
+            "cannot start other programs",
+            "cannot read /etc or look up users",
+            "sbatch",
+            "squeue",
+            "tell the person",
+        ] {
+            assert!(argv.contains(limit), "{limit}: {argv}");
+        }
     }
 
     /// Why the model cannot revoke: no method it may send grants, revokes or cancels a run.
