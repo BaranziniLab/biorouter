@@ -151,6 +151,7 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
     channelId,
     expectedMode,
     onReady: addAttachment,
+    request: controller.request,
   });
   const [dropHint, setDropHint] = useState('');
   // Several files dropped at once (DW-18): the note naming the one Crew took, until closed. Unlike

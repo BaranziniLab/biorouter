@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { beginTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from '../crewTransfers';
+import { resetBetweenTests } from '../state/draftStash';
+import type { CrewController } from '../state/types';
+import { checkedUpload } from './checkedUpload';
 import { withFileWindow } from './fileWindows';
 import type { CrewShareDroppedFileResult } from '../../../utils/crewSharePathBridge';
 import { filesCopy } from './copy';
@@ -17,7 +20,32 @@ export interface CrewUploadOptions {
   expectedMode: 'private' | 'public' | undefined;
   /** A watched upload finished: add it to the draft. */
   onReady(file: { id: string; name: string }): void;
+  /**
+   * The broker, to re-read the shared file of an upload this window did not start before it joins
+   * the draft ({@link checkedUpload}). Without it such an upload is shown but never added.
+   */
+  request?: CrewController['request'];
 }
+
+/**
+ * Uploads a composer let go of (`forget()`): the view they were started under is gone, so none of
+ * them is taken into a draft again in this window. Bounded; the oldest go first.
+ */
+const releasedUploads = new Set<string>();
+const RELEASED_UPLOADS_MAX = 500;
+
+function releaseUploads(ids: Iterable<string>): void {
+  for (const id of ids) {
+    releasedUploads.delete(id);
+    releasedUploads.add(id);
+  }
+  for (const id of releasedUploads) {
+    if (releasedUploads.size <= RELEASED_UPLOADS_MAX) break;
+    releasedUploads.delete(id);
+  }
+}
+
+resetBetweenTests(() => releasedUploads.clear());
 
 /** How the native share confirmation names where a dropped file goes. Display text only. */
 export interface CrewShareNames {
@@ -65,9 +93,10 @@ export interface CrewUpload {
   resume(transfer: CrewTransfer): Promise<void>;
   /**
    * Stop watching: an upload still on its way is no longer added to the draft when it
-   * finishes (it waits under "Uploaded, not sent" instead), an answer still in flight is
-   * ignored, and the failure on screen is cleared, since it describes the view that was
-   * reset. For a reset that cleared the draft's protected state, or a new privacy scope.
+   * finishes (it waits under "Uploaded, not sent" instead), nor taken back later as a restored
+   * chip, an answer still in flight is ignored, and the failure on screen is cleared, since it
+   * describes the view that was reset. For a reset that cleared the draft's protected state, or a
+   * new privacy scope.
    */
   forget(): void;
 }
@@ -145,8 +174,19 @@ export function useCrewUpload({
   channelId,
   expectedMode,
   onReady,
+  request,
 }: CrewUploadOptions): CrewUpload {
   const { transfers, refresh } = useCrewTransfers(connectionId);
+  const latestTransfers = useRef(transfers);
+  latestTransfers.current = transfers;
+  const ask = useRef(request);
+  ask.current = request;
+  /**
+   * Uploads watched here that this window did not start: their chips came back after an app
+   * relaunch (RES2-N9), or the command line started them, and each is re-read before it joins
+   * the draft.
+   */
+  const adopted = useRef<Set<string>>(new Set());
   const [error, setError] = useState('');
   const [choosing, setChoosing] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -164,6 +204,7 @@ export function useCrewUpload({
     setWatched(new Set());
     setError('');
     delivered.current = new Set();
+    adopted.current = new Set();
     return () => {
       generation.current += 1;
     };
@@ -187,6 +228,28 @@ export function useCrewUpload({
     [transfers, connectionId, channelId]
   );
 
+  // A chip in the composer is part of the message (RES2-N9): an upload to this channel still on
+  // its way that no watch here started (the app relaunched mid-upload, and the chip came back)
+  // joins the draft when it finishes, as one this composer started does. Only in a verified view,
+  // never one this window let go of (`forget()`), and only once its file is re-read.
+  useEffect(() => {
+    if (!ask.current || !expectedMode) return;
+    const restored = channelUploads.filter(
+      (item) =>
+        isTransferActive(item) &&
+        !watched.has(item.id) &&
+        !delivered.current.has(item.id) &&
+        !releasedUploads.has(item.id)
+    );
+    if (restored.length === 0) return;
+    for (const item of restored) adopted.current.add(item.id);
+    setWatched((current) => {
+      const next = new Set(current);
+      for (const item of restored) next.add(item.id);
+      return next;
+    });
+  }, [channelUploads, watched, expectedMode]);
+
   useEffect(() => {
     const finished = channelUploads.filter(
       (item) =>
@@ -202,8 +265,24 @@ export function useCrewUpload({
       for (const item of finished) next.delete(item.id);
       return next;
     });
-    for (const item of finished) ready.current({ id: item.blob_id as string, name: item.name });
-  }, [channelUploads, watched]);
+    for (const item of finished) {
+      if (!adopted.current.delete(item.id)) {
+        ready.current({ id: item.blob_id as string, name: item.name });
+        continue;
+      }
+      const broker = ask.current;
+      if (!broker) continue;
+      const current = generation.current;
+      void checkedUpload(broker, item, channelId).then(
+        (file) => {
+          if (current === generation.current) ready.current(file);
+        },
+        (failure: unknown) => {
+          if (current === generation.current) setError(message(failure, filesCopy.transferFailed));
+        }
+      );
+    }
+  }, [channelUploads, watched, channelId]);
 
   const upload = useCallback(async () => {
     if (choosingNow.current) return;
@@ -314,6 +393,10 @@ export function useCrewUpload({
   const dismissError = useCallback(() => setError(''), []);
   const forget = useCallback(() => {
     generation.current += 1;
+    // Every upload this connection has now was started under the view that is gone: none of them
+    // is taken into a draft again, here or in another channel of it.
+    releaseUploads(latestTransfers.current.map((item) => item.id));
+    adopted.current = new Set();
     setWatched(new Set());
     setError('');
   }, []);

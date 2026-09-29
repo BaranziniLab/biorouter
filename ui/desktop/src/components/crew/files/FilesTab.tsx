@@ -8,8 +8,9 @@ import { PersonName, personLabel, usePeopleDirectory, type PeopleDirectory } fro
 import { useCrew } from '../state/CrewControllerContext';
 import { usePendingPostOf } from '../timeline/pendingPost';
 import { isoTime, messageTime } from '../timeline/timelineTime';
-import { AttachmentCard, type CrewBlob } from './AttachmentCard';
+import { AttachmentCard } from './AttachmentCard';
 import { postedLabel } from './attachmentIndex';
+import { checkedUpload } from './checkedUpload';
 import { filesCopy } from './copy';
 import { visibleFileText } from './fileName';
 import { MoreActionsTrigger } from './GlyphButton';
@@ -161,15 +162,8 @@ export function FilesTab() {
     setAttaching(transfer.id);
     setError('');
     try {
-      const blob = await request<CrewBlob>('blob.status', { blob_id: transfer.blob_id });
-      if (
-        !blob.complete ||
-        blob.channel_id !== channelId ||
-        blob.sha256 !== transfer.sha256 ||
-        blob.size !== transfer.size
-      )
-        throw new Error(filesCopy.attachMismatch);
-      if (started === scope.current) addAttachment({ id: blob.id, name: blob.name });
+      const file = await checkedUpload(request, transfer, channelId);
+      if (started === scope.current) addAttachment(file);
     } catch (failure) {
       if (started === scope.current) setError(failureText(failure, filesCopy.transferFailed));
     } finally {

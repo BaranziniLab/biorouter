@@ -150,6 +150,133 @@ describe('Crew upload privacy handoff, from the Attach menu', () => {
   });
 });
 
+/**
+ * RES2-N9: after an app relaunch mid-upload the composer chip came back with its progress, and on
+ * completion it left the composer: the file sat under Files › "Uploaded, not sent" instead of in
+ * the draft. A chip in the composer is part of the message.
+ */
+describe('an upload whose chip came back after a relaunch', () => {
+  const running = (id: string) => ({
+    ...completedUpload(id, '', 'plate.h5ad'),
+    blob_id: null,
+    offset: 12,
+    state: 'uploading',
+  });
+  const blob = (overrides: Record<string, unknown> = {}) => ({
+    id: 'blob-9',
+    channel_id: 'channel-1',
+    name: 'plate.h5ad',
+    size: 103,
+    sha256: 'a'.repeat(64),
+    complete: true,
+    media_type: 'application/octet-stream',
+    ...overrides,
+  });
+  beforeEach(() => {
+    mocks.beginTransfer.mockReset();
+    mocks.listTransfers.mockReset();
+  });
+
+  async function finish(transfers: { current: unknown[] }, id: string) {
+    transfers.current = [completedUpload(id, 'blob-9', 'plate.h5ad')];
+    await act(async () => {
+      const { refreshCrewTransfers } = await import('./useCrewTransfers');
+      await refreshCrewTransfers('connection-1');
+    });
+  }
+
+  it('joins the draft when it finishes, once its shared file is re-read', async () => {
+    const addAttachment = vi.fn();
+    const request = vi.fn(async () => blob());
+    const transfers = { current: [running('restored')] as unknown[] };
+    mocks.listTransfers.mockImplementation(async () => transfers.current);
+    renderComposer({ addAttachment, request: request as CrewController['request'] });
+    // The chip came back.
+    expect(await screen.findByText('plate.h5ad')).toBeInTheDocument();
+
+    await finish(transfers, 'restored');
+    await waitFor(() =>
+      expect(addAttachment).toHaveBeenCalledWith({ id: 'blob-9', name: 'plate.h5ad' })
+    );
+    expect(request).toHaveBeenCalledWith('blob.status', { blob_id: 'blob-9' });
+    expect(addAttachment).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps it out of the draft when its shared file no longer matches', async () => {
+    const addAttachment = vi.fn();
+    const request = vi.fn(async () => blob({ sha256: 'c'.repeat(64) }));
+    const transfers = { current: [running('restored')] as unknown[] };
+    mocks.listTransfers.mockImplementation(async () => transfers.current);
+    renderComposer({ addAttachment, request: request as CrewController['request'] });
+    expect(await screen.findByText('plate.h5ad')).toBeInTheDocument();
+
+    await finish(transfers, 'restored');
+    expect(await screen.findByRole('alert')).toHaveTextContent(filesCopy.attachMismatch);
+    expect(addAttachment).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The composer's rule for an upload it started holds for one that came back too: once the
+   * verified privacy scope changes under it, it never lands in the draft, even after a remount.
+   */
+  it('lets it go for good when the privacy scope changes under it', async () => {
+    const addAttachment = vi.fn();
+    const request = vi.fn(async () => blob());
+    const transfers = { current: [running('restored')] as unknown[] };
+    mocks.listTransfers.mockImplementation(async () => transfers.current);
+    const controller = crewTestController({
+      addAttachment,
+      request: request as CrewController['request'],
+    });
+    const view = render(
+      <CrewTestProvider controller={controller}>
+        <Composer />
+      </CrewTestProvider>
+    );
+    expect(await screen.findByText('plate.h5ad')).toBeInTheDocument();
+    const moved = crewTestController({
+      addAttachment,
+      request: request as CrewController['request'],
+      observedPrivacy: { ...controller.observedPrivacy!, policyEpoch: 2 },
+    });
+    view.rerender(
+      <CrewTestProvider controller={moved}>
+        <Composer />
+      </CrewTestProvider>
+    );
+    view.unmount();
+    render(
+      <CrewTestProvider controller={moved}>
+        <Composer />
+      </CrewTestProvider>
+    );
+    expect(await screen.findByText('plate.h5ad')).toBeInTheDocument();
+
+    await finish(transfers, 'restored');
+    await act(async () => undefined);
+    expect(request).not.toHaveBeenCalled();
+    expect(addAttachment).not.toHaveBeenCalled();
+  });
+
+  it('never takes one into the draft while the view is not verified', async () => {
+    const addAttachment = vi.fn();
+    const request = vi.fn(async () => blob());
+    const transfers = { current: [running('restored')] as unknown[] };
+    mocks.listTransfers.mockImplementation(async () => transfers.current);
+    renderComposer({
+      ...privacyUnverified,
+      addAttachment,
+      request: request as CrewController['request'],
+    });
+    expect(await screen.findByText('plate.h5ad')).toBeInTheDocument();
+
+    await finish(transfers, 'restored');
+    await act(async () => undefined);
+    expect(request).not.toHaveBeenCalled();
+    expect(addAttachment).not.toHaveBeenCalled();
+  });
+});
+
 describe('Crew files dropped or pasted', () => {
   beforeEach(() => {
     mocks.beginTransfer.mockReset();
