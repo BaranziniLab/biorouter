@@ -1549,6 +1549,128 @@ test('app-sentences: the download refusal for a path through a link is quoted as
   );
 });
 
+// The drop flow's fix as the T3-DOC-6 round-2 review asks for it: a code of its own for a name
+// with hidden characters, worded from the name this process read, as the daemon words it.
+const DAEMON_INVISIBLE =
+  '“{name}” has an invisible or formatting character in its name. Rename the file, then share it again.';
+const wordInvisible =
+  (sentence = DAEMON_INVISIBLE) =>
+  (text) =>
+    [
+      swap(
+        "export const CREW_FOLDER_SHARED = 'crew_folder_shared';",
+        "export const CREW_FOLDER_SHARED = 'crew_folder_shared';\n" +
+          "export const CREW_FILE_NAME_INVISIBLE = 'crew_file_name_invisible';"
+      ),
+      swap(
+        '    case CREW_FOLDER_SHARED:\n',
+        '    case CREW_FILE_NAME_INVISIBLE:\n' +
+          "      return crewShareCopy.nameInvisible(visibleText(name) || 'This file');\n" +
+          '    case CREW_FOLDER_SHARED:\n'
+      ),
+      swap(
+        '  daemonRefused: (name: string) =>',
+        `  nameInvisible: (name: string) =>\n    \`${sentence.replace('{name}', '$' + '{name}')}\`,\n` +
+          '  daemonRefused: (name: string) =>'
+      ),
+    ].reduce((source, edit) => edit(source), text);
+/** The files page's note that a dragged file gets the general note instead. */
+const withoutDragNote = swap(
+  ' A file you drag or paste in gets the general note "Crew couldn\'t take …" instead; rename it the same way.',
+  ''
+);
+
+test('drop-refusals: the files page says what a dropped file with a hidden-character name shows (T3-DOC-6)', () => {
+  // The note taken out while a drop still gets the general note.
+  assertCaught(
+    { [MESSAGES]: withoutDragNote },
+    'drop-refusals',
+    /whose crewFileRefusal does not word crew_file_name_invisible; word the code there/
+  );
+  // The drop flow words the code, and the page still sends a drag to the general note, in
+  // quotes or in words.
+  assertCaught(
+    { [SHARE_PATH]: wordInvisible() },
+    'drop-refusals',
+    /now words crew_file_name_invisible; delete that sentence/
+  );
+  assertCaught(
+    {
+      [SHARE_PATH]: wordInvisible(),
+      [MESSAGES]: swap(
+        'gets the general note "Crew couldn\'t take …" instead',
+        'gets a general note instead'
+      ),
+    },
+    'drop-refusals',
+    /delete that sentence/
+  );
+  // A drop that fell back to the daemon's own sentence would show it for every code.
+  assertCaught(
+    {
+      [SHARE_PATH]: swap(
+        '}) ?? crewShareCopy.daemonRefused(shownName)',
+        '}) ?? daemonRefusalSentence(answer.body) ?? crewShareCopy.daemonRefused(shownName)'
+      ),
+    },
+    'drop-refusals',
+    /delete that sentence/
+  );
+  // The reader fails rather than passing when the code it reads has moved.
+  assertCaught(
+    { [SHARE_PATH]: (text) => text.replaceAll('crewFileRefusal', 'crewRefusal') },
+    'drop-refusals',
+    /could not read the codes crewFileRefusal words/
+  );
+  assertCaught(
+    { [SHARE_PATH]: (text) => text.replaceAll("Crew couldn't take", 'Crew could not take') },
+    'drop-refusals',
+    /could not read the general note/
+  );
+  assertCaught(
+    {
+      'crates/biorouter-server/src/crew/local_files.rs': (text) =>
+        text.replace('pub const FILE_NAME_INVISIBLE_CODE', 'pub const NAME_INVISIBLE_CODE'),
+    },
+    'drop-refusals',
+    /has no FILE_NAME_INVISIBLE_CODE/
+  );
+  // The fix and the page together: the page quotes the one sentence, and nothing else fails.
+  const fixedDrop = overlay({ [SHARE_PATH]: wordInvisible(), [MESSAGES]: withoutDragNote }, fixed);
+  assert.deepEqual(checkCrewManual(fixedDrop), checkCrewManual(fixed));
+  // The drop flow's copy in other words than the daemon's: the page quotes what a drop gets, so
+  // the two cannot drift apart with the page quoting only the daemon's.
+  const otherWords = '“{name}” has an invisible character. Rename it and share it again.';
+  assertCaught(
+    { [SHARE_PATH]: wordInvisible(otherWords), [MESSAGES]: withoutDragNote },
+    'drop-refusals',
+    /row does not quote, to the end of a sentence, what a file dropped in gets from crewFileRefusal .*: "“\{name\}” has an invisible character\. Rename it and share it again\."/
+  );
+  // With the daemon's opening words and another ending, the hidden-character family holds both.
+  const otherEnding =
+    '“{name}” has an invisible or formatting character in its name. Rename it first.';
+  for (const rule of ['drop-refusals', 'app-sentences']) {
+    assertCaught(
+      { [SHARE_PATH]: wordInvisible(otherEnding), [MESSAGES]: withoutDragNote },
+      rule,
+      /Rename it first\."/
+    );
+  }
+  // An arm the reader cannot follow fails rather than passing.
+  assertCaught(
+    {
+      [SHARE_PATH]: (text) =>
+        wordInvisible()(text).replace(
+          "return crewShareCopy.nameInvisible(visibleText(name) || 'This file');",
+          'return invisibleNameSentence(name);'
+        ),
+      [MESSAGES]: withoutDragNote,
+    },
+    'drop-refusals',
+    /could not read the sentence crewFileRefusal gives crew_file_name_invisible/
+  );
+});
+
 test('dashes: an em or en dash anywhere in docs/crew is refused', () => {
   assertCaught(
     { 'docs/crew/design/naming-design.md': (text) => `${text}\nA range, 1\u201364.\n` },

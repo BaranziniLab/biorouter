@@ -106,6 +106,10 @@
 //   * `work-folder`: while the server's sandbox gives a work-folder command no
 //     network and no other processes, the agents and administration pages say
 //     so, and that cluster tools such as sbatch do not run (T3-DOC-5).
+//   * `drop-refusals`: the files page says what a file dropped or pasted in
+//     shows for a name with hidden characters as the drop flow words it: the
+//     daemon's sentence once `crewFileRefusal` words the code, the general
+//     note until then, and never the other one (T3-DOC-6, round 2).
 //
 // Every rule reads the code it depends on, and a rule whose anchor in the code
 // is gone FAILS rather than passing vacuously: the fix is then to re-read the
@@ -1066,15 +1070,17 @@ export function checkCrewManual(tree = repoTree()) {
       requiredWhole: true,
     },
     {
-      name: `the hidden-character refusal in ${LOCAL_FILES_RS}`,
+      // The daemon's sentence, and the drop flow's copy of it once `crewFileRefusal` words the
+      // code: the page quotes each whole, so the two can only differ by the page quoting both.
+      name: `the hidden-character refusal in ${LOCAL_FILES_RS} and ${SHARE_PATH}`,
       opens: /^"[^"]*" has an invisible or formatting character\b/,
       templates: opening(
-        rustLiterals(localFilesSource || ''),
+        [...rustLiterals(localFilesSource || ''), ...tsLiterals(shareSource || '')],
         /^"[^"]*" has an invisible or formatting character\b/
       ),
       source: localFilesSource,
       requiredIn: [MESSAGES_PAGE],
-      requiredWhole: true,
+      requiredEach: true,
     },
     {
       name: `the Chat access pane's work folder lines in ${ACCESS_COPY}`,
@@ -1833,6 +1839,115 @@ export function checkCrewManual(tree = repoTree()) {
           fail(
             'reconnect-timing',
             `${page} does not say Crew tries again "${phrase}", as ${KEEPALIVE_RS}'s KeepaliveTiming does`
+          );
+        }
+      }
+    }
+  }
+
+  // ── drop-refusals ────────────────────────────────────────────────────────
+  // A file dropped or pasted into a channel is shared by `shareDroppedFile` in the main process,
+  // not by the paperclip's picker. There a refusal whose code `crewFileRefusal` words gets that
+  // sentence, and every other refusal gets the flow's general note ("Crew couldn't take …"),
+  // whatever the daemon said; the picker and the command line show the daemon's own sentence.
+  // The files page quoted the daemon's sentence for a name with hidden characters (T3-BE-10) as
+  // what Crew says, while a drag got the general note (T3-DOC-6, round 2). So the page says what
+  // a drag shows by reading the code: while crewFileRefusal does not word the code, the row says
+  // a dropped file gets the general note, and once it does, the row may no longer say so.
+  const dropSource = need(SHARE_PATH, 'drop-refusals');
+  const dropDaemon = need(LOCAL_FILES_RS, 'drop-refusals');
+  if (dropSource !== null && dropDaemon !== null) {
+    const code = withoutLineComments(dropSource);
+    const body = (name) =>
+      new RegExp(`\\nexport (?:async )?function ${name}\\([\\s\\S]*?\\n\\}`).exec(code)?.[0] ?? '';
+    const refusal = body('crewFileRefusal');
+    const drop = body('shareDroppedFile');
+    const constants = new Map(
+      [...code.matchAll(/\bexport const (\w+) = '([^'\\]+)';/g)].map((m) => [m[1], m[2]])
+    );
+    const worded = [...refusal.matchAll(/\bcase (?:(\w+)|'([^'\\]+)'):/g)].map(
+      (m) => m[2] ?? constants.get(m[1])
+    );
+    const general = tsLiterals(dropSource).filter((text) =>
+      /^Crew couldn't take\b/.test(sameQuotes(text))
+    );
+    const unread = [
+      [worded.length >= 3 && worded.every(Boolean), 'the codes crewFileRefusal words'],
+      [
+        /\bcrewFileRefusal\(/.test(drop) && /\bcrewShareCopy\.daemonRefused\(/.test(drop),
+        "shareDroppedFile's refusal sentences",
+      ],
+      [general.length > 0, `the general note "Crew couldn't take …"`],
+    ].filter(([read]) => !read);
+    for (const [, what] of unread) {
+      fail('drop-refusals', `could not read ${what} in ${SHARE_PATH}; update this reader`);
+    }
+    const quoted = [
+      {
+        constant: 'FILE_NAME_INVISIBLE_CODE',
+        what: 'hidden-character',
+        opens: /^"[^"]*" has an invisible or formatting character\b/,
+      },
+    ];
+    for (const { constant, what, opens } of unread.length ? [] : quoted) {
+      const refused = rustStrConst(dropDaemon, constant);
+      if (!refused) {
+        fail('drop-refusals', `${LOCAL_FILES_RS} has no ${constant}; update this reader`);
+        continue;
+      }
+      const cased = worded.includes(refused);
+      // A drop that fell back to the daemon's own sentence would show it for every code.
+      const shown = cased || /\bdaemonRefusalSentence\(/.test(drop);
+      // The sentence the drop flow gives the code: the copy its case returns.
+      const names = [...constants].filter(([, value]) => value === refused).map(([name]) => name);
+      const arm = new RegExp(
+        `\\bcase (?:${[...names, `'${refused}'`].map(escapeRegExp).join('|')}):\\s*return crewShareCopy\\.(\\w+)\\b`
+      ).exec(refusal);
+      const copy =
+        arm &&
+        new RegExp(
+          `\\n  ${arm[1]}:\\s*(?:\\([^)]*\\)\\s*=>\\s*)?(\`(?:[^\`\\\\]|\\\\[\\s\\S])*\`|'(?:[^'\\\\\\n]|\\\\.)*')`
+        ).exec(code);
+      const sentence = copy ? tsLiterals(copy[1])[0] : null;
+      if (cased && !sentence) {
+        fail(
+          'drop-refusals',
+          `could not read the sentence crewFileRefusal gives ${refused} in ${SHARE_PATH}; update this reader`
+        );
+      }
+      const rows = markdownBlocks(tree.read(MESSAGES_PAGE) || '').filter((block) =>
+        quotedPhrases(block).some((phrase) => opens.test(sameQuotes(phrase)))
+      );
+      if (rows.length === 0) {
+        fail('drop-refusals', `${MESSAGES_PAGE} does not quote the ${what} refusal (${refused})`);
+      }
+      for (const row of rows) {
+        const saysGeneral =
+          /\bgeneral note\b/i.test(row) ||
+          quotedPhrases(row).some((phrase) =>
+            general.some((template) => saysTemplate(phrase, template))
+          );
+        const quotesDrop =
+          !cased ||
+          !sentence ||
+          quotedPhrases(row).some(
+            (phrase) => /[.!?]$/.test(phrase.trim()) && saysTemplate(phrase, sentence)
+          );
+        if (!quotesDrop) {
+          fail(
+            'drop-refusals',
+            `${MESSAGES_PAGE}'s ${what} row does not quote, to the end of a sentence, what a file dropped in gets from crewFileRefusal in ${SHARE_PATH}: "${sentence}"`
+          );
+        }
+        if (shown && saysGeneral) {
+          fail(
+            'drop-refusals',
+            `${MESSAGES_PAGE} says a file dropped in with a ${what} name gets the general note, but crewFileRefusal in ${SHARE_PATH} now words ${refused}; delete that sentence`
+          );
+        } else if (!shown && !saysGeneral) {
+          fail(
+            'drop-refusals',
+            `${MESSAGES_PAGE} quotes the daemon's ${what} refusal as what Crew says, but a file dropped or pasted in gets "${general[0]}" from shareDroppedFile in ${SHARE_PATH}, whose crewFileRefusal does not word ${refused}; word the code there, or say what a drop shows`
           );
         }
       }
