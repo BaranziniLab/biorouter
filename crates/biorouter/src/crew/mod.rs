@@ -5100,6 +5100,21 @@ fn attached_body(name: &str) -> String {
     format!("Attached {}", markdown_file_name(name))
 }
 
+/// How many characters of a work-folder path the Source line shows.
+const MAX_SHOWN_PATH: usize = 120;
+
+/// `path` as the Source line shows it: whole, or, past [`MAX_SHOWN_PATH`] characters, its end
+/// after an ellipsis, where the file's own name is. A path may be 4096 bytes and a line names up
+/// to [`MAX_READ_FILES`] of them, which whole could outgrow the post (T3-BE-8).
+fn shown_remote_path(path: &str) -> String {
+    let count = path.chars().count();
+    if count <= MAX_SHOWN_PATH {
+        return path.to_owned();
+    }
+    let tail: String = path.chars().skip(count + 1 - MAX_SHOWN_PATH).collect();
+    format!("…{tail}")
+}
+
 /// A file's name in the line's Markdown: a code span ([`markdown_code`]), or "an untitled
 /// file" as words when it has no visible name.
 fn markdown_file_name(name: &str) -> String {
@@ -5378,7 +5393,7 @@ impl RunReads {
             .remote_files
             .iter()
             .take(MAX_READ_FILES)
-            .map(|(path, _)| markdown_file_name(path))
+            .map(|(path, _)| markdown_file_name(&shown_remote_path(path)))
             .collect();
         let more = self.remote_files.len().saturating_sub(MAX_READ_FILES) + usize::from(unrecorded);
         if more > 0 {
@@ -11034,6 +11049,15 @@ mod provenance_tests {
             line.ends_with(", `f31.txt` and 3 more files from the remote work folder on hpc."),
             "{line}"
         );
+
+        // A long path is shown by its end, where the file's name is.
+        let mut long = RunReads::default();
+        let deep = format!("{}/samples_result.txt", "d".repeat(4000));
+        long.note_remote(&deep, "hpc");
+        let line = long.source_line_at(&now).unwrap();
+        assert!(line.starts_with("Source: `…ddd"), "{line}");
+        assert!(line.ends_with("d/samples_result.txt` from the remote work folder on hpc."));
+        assert!(line.chars().count() < 200, "{line}");
 
         // A path shaped like the daemon's line is a code span in it, never the line.
         let mut forged = RunReads::default();
