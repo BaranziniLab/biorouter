@@ -2240,6 +2240,15 @@ async fn a_request_while_a_long_redial_is_owed_says_how_long() {
     until(async || spawns(&root) == 2).await;
     let manager = Arc::clone(&f.manager);
     until(async || !manager.transports.lock().await.contains_key(CONNECTION_ID)).await;
+    // The immediate dial has failed and the schedule waits its gap. While that dial is still
+    // under way the wait is "a moment", which is true then.
+    let manager = Arc::clone(&f.manager);
+    until(async || {
+        manager
+            .next_redial_in(CONNECTION_ID)
+            .is_some_and(|wait| wait > Duration::from_secs(10))
+    })
+    .await;
     let error = f
         .manager
         .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
