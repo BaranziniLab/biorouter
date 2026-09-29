@@ -2753,16 +2753,55 @@ fn saved_conflict(
             command("connections remove")
         )
     } else {
-        format!(
-            "This workspace is already saved as {name}. Run {} to finish joining.",
-            command("join")
-        )
+        // T3-CLI-4: the daemon refuses an existing connection only when a setting it compares
+        // differs (`same_settings`: the login, port, key file, jump host, mode and
+        // institution); a matching save succeeds. So the saved one is not what was asked for,
+        // and nothing was saved: joining with it is only one of the ways on.
+        [
+            format!("This workspace is already saved as {name} with a different server login, port, key file, jump host or privacy, so nothing was saved."),
+            format!("  To compare them: {}", command("connections show")),
+            format!(
+                "  To give it this invitation's privacy: {}",
+                command(&set_personal_words(preview))
+            ),
+            format!(
+                "  To change its server login, port, key file or jump host: {}",
+                command("connections update FILE")
+            ),
+            format!(
+                "  If it has not joined yet, remove it and save this invitation again: {}",
+                command("connections remove")
+            ),
+            format!("  To use it as it is: {}", command("join")),
+        ]
+        .join("\n")
     };
     Worded {
         sentence,
         source: error,
     }
     .into()
+}
+
+/// `privacy set-personal private --institution ucsf`: the privacy this invitation would save,
+/// as the command that gives it to a connection already saved. The preview's words are used
+/// only when they are a mode this command takes; anything else is left as `MODE`.
+fn set_personal_words(preview: &Value) -> String {
+    match preview["mode"].as_str() {
+        Some("private") => match preview["institution_id"]
+            .as_str()
+            .map(str::trim)
+            .filter(|institution| !institution.is_empty())
+        {
+            Some(institution) => format!(
+                "privacy set-personal private --institution {}",
+                safe_text(&shell_word(institution))
+            ),
+            None => "privacy set-personal private".to_owned(),
+        },
+        Some("public") => "privacy set-personal public".to_owned(),
+        _ => "privacy set-personal MODE".to_owned(),
+    }
 }
 
 /// What saving still needs, with the option that supplies each.
@@ -6273,12 +6312,47 @@ mod tests {
             }
             standard(method, path, body)
         };
+        // T3-CLI-4: the daemon refuses it only because a compared setting differs, so the
+        // terminal says nothing was saved and names every way on, `join` only as one of them.
         let (api, _) = api_with(OutputFormat::Text, existing);
         let error = run(&api, join(false)).await.expect_err("already saved");
+        let shown = failure(&error, OutputFormat::Text, "req-1", true).to_string();
         assert_eq!(
-            failure(&error, OutputFormat::Text, "req-1", true).to_string(),
-            "This workspace is already saved as UCSF HPC. Run biorouter crew --connection 'UCSF HPC' join to finish joining."
+            shown,
+            "This workspace is already saved as UCSF HPC with a different server login, port, key file, jump host or privacy, so nothing was saved.\n  To compare them: biorouter crew --connection 'UCSF HPC' connections show\n  To give it this invitation's privacy: biorouter crew --connection 'UCSF HPC' privacy set-personal private --institution ucsf\n  To change its server login, port, key file or jump host: biorouter crew --connection 'UCSF HPC' connections update FILE\n  If it has not joined yet, remove it and save this invitation again: biorouter crew --connection 'UCSF HPC' connections remove\n  To use it as it is: biorouter crew --connection 'UCSF HPC' join"
         );
+        assert!(!shown.contains("finish joining"), "{shown}");
+        assert!(!shown.contains("connection settings"), "{shown}");
+        assert_eq!(
+            error_code(&error).as_deref(),
+            Some("crew_connection_exists")
+        );
+        // JSON keeps the daemon's code and the connection it named beside the same words.
+        let (api, _) = api_with(OutputFormat::Json, existing);
+        let error = run(&api, join(false)).await.expect_err("already saved");
+        let body = failure_body(&error, &safe_lines(&error_text(&error)), "req-1");
+        assert_eq!(body["code"], "crew_connection_exists");
+        assert_eq!(body["connection_id"], CONNECTION);
+        assert_eq!(body["error"], shown);
+
+        // The privacy line names the privacy the invitation would save: a Public choice, and a
+        // hostile institution quoted for the shell with its controls escaped.
+        let with_privacy = |mode: &str, institution: Option<&str>| {
+            let mut answer = preview(&[]);
+            answer["preview"]["mode"] = json!(mode);
+            answer["preview"]["institution_id"] = json!(institution);
+            set_personal_words(&answer["preview"])
+        };
+        assert_eq!(with_privacy("public", None), "privacy set-personal public");
+        assert_eq!(
+            with_privacy("private", Some("  ")),
+            "privacy set-personal private"
+        );
+        assert_eq!(
+            with_privacy("private", Some("u c\u{1b}[31m")),
+            "privacy set-personal private --institution 'u c\\u{1b}[31m'"
+        );
+        assert_eq!(with_privacy("secret", None), "privacy set-personal MODE");
         let (api, _) = api_with(OutputFormat::Text, existing);
         let mut args = join_args(file.path());
         args.yes = false;
@@ -8482,6 +8556,30 @@ mod tests {
         assert_eq!(body["code"], "crew_institution_mismatch");
         assert_eq!(body["error"], "Said for a person.");
 
+        // T3-CLI-10: a save refused because its institution is not the workspace's own
+        // (T3-BE-4) keeps `workspace_institution`, the one institution a script can retry with.
+        let save: anyhow::Error = DaemonRefusal::for_test(
+            400,
+            json!({
+                "code": "crew_institution_mismatch",
+                "error": "This connection is for ucsf, but okafor-lab belongs to stanford-synthetic. Use stanford-synthetic here.",
+                "connection_institution": "ucsf",
+                "workspace_institution": "stanford-synthetic",
+                "workspace": "okafor-lab",
+            }),
+        )
+        .into();
+        let text = safe_lines(&error_text(&save));
+        assert_eq!(
+            text,
+            "This connection is for ucsf, but okafor-lab belongs to stanford-synthetic. Use stanford-synthetic here."
+        );
+        let body = failure_body(&save, &text, "req-1");
+        assert_eq!(body["code"], "crew_institution_mismatch");
+        assert_eq!(body["workspace_institution"], "stanford-synthetic");
+        assert_eq!(body["connection_institution"], "ucsf");
+        assert_eq!(body["workspace"], "okafor-lab");
+
         // AGT2-N6: a refusal's diagnostic detail reaches JSON, and never the sentence.
         let unreadable: anyhow::Error = DaemonRefusal::for_test(
             409,
@@ -8503,6 +8601,56 @@ mod tests {
             body["detail"],
             "unknown variant `bogus_future_variant`, expected one of `chat`, `task`"
         );
+    }
+
+    /// T3-CLI-10: every field of the daemon's `CrewError`, as the generated OpenAPI document
+    /// describes it, is either copied into a JSON failure (`REFUSAL_FIELDS`) or written by the
+    /// CLI itself (`CLI_WRITTEN_FIELDS`). A field the daemon adds then fails here instead of
+    /// silently leaving `--output-format json`, as `workspace_institution` did. The reverse
+    /// holds too, so a misspelt entry that could never match is caught.
+    #[test]
+    fn every_crew_error_field_reaches_json_output_or_is_written_by_the_cli() {
+        use crate::daemon_client::{CLI_WRITTEN_FIELDS, REFUSAL_FIELDS};
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/desktop/openapi.json");
+        let document: Value = serde_json::from_str(
+            &std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+        )
+        .expect("openapi.json is JSON");
+        let properties = document["components"]["schemas"]["CrewError"]["properties"]
+            .as_object()
+            .expect("openapi.json describes CrewError's properties");
+        assert!(
+            properties.len() > CLI_WRITTEN_FIELDS.len(),
+            "CrewError has only {} properties",
+            properties.len()
+        );
+        let dropped: Vec<&str> = properties
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !REFUSAL_FIELDS.contains(key) && !CLI_WRITTEN_FIELDS.contains(key))
+            .collect();
+        assert!(
+            dropped.is_empty(),
+            "CrewError fields a JSON failure would drop: {dropped:?}. Add each to REFUSAL_FIELDS in daemon_client.rs, or write it in failure_body and list it in CLI_WRITTEN_FIELDS."
+        );
+        let unknown: Vec<&str> = REFUSAL_FIELDS
+            .iter()
+            .chain(CLI_WRITTEN_FIELDS)
+            .copied()
+            .filter(|key| !properties.contains_key(*key))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "fields the CLI keeps that CrewError does not have: {unknown:?}"
+        );
+        for key in REFUSAL_FIELDS {
+            assert!(
+                !CLI_WRITTEN_FIELDS.contains(key),
+                "{key} is both copied and written by the CLI"
+            );
+        }
     }
 
     /// CLI-7: a connect the server refused is said in words with what to run, then the code
