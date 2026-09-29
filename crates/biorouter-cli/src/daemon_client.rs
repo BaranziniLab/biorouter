@@ -44,8 +44,10 @@ pub struct DaemonRefusal {
 }
 
 /// The optional fields of the daemon's `CrewError` a JSON failure carries through, beside the
-/// `error`, `code`, `broker_code` and `detail` the CLI writes itself. The daemon's `request_id`
-/// is left out: the CLI's own is the one to retry with.
+/// `error`, `code`, `broker_code` and `detail` the CLI writes itself ([`CLI_WRITTEN_FIELDS`]).
+/// The daemon's `request_id` is left out: the CLI's own is the one to retry with. A test in
+/// `commands::crew` reads `CrewError` from `ui/desktop/openapi.json` and fails when a field is
+/// in neither list, so a field the daemon adds is never silently dropped from JSON output.
 pub const REFUSAL_FIELDS: &[&str] = &[
     "host",
     "connection_id",
@@ -59,6 +61,7 @@ pub const REFUSAL_FIELDS: &[&str] = &[
     "connection",
     "connection_institution",
     "institution",
+    "workspace_institution",
     "institutions",
     "kind",
     "text",
@@ -70,6 +73,11 @@ pub const REFUSAL_FIELDS: &[&str] = &[
     "task_status",
     "task_status_error",
 ];
+
+/// The `CrewError` fields a JSON failure writes from the CLI's own reading rather than copying
+/// ([`REFUSAL_FIELDS`]): the sentence, the code, the CLI's request ID, and the broker's code and
+/// OpenSSH's detail, which are checked before they are kept.
+pub const CLI_WRITTEN_FIELDS: &[&str] = &["error", "code", "request_id", "broker_code", "detail"];
 
 /// A daemon value kept for JSON output, bounded so a malformed answer cannot grow it: strings
 /// to 4096 characters, lists to 64 items, objects to 32 fields, three levels deep.
