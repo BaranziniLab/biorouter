@@ -15,8 +15,8 @@ use axum::{
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
 use biorouter::privacy::declassify::{
-    authenticate_declassification, declassify, is_store_busy, DeclassifyOutcome, UserConfirmation,
-    DECLASSIFY_STORE_BUSY,
+    authenticate_declassification, declassify, is_crew_restricted, is_store_busy,
+    DeclassifyOutcome, UserConfirmation, DECLASSIFY_CREW_RESTRICTED, DECLASSIFY_STORE_BUSY,
 };
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
@@ -1740,6 +1740,9 @@ pub struct DeclassifySessionResponse {
                                       request carried no proof it came from them (body = plain \
                                       text)"),
         (status = 404, description = "Session not found"),
+        (status = 409, description = "The chat read Crew channels, whose permissions marking it \
+                                      public cannot remove. Nothing was changed (body = plain \
+                                      text, a sentence to show as it is)"),
         (status = 500, description = "Internal server error. Nothing was changed (body = plain \
                                       text)"),
         (status = 503, description = "The session store stayed busy with other writes for longer \
@@ -1850,6 +1853,15 @@ async fn declassify_session(
         // Either way nothing was written: `declassify` changes nothing on an
         // `Err` (its transaction rolls back on drop), and a probe that answered
         // before it never writes. So neither body claims more than that.
+        // A chat that read Crew channels: a refusal, not a fault (T3-BE-18). Nothing was
+        // written; the Crew check came before the row was read.
+        Err(e) if is_crew_restricted(&e) => {
+            tracing::info!(
+                "Declassifying session {} refused: it read Crew channels",
+                session_id
+            );
+            Err((StatusCode::CONFLICT, DECLASSIFY_CREW_RESTRICTED).into_response())
+        }
         Err(e) if is_store_busy(&e) => {
             // WARN, not ERROR: nothing is broken, other work held the lock.
             tracing::warn!(
@@ -4090,6 +4102,7 @@ mod declassify_tests {
             // that sends the renderer's toast somewhere that cannot help.
             DECLASSIFY_STORE_BUSY,
             DECLASSIFY_FAILED,
+            DECLASSIFY_CREW_RESTRICTED,
         ];
         for (i, one) in all.iter().enumerate() {
             for other in &all[i + 1..] {

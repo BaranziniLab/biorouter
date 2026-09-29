@@ -7755,6 +7755,9 @@
           "404": {
             "description": "Session not found"
           },
+          "409": {
+            "description": "The chat read Crew channels, whose permissions marking it public cannot remove. Nothing was changed (body = plain text, a sentence to show as it is)"
+          },
           "500": {
             "description": "Internal server error. Nothing was changed (body = plain text)"
           },

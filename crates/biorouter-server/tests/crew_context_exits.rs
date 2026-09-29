@@ -240,6 +240,38 @@ async fn send(
     (status, body)
 }
 
+/// T3-BE-18: making a Crew chat public is refused as the refusal it is: 409 with a sentence the
+/// desktop shows as it is, and nothing changes. It used to be the route's generic 500, logged at
+/// ERROR, and the dialog blamed "an error". A chat no grant restricts is still answered as before
+/// (already public here, so a success).
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn making_a_crew_chat_public_is_refused_in_a_sentence() {
+    let (state, chats) = setup().await;
+    let (status, body) = send(
+        &state,
+        "POST",
+        &format!("/sessions/{}/declassify", chats.crew),
+        Some(json!({})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body,
+        json!("This chat read Crew channels, so it can't be made public. Start a new chat for public work.")
+    );
+    let (status, body) = send(
+        &state,
+        "POST",
+        &format!("/sessions/{}/declassify", chats.plain),
+        Some(json!({})),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 /// THE CROSSCUT-2 CASE. The person exporting a Crew chat from the desktop is told why it cannot
 /// leave, in the sentence the terminal prints for the same chat. It used to be a bare 404, which
 /// the desktop could only read as "not found".

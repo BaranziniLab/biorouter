@@ -414,6 +414,32 @@ impl std::fmt::Display for StoreBusy {
     }
 }
 
+/// What a chat that read Crew channels is refused with, at both doors (T3-BE-18): its
+/// restrictions come from the channels' permissions, which marking it public cannot remove. It
+/// used to reach the desktop as the route's generic 500 ("because Biorouter hit an error"),
+/// logged at ERROR, although nothing had failed.
+pub const DECLASSIFY_CREW_RESTRICTED: &str =
+    "This chat read Crew channels, so it can't be made public. Start a new chat for public work.";
+
+/// The error [`declassify`] refuses a Crew chat with. A type rather than a sentence, so a door
+/// asks [`is_crew_restricted`] and answers a refusal rather than a fault. The check it reports
+/// is unchanged: a chat a Crew grant restricts is never declassified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrewRestricted;
+
+impl std::fmt::Display for CrewRestricted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(DECLASSIFY_CREW_RESTRICTED)
+    }
+}
+
+impl std::error::Error for CrewRestricted {}
+
+/// Was this declassification refused because the chat read Crew channels?
+pub fn is_crew_restricted(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<CrewRestricted>().is_some()
+}
+
 /// Did this declassification fail only because the chat store stayed busy?
 ///
 /// `true` exactly for an error [`declassify`] returned with [`StoreBusy`]
@@ -553,8 +579,9 @@ pub async fn declassify(
     authorization: Option<&SystemAuthorization>,
     ok: &UserConfirmation,
 ) -> Result<DeclassifyOutcome> {
-    anyhow::ensure!(!crate::crew::manager()?.is_scoped_session(session_id).await,
-        "Crew source restrictions cannot be removed by declassifying a conversation. Start a fresh task in an authorized Public workspace.");
+    if crate::crew::manager()?.is_scoped_session(session_id).await {
+        return Err(anyhow::Error::new(CrewRestricted));
+    }
     declassify_in_one_transaction(sm, session_id, confirmation, authorization, ok)
         .await
         .map_err(|error| {
