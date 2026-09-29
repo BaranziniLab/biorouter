@@ -3,22 +3,26 @@
   "upstream_repository": "https://github.com/iFurySt/open-codex-computer-use.git",
   "upstream_commit": "547b4ffb8ed731a8f16486e6d8a3b215484267d3",
   "upstream_version": "0.3.5",
-  "file_count": 396,
-  "tree_sha256": "cec233608c6e54d7faa9d58803f5c8a12c6d4d95c5142a57e460b967b01f4be1",
+  "file_count": 391,
+  "tree_sha256": "43343196d44587cef6f5530cdb2ae594bb59e55fec25c5abf189910386c80b81",
   "excluded": [
     {
       "path_prefix": "docs/references/codex-computer-use-reverse-engineering/assets/extracted-",
       "reason": "assets extracted from a third party's application; upstream's MIT licence does not extend to them, and they are documentation references rather than build inputs"
+    },
+    {
+      "path_prefix": ".gitattributes",
+      "reason": "only configures Git LFS for the omitted official bundle archives; not a build input"
+    },
+    {
+      "path_prefix": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/",
+      "reason": "official plugin archives are unavailable in this repository's Git LFS storage and are documentation references rather than build inputs"
     }
   ],
   "files": [
     {
       "path": ".agents/plugins/marketplace.json",
       "sha256": "1d8e600c09f73e535229c6be1ddf7d137e33fcebab0223b1d72a6309b4a32562"
-    },
-    {
-      "path": ".gitattributes",
-      "sha256": "df3531f1f3b5bb05470d0f4457d58b0fa1bd756943d5704d44d9e0e4b84a83f3"
     },
     {
       "path": ".github/workflows/release.yml",
@@ -1119,22 +1123,6 @@
     {
       "path": "docs/references/codex-computer-use-reverse-engineering/assets/README.md",
       "sha256": "daa15411ebb48c5519a7172c17319297736160f1e4edfb05abc75ea4c37be8d2"
-    },
-    {
-      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/1.0.750.zip",
-      "sha256": "bb0a8e0db982f9d37e48f30b51bb32814470a1bcd4e40695f3eb6065a092a2f3"
-    },
-    {
-      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/1.0.755.zip",
-      "sha256": "b1eb458fee1e000c3d1f4c323a6a81fe54f39372537eaeb91b0d9b26e5679df8"
-    },
-    {
-      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/README.md",
-      "sha256": "b6b56fa918cc6a03059f89bafb9aedc3de50ccf2ce213b069840e428bd89b390"
-    },
-    {
-      "path": "docs/references/codex-computer-use-reverse-engineering/assets/official-bundles/computer-use/SHA256SUMS",
-      "sha256": "8c8dfb8b653107cbe5e84d2c1e80f5e0b39f2f6f6d19a9ce7e06f0596fcf1b36"
     },
     {
       "path": "docs/references/codex-computer-use-reverse-engineering/background-click-free-tooling.md",
