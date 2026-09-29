@@ -354,6 +354,46 @@ pub fn open_directory(path: &Path, create: bool) -> Result<Dir> {
     Ok(directory)
 }
 
+/// Why `folder` could not be opened, when a folder on its way is a symbolic link: Crew opens
+/// every folder of a path without following links, so `/tmp` (on macOS a link to `/private/tmp`)
+/// failed as "Not a directory (os error 20)" before any of the checks that would have said what
+/// was wrong (T3-BE-12). The link is resolved here only to word the refusal: nothing is opened
+/// through it, and nothing is read or written there. A download into a folder the link points
+/// to that other accounts can change is refused as such a folder always is
+/// ([`SelectionRefusal::SharedFolder`]); anything else names the folder to choose instead
+/// ([`SelectionRefusal::Link`]). `None` when no folder on the way is a link, so the error that
+/// happened stands.
+fn through_a_link(folder: &Path, direction: Direction) -> Option<anyhow::Error> {
+    let linked = folder.ancestors().any(|ancestor| {
+        std::fs::symlink_metadata(ancestor).is_ok_and(|m| m.file_type().is_symlink())
+    });
+    if !linked {
+        return None;
+    }
+    let target = std::fs::canonicalize(folder).ok()?;
+    #[cfg(unix)]
+    if direction == Direction::Download {
+        // The folder the link points to, opened as any other is (no link followed), only to
+        // ask whether other accounts can change it.
+        if let Ok(real) = open_directory(&target, false) {
+            if !directory_is_private(&real).unwrap_or(false) {
+                return Some(SelectionRefusal::SharedFolder.into());
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = direction;
+    let printable =
+        |path: &Path| biorouter::utils::sanitize_untrusted_label(&path.to_string_lossy(), 1024);
+    Some(
+        SelectionRefusal::Link {
+            folder: printable(folder),
+            target: printable(&target),
+        }
+        .into(),
+    )
+}
+
 fn reject_reparse(file: &File) -> Result<()> {
     ensure!(
         !file.metadata()?.file_type().is_symlink(),
@@ -457,6 +497,9 @@ pub const DESTINATION_EXISTS_CODE: &str = "crew_destination_exists";
 pub const FILE_IS_PROGRAM_CODE: &str = "crew_file_is_program";
 /// The code `POST /crew/files` answers [`SelectionRefusal::InvisibleName`] with.
 pub const FILE_NAME_INVISIBLE_CODE: &str = "crew_file_name_invisible";
+/// The code `POST /crew/files` answers [`SelectionRefusal::Link`] with: the general transfer
+/// refusal, whose sentence says what to choose instead.
+pub const THROUGH_A_LINK_CODE: &str = "crew_transfer_refused";
 
 /// A file to share whose name has a character the workspace refuses in a shared name
 /// (`biorouter_crew::hidden_in_shared_name`: a control, format or separator character, anything
@@ -507,6 +550,10 @@ pub enum SelectionRefusal {
     /// invisible, reorders the text or shows as a blank (T3-BE-10). Refused here, before any
     /// transfer is recorded; `name` is already [`shown_name`]'s.
     InvisibleName { name: String },
+    /// The folder given reaches its file through a symbolic link (`/tmp` on macOS is one, to
+    /// `/private/tmp`), which Crew never follows. `folder` is the folder as given and `target`
+    /// the one the link points to, both made printable (T3-BE-12).
+    Link { folder: String, target: String },
 }
 
 impl SelectionRefusal {
@@ -519,6 +566,7 @@ impl SelectionRefusal {
             Self::Exists { .. } => DESTINATION_EXISTS_CODE,
             Self::Program { .. } => FILE_IS_PROGRAM_CODE,
             Self::InvisibleName { .. } => FILE_NAME_INVISIBLE_CODE,
+            Self::Link { .. } => THROUGH_A_LINK_CODE,
         }
     }
 
@@ -562,6 +610,10 @@ impl std::fmt::Display for SelectionRefusal {
             Self::InvisibleName { name } => write!(
                 f,
                 "\u{201c}{name}\u{201d} has an invisible or formatting character in its name. Rename the file, then share it again."
+            ),
+            Self::Link { folder, target } => write!(
+                f,
+                "{folder} goes through a link. Choose the folder it points to, {target}."
             ),
         }
     }
@@ -1237,7 +1289,10 @@ fn select_local(
     if direction == Direction::Upload && credential_floor_denies(path) {
         return Err(CredentialRefusal::source(path).into());
     }
-    let directory = open_directory(parent, false)?;
+    let directory = match open_directory(parent, false) {
+        Ok(directory) => directory,
+        Err(error) => return Err(through_a_link(parent, direction).unwrap_or(error)),
+    };
     match direction {
         Direction::Upload => {
             reject_link(path)?;
@@ -2665,5 +2720,86 @@ mod shared_name_tests {
             select(&path, Direction::Upload, false).unwrap().name(),
             "résumé 日本語 (final) – v2.txt"
         );
+    }
+}
+
+/// T3-BE-12: a path through a symbolic link is refused in words that say what to choose, never
+/// as "Not a directory (os error 20)", and nothing is opened, read or written through the link.
+#[cfg(all(test, unix))]
+mod link_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    fn refusal(result: Result<Selection>) -> SelectionRefusal {
+        let error = match result {
+            Ok(selection) => panic!("{} was chosen", selection.name()),
+            Err(error) => error,
+        };
+        error
+            .downcast_ref::<SelectionRefusal>()
+            .cloned()
+            .unwrap_or_else(|| panic!("not a selection refusal: {error:#}"))
+    }
+
+    #[test]
+    fn a_folder_reached_through_a_link_is_refused_in_words() {
+        let temporary = tempfile::TempDir::new().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let private = root.join("private");
+        fs::create_dir(&private).unwrap();
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+        let shared = root.join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+        symlink(&private, root.join("to-private")).unwrap();
+        symlink(&shared, root.join("to-shared")).unwrap();
+
+        // Like `/tmp` on macOS: the folder the link reaches is one other accounts can change,
+        // so the answer is the one `/private/tmp` itself gets.
+        let into_shared = root.join("to-shared").join("counts.csv");
+        let refused = refusal(select(&into_shared, Direction::Download, false));
+        assert_eq!(refused, SelectionRefusal::SharedFolder);
+        assert_eq!(refused.code(), FOLDER_SHARED_CODE);
+
+        // A private folder behind a link: the link's own words, naming the folder to choose.
+        let into_private = root.join("to-private").join("counts.csv");
+        let refused = refusal(select(&into_private, Direction::Download, false));
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "{} goes through a link. Choose the folder it points to, {}.",
+                root.join("to-private").display(),
+                private.display()
+            )
+        );
+        assert_eq!(refused.code(), "crew_transfer_refused");
+
+        // A file to share behind a link is refused the same way, and never opened.
+        fs::write(private.join("assay.csv"), "sample,signal\n").unwrap();
+        let refused = refusal(select(
+            &root.join("to-private").join("assay.csv"),
+            Direction::Upload,
+            false,
+        ));
+        assert!(
+            matches!(refused, SelectionRefusal::Link { .. }),
+            "{refused}"
+        );
+
+        // Nothing was written through either link.
+        assert_eq!(fs::read_dir(&shared).unwrap().count(), 0);
+        assert_eq!(
+            fs::read_dir(&private)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>(),
+            [std::ffi::OsString::from("assay.csv")]
+        );
+
+        // The folder itself, not through the link, is chosen as ever.
+        let direct = select(&private.join("counts.csv"), Direction::Download, false).unwrap();
+        assert_eq!(direct.name(), "counts.csv");
     }
 }
