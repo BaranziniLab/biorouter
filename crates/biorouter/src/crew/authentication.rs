@@ -371,15 +371,153 @@ fn command(plan: &AuthenticationPlan) -> CommandBuilder {
     command.env("TERM", "xterm-256color");
     command
 }
+/// Turn the terminal's own echo off (`ECHO` and `ECHONL`) before `ssh` starts in it (T3-BE-17).
+/// OpenSSH turns echo off only while it reads a password, and restores what it found after, so
+/// with echo on, text typed while no prompt was reading (during PAM's delay after a wrong
+/// password) was drawn in clear in the Sign in window, and stayed in its scrollback and its
+/// accessibility text. With echo off from the start, what OpenSSH restores is off too. The one
+/// prompt that shows its answer is drawn by [`PromptEcho`] instead. Set through the terminal's
+/// own device, opened without making it this process's controlling terminal.
+#[cfg(unix)]
+fn echo_off(master: &dyn MasterPty) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = master
+        .tty_name()
+        .context("The sign-in terminal has no device name")?;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    ensure!(
+        fd >= 0,
+        "Couldn't open the sign-in terminal: {}",
+        std::io::Error::last_os_error()
+    );
+    let result = (|| {
+        let mut term = std::mem::MaybeUninit::<libc::termios>::uninit();
+        ensure!(
+            unsafe { libc::tcgetattr(fd, term.as_mut_ptr()) } == 0,
+            "Couldn't read the sign-in terminal's settings: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut term = unsafe { term.assume_init() };
+        term.c_lflag &= !(libc::ECHO | libc::ECHONL);
+        ensure!(
+            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } == 0,
+            "Couldn't turn the sign-in terminal's echo off: {}",
+            std::io::Error::last_os_error()
+        );
+        Ok(())
+    })();
+    unsafe { libc::close(fd) };
+    result
+}
+
+/// The ends of the prompts OpenSSH asks with echo on, so their answer is meant to be seen: the
+/// host-key question (`Are you sure you want to continue connecting (yes/no/[fingerprint])?`)
+/// and its older and update-host-keys forms. A keyboard-interactive prompt marked echo-on cannot
+/// be told from one that is not, so it is not among them.
+const PROMPTS_THAT_SHOW_THEIR_ANSWER: [&str; 3] =
+    ["(yes/no/[fingerprint])?", "(yes/no)?", "(yes/no):"];
+
+/// Draws what is typed at a prompt that shows its answer, since the terminal's own echo is off
+/// ([`echo_off`], T3-BE-17). It follows the last line `ssh` wrote; while that line is one of
+/// [`PROMPTS_THAT_SHOW_THEIR_ANSWER`], printable input is written back to the window, and an
+/// erase takes back one typed character. Enter ends it: `ssh` writes the newline itself. Only
+/// the window's stream is written; what reaches `ssh` is unchanged.
+#[derive(Default)]
+struct PromptEcho {
+    /// What `ssh` wrote since its last newline, at most [`PromptEcho::LINE`] bytes.
+    line: Vec<u8>,
+    /// How many characters were drawn at the current prompt, which an erase may take back.
+    typed: usize,
+    /// Enter was typed at the prompt, and `ssh` has not ended its line yet.
+    answered: bool,
+}
+
+impl PromptEcho {
+    const LINE: usize = 512;
+
+    fn note_output(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            match byte {
+                b'\n' => {
+                    self.line.clear();
+                    self.typed = 0;
+                    self.answered = false;
+                }
+                b'\r' => {}
+                _ => {
+                    if self.line.len() >= Self::LINE {
+                        self.line.remove(0);
+                    }
+                    self.line.push(byte);
+                }
+            }
+        }
+    }
+
+    fn answer_is_shown(&self) -> bool {
+        let line = String::from_utf8_lossy(&self.line);
+        let line = line.trim_end();
+        !self.answered
+            && PROMPTS_THAT_SHOW_THEIR_ANSWER
+                .iter()
+                .any(|prompt| line.ends_with(prompt))
+    }
+
+    /// What to draw for `input`, typed now; `None` when nothing is to be shown.
+    fn mirror(&mut self, input: &[u8]) -> Option<Vec<u8>> {
+        if !self.answer_is_shown() {
+            return None;
+        }
+        let mut drawn = Vec::new();
+        for &byte in input {
+            match byte {
+                0x20..=0x7e => {
+                    drawn.push(byte);
+                    self.typed += 1;
+                }
+                0x7f | 0x08 if self.typed > 0 => {
+                    drawn.extend_from_slice(b"\x08 \x08");
+                    self.typed -= 1;
+                }
+                b'\r' | b'\n' => {
+                    self.answered = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (!drawn.is_empty()).then_some(drawn)
+    }
+}
+
 fn spawn(
     plan: &AuthenticationPlan,
     size: PtySize,
     adopted: Arc<AtomicBool>,
 ) -> Result<(Runtime, mpsc::Receiver<TerminalEvent>)> {
+    spawn_in_terminal(command(plan), size, adopted)
+}
+
+/// Start `command` in a new terminal of `size` with its own echo off ([`echo_off`]): what it
+/// writes, and what [`PromptEcho`] draws, reach the window as [`TerminalEvent::Data`], until
+/// `adopted`; what is typed goes to it unchanged.
+fn spawn_in_terminal(
+    command: CommandBuilder,
+    size: PtySize,
+    adopted: Arc<AtomicBool>,
+) -> Result<(Runtime, mpsc::Receiver<TerminalEvent>)> {
     let pair = native_pty_system().openpty(size)?;
+    #[cfg(unix)]
+    echo_off(&*pair.master)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
-    let child = pair.slave.spawn_command(command(plan))?;
+    let child = pair.slave.spawn_command(command)?;
     let pid = child
         .process_id()
         .context("SSH child process identity unavailable")?;
@@ -392,8 +530,21 @@ fn spawn(
     drop(pair.slave);
     let (input, receive_input) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
     let (output, receive_output) = mpsc::channel(16);
+    let prompt = Arc::new(Mutex::new(PromptEcho::default()));
+    let writer_prompt = prompt.clone();
+    // Weak, so the window's stream still ends when the reader does.
+    let drawn = output.downgrade();
+    let writer_adopted = adopted.clone();
     std::thread::spawn(move || {
         while let Ok(mut bytes) = receive_input.recv() {
+            let mirror = if writer_adopted.load(Ordering::Acquire) {
+                None
+            } else {
+                writer_prompt.lock().unwrap().mirror(&bytes)
+            };
+            if let (Some(mirror), Some(output)) = (mirror, drawn.upgrade()) {
+                let _ = output.blocking_send(TerminalEvent::Data(mirror));
+            }
             let result = writer.write_all(&bytes).and_then(|_| writer.flush());
             bytes.fill(0);
             if result.is_err() {
@@ -412,6 +563,7 @@ fn spawn(
                         buffer.fill(0);
                         continue;
                     }
+                    prompt.lock().unwrap().note_output(&buffer[..count]);
                     if output
                         .blocking_send(TerminalEvent::Data(buffer[..count].to_vec()))
                         .is_err()
@@ -4606,5 +4758,113 @@ fi
         let preview = preview_with(vec![foreign], same).await;
         assert_eq!(preview.institution_conflict, None);
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+/// T3-BE-17: the Sign in window's terminal draws nothing it was not meant to. Text typed while
+/// no prompt is reading (during PAM's delay after a wrong password) never reaches the window;
+/// an answer typed at the host-key question does, and what reaches the program is unchanged.
+#[cfg(all(test, unix))]
+mod echo_tests {
+    use super::*;
+
+    fn size() -> PtySize {
+        PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+
+    /// Everything the window is sent until the program exits.
+    async fn drawn_until_exit(mut output: mpsc::Receiver<TerminalEvent>) -> String {
+        let mut drawn = Vec::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(10), output.recv())
+            .await
+            .expect("the program ends")
+        {
+            match event {
+                TerminalEvent::Data(bytes) => drawn.extend(bytes),
+                TerminalEvent::Exit(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&drawn).into_owned()
+    }
+
+    /// Wait until `ready` exists, the program's sign that it is waiting where the test wants.
+    async fn wait_for(ready: &std::path::Path) {
+        for _ in 0..500 {
+            if ready.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the program never got there");
+    }
+
+    #[tokio::test]
+    async fn typed_ahead_text_is_never_drawn_and_a_yes_no_answer_is() {
+        let root = tempfile::TempDir::new().unwrap();
+        let ready = root.path().join("ready");
+        let asked = root.path().join("asked");
+        let got = root.path().join("got");
+        // A stand-in for ssh after a wrong password: nothing reads while PAM delays, then the
+        // host-key question is asked with the terminal as OpenSSH leaves it for a prompt that
+        // shows its answer.
+        let script = format!(
+            "printf 'Password: '; touch '{ready}'; sleep 1; read -r early; \
+             printf '\\nAre you sure you want to continue connecting (yes/no/[fingerprint])? '; \
+             touch '{asked}'; read -r answer; printf '%s|%s' \"$early\" \"$answer\" > '{got}'; \
+             printf 'done\\n'",
+            ready = ready.display(),
+            asked = asked.display(),
+            got = got.display(),
+        );
+        let mut command = CommandBuilder::new("sh");
+        command.args(["-c", &script]);
+        let (runtime, output) =
+            spawn_in_terminal(command, size(), Arc::new(AtomicBool::new(false))).unwrap();
+        wait_for(&ready).await;
+        // Typed while nothing reads.
+        runtime
+            .input
+            .send(b"hunter2-typed-ahead\r".to_vec())
+            .unwrap();
+        wait_for(&asked).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        runtime.input.send(b"yex\x7fs\r".to_vec()).unwrap();
+        let drawn = drawn_until_exit(output).await;
+        assert!(
+            !drawn.contains("hunter2"),
+            "typed-ahead text was drawn: {drawn:?}"
+        );
+        assert!(
+            drawn.contains("(yes/no/[fingerprint])? yex\x08 \x08s"),
+            "the answer was not drawn: {drawn:?}"
+        );
+        // The program read exactly what was typed.
+        assert_eq!(
+            std::fs::read_to_string(&got).unwrap(),
+            "hunter2-typed-ahead|yes"
+        );
+        drop(runtime);
+    }
+
+    #[test]
+    fn only_a_prompt_that_shows_its_answer_draws_what_is_typed() {
+        let mut prompt = PromptEcho::default();
+        prompt.note_output(b"crew_bob@lab's password: ");
+        assert_eq!(prompt.mirror(b"secret"), None);
+        prompt.note_output(b"\r\nAre you sure you want to continue connecting (yes/no)? ");
+        assert_eq!(prompt.mirror(b"ye"), Some(b"ye".to_vec()));
+        assert_eq!(
+            prompt.mirror(b"\x7f\x7f\x7f"),
+            Some(b"\x08 \x08\x08 \x08".to_vec())
+        );
+        assert_eq!(prompt.mirror(b"yes\rmore"), Some(b"yes".to_vec()));
+        assert_eq!(prompt.mirror(b"more"), None, "answered");
+        prompt.note_output(b"\n");
+        assert_eq!(prompt.mirror(b"x"), None);
     }
 }
