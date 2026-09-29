@@ -235,6 +235,7 @@ If Crew refuses where you chose to save, it says what to change:
 |---|---|
 | "…starts with a dot, which Crew doesn't save into your home." | Choose a name without the leading dot. |
 | "Choose a folder owned by your account that other accounts can't change." | Save into a folder of your own, such as Downloads. |
+| "/Users/bob/shared goes through a link. Choose the folder it points to, /Volumes/lab/shared." | A folder on the way is a link, and Crew never saves through one. Choose the folder the sentence names, if it is yours, or another folder of your own. On a Mac, `/tmp` is a link to `/private/tmp`, which other accounts can change, so it gets the sentence above instead. |
 | "Crew won't save into a credential or settings location. Choose another folder." | Choose another folder. |
 | "That is a folder. Give a file name…" | Choose a file name, not a folder. |
 | "…is a program, and Crew won't replace one. Choose another name." | Choose another name. |

@@ -1527,6 +1527,28 @@ test('source-line: the agents page quotes the source line for a work-folder file
   );
 });
 
+test('app-sentences: the download refusal for a path through a link is quoted as the daemon writes it (T3-DOC-6)', () => {
+  assertCaught(
+    {
+      [MESSAGES]: (text) =>
+        text.replace(/^\| "\/Users\/bob\/shared goes through a link\..*\n/m, ''),
+    },
+    'app-sentences',
+    /messages-and-files\.md does not quote the refusal of a path through a link/
+  );
+  assertCaught(
+    {
+      'crates/biorouter-server/src/crew/local_files.rs': (text) =>
+        text.replaceAll(
+          'goes through a link. Choose the folder it points to,',
+          'goes through a link. Save in'
+        ),
+    },
+    'app-sentences',
+    /quotes "\/Users\/bob\/shared goes through a link\. Choose the folder it points to, \/Volumes\/lab\/shared\.", which is not how/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

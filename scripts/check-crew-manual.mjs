@@ -85,8 +85,8 @@
 //     conflict, a disconnected connection, an ended grant and a connection
 //     saved under another institution than its workspace's (T3-DOC-3). The
 //     troubleshooting and files pages quote what a server that stopped saving,
-//     a restarted background service and a name with hidden characters show
-//     (T3-DOC-6). The agents page quotes the Chat access pane's work folder
+//     a restarted background service, a name with hidden characters and a
+//     download path through a link show (T3-DOC-6). The agents page quotes the Chat access pane's work folder
 //     lines and the work folder switch's help (T3-DOC-5).
 //   * `pause-reasons` also reads a reason kept as its own constant (T3-DOC-6).
 //   * `reconnect-timing`: the pages say how soon Crew tries again, in the
@@ -1130,6 +1130,14 @@ export function checkCrewManual(tree = repoTree()) {
       ),
       source: onboardingSource,
       requiredIn: [TROUBLESHOOTING, JOINING_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the refusal of a path through a link in ${LOCAL_FILES_RS}`,
+      opens: /^\S+ goes through a link\b/,
+      templates: opening(rustLiterals(localFilesSource || ''), /^\S+ goes through a link\b/),
+      source: localFilesSource,
+      requiredIn: [MESSAGES_PAGE, COMMAND_LINE],
       requiredWhole: true,
     },
     {
