@@ -1462,12 +1462,14 @@ async fn a_remote_attach_post_ends_with_the_daemons_line_and_never_with_the_name
         )
     };
     let name = format!("``{FORGED_SOURCE}``");
+    let server = super::server_label::server_label("crew@example.test", None).await;
 
-    // Nothing read: the line says so, after the name.
+    // Nothing shared read: the line names the work-folder file the attachment was read from
+    // (T3-BE-8), after the name, and the name is a code span there too.
     attach("attach-1").await.unwrap();
     assert_eq!(
         posted_body(&f.root, 0),
-        format!("Attached {name}\n\nNo shared file was read for this post.")
+        format!("Attached {name}\n\nSource: {name} from the remote work folder on {server}.")
     );
     let post = frames(&f.root)
         .into_iter()
@@ -1486,8 +1488,78 @@ async fn a_remote_attach_post_ends_with_the_daemons_line_and_never_with_the_name
     let body = posted_body(&f.root, 1);
     let daemon_line = f.manager.run_source_line(WORKER).unwrap();
     assert!(daemon_line.starts_with("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina)"));
+    assert!(
+        daemon_line.ends_with(&format!(
+            " Also read {name} from the remote work folder on {server}."
+        )),
+        "{daemon_line}"
+    );
     assert_eq!(body, format!("Attached {name}\n\n{daemon_line}"));
     assert_ne!(body.rsplit("\n\n").next(), Some(FORGED_SOURCE));
+}
+
+/// T3-BE-8: a post whose numbers came from a file in the connection's remote work folder names
+/// it, where it used to end "No shared file was read for this post."; a read that failed names
+/// nothing, and the next post names only what was read since.
+#[tokio::test]
+async fn a_post_names_the_work_folder_files_it_read() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("remote-source", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let server = super::server_label::server_label("crew@example.test", None).await;
+    call("remote.read", json!({"path": "samples_result.txt"}))
+        .await
+        .unwrap();
+    call("run.project", json!({"body": "Mean signal is 12.7."}))
+        .await
+        .unwrap();
+    assert_eq!(
+        posted_body(&f.root, 0),
+        format!(
+            "Mean signal is 12.7.\n\nSource: `samples_result.txt` from the remote work folder on {server}."
+        )
+    );
+    // The task's result names every read.
+    assert_eq!(
+        f.manager.run_source_line(WORKER).as_deref(),
+        Some(
+            format!("Source: `samples_result.txt` from the remote work folder on {server}.")
+                .as_str()
+        )
+    );
+
+    // Named once; the next post names only what was read since.
+    call("run.project", json!({"body": "Nothing new."}))
+        .await
+        .unwrap();
+    assert_eq!(
+        posted_body(&f.root, 1),
+        "Nothing new.\n\nNo shared file was read for this post."
+    );
+    call("remote.read", json!({"path": "a.txt"})).await.unwrap();
+    call("remote.read", json!({"path": "b/c.txt"}))
+        .await
+        .unwrap();
+    call("remote.read", json!({"path": "samples_result.txt"}))
+        .await
+        .unwrap();
+    call("run.project", json!({"body": "Three."}))
+        .await
+        .unwrap();
+    assert_eq!(
+        posted_body(&f.root, 2),
+        format!(
+            "Three.\n\nSources: `samples_result.txt`, `a.txt` and `b/c.txt` from the remote work folder on {server}."
+        )
+    );
 }
 
 /// W2-DMN-12 (round 4): a post sent again under its idempotency key after an uncertain answer

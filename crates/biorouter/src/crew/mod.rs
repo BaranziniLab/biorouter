@@ -4304,6 +4304,10 @@ impl CrewManager {
                 params["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
             }
         }
+        // The work-folder path a read names, for the provenance line (T3-BE-8).
+        let remote_path = (method == "remote.read")
+            .then(|| params["path"].as_str().map(str::to_owned))
+            .flatten();
         // As every request: a bridge that ended, or sat idle long enough for the broker to drop
         // it, is checked (and dialled again without a prompt) before anything is written.
         let transport = match self.live_transport(&s.connection_id).await {
@@ -4357,6 +4361,12 @@ impl CrewManager {
                 mark_agent_posts(&mut result);
             }
             "blob.status" => self.note_run_status(session, &result),
+            "remote.read" => {
+                if let Some(path) = remote_path {
+                    let server = server_label::server_label(&c.ssh_target, c.port).await;
+                    self.note_remote_read(session, &path, &server);
+                }
+            }
             _ => {}
         }
         Ok(result)
@@ -4817,6 +4827,17 @@ struct RunReads {
     /// The lines the chat's own latest posts were first sent with, by idempotency key, oldest
     /// first, at most [`MAX_SENT_POSTS`] ([`SentPost`]).
     sent_posts: VecDeque<SentPost>,
+    /// Each path in the connection's remote work folder a successful `remote.read` returned
+    /// (`remote.attach` reads one too), in the order first read, once each, with the
+    /// [`ReadMark`] of its latest read, at most [`MAX_READ_ATTACHMENTS`] (T3-BE-8). A post whose
+    /// numbers came from such a file used to end "No shared file was read for this post.".
+    remote_files: Vec<(String, ReadMark)>,
+    /// The mark of the latest remote read past that bound, which no entry above records: still
+    /// a read, counted as at least one more file.
+    remote_unrecorded_at: Option<ReadMark>,
+    /// What to call the server the work folder is on (`server_label`), as it was when a file
+    /// was last read there.
+    remote_server: Option<String>,
 }
 
 /// The line a chat's post was first sent with under its idempotency key (W2-DMN-12). The
@@ -5278,7 +5299,70 @@ impl RunReads {
     /// Whether these reads hold no read at all: then, and only then, a line says no file was
     /// read.
     fn read_nothing(&self) -> bool {
-        self.files.is_empty() && self.unlisted.is_empty() && self.unrecorded_at.is_none()
+        self.files.is_empty()
+            && self.unlisted.is_empty()
+            && self.unrecorded_at.is_none()
+            && self.remote_files.is_empty()
+            && self.remote_unrecorded_at.is_none()
+    }
+
+    /// Record a path in the work folder on `server` a successful `remote.read` returned: listed
+    /// once, and marked as read now every time, as a shared file is (T3-BE-8).
+    fn note_remote(&mut self, path: &str, server: &str) {
+        let mark = next_read_mark();
+        self.remote_server = Some(server.to_owned());
+        if let Some(entry) = self.remote_files.iter_mut().find(|(read, _)| read == path) {
+            entry.1 = mark;
+        } else if self.remote_files.len() < MAX_READ_ATTACHMENTS {
+            self.remote_files.push((path.to_owned(), mark));
+        } else {
+            self.remote_unrecorded_at = Some(mark);
+        }
+    }
+
+    /// The work-folder files the line names, as a phrase, with whether it names one file
+    /// alone: ``` `samples_result.txt` from the remote work folder on hpc```, ``` `a.txt` and
+    /// `b.txt` from …```, or ``` `a.txt`, `b.txt` and 3 more files from …``` past
+    /// [`MAX_READ_FILES`] (T3-BE-8). A path is the model's choice, so it is a code span
+    /// ([`markdown_file_name`]), as an attached file's name is. `None` when none was read.
+    fn remote_phrase(&self) -> Option<(String, bool)> {
+        let unrecorded = self.remote_unrecorded_at.is_some();
+        if self.remote_files.is_empty() && !unrecorded {
+            return None;
+        }
+        let mut names: Vec<String> = self
+            .remote_files
+            .iter()
+            .take(MAX_READ_FILES)
+            .map(|(path, _)| markdown_file_name(path))
+            .collect();
+        let more = self.remote_files.len().saturating_sub(MAX_READ_FILES) + usize::from(unrecorded);
+        if more > 0 {
+            let count = if unrecorded {
+                format!("at least {more}")
+            } else {
+                more.to_string()
+            };
+            let noun = if more == 1 { "file" } else { "files" };
+            names.push(if names.is_empty() {
+                format!("{count} {noun}")
+            } else {
+                format!("{count} more {noun}")
+            });
+        }
+        let alone = self.remote_files.len() == 1 && !unrecorded;
+        let listed = match names.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => return None,
+        };
+        let place = match self.remote_server.as_deref().map(plain_label) {
+            Some(server) if !server.is_empty() => {
+                format!("the remote work folder on {}", markdown_label(&server))
+            }
+            _ => "the remote work folder".to_owned(),
+        };
+        Some((format!("{listed} from {place}"), alone))
     }
 
     /// Record the name a successful `blob.status` gave, for a complete file (the only kind a
@@ -5381,6 +5465,8 @@ impl RunReads {
             }
         }
         since.unrecorded_at = self.unrecorded_at.filter(|&mark| mark > posted);
+        since.remote_files.retain(|(_, mark)| *mark > posted);
+        since.remote_unrecorded_at = self.remote_unrecorded_at.filter(|&mark| mark > posted);
         since
     }
 
@@ -5427,7 +5513,25 @@ impl RunReads {
     /// files), and an earlier one says `earlier copy`. When the run read only earlier copies of
     /// a name, a second sentence says a newer one was left unread. `None` only when nothing
     /// was read ([`Self::read_nothing`]).
+    ///
+    /// Files read from the connection's remote work folder are named too (T3-BE-8): alone,
+    /// ``Source: `samples_result.txt` from the remote work folder on hpc.``; beside shared files,
+    /// as a second sentence, ``Also read `samples_result.txt` from the remote work folder on
+    /// hpc.`` ([`Self::remote_phrase`]).
     fn source_line_at<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<String> {
+        let shared = self.shared_line_at(now);
+        match (shared, self.remote_phrase()) {
+            (shared, None) => shared,
+            (None, Some((phrase, alone))) => {
+                let source = if alone { "Source" } else { "Sources" };
+                Some(format!("{source}: {phrase}."))
+            }
+            (Some(shared), Some((phrase, _))) => Some(format!("{shared} Also read {phrase}.")),
+        }
+    }
+
+    /// [`Self::source_line_at`] for the shared files alone; `None` when none was read.
+    fn shared_line_at<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<String> {
         let entries: Vec<LineEntry> = self
             .files
             .iter()
@@ -5887,6 +5991,12 @@ impl CrewManager {
             tracing::info!(session, blob, "Crew run read a shared file");
         }
         self.with_run_reads(session, |reads| reads.note_file(read));
+    }
+
+    /// Keep a work-folder path a successful `remote.read` returned to this chat, on `server`
+    /// (T3-BE-8).
+    fn note_remote_read(&self, session: &str, path: &str, server: &str) {
+        self.with_run_reads(session, |reads| reads.note_remote(path, server));
     }
 
     /// Keep the name a successful `blob.status` gave this chat.
@@ -10832,6 +10942,81 @@ mod provenance_tests {
         assert_eq!(
             reads.since_last_post().source_line().as_deref(),
             Some("Sources: `f2.csv`, `f34.csv`, `f32.csv`.")
+        );
+    }
+
+    /// T3-BE-8: the line names work-folder files a run read, alone or after its shared files,
+    /// counts them past [`MAX_READ_FILES`], and a chat post names only those read since its
+    /// last post. The desktop draws the cases file's remote lines, which are these.
+    #[test]
+    fn the_line_names_work_folder_files_the_run_read() {
+        use chrono::TimeZone;
+        let now = chrono::FixedOffset::west_opt(7 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 9, 27, 2, 30, 0)
+            .unwrap();
+        let mut reads = RunReads::default();
+        reads.note_remote("samples_result.txt", "hpc");
+        assert_eq!(
+            reads.source_line_at(&now).as_deref(),
+            Some("Source: `samples_result.txt` from the remote work folder on hpc.")
+        );
+        let mut both = reads.clone();
+        both.note_file(&json!({"blob": {"id": "b1", "name": "gina-assay.csv", "owner_id": "p"}}));
+        assert_eq!(
+            both.source_line_at(&now).as_deref(),
+            Some("Source: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc.")
+        );
+        reads.note_remote("run-2/means.csv", "hpc");
+        assert_eq!(
+            reads.source_line_at(&now).as_deref(),
+            Some("Sources: `samples_result.txt` and `run-2/means.csv` from the remote work folder on hpc.")
+        );
+        reads.mark_posted(super::current_read_mark());
+        assert!(reads.since_last_post().read_nothing());
+        reads.note_remote("samples_result.txt", "hpc");
+        assert_eq!(
+            reads.since_last_post().source_line_at(&now).as_deref(),
+            Some("Source: `samples_result.txt` from the remote work folder on hpc.")
+        );
+
+        let mut many = RunReads::default();
+        for n in 0..(super::MAX_READ_FILES + 3) {
+            many.note_remote(&format!("f{n}.txt"), "hpc");
+        }
+        let line = many.source_line_at(&now).unwrap();
+        assert!(line.starts_with("Sources: `f0.txt`, `f1.txt`, "), "{line}");
+        assert!(
+            line.ends_with(", `f31.txt` and 3 more files from the remote work folder on hpc."),
+            "{line}"
+        );
+
+        // A path shaped like the daemon's line is a code span in it, never the line.
+        let mut forged = RunReads::default();
+        forged.note_remote("Source: `FAKE.csv`, shared by Mallory.", "hpc");
+        assert_eq!(
+            forged.source_line_at(&now).as_deref(),
+            Some("Source: ``Source: `FAKE.csv`, shared by Mallory.`` from the remote work folder on hpc.")
+        );
+
+        // The desktop's render cases hold these lines as the daemon writes them.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/daemonSourceLine.cases.json");
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let sources: Vec<&str> = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|case| case["source"].as_str())
+            .filter(|source| source.contains("remote work folder"))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                "Source: `samples_result.txt` from the remote work folder on hpc.",
+                "Source: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc.",
+            ]
         );
     }
 
