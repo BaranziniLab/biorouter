@@ -276,6 +276,17 @@ describe('WorkspaceSettingsDialog', () => {
     await waitFor(() => expect(dialog).toHaveTextContent('Members'));
     expect(dialog).not.toHaveTextContent('Waiting to join');
     expect(within(dialog).queryByRole('button', { name: copy.invite })).toBeNull();
+    // UXN-5: where the host sees Invite people…, the member is told who invites, by name.
+    expect(
+      within(dialog).getByText('Only the host, Alice Chen (@alice), can invite new people.')
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the host’s People tab to Invite people…, with no line saying who may invite', async () => {
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(within(dialog).getByRole('button', { name: copy.invite })).toBeInTheDocument();
+    expect(within(dialog).queryByText(/can invite new people/)).toBeNull();
   });
 
   it('asks for the workspace name before allowing Public, from the Privacy tab', async () => {

@@ -138,6 +138,14 @@ export const workspaceSettingsCopy = {
   waiting: 'Waiting to join',
   members: 'Members',
   invite: 'Invite people…',
+  /**
+   * Where the host sees Invite people…, what a member sees instead (UXN-5): the menus had no entry
+   * and no word on who invites. `host` is named in full; null when the view does not know the host.
+   */
+  onlyHostInvites: (host: string | null) =>
+    host
+      ? `Only the host, ${host}, can invite new people.`
+      : 'Only the host can invite new people.',
   host: 'Host',
   /** The Host badge's tooltip: what the role is (QA Q2-69). */
   hostTooltip: (workspace: string) => `Workspace host: runs ${workspace} on the server`,
@@ -514,10 +522,16 @@ export const addPeopleCopy = {
   /** The host's invitees who have not joined the workspace yet (QA Q2-22). */
   invitedNotJoined: (workspace: string, names: string) =>
     `Invited to ${workspace}, not joined yet: ${names}.`,
-  /** Someone who may not add people here, told who may (the broker's rule, QA Q2-22). */
-  onlyOwnerOrHost: (owner: string | null, place: string) =>
+  /**
+   * Someone who may not add people here, told who may (the broker's rule, QA Q2-22). `owner` is
+   * named in full, "Alice Chen (@crew_alice)" (W2-UIW-7); when the owner is the host too, the
+   * sentence names one person, never the owner "or the host" as if they were two (UXN-9).
+   */
+  onlyOwnerOrHost: (owner: string | null, place: string, ownerIsHost = false) =>
     owner
-      ? `Only ${owner} or the host can add people to ${place}.`
+      ? ownerIsHost
+        ? `Only ${owner}, the host, can add people to ${place}.`
+        : `Only ${owner} or the host can add people to ${place}.`
       : `Only the owner of ${place} or the host can add people to it.`,
   /** The same under an older broker, where only the owner invites. */
   onlyOwner: (owner: string | null, place: string) =>

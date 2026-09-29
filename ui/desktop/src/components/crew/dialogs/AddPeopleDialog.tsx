@@ -11,6 +11,7 @@ import {
   channelName,
   OnlineMark,
   onlineSet,
+  personLabel,
   PersonName,
   teamName,
   usableName,
@@ -162,9 +163,11 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
   // A team's member list: for someone who may not add people to it (QA Q3-44), and for everyone
   // when the team menu's "Members of {team}…" asked for it, until they choose to add (QA Q4-35).
   const membersView = target === 'team' && (!mayAdd || (view === 'members' && !adding));
+  // Named in full at this authority point (W2-UIW-7), and once when the owner is the host (UXN-9).
+  const ownerName = owner ? personLabel(owner, 'authority', dir) : null;
   const onlyWho = directAdd
-    ? copy.onlyOwnerOrHost(owner ? `@${owner.username}` : null, place)
-    : copy.onlyOwner(owner ? `@${owner.username}` : null, place);
+    ? copy.onlyOwnerOrHost(ownerName, place, dir.isHost(owner))
+    : copy.onlyOwner(ownerName, place);
 
   const isChecked = (choice: ChannelChoice) =>
     choice.always || (checked[choice.id] ?? choice.checked);

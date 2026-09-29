@@ -429,6 +429,11 @@ function PeopleTab({
           {copy.noMembers(workspace)}
         </Note>
       ) : null}
+      {isHost ? null : (
+        <p className="text-supporting text-text-muted mt-2">
+          {copy.onlyHostInvites(dir.host ? personLabel(dir.host, 'authority', dir) : null)}
+        </p>
+      )}
     </div>
   );
 }
