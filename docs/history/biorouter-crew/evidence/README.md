@@ -8,6 +8,7 @@ local and are not published.
 
 | Record | What it holds |
 |---|---|
+| [Merge QA, 2026-09-27](merge-qa-2026-09-27.md) | The QA of the merged build: a static audit, two live runs on disposable AWS fleets, three fix waves with every finding mapped to its commits, the final live round on `341df2d06` and what is still open |
 | [UI redesign acceptance, 2026-09](ui-redesign-acceptance-2026-09.md) | The redesign and naming campaign: four live QA rounds with novice critics, per-round security results, the seven final acceptance lanes on `461f7899`, fixture provenance and what remains unverified |
 | [Shared-daemon acceptance on `532c3b7d`](shared-daemon-532c3b7d-20260923.md) | Observer fairness and released slots, PTY continuation, membership and derived-source refusals, and the three-user file and `qwen3:8b` replay on the `532c3b7d` native pair |
 | [Fresh 5455 shared-daemon acceptance](shared-daemon-acceptance-20260922.md) | The `qwen3:8b` shared-daemon tool workflow, the bounded observer lane and the large observer backlog stress on `5455ebf9` |

@@ -36,7 +36,7 @@ No documents sit directly in this folder apart from this index. All content sits
 
 | Folder | What it holds |
 |---|---|
-| [biorouter-crew](biorouter-crew/README.md) | The campaign that designed, built and tested Crew, from the first research on 2026-09-21 to its merge into `main` on 2026-09-27 (PR #366): the implementation plan and its §16 redesign and naming scope, the status ledger and handoff, the source investigations and independent reviews, four live QA rounds, and the bounded evidence runs behind each acceptance claim. Shipped. Its designs are living documentation under [crew/design](../crew/design/README.md), where the rows later fixes changed are marked in place. |
+| [biorouter-crew](biorouter-crew/README.md) | The campaign that designed, built and tested Crew, from the first research on 2026-09-21 to its merge into `main` on 2026-09-27 (PR #366): the implementation plan and its §16 redesign and naming scope, the status ledger and handoff, the source investigations and independent reviews, four live QA rounds, the bounded evidence runs behind each acceptance claim, and the merge QA and three fix waves that followed (PR #377). Shipped. Its designs are living documentation under [crew/design](../crew/design/README.md), where the rows later fixes changed are marked in place. |
 
 ## Desktop UI
 
