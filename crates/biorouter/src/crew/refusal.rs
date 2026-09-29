@@ -194,11 +194,15 @@ fn bounded_detail(text: &str) -> String {
     if clean.len() <= DETAIL_LIMIT {
         return clean;
     }
-    let mut end = DETAIL_LIMIT;
-    while !clean.is_char_boundary(end) {
-        end -= 1;
+    let mut kept = String::with_capacity(DETAIL_LIMIT + '…'.len_utf8());
+    for c in clean.chars() {
+        if kept.len() + c.len_utf8() > DETAIL_LIMIT {
+            break;
+        }
+        kept.push(c);
     }
-    format!("{}…", &clean[..end])
+    kept.push('…');
+    kept
 }
 
 /// `Private` or `Public`, as the manual writes a privacy mode.

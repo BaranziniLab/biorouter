@@ -5952,10 +5952,7 @@ fn connect_recorded(info: &Value, socket: &Path, owner: u32) -> Result<UnixStrea
         )
     };
     if let Err(error) = validate_socket(socket, owner) {
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|error| gone(error))
-        {
+        if error.downcast_ref::<std::io::Error>().is_some_and(&gone) {
             bail!(NOT_RUNNING);
         }
         return Err(error);
