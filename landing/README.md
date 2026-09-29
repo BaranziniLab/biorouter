@@ -108,7 +108,7 @@ Then visit `http://localhost:8080`.
 
 ### Inspirations
 
-Biorouter is an independent project that started from its own source code. The agents below influenced its design, Goose most of all, and it also draws on many open source libraries.
+Biorouter's design was inspired by the agents below, and Block's Goose was a major influence.
 
 - **[Goose](https://block.github.io/goose/)**: CLI and desktop agent for full developer workflows (Block), and a major inspiration for Biorouter's design
 - **[Claude Code](https://github.com/anthropics/claude-code)**: Anthropic's agentic coding tool for the terminal and IDE
