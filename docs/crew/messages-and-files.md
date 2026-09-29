@@ -201,7 +201,7 @@ A refused file shows a red note above the box. Its × closes the note.
 | A device, socket or pipe | Save the data to an ordinary file. |
 | A file that moved, changed or cannot be read | Check that you can open it, then add it again. |
 | A credential file, such as `id_rsa` or `.env` | Do not share it. |
-| A name with an invisible or formatting character, or with characters made to look blank | Rename the file, then share it again. Crew says so, such as "“report�.pdf” has an invisible or formatting character in its name. Rename the file, then share it again.", with each hidden character shown as �. Such a name could hide the file's real type from the people you share it with. |
+| A name with an invisible or formatting character, or with characters made to look blank | Rename the file, then share it again. Crew says so, such as "“report�.pdf” has an invisible or formatting character in its name. Rename the file, then share it again.", with each hidden character shown as �. A file you drag in may get the general note "Crew couldn't take …" instead; rename it the same way. Such a name could hide the file's real type from the people you share it with. |
 
 The credential check runs however a file arrives (the paperclip, a drag, a paste or a terminal),
 and can refuse a file after you choose **Share**. It checks the file's name, and reads the file's
