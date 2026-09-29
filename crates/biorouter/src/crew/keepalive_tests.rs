@@ -2292,6 +2292,50 @@ async fn a_workspace_server_that_is_down_is_tried_again_at_a_steady_pace() {
     f.manager.disconnect(CONNECTION_ID).await.unwrap();
 }
 
+/// T3-BE-15 (review): the tries while the server is down use up the schedule's time without
+/// taking gaps from the growing list. When the failure then changes kind (the host stopped the
+/// server, then its computer went off the network), the schedule ends there. Before, the next
+/// failure took every gap still listed, each cut to the zero time left, and dialled back to back
+/// until the list ran out: about 12 SSH spawns in well under a second under the default timing.
+#[tokio::test]
+async fn a_schedule_whose_time_the_steady_tries_used_up_ends_at_the_next_failure() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let timing = KeepaliveTiming {
+        // 50 ms, then 30 later gaps of 10 ms: a budget of 450 ms, and 32 gaps listed.
+        retry_delays: [Duration::from_millis(50); 3],
+        late_retry_every: Duration::from_millis(10),
+        late_retry_for: Duration::from_millis(300),
+        // One steady wait is longer than the whole budget, so the first one uses it up.
+        broker_down_every: Duration::from_secs(5),
+        ..fast(Duration::from_millis(50))
+    };
+    // The connect; the dial at once when the bridge is found gone, which arms the schedule;
+    // the schedule's first try after its first gap, which meets no server and so waits the
+    // steady interval, cut to the 400 ms left; and the try after it, which is unreachable.
+    let plan = [
+        &["broker-lost-after-1", "broker-stopped", "broker-stopped"][..],
+        &["unreachable"; 40][..],
+    ]
+    .concat();
+    let f = fixture("broker-down-then-unreachable", &plan, timing).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 4).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        spawns(&f.root),
+        4,
+        "no dial after the schedule's time ran out"
+    );
+    assert!(
+        !f.manager.redial_pending(CONNECTION_ID),
+        "the schedule ended and disarmed itself"
+    );
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
 /// T3-BE-16: a send refused while a re-dial is owed says how long the wait is when it is longer
 /// than a moment, and that Connect tries at once. The code is unchanged.
 #[tokio::test]

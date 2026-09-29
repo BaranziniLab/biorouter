@@ -845,6 +845,11 @@ impl CrewManager {
 /// after [`KeepaliveTiming::broker_down_every`] rather than the next growing gap, until the time
 /// the whole schedule would have taken is used up (T3-BE-15): a host restarting the server is
 /// then noticed within that interval. Any other failure keeps the growing gaps.
+///
+/// The schedule ends once that time is used up, whichever pace used it. The steady tries spend
+/// it without taking gaps from the growing list, so a failure of another kind after them would
+/// otherwise take every gap still listed, each cut to the zero time left, and dial back to back
+/// until the list ran out (W2-DMN-6: the daemon's own dials are always spaced).
 async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64, now: bool) {
     let Some((mut gaps, broker_down_every)) = manager.upgrade().map(|manager| {
         let timing = manager.keepalive_timing();
@@ -877,8 +882,10 @@ async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64, now
                 break;
             }
             Some(Err(error)) if worth_retrying(&error) => {
-                delay = if broker_not_running(&error) && !broker_down_every.is_zero() {
-                    (!left.is_zero()).then_some(broker_down_every)
+                delay = if left.is_zero() {
+                    None
+                } else if broker_not_running(&error) && !broker_down_every.is_zero() {
+                    Some(broker_down_every)
                 } else {
                     gaps.next()
                 };
