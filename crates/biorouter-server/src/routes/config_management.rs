@@ -713,10 +713,26 @@ fn names_a_provider(key: &str) -> bool {
 /// updated". Every new chat then failed to start, and the app raised the
 /// non-private-model disclosure for a provider that does not exist.
 /// `/config/set_provider` already refuses such a name, by building the provider.
+///
+/// ⚠ The name is compared exactly as it will be stored. The route writes
+/// `value` unchanged, and the factory looks a provider up by that exact string
+/// (`get_from_registry` does not trim), so a check that trimmed first passed
+/// `" openai "` and saved a name no new chat could start on. A name with
+/// spaces around it is refused with a sentence that says so, rather than
+/// quietly rewritten: every gate above this check judged the value as sent,
+/// and the value written must be the value they judged.
 fn unknown_provider_refusal(key: &str, value: &Value, registered: &[String]) -> Option<String> {
-    let name = value.as_str().map(str::trim).unwrap_or_default();
-    if !name.is_empty() && registered.iter().any(|known| known == name) {
+    let name = value.as_str().unwrap_or_default();
+    let is_registered = |candidate: &str| registered.iter().any(|known| known == candidate);
+    if !name.is_empty() && is_registered(name) {
         return None;
+    }
+    let trimmed = name.trim();
+    if trimmed != name && !trimmed.is_empty() && is_registered(trimmed) {
+        return Some(format!(
+            "'{name}' has spaces around the provider name, so {key} was not changed. Save it \
+             as '{trimmed}'."
+        ));
     }
     let shown = if name.is_empty() {
         value.to_string()
@@ -3835,16 +3851,33 @@ mod tests {
             "biorouter_provider",
         ] {
             assert!(names_a_provider(key), "{key}");
-            for accepted in [json!("openai"), json!(" versa_azure ")] {
+            for accepted in [json!("openai"), json!("versa_azure")] {
                 assert_eq!(
                     unknown_provider_refusal(key, &accepted, &registered),
                     None,
                     "{key} = {accepted}"
                 );
             }
+            // The route stores the value as sent and the factory does not trim
+            // when it looks the name up, so a padded name is refused, in words
+            // that say what to change, rather than saved for every new chat to
+            // fail on.
+            for (padded, bare) in [
+                (" versa_azure ", "versa_azure"),
+                ("openai ", "openai"),
+                ("\topenai\n", "openai"),
+            ] {
+                let refusal = unknown_provider_refusal(key, &json!(padded), &registered)
+                    .unwrap_or_else(|| panic!("{key} = {padded:?} was accepted"));
+                assert!(refusal.contains("has spaces around"), "{refusal}");
+                assert!(refusal.contains(&format!("'{bare}'")), "{refusal}");
+                assert!(refusal.contains(key), "{refusal}");
+            }
             for refused in [
                 json!("bogus_provider_qa"),
                 json!("OpenAI"),
+                json!(" bogus_provider_qa "),
+                json!("   "),
                 json!(""),
                 json!(null),
                 json!(3),
@@ -5020,6 +5053,21 @@ mod destination_route_tests {
             sentence.contains("'bogus_provider_qa' is not a provider"),
             "{sentence}"
         );
+        assert!(
+            stored("BIOROUTER_PROVIDER").is_none(),
+            "nothing was written"
+        );
+        // Edit configuration sends the field as typed. A registered name with a
+        // space after it is not a name the factory can find, so it is refused
+        // too, and nothing reaches the file.
+        let (status, sentence) = upsert_config(
+            headers_with(Some(TEST_USER_ACTION_KEY)),
+            write("BIOROUTER_PROVIDER", "openai ", false),
+        )
+        .await
+        .expect_err("a padded provider name is refused");
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(sentence.contains("has spaces around"), "{sentence}");
         assert!(
             stored("BIOROUTER_PROVIDER").is_none(),
             "nothing was written"
