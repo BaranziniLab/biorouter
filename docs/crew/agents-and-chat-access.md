@@ -114,7 +114,7 @@ The chat needs a sent message (in a new chat, the `/crew` suggestion reads "Conn
 2. Crew opens the first workspace in its list, at the channel you last had open there, with the Chat access pane. If you see "{workspace} is offline", choose **Connect to {workspace}**.
 3. Check the pane. It names the channel, which is always the one Crew shows, the **Workspace**, and the chat's **Model** with its privacy chip, and says the chat posts there as your agent. If your connection has a **Remote work folder** and the model is not public, the chat gets the folder too, and the pane lists it: "Read and write files in /home/bob/project", or "Read and write files, and run commands, in /home/bob/project" when **Let my agent run commands in this folder** is on. It also says "The first access fixes this chat’s workspace, channel and model." To change the channel, see [Another channel or workspace](#another-channel-or-workspace). If the workspace will refuse the chat's model, the pane says why, and Allow stays unavailable until you [change the model](#another-channel-or-workspace).
 4. Optionally open **Advanced** and tick more channels under "Also read".
-5. Choose **Allow “Plot review” to read and post in #methods** (**Allow this conversation to read and post here** when the title is unknown).
+5. Read what the pane lists under "“Plot review” will be able to" ("This chat will be able to" when the title is unknown), then choose **Allow**.
 6. The pane shows "Connected." and "Active · ends 4:40 PM". Choose **Back to chat**, and ask for what you need.
 
 ### Another channel or workspace

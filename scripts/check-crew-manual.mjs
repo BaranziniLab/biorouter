@@ -89,6 +89,8 @@
 //     (T3-DOC-6). The agents page quotes the Chat access pane's work folder
 //     lines and the work folder switch's help (T3-DOC-5).
 //   * `pause-reasons` also reads a reason kept as its own constant (T3-DOC-6).
+//   * `allow-button`: the Chat access pane's Allow button is named as the
+//     pane labels it, never with the chat's title it used to carry.
 //   * `refusal-codes` also holds every code the command line gives its own
 //     errors, and `ssh-codes` the words a login on this machine gets in place
 //     of the advice to ask IT (T3-DOC-3).
@@ -1652,6 +1654,39 @@ export function checkCrewManual(tree = repoTree()) {
         fail(
           'data-paths',
           `${ADMINISTRATION}'s "Where Crew keeps its data" has no row for ${path}, which Crew writes on each computer`
+        );
+      }
+    }
+  }
+
+  // ── allow-button ─────────────────────────────────────────────────────────
+  // The Chat access pane's Allow button is one word that never changes, and the sentence above it
+  // names the chat (UXN-10). The manual and the landing page named a button, "Allow “Plot review”
+  // to read and post in #methods", that no screen shows any more.
+  const accessForAllow = need(ACCESS_COPY, 'allow-button');
+  if (accessForAllow !== null) {
+    const allow = tsCopyString(accessForAllow, 'allow');
+    if (allow === null) {
+      fail('allow-button', `${ACCESS_COPY} has no string allow; update this rule`);
+    } else if (!/[{“"]/.test(allow)) {
+      for (const { path, blocks } of surfaces) {
+        for (const block of blocks) {
+          if (
+            /\bAllow (?:“|")[^”"]+(?:”|") to read and post\b|\bAllow this conversation to read\b/.test(
+              block
+            )
+          ) {
+            fail(
+              'allow-button',
+              `${path} names an Allow button that carries the chat, but ${ACCESS_COPY} labels it "${allow}": ${block.slice(0, 140)}`
+            );
+          }
+        }
+      }
+      if (!(tree.read(AGENTS_PAGE) || '').includes(`**${allow}**`)) {
+        fail(
+          'allow-button',
+          `${AGENTS_PAGE} does not name the Chat access pane's **${allow}** button`
         );
       }
     }

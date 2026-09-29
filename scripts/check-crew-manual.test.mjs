@@ -1406,6 +1406,29 @@ test('command line: Privacy settings says a connection under another institution
   );
 });
 
+test('allow-button: the Allow button is named as the pane labels it', () => {
+  assertCaught(
+    {
+      [AGENTS]: swap(
+        '5. Read what the pane lists under "“Plot review” will be able to" ("This chat will be able to" when the title is unknown), then choose **Allow**.',
+        '5. Choose **Allow “Plot review” to read and post in #methods** (**Allow this conversation to read and post here** when the title is unknown).'
+      ),
+    },
+    'allow-button',
+    /agents-and-chat-access\.md names an Allow button that carries the chat/
+  );
+  assertCaught(
+    {
+      [LANDING]: swap(
+        'then choose <strong>Allow</strong>. The pane shows',
+        'Choose <strong>Allow “{chat title}” to read and post in #methods</strong>. The pane shows'
+      ),
+    },
+    'allow-button',
+    /landing\/docs\.html#crew names an Allow button/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });
