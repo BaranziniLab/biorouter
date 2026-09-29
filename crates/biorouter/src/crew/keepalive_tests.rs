@@ -2187,8 +2187,7 @@ async fn an_expectation_met_by_a_stale_hello_is_held_where_it_counts() {
     let posted_mode = |root: &Path| {
         frames(root)
             .into_iter()
-            .filter(|frame| frame["method"] == "message.post")
-            .last()
+            .rfind(|frame| frame["method"] == "message.post")
             .map(|frame| frame["params"]["personal_mode"].clone())
     };
     for (expected, told) in [("private", "private"), ("public", "public")] {
