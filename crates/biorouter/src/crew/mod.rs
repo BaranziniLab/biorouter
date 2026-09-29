@@ -469,6 +469,31 @@ const BRIDGE_FAILED: &str = "SSH bridge failed. Reconnect; inspect any submitted
 /// The last error of a bridge that broke under a read: nothing can have changed (W2-DMN-6).
 const READ_DROPPED: &str = "The connection to this workspace dropped.";
 
+/// A wait for the next dial this long or shorter reads as "in a moment" (T3-BE-16).
+const RECONNECT_SOON: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a request refused with `crew_reconnecting` is told, when the daemon dials `workspace`
+/// again in `wait` (T3-BE-16). A short or unknown wait is "a moment", as it always was. A longer
+/// one (after two breaks in a row the schedule waits 60 s, then 180 s) says how long and that
+/// Connect tries at once: every send meanwhile used to say "try again in a moment" for up to
+/// three minutes.
+fn reconnecting_sentence(workspace: &str, wait: Option<std::time::Duration>) -> String {
+    match wait.filter(|wait| *wait > RECONNECT_SOON) {
+        None => format!("Reconnecting to {workspace}. Nothing was sent; try again in a moment."),
+        Some(wait) => {
+            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            let when = if seconds < 120 {
+                format!("{seconds} seconds")
+            } else {
+                format!("{} minutes", seconds.div_ceil(60))
+            };
+            format!(
+                "Reconnecting to {workspace} in about {when}. Nothing was sent. Connect now to try at once."
+            )
+        }
+    }
+}
+
 /// The last error of a bridge that broke carrying `method`, whose answer was `answer`
 /// (T3-BE-1). [`BRIDGE_FAILED`], which asks the person to inspect what was submitted, only when a
 /// change was written and its answer lost: `crew_outcome_unknown`, an SSH failure that says so,
@@ -915,6 +940,9 @@ pub struct CrewManager {
     /// Connect), by the wall clock, so a bridge that breaks again right after it is not dialled
     /// at once a second time (W2-DMN-6); see `keepalive.rs`.
     own_dials: StdMutex<HashMap<String, std::time::SystemTime>>,
+    /// When the armed re-dial schedule of each connection (by its token) dials next, by the wall
+    /// clock, so a request refused meanwhile can say how long the wait is (T3-BE-16).
+    next_redial: StdMutex<HashMap<String, (u64, std::time::SystemTime)>>,
     /// Connections whose device the workspace accepted a person-signed request from in this
     /// process (Q3-12). Only these can have a membership that *ended*: a device the workspace
     /// never knew is one still joining, which keeps its bridge (see `keepalive.rs`).
@@ -1769,6 +1797,7 @@ impl CrewManager {
             keepalive: StdMutex::new(keepalive::KeepaliveTiming::default()),
             idle_redial: StdMutex::new(HashMap::new()),
             own_dials: StdMutex::new(HashMap::new()),
+            next_redial: StdMutex::new(HashMap::new()),
             members: StdMutex::new(std::collections::HashSet::new()),
             error_codes: StdMutex::new(HashMap::new()),
             run_reads: StdMutex::new(HashMap::new()),
@@ -3312,7 +3341,7 @@ impl CrewManager {
             let workspace = self.workspace_label(id).await;
             return Err(CrewRefusal::new(
                 refusal::RECONNECTING,
-                format!("Reconnecting to {workspace}. Nothing was sent; try again in a moment."),
+                reconnecting_sentence(&workspace, self.next_redial_in(id)),
             )
             .status(503)
             .with("workspace", json!(workspace))

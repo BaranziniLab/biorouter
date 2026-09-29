@@ -108,6 +108,11 @@ pub(super) struct KeepaliveTiming {
     pub late_retry_every: Duration,
     /// How long those later tries go on; zero for none.
     pub late_retry_for: Duration,
+    /// While the last try met no workspace server (`crew_broker_not_running`: the host stopped
+    /// or restarted it, or its computer rebooted), how often to try again instead of the growing
+    /// gaps, for as long as the schedule would have gone on (T3-BE-15). Its host restarting it
+    /// is the likely next event, and members used to notice only 2 to 3 minutes later.
+    pub broker_down_every: Duration,
     /// How often, between ticks, the keepalive checks whether its bridge's `ssh` has exited:
     /// local process state only, never a request (Q4-08).
     pub ended_check: Duration,
@@ -131,6 +136,7 @@ impl Default for KeepaliveTiming {
             ],
             late_retry_every: Duration::from_secs(5 * 60),
             late_retry_for: Duration::from_secs(60 * 60),
+            broker_down_every: Duration::from_secs(30),
             ended_check: Duration::from_secs(5),
             revocation_retry_first: Duration::from_secs(5),
             revocation_retry_max: Duration::from_secs(5 * 60),
@@ -515,6 +521,33 @@ impl CrewManager {
             .is_some_and(|since| since < gap)
     }
 
+    /// How long until `id`'s armed schedule dials next, by the wall clock; `None` when no
+    /// schedule is armed or it has not said (T3-BE-16).
+    pub(super) fn next_redial_in(&self, id: &str) -> Option<Duration> {
+        let armed = *self
+            .idle_redial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)?;
+        let (token, at) = *self
+            .next_redial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)?;
+        (token == armed).then(|| {
+            at.duration_since(std::time::SystemTime::now())
+                .unwrap_or(Duration::ZERO)
+        })
+    }
+
+    /// Record that `id`'s schedule armed with `token` dials next in `delay`.
+    fn note_next_redial(&self, id: &str, token: u64, delay: Duration) {
+        self.next_redial
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.to_owned(), (token, std::time::SystemTime::now() + delay));
+    }
+
     /// Whether `id` is being dialled again by itself: a schedule is armed and no bridge is up.
     /// A request meanwhile is told so (`crew_reconnecting`), not asked to sign in (W2-DMN-6).
     pub(super) fn redial_pending(&self, id: &str) -> bool {
@@ -807,17 +840,33 @@ impl CrewManager {
 /// about the network, when the schedule is no longer owed (a Disconnect, an edit or removal, a
 /// newer schedule, a pending sign-in), or when the gaps run out; and disarms its own token, never
 /// a newer one.
+///
+/// While the last try met no workspace server (`crew_broker_not_running`), the next try comes
+/// after [`KeepaliveTiming::broker_down_every`] rather than the next growing gap, until the time
+/// the whole schedule would have taken is used up (T3-BE-15): a host restarting the server is
+/// then noticed within that interval. Any other failure keeps the growing gaps.
 async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64, now: bool) {
-    let Some(gaps) = manager.upgrade().map(|manager| {
-        now.then_some(Duration::ZERO)
+    let Some((mut gaps, broker_down_every)) = manager.upgrade().map(|manager| {
+        let timing = manager.keepalive_timing();
+        let gaps = now
+            .then_some(Duration::ZERO)
             .into_iter()
-            .chain(manager.keepalive_timing().redial_gaps())
-            .collect::<Vec<_>>()
+            .chain(timing.redial_gaps())
+            .collect::<Vec<_>>();
+        (gaps.into_iter(), timing.broker_down_every)
     }) else {
         return;
     };
-    for delay in gaps {
-        tokio::time::sleep(delay).await;
+    // How long the schedule goes on, from now, whatever pace the tries take.
+    let mut left: Duration = gaps.clone().sum();
+    let mut delay = gaps.next();
+    while let Some(wait) = delay {
+        let wait = wait.min(left);
+        left = left.saturating_sub(wait);
+        if let Some(manager) = manager.upgrade() {
+            manager.note_next_redial(&id, token, wait);
+        }
+        tokio::time::sleep(wait).await;
         let Some(manager) = manager.upgrade() else {
             return;
         };
@@ -827,13 +876,28 @@ async fn redial_schedule(manager: Weak<CrewManager>, id: String, token: u64, now
                 manager.probe_membership(&id).await;
                 break;
             }
-            Some(Err(error)) if worth_retrying(&error) => continue,
+            Some(Err(error)) if worth_retrying(&error) => {
+                delay = if broker_not_running(&error) && !broker_down_every.is_zero() {
+                    (!left.is_zero()).then_some(broker_down_every)
+                } else {
+                    gaps.next()
+                };
+            }
             Some(Err(_)) => break,
         }
     }
     if let Some(manager) = manager.upgrade() {
         manager.disarm_idle_redial_if(&id, token);
     }
+}
+
+/// Whether `error` says the workspace's server was not running: SSH and the bridge worked, and
+/// nothing answered on the workspace's socket.
+fn broker_not_running(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        .is_some_and(|failure| failure.kind == SshFailureKind::BrokerNotRunning)
 }
 
 /// The keepalive of one bridge: heartbeat it while it is idle, and dial again when it is gone.

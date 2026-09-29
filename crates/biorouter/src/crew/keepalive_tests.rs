@@ -435,6 +435,7 @@ fn fast(retry: Duration) -> KeepaliveTiming {
         // No later tries unless a test asks for them (see `with_late_retries`).
         late_retry_every: retry,
         late_retry_for: Duration::ZERO,
+        broker_down_every: retry,
         ended_check: Duration::from_millis(40),
         revocation_retry_first: Duration::from_millis(40),
         revocation_retry_max: Duration::from_millis(160),
@@ -704,6 +705,7 @@ async fn a_request_after_a_long_idle_is_never_written_to_a_dropped_bridge() {
             retry_delays: [Duration::from_secs(600); 3],
             late_retry_every: Duration::from_secs(600),
             late_retry_for: Duration::ZERO,
+            broker_down_every: Duration::from_secs(600),
             ended_check: Duration::from_secs(600),
             revocation_retry_first: Duration::from_secs(600),
             revocation_retry_max: Duration::from_secs(600),
@@ -846,6 +848,7 @@ fn slept() -> KeepaliveTiming {
         retry_delays: [Duration::from_secs(600); 3],
         late_retry_every: Duration::from_secs(600),
         late_retry_for: Duration::ZERO,
+        broker_down_every: Duration::from_secs(600),
         ended_check: Duration::from_secs(600),
         revocation_retry_first: Duration::from_secs(600),
         revocation_retry_max: Duration::from_secs(600),
@@ -1758,6 +1761,7 @@ fn request_finds(retry: Duration) -> KeepaliveTiming {
     KeepaliveTiming {
         retry_delays: [retry; 3],
         late_retry_every: retry,
+        broker_down_every: retry,
         ..quiet()
     }
 }
@@ -2082,6 +2086,129 @@ async fn only_a_lost_change_leaves_the_submitted_operation_alarm() {
         );
         f.manager.disarm_idle_redial(CONNECTION_ID);
     }
+}
+
+/// T3-BE-15: while the workspace's server is not running (the host stopped or restarted it, or
+/// its computer rebooted), the daemon tries again at a steady short interval instead of the
+/// growing gaps, so a server the host started again is noticed within that interval. Members
+/// used to come back 2 to 3 minutes after it was up again, while being told to ask the host.
+#[tokio::test]
+async fn a_workspace_server_that_is_down_is_tried_again_at_a_steady_pace() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let steady = KeepaliveTiming {
+        // The growing gaps: a second try 10 s after the first would fail this test.
+        retry_delays: [
+            Duration::from_millis(50),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+        ],
+        late_retry_every: Duration::from_secs(60),
+        late_retry_for: Duration::from_secs(120),
+        broker_down_every: Duration::from_millis(100),
+        ..fast(Duration::from_millis(50))
+    };
+    let f = fixture(
+        "broker-down-steady",
+        &[
+            "broker-lost-after-1",
+            "broker-stopped",
+            "broker-stopped",
+            "broker-stopped",
+            "broker-stopped",
+            "serve",
+        ],
+        steady,
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    // Five tries that meet no server, then one that does, in well under the 10 s gap.
+    until(async || spawns(&root) == 6 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    drop(f);
+
+    // Any other failure keeps the growing gaps: after the network fails twice, the next try is
+    // the 10 s gap away.
+    let f = fixture(
+        "network-down-grows",
+        &["drop-after-1", "unreachable", "unreachable", "serve"],
+        steady,
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 3).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(spawns(&f.root), 3, "the growing gap is kept");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// T3-BE-16: a send refused while a re-dial is owed says how long the wait is when it is longer
+/// than a moment, and that Connect tries at once. The code is unchanged.
+#[tokio::test]
+async fn a_request_while_a_long_redial_is_owed_says_how_long() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-reconnecting-long",
+        &["drop-after-1", "unreachable", "serve"],
+        request_finds(Duration::from_secs(90)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 2).await;
+    let manager = Arc::clone(&f.manager);
+    until(async || !manager.transports.lock().await.contains_key(CONNECTION_ID)).await;
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_reconnecting");
+    let text = error.to_string();
+    assert!(
+        text.starts_with("Reconnecting to keepalive fixture in about ")
+            && text.ends_with(" seconds. Nothing was sent. Connect now to try at once."),
+        "{text}"
+    );
+    let seconds: u64 = text
+        .trim_start_matches("Reconnecting to keepalive fixture in about ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((80..=90).contains(&seconds), "{seconds}");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+#[test]
+fn the_reconnecting_sentence_names_a_wait_longer_than_a_moment() {
+    use super::reconnecting_sentence;
+    for wait in [None, Some(Duration::ZERO), Some(Duration::from_secs(10))] {
+        assert_eq!(
+            reconnecting_sentence("okafor-lab", wait),
+            "Reconnecting to okafor-lab. Nothing was sent; try again in a moment."
+        );
+    }
+    assert_eq!(
+        reconnecting_sentence("okafor-lab", Some(Duration::from_millis(59_200))),
+        "Reconnecting to okafor-lab in about 60 seconds. Nothing was sent. Connect now to try at once."
+    );
+    assert_eq!(
+        reconnecting_sentence("okafor-lab", Some(Duration::from_secs(179))),
+        "Reconnecting to okafor-lab in about 3 minutes. Nothing was sent. Connect now to try at once."
+    );
 }
 
 /// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`
