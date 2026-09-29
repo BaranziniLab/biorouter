@@ -129,7 +129,7 @@ The channel moves under **Archived ({n})** with an "Archived" badge. Its members
 
 ## Add and remove people
 
-You can add only people who have joined the workspace. The host invites new people: see [Invite people](hosting-a-workspace.md#invite-people). Adding is immediate. A person added to a team also joins its `#general`. A channel takes only members of its team.
+You can add only people who have joined the workspace. The host invites new people: see [Invite people](hosting-a-workspace.md#invite-people). Other members see "Only the host, Alice Chen (@alice), can invite new people." on the **People** tab of "{workspace} settings". Adding is immediate. A person added to a team also joins its `#general`. A channel takes only members of its team.
 
 A person you add can read everything already posted in the channel, files included, and the dialog says so before you choose **Add**. Someone removed and added again also sees what was posted while they were out. Move anything the person should not read to another channel before you add them.
 

@@ -361,7 +361,7 @@ Without `--shared-daemon`, the chat cannot use a grant.
 
 Saving your connection's privacy or institution ends your chats' access through it. A connection that was connected reconnects at once, and one that was disconnected stays so.
 
-An institution ID is 1 to 64 lowercase letters, digits, `_` or `-`. Changing the workspace's privacy ends every agent grant. Switching to Public never exposes earlier Private content. See [Privacy and security](privacy-and-security.md).
+A Private connection's institution must be the workspace's, once the workspace has one, since the host fixes it for good. Another one is refused and nothing is saved, such as ``This connection is for stanford, but lab belongs to ucsf. Use ucsf here.`` (code `crew_institution_mismatch`, with `connection_institution` and `workspace_institution` in JSON). An institution ID is 1 to 64 lowercase letters, digits, `_` or `-`. Changing the workspace's privacy ends every agent grant. Switching to Public never exposes earlier Private content. See [Privacy and security](privacy-and-security.md).
 
 To stop a script when the policy changed after it checked, pass the epochs from `privacy show` to `--expected-policy-epoch` and `--expected-workspace-policy-epoch`. For posts and file transfers, use `--expected-mode private`.
 

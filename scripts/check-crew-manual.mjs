@@ -82,7 +82,8 @@
 //     to the end of a sentence, since each conflict has its own way out
 //     (T3-DOC-4). The command-line page quotes the command line's own
 //     sentences for a missing --connection, an over-long message, a join
-//     conflict, a disconnected connection and an ended grant (T3-DOC-3). The
+//     conflict, a disconnected connection, an ended grant and a connection
+//     saved under another institution than its workspace's (T3-DOC-3). The
 //     troubleshooting and files pages quote what a server that stopped saving,
 //     a restarted background service and a name with hidden characters show
 //     (T3-DOC-6). The agents page quotes the Chat access pane's work folder
@@ -169,6 +170,7 @@ const ADMINISTRATION = 'docs/crew/administration.md';
 const JOINING_PAGE = 'docs/crew/joining-a-workspace.md';
 const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
 const BAR_COPY = 'ui/desktop/src/components/crew/channel/copy.ts';
+const INSTITUTION_RS = 'crates/biorouter/src/crew/institution.rs';
 const LOCAL_FILES_RS = 'crates/biorouter-server/src/crew/local_files.rs';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
@@ -948,6 +950,7 @@ export function checkCrewManual(tree = repoTree()) {
   const onboardingSource = need(ONBOARDING_COPY, 'app-sentences');
   const barSource = need(BAR_COPY, 'app-sentences');
   const accessSource = need(ACCESS_COPY, 'app-sentences');
+  const institutionSource = need(INSTITUTION_RS, 'app-sentences');
   const localFilesSource = need(LOCAL_FILES_RS, 'app-sentences');
   const opening = (texts, opens) =>
     texts.map((text) => text.trim()).filter((text) => opens.test(sameQuotes(text)));
@@ -1069,6 +1072,19 @@ export function checkCrewManual(tree = repoTree()) {
       templates: opening(tsLiterals(dialogsSource || ''), /^Commands run with no network\b/),
       source: dialogsSource,
       requiredIn: [AGENTS_PAGE],
+      requiredWhole: true,
+    },
+    {
+      // A save under another institution than the workspace's is refused (T3-DOC-3), where the
+      // command line used to save it and every task was refused afterwards.
+      name: `the institution refusal in ${INSTITUTION_RS} and ${DIALOGS_COPY}`,
+      opens: /^This connection is for\b/,
+      templates: opening(
+        [...rustLiterals(institutionSource || ''), ...tsLiterals(dialogsSource || '')],
+        /^This connection is for\b/
+      ),
+      source: institutionSource,
+      requiredIn: [COMMAND_LINE, TROUBLESHOOTING],
       requiredWhole: true,
     },
     {

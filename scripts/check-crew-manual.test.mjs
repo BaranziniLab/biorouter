@@ -1377,6 +1377,35 @@ test('agents page: a chat grant includes the work folder, as the Chat access pan
   );
 });
 
+test('command line: Privacy settings says a connection under another institution is refused (T3-DOC-3)', () => {
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text.replace(
+          /A Private connection's institution must be the workspace's[^`]*``[^`]*`` \([^)]*\)\. /,
+          ''
+        ),
+    },
+    'app-sentences',
+    /command-line\.md does not quote the institution refusal/
+  );
+  // The daemon rewords it and the page keeps the old words.
+  assertCaught(
+    {
+      'crates/biorouter/src/crew/institution.rs': swap(
+        'belongs to {theirs}. Use {theirs} here.',
+        'belongs to {theirs}. Choose {theirs} instead.'
+      ),
+      'ui/desktop/src/components/crew/dialogs/copy.ts': swap(
+        'belongs to ${institution}. Use ${institution} here.',
+        'belongs to ${institution}. Choose ${institution} instead.'
+      ),
+    },
+    'app-sentences',
+    /quotes "This connection is for stanford, but lab belongs to ucsf\. Use ucsf here\.", which is not how/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

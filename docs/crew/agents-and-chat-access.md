@@ -108,7 +108,7 @@ A task's access ends once it posts its result, and its access row reads "Ended",
 
 ## Connect a chat with /crew
 
-The chat needs a sent message (otherwise you see "Start the chat first"), no attached files, images or reference chips (otherwise "Draft kept"), a model, and no reply in progress. Reference chips are labels added with @, or with **Quote it** in the menu when you right click selected text in a chat.
+The chat needs a sent message (in a new chat, the `/crew` suggestion reads "Connect this chat to a Crew channel after your first message", and typing it shows "Start the chat first"), no attached files, images or reference chips (otherwise "Draft kept"), a model, and no reply in progress. Reference chips are labels added with @, or with **Quote it** in the menu when you right click selected text in a chat.
 
 1. Type `/crew` alone in the chat's message box and press Enter. Nothing is sent to the model.
 2. Crew opens the first workspace in its list, at the channel you last had open there, with the Chat access pane. If you see "{workspace} is offline", choose **Connect to {workspace}**.
