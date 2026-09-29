@@ -1517,7 +1517,10 @@ test('source-line: the agents page quotes the source line for a work-folder file
   assertCaught(
     {
       'ui/desktop/src/components/crew/daemonSourceLine.cases.json': (text) =>
-        text.replaceAll('from the remote work folder on hpc', 'in the work folder on hpc'),
+        text.replaceAll(
+          '` from the remote work folder on hpc',
+          '`, read from the remote work folder on hpc'
+        ),
     },
     'source-line',
     /quotes "Source: `samples_result\.txt` from the remote work folder on hpc\.", which no case/
