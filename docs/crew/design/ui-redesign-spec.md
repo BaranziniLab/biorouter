@@ -20,11 +20,11 @@ the companion [naming design](naming-design.md).
   `CV` is `crew/CrewView.tsx`, `CVT` is `crew/CrewView.regression.test.tsx`, `CAT` is
   `crew/CrewAuthentication.regression.test.tsx`, `CFT` is `crew/CrewFiles.regression.test.tsx`. `CV:123` is a line
   of `CrewView.tsx` at the design's base commit `76b88555`.
-- **Test constraints `C1`–`C16`** are the rules the current regression tests impose, and **latent defects
-  `L1`–`L19`** are bugs found while inventorying the current UI. Both lists are reproduced in
+- **Test constraints `C1` to `C16`** are the rules the current regression tests impose, and **latent defects
+  `L1` to `L19`** are bugs found while inventorying the current UI. Both lists are reproduced in
   [Test constraints and latent defects](#test-constraints-and-latent-defects) so this document stands alone.
-- **Naming slices `S0`–`S4`** and **decisions `D1`–`D17`** are defined in the [naming design](naming-design.md).
-  Revoke daemon items **`RV-D1`–`RV-D5`** and renderer items **`RV-R1`–`RV-R3`** are defined in
+- **Naming slices `S0` to `S4`** and **decisions `D1` to `D17`** are defined in the [naming design](naming-design.md).
+  Revoke daemon items **`RV-D1` to `RV-D5`** and renderer items **`RV-R1` to `RV-R3`** are defined in
   [Revoke](#revoke).
 - A string marked **(pinned)** is asserted by a test or cited by acceptance evidence. Change it only together with
   its test, as listed in [Test migration plan](#test-migration-plan).
@@ -117,7 +117,7 @@ uses an idle timeout, `ControlPersist=600`, so any time shown would be a guess).
 
 ### Placement, the 44px band and the drag region
 
-Crew is one route (`/crew`) inside `SidebarInset`. The app sidebar (216–360px, default 288px, auto-collapsed below a
+Crew is one route (`/crew`) inside `SidebarInset`. The app sidebar (216 to 360px, default 288px, auto-collapsed below a
 1120px window by `SIDEBAR_COMPACT_WIDTH`) is unchanged, with **Crew** highlighted.
 
 - **One continuous top edge.** The Crew sidebar header (workspace switcher), the channel header and the pane header
@@ -157,7 +157,7 @@ them.
 | Window and app sidebar | Crew area | Channel column | Pane opens as |
 |---|---|---|---|
 | 1048px, sidebar auto-collapsed (default) | 1048 | 808 | **Push** (channel keeps 448px) |
-| 1120–1279px, sidebar open at 288px | 832–991 | 592–751 | **Cover** |
+| 1120 to 1279px, sidebar open at 288px | 832 to 991 | 592 to 751 | **Cover** |
 | 1280px, sidebar open | 992 | 752 | **Cover** |
 | 1280px, sidebar collapsed by the user | 1280 | 1040 | Push (680) |
 | 1440px, sidebar open | 1152 | 912 | Push (552) |
@@ -550,10 +550,10 @@ menu** (right-click, or Shift+F10 on the focused row): Channel details · Mark a
 
 | `status` | Word | Tone | Inline action | Stop shown |
 |---|---|---|---|---|
-| `starting` | Starting… | running pulse | — | yes |
+| `starting` | Starting… | running pulse | None | yes |
 | `running` | Working… | running pulse | Open | yes |
 | `waiting_for_approval` | Waiting for your approval | warning `Badge` | **Review** (secondary `sm`) | yes |
-| `cancellation_pending` | Stopping… | running pulse | — | yes (retry) |
+| `cancellation_pending` | Stopping… | running pulse | None | yes (retry) |
 | `cancellation_unconfirmed` | Stop not confirmed | warning `Badge` | Try stopping again | yes |
 | `interrupted` | Interrupted | muted | Open | yes |
 | `outcome_not_durable` | Outcome unknown | muted | Open | yes |
@@ -665,9 +665,9 @@ the pane survives a manual refresh (C1, CVT:437-466).
 
 | Screen | Condition | Main area | One action |
 |---|---|---|---|
-| `loading` | First `GET /crew/connections` in flight | After a 150ms delay: sidebar skeleton (2 headers, 6 rows) and 4 message blocks | — |
+| `loading` | First `GET /crew/connections` in flight | After a 150ms delay: sidebar skeleton (2 headers, 6 rows) and 4 message blocks | None |
 | `welcome` | No saved connection | First-run empty state (wireframe) | **Join a workspace**; link Host a new workspace |
-| `connecting` | Connect or sign-in in flight, no snapshot | Setup card "Connecting to {host}…" | — |
+| `connecting` | Connect or sign-in in flight, no snapshot | Setup card "Connecting to {host}…" | None |
 | `offline` | Saved `disconnected`, no failure code | `EmptyState` "{workspace} is offline" / "Connect to see your channels." *Amended by wave 2 (F5, R-7):* after `crew_ssh_key_refused` the description names the refused key and adds **Connection settings…**, and after `crew_broker_not_running` a card "Crew isn't running on {server}" replaces it, as the [SSH failure table](#ssh-failure-classification) says | **Connect to {workspace}** |
 | `sign-in` | Last failure `crew_ssh_auth_required` and the dialog was closed | "Sign in to {host}" / "The server needs your password or a verification code." | **Sign in** |
 | `trust` | A trust code | The tier-3 panes above; the unknown-key pane's help offers **Open a terminal here** (the embedded terminal dock) for comparing and adding the verified key. Crew itself never accepts a key | per pane |
@@ -676,7 +676,7 @@ the pane survives a manual refresh (C1, CVT:437-466).
 | `updates-paused` | Observation error, protected state cleared, no last verified view | Connection bar plus "Messages are hidden until Crew reconnects." | **Retry** (pinned name) |
 | `no-team` | Verified snapshot, no teams | Host: the setup checklist. Member: "You're in {workspace}" / "Ask {host} to add you to a team." with secondary link Create a team. With pending invitations: "You're invited to {team}" with **Join {team}** | per variant |
 | `no-channel` | A team with no open channels | "No open channels in {team}" | **Create channel** (fixes L15) |
-| `channel` | Verified snapshot and channel | The channel view | — |
+| `channel` | Verified snapshot and channel | The channel view | None |
 
 **Re-verification never flashes.** `refresh()` keeps its order (abort, clear, `GET /connections`, re-observe; pinned by
 CVT:652) and still clears the verified snapshot. The layout renders from `lastVerified`, a presentation-only copy
@@ -687,8 +687,8 @@ change) drops `lastVerified` too, so nothing stale survives a failure. No action
 view.
 
 **The host setup checklist** (compact card, host only, while any item is open): "Get {workspace} ready" with three
-rows — Confirm the institution (**Set institution to {id}…**), Create a team (**Create team**), Invite people
-(**Invite people…**) — each ticking when done, and **Hide**.
+rows: Confirm the institution (**Set institution to {id}…**), Create a team (**Create team**) and Invite people
+(**Invite people…**), each ticking when done, and **Hide**.
 
 ### Onboarding: join, host and admit
 
@@ -709,11 +709,11 @@ rows — Confirm the institution (**Set institution to {id}…**), Create a team
 | Join status | Card | Action |
 |---|---|---|
 | `invited` | "Alice Chen (@alice) invited you to lab." "Send Alice this code:" a large `CopyField` holding the 16-character device code (`7QK2-M9XA-3JTP-WZ4D`), then a still clock beside "Waiting for Alice to let you in…" (a wait on a person, so nothing animates: see the motion table), "This invitation expires {when}." and "You can close Biorouter…" | Copy |
-| `approved` | "Joining lab…" (the daemon sends `auth.join` by itself; pressing Join lab was the consent) | — |
+| `approved` | "Joining lab…" (the daemon sends `auth.join` by itself; pressing Join lab was the consent) | None |
 | `code_mismatch` | "The code Alice entered doesn't match this computer. Send it again:" and the same `CopyField` | Copy |
 | `not_invited` | "You're not in lab yet." "Ask Alice Chen (@alice) to invite @bob. This page updates by itself." A `CopyField` holding "Hi Alice, please invite @bob to lab in Crew." | Copy |
-| `expired` | "This invitation expired. Ask Alice Chen (@alice) to invite you again." | — |
-| `joined` | Transitions into the workspace; the first-join note offers "Use “Bob Lee” as your name in lab?" **Use** / **Edit…** (the name on the server account is offered, never applied silently) | — |
+| `expired` | "This invitation expired. Ask Alice Chen (@alice) to invite you again." | None |
+| `joined` | Transitions into the workspace; the first-join note offers "Use “Bob Lee” as your name in lab?" **Use** / **Edit…** (the name on the server account is offered, never applied silently) | None |
 | Legacy broker (no `join_by_name_v1`), or **Other ways to join** opened | "Join with an invitation token". "Send this join request to your host:" a `CopyField` holding the join request (username and this device's key). Then a `SecretInput` (accessible name **Enrollment invitation**, placeholder "Invitation token") and **Join workspace** | `auth.enroll` |
 
 **Other ways to join** is a `Disclosure` under the invited and not-invited cards, so the legacy path is reachable
@@ -876,26 +876,26 @@ was added to your account on {date}." with **Review** opening Keys and security)
 | Old | New home | Call |
 |---|---|---|
 | S0 loading, no distinct UI | `loading` skeletons after 150ms | same `GET /crew/connections` |
-| S1 "A shared place for your lab", **Add your first workspace**, "Private by default…" | `welcome`: **Join a workspace** + link **Host a new workspace**; the "Private by default" line is deleted (privacy is stated where it is chosen) | — |
-| S1 picker on "Choose a connection" | Gone: the last used connection (per viewer) or the first is selected | — |
-| S2 sub-status text | Status row dot and word | — |
+| S1 "A shared place for your lab", **Add your first workspace**, "Private by default…" | `welcome`: **Join a workspace** + link **Host a new workspace**; the "Private by default" line is deleted (privacy is stated where it is chosen) | None |
+| S1 picker on "Choose a connection" | Gone: the last used connection (per viewer) or the first is selected | None |
+| S2 sub-status text | Status row dot and word | None |
 | S2 **Connect to {name}** | `offline` primary **Connect to {workspace}** | same `POST …/connect` → `GET /connections` → `refresh()` |
 | S2a connecting, no spinner | "Connecting…" word with spinner; setup card | same |
 | S2b **Authenticate** and the inline auth panel | Sign in dialog: automatic on `crew_ssh_auth_required`, workspace menu **Sign in…**, the status word, the `sign-in` screen | same IPC; completion refreshes without POST connect (pinned) |
-| S2b exit ≠ 0 alert | Unchanged inside the component (one `role="alert"`, C16) | — |
+| S2b exit ≠ 0 alert | Unchanged inside the component (one `role="alert"`, C16) | None |
 | S2b **Close authentication connection** | The component's **Close** (accessible name unchanged) | same dispose |
 | S2c `CrewHostTrust` appended to any error mentioning SSH | Classified tier-3 panes; the steps behind **How do I verify it?** and **Trouble signing in?** | Try again = Reconnect |
 | S2d token input, **Join workspace**, **Initialize as workspace host**, "Enrollment public key: …" | The join state machine; the token path under **Other ways to join** with the join request in a `CopyField`; Initialize becomes **Create workspace** in the Host dialog | `auth.enroll` / `auth.bootstrap` unchanged; S3a adds `…/join` |
 | S3 "Choose a channel" / "Start your first team", **Create team** | `no-team` and `no-channel` variants | `team.create` / `channel.create` |
-| S4 channel view | The channel view | — |
+| S4 channel view | The channel view | None |
 | S4 live versus history | Viewing earlier messages pill + Jump to latest. *Amended by wave 2 (M6, M7):* plus **Newer messages** at a window's end and **Jump to first unread** | same `messages.history {before, limit:200, latest:true}`; a newer page asks `{after, limit}` |
-| S4 archived (disabled composer + footer) | Header badge + archived bar | — |
+| S4 archived (disabled composer + footer) | Header badge + archived bar | None |
 | S4 owner: header **Invite**, **Channel settings** | Channel menu Add people… and the pane's About and Members tabs | `invitation.create` etc. |
 | S4 ownership offer banner + **Accept ownership** | Note above the composer, same button | same `transfer.accept` |
-| S4 without `sessionId`: the permanent `/crew` hint banner + **Open Chat history** | Deleted from the channel; the instruction lives in the Access tab's empty state | — |
+| S4 without `sessionId`: the permanent `/crew` hint banner + **Open Chat history** | Deleted from the channel; the instruction lives in the Access tab's empty state | None |
 | S4 with `sessionId`: "Connect your current agent conversation to #X" + **Review access and posting permission** | The state-aware chat-connect note ([Revoke](#revoke)); the button's accessible name is kept | same grant POST; new list and revoke calls |
 | Pending invitations at the bottom of the main pane with raw IDs | Sidebar Invitations rows with names (S1 enrichment; before S1, "Invitation from Alice Chen (@alice)", never an ID) | same `invitation.accept` |
-| Errors `error` and `refreshError` (rendered twice with a modal open) | [Where errors render](#where-errors-render-exactly-once) | — |
+| Errors `error` and `refreshError` (rendered twice with a modal open) | [Where errors render](#where-errors-render-exactly-once) | None |
 
 ### Observation and refresh
 
@@ -934,27 +934,27 @@ was added to your account on {date}." with **Review** opening Keys and security)
 
 | Old | New | Call |
 |---|---|---|
-| Breadcrumb `{connection} / {team}` | Removed (the sidebar shows both; the agent pane and unknown-outcome text keep a destination) | — |
-| `<h2># name</h2>` + Archived pill | Band title menu + badges | — |
-| `{n} members · {classification} · SSH @user` | Member stack; classification badge; identity in the You row | — |
+| Breadcrumb `{connection} / {team}` | Removed (the sidebar shows both; the agent pane and unknown-outcome text keep a destination) | None |
+| `<h2># name</h2>` + Archived pill | Band title menu + badges | None |
+| `{n} members · {classification} · SSH @user` | Member stack; classification badge; identity in the You row | None |
 | **Mark read** | Automatic when the newest message has been visible for 1s in a focused window and `unread > 0`, at most once per 5s per channel, no refresh; plus the menu item. *Amended by wave 2 (M7):* automatic mark-read goes only up to the newest message that has been on screen for a whole second (two looks a second apart find it), never to the newest message loaded, and nothing is marked while the first unread message is outside the window, because the broker keeps one watermark per channel and a write cannot be taken back | `channel.read` |
 | **Refresh channel** icon | Channel menu **Refresh channel** (pinned) | `refresh()` |
 | History row (**Older messages**, "Viewing earlier messages", **Latest messages**) | Top sentinel **Older messages**, history pill, **Jump to latest** | same |
-| Empty timeline "Welcome to #name" + two sentences | Channel intro (title pinned) | — |
-| Message article with full timestamp and pills | Grouped rows, short time, badges only when informative | — |
-| Unknown author → raw ID | "Unknown member" or "{name} · former member", never an ID | — |
+| Empty timeline "Welcome to #name" + two sentences | Channel intro (title pinned) | None |
+| Message article with full timestamp and pills | Grouped rows, short time, badges only when informative | None |
+| Unknown author → raw ID | "Unknown member" or "{name} · former member", never an ID | None |
 | Run cards after all messages, raw statuses, **Open agent session**, **Cancel** | Task status rows in time order, status words, **Open**/**Review**, visible **Stop** while cancellable | same navigate and cancel route |
-| Visible `<label>`, `Message your teammates in #x…` | `aria-label` kept, placeholder `Message #x` | — |
-| `resize: vertical` textarea | Auto-grow | — |
+| Visible `<label>`, `Message your teammates in #x…` | `aria-label` kept, placeholder `Message #x` | None |
+| `resize: vertical` textarea | Auto-grow | None |
 | **Send message** text button | Round Send, same accessible name | single flight, key reuse |
-| "Message posted. Local transfer metadata could not be cleared…" | Warning note: "Message sent, but its upload record couldn't be cleared. Remove it from Files." | — |
-| "Posting as @user · conn / team / channel" footer | Deleted | — |
+| "Message posted. Local transfer metadata could not be cleared…" | Warning note: "Message sent, but its upload record couldn't be cleared. Remove it from Files." | None |
+| "Posting as @user · conn / team / channel" footer | Deleted | None |
 | **Choose file to upload**, **Share remote reference**, disclaimer | Attach menu **Upload a file…** / **Share a server path…**; the 1 GiB limit appears only as an error | same picker IPC and `beginTransfer` payload |
-| Chips with a text `×`; "Remote reference: {label}" | `Badge` chips with `XIcon`; `Link` icon + label; remove names kept | — |
+| Chips with a text `×`; "Remote reference: {label}" | `Badge` chips with `XIcon`; `Link` icon + label; remove names kept | None |
 | `CrewAttachment` **Save attachment…**, **Preview image**, `{n} bytes`, per-card 2s polling | Card glyphs, human sizes, one poller | same transfer routes |
 | `TransferRows` text, **Pause**, **Select file and resume**, **Forget receipt** + four sentences, **Restore to composer** | `Progress` + state word; Pause; `⋯` **Resume…**; **Remove from list** with a `(?)` tooltip; Files tab **Attach** | same `pause`, `resume`, `DELETE`, `blob.status` |
 | `CrewRemoteReference` bold label + disclaimer | Server path row + `CopyField` + tooltip | same `reference.get` |
-| Native dialogs (Choose a file, Save, Replace, Remove incomplete download, vault prompts) | Unchanged (main process) | — |
+| Native dialogs (Choose a file, Save, Replace, Remove incomplete download, vault prompts) | Unchanged (main process) | None |
 
 ### The eleven panels
 
@@ -962,7 +962,7 @@ was added to your account on {date}." with **Review** opening Keys and security)
 |---|---|---|
 | `connection` add ("Add SSH workspace") | Join a workspace or Host a new workspace | **Join {workspace}** / **Create workspace** |
 | `connection` edit (also titled "Add SSH workspace", L1) | Connection settings | **Save connection** |
-| Hosting `<details>`: Prepare/Recover, key input, `<pre>` commands | Host dialog steps 1–2 (automatic preparation; the key inside the command `CopyField`) | same `POST /crew/devices/prepare` |
+| Hosting `<details>`: Prepare/Recover, key input, `<pre>` commands | Host dialog steps 1 to 2 (automatic preparation; the key inside the command `CopyField`) | same `POST /crew/devices/prepare` |
 | **Remove saved connection** (no confirm, L3) | Connection settings danger zone → `ConfirmationModal` | same `DELETE` |
 | `team` | Create team (+ optional Add people step) | `team.create` |
 | `channel` (classification not reset, L14) | Create channel (state resets on open) | `channel.create` |
@@ -974,7 +974,7 @@ was added to your account on {date}." with **Review** opening Keys and security)
 | `grant` | Pane, chat-access mode, with revoke | grant POST; new list and revoke |
 | `enroll` (UID + key → token, generic Save, L2) | Invite people (S3a by name) with the legacy form under Advanced | `enrollment.invite` (new or legacy form) |
 | `offboard` (hand-rolled typed confirm, black button) | People tab row `⋯` **Remove from {workspace}…** → `DangerousConfirmDialog` with the username phrase, case-sensitive | `enrollment.revoke` |
-| Hand-rolled modal shell, custom Tab loop, ✕ glyph, focus stolen by ✕ | `ModalShell`; first field focused | — |
+| Hand-rolled modal shell, custom Tab loop, ✕ glyph, focus stolen by ✕ | `ModalShell`; first field focused | None |
 
 ### Capabilities the UI never had
 
@@ -1150,7 +1150,7 @@ ui/desktop/src/components/
     CrewApp.tsx           new entry: <CrewView layout={CrewLayout} controllerOptions=…/>
     crew-app.css          new stylesheet for the new layout (tokens only; the old crew.css stays with legacy)
     crewApi.ts            wire helpers (types enriched for S1/S3)
-    api/                  grants.ts names.ts join.ts errors.ts — each imports crewHttp/crewRequest from ../crewApi
+    api/                  grants.ts names.ts join.ts errors.ts (each imports crewHttp/crewRequest from ../crewApi)
     state/                useCrewController.ts CrewControllerContext.tsx useCrewConnections.ts
                           useCrewObservation.ts crewActions.ts crewSend.ts crewRunStart.ts
                           observationFailure.ts connectFailure.ts crewStatus.ts copy.ts
@@ -1232,7 +1232,7 @@ uses a field inside.
 the first letters of its first two words, or one letter for one word whatever joins its parts (`Alice Chen` → AC,
 `Jean-Luc` → J). A display name that only repeats the username ("equal", as defined under
 [Identity and naming display rules](#identity-and-naming-display-rules)) is read from the username's account part
-instead — never an SSSD realm, which every member shares: a handle joined by `_`, `.` or `-` gives the first letter
+instead, never from an SSSD realm, which every member shares: a handle joined by `_`, `.` or `-` gives the first letter
 of its last part (`crew_bob` → B, `crew_bob@ad.ucsf.edu` → B), anything else its first letter (`bob@ad.ucsf.edu` →
 B). With no letter in the display name at all, an unseparated username gives its first two letters (`bob` → BO).
 
@@ -1259,25 +1259,25 @@ the Advanced summary. **Req** means native `required`, a `type="submit"` button 
 
 | Form | Visible by default | Behind Advanced (default) |
 |---|---|---|
-| **Join a workspace** | Invitation from your host (req) · then the summary card, Your username on {server} (req, prefilled) and the privacy line with Change | Server login override (an SSH alias from your SSH config instead of `{username}@{server}`) · Port (22 or the invitation's) · Identity file (none: your SSH config) · Jump host (the invitation's hint, else none) · Connection name (the workspace name; `name — server` when two collide) · Remote work folder (none) · Let my agent run commands in this folder (off, a `Switch`, disabled until a folder is set) · Enter workspace details manually (socket path, workspace ID, host user ID, workspace key) |
-| Join, Change privacy | Private / Public radio rows (req) · Institution (req iff Private, `pattern="[a-z0-9][a-z0-9_-]{0,63}"`, placeholder "For example, ucsf or sdsc" (pinned)) | — |
-| Join, legacy token state | The join request `CopyField` · Invitation token (req, `SecretInput`) | — |
+| **Join a workspace** | Invitation from your host (req) · then the summary card, Your username on {server} (req, prefilled) and the privacy line with Change | Server login override (an SSH alias from your SSH config instead of `{username}@{server}`) · Port (22 or the invitation's) · Identity file (none: your SSH config) · Jump host (the invitation's hint, else none) · Connection name (the workspace name; the name and the server, joined by a dash, when two collide) · Remote work folder (none) · Let my agent run commands in this folder (off, a `Switch`, disabled until a folder is set) · Enter workspace details manually (socket path, workspace ID, host user ID, workspace key) |
+| Join, Change privacy | Private / Public radio rows (req) · Institution (req iff Private, `pattern="[a-z0-9][a-z0-9_-]{0,63}"`, placeholder "For example, ucsf or sdsc" (pinned)) | None |
+| Join, legacy token state | The join request `CopyField` · Invitation token (req, `SecretInput`) | None |
 | **Host a workspace**, Name | Workspace name (req) · Your server login (req) · Privacy (Private) · Institution (req iff Private) | Port · Identity file · Jump hosts · Connection name · Remote work folder + agent execution `Switch` (off) |
 | Host, Start | The start command `CopyField` · Paste what it printed (req) | the two help disclosures |
-| Host, Create | Summary + **Create workspace** | — |
+| Host, Create | Summary + **Create workspace** | None |
 | **Connection settings** | Connection name (req) · Your server login (req) · Privacy radios · Institution (req iff Private, placeholder pinned) | Port · Identity file · Jump hosts · Remote work folder + agent execution `Switch` · Workspace details (read-only `CopyField`s: workspace ID, fingerprint, socket path, host user ID, device ID, cluster ID; editable only for a manually entered connection). Opens by default when any value is non-default. Danger zone: Remove {workspace} from this computer… |
 | **Invite people** (host, S3a) | Username `@` (req) | Invite someone using an older version of Biorouter (join request + user ID → token) · Add another device for an existing member (a `Switch`, shown only when the broker answers "already a member") |
-| **Let someone in** | Code from {person} (req) | — |
-| **Create team** | Name (req; S2 helper "Team names are unique in {workspace}.") | — |
-| **Create channel** | Name (req, `#` prefix, live slug preview "Will be created as #{slug}") · Content: Restricted / Public-safe radio rows (visible: it cannot be changed later; default Restricted) | — |
-| **Add people** | Person (req) | — |
-| **Transfer ownership** | New owner (req); helper "They'll need to accept." | — |
-| **Rename** (S2) | Name (req) | — |
-| **Edit profile** | Display name (req) · Initials (optional, max 12) · a read-only "Your username: @bob" | — |
+| **Let someone in** | Code from {person} (req) | None |
+| **Create team** | Name (req; S2 helper "Team names are unique in {workspace}.") | None |
+| **Create channel** | Name (req, `#` prefix, live slug preview "Will be created as #{slug}") · Content: Restricted / Public-safe radio rows (visible: it cannot be changed later; default Restricted) | None |
+| **Add people** | Person (req) | None |
+| **Transfer ownership** | New owner (req); helper "They'll need to accept." | None |
+| **Rename** (S2) | Name (req) | None |
+| **Edit profile** | Display name (req) · Initials (optional, max 12) · a read-only "Your username: @bob" | None |
 | **Ask my agent** | Task (req, seeded) · Model (summary with Change, or the picker; req) | Also read other channels (none) · the remote folder summary (only when configured) |
 | **Chat access** (grant) | The consent summary only | Also read other channels (none) |
 | **Share a server path** | Path on {host} (req, `pattern="/.*"`) | Label (the file name) |
-| **Remove from workspace** | Type {username} to confirm (req, exact, case-sensitive) | — |
+| **Remove from workspace** | Type {username} to confirm (req, exact, case-sensitive) | None |
 | **Keys and security** | Storage status line; Unlock/Lock for a vault; This device's key (`CopyField`) | Use an encrypted vault instead (fresh profiles only) |
 
 Every submit with an invalid field inside a closed Advanced opens it and focuses that field.
@@ -1499,10 +1499,10 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 
 | Dialog | Strings |
 |---|---|
-| Connection settings | Connection settings · Connection name · Your server login · Privacy · Private — Only private and institution-approved models · Public — Public models allowed for public-safe work · Institution · **For example, ucsf or sdsc** (pinned) · Your organization's short ID, as your host uses it. *(helper, only when empty)* · Workspace details · **Save connection** (pinned) · Remove {workspace} from this computer… |
+| Connection settings | Connection settings · Connection name · Your server login · Privacy · Private: Only private and institution-approved models · Public: Public models allowed for public-safe work · Institution · **For example, ucsf or sdsc** (pinned) · Your organization's short ID, as your host uses it. *(helper, only when empty)* · Workspace details · **Save connection** (pinned) · Remove {workspace} from this computer… |
 | Workspace settings | {workspace} settings · General · People · Privacy · Agent access · Hosted by · Server · Rename… (S2 host) · Waiting to join · Members · Invite people… · Host · you · Copy username · Copy person ID · Remove from {workspace}… · Your connection · Workspace · Private for everyone · Allow Public… · Make Private for everyone… · Institution · Set institution to {id}… · Only the host can change this. · Done |
 | Create team | Create team · Name · e.g. Analysis Lab · Team names are unique in {workspace}. · Create team · Add people to {team} · Skip for now · Add |
-| Create channel | Create channel · in {team} · Name · e.g. methods · Will be created as #{slug} · Content · Restricted — For unpublished or sensitive work · Public-safe — Public models may read it · Create channel |
+| Create channel | Create channel · in {team} · Name · e.g. methods · Will be created as #{slug} · Content · Restricted: For unpublished or sensitive work · Public-safe: Public models may read it · Create channel |
 | Name refusal (S2) | A team with this name, or one that looks like it, already exists in this workspace. Choose a different name. *(channels: …in this team…)* |
 | Name consequence (S2) | Everyone in this team can tell whether a name is taken. Keep identifiers out of names. |
 | Add people | Add people to #{channel} / {team} · Person · Search by name or @username · Everyone in {team} is already here. · No one else has joined {workspace} yet. · Add |
@@ -1523,8 +1523,8 @@ Advanced. `{person}` means `personLabel` output; `{first}` is the display name's
 | Remove channel member (owner) | `ConfirmationModal` | Remove {person, authority} from #{name}? | They'll lose access to its messages and files. You can invite them again. *Amended by wave 2 (M11):* "They'll lose access to its messages and files. You can add them again with Add people.", since on a broker that adds directly the way back is Add people, with nothing to accept | Remove |
 | Remove saved connection | `ConfirmationModal` | Remove {workspace} from this computer? | Chats connected to it lose access. Your messages stay on the server, and you can add it again. *Amended by wave 2 (CLI-1):* removing deletes this computer's device key while the person stays a member, so the old invitation cannot bring it back. The description says so: "It disconnects, ends every chat's access through it and deletes this computer's key for the workspace. Your messages stay on the server. To use the workspace here again, the host has to add this computer. …". A member reads the way back instead: "…ask the host to invite you with Add another device for @{username}." The host removing it from the only computer of theirs the workspace lists gets a `DangerousConfirmDialog` with the workspace name as its phrase: "You host {workspace}, and no other computer of yours can act as its host. Removing it here ends the host controls for good: …", confirmed by **Remove and give up hosting** | Remove |
 | Stop task | `ConfirmationModal` | Stop your agent? | It stops working on this task. Anything it already did stays done. | Stop task |
-| Cancel a pending invitation (host) | inline two-step | Cancel @{username}'s invitation? | — | Cancel invitation / Keep |
-| Revoke chat access | inline two-step | [Chat access and revoke](#chat-access-and-revoke) | — | Revoke / Keep access |
+| Cancel a pending invitation (host) | inline two-step | Cancel @{username}'s invitation? | None | Cancel invitation / Keep |
+| Revoke chat access | inline two-step | [Chat access and revoke](#chat-access-and-revoke) | None | Revoke / Keep access |
 
 ### Error strings
 
@@ -1578,7 +1578,7 @@ function (`personLabel`). No other code formats a person.
 case-insensitively, or the username with its `@` and `#` removed. The second shape is an SSSD account's default: a
 new principal's nickname is its username, the daemon's `sanitize_display_name` strips `@` from a nickname, and so
 `bob@ad.ucsf.edu` is projected as `bobad.ucsf.edu`. Equal names render `@username` once in **every** context,
-authority included — never `crew_alice (@crew_alice)` or `bobad.ucsf.edu (@bob@ad.ucsf.edu)` (T-31). An authority
+authority included, never `crew_alice (@crew_alice)` or `bobad.ucsf.edu (@bob@ad.ucsf.edu)` (T-31). An authority
 point loses nothing by it: what it must show in full is `@username`, which it still does, and the daemon refuses a
 nickname that reads as another person's username (`validate_display_name_for`), so `@username` alone never hides an
 impersonation. `personLabel.ts` `displayNameRepeatsUsername` is the one test of equality.
@@ -1600,7 +1600,7 @@ Rules:
    is ever rendered, including in "add another device".
 7. **Teams** render as typed, never uppercased. **Channels** render `#slug`; in a list that spans teams (Agents,
    Also read) they render `{team} / #slug` when two teams share a slug. **Workspaces** render their S2 name, else
-   "{host display name}'s workspace" for a legacy unnamed one; the local label is `name — server` only when two
+   "{host display name}'s workspace" for a legacy unnamed one; the local label adds the server after the name, joined by a dash, only when two
    saved connections share a name.
 8. **Copy ID lives only in `⋯` menus** (person, team, channel, message, attachment and SHA-256, task, invitation) and
    in Connection settings → Advanced → Workspace details. Those are the only places a UUID, 64-hex value or numeric
@@ -1652,7 +1652,7 @@ This campaign adds the renderer and fixes the daemon so a failed revoke fails cl
 
 | Grant state | Note | Action |
 |---|---|---|
-| Loading | Checking this chat's access… | — |
+| Loading | Checking this chat's access… | None |
 | None | Connect this chat to #methods? | **Review access** (accessible name pinned) |
 | Active, destination here | This chat can read and post in #methods. | **Manage access** |
 | Active elsewhere | This chat already uses #raw-data. | **Manage access** |
@@ -1720,24 +1720,24 @@ the shared `main.css` blocks, and every infinite loop declares its static rest s
 |---|---|---|---|---|
 | Row, member, message hover; gutter time reveal | background, opacity | `--dur-fast-min` (95ms) | same | instant |
 | Buttons, chips, switch, radio, Copy → Copied label | color, background-image | `--dur-fast` (125ms) | same | instant |
-| Copied check | `.biorouter-check-settled` (2px settle) | `--dur-med-min` (250ms) | — | static |
+| Copied check | `.biorouter-check-settled` (2px settle) | `--dur-med-min` (250ms) | None | static |
 | Switcher and channel-menu chevrons (180°), disclosure and team chevrons (90°) | transform | `--dur-fast-max` (175ms) | `--dur-fast` | instant |
 | Menus, popovers, pickers, tooltips | the primitives' fade + zoom-95 from the Radix origin | `--dur-fast-max` | `--dur-fast` | fade only |
 | Advanced disclosure body | height (`--radix-collapsible-content-height`) + opacity | `--dur-med` (300ms) | `--dur-fast` | instant |
-| Team-section body | none: rows appear and disappear instantly; only the chevron rotates (a frequent action) | — | — | — |
+| Team-section body | none: rows appear and disappear instantly; only the chevron rotates (a frequent action) | None | None | None |
 | Details pane, push | the grid column width `0 → var(--crew-pane-width)`; the inner content is fixed at the pane width and fades in over `--dur-fast-max`, so its text never reflows mid-tween | `--dur-med` | `--dur-fast-max` | instant |
 | Details pane, cover | opacity + `translateX(8px → 0)` | `--dur-fast-max` | `--dur-fast` | fade only |
 | Pane mode change | `animate-fade-slide-up` (8px) on the content | `--dur-fast-max` | none (replaced) | instant |
 | Dialogs | `ModalShell` as built | primitive | primitive | primitive |
 | Host dialog step change, setup-card state change | incoming: opacity + `translateY(8px → 0)`; outgoing: opacity | `--dur-fast-max` | `--dur-fast` | fade only |
-| Live message arrival while following the bottom (including your own echo, the only confirmation of a send) | `biorouter-tool-enter` (4px rise + fade) | 160ms | — | none |
+| Live message arrival while following the bottom (including your own echo, the only confirmation of a send) | `biorouter-tool-enter` (4px rise + fade) | 160ms | None | none |
 | Jump pill, history pill | opacity + 4px rise | `--dur-fast-max` | `--dur-fast` | fade only |
-| Highlight of a task row (new task, Show task in channel, Agents row jump) | `--overlay-selected` wash fading to transparent | `calc(var(--dur-slow) * 3)` on `--ease-out` | — | shown, then removed with no transition |
+| Highlight of a task row (new task, Show task in channel, Agents row jump) | `--overlay-selected` wash fading to transparent | `calc(var(--dur-slow) * 3)` on `--ease-out` | None | shown, then removed with no transition |
 | Verifying dim | timeline opacity 1 → 0.6 | `--dur-fast` | `--dur-fast` | instant |
-| Spinner (Connecting…, Uploading; never a wait on a person, such as the host letting you in) | the one spinner, 700ms linear rotation | loop | — | static arc |
-| `StatusDot live` | 2px halo, 2s period (design.md §4.16) | loop | — | static dot |
-| Running task word | the tool-call running text pulse | loop | — | static |
-| Skeletons | the `Skeleton` pulse, shown only after 150ms | loop | — | flat fill |
+| Spinner (Connecting…, Uploading; never a wait on a person, such as the host letting you in) | the one spinner, 700ms linear rotation | loop | None | static arc |
+| `StatusDot live` | 2px halo, 2s period (design.md §4.16) | loop | None | static dot |
+| Running task word | the tool-call running text pulse | loop | None | static |
+| Skeletons | the `Skeleton` pulse, shown only after 150ms | loop | None | flat fill |
 
 **What must not animate:** channel and workspace switching (instant swap, keyboard-driven or not); security state
 (the privacy chip, status words, classification badges, the destination line, grant state, the unknown-outcome gate)
@@ -1760,7 +1760,7 @@ first unread also move the scroll, instantly, without animation.
 | Channel row | `<button aria-current="page">` in an `<li>` | {name}, {n} unread |
 | Channel | `<section aria-labelledby>` the `<h1>` | #{name} |
 | Timeline | `role="log" aria-live="polite"`, `aria-busy` while paging | {name} messages |
-| Message group | `<article aria-labelledby>` author and time | — |
+| Message group | `<article aria-labelledby>` author and time | None |
 | Composer | textarea `aria-label` | Message #{name} |
 | Details pane | `<aside>` | #{name} details / Ask my agent / Chat access |
 | Connection bar | `Note role="alert"` (errors) or `role="status"` (standing conditions) | its text |
@@ -1871,43 +1871,43 @@ this in this jsdom setup), and its default `modal={false}` leaves the page in th
 
 | Line(s) | Today | After | Why |
 |---|---|---|---|
-| 191, 210, 650 | `findByText('fixture')`, `getByText('alice@new-host')` | **Unchanged** (You row SSH login, its own node, rendered with or without a snapshot) | — |
-| 192, 211 | `'Checking connection'`, `/^(Checking connection\|Updates unavailable)$/` | **Unchanged** (status row word) | — |
-| 193, 212, 217, 293, 340, 352, 387, 425 | `'Connected · identity verified'` | **Unchanged** (the status row's `sr-only` span; the menu copy mounts only when open) | — |
+| 191, 210, 650 | `findByText('fixture')`, `getByText('alice@new-host')` | **Unchanged** (You row SSH login, its own node, rendered with or without a snapshot) | None |
+| 192, 211 | `'Checking connection'`, `/^(Checking connection\|Updates unavailable)$/` | **Unchanged** (status row word) | None |
+| 193, 212, 217, 293, 340, 352, 387, 425 | `'Connected · identity verified'` | **Unchanged** (the status row's `sr-only` span; the menu copy mounts only when open) | None |
 | 221 | `getByRole('button', {name:'Edit'})` | `await workspaceAction('Connection settings…')` | Moved into the menu (C5) |
-| 222 | `findByPlaceholderText('For example, ucsf or sdsc')` | **Unchanged** | — |
+| 222 | `findByPlaceholderText('For example, ucsf or sdsc')` | **Unchanged** | None |
 | 225, 229 | `getAllByLabelText('Connection privacy')[1]` + change | `fireEvent.click(getByRole('radio', {name: /^Public/}))` / `/^Private/` | Radio rows (C3, deliberate) |
 | 227 | institution `not.toBeRequired()` when Public | `expect(queryByPlaceholderText('For example, ucsf or sdsc')).toBeNull()` | The field is hidden when Public; stricter |
 | 231-233 | same element `toBeRequired()`, `toHaveValue('')` | Re-query with `findByPlaceholderText`, same two assertions | The field remounts; form state keeps its value |
-| *(add)* | — | Type `ucsf`, toggle Public then Private, expect `ucsf` retained | The test's name promised this; nothing checked it |
-| 234-240 | **Save connection**, `toBeInvalid()`, no PATCH | **Unchanged** (native validation, C8) | — |
+| *(add)* | None | Type `ucsf`, toggle Public then Private, expect `ucsf` retained | The test's name promised this; nothing checked it |
+| 234-240 | **Save connection**, `toBeInvalid()`, no PATCH | **Unchanged** (native validation, C8) | None |
 | 249 | `findByText('Not specified')` | `findByText(crewCopy.hostSetup.title('Fixture'))` | The institution is no longer a rail paragraph |
 | 250-262 | click **Confirm workspace institution: ucsf** → `policy.set` | click **Set institution to ucsf…**, then **Set ucsf permanently** → the same `policy.set` assertion | The irreversible action gained a confirmation (L3) |
-| 283, 287, 294, 341, 388, 404, 426, 514, 542, 550, 554, 560, 596, 675, 687, 706, 754 | `'Message #general'` | **Unchanged** | — |
+| 283, 287, 294, 341, 388, 404, 426, 514, 542, 550, 554, 560, 596, 675, 687, 706, 754 | `'Message #general'` | **Unchanged** | None |
 | 286, 553, 586 | `getByRole('button',{name:'Reconnect'})` | `await workspaceAction('Reconnect')` (the helper's enabled wait replaces 552's `toBeEnabled`) | Menu (C5) |
 | 288, 395, 519, 588, 647 | observation error texts | **Unchanged**, exactly one element (connection bar only) | C2 |
-| 296-327 | composer key events | **Unchanged** | — |
+| 296-327 | composer key events | **Unchanged** | None |
 | 397, 550 | `queryByLabelText('Message #general')` null | **Unchanged** (the Verifying bar replaces the card) | C13 |
-| 401-403, 520, 593, 648 | **Retry Crew updates** | **Unchanged** (accessible name) | — |
-| 406, 431, 709 | **Send message** | **Unchanged** | — |
-| 429, 460, 465, 783 | `findAllByText('send failed' \| 'start failed' \| …)` | **Unchanged**; each now renders once | — |
-| 439, 470, 774, 808, 830 | `'Welcome to #general'` | **Unchanged** | — |
-| 451, 718, 721, 775, 809, 831 | **Ask my agent** | **Unchanged** (the only control with that name) | — |
-| 454, 722, 776, 810, 824, 835 | `'Task'` | **Unchanged** (seeding changes the initial value only when a draft exists; tests type into it) | — |
+| 401-403, 520, 593, 648 | **Retry Crew updates** | **Unchanged** (accessible name) | None |
+| 406, 431, 709 | **Send message** | **Unchanged** | None |
+| 429, 460, 465, 783 | `findAllByText('send failed' \| 'start failed' \| …)` | **Unchanged**; each now renders once | None |
+| 439, 470, 774, 808, 830 | `'Welcome to #general'` | **Unchanged** | None |
+| 451, 718, 721, 775, 809, 831 | **Ask my agent** | **Unchanged** (the only control with that name) | None |
+| 454, 722, 776, 810, 824, 835 | `'Task'` | **Unchanged** (seeding changes the initial value only when a draft exists; tests type into it) | None |
 | 455-458, 725-730, 777-780, 811-814, 836-839 | `getByLabelText('Configured provider')` change + `getByLabelText('Model')` change | `await chooseModel('fixture-model')` | One picker; the POST assertions on `provider` and `model` are unchanged |
-| 459, 731, 781, 815, 820, 822 | **Start my agent and allow posting here** | **Unchanged** | — |
+| 459, 731, 781, 815, 820, 822 | **Start my agent and allow posting here** | **Unchanged** | None |
 | 463, 546 | `getByRole('button',{name:'Refresh channel'})` | `await channelAction('Refresh channel')` | Channel menu (C5); at 463 the pane is still open and the menu reachable (C1) |
 | 474, 679, 746 | **Authenticate** | `await workspaceAction('Sign in…')` | Renamed and moved (C5) |
-| 475-477, 681, 748 | **Simulate authenticated completion** | **Unchanged** (the mock renders inside the Sign in dialog) | — |
-| 516 | **Older messages** | **Unchanged** (no `IntersectionObserver` in jsdom, so nothing auto-loads) | — |
-| 518 | `'Viewing earlier messages'` | **Unchanged** | — |
+| 475-477, 681, 748 | **Simulate authenticated completion** | **Unchanged** (the mock renders inside the Sign in dialog) | None |
+| 516 | **Older messages** | **Unchanged** (no `IntersectionObserver` in jsdom, so nothing auto-loads) | None |
+| 518 | `'Viewing earlier messages'` | **Unchanged** | None |
 | 651 | `getByRole('option',{name:'Renamed workspace'})` | `getByRole('button', {name: /^Renamed workspace/})` | The switcher trigger shows the selected name (C4, deliberate) |
 | 684, 751 | `getByRole('combobox',{name:'Connection privacy'})` `toHaveValue` | `getByRole('button', {name: /^Privacy: Public/})` / `/^Privacy: Private/` | The status-row chip (C3, deliberate); `expected_mode` and `personal_mode` payload assertions still prove the wire |
 | 686, 753 | `getByText(/Effective: public/)` | Folded into the chip assertion | The chip is the effective mode |
 | 689 | `getByRole('button',{name:'Review access and posting permission'})` | `await findByRole(...)`, same name | The note waits for the grants lookup; the mocked `crewHttp` returns `{}`, read as "no grant" |
-| 691 | **Allow this conversation to read and post here** | **Unchanged** | — |
+| 691 | **Allow this conversation to read and post here** | **Unchanged** | None |
 | 840 | `getByRole('checkbox')` | **Unchanged** (Also read is unmounted under a closed Advanced; other toggles are switches) | C9 |
-| 841 | `/Start a new task/` | **Unchanged** | — |
+| 841 | `/Start a new task/` | **Unchanged** | None |
 
 **Module seams (C14).** `./crewApi` (`crewHttp`, `crewRequest`, `observeCrew`, actual `CrewHttpError`),
 `../ConfigContext`, `react-router-dom` and the `./CrewAuthentication` default export
@@ -2038,7 +2038,7 @@ Offline after an app restart. The design passes when all of these hold in the re
 
 ## Test constraints and latent defects
 
-**Constraints the current tests impose (C1–C16).**
+**Constraints the current tests impose (C1 to C16).**
 
 | # | Constraint |
 |---|---|
@@ -2059,7 +2059,7 @@ Offline after an app restart. The design passes when all of these hold in the re
 | C15 | Enter/Shift+Enter/IME, single flight, no refresh after send, refresh order, auth completion without POST connect, draft rules, key reuse and rotation, `expected_*` epochs |
 | C16 | `CrewAuthentication` resizes after creation only, offers no manual complete, disposes only on explicit close, renders one alert |
 
-**Latent defects (L1–L19)** are listed with their dispositions in [Latent defects](#latent-defects). In short: wrong
+**Latent defects (L1 to L19)** are listed with their dispositions in [Latent defects](#latent-defects). In short: wrong
 edit title (L1), generic Save that creates a token (L2), four unconfirmed destructive actions (L3), pickers listing
 members (L4), IDs in invitations (L5), `last_error` never shown (L6), duplicate Open Chat history (L7), no key pattern
 (L8), Task sharing the draft (L9), grant success relying on navigation (L10), dead catch (L11), mark-read refreshing
@@ -2085,12 +2085,12 @@ search (L19).
 
 ## Related documentation
 
-- [Naming design](naming-design.md) — the identity rules, invitation format, device code and slices this UI displays
-- [Implementation plan](../../history/biorouter-crew/implementation-plan.md) — Crew architecture, §16 GUI and naming requirements
-- [Protocol contract](protocol-contract.md) — transport, identity and enrollment contract the join flow follows
-- [Native CLI guide](cli-guide.md) — the CLI parity surface for grants, revoke and joining
-- [Crew UI acceptance report](../../history/biorouter-crew/crew-ui-acceptance-report.md) — earlier three-client evidence whose cited strings this spec keeps or retires
-- [Implementation status](../../history/biorouter-crew/implementation-status.md) — where progress on this design is recorded
-- [SSH hop policy](ssh-hop-policy.md) — the host-trust rules the trust screens enforce
-- [Design system](../../../design.md) — principles P1–P8 and element specs §4 used throughout
-- [Settings visual vocabulary](../../desktop-ui/settings-visual-vocabulary.md) — row, section, note and button rules applied to Crew's lists and dialogs
+- [Naming design](naming-design.md): the identity rules, invitation format, device code and slices this UI displays
+- [Implementation plan](../../history/biorouter-crew/implementation-plan.md): Crew architecture, §16 GUI and naming requirements
+- [Protocol contract](protocol-contract.md): transport, identity and enrollment contract the join flow follows
+- [Native CLI guide](cli-guide.md): the CLI parity surface for grants, revoke and joining
+- [Crew UI acceptance report](../../history/biorouter-crew/crew-ui-acceptance-report.md): earlier three-client evidence whose cited strings this spec keeps or retires
+- [Implementation status](../../history/biorouter-crew/implementation-status.md): where progress on this design is recorded
+- [SSH hop policy](ssh-hop-policy.md): the host-trust rules the trust screens enforce
+- [Design system](../../../design.md): principles P1 to P8 and element specs §4 used throughout
+- [Settings visual vocabulary](../../desktop-ui/settings-visual-vocabulary.md): row, section, note and button rules applied to Crew's lists and dialogs

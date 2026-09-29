@@ -1549,6 +1549,22 @@ test('app-sentences: the download refusal for a path through a link is quoted as
   );
 });
 
+test('dashes: an em or en dash anywhere in docs/crew is refused', () => {
+  assertCaught(
+    { 'docs/crew/design/naming-design.md': (text) => `${text}\nA range, 1\u201364.\n` },
+    'dashes',
+    /naming-design\.md:\d+ uses an em or en dash/
+  );
+  assertCaught(
+    {
+      [TROUBLE]: (text) =>
+        text.replace('## Connect and disconnect', '## Connect \u2014 and disconnect'),
+    },
+    'dashes',
+    /connections-and-troubleshooting\.md:\d+ uses an em or en dash/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

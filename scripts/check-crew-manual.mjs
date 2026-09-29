@@ -94,6 +94,8 @@
 //     sentence and the member's stopped-server sentence (T3-DOC-6).
 //   * `source-line`: the agents page quotes the daemon's last line for a post
 //     that read a work-folder file, as its render cases write it (T3-DOC-5).
+//   * `dashes`: no em or en dash anywhere in docs/crew, design documents
+//     included.
 //   * `allow-button`: the Chat access pane's Allow button is named as the
 //     pane labels it, never with the chat's title it used to carry.
 //   * `refusal-codes` also holds every code the command line gives its own
@@ -1834,6 +1836,25 @@ export function checkCrewManual(tree = repoTree()) {
           );
         }
       }
+    }
+  }
+
+  // ── dashes ───────────────────────────────────────────────────────────────
+  // The Crew pages and their design documents are written without em or en dashes, as the
+  // documentation style asks: a range is "1 to 64", an empty table cell says None, and a clause
+  // takes a comma, colon or full stop. The design documents still held 156 when they were filed
+  // beside the manual.
+  for (const dir of [MANUAL_DIR, `${MANUAL_DIR}/design`]) {
+    for (const name of tree.list(dir).filter((file) => file.endsWith('.md'))) {
+      const lines = (tree.read(`${dir}/${name}`) || '').split('\n');
+      lines.forEach((line, index) => {
+        if (/[\u2013\u2014]/.test(line)) {
+          fail(
+            'dashes',
+            `${dir}/${name}:${index + 1} uses an em or en dash: ${line.trim().slice(0, 100)}`
+          );
+        }
+      });
     }
   }
 

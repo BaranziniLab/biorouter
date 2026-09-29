@@ -15,13 +15,13 @@ review. Every finding of both reviews is answered below; the few that are deferr
 
 ## Identifiers used in this document
 
-- **Decisions `D1`–`D17`** are listed in [Decisions](#decisions) and are what the docs keeper records.
+- **Decisions `D1` to `D17`** are listed in [Decisions](#decisions) and are what the docs keeper records.
 - **Slices `S0`, `S1a`, `S1b`, `S2a`, `S2b`, `S3a`, `S4`** are defined in [Slices, order and review gates](#slices-order-and-review-gates).
-- **`SR1`–`SR15`** are the findings of the adversarial security review (its F1–F15) and **`FR1`–`FR20`** the findings
-  of the feasibility review (its R1–R20), both dated 2026-09-23.
-- **Attackers `M1`–`M5`** are defined in [Security analysis](#security-analysis).
-- **`FU1`–`FU10`** are deliberate follow-ups ([Deferred follow-ups](#deferred-follow-ups)).
-- `plan:n` is a line of [the implementation plan](../../history/biorouter-crew/implementation-plan.md); `I01`–`I24` are the invariants in
+- **`SR1` to `SR15`** are the findings of the adversarial security review (its F1 to F15) and **`FR1` to `FR20`** the findings
+  of the feasibility review (its R1 to R20), both dated 2026-09-23.
+- **Attackers `M1` to `M5`** are defined in [Security analysis](#security-analysis).
+- **`FU1` to `FU10`** are deliberate follow-ups ([Deferred follow-ups](#deferred-follow-ups)).
+- `plan:n` is a line of [the implementation plan](../../history/biorouter-crew/implementation-plan.md); `I01` to `I24` are the invariants in
   [implementation status](../../history/biorouter-crew/implementation-status.md).
 - Paths: `lib.rs`, `broker.rs`, `main.rs`, `remote.rs` are in `crates/biorouter-crew/src/`; `core/` is
   `crates/biorouter/src/crew/`; `routes/` is `crates/biorouter-server/src/routes/`; `cli/` is
@@ -77,13 +77,13 @@ review. Every finding of both reviews is answered below; the few that are deferr
 | Compact inline text (notes, toasts, invitation text, run owner tags, CLI lines) | `Display name (@username)`, or `@username` when equal | `Bob Lee (@bob) invited you to Analysis Lab` |
 | Authority decision points (invite, remove member, offer or accept ownership, offboard, approve an agent request, grant consent) | Always `Display name (@username)`, or `@username` alone when the two are equal, plus `· former member` when inactive | `Remove Bob Lee (@bob) from #methods?` |
 | Admitting a joiner (host) | `@username` first, in monospace, then "{full name} (name on the server account)" | `@bob` · Bob Lee (name on the server account) |
-| Chips, avatars, @-mention autocomplete | Display name with `@username` in a tooltip; both on a collision | — |
+| Chips, avatars, @-mention autocomplete | Display name with `@username` in a tooltip; both on a collision | None |
 | Former member | Label plus ` · former member`, muted | `Bob Lee (@bob) · former member` |
-| ID in no projection | `Unknown member`, with the ID only under Copy ID | — |
+| ID in no projection | `Unknown member`, with the ID only under Copy ID | None |
 | CLI human output and model-facing text | `"Display name" (@username)`, the display name quoted and wrapped in Unicode isolates (U+2068 … U+2069). *Amended by wave 2 (F10):* the CLI adds the isolates only when the display name, once escaped, is not ASCII, as it already did for team and file names. ASCII holds no right-to-left text, and isolates are invisible in a terminal but travel into anything copied, so `"Alice Chen"` failed a search for that very text. Escaping comes first, so a name's own bidirectional controls print as `\u{…}` and cannot make it look ASCII. Model-facing labels were built differently from the start: the daemon's `labels` (`person_label` in `crates/biorouter/src/crew/mod.rs`) are the sanitized `Display name (@username)`, without quotes or isolates | `"Bob Lee" (@bob) · 14:02  The analysis is ready.` |
 
 **Equal names.** A display name is equal to the username when it only repeats it, so the person has not chosen one:
-the same text case-insensitively, or the username with its `@` and `#` removed — the default an SSSD account gets,
+the same text case-insensitively, or the username with its `@` and `#` removed, which is the default an SSSD account gets,
 since a new principal's nickname is its username and the projection strips `@` (`bob@ad.ucsf.edu` is projected as
 `bobad.ucsf.edu`). In the GUI, equal names render `@username` once in every context, authority points included,
 never `bob (@bob)` (T-31). An authority point still shows the `@username` in full, and that is the part it needs:
@@ -113,10 +113,10 @@ those labels and fall back to a local computation only when a daemon predates th
 Applied by `profile.update` and to `profile.suggest` output. Cleaning: NFC, trim, collapse runs of `White_Space` to
 U+0020. After cleaning the name must:
 
-- be 1–64 Unicode scalar values and at most 120 UTF-8 bytes;
+- be 1 to 64 Unicode scalar values and at most 120 UTF-8 bytes;
 - contain at least one visible base character of category L or N that is not default-ignorable;
 - contain no character of category Cc, Cf, Co, Cs, Cn, Zl or Zp, and no `Default_Ignorable_Code_Point` (variation
-  selectors U+FE00–U+FE0F and U+E0100–U+E01EF, Hangul fillers U+115F, U+1160, U+3164, U+FFA0, and the rest of the
+  selectors U+FE00 to U+FE0F and U+E0100 to U+E01EF, Hangul fillers U+115F, U+1160, U+3164, U+FFA0, and the rest of the
   property, embedded as a generated table so no new dependency is needed in S1a) (SR5);
 - contain no `@` or `#` after NFKC, and, from S2b, none after the confusable skeleton either, so fullwidth `＠` and
   small `﹫` are refused (SR5);
@@ -205,7 +205,7 @@ skeleton_key(s) = name_key( UTS #39 skeleton( strip_ignorable(NFKC(s)) ) )     (
 
 ### Validation per kind (create and rename only)
 
-**Team display name.** After `clean()`: 1–64 scalar values and at most 120 bytes; at least one L or N; only
+**Team display name.** After `clean()`: 1 to 64 scalar values and at most 120 bytes; at least one L or N; only
 characters of category L, M or N, the space, and `- _ . ' & ( ) +`; every code point with UTS #39
 `Identifier_Status=Allowed` (S2b; before S2b, the category and default-ignorable rules only); no default-ignorable
 characters; no combining mark that does not compose under NFC; no `@`, `#`, `/` or `:` (reserved for selectors); no
@@ -214,11 +214,11 @@ rule below.
 
 **Channel name.** The broker canonicalizes first (NFKC, lowercase, whitespace and `.` to `-`, collapse runs, trim),
 then requires: every character a lowercase-stable letter, a composing mark, a decimal digit, `-` or `_`; the first
-character a letter or digit; 1–80 scalar values and at most 120 bytes; `Identifier_Status=Allowed` (S2b); no
+character a letter or digit; 1 to 80 scalar values and at most 120 bytes; `Identifier_Status=Allowed` (S2b); no
 default-ignorable characters; not UUID-shaped; and the restriction-level rule. Canonicalizing instead of refusing
 matches Slack, keeps older clients that send `"Data Analysis"` working, and lets the GUI preview the exact slug.
 
-**Workspace name.** 1–40 lowercase ASCII letters, digits and hyphens, starting and ending with a letter or digit
+**Workspace name.** 1 to 40 lowercase ASCII letters, digits and hyphens, starting and ending with a letter or digit
 (`^[a-z0-9]{1}(?:[a-z0-9-]{0,38}[a-z0-9])?$`), and not UUID-shaped.
 
 ### Confusable characters (S2b)
@@ -483,7 +483,7 @@ it (FR4).
 **Canonicalizing a typed name (SR9).**
 
 1. Strip one leading `@`.
-2. Require 1–256 bytes, no NUL, control characters, whitespace, `/` or `:`, and not all digits (glibc's `getpwnam("1001")`
+2. Require 1 to 256 bytes, no NUL, control characters, whitespace, `/` or `:`, and not all digits (glibc's `getpwnam("1001")`
    looks up a name while `getent passwd 1001` looks up a UID).
 3. `a = by_name(input)`, `b = by_uid(a.uid)`; require `a.name == b.name`, else refuse
    `identity_ambiguous: @X is an alias on this server; invite @<b.name>`.
@@ -501,7 +501,7 @@ it (FR4).
 | `enrollment.pending` | **Pre-authentication**, like `hello`; kernel UID only; built from state with no NSS call | `{}` | `{invited: false}`, or `{invited: true, join_id, workspace_name, inviter: {username, display_name}, add_device, approved, expires_at, last_refusal?: "code_mismatch"}` | Read |
 | `auth.join` | **Pre-authentication**, like `auth.enroll`; signed by the claimed key over an `auth.challenge` nonce | `{public_key, join_id}` | `{principal: {username, display_name}, device_id, workspace}` | Commits directly: operation `auth.join`, actor `uid:<n>` |
 | `profile.suggest` | Signed; actor only | `{}` | `{full_name?}` | Read |
-| Snapshot addition (manager only) | — | — | `pending_joins: [{username, full_name, add_device, approved, created_at, expires_at, mismatched_attempts}]`, never a code, key, UID or join ID | — |
+| Snapshot addition (manager only) | None | None | `pending_joins: [{username, full_name, add_device, approved, created_at, expires_at, mismatched_attempts}]`, never a code, key, UID or join ID | None |
 
 `enrollment.pending` and `auth.join` join the pre-authentication dispatch beside `hello` and `auth.*`
 (`broker.rs:687-695`); `enrollment.pending` joins the read set. The `hello` capability `join_by_name_v1` is advertised
@@ -731,7 +731,7 @@ capability is unsigned without `hello` v2 and can be stripped (last row), and an
 | New daemon, old broker | No `human_names_v1`, `unique_names_v1` or `join_by_name_v1`; new methods fall through to authentication and fail closed | "Unknown member" and "Invitation from {inviter}"; Rename hidden; the legacy token path |
 | Old daemon or client, new broker | Legacy `enrollment.invite {uid, public_key}` and `auth.enroll` unchanged. After S2a, colliding team names are refused with plain text and channel names canonicalized; after S1a, an invalid nickname is refused and expired invitations disappear for the invitee | Recorded in the release notes |
 | New broker, old joiner desktop | The joiner has no invitation paste | The host's invite result offers "Bob's Biorouter is older? Invite with a token instead" |
-| Host broker upgraded, old joiner binary | The bridge is unchanged, so the invitation and device code work; S3a needs no joiner binary upgrade | — |
+| Host broker upgraded, old joiner binary | The bridge is unchanged, so the invitation and device code work; S3a needs no joiner binary upgrade | None |
 | New CLI or renderer, stale shared daemon | `SaveConnection` refuses unknown fields; new routes return 404 | The CLI calls `/crew/resolve` only for non-UUID input and explains a 404; the GUI hides name-only affordances |
 | Spoofed capability on the bridge path | Capabilities are unsigned before `hello` v2 | Adding one fails closed on an old broker; stripping one downgrades to the legacy path, which is still safe |
 
@@ -846,9 +846,9 @@ raw field dumps is updated deliberately with the reason recorded beside it; none
 | Slice | User-visible result | Size (production + test lines, rough) | Risk | Gate |
 |---|---|---|---|---|
 | **S0** presentation only (daemon, GUI, CLI; no broker change) | No UUID by default: "Unknown member", "Invitation from Alice Chen (@alice)", Copy … ID, daemon-computed host detection | ~300 + ~300 | Low | Standard review |
-| **S1a** broker projections and D3 | Former members by name; invitations say who and what; the `people` map; devices visible; display-name rules; `expected_username` | ~450 + ~800 | Low–moderate (projection leaks, spoofed names) | Standard review with the disclosure bounds checked |
-| **S1b** resolver, route, CLI selectors and formatters, admission labels | The CLI takes `@bob`, `analysis-lab`, `methods`; agents write names | ~900 + ~800 | Low–moderate | Standard review |
-| **S2a** unique names, renames, workspace name, `hello` v2 | Teams and channels cannot collide; Rename works; the workspace has a name; `start` prints the invitation line | ~600 + ~900 | Low–moderate (Unicode, oracle wording, legacy replay) | Standard review plus the generated-journal gate |
+| **S1a** broker projections and D3 | Former members by name; invitations say who and what; the `people` map; devices visible; display-name rules; `expected_username` | ~450 + ~800 | Low to moderate (projection leaks, spoofed names) | Standard review with the disclosure bounds checked |
+| **S1b** resolver, route, CLI selectors and formatters, admission labels | The CLI takes `@bob`, `analysis-lab`, `methods`; agents write names | ~900 + ~800 | Low to moderate | Standard review |
+| **S2a** unique names, renames, workspace name, `hello` v2 | Teams and channels cannot collide; Rename works; the workspace has a name; `start` prints the invitation line | ~600 + ~900 | Low to moderate (Unicode, oracle wording, legacy replay) | Standard review plus the generated-journal gate |
 | **S2b** confusables | Lookalike and mixed-script names refused | ~150 + ~200 | Low (one new pinned dependency) | Supply-chain review of `unicode-security` |
 | **S3a** join by invitation and device code | Invite `@bob`, paste one message, send one code, paste it back; no token or descriptor field on the default path | ~1,300 + ~1,600 | **High** (new pre-authentication methods, key binding, journal state) | **Mandatory** independent adversarial identity and authorization review, the hostile-bridge harness, the previous-binary downgrade test and the live three-account run, **before** the `join-by-name` feature is enabled in a release build (plan §16.5). All four passed; the feature is on by default since 2026-09-25 (D17) |
 | **S4** discovery and 8-digit codes | Join by host `@username` without an invitation | not sized | High | Its own design revision and adversarial review; maintainer decision on trust provenance |
@@ -859,7 +859,7 @@ a separate module compiled only with its feature, so S1a and S2a can ship while 
 
 ## What the docs keeper must record
 
-- **Decisions log:** D1–D17 above, with SR and FR references. D8 supersedes the enrollment steps in
+- **Decisions log:** D1 to D17 above, with SR and FR references. D8 supersedes the enrollment steps in
   `protocol-contract.md:25`, `cli-guide.md:106-125` and the `plan:112` descriptor as the primary path; first-writer-wins
   remains forbidden (`plan:239`) and is satisfied by the host's approval of a desktop-computed device code. D10 records
   that discovery is deferred pending a maintainer decision on trust provenance.
@@ -893,9 +893,9 @@ a separate module compiled only with its feature, so S1a and S2a can ship while 
 
 ## Related documentation
 
-- [UI redesign specification](ui-redesign-spec.md) — the screens, copy and flows that display these names and run this join
-- [Implementation plan](../../history/biorouter-crew/implementation-plan.md) — §5 descriptor, §6 device authority (`plan:237-241`) and §16 naming requirements
-- [Protocol contract](protocol-contract.md) — the transport, identity and enrollment contract this design amends
-- [Native CLI guide](cli-guide.md) — the examples to rewrite name-first, and the per-account binary prerequisite
-- [Implementation status](../../history/biorouter-crew/implementation-status.md) — invariants I01–I03, I12, I16 and I20–I22, and progress on these slices
-- [SSH hop policy](ssh-hop-policy.md) — host-key trust rules that the invitation keeps unchanged
+- [UI redesign specification](ui-redesign-spec.md): the screens, copy and flows that display these names and run this join
+- [Implementation plan](../../history/biorouter-crew/implementation-plan.md): §5 descriptor, §6 device authority (`plan:237-241`) and §16 naming requirements
+- [Protocol contract](protocol-contract.md): the transport, identity and enrollment contract this design amends
+- [Native CLI guide](cli-guide.md): the examples to rewrite name-first, and the per-account binary prerequisite
+- [Implementation status](../../history/biorouter-crew/implementation-status.md): invariants I01 to I03, I12, I16 and I20 to I22, and progress on these slices
+- [SSH hop policy](ssh-hop-policy.md): host-key trust rules that the invitation keeps unchanged
