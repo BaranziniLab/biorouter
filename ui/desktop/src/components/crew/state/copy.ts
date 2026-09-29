@@ -92,11 +92,35 @@ export const crewObservationCopy = {
 export const crewDraftCopy = {
   /** Added to a rail row's accessible name when its channel holds a kept draft. */
   rowSuffix: ', draft',
+  /**
+   * Above the message box when a channel the person lost access to held their unsent words (QA
+   * M10): they can no longer be sent there, and the note is the one place they are still kept.
+   * `channel` is `#name`, or null when no view named it.
+   */
+  lost: (channel: string | null) =>
+    `${channel ?? 'A channel you lost access to'} held your unsent draft, which can’t be sent there now. Copy it before you close this note.`,
+  copy: 'Copy draft',
+  copied: 'Copied',
+  copyFailed: 'Couldn’t copy',
+  dismiss: 'Dismiss',
 } as const;
 
 export const crewActionCopy = {
   actionFallback: 'Crew could not complete that action.',
   sendPrivacyUnverified: 'Refresh the workspace to verify connection privacy before sending.',
+  /**
+   * A post refused after the person moved to another channel (RENDERER-4): shown in the connection
+   * bar, since the composer on screen did not send it. `channel` is already `#slug`.
+   */
+  sendFailedIn: (channel: string, reason: string) =>
+    `Couldn’t send your message in ${channel}. ${reason}`,
+  /**
+   * A task start that failed after the person moved to another channel (MSG2-N10): shown in the
+   * connection bar, naming the channel the task was for, whose Ask my agent keeps the task.
+   * `channel` is already `#slug`.
+   */
+  startFailedIn: (channel: string, reason: string) =>
+    `Couldn’t start the task in ${channel}: ${reason} Ask my agent there has your task.`,
   grantPrivacyUnverified:
     'Refresh the workspace to verify connection privacy before granting agent access.',
   sendTransferRecordKept:
@@ -104,4 +128,13 @@ export const crewActionCopy = {
   unknownOutcomeGate:
     'Inspect the previous task conversations and remote effects, then acknowledge the inspection before starting another task.',
   restartNeedsInspection: 'Confirm that you inspected the previous task before starting a new one.',
+  /**
+   * A workspace chosen in the workspace menu that the daemon no longer has: removed from this
+   * computer since the menu last read the list, from a terminal or another window (MSG2-N9).
+   * `name` is the name the menu showed.
+   */
+  workspaceRemoved: (name: string) =>
+    name
+      ? `${name} was removed from this computer, so it can’t be opened.`
+      : 'That workspace was removed from this computer, so it can’t be opened.',
 } as const;

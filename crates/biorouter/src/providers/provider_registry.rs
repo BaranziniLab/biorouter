@@ -162,14 +162,66 @@ impl ProviderRegistry {
         (entry.constructor)(model).await
     }
 
+    /// Every registered provider, in ONE stable order: private providers before
+    /// public ones, then by display name (case-insensitively), then by id.
+    ///
+    /// ⚠ The registry is a `HashMap`, and this used to be its `.values()`
+    /// order, which Rust randomises per process: three daemons on the same
+    /// binary listed three different orders, so the model picker, which keeps
+    /// `GET /config/providers`'s order, rearranged itself on every restart
+    /// (W2-PRV-13). Every list downstream starts from this one.
     pub fn all_metadata_with_types(&self) -> Vec<(ProviderMetadata, ProviderType)> {
-        self.entries
+        let mut all: Vec<(ProviderMetadata, ProviderType)> = self
+            .entries
             .values()
             .map(|e| (e.metadata.clone(), e.provider_type))
-            .collect()
+            .collect();
+        all.sort_by_cached_key(|(metadata, _)| {
+            (
+                !metadata.tier.is_private(),
+                metadata.display_name.to_lowercase(),
+                metadata.name.clone(),
+            )
+        });
+        all
     }
 
     pub fn remove_custom_providers(&mut self) {
         self.entries.retain(|name, _| !name.starts_with("custom_"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// W2-PRV-13: the listing is sorted, not `HashMap` order, so it is the same
+    /// in every process: private providers first, then by display name.
+    #[test]
+    fn every_listing_comes_in_one_stable_order() {
+        let all = crate::providers::factory::builtin_provider_metadata();
+        let keys: Vec<(bool, String, String)> = all
+            .iter()
+            .map(|metadata| {
+                (
+                    !metadata.tier.is_private(),
+                    metadata.display_name.to_lowercase(),
+                    metadata.name.clone(),
+                )
+            })
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            keys, sorted,
+            "the registry listing is not in its stable order"
+        );
+        assert!(
+            all.first()
+                .is_some_and(|metadata| metadata.tier.is_private()),
+            "a private provider leads the list"
+        );
+        assert!(
+            all.len() > 3,
+            "the scan read too few providers to mean anything"
+        );
     }
 }

@@ -977,6 +977,24 @@ pub trait Provider: Send + Sync {
         Ok(None)
     }
 
+    /// Ask the provider, with the cheapest call that it authenticates, whether it
+    /// accepts the credentials this instance was built with.
+    ///
+    /// `Err(ProviderError::Authentication(reason))` means the provider REFUSED
+    /// them, and `reason` is its own words. Every other outcome means nothing
+    /// about the key: `Ok(())` when it was accepted or no such call exists, and
+    /// any other error when the call could not be made or answered. A caller
+    /// that acts on this (`/config/check_provider`, which refuses to save a key
+    /// the provider rejects) must act on the `Authentication` arm alone, so a
+    /// network fault or a slow gateway never rolls back a working key.
+    ///
+    /// The default is the model listing, which is authenticated wherever it
+    /// exists. T3-SH-3: a provider with no listing (the Versa gateways) answers
+    /// `Ok(None)` without sending anything, so it has to say how else to ask.
+    async fn check_credentials(&self) -> Result<(), ProviderError> {
+        self.fetch_supported_models().await.map(|_| ())
+    }
+
     /// Fetch models filtered by canonical registry and usability
     async fn fetch_recommended_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         let all_models = match self.fetch_supported_models().await? {
@@ -1878,11 +1896,36 @@ mod tests {
         assert_eq!(info.supported_input_mime_types, None);
     }
 
+    /// The two AWS-backed cases of the test below, which exist only when the
+    /// `aws-providers` feature compiles their providers in. Ungated, they made
+    /// `cargo test -p biorouter --lib --no-default-features` fail to compile.
+    #[cfg(feature = "aws-providers")]
+    fn aws_vision_cases() -> Vec<(ProviderMetadata, &'static str, &'static str)> {
+        use crate::providers::bedrock::BedrockProvider;
+        use crate::providers::versa_bedrock::VersaBedrockProvider;
+        vec![
+            (
+                BedrockProvider::metadata(),
+                "us.anthropic.claude-opus-4-6-v1",
+                "Amazon Bedrock Claude Opus 4.6",
+            ),
+            (
+                VersaBedrockProvider::metadata(),
+                "us.anthropic.claude-opus-4-6-v1",
+                "Versa Bedrock Claude Opus 4.6",
+            ),
+        ]
+    }
+
+    #[cfg(not(feature = "aws-providers"))]
+    fn aws_vision_cases() -> Vec<(ProviderMetadata, &'static str, &'static str)> {
+        Vec::new()
+    }
+
     #[test]
     fn known_vision_models_have_supports_vision_true() {
         use crate::providers::anthropic::AnthropicProvider;
         use crate::providers::azure::AzureProvider;
-        use crate::providers::bedrock::BedrockProvider;
         use crate::providers::databricks::DatabricksProvider;
         use crate::providers::gcpvertexai::GcpVertexAIProvider;
         use crate::providers::githubcopilot::GithubCopilotProvider;
@@ -1891,11 +1934,10 @@ mod tests {
         use crate::providers::openrouter::OpenRouterProvider;
         use crate::providers::tetrate::TetrateProvider;
         use crate::providers::versa_azure::VersaAzureProvider;
-        use crate::providers::versa_bedrock::VersaBedrockProvider;
         use crate::providers::xai::XaiProvider;
         use crate::providers::xiaomi_mimo::XiaomiMimoProvider;
 
-        let cases: Vec<(ProviderMetadata, &str, &str)> = vec![
+        let mut cases: Vec<(ProviderMetadata, &str, &str)> = vec![
             (
                 AnthropicProvider::metadata(),
                 "claude-sonnet-4-6",
@@ -1916,16 +1958,6 @@ mod tests {
                 GoogleProvider::metadata(),
                 "gemini-2.5-pro",
                 "Google Gemini 2.5 Pro",
-            ),
-            (
-                BedrockProvider::metadata(),
-                "us.anthropic.claude-opus-4-6-v1",
-                "Amazon Bedrock Claude Opus 4.6",
-            ),
-            (
-                VersaBedrockProvider::metadata(),
-                "us.anthropic.claude-opus-4-6-v1",
-                "Versa Bedrock Claude Opus 4.6",
             ),
             (
                 GcpVertexAIProvider::metadata(),
@@ -1982,6 +2014,7 @@ mod tests {
                 "Xiaomi MiMo V2.6 Pro",
             ),
         ];
+        cases.extend(aws_vision_cases());
 
         for (metadata, model_name, label) in cases {
             let info = metadata

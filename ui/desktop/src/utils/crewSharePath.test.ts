@@ -8,25 +8,39 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CREW_DEFAULT_SAVE_NAME,
+  CREW_FILE_NAME_HIDDEN,
+  CREW_FOLDER_SHARED,
+  CREW_MODE_MISMATCH,
   CREW_SHARE_BUTTON_SHARE,
   CREW_SHARE_LABEL_MAX_CHARS,
   CREW_SHARE_SIZE_LIMIT,
   CREW_FILE_IS_CREDENTIAL,
-  CrewSharePending,
+  CrewSheetGate,
+  DAEMON_SENTENCE_MAX_CHARS,
   DEV_AUTO_CONFIRM_SHARE_ENV,
   crewFileRefusal,
+  crewSaveName,
   crewShareCopy,
   crewShareDialogOptions,
   crewShareRegistrationBody,
+  daemonRefusalSentence,
+  holdCrewSheet,
   inspectDroppedFile,
+  parseCrewPickerRequest,
   parseCrewShareRequest,
   resolveDevAutoConfirmShare,
+  selectCrewTransferFile,
   shareDroppedFile,
   visibleText,
+  type CrewPickerDeps,
+  type CrewPickerRequest,
   type CrewShareRequest,
   type ShareDroppedFileDeps,
   type ShareFs,
 } from './crewSharePath';
+import { saveNameFor } from '../components/crew/files/fileName';
+import { stripHiddenCharacters } from './untrustedText';
 
 const posix = process.platform !== 'win32';
 const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
@@ -665,7 +679,25 @@ describe('shareDroppedFile', () => {
 
   it.each([
     [
-      'a privacy change',
+      'a privacy change, named by its code with both modes (DW-12)',
+      async () => ({
+        ok: false,
+        body: {
+          code: CREW_MODE_MISMATCH,
+          error: 'Your connection is Public, but this request required Private. Nothing was sent.',
+          actual_mode: 'public',
+          expected_mode: 'private',
+        },
+      }),
+      'Your connection is now Public; this file was checked for Private. Refresh Crew and drop the file again.',
+    ],
+    [
+      'a privacy change from a daemon that names no mode, from the mode this request expected',
+      async () => ({ ok: false, body: { code: CREW_MODE_MISMATCH, error: 'unused' } }),
+      crewShareCopy.modeChanged('public', 'private', 'drop the file again'),
+    ],
+    [
+      'the old privacy sentence without its code, which is no longer matched by its words',
       async () => ({
         ok: false,
         body: {
@@ -673,7 +705,7 @@ describe('shareDroppedFile', () => {
             'Crew connection privacy changed; refresh the verified workspace before selecting a file',
         },
       }),
-      crewShareCopy.privacyChanged,
+      crewShareCopy.daemonRefused('growth.csv'),
     ],
     [
       'another refusal, without repeating the daemon text',
@@ -780,13 +812,532 @@ describe('resolveDevAutoConfirmShare', () => {
   });
 });
 
-describe('CrewSharePending', () => {
+describe('CrewSheetGate (FILES-F2)', () => {
   it('holds one confirmation per window and frees it after', () => {
-    const pending = new CrewSharePending();
-    expect(pending.enter(1)).toBe(true);
-    expect(pending.enter(1)).toBe(false);
-    expect(pending.enter(2)).toBe(true);
-    pending.leave(1);
-    expect(pending.enter(1)).toBe(true);
+    const gate = new CrewSheetGate();
+    expect(gate.enter(1, 'share')).toBeUndefined();
+    expect(gate.enter(1, 'share')).toBe(crewShareCopy.busy);
+    expect(gate.enter(2, 'share')).toBeUndefined();
+    gate.leave(1);
+    expect(gate.enter(1, 'share')).toBeUndefined();
+  });
+
+  it('refuses the picker while the drop confirmation is open, and the other way round', () => {
+    const gate = new CrewSheetGate();
+    expect(gate.enter(1, 'picker')).toBeUndefined();
+    expect(gate.enter(1, 'picker')).toBe('Finish the open Save or Open window first.');
+    expect(gate.enter(1, 'share')).toBe(crewShareCopy.pickerBusy);
+    gate.leave(1);
+    expect(gate.enter(1, 'share')).toBeUndefined();
+    expect(gate.enter(1, 'picker')).toBe(crewShareCopy.busy);
+  });
+
+  it('refuses while another dialog is attached to the window, and not after it closes', () => {
+    const gate = new CrewSheetGate();
+    gate.sheetBegan(1);
+    gate.sheetBegan(1);
+    expect(gate.hasSheet(1)).toBe(true);
+    expect(gate.enter(1, 'picker')).toBe(crewShareCopy.sheetOpen);
+    gate.sheetEnded(1);
+    expect(gate.enter(1, 'picker')).toBe(crewShareCopy.sheetOpen);
+    gate.sheetEnded(1);
+    gate.sheetEnded(1);
+    expect(gate.hasSheet(1)).toBe(false);
+    expect(gate.enter(1, 'picker')).toBeUndefined();
+  });
+
+  it('forgets a closed window', () => {
+    const gate = new CrewSheetGate();
+    gate.enter(3, 'picker');
+    gate.sheetBegan(3);
+    gate.forget(3);
+    expect(gate.hasSheet(3)).toBe(false);
+    expect(gate.enter(3, 'share')).toBeUndefined();
+  });
+});
+
+describe('crewFileRefusal: the codes that say what to change (W2-HRD-4, DW-12)', () => {
+  it('names a leading-dot file name and a shared folder', () => {
+    expect(crewFileRefusal({ code: CREW_FILE_NAME_HIDDEN }, 'download', '.Rprofile')).toBe(
+      "“.Rprofile” starts with a dot, which Crew doesn't save into your home. Choose a name without the leading dot."
+    );
+    expect(crewFileRefusal({ code: CREW_FOLDER_SHARED }, 'download', 'counts.csv')).toBe(
+      "Choose a folder owned by your account that other accounts can't change."
+    );
+    // The daemon's other download refusals name the path they refuse, in its own words.
+    expect(
+      crewFileRefusal({ code: 'crew_destination_is_folder' }, 'download', 'results')
+    ).toBeUndefined();
+  });
+
+  it('makes a hidden character in the chosen name visible', () => {
+    expect(crewFileRefusal({ code: CREW_FILE_NAME_HIDDEN }, 'download', '.a\u202Eb')).toBe(
+      crewShareCopy.nameHidden('.a�b')
+    );
+  });
+
+  it('keys the privacy change on the code and names both modes, never matching the sentence', () => {
+    const mismatch = {
+      code: CREW_MODE_MISMATCH,
+      error: 'reworded by the daemon',
+      actual_mode: 'private',
+      expected_mode: 'public',
+    };
+    expect(crewFileRefusal(mismatch, 'upload', 'a.csv')).toBe(
+      'Your connection is now Private; this file was checked for Public. Refresh Crew and try again.'
+    );
+    // The modes may come under `details`, and a request's own expected mode stands in.
+    expect(
+      crewFileRefusal(
+        { code: CREW_MODE_MISMATCH, details: { actual_mode: 'public', expected_mode: 'private' } },
+        'upload',
+        'a.csv'
+      )
+    ).toBe(crewShareCopy.modeChanged('public', 'private', 'try again'));
+    expect(
+      crewFileRefusal({ code: CREW_MODE_MISMATCH }, 'upload', 'a.csv', { expectedMode: 'public' })
+    ).toBe(crewShareCopy.modeChanged('private', 'public', 'try again'));
+    expect(crewFileRefusal({ code: CREW_MODE_MISMATCH }, 'upload', 'a.csv')).toBe(
+      crewShareCopy.modeChangedUnknown('try again')
+    );
+    // The sentence alone, without the code, is no longer recognised.
+    expect(
+      crewFileRefusal(
+        {
+          error:
+            'Crew connection privacy changed; refresh the verified workspace before selecting a file',
+        },
+        'upload',
+        'a.csv'
+      )
+    ).toBeUndefined();
+  });
+});
+
+describe('the download refusal codes are the daemon’s (W2-HRD-4)', () => {
+  it('keeps each code and sentence word for word', () => {
+    const rust = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../crates/biorouter-server/src/crew/local_files.rs'
+      ),
+      'utf8'
+    );
+    expect(rust).toContain(`pub const FILE_NAME_HIDDEN_CODE: &str = "${CREW_FILE_NAME_HIDDEN}";`);
+    expect(rust).toContain(`pub const FOLDER_SHARED_CODE: &str = "${CREW_FOLDER_SHARED}";`);
+    const [, rest] = crewShareCopy.nameHidden('{name}').split('{name}');
+    expect(rust).toContain(`"\\u{201c}{name}\\u{201d}${rest.slice(1)}"`);
+    expect(rust).toContain(`"${crewShareCopy.folderShared}"`);
+  });
+
+  it('keys the privacy change on the Crew core’s own code (W2-DMN-9)', () => {
+    const refusal = fs.readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '../../../../crates/biorouter/src/crew/refusal.rs'
+      ),
+      'utf8'
+    );
+    expect(refusal).toContain(`pub const MODE_MISMATCH: &str = "${CREW_MODE_MISMATCH}";`);
+  });
+});
+
+describe('daemonRefusalSentence', () => {
+  it("passes the daemon's own reason through, made visible and bounded", () => {
+    expect(
+      daemonRefusalSentence({ code: 'crew_transfer_refused', error: 'Symlinks are refused' })
+    ).toBe('Symlinks are refused');
+    expect(daemonRefusalSentence({ error: 'two\nlines \u202Eflip' })).toBe('two�lines �flip');
+    const long = daemonRefusalSentence({ error: 'x'.repeat(DAEMON_SENTENCE_MAX_CHARS + 50) });
+    expect(Array.from(long ?? '')).toHaveLength(DAEMON_SENTENCE_MAX_CHARS);
+    expect(long?.endsWith('…')).toBe(true);
+  });
+
+  it.each([null, 'text', {}, { error: '' }, { error: 42 }])('gives nothing for %j', (body) => {
+    expect(daemonRefusalSentence(body)).toBeUndefined();
+  });
+});
+
+describe('crewSaveName: a default the daemon accepts (FILES-F3)', () => {
+  it.each([
+    ['counts.csv', 'counts.csv'],
+    ['.Rprofile', 'Rprofile'],
+    ['..hidden.txt', 'hidden.txt'],
+    [' . gitignore', 'gitignore'],
+    ['invoice\u202Efdp.sh', 'invoicefdp.sh'],
+    ['line\u2028break.txt', 'linebreak.txt'],
+    ['privateuse.csv', 'privateuse.csv'],
+    ['../../etc/passwd', 'passwd'],
+    ['two\nlines.txt', 'twolines.txt'],
+    // Two halves of one character split by a hidden one: dropped before the join, so they never
+    // fuse into U+E0001 (a tag), U+F0000 (private use) or U+10000.
+    ['a\uDB40\u200B\uDC01b.txt', 'ab.txt'],
+    ['a\uDB80\u200B\uDC00b.txt', 'ab.txt'],
+    ['a\uD800\u2066\uDC00b.txt', 'ab.txt'],
+    ['dir/a\uDB40\u202E\uDC01b.txt', 'ab.txt'],
+    ['\u{1F9EC} genome.fa', '\u{1F9EC} genome.fa'],
+    // Spaces and dots alternating at the start: taken as one run, so no dot is left in front.
+    ['. .x', 'x'],
+    ['.\u200B .Rprofile', 'Rprofile'],
+    [' . . .x', 'x'],
+    ['dir/. .Rprofile', 'Rprofile'],
+    ['.\u00A0.\u3000.x ', 'x'],
+    ['x. .y. ', 'x. .y.'],
+  ])('offers %j as %j', (raw, name) => {
+    const offered = crewSaveName(raw);
+    expect(offered).toBe(name);
+    expect(stripHiddenCharacters(offered)).toBe(offered);
+    expect(/[\p{Cs}\p{Co}]/u.test(offered)).toBe(false);
+    expect(crewSaveName(offered)).toBe(offered);
+  });
+
+  it.each([
+    undefined,
+    null,
+    7,
+    '',
+    '.',
+    '..',
+    '\u202E',
+    '/',
+    '\uD800',
+    '\uDB40\u200B',
+    // Each of these was `.` or `..` after one trim, one dot strip and another trim, and the Save
+    // window opens the directory a `.` or `..` default resolves to.
+    '. .',
+    '.. ..',
+    ' . . ',
+    '.\u200B.',
+    'dir/. ..',
+  ])('falls back to its own name for %j', (raw) => {
+    expect(crewSaveName(raw)).toBe(CREW_DEFAULT_SAVE_NAME);
+  });
+
+  it("never offers a dot name, `.` or `..`, and proposes the renderer's name unchanged (property)", () => {
+    // Random names over the characters that interact: spaces, dots, separators, hidden and
+    // private-use characters, whole astral ones and the lone halves of others. Seeded, so a
+    // failure repeats.
+    const alphabet = [
+      '.',
+      '.',
+      ' ',
+      '\t',
+      '\u00A0',
+      '\u3000',
+      'x',
+      'é',
+      '/',
+      '\\',
+      '\u200B',
+      '\u202E',
+      '\u2066',
+      '\u2028',
+      '\uFEFF',
+      '\n',
+      '\uE000',
+      '\u{E0001}',
+      '\u{1F9EC}',
+      '\uD800',
+      '\uDC00',
+      '\uDB40',
+      '\uDC01',
+    ];
+    let state = 0x5eed;
+    const next = () => {
+      // mulberry32
+      state = (state + 0x6d2b79f5) >>> 0;
+      let value = state;
+      value = Math.imul(value ^ (value >>> 15), value | 1);
+      value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+      return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let run = 0; run < 20000; run += 1) {
+      let sample = '';
+      const length = Math.floor(next() * 9);
+      for (let i = 0; i < length; i += 1) sample += alphabet[Math.floor(next() * alphabet.length)];
+      const offered = crewSaveName(sample);
+      const why = JSON.stringify(sample);
+      expect(offered.startsWith('.'), why).toBe(false);
+      expect(offered === '.' || offered === '..', why).toBe(false);
+      expect(offered, why).toBe(offered.trim());
+      expect(path.basename(offered), why).toBe(offered);
+      expect(stripHiddenCharacters(offered), why).toBe(offered);
+      expect(/[\p{Cs}\p{Co}\p{Zl}\p{Zp}]/u.test(offered), why).toBe(false);
+      // A fixed point: the main process running the rule again on the renderer's proposal keeps it.
+      expect(crewSaveName(offered), why).toBe(offered);
+      if (path.basename(sample) === sample) {
+        expect(offered, why).toBe(saveNameFor(sample) ?? CREW_DEFAULT_SAVE_NAME);
+      }
+    }
+  });
+});
+
+describe('parseCrewPickerRequest', () => {
+  const valid = {
+    direction: 'download',
+    connectionId: 'conn-1',
+    channelId: 'chan-1',
+    blobId: 'blob-1',
+    suggestedName: 'counts.csv',
+  };
+
+  it('keeps the named fields, with transfer as the default purpose', () => {
+    expect(parseCrewPickerRequest({ ...valid, expectedMode: 'private', extra: 'x' })).toEqual({
+      expectedMode: 'private',
+      purpose: 'transfer',
+      direction: 'download',
+      connectionId: 'conn-1',
+      channelId: 'chan-1',
+      blobId: 'blob-1',
+      suggestedName: 'counts.csv',
+    });
+  });
+
+  it.each([
+    ['no object', null, 'Invalid transfer request.'],
+    ['a strange mode', { ...valid, expectedMode: 'secret' }, /Invalid expected transfer privacy/],
+    ['a strange direction', { ...valid, direction: 'sideways' }, 'Invalid transfer destination.'],
+    ['a path-like channel', { ...valid, channelId: '../x' }, 'Invalid transfer destination.'],
+    ['a strange blob', { ...valid, blobId: 'a/b' }, 'Invalid transfer capability binding.'],
+    ['a strange purpose', { ...valid, purpose: 'erase' }, 'Invalid transfer selection purpose.'],
+    [
+      'a cleanup without its transfer',
+      { ...valid, purpose: 'cleanup' },
+      'Temporary download cleanup needs its original transfer.',
+    ],
+  ])('refuses %s', (_label, raw, message) => {
+    expect(() => parseCrewPickerRequest(raw)).toThrow(message);
+  });
+});
+
+describe('selectCrewTransferFile: the secure picker, with stubbed native windows', () => {
+  const download: CrewPickerRequest = {
+    expectedMode: 'private',
+    purpose: 'transfer',
+    direction: 'download',
+    connectionId: 'conn-1',
+    channelId: 'chan-1',
+    blobId: 'blob-1',
+    suggestedName: '.Rprofile',
+  };
+  const upload: CrewPickerRequest = {
+    expectedMode: 'public',
+    purpose: 'transfer',
+    direction: 'upload',
+    connectionId: 'conn-1',
+    channelId: 'chan-1',
+  };
+
+  const picker = (answers: Array<{ ok: boolean; body: unknown }>, overrides = {}) => {
+    const queue = [...answers];
+    const deps = {
+      showOpenDialog: vi.fn<CrewPickerDeps['showOpenDialog']>(async () => ({
+        canceled: false,
+        filePaths: ['/Users/henry/data/counts.csv'],
+      })),
+      showSaveDialog: vi.fn<CrewPickerDeps['showSaveDialog']>(async () => ({
+        canceled: false,
+        filePath: '/Users/henry/Downloads/Rprofile',
+      })),
+      showMessageBox: vi.fn<CrewPickerDeps['showMessageBox']>(async () => ({ response: 1 })),
+      crewFiles: vi.fn<CrewPickerDeps['crewFiles']>(async () => {
+        const next = queue.shift();
+        if (!next) throw new Error('The picker harness ran out of daemon answers.');
+        return next;
+      }),
+      isClosed: vi.fn<CrewPickerDeps['isClosed']>(() => false),
+      ...overrides,
+    };
+    return deps;
+  };
+
+  it('proposes a Save name the daemon accepts, never a leading-dot one', async () => {
+    const deps = picker([
+      { ok: true, body: { capability_id: 'cap-1', name: 'Rprofile', target_exists: false } },
+      { ok: true, body: { capability_id: 'cap-1', name: 'Rprofile' } },
+    ]);
+    await expect(selectCrewTransferFile(download, deps)).resolves.toEqual({
+      capability_id: 'cap-1',
+      name: 'Rprofile',
+    });
+    expect(deps.showSaveDialog).toHaveBeenCalledWith({
+      title: 'Save Crew file',
+      defaultPath: 'Rprofile',
+    });
+    expect(deps.crewFiles.mock.calls.map(([endpoint]) => endpoint)).toEqual(['', '/cap-1/confirm']);
+  });
+
+  it("shows the daemon's own reason for a refusal without a code of its own (FILES-F1)", async () => {
+    const deps = picker([
+      {
+        ok: false,
+        body: {
+          code: 'crew_transfer_refused',
+          error: 'Crew keeps two transfers at a time; resume this one when another finishes',
+        },
+      },
+    ]);
+    await expect(selectCrewTransferFile(upload, deps)).rejects.toThrow(
+      'Crew keeps two transfers at a time; resume this one when another finishes'
+    );
+  });
+
+  it('keeps its general sentence for a refusal that carries no words at all', async () => {
+    const deps = picker([{ ok: false, body: null }]);
+    await expect(selectCrewTransferFile(upload, deps)).rejects.toThrow(
+      'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
+    );
+  });
+
+  it('names the chosen file when the daemon refuses its leading dot', async () => {
+    const deps = picker([{ ok: false, body: { code: CREW_FILE_NAME_HIDDEN, error: 'unused' } }], {
+      showSaveDialog: vi.fn(async () => ({
+        canceled: false,
+        filePath: '/Users/henry/.Rprofile',
+      })),
+    });
+    await expect(selectCrewTransferFile(download, deps)).rejects.toThrow(
+      crewShareCopy.nameHidden('.Rprofile')
+    );
+  });
+
+  it('keys a privacy change on its code and names both modes (DW-12)', async () => {
+    const deps = picker([
+      {
+        ok: false,
+        body: {
+          code: CREW_MODE_MISMATCH,
+          error: 'x',
+          actual_mode: 'private',
+          expected_mode: 'public',
+        },
+      },
+    ]);
+    await expect(selectCrewTransferFile(upload, deps)).rejects.toThrow(
+      'Your connection is now Private; this file was checked for Public. Refresh Crew and try again.'
+    );
+  });
+
+  it('sends only the chosen path and the binding, and returns only the capability', async () => {
+    const deps = picker([
+      { ok: true, body: { capability_id: 'cap-9', name: 'counts.csv', size: 8 } },
+    ]);
+    await expect(selectCrewTransferFile(upload, deps)).resolves.toEqual({
+      capability_id: 'cap-9',
+      name: 'counts.csv',
+      size: 8,
+    });
+    expect(deps.crewFiles).toHaveBeenCalledWith('', 'POST', {
+      direction: 'upload',
+      purpose: 'transfer',
+      path: '/Users/henry/data/counts.csv',
+      overwrite: false,
+      approval_pending: false,
+      connection_id: 'conn-1',
+      channel_id: 'chan-1',
+      blob_id: undefined,
+      transfer_id: undefined,
+      expected_mode: 'public',
+    });
+  });
+
+  it('gives the capability back when the person declines to replace an existing file', async () => {
+    const deps = picker(
+      [
+        { ok: true, body: { capability_id: 'cap-2', name: 'Rprofile', target_exists: true } },
+        { ok: true, body: null },
+      ],
+      { showMessageBox: vi.fn(async () => ({ response: 0 })) }
+    );
+    await expect(selectCrewTransferFile(download, deps)).resolves.toBeNull();
+    expect(deps.crewFiles.mock.calls[deps.crewFiles.mock.calls.length - 1]).toEqual([
+      '/cap-2',
+      'DELETE',
+      {},
+    ]);
+  });
+
+  it('does nothing after Cancel in the native window', async () => {
+    const deps = picker([], {
+      showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })),
+    });
+    await expect(selectCrewTransferFile(upload, deps)).resolves.toBeNull();
+    expect(deps.crewFiles).not.toHaveBeenCalled();
+  });
+
+  it('refuses a second Save while the first window is open, and no card waits forever (FILES-F2)', async () => {
+    const gate = new CrewSheetGate();
+    // AppKit never answers a second sheet on one window: model the first window as one that
+    // stays open until the test answers it.
+    let answer: (value: { canceled: boolean; filePath?: string }) => void = () => undefined;
+    const first = picker([], {
+      showSaveDialog: vi.fn(
+        () => new Promise<{ canceled: boolean; filePath?: string }>((resolve) => (answer = resolve))
+      ),
+    });
+    const second = picker([]);
+    const opening = holdCrewSheet(gate, 7, 'picker', () => selectCrewTransferFile(download, first));
+    await vi.waitFor(() => expect(first.showSaveDialog).toHaveBeenCalledTimes(1));
+    await expect(
+      holdCrewSheet(gate, 7, 'picker', () => selectCrewTransferFile(download, second))
+    ).rejects.toThrow('Finish the open Save or Open window first.');
+    expect(second.showSaveDialog).not.toHaveBeenCalled();
+    answer({ canceled: true });
+    await expect(opening).resolves.toBeNull();
+    // Held no longer: the next Save opens its window.
+    const third = picker([], { showSaveDialog: vi.fn(async () => ({ canceled: true })) });
+    await expect(
+      holdCrewSheet(gate, 7, 'picker', () => selectCrewTransferFile(download, third))
+    ).resolves.toBeNull();
+    expect(third.showSaveDialog).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the window across the daemon round trip before the replace alert', async () => {
+    const gate = new CrewSheetGate();
+    let registered: (value: { ok: boolean; body: unknown }) => void = () => undefined;
+    const deps = picker([], {
+      crewFiles: vi.fn(
+        () => new Promise<{ ok: boolean; body: unknown }>((resolve) => (registered = resolve))
+      ),
+    });
+    const flow = holdCrewSheet(gate, 7, 'picker', () => selectCrewTransferFile(download, deps));
+    await vi.waitFor(() => expect(deps.crewFiles).toHaveBeenCalledTimes(1));
+    // The Save window has closed, and the page takes clicks again: still refused.
+    expect(gate.enter(7, 'picker')).toBe(crewShareCopy.pickerBusy);
+    registered({ ok: false, body: null });
+    await expect(flow).rejects.toThrow(/refused this file selection/);
+    expect(gate.enter(7, 'picker')).toBeUndefined();
+  });
+
+  it('refuses the picker while another dialog is attached to the window', async () => {
+    const gate = new CrewSheetGate();
+    gate.sheetBegan(7);
+    const deps = picker([]);
+    await expect(
+      holdCrewSheet(gate, 7, 'picker', () => selectCrewTransferFile(upload, deps))
+    ).rejects.toThrow(crewShareCopy.sheetOpen);
+    expect(deps.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  it('shows the cleanup name made visible, and finds the file by its own name', async () => {
+    const deps = picker([{ ok: true, body: { capability_id: 'cap-3', name: 'a\u202Eb.csv' } }], {
+      showOpenDialog: vi.fn(async () => ({
+        canceled: false,
+        filePaths: ['/Users/henry/Downloads'],
+      })),
+    });
+    await selectCrewTransferFile(
+      { ...download, purpose: 'cleanup', transferId: 'tr-1', suggestedName: 'a\u202Eb.csv' },
+      deps
+    );
+    expect(deps.showOpenDialog.mock.calls[0][0].title).toBe(
+      'Locate the original folder for a�b.csv'
+    );
+    expect(deps.showMessageBox.mock.calls[0][0].message).toBe(
+      'Remove the temporary download for a�b.csv?'
+    );
+    expect((deps.crewFiles.mock.calls[0][2] as { path: string }).path).toBe(
+      '/Users/henry/Downloads/a\u202Eb.csv'
+    );
   });
 });

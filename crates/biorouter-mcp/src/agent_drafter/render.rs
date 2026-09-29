@@ -265,7 +265,9 @@ fn package_json(manifest: &Manifest) -> String {
 /// store, and bring a daemon up on a known port. Sourced by `run.sh` so the two
 /// launch paths can't drift.
 ///
-/// Defines `BIOROUTERD`, `PORT`, and `BASE` (e.g. `http://127.0.0.1:3000`).
+/// Defines `BIOROUTERD`, `PORT`, `SECRET` (the daemon's, never printed and never
+/// on a command line) and, after `launch_url`, `LAUNCH_URL`: the app's one-time
+/// launch link (W2-HRD-1).
 #[expect(
     clippy::too_many_lines,
     reason = "the generated launcher is one contiguous shell program; splitting its literal would obscure control flow"
@@ -331,41 +333,141 @@ install_app() {{
 
 port_alive() {{ curl -sf -o /dev/null --max-time 1 "http://127.0.0.1:$1/status" 2>/dev/null; }}
 
-# ── 3. Reuse a running daemon, else start one ─────────────────────────────
-# Any biorouterd on this machine reads the same store, so once the app is
-# installed, whichever daemon is up can serve it.
+# ── 3. A daemon whose secret this launcher knows ──────────────────────────
+# A daemon serves an app's page only to a browser holding that app's access
+# cookie, and the one-time link that sets the cookie is handed only to a caller
+# holding the daemon's secret. So this launcher uses a daemon it started (its
+# port and secret are kept, readable by you alone, in $LAUNCHER_STATE) or one you
+# name with BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY. It cannot open the
+# app on any other daemon, whatever answers /status.
+LAUNCHER_STATE="${{XDG_CONFIG_HOME:-$HOME/.config}}/biorouter/app-launcher/daemon"
+SECRET=""
+LOG=""
+
+new_secret() {{ od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }}
+
+# Every request that carries the secret hands it to curl on stdin, never on a
+# command line, where other accounts on this machine can read it.
+secret_ok() {{
+  printf 'X-Secret-Key: %s\n' "$2" \
+    | curl -sf -o /dev/null --max-time 2 -H @- "http://127.0.0.1:$1/apps" 2>/dev/null
+}}
+
+# The path of this app's one-time launch link, from the daemon on :$1.
+launch_path() {{
+  printf 'X-Secret-Key: %s\n' "$2" \
+    | curl -sf --max-time 5 -X POST -H @- "http://127.0.0.1:$1/apps/$APP_ID/launch" 2>/dev/null \
+    | sed -n 's|.*"path":"\(/apps/[A-Za-z0-9_-]*/?t=[0-9a-f]*\)".*|\1|p'
+}}
+
+save_daemon() {{
+  ( umask 077
+    mkdir -p "$(dirname "$LAUNCHER_STATE")"
+    printf '%s %s\n' "$PORT" "$SECRET" > "$LAUNCHER_STATE.$$" && mv -f "$LAUNCHER_STATE.$$" "$LAUNCHER_STATE"
+  ) || echo "  (could not remember this daemon; the next run starts another)" >&2
+}}
+
 start_daemon() {{
-  for p in "${{BIOROUTERD_PORT:-3000}}" 3000 3001 3002 3003; do
-    if port_alive "$p"; then PORT="$p"; echo "Using the Biorouter daemon already on :$PORT"; return 0; fi
-  done
+  if [ -n "${{BIOROUTER_SERVER__SECRET_KEY:-}}" ] && [ -n "${{BIOROUTERD_PORT:-}}" ] \
+    && secret_ok "$BIOROUTERD_PORT" "$BIOROUTER_SERVER__SECRET_KEY"; then
+    PORT="$BIOROUTERD_PORT"; SECRET="$BIOROUTER_SERVER__SECRET_KEY"
+    echo "Using the Biorouter daemon on :$PORT"
+    return 0
+  fi
+  if [ -f "$LAUNCHER_STATE" ]; then
+    saved_port=""; saved_secret=""
+    read -r saved_port saved_secret < "$LAUNCHER_STATE" || true
+    if [ -n "$saved_port" ] && [ -n "$saved_secret" ] && secret_ok "$saved_port" "$saved_secret"; then
+      PORT="$saved_port"; SECRET="$saved_secret"
+      echo "Using the Biorouter daemon this launcher started on :$PORT"
+      return 0
+    fi
+  fi
 
   BIOROUTERD="$(find_biorouterd)" || die "biorouterd not found. Install Biorouter, or set BIOROUTERD_BIN=/path/to/biorouterd"
 
-  for p in "${{BIOROUTERD_PORT:-3000}}" 3001 3002 3003; do
+  for p in "${{BIOROUTERD_PORT:-3000}}" 3001 3002 3003 3004 3005; do
+    # A daemon already here is not one whose secret this launcher knows.
+    if port_alive "$p"; then continue; fi
+    # A new secret for every attempt: until the daemon answers with it, whatever
+    # listens on the port is asked with it, and that must never be the secret of a
+    # daemon that goes on to start somewhere else.
+    SECRET="$(new_secret)"
+    [ "${{#SECRET}}" -eq 64 ] || die "could not make a secret for the daemon (this needs od and /dev/urandom)"
     LOG="${{TMPDIR:-/tmp}}/biorouterd-$APP_ID-$p.log"
     echo "Starting $BIOROUTERD on :$p (using your configured Biorouter provider)..."
-    BIOROUTER_PORT="$p" "$BIOROUTERD" agent >"$LOG" 2>&1 &
+    BIOROUTER_SERVER__SECRET_KEY="$SECRET" BIOROUTER_PORT="$p" "$BIOROUTERD" agent </dev/null >"$LOG" 2>&1 &
     for _ in $(seq 1 40); do
-      port_alive "$p" && {{ PORT="$p"; return 0; }}
+      if secret_ok "$p" "$SECRET"; then PORT="$p"; save_daemon; return 0; fi
       kill -0 "$!" 2>/dev/null || break   # it died; try the next port
       sleep 0.5
     done
     echo "  :$p did not come up (see $LOG)" >&2
   done
-  die "could not start biorouterd. Last log: $LOG"
+  die "could not start biorouterd.${{LOG:+ Last log: $LOG}}"
 }}
 
-# ── 4. Verify the daemon can actually serve this app ──────────────────────
-verify_app() {{
-  code="$(curl -s -o /dev/null -w '%{{http_code}}' "$BASE/apps/$APP_ID/" 2>/dev/null || echo 000)"
-  [ "$code" = "200" ] || die "the daemon on :$PORT does not serve '$APP_ID' (HTTP $code). Is the store at $STORE?"
+# ── 4. The one-time address that opens this app ───────────────────────────
+# Opening it sets the app's access cookie in your browser and lands on the app.
+# It works once and for a few minutes; run the launcher again for a new one.
+launch_url() {{
+  path="$(launch_path "$PORT" "$SECRET")"
+  [ -n "$path" ] || die "the daemon on :$PORT does not serve '$APP_ID'. Is the store at $STORE?"
+  LAUNCH_URL="http://127.0.0.1:$PORT$path"
+}}
+
+# The link opens the app for whoever uses it FIRST, and a command line is
+# readable by every account on this machine (`ps`, /proc/<pid>/cmdline) while
+# `open` or `xdg-open` runs. So the link never goes on one: it is written into a
+# page only you can read, which sends the browser on to it, and the opener is
+# handed that page. Pages older than ten minutes hold expired links and are
+# removed here.
+LAUNCH_PAGES="${{XDG_CONFIG_HOME:-$HOME/.config}}/biorouter/app-launcher/open"
+
+launch_page() {{
+  ( umask 077
+    set -C
+    mkdir -p "$LAUNCH_PAGES" || exit 1
+    [ -d "$LAUNCH_PAGES" ] && [ ! -L "$LAUNCH_PAGES" ] && [ -O "$LAUNCH_PAGES" ] || exit 1
+    chmod 700 "$LAUNCH_PAGES" || exit 1
+    find "$LAUNCH_PAGES" -type f -name 'launch-*.html' -mmin +10 -exec rm -f {{}} + 2>/dev/null || true
+    name="$(new_secret)"
+    [ "${{#name}}" -eq 64 ] || exit 1
+    page="$LAUNCH_PAGES/launch-${{name:0:32}}.html"
+    printf '%s%s%s%s%s\n' \
+      '<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer><meta http-equiv="refresh" content="0;url=' \
+      "$1" '"><title>Opening Biorouter app</title><p>Opening the app. If nothing happens, <a href="' \
+      "$1" '">open it here</a>. The address works once.</p>' > "$page" || exit 1
+    printf '%s\n' "$page"
+  )
 }}
 
 open_url() {{
-  echo "Opening $1"
-  if command -v open >/dev/null 2>&1; then open "$1"
-  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"
-  else echo "Open this URL in your browser: $1"; fi
+  echo "Opening $APP_ID at http://127.0.0.1:$PORT/apps/$APP_ID/"
+  token="${{1#"http://127.0.0.1:$PORT/apps/$APP_ID/?t="}}"
+  # The digits and letters are listed, not written as ranges: macOS's bash 3.2
+  # reads [0-9a-f] by the locale's collation under UTF-8, where it takes
+  # upper-case letters too.
+  case "$token" in
+    "$1" | *[!0123456789abcdef]*) die "not a launch link for $APP_ID; refusing to open it" ;;
+  esac
+  [ "${{#token}}" -eq 64 ] || die "not a launch link for $APP_ID; refusing to open it"
+  page="$(launch_page "$1")" || page=""
+  opened=0
+  if [ -n "$page" ]; then
+    case "$(uname -s)" in
+      Darwin) open "$page" && opened=1 ;;
+      *) if command -v xdg-open >/dev/null 2>&1; then xdg-open "$page" && opened=1; fi ;;
+    esac
+  fi
+  # This terminal is yours alone, so the link can be shown here: for a browser
+  # that cannot read the page (a snap-packaged one cannot read hidden folders),
+  # or for when none opened.
+  if [ "$opened" = 1 ]; then
+    echo "If the app does not appear, open this address instead (it works once): $1"
+  else
+    echo "Open this address in your browser (it works once): $1"
+  fi
 }}
 
 # ── 5. First-run payload install (full-mode exports only) ─────────────────
@@ -454,9 +556,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install_app
 install_payload          # no-op for launcher-mode exports (no payload/ dir)
 start_daemon
-BASE="http://127.0.0.1:$PORT"
-verify_app
-open_url "$BASE/apps/$APP_ID/"
+launch_url
+open_url "$LAUNCH_URL"
 "#
     .to_string()
 }
@@ -588,19 +689,67 @@ function Test-Port([int]$Port) {
   } catch { return $false }
 }
 
-# Reuse a running daemon, else spawn one headlessly and wait for /status.
+# A daemon serves an app's page only to a browser holding that app's access
+# cookie, and the one-time link that sets it is handed only to a caller holding
+# the daemon's secret. So this launcher uses a daemon it started (its port and
+# secret are kept in $StateFile, under your profile) or one you name with
+# BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY, and no other.
+$StateFile = Join-Path $Cfg "app-launcher\daemon"
+
+function New-Secret {
+  $bytes = New-Object byte[] 32
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  return (($bytes | ForEach-Object { $_.ToString("x2") }) -join "")
+}
+
+function Test-Secret([int]$Port, [string]$Secret) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/apps" -Headers @{ "X-Secret-Key" = $Secret } -TimeoutSec 2 -UseBasicParsing
+    return ($r.StatusCode -eq 200)
+  } catch { return $false }
+}
+
+function Save-Daemon([int]$Port, [string]$Secret) {
+  try {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $StateFile) | Out-Null
+    Set-Content -Path $StateFile -Value "$Port $Secret" -NoNewline
+  } catch { Write-Host "  (could not remember this daemon; the next run starts another)" }
+}
+
+# Use a daemon whose secret is known, else start one headlessly with a new secret.
 function Start-Daemon {
-  $preferred = if ($env:BIOROUTERD_PORT) { [int]$env:BIOROUTERD_PORT } else { 3000 }
-  foreach ($p in @($preferred, 3000, 3001, 3002, 3003)) {
-    if (Test-Port $p) { Write-Host "Using the Biorouter daemon already on :$p"; return $p }
+  if ($env:BIOROUTER_SERVER__SECRET_KEY -and $env:BIOROUTERD_PORT -and
+      (Test-Secret ([int]$env:BIOROUTERD_PORT) $env:BIOROUTER_SERVER__SECRET_KEY)) {
+    Write-Host "Using the Biorouter daemon on :$env:BIOROUTERD_PORT"
+    return @([int]$env:BIOROUTERD_PORT, [string]$env:BIOROUTER_SERVER__SECRET_KEY)
+  }
+  if (Test-Path $StateFile) {
+    try {
+      $saved = ((Get-Content $StateFile -Raw) -as [string]).Trim() -split "\s+"
+      if ($saved.Count -eq 2 -and (Test-Secret ([int]$saved[0]) $saved[1])) {
+        Write-Host "Using the Biorouter daemon this launcher started on :$($saved[0])"
+        return @([int]$saved[0], [string]$saved[1])
+      }
+    } catch { }  # an unreadable record: start a daemon of our own
   }
   $bin = Find-Biorouterd
-  foreach ($p in @($preferred, 3001, 3002, 3003)) {
+  $preferred = if ($env:BIOROUTERD_PORT) { [int]$env:BIOROUTERD_PORT } else { 3000 }
+  foreach ($p in @($preferred, 3001, 3002, 3003, 3004, 3005)) {
+    # A daemon already here is not one whose secret this launcher knows.
+    if (Test-Port $p) { continue }
+    # A new secret for every attempt, so one asked of whatever held the port
+    # never becomes the secret of a daemon started elsewhere.
+    $secret = New-Secret
     Write-Host "Starting $bin on :$p ..."
     $env:BIOROUTER_PORT = "$p"
+    $env:BIOROUTER_SERVER__SECRET_KEY = $secret
     Start-Process -FilePath $bin -ArgumentList "agent" -WindowStyle Hidden | Out-Null
+    # Only the daemon needs it: the browser started below inherits this
+    # process's environment, so the secret must not stay in it.
+    Remove-Item Env:BIOROUTER_SERVER__SECRET_KEY -ErrorAction SilentlyContinue
     for ($i = 0; $i -lt 40; $i++) {
-      if (Test-Port $p) { return $p }
+      if (Test-Secret $p $secret) { Save-Daemon $p $secret; return @($p, $secret) }
       Start-Sleep -Milliseconds 500
     }
   }
@@ -609,13 +758,42 @@ function Start-Daemon {
 
 Install-App
 Install-Payload
-$Port = Start-Daemon
+$Daemon = Start-Daemon
+$Port = [int]$Daemon[0]
+$Secret = [string]$Daemon[1]
 $Base = "http://127.0.0.1:$Port"
-$code = 0
-try { $code = (Invoke-WebRequest -Uri "$Base/apps/$AppId/" -TimeoutSec 5 -UseBasicParsing).StatusCode } catch { $code = 0 }
-if ($code -ne 200) { throw "the daemon on :$Port does not serve '$AppId' (HTTP $code)." }
-Write-Host "Opening $Base/apps/$AppId/"
-Start-Process "$Base/apps/$AppId/"
+# The app's one-time launch link: opening it sets the app's access cookie in the
+# browser and lands on the app. It works once and for a few minutes.
+$LaunchPath = $null
+try {
+  $LaunchPath = [string](Invoke-RestMethod -Method Post -Uri "$Base/apps/$AppId/launch" -Headers @{ "X-Secret-Key" = $Secret } -TimeoutSec 5).path
+} catch { $LaunchPath = $null }
+if (-not $LaunchPath -or $LaunchPath -notmatch '^/apps/[A-Za-z0-9_-]+/\?t=[0-9a-f]{64}$') {
+  throw "the daemon on :$Port does not serve '$AppId'."
+}
+Write-Host "Opening $AppId at $Base/apps/$AppId/"
+# The link opens the app for whoever uses it first, so it never goes on a
+# command line: it is written into a page under your profile, which only you can
+# read, and the page sends the browser on to it. Pages older than ten minutes
+# hold expired links and are removed here.
+$Link = "$Base$LaunchPath"
+$Pages = Join-Path $Cfg "app-launcher\open"
+New-Item -ItemType Directory -Force -Path $Pages | Out-Null
+Get-ChildItem -Path $Pages -Filter "launch-*.html" -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+  Remove-Item -Force -ErrorAction SilentlyContinue
+$Page = Join-Path $Pages ("launch-" + (New-Secret).Substring(0, 32) + ".html")
+$Html = '<!doctype html><meta charset=utf-8><meta name=referrer content=no-referrer>' +
+  '<meta http-equiv="refresh" content="0;url=' + $Link + '"><title>Opening Biorouter app</title>' +
+  '<p>Opening the app. If nothing happens, <a href="' + $Link + '">open it here</a>. The address works once.</p>'
+try {
+  Set-Content -LiteralPath $Page -Value $Html -Encoding UTF8
+  Invoke-Item -LiteralPath $Page
+  # This window is yours alone, so the link can be shown here too.
+  Write-Host "If the app does not appear, open this address instead (it works once): $Link"
+} catch {
+  Write-Host "Open this address in your browser (it works once): $Link"
+}
 "#;
 
 /// The thin `run.bat` wrapper: double-clickable on Windows, it just runs
@@ -651,7 +829,8 @@ fn serve_mjs(id: &str, default_port: u16) -> String {
 // the page and its agent share an origin and no port is ever hard-coded.
 import {{ createServer, request as httpRequest }} from "node:http";
 import {{ spawn }} from "node:child_process";
-import {{ readFile, mkdir, cp, rm, access }} from "node:fs/promises";
+import {{ readFile, writeFile, rename, mkdir, cp, rm, access }} from "node:fs/promises";
+import {{ randomBytes }} from "node:crypto";
 import {{ constants }} from "node:fs";
 import {{ extname, normalize, resolve, join, dirname }} from "node:path";
 import {{ fileURLToPath }} from "node:url";
@@ -662,6 +841,13 @@ const PORT = Number(process.env.PORT || {default_port});
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const STORE = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
                    "biorouter", "agent_drafter", APP_ID);
+// A daemon serves an app's page only to a browser holding that app's access
+// cookie, and the one-time link that sets it is handed only to a caller holding
+// the daemon's secret. So this server uses a daemon it (or run.sh) started, whose
+// port and secret are kept here readable by you alone, or one you name with
+// BIOROUTERD_PORT and BIOROUTER_SERVER__SECRET_KEY, and no other.
+const LAUNCHER_STATE = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
+                            "biorouter", "app-launcher", "daemon");
 const MIME = {{ ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".json": "application/json", ".svg": "image/svg+xml",
   ".png": "image/png", ".jpg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
@@ -716,18 +902,64 @@ function probe(port) {{
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Reuse a daemon if one answers; otherwise spawn one and wait for /status. */
-async function ensureDaemon() {{
-  const preferred = Number(process.env.BIOROUTERD_PORT || 3000);
-  for (const p of [preferred, 3000, 3001, 3002, 3003]) {{
-    if (await probe(p)) {{ console.log(`Using the Biorouter daemon already on :${{p}}`); return p; }}
+/** One request to the daemon on `port` carrying its secret; resolves to {{ status, body }}. */
+function withSecret(port, secret, method, path) {{
+  return new Promise((res) => {{
+    const r = httpRequest(
+      {{ host: "127.0.0.1", port, path, method, timeout: 5000, headers: {{ "X-Secret-Key": secret }} }},
+      (resp) => {{
+        let body = "";
+        resp.setEncoding("utf8");
+        resp.on("data", (chunk) => {{ body += chunk; }});
+        resp.on("end", () => res({{ status: resp.statusCode, body }}));
+      }}
+    );
+    r.on("error", () => res({{ status: 0, body: "" }}));
+    r.on("timeout", () => {{ r.destroy(); res({{ status: 0, body: "" }}); }});
+    r.end();
+  }});
+}}
+
+const secretWorks = async (port, secret) =>
+  (await withSecret(port, secret, "GET", "/apps")).status === 200;
+
+async function rememberDaemon(port, secret) {{
+  try {{
+    await mkdir(dirname(LAUNCHER_STATE), {{ recursive: true, mode: 0o700 }});
+    const staged = `${{LAUNCHER_STATE}}.${{process.pid}}`;
+    await writeFile(staged, `${{port}} ${{secret}}\n`, {{ mode: 0o600 }});
+    await rename(staged, LAUNCHER_STATE);
+  }} catch {{
+    console.warn("(could not remember this daemon; the next run starts another)");
   }}
+}}
+
+/** A daemon whose secret is known: named, remembered, or started here. */
+async function ensureDaemon() {{
+  const named = process.env.BIOROUTER_SERVER__SECRET_KEY;
+  const preferred = Number(process.env.BIOROUTERD_PORT || 3000);
+  if (named && process.env.BIOROUTERD_PORT && (await secretWorks(preferred, named))) {{
+    console.log(`Using the Biorouter daemon on :${{preferred}}`);
+    return {{ port: preferred, secret: named }};
+  }}
+  try {{
+    const [port, secret] = (await readFile(LAUNCHER_STATE, "utf8")).trim().split(/\s+/);
+    if (port && secret && (await secretWorks(Number(port), secret))) {{
+      console.log(`Using the Biorouter daemon started for your apps on :${{port}}`);
+      return {{ port: Number(port), secret }};
+    }}
+  }} catch {{ /* no remembered daemon */ }}
   for (const bin of DAEMON_PATHS) {{
-    for (const p of [preferred, 3001, 3002, 3003]) {{
+    for (const p of [preferred, 3001, 3002, 3003, 3004, 3005]) {{
+      // A daemon already here is not one whose secret this server knows.
+      if (await probe(p)) continue;
+      // A new secret for every attempt, so one asked of whatever held the port
+      // never becomes the secret of a daemon started elsewhere.
+      const secret = randomBytes(32).toString("hex");
       let child;
       try {{
         child = spawn(bin, ["agent"], {{
-          env: {{ ...process.env, BIOROUTER_PORT: String(p) }},
+          env: {{ ...process.env, BIOROUTER_PORT: String(p), BIOROUTER_SERVER__SECRET_KEY: secret }},
           stdio: "ignore", detached: true,
         }});
       }} catch {{ break; }}          // this binary doesn't exist; try the next one
@@ -735,7 +967,11 @@ async function ensureDaemon() {{
       child.on("error", () => {{ spawnFailed = true; }});
       child.unref();
       for (let i = 0; i < 40 && !spawnFailed; i++) {{
-        if (await probe(p)) {{ console.log(`Started ${{bin}} on :${{p}}`); return p; }}
+        if (await secretWorks(p, secret)) {{
+          console.log(`Started ${{bin}} on :${{p}}`);
+          await rememberDaemon(p, secret);
+          return {{ port: p, secret }};
+        }}
         await sleep(500);
       }}
       if (spawnFailed) break;
@@ -746,12 +982,26 @@ async function ensureDaemon() {{
   );
 }}
 
+/** The path of this app's one-time launch link: opening it sets the app's access cookie. */
+async function launchPath(port, secret) {{
+  const {{ status, body }} = await withSecret(port, secret, "POST", `/apps/${{APP_ID}}/launch`);
+  let path;
+  try {{ path = JSON.parse(body).path; }} catch {{ /* not JSON */ }}
+  if (status !== 200 || typeof path !== "string" || !/^\/apps\/[A-Za-z0-9_-]+\/\?t=[0-9a-f]{{64}}$/.test(path)) {{
+    throw new Error(`The daemon on :${{port}} does not serve '${{APP_ID}}'. Is the store at ${{STORE}}?`);
+  }}
+  return path;
+}}
+
 // Install the app, then bring up a daemon. On failure, print the actionable
 // message (not an unhandled-rejection stack trace) and exit cleanly.
 let daemonPort;
+let launch;
 try {{
   await installApp();
-  daemonPort = await ensureDaemon();
+  const daemon = await ensureDaemon();
+  daemonPort = daemon.port;
+  launch = await launchPath(daemon.port, daemon.secret);
 }} catch (e) {{
   console.error("\n" + (e && e.message ? e.message : e) + "\n");
   process.exit(1);
@@ -812,10 +1062,10 @@ server.on("upgrade", (req, socket, head) => {{
   up.end();
 }});
 
-// Bind loopback ONLY. This server proxies straight through to the daemon's
-// `/apps/**` routes, which are deliberately exempt from the secret-key check
-// (a browser tab can't send the header). Listening on 0.0.0.0 would hand the
-// whole LAN an unauthenticated agent.
+// Bind loopback ONLY. This server proxies the daemon's `/apps/**` routes and
+// never adds the secret to what it forwards: a browser gets the app only with the
+// access cookie its one-time launch link sets. Listening on 0.0.0.0 would still
+// put the app's page one stolen link away from the whole LAN.
 function listen(port, attempt = 0) {{
   server.once("error", (e) => {{
     if (e.code === "EADDRINUSE" && attempt < 10) {{
@@ -828,6 +1078,7 @@ function listen(port, attempt = 0) {{
   }});
   server.listen(port, "127.0.0.1", () => {{
     console.log(`App running at http://127.0.0.1:${{port}}  (agent -> :${{daemonPort}})`);
+    console.log(`Open it here (this address works once): http://127.0.0.1:${{port}}${{launch}}`);
   }});
 }}
 listen(PORT);
@@ -858,9 +1109,28 @@ That's the whole thing. The launcher:
 1. installs the app into your local Biorouter store (`manifest.json` and all),
 2. installs any first-run payload this export carries (`payload/`: knowledge
    bases and skills, with your consent; see `payload/export.json`),
-3. reuses a running `biorouterd`, or starts one on the first free port,
-4. checks the daemon can actually serve the app, and
-5. opens it in your browser.
+3. reuses the `biorouterd` it started last time, or starts one on the first
+   free port,
+4. asks that daemon for a one-time link to the app, and
+5. opens the link in your browser, and prints it in the terminal too.
+
+A daemon serves an app only to a browser that opened such a link, and hands one
+out only to a caller that knows the daemon's secret, so another account on the
+same computer cannot open your app. That is why the launcher starts a daemon of
+its own rather than using one that happens to be running: it keeps that
+daemon's port and secret, readable by you alone, in
+`~/.config/biorouter/app-launcher/daemon`. To use a daemon you run yourself, set
+`BIOROUTERD_PORT` and `BIOROUTER_SERVER__SECRET_KEY` to its port and secret. The
+link works once and for a few minutes; after that the browser keeps the app
+open until the daemon restarts. Run the launcher again for a new link.
+
+The link opens the app for whoever uses it first, so the launcher never puts it
+on a command line, which other accounts on the computer can read. It writes the
+link into a small page only you can read, in
+`~/.config/biorouter/app-launcher/open`, and opens that page, which sends the
+browser on to the app. A browser installed as a snap package cannot read that
+folder; if yours shows an error instead of the app, open the address the
+terminal printed.
 
 No Node, no `npm install`, no build step. You need Biorouter installed with a
 provider configured (`biorouter configure`), unless this is a **fat** export,
@@ -884,9 +1154,10 @@ your rebuilt bundle shows up on refresh:
     npm run build
     npm start            # http://localhost:8787
 
-`serve.mjs` starts (or reuses) a daemon for you and proxies `/apps/**` to it,
-including the agent WebSocket. Because the page and the agent then share an
-origin, nothing hard-codes a port.
+`serve.mjs` starts (or reuses) a daemon for you, the same way the launcher does,
+and proxies `/apps/**` to it, including the agent WebSocket. Because the page
+and the agent then share an origin, nothing hard-codes a port. It prints a
+one-time address under `/apps/{id}/`: open that to reach the live agent.
 
 ## Notes
 
@@ -1422,12 +1693,22 @@ mod tests {
             serve.contains("path: req.url"),
             "proxy must preserve query strings (the ws token rides the query)"
         );
-        // It fronts the daemon's auth-exempt /apps routes, so it must never
-        // leave loopback — binding 0.0.0.0 would expose an unauthenticated agent.
+        // It fronts the daemon's /apps routes, so it must never leave loopback.
         assert!(
             serve.contains(r#"server.listen(port, "127.0.0.1""#),
             "the dev server must bind loopback only"
         );
+        // W2-HRD-1: the proxy forwards the browser's own headers and never adds
+        // the daemon secret, or this port would open the app to every local
+        // account. The secret is used only to mint the one-time launch link.
+        let (_, proxy) = serve.split_once("function proxyHttp").unwrap();
+        assert!(
+            !proxy.contains("X-Secret-Key"),
+            "the proxy must not add the secret"
+        );
+        assert!(serve.contains("`/apps/${APP_ID}/launch`"));
+        assert!(serve.contains("BIOROUTER_SERVER__SECRET_KEY: secret"));
+        assert!(serve.contains("works once"));
     }
 
     /// The OS-agnostic launcher set: `run.ps1` (PowerShell) + `run.bat` (thin
@@ -1459,6 +1740,40 @@ mod tests {
             "prefers bundled daemon"
         );
         assert!(ps1.contains("/apps/$AppId/"), "opens the daemon origin");
+        // W2-HRD-1: through the one-time launch link, minted with the secret of
+        // a daemon the launcher started or was told about.
+        assert!(ps1.contains("\"$Base/apps/$AppId/launch\""));
+        assert!(ps1.contains("$env:BIOROUTER_SERVER__SECRET_KEY = $secret"));
+        // The link opens the app for whoever uses it first, so it never reaches
+        // a command line: the browser is handed a page that forwards to it.
+        assert!(ps1.contains("$Link = \"$Base$LaunchPath\""));
+        assert!(ps1.contains("Invoke-Item -LiteralPath $Page"));
+        for line in ps1.lines() {
+            let opens = [
+                "Start-Process",
+                "Invoke-Item",
+                "Invoke-Expression",
+                "cmd",
+                "explorer",
+            ]
+            .iter()
+            .any(|opener| line.contains(opener));
+            let names_the_link = ["$Link", "$LaunchPath", "?t="]
+                .iter()
+                .any(|link| line.contains(link));
+            assert!(
+                !(opens && names_the_link),
+                "an opener is handed the link: {line}"
+            );
+        }
+        // ...and the secret leaves the launcher's environment before the browser starts.
+        let (_, after_spawn) = ps1
+            .split_once("$env:BIOROUTER_SERVER__SECRET_KEY = $secret")
+            .unwrap();
+        let (spawn, _) = after_spawn
+            .split_once("Invoke-Item -LiteralPath $Page")
+            .unwrap();
+        assert!(spawn.contains("Remove-Item Env:BIOROUTER_SERVER__SECRET_KEY"));
         // The app id is embedded, not a leftover placeholder.
         assert!(ps1.contains("$AppId = \"demo\""));
         assert!(!ps1.contains("__APP_ID__"));
@@ -1508,10 +1823,126 @@ mod tests {
             "must set the daemon port env var biorouterd actually reads"
         );
         assert!(lib.contains("die \"biorouterd not found"));
-        // And the runner opens the DAEMON's own origin, not a static server's.
+        // And the runner opens the DAEMON's own origin, not a static server's,
+        // through the app's one-time launch link (W2-HRD-1).
         let run = file(&files, "run.sh");
-        assert!(run.contains("open_url \"$BASE/apps/$APP_ID/\""));
-        assert!(run.contains("verify_app"));
+        assert!(run.contains("launch_url\nopen_url \"$LAUNCH_URL\""));
+        assert!(lib.contains(r#"LAUNCH_URL="http://127.0.0.1:$PORT$path""#));
+        assert!(lib.contains(r#""http://127.0.0.1:$1/apps/$APP_ID/launch""#));
+        // It starts its daemon with a secret it keeps, owner-only.
+        assert!(lib.contains(
+            r#"BIOROUTER_SERVER__SECRET_KEY="$SECRET" BIOROUTER_PORT="$p" "$BIOROUTERD" agent"#
+        ));
+        assert!(lib.contains("umask 077"));
+        // The secret never rides a command line other accounts can read: every
+        // curl that carries it reads the header from stdin.
+        assert_eq!(lib.matches("-H @-").count(), 2);
+        assert!(!lib.contains("-H \"X-Secret-Key"));
+    }
+
+    /// W2-HRD-1: the launcher never puts the one-time link on a command line,
+    /// where every account on the machine can read it and redeem it before the
+    /// browser does. Runs the real `open_url` with stub `open` and `xdg-open`
+    /// that record their arguments, and checks they were handed a page only this
+    /// account can read, which forwards to the link, and never the link itself.
+    #[cfg(unix)]
+    #[test]
+    fn the_launcher_hands_its_opener_a_private_page_and_never_the_link() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        // Every Unix this ships to has bash; a missing one must fail here, not
+        // pass without checking anything.
+        let bash = find_usable_bash(dir.path()).expect("a usable bash");
+        let m = manifest(ArtifactKind::Agentic);
+        let files = export(&m, None);
+        std::fs::write(
+            dir.path().join("biorouter-launch.sh"),
+            file(&files, "biorouter-launch.sh"),
+        )
+        .unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("opened.log");
+        for opener in ["open", "xdg-open"] {
+            let stub = bin.join(opener);
+            std::fs::write(
+                &stub,
+                format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n", log.display()),
+            )
+            .unwrap();
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let config = dir.path().join("config");
+        let token = "cd".repeat(32);
+        let run = |url: &str| {
+            Command::new(&bash)
+                .arg("-c")
+                .arg(format!(
+                    "set -euo pipefail\n. ./biorouter-launch.sh\nPORT=4321\nopen_url '{url}'"
+                ))
+                .current_dir(dir.path())
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("XDG_CONFIG_HOME", &config)
+                .env("HOME", dir.path())
+                .output()
+                .unwrap()
+        };
+
+        let launch = format!("http://127.0.0.1:4321/apps/{}/?t={token}", m.id);
+        let out = run(&launch);
+        assert!(
+            out.status.success(),
+            "open_url failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // The terminal is the user's alone, so the link is shown there for a
+        // browser that cannot read the page.
+        assert!(String::from_utf8_lossy(&out.stdout).contains(&format!(
+            "open this address instead (it works once): {launch}"
+        )));
+        let opened = std::fs::read_to_string(&log).expect("an opener ran");
+        let handed: Vec<&str> = opened.lines().collect();
+        assert_eq!(handed.len(), 1, "one argument, the page: {opened}");
+        assert!(
+            !opened.contains("?t=") && !opened.contains(&token),
+            "{opened}"
+        );
+        let page = std::path::Path::new(handed[0]);
+        assert_eq!(
+            page.parent(),
+            Some(config.join("biorouter/app-launcher/open").as_path())
+        );
+        let html = std::fs::read_to_string(page).unwrap();
+        assert!(
+            html.contains(&format!(r#"content="0;url={launch}""#)),
+            "{html}"
+        );
+        assert!(html.contains(&format!(r#"href="{launch}""#)), "{html}");
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(page), 0o600, "the page is this account's alone");
+        assert_eq!(mode(page.parent().unwrap()), 0o700, "and so is its folder");
+
+        // Anything but this app's launch link on this daemon is refused, and no
+        // opener runs.
+        std::fs::remove_file(&log).unwrap();
+        for other in [
+            format!("http://127.0.0.1:4321/apps/other/?t={token}"),
+            format!("http://127.0.0.1:9999/apps/{}/?t={token}", m.id),
+            format!("http://127.0.0.1:4321/apps/{}/?t={}", m.id, "cd".repeat(31)),
+            format!("http://127.0.0.1:4321/apps/{}/?t={token}\"><script>", m.id),
+            format!(
+                "http://127.0.0.1:4321/apps/{}/?t={}",
+                m.id,
+                token.to_uppercase()
+            ),
+            "https://example.test/".to_string(),
+        ] {
+            assert!(!run(&other).status.success(), "{other}");
+            assert!(!log.exists(), "{other} reached an opener");
+        }
     }
 
     /// The export tests otherwise only match substrings. This actually *parses*
@@ -1593,10 +2024,16 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
+            // The program goes to Bash as a file, like the syntax check above. Passed with
+            // `-c`, the whole launcher crosses the Windows command line, and Git Bash's
+            // argument parsing re-reads the quotes and glob characters in it: the launch-page
+            // code made it report "unexpected EOF while looking for matching `\"'" there,
+            // while `bash -n` of the same text on disk passed.
             let script =
-                format!("set -euo pipefail\nchmod +x ./biorouterd\n{lib}\nfind_biorouterd");
+                format!("set -euo pipefail\nchmod +x ./biorouterd\n{lib}\nfind_biorouterd\n");
+            std::fs::write(stub_dir.join("check-find-biorouterd.sh"), script).unwrap();
             let out = Command::new(&bash)
-                .args(["-c", &script])
+                .arg("./check-find-biorouterd.sh")
                 .current_dir(&stub_dir)
                 .env_remove("BIOROUTERD_BIN")
                 .env_remove("XDG_CONFIG_HOME")

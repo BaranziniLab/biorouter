@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ProviderCard } from './subcomponents/ProviderCard';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
 import {
@@ -12,8 +12,19 @@ import { Plus } from '../../icons/app-icons';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
+import { holdChatModel } from '../models/pendingChatModel';
+import type Model from '../models/modelInterface';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 import type { View } from '../../../utils/navigationUtils';
+import type { SessionClassification } from '../../../api';
+import { useConfig } from '../../ConfigContext';
+import { userActionHeaders } from '../../../utils/userAction';
+import { Note } from '../../ui/note';
+import { Button } from '../../ui/button';
+import {
+  RETIRED_AZURE_ENDPOINT_NOTICE,
+  isRetiredAzureDefaultEndpoint,
+} from './azureRetiredEndpoint';
 import {
   AI_AGENT_PROVIDER_IDS,
   getOrderedProviderGroups,
@@ -98,6 +109,22 @@ interface ProviderCatalogProps {
   configuredProvider?: string | null;
   /** A route hint (`?tab=public`), which outranks every computed default. */
   initialTab?: string | null;
+  /**
+   * W2-PRV-5. The chat whose model picker opened this catalog ("Use other
+   * provider"), and its tier. The model step that follows a setup then
+   * switches THAT chat, with the chat's own scope and pre-flight, instead of
+   * the model every new chat starts on.
+   */
+  chatSessionId?: string | null;
+  chatPrivacyTier?: SessionClassification;
+  /**
+   * T3-SH-2. The tab of a chat not sent yet whose model picker opened this
+   * catalog. It has no session for {@link chatSessionId} to name, so the model
+   * step holds its pick for that chat (`holdChatModel`), with "for this chat"
+   * and "Also use for new chats", instead of setting the model every new chat
+   * starts on. Ignored when {@link chatSessionId} is set.
+   */
+  heldChatTabId?: string | null;
 }
 
 /**
@@ -213,8 +240,46 @@ export default function ProviderCatalog({
   onCommercialSuccess,
   configuredProvider,
   initialTab,
+  chatSessionId = null,
+  chatPrivacyTier,
+  heldChatTabId = null,
 }: ProviderCatalogProps) {
   const isOnboarding = mode === 'onboarding';
+  const { read } = useConfig();
+  // T3-SH-2: a chat not sent yet, named by its tab, gets the model step's pick.
+  const unsentChatTabId = !chatSessionId && heldChatTabId ? heldChatTabId : undefined;
+  const holdForUnsentChat = useCallback(
+    (model: Model) => {
+      if (unsentChatTabId) holdChatModel(unsentChatTabId, model);
+    },
+    [unsentChatTabId]
+  );
+
+  // W2-PRV-1. A configured Azure OpenAI whose saved endpoint is the one older
+  // versions filled in by mistake (UCSF's gateway) says so on its row. Read only
+  // for a configured row, and never rewritten from here.
+  const azureConfigured = providers.some(
+    (provider) => provider.name === 'azure_openai' && provider.is_configured
+  );
+  const [azureOnRetiredEndpoint, setAzureOnRetiredEndpoint] = useState(false);
+  useEffect(() => {
+    if (!azureConfigured) {
+      setAzureOnRetiredEndpoint(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const endpoint = await read('AZURE_OPENAI_ENDPOINT', false);
+        if (!cancelled) setAzureOnRetiredEndpoint(isRetiredAzureDefaultEndpoint(endpoint));
+      } catch {
+        if (!cancelled) setAzureOnRetiredEndpoint(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [azureConfigured, read, providers]);
 
   const [configuringProvider, setConfiguringProvider] = useState<ProviderDetails | null>(null);
   const [showCustomProviderModal, setShowCustomProviderModal] = useState(false);
@@ -225,6 +290,8 @@ export default function ProviderCatalog({
     id: string;
     config: DeclarativeProviderConfig;
     isEditable: boolean;
+    /** Set up already, so a blank key keeps the saved one (W2-PRV-13). */
+    isConfigured: boolean;
   } | null>(null);
 
   const handleProviderReady = useCallback((providerId: string, model?: string | null) => {
@@ -356,6 +423,7 @@ export default function ProviderCatalog({
             id: provider.name,
             config: result.data.config,
             isEditable: result.data.is_editable,
+            isConfigured: provider.is_configured,
           });
           setShowCustomProviderModal(true);
         }
@@ -373,6 +441,9 @@ export default function ProviderCatalog({
       await updateCustomProvider({
         path: { id: editingProvider.id },
         body: data,
+        // An update that moves the provider's URL keeps its saved key, so the
+        // daemon asks for the proof that a person made it.
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       const providerId = editingProvider.id;
@@ -453,35 +524,58 @@ export default function ProviderCatalog({
     // status and the guidance for it, which a modal cannot carry and which a
     // settings user needs exactly as much as a first-run user does.
     const expandable = agent !== undefined || setupPanel !== null;
+    const retiredEndpointNotice =
+      provider.name === 'azure_openai' && azureOnRetiredEndpoint ? (
+        <Note
+          tone="warning"
+          role="status"
+          testId="azure-retired-endpoint-notice"
+          className="mx-4 mb-2"
+          action={
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void configureProviderViaModal(provider)}
+            >
+              Configure
+            </Button>
+          }
+        >
+          {RETIRED_AZURE_ENDPOINT_NOTICE}
+        </Note>
+      ) : null;
 
     return (
-      <ProviderCard
-        key={provider.name}
-        provider={provider}
-        onConfigure={() => void configureProviderViaModal(provider)}
-        onLaunch={() => {
-          setSwitchModelProvider(provider.name);
-          setShowSwitchModelModal(true);
-        }}
-        isOnboarding={isOnboarding}
-        expandable={expandable}
-        expanded={expandable && openRow === provider.name}
-        onToggle={() => toggleRow(provider.name)}
-        statusSlot={
-          agent ? (
-            <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
-          ) : undefined
-        }
-      >
-        {agent ? (
-          <div className="space-y-2">
-            <CodingAgentProvenance agent={agent} />
-            <CodingAgentBody agent={agent} controls={agentControls} />
-          </div>
-        ) : (
-          setupPanel
-        )}
-      </ProviderCard>
+      <React.Fragment key={provider.name}>
+        <ProviderCard
+          key={provider.name}
+          provider={provider}
+          onConfigure={() => void configureProviderViaModal(provider)}
+          onLaunch={() => {
+            setSwitchModelProvider(provider.name);
+            setShowSwitchModelModal(true);
+          }}
+          isOnboarding={isOnboarding}
+          expandable={expandable}
+          expanded={expandable && openRow === provider.name}
+          onToggle={() => toggleRow(provider.name)}
+          statusSlot={
+            agent ? (
+              <StatusPill tone={pillFor(agent.auth).tone}>{pillFor(agent.auth).label}</StatusPill>
+            ) : undefined
+          }
+        >
+          {agent ? (
+            <div className="space-y-2">
+              <CodingAgentProvenance agent={agent} />
+              <CodingAgentBody agent={agent} controls={agentControls} />
+            </div>
+          ) : (
+            setupPanel
+          )}
+        </ProviderCard>
+        {retiredEndpointNotice}
+      </React.Fragment>
     );
   };
 
@@ -608,8 +702,14 @@ export default function ProviderCatalog({
     supports_streaming: editingProvider.config.supports_streaming ?? true,
   };
   const editable = editingProvider ? editingProvider.isEditable : true;
-  const customModalTitle =
-    (editingProvider ? (editable ? 'Edit' : 'Configure') : 'Add') + '  Provider';
+  // Named, and honest about first-time setup (W2-PRV-13): it read
+  // "Configure  Provider" for every built-in declarative provider, set up or not.
+  const editingName = editingProvider?.config.display_name || 'provider';
+  const customModalTitle = !editingProvider
+    ? 'Add provider'
+    : !editingProvider.isConfigured
+      ? `Set up ${editingName}`
+      : `${editable ? 'Edit' : 'Configure'} ${editingName}`;
 
   return (
     <>
@@ -661,6 +761,7 @@ export default function ProviderCatalog({
           <CustomProviderForm
             initialData={initialData}
             isEditable={editable}
+            hasSavedKey={editingProvider?.isConfigured ?? true}
             onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
             onCancel={handleCloseCustomModal}
           />
@@ -675,7 +776,10 @@ export default function ProviderCatalog({
       )}
       {showSwitchModelModal && (
         <SwitchModelModal
-          sessionId={null}
+          sessionId={chatSessionId}
+          privacyTier={chatPrivacyTier}
+          onChooseForUnsentChat={unsentChatTabId ? holdForUnsentChat : undefined}
+          unsentChatTabId={unsentChatTabId}
           onClose={() => setShowSwitchModelModal(false)}
           setView={handleSetView}
           onModelSelected={onModelSelected}

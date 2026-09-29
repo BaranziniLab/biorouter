@@ -1,11 +1,24 @@
 import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Avatar } from '../../ui/avatar';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Check } from '../../icons/app-icons';
-import { channelName, PersonName, teamName, usableName, type CrewPerson } from '../identity';
+import {
+  carriesJoinerName,
+  channelName,
+  OnlineMark,
+  onlineSet,
+  personLabel,
+  PersonName,
+  teamName,
+  usableName,
+  withJoinerNames,
+  type CrewPerson,
+} from '../identity';
+import { membersCopy } from '../pane/copy';
 import { focusIsLost } from '../state/focusReturn';
 import { failureMessage } from '../state/observationFailure';
 import type { ErrorSource } from '../state/types';
@@ -19,7 +32,7 @@ import {
   directAddSupported,
   listOf,
   targetMembers,
-  usernameList,
+  peopleList,
   workspaceInvitees,
   type ChannelChoice,
   type DirectAddResult,
@@ -100,6 +113,8 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
   // The people this dialog added, kept out of the list until the next state frame shows them in.
   const [added, setAdded] = React.useState<ReadonlySet<string>>(() => new Set());
   const [summary, setSummary] = React.useState<Summary | null>(null);
+  /** How many times people were added: the checklist's search starts over each time (UXN-12). */
+  const [addRounds, setAddRounds] = React.useState(0);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const doneRef = React.useRef<HTMLButtonElement>(null);
   // "Members of {team}…" asked for the list; its "Add people to {team}…" switches to adding.
@@ -123,7 +138,14 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     pickerTarget,
     { directAdd }
   );
-  const offered = candidates.filter((person) => !added.has(person.id as string));
+  // Someone who joined without choosing a name is named as the Joined row and the toast name them,
+  // "Henry Ito (@crew_henry)", and found by that name (F8).
+  const workspaceId = snapshot?.workspace.id ?? null;
+  const named = (people: readonly CrewPerson[]) => withJoinerNames(people, workspaceId);
+  const offered = withJoinerNames(
+    candidates.filter((person) => !added.has(person.id as string)),
+    workspaceId
+  );
   const chosen = offered.filter((person) => selected.includes(person.id as string));
   const choices = directAdd && target === 'team' ? directAddChannels(snapshot, targetId, dir) : [];
   const key = !directAdd ? INVITE_KEY : target === 'team' ? TEAM_ADD_KEY : CHANNEL_ADD_KEY;
@@ -143,9 +165,11 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
   // A team's member list: for someone who may not add people to it (QA Q3-44), and for everyone
   // when the team menu's "Members of {team}…" asked for it, until they choose to add (QA Q4-35).
   const membersView = target === 'team' && (!mayAdd || (view === 'members' && !adding));
+  // Named in full at this authority point (W2-UIW-7), and once when the owner is the host (UXN-9).
+  const ownerName = owner ? personLabel(owner, 'authority', dir) : null;
   const onlyWho = directAdd
-    ? copy.onlyOwnerOrHost(owner ? `@${owner.username}` : null, place)
-    : copy.onlyOwner(owner ? `@${owner.username}` : null, place);
+    ? copy.onlyOwnerOrHost(ownerName, place, dir.isHost(owner))
+    : copy.onlyOwner(ownerName, place);
 
   const isChecked = (choice: ChannelChoice) =>
     choice.always || (checked[choice.id] ?? choice.checked);
@@ -161,7 +185,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     );
     const landed = done.filter((outcome) => !already.includes(outcome));
     const names = (list: readonly { person: CrewPerson }[]) =>
-      usernameList(list.map((outcome) => outcome.person));
+      peopleList(list.map((outcome) => outcome.person));
     const parts: string[] = [];
     if (landed.length > 0) {
       if (!directAdd) parts.push(copy.invitedMany(names(landed)));
@@ -188,7 +212,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       reasons.set(outcome.reason, [...(reasons.get(outcome.reason) ?? []), outcome.person]);
     }
     for (const [reason, people] of reasons)
-      parts.push(copy.couldNotAdd(usernameList(people), reason));
+      parts.push(copy.couldNotAdd(peopleList(people), reason));
     return { text: parts.join(' '), failed: reasons.size > 0 };
   };
 
@@ -266,6 +290,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
         const landed = outcomes.filter((outcome) => outcome.ok).map((outcome) => outcome.person.id);
         setAdded((current) => new Set([...current, ...(landed as string[])]));
         setSelected((current) => current.filter((id) => !landed.includes(id)));
+        if (landed.length > 0) setAddRounds((rounds) => rounds + 1);
         setSummary(summarize(outcomes));
       });
   };
@@ -287,7 +312,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     if (target === 'team') {
       if (!directAdd && pending.length > 0)
         return {
-          text: copy.allInvited(workspace, teamName(team), usernameList(pending)),
+          text: copy.allInvited(workspace, teamName(team), peopleList(named(pending))),
           action: inviteToWorkspace,
         };
       return { text: copy.allInWorkspace(workspace), action: inviteToWorkspace };
@@ -297,7 +322,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
       return {
         text:
           !directAdd && pendingTeam.length > 0
-            ? `${copy.noOneInTeam(teamName(team))} ${copy.waitingToAccept(usernameList(pendingTeam))}`
+            ? `${copy.noOneInTeam(teamName(team))} ${copy.waitingToAccept(peopleList(named(pendingTeam)))}`
             : copy.noOneInTeam(teamName(team)),
         action:
           canAddToTeam && team ? (
@@ -317,7 +342,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     return {
       text:
         !directAdd && pending.length > 0
-          ? `${copy.allInTeam(teamName(team))} ${copy.waiting(usernameList(pending))}`
+          ? `${copy.allInTeam(teamName(team))} ${copy.waiting(peopleList(named(pending)))}`
           : copy.allInTeam(teamName(team)),
     };
   }
@@ -328,7 +353,20 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
     : offered.length === 0
       ? emptyState()
       : null;
-  const members = message || membersView ? targetMembers(snapshot, dir, pickerTarget, added) : [];
+  // A team's #general comes with it, and ticked channels with that (`choices`, adding directly).
+  const general = team
+    ? (snapshot?.channels.find((item) => item.id === team.general_channel_id) ?? null)
+    : null;
+  const historyLine =
+    target === 'channel'
+      ? copy.historyChannel(place)
+      : copy.historyTeam(general ? channelName(general) : '#general', choices.length > 1);
+  const members =
+    message || membersView ? targetMembers(snapshot, dir, pickerTarget, added, workspaceId) : [];
+  // Marked as the Members tab marks them (UXN-6): the owner (`ownerId`, a team's being its
+  // creator), and who is online, from the verified view only.
+  const ownerLabel = team ? copy.teamOwner : membersCopy.owner;
+  const online = crew.snapshot ? onlineSet(crew.snapshot) : null;
   // Named as the host knows them (QA Q4-42): "Jack Moreno (@crew_jack)", as Let in named them.
   const inviteesLine =
     invitees.length > 0
@@ -393,7 +431,15 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
           <>
             {/* The list first: it is what this dialog is for here. Who may add people follows,
                 muted, as its description — or, for someone who may, the way to add them. */}
-            <MemberList place={place} people={members} dir={dir} label={copy.membersOf(place)} />
+            <MemberList
+              place={place}
+              people={members}
+              dir={dir}
+              label={copy.membersOf(place)}
+              ownerId={ownerId ?? null}
+              ownerLabel={ownerLabel}
+              online={online}
+            />
             {mayAdd ? (
               <div className="flex min-w-0">
                 <Button type="button" variant="secondary" size="sm" onClick={() => setAdding(true)}>
@@ -414,7 +460,14 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
             {inviteesLine ? (
               <p className="text-supporting text-text-muted">{inviteesLine}</p>
             ) : null}
-            <MemberList place={place} people={members} dir={dir} />
+            <MemberList
+              place={place}
+              people={members}
+              dir={dir}
+              ownerId={ownerId ?? null}
+              ownerLabel={ownerLabel}
+              online={online}
+            />
           </>
         ) : (
           <>
@@ -431,11 +484,12 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
                 dir={dir}
                 disabled={sending}
                 searchRef={searchRef}
+                searchResetKey={addRounds}
               />
             </div>
             {!directAdd && pending.length > 0 ? (
               <p className="text-supporting text-text-muted">
-                {copy.waiting(usernameList(pending))}
+                {copy.waiting(peopleList(named(pending)))}
               </p>
             ) : null}
             {inviteesLine ? (
@@ -449,6 +503,10 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
                 onChange={(id, next) => setChecked((current) => ({ ...current, [id]: next }))}
               />
             ) : null}
+            {/* Before Add: an addition shows them the channel's whole past (M19). */}
+            <p className="text-supporting text-text-muted" data-testid="crew-add-history">
+              {historyLine}
+            </p>
           </>
         )}
         <DialogErrorNote source={SOURCE} render={directAdd ? directAddRefusalText : refusalText} />
@@ -467,37 +525,78 @@ function MemberList({
   people,
   dir,
   label,
+  ownerId,
+  ownerLabel,
+  online,
 }: {
   place: string;
   people: readonly CrewPerson[];
   dir: ReturnType<typeof useDialogView>['dir'];
   label?: string;
+  /** Who owns the team (its creator) or the channel, marked with `ownerLabel`. */
+  ownerId: string | null;
+  ownerLabel: string;
+  /** Who the verified view says is online, or null when it says nothing. */
+  online: ReadonlySet<string> | null;
 }) {
   const headingId = React.useId();
+  const countId = React.useId();
+  // The list scrolls inside the dialog once a lab outgrows it (Q2-05), and a keyboard scrolls it
+  // too: a region that takes a Tab stop, named by its count, fading at its lower edge while more is
+  // below (UXN-6). Nothing in it was focusable, so arrows and Page Down moved nothing, and macOS's
+  // overlay scrollbars showed no sign that the tenth person was there.
+  const scroller = React.useRef<HTMLDivElement>(null);
+  const [more, setMore] = React.useState(false);
+  const measure = React.useCallback(() => {
+    const box = scroller.current;
+    setMore(Boolean(box) && box!.scrollHeight - box!.scrollTop - box!.clientHeight > 1);
+  }, []);
+  React.useLayoutEffect(measure, [measure, people.length]);
   if (people.length === 0) return null;
   const list = (
-    <ul role="list" aria-label={label} className="crew-person-checklist flex min-w-0 flex-col">
-      {people.map((person) => (
-        <li
-          key={person.id ?? person.username}
-          className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
-        >
-          <Avatar
-            size={20}
-            fallback={person.avatar}
-            name={person.displayName}
-            username={person.username}
-          />
-          <PersonName
-            person={person}
-            context="header"
-            dir={dir}
-            you={person.isYou}
-            className="min-w-0 flex-1 truncate"
-          />
-        </li>
-      ))}
-    </ul>
+    <div className="flex min-w-0 flex-col gap-1">
+      <p id={countId} className="text-supporting text-text-muted" data-crew-member-count="">
+        {copy.memberCount(people.length)}
+      </p>
+      <div
+        ref={scroller}
+        role="region"
+        tabIndex={0}
+        aria-labelledby={countId}
+        className="crew-person-checklist crew-member-scroll biorouter-focus-region"
+        data-overflow={more ? 'true' : undefined}
+        onScroll={measure}
+      >
+        <ul role="list" aria-label={label} className="flex min-w-0 flex-col">
+          {people.map((person) => (
+            <li
+              key={person.id ?? person.username}
+              className="flex min-w-0 items-center gap-2 px-1 py-1 text-label"
+            >
+              <Avatar
+                size={20}
+                fallback={person.avatar}
+                name={person.displayName}
+                username={person.username}
+              />
+              <PersonName
+                person={person}
+                context="header"
+                // A stand-in name (`withJoinerNames`) is drawn as given: the directory's copy has
+                // none.
+                dir={carriesJoinerName(person) ? null : dir}
+                you={person.isYou}
+                className="min-w-0 flex-1 truncate"
+              />
+              {person.id !== null ? <OnlineMark online={online?.has(person.id) ?? false} /> : null}
+              {person.id !== null && person.id === ownerId ? (
+                <Badge tone="neutral">{ownerLabel}</Badge>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
   if (label) return list;
   return (

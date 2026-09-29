@@ -569,6 +569,91 @@ fn retry_up_to<T>(
     attempt()
 }
 
+/// Write the plaintext secrets store (`secrets.yaml`) so that only this account can read it
+/// (PROV-F3).
+///
+/// A bare `std::fs::write` takes its mode from the process umask, and under the common `022`
+/// that is `-rw-r--r--`: every provider key readable by any account that can traverse the home.
+/// That was measured on a daemon with the keyring disabled, which is every unpackaged desktop
+/// build, headless Linux, SSH, WSL and `biorouter serve`. So on unix:
+///
+/// - a missing folder is created `0700`;
+/// - an existing file that others can read is tightened to `0600` first, so the old contents
+///   stop being readable even when the write below fails;
+/// - the new contents are written to a sibling staged `0600` (set on the open descriptor, so
+///   no umask widens or narrows it), synced, and renamed into place, so no reader ever sees a
+///   half-written store and the file never exists with a looser mode.
+///
+/// A `secrets.yaml` that is a link the person made on purpose (the store kept with other
+/// dotfiles) is followed to the file it names, and that file is replaced; a dangling link is
+/// replaced by the file itself.
+///
+/// Windows keeps the plain write: a file under the profile inherits the profile's owner-only
+/// ACL, and a replace-by-rename there has the sharing races `install_staged_config` retries.
+fn write_private_secrets_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+        let target = match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+            }
+            _ => path.to_path_buf(),
+        };
+        let parent = match target.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        if !parent.exists() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&parent)?;
+        }
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            if metadata.is_file() && metadata.permissions().mode() & 0o077 != 0 {
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
+            }
+        }
+
+        static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nth = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut name = std::ffi::OsString::from(".");
+        name.push(
+            target
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("secrets.yaml")),
+        );
+        name.push(format!(".{}.{nth}.tmp", std::process::id()));
+        let staging = parent.join(name);
+
+        let written = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&staging)?;
+            // The mode above is masked by the umask; this is not.
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&staging, &target)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&staging);
+        }
+        written
+    }
+    #[cfg(not(unix))]
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)
+    }
+}
+
 /// Test-only injection of the failure Windows produces while a sibling replaces
 /// the config file's name.
 ///
@@ -2020,7 +2105,17 @@ impl Config {
         let get_value = |key: &str| -> Result<String, ConfigError> {
             let env_key = key.to_uppercase();
             if use_overrides {
+                // An override is read here as `get_secret` reads it: a JSON
+                // string literal gives up its quotes. `/config/check_provider`
+                // passes a candidate key that way so an all-digit key stays a
+                // string, and returning it raw sent OpenAI and LiteLLM the key
+                // with its quote characters. Text that is not a JSON string
+                // (a bare key, a number) is the key itself, as before.
                 override_lookup(&env_key)
+                    .map(|raw| match Self::parse_env_value(&raw) {
+                        Ok(Value::String(text)) => text,
+                        _ => raw,
+                    })
                     .or_else(|| env::var(&env_key).ok())
                     .ok_or_else(|| ConfigError::NotFound(key.to_string()))
             } else if use_env {
@@ -2155,7 +2250,7 @@ impl Config {
             }
             SecretStorage::File { path } => {
                 let yaml_value = serde_yaml::to_string(values)?;
-                std::fs::write(path, yaml_value)?;
+                write_private_secrets_file(path, &yaml_value)?;
                 Ok(())
             }
         };
@@ -2195,10 +2290,9 @@ impl Config {
 
     /// Write secrets to file storage (used for fallback)
     fn write_secrets_to_file(&self, values: &HashMap<String, Value>) -> Result<(), ConfigError> {
-        std::fs::create_dir_all(Paths::config_dir())?;
         let path = Self::secrets_file_path();
         let yaml_value = serde_yaml::to_string(values)?;
-        std::fs::write(path, yaml_value)?;
+        write_private_secrets_file(&path, &yaml_value)?;
         Ok(())
     }
 
@@ -5253,6 +5347,84 @@ mod tests {
         config.delete_secret("cache_test_key")?;
         let missing: Result<String, _> = config.get_secret("cache_test_key");
         assert!(matches!(missing, Err(ConfigError::NotFound(_))));
+        Ok(())
+    }
+
+    /// PROV-F3: with the keyring disabled, `POST /config/upsert` wrote `secrets.yaml` with a bare
+    /// `std::fs::write`, and under umask `022` that is `-rw-r--r--` in `0755` folders: every
+    /// provider key readable by any account that can traverse the home. The store must be
+    /// created `0600` in a `0700` folder whatever the umask says, a looser store left by an
+    /// older build must be tightened by its next write, and nothing staged may be left behind.
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn the_plaintext_secrets_store_is_private_to_this_account() -> Result<(), ConfigError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        /// The umask the finding was measured under, restored however the test ends.
+        struct Umask(libc::mode_t);
+        impl Drop for Umask {
+            fn drop(&mut self) {
+                // SAFETY: `umask` only swaps the process's file-creation mask.
+                unsafe { libc::umask(self.0) };
+            }
+        }
+        // SAFETY: as above.
+        let _umask = Umask(unsafe { libc::umask(0o022) });
+
+        let mode = |path: &Path| -> u32 {
+            std::fs::metadata(path)
+                .expect("the path exists")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        let dir = tempfile::tempdir()?;
+        let config_path = dir.path().join("config.yaml");
+        // A folder that does not exist yet, as on a first run.
+        let secrets_path = dir.path().join("profile").join("secrets.yaml");
+        let config = Config::new_with_file_secrets(&config_path, &secrets_path)?;
+
+        config.set_secret("PROV_F3_API_KEY", &Value::String("not-a-real-key".into()))?;
+        assert_eq!(mode(&secrets_path), 0o600, "a new store is owner-only");
+        assert_eq!(
+            mode(secrets_path.parent().expect("a parent")),
+            0o700,
+            "a folder the store needed is owner-only"
+        );
+
+        // A store an older build left readable by everyone.
+        std::fs::set_permissions(&secrets_path, std::fs::Permissions::from_mode(0o644))?;
+        config.set_secret("PROV_F3_OTHER_KEY", &Value::String("also-not-real".into()))?;
+        assert_eq!(mode(&secrets_path), 0o600, "the next write tightens it");
+        let kept: String = config.get_secret("PROV_F3_API_KEY")?;
+        assert_eq!(
+            kept, "not-a-real-key",
+            "the earlier secret survives the rewrite"
+        );
+
+        // The staged copy was renamed into place, not left beside it.
+        let entries: Vec<String> = std::fs::read_dir(secrets_path.parent().expect("a parent"))?
+            .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect::<std::io::Result<_>>()?;
+        assert_eq!(entries, vec!["secrets.yaml".to_string()]);
+
+        // A store kept elsewhere behind a link stays a link, and the file it names is private.
+        let elsewhere = dir.path().join("dotfiles");
+        std::fs::create_dir(&elsewhere)?;
+        let real = elsewhere.join("biorouter-secrets.yaml");
+        std::fs::write(&real, "PROV_F3_LINKED_KEY: before\n")?;
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o644))?;
+        let linked_path = dir.path().join("linked").join("secrets.yaml");
+        std::fs::create_dir(linked_path.parent().expect("a parent"))?;
+        std::os::unix::fs::symlink(&real, &linked_path)?;
+        let linked = Config::new_with_file_secrets(&config_path, &linked_path)?;
+        linked.set_secret("PROV_F3_LINKED_KEY", &Value::String("after".into()))?;
+        assert!(std::fs::symlink_metadata(&linked_path)?
+            .file_type()
+            .is_symlink());
+        assert_eq!(mode(&real), 0o600);
+        assert!(std::fs::read_to_string(&real)?.contains("after"));
         Ok(())
     }
 }

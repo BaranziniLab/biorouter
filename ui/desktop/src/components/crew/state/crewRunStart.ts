@@ -8,29 +8,37 @@ import {
   type MutableRefObject,
   type SetStateAction,
 } from 'react';
-import {
-  crewHttp,
-  CrewHttpError,
-  type Channel,
-  type CrewConnection,
-  type ObservedRun,
-  type Snapshot,
-  type Team,
-} from '../crewApi';
+import type * as Api from '../../../api/types.gen';
+import { isTransportFailure } from '../api/errors';
+import { wireOf } from '../api/parse';
+import { crewHttp, CrewHttpError, type Channel, type ObservedRun, type Snapshot } from '../crewApi';
+import { channelName, teamName } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
+import { postDestination } from './crewSend';
+import { resetBetweenTests } from './draftStash';
+import {
+  draftScope,
+  draftScopeChanged,
+  failureCode,
+  failureMessage,
+  type DraftScope,
+  type ScopeFrame,
+} from './observationFailure';
 import type {
   ActionKey,
   ActOptions,
+  ErrorDetails,
   ErrorSource,
   ObservedPrivacy,
   StartOwnedRunInput,
   SurfaceResetReason,
+  UnknownRunDestination,
 } from './types';
 
 interface PendingRunAttempt {
   fingerprint: string;
   key: string;
-  unknownDestination?: string;
+  unknownDestination?: UnknownRunDestination;
 }
 // Inspection can navigate to another route; retain the uncertain attempt in memory, never on disk.
 // Module scope makes the lock survive a remount of Crew (C10).
@@ -42,12 +50,100 @@ let unfinishedRunAttempt: PendingRunAttempt | null = null;
  */
 export const RUN_START_FRAME_WAIT_MS = 5000;
 
+// ---------------------------------------------------------------------------------------------
+// A task whose start failed (MSG2-N10)
+// ---------------------------------------------------------------------------------------------
+//
+// SECURITY-SENSITIVE (human review). The task's words, kept for the channel it was meant for, so
+// Ask my agent there offers them again: a start that failed after the person had moved on lost
+// them with the pane that held them. Kept like an unsent draft (`draftStash`): memory only, the
+// words only, with the scope of the verified view the start was made under, and handed back only
+// while nothing in that scope moved (`draftScopeChanged`).
+
+interface FailedTask {
+  prompt: string;
+  scope: DraftScope;
+}
+
+/** The most failed tasks kept at once; the oldest goes first. */
+export const FAILED_TASK_MAX = 20;
+const failedTasks = new Map<string, FailedTask>();
+
+/** The scope frame a verified view of `connectionId` makes, or null while none is verified. */
+export function viewScopeFrame(
+  connectionId: string,
+  snapshot: Snapshot | null,
+  observedPrivacy: ObservedPrivacy | null
+): ScopeFrame | null {
+  if (!snapshot || !connectionId || observedPrivacy?.connectionId !== connectionId) return null;
+  return {
+    connection_id: connectionId,
+    connection_mode: observedPrivacy.mode,
+    connection_policy_epoch: observedPrivacy.policyEpoch,
+    connection_institution_id: observedPrivacy.institutionId,
+    snapshot,
+  };
+}
+
+function keepFailedTask(
+  connectionId: string,
+  channelId: string,
+  prompt: string,
+  frame: ScopeFrame
+) {
+  if (!prompt.trim() || !channelId) return;
+  const key = postDestination(connectionId, channelId);
+  failedTasks.delete(key);
+  failedTasks.set(key, { prompt, scope: draftScope(frame, channelId, []) });
+  while (failedTasks.size > FAILED_TASK_MAX) {
+    const oldest = failedTasks.keys().next().value;
+    if (oldest === undefined) break;
+    failedTasks.delete(oldest);
+  }
+}
+
+/**
+ * The words of the task whose start failed in `channelId` on `connectionId`, when the verified view
+ * now (`frame`) still offers that channel under the scope the start was made under; else null. A
+ * kept task whose scope moved is forgotten. It stays kept until `forgetFailedTask`, so a pane that
+ * opens and closes again offers it again.
+ */
+export function keptFailedTask(
+  connectionId: string,
+  channelId: string,
+  frame: ScopeFrame | null
+): string | null {
+  const key = postDestination(connectionId, channelId);
+  const kept = failedTasks.get(key);
+  if (!kept || !frame || frame.connection_id !== connectionId) return null;
+  if (
+    kept.scope.connectionId !== connectionId ||
+    !frame.snapshot.channels.some((item) => item.id === channelId) ||
+    draftScopeChanged(kept.scope, frame, channelId, [])
+  ) {
+    failedTasks.delete(key);
+    return null;
+  }
+  return kept.prompt;
+}
+
+/** Forget the failed task kept for a channel: it started, or its words were taken. */
+export function forgetFailedTask(connectionId: string, channelId: string): void {
+  failedTasks.delete(postDestination(connectionId, channelId));
+}
+
+/** Forget every failed task of a connection (it was removed). */
+export function forgetConnectionFailedTasks(connectionId: string): void {
+  const prefix = postDestination(connectionId, '');
+  for (const key of [...failedTasks.keys()]) if (key.startsWith(prefix)) failedTasks.delete(key);
+}
+
+resetBetweenTests(() => failedTasks.clear());
+
 export interface CrewRunStartContext {
   connectionId: string;
   teamId: string;
   channelId: string;
-  connection: CrewConnection | null;
-  team: Team | null;
   channel: Channel | null;
   snapshot: Snapshot | null;
   observedPrivacy: ObservedPrivacy | null;
@@ -72,11 +168,16 @@ export interface CrewRunStartContext {
     fn: () => Promise<T>,
     options?: ActOptions
   ): Promise<T | undefined>;
+  /**
+   * Record a failed start's words where they belong: the pane's slot while the person is on the
+   * channel the task was for, else the connection bar, naming that channel (MSG2-N10).
+   */
+  reportError(message: string, source?: ErrorSource, code?: string, details?: ErrorDetails): void;
 }
 
 export interface CrewRunStart {
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
-  unknownRunDestination: string;
+  unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;
   setInspectedPriorRun: Dispatch<SetStateAction<boolean>>;
   pendingRun: MutableRefObject<PendingRunAttempt | null>;
@@ -110,16 +211,14 @@ export interface CrewRunStart {
  */
 export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   const pendingRun = useRef<PendingRunAttempt | null>(unfinishedRunAttempt);
-  const [unknownRunDestination, setUnknownRunDestination] = useState(
-    unfinishedRunAttempt?.unknownDestination ?? ''
+  const [unknownRunDestination, setUnknownRunDestination] = useState<UnknownRunDestination | null>(
+    unfinishedRunAttempt?.unknownDestination ?? null
   );
   const [inspectedPriorRun, setInspectedPriorRun] = useState(false);
   const {
     connectionId,
     teamId,
     channelId,
-    connection,
-    team,
     channel,
     snapshot,
     observedPrivacy,
@@ -129,6 +228,7 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     restartObservation,
     resetSurfaces,
     act,
+    reportError,
   } = context;
 
   // The started task the view waits for, and the timer that observes again if it does not come.
@@ -150,10 +250,10 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
   // The selection and whether its view is verified, as of the latest commit: read by the start's
   // answer and by the timer, which both run after the render that armed them. Written as the
   // render commits, so neither ever reads a view older than the one on screen.
-  const view = useRef({ connectionId, verified });
+  const view = useRef({ connectionId, channelId, verified });
   useLayoutEffect(() => {
-    view.current = { connectionId, verified };
-  }, [connectionId, verified]);
+    view.current = { connectionId, channelId, verified };
+  }, [connectionId, channelId, verified]);
   /**
    * SECURITY-SENSITIVE (human review): the observation `observed` (a generation) is still the
    * running one, and its view is still verified for `forConnection`. The generation moves
@@ -233,25 +333,38 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
       model,
       context_channels: [channelId, ...contextChannels],
       posting_grant: true,
-    };
+    } satisfies Api.StartRunRequest;
     const fingerprint = JSON.stringify({ connectionId, ...payload });
     if (deliberateRestart || pendingRun.current?.fingerprint !== fingerprint) {
       pendingRun.current = { fingerprint, key: crypto.randomUUID() };
     }
     unfinishedRunAttempt = pendingRun.current;
     if (deliberateRestart) {
-      setUnknownRunDestination('');
+      setUnknownRunDestination(null);
       setInspectedPriorRun(false);
     }
     let started: unknown;
     try {
-      started = await crewHttp<unknown>(`/connections/${connectionId}/runs`, 'POST', {
-        ...payload,
-        request_id: pendingRun.current.key,
-      });
+      started = await crewHttp<unknown>(
+        `/connections/${encodeURIComponent(connectionId)}/runs`,
+        'POST',
+        {
+          ...payload,
+          request_id: pendingRun.current.key,
+        }
+      );
     } catch (failure) {
       if (failure instanceof CrewHttpError && failure.code === 'crew_start_outcome_unknown') {
-        const destination = `${connection?.name ?? connectionId} / ${team?.name ?? teamId} / #${channel?.name ?? channelId}`;
+        // Named as Crew names them everywhere else, from the channel's own team (RENDERER-5): the
+        // gate shows this in every channel until it is cleared, never as stored names or an ID.
+        const destinationTeamId = channel?.team_id ?? teamId;
+        const destination: UnknownRunDestination = {
+          connectionId,
+          teamId: destinationTeamId,
+          channelId,
+          channel: channelName(channel),
+          team: teamName(snapshot.teams.find((item) => item.id === destinationTeamId)),
+        };
         pendingRun.current.unknownDestination = destination;
         unfinishedRunAttempt = pendingRun.current;
         setUnknownRunDestination(destination);
@@ -261,20 +374,68 @@ export function useCrewRunStart(context: CrewRunStartContext): CrewRunStart {
     }
     pendingRun.current = null;
     unfinishedRunAttempt = null;
-    setUnknownRunDestination('');
+    forgetFailedTask(connectionId, channelId);
+    setUnknownRunDestination(null);
     setInspectedPriorRun(false);
     resetSurfaces('run-started');
     if (clearBody) setBody('');
-    const runId =
-      started !== null && typeof started === 'object'
-        ? (started as { run_id?: unknown }).run_id
-        : undefined;
+    const runId = wireOf<Api.RunView>(started)?.run_id;
     awaitStartedRun(connectionId, observed, typeof runId === 'string' && runId ? runId : null);
     return true;
   };
 
-  const startOwnedRun = async (input: StartOwnedRunInput) =>
-    (await act('pane:agent', 'run.start', () => submitOwnedRun(input))) === true;
+  /**
+   * A failed start, told where the person is (MSG2-N10): in the pane's slot while they are still
+   * on the channel the task was for, else in the connection bar, naming that channel. A failure of
+   * the link is marked so, so the connection verifying again takes it away instead of leaving it
+   * red under "Connected". Unless the task may have started (the gate above handles that), its
+   * words are kept for that channel's Ask my agent, which offers them again.
+   */
+  const tellStartFailure = (
+    failure: unknown,
+    input: StartOwnedRunInput,
+    forConnection: string,
+    forChannel: string,
+    channelLabel: string,
+    frame: ScopeFrame | null
+  ) => {
+    const outcomeUnknown =
+      failure instanceof CrewHttpError && failure.code === 'crew_start_outcome_unknown';
+    if (!outcomeUnknown && frame) keepFailedTask(forConnection, forChannel, input.prompt, frame);
+    const message = failureMessage(failure, crewActionCopy.actionFallback);
+    const code = failureCode(failure);
+    const details = isTransportFailure(failure) ? { transport: true } : undefined;
+    const now = view.current;
+    if (now.connectionId === forConnection && now.channelId === forChannel) {
+      reportError(message, 'pane:agent', code, details);
+      return;
+    }
+    reportError(
+      outcomeUnknown ? message : crewActionCopy.startFailedIn(channelLabel, message),
+      'global',
+      code,
+      details
+    );
+  };
+
+  const startOwnedRun = async (input: StartOwnedRunInput) => {
+    // What the start is for, as Start was pressed: a failure is told against it, wherever the
+    // person is by then.
+    const forConnection = connectionId;
+    const forChannel = channelId;
+    const channelLabel = channelName(channel);
+    const frame = viewScopeFrame(connectionId, snapshot, observedPrivacy);
+    return (
+      (await act('pane:agent', 'run.start', async () => {
+        try {
+          return await submitOwnedRun(input);
+        } catch (failure) {
+          tellStartFailure(failure, input, forConnection, forChannel, channelLabel, frame);
+          return false;
+        }
+      })) === true
+    );
+  };
 
   return {
     startOwnedRun,

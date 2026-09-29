@@ -6,12 +6,39 @@ import { Button } from '../../../../../ui/button';
 import { SecureStorageNotice } from '../SecureStorageNotice';
 import { Checkbox } from '@radix-ui/themes';
 import { UpdateCustomProviderRequest } from '../../../../../../api';
+import { isBrowserSurface } from '../../../../../../utils/surface';
+import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
+
+/**
+ * What to show when the save was refused. The daemon's refusal is a sentence
+ * written for a person (a key the provider rejected, a URL move it will not
+ * make), and the generated client throws that parsed body, a string, under
+ * `throwOnError`.
+ */
+export function customProviderSaveFailure(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  return 'The provider was not saved. Try again.';
+}
 
 interface CustomProviderFormProps {
-  onSubmit: (data: UpdateCustomProviderRequest) => void;
+  /**
+   * Save the provider. A rejection is shown in the form, which stays open with
+   * everything typed (T3-SH-3: the daemon refuses a key the provider rejects).
+   */
+  onSubmit: (data: UpdateCustomProviderRequest) => void | Promise<void>;
   onCancel: () => void;
   initialData: UpdateCustomProviderRequest | null;
   isEditable?: boolean;
+  /**
+   * Whether a key is already saved for the provider being edited. Declarative
+   * providers (DeepSeek, Groq, Mistral...) open here with `initialData` whether
+   * or not anyone set them up, and the form used to read that as "a key is
+   * saved": "Leave blank to keep existing key", "Update Provider", and an empty
+   * key accepted as a silent no-op (W2-PRV-13). Defaults to `true` for an edit,
+   * the old reading, so a caller that knows nothing changes nothing.
+   */
+  hasSavedKey?: boolean;
 }
 
 export default function CustomProviderForm({
@@ -19,7 +46,16 @@ export default function CustomProviderForm({
   onCancel,
   initialData,
   isEditable,
+  hasSavedKey = true,
 }: CustomProviderFormProps) {
+  /** An edit of a provider whose key is saved: a blank key keeps it. */
+  const keepsSavedKey = initialData !== null && hasSavedKey;
+  /**
+   * W2-PRV-2, round 4. In a browser served by `biorouter serve`, the daemon
+   * refuses to move a saved key to a new URL, since nothing there can confirm a
+   * person asked. Typing the key again replaces it, and that is allowed.
+   */
+  const urlNeedsTypedKey = keepsSavedKey && isBrowserSurface();
   const [engine, setEngine] = useState('openai_compatible');
   const [displayName, setDisplayName] = useState('');
   const [apiUrl, setApiUrl] = useState('');
@@ -28,6 +64,8 @@ export default function CustomProviderForm({
   const [isLocalModel, setIsLocalModel] = useState(false);
   const [supportsStreaming, setSupportsStreaming] = useState(true);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (initialData) {
@@ -59,7 +97,10 @@ export default function CustomProviderForm({
     const errors: Record<string, string> = {};
     if (!displayName) errors.displayName = 'Display name is required';
     if (!apiUrl) errors.apiUrl = 'API URL is required';
-    if (!isLocalModel && !apiKey && !initialData) errors.apiKey = 'API key is required';
+    if (!isLocalModel && !apiKey && !keepsSavedKey) errors.apiKey = 'API key is required';
+    if (urlNeedsTypedKey && !apiKey && apiUrl !== initialData?.api_url) {
+      errors.apiKey = 'Type the key again to move this provider to a new URL.';
+    }
     if (!models) errors.models = 'At least one model is required';
 
     if (Object.keys(errors).length > 0) {
@@ -72,14 +113,31 @@ export default function CustomProviderForm({
       .map((m) => m.trim())
       .filter((m) => m);
 
-    onSubmit({
-      engine,
-      display_name: displayName,
-      api_url: apiUrl,
-      api_key: apiKey,
-      models: modelList,
-      supports_streaming: supportsStreaming,
-    });
+    // T3-SH-3: a save can be refused (a key the provider rejected), and that
+    // used to be an unhandled rejection with the form sitting there as if
+    // nothing had happened. The sentence is shown here, in the form. The save
+    // itself is started synchronously, as it always was.
+    setSubmitError(null);
+    let saved: void | Promise<void>;
+    try {
+      saved = onSubmit({
+        engine,
+        display_name: displayName,
+        api_url: apiUrl,
+        api_key: apiKey,
+        models: modelList,
+        supports_streaming: supportsStreaming,
+      });
+    } catch (error) {
+      setSubmitError(customProviderSaveFailure(error));
+      return;
+    }
+    if (saved instanceof Promise) {
+      setSaving(true);
+      saved
+        .catch((error: unknown) => setSubmitError(customProviderSaveFailure(error)))
+        .finally(() => setSaving(false));
+    }
   };
 
   return (
@@ -169,6 +227,11 @@ export default function CustomProviderForm({
                 {validationErrors.apiUrl}
               </p>
             )}
+            {urlNeedsTypedKey && (
+              <p data-testid="host-managed-custom-url" className="text-text-muted text-sm mt-1">
+                {HOST_MANAGED_CUSTOM_URL}
+              </p>
+            )}
           </div>
         </>
       )}
@@ -179,7 +242,7 @@ export default function CustomProviderForm({
           className="flex items-center text-sm font-medium text-text-default mb-2"
         >
           API Key
-          {!isLocalModel && !initialData && <span className="text-text-danger ml-1">*</span>}
+          {!isLocalModel && !keepsSavedKey && <span className="text-text-danger ml-1">*</span>}
         </label>
         {/* The same primitive the built-in providers' form uses for every secret
             parameter, so the two forms mask — and reveal — a key the same way. */}
@@ -188,7 +251,7 @@ export default function CustomProviderForm({
           revealLabel="API Key"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
-          placeholder={initialData ? 'Leave blank to keep existing key' : 'Your API key'}
+          placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
           aria-invalid={!!validationErrors.apiKey}
           aria-describedby={validationErrors.apiKey ? 'api-key-error' : undefined}
           className={validationErrors.apiKey ? 'border-border-danger' : ''}
@@ -253,11 +316,22 @@ export default function CustomProviderForm({
         </>
       )}
       <SecureStorageNotice />
+      {submitError && (
+        <p
+          role="alert"
+          data-testid="custom-provider-submit-error"
+          className="text-text-danger text-sm whitespace-pre-wrap break-words"
+        >
+          {submitError}
+        </p>
+      )}
       <div className="flex justify-end space-x-2 pt-4">
         <Button type="button" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit">{initialData ? 'Update Provider' : 'Create Provider'}</Button>
+        <Button type="submit" disabled={saving}>
+          {initialData ? (keepsSavedKey ? 'Update Provider' : 'Save') : 'Create Provider'}
+        </Button>
       </div>
     </form>
   );

@@ -26,11 +26,20 @@ const MAX_ID_BYTES: usize = 512;
 const MAX_CREDENTIAL_BYTES: usize = 16 * 1024;
 const MAX_PASSPHRASE_BYTES: usize = 1024;
 
-#[derive(Serialize)]
+/// Where this profile keeps its Crew keys, and whether that store can be used now
+/// (`GET /crew/credentials`, and the vault routes' answers).
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CredentialStatus {
+    /// `keyring` (the OS keyring), `encrypted_vault` (the Crew vault) or `file` (a development
+    /// profile with the keyring disabled).
+    #[schema(value_type = String)]
     pub backend: &'static str,
     pub initialized: bool,
     pub locked: bool,
+    /// Whether `backend` can keep a Crew key on this computer now. Only the OS keyring can be
+    /// unavailable: a headless Linux node often has no Secret Service, and every key write then
+    /// fails (W2-DMN-1). `backend` itself keeps its three values, which clients validate.
+    pub available: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -152,24 +161,32 @@ impl CredentialVault {
         Ok(false)
     }
 
-    pub(super) fn status(&self) -> Result<CredentialStatus> {
+    /// Where Crew keys are kept, and whether that store works. `keyring_answers` is asked only
+    /// when the OS keyring is the store: it reads an entry that never exists, so a working
+    /// keyring answers "no entry" and one with no service behind it fails.
+    pub(super) fn status(
+        &self,
+        keyring_answers: impl FnOnce() -> bool,
+    ) -> Result<CredentialStatus> {
         let mut state = self.state()?;
         let selected = self.selected(&mut state)?;
         if selected {
             self.read_envelope()?;
         }
+        // Where keys really are (T-49): a development profile with the keyring disabled keeps
+        // them as files, and must never be reported as the system keychain.
+        let backend = if selected {
+            "encrypted_vault"
+        } else if super::file_credentials_enabled() {
+            "file"
+        } else {
+            "keyring"
+        };
         Ok(CredentialStatus {
-            // Where keys really are (T-49): a development profile with the keyring disabled
-            // keeps them as files, and must never be reported as the system keychain.
-            backend: if selected {
-                "encrypted_vault"
-            } else if super::file_credentials_enabled() {
-                "file"
-            } else {
-                "keyring"
-            },
+            backend,
             initialized: selected,
             locked: selected && state.unlocked.is_none(),
+            available: backend != "keyring" || keyring_answers(),
         })
     }
 

@@ -2319,7 +2319,13 @@ fn resolve_reply_loop_policy(
         max_turns: effort.scale_turns(
             session_config
                 .max_turns
-                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
+                .or_else(|| {
+                    configured_max_turns(
+                        Config::global()
+                            .get_param::<serde_json::Value>("BIOROUTER_MAX_TURNS")
+                            .ok(),
+                    )
+                })
                 .unwrap_or(DEFAULT_MAX_TURNS),
         ),
         max_tool_calls: effort.scale_tool_calls(
@@ -2342,6 +2348,42 @@ fn resolve_reply_loop_policy(
             Config::global(),
         )),
     }
+}
+
+/// The stored `BIOROUTER_MAX_TURNS`, or `None` when it is absent or unusable.
+///
+/// Only a whole number of at least 1 is a limit. Clearing the settings field
+/// stores `0`, and honouring it stopped every new chat before its first model
+/// call ("0 actions without user input"); a negative or non-numeric value used
+/// to fail to parse and fall back without a word. Both now fall back to
+/// [`DEFAULT_MAX_TURNS`] with a warning that names the stored value, logged
+/// once per distinct value rather than on every reply.
+fn configured_max_turns(raw: Option<serde_json::Value>) -> Option<u32> {
+    let raw = raw?;
+    let parsed = match &raw {
+        serde_json::Value::Number(number) => number.as_u64(),
+        serde_json::Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    };
+    if let Some(turns) = parsed
+        .filter(|turns| *turns >= 1)
+        .and_then(|turns| u32::try_from(turns).ok())
+    {
+        return Some(turns);
+    }
+    static LAST_WARNED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let shown = raw.to_string();
+    let mut last = LAST_WARNED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.as_deref() != Some(shown.as_str()) {
+        tracing::warn!(
+            "BIOROUTER_MAX_TURNS is set to {shown}, which is not a whole number of at least 1; \
+             using the default of {DEFAULT_MAX_TURNS}"
+        );
+        *last = Some(shown);
+    }
+    None
 }
 
 /// Emit one loop-safety event.
@@ -2426,6 +2468,60 @@ fn inline_notice<S: Into<String>>(text: S) -> Message {
 /// [`inline_notice`], hidden from the model.
 fn inline_notice_user_only<S: Into<String>>(text: S) -> Message {
     inline_notice(text).user_only()
+}
+
+/// T3-SH-9 — what the chat says while a failed model call is tried again.
+///
+/// It used to be `Model call failed: {error}. Retrying (1/1)…`, which gave
+/// `…your provider administrator.. Retrying` (the error's own full stop, then
+/// the frame's), and which a clinician read as her message having been
+/// flagged. A content-filter failure is said plainly; any other error keeps
+/// its own words, with one full stop.
+fn provider_retry_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
+    let said = error.to_string();
+    if said.contains("content_filter_error") {
+        return format!(
+            "The provider's content filter interrupted the reply. Trying again ({attempt}/{limit})…"
+        );
+    }
+    if said.contains("(content_filter)") {
+        return format!(
+            "The provider's safety filter stopped the reply. Trying again ({attempt}/{limit})…"
+        );
+    }
+    let reason = said.trim_end().trim_end_matches(['.', '!', '?']).trim_end();
+    format!("The model call failed: {reason}. Trying again ({attempt}/{limit})…")
+}
+
+#[cfg(test)]
+mod provider_retry_notice_tests {
+    use super::*;
+
+    #[test]
+    fn one_full_stop_and_plain_words() {
+        let notice = provider_retry_notice(
+            &ProviderError::ServerError("Server error (502 Bad Gateway): upstream.".to_string()),
+            1,
+            2,
+        );
+        assert_eq!(
+            notice,
+            "The model call failed: Server error: Server error (502 Bad Gateway): upstream. \
+             Trying again (1/2)…"
+        );
+        assert_eq!(
+            provider_retry_notice(
+                &ProviderError::RequestFailed(
+                    "Provider safety filter blocked the response (content_filter). Revise the \
+                     request or contact your provider administrator."
+                        .to_string()
+                ),
+                1,
+                1
+            ),
+            "The provider's safety filter stopped the reply. Trying again (1/1)…"
+        );
+    }
 }
 
 /// The transient "thinking" notice shown while a compaction runs.
@@ -3707,6 +3803,17 @@ pub struct Agent {
     /// A tool that is absent from the tool list cannot be called; prose competing
     /// with an available tool loses.
     pub(super) subagent_tool_enabled: AtomicBool,
+    /// T3-SH-4. The last model call this chat made was refused for its
+    /// credentials, so the next turn rebuilds the provider from the row before
+    /// it runs (`rebind_from_row`, the tier check included).
+    ///
+    /// A provider reads its key when it is built, so a chat bound while the key
+    /// was wrong went on sending the wrong key after it was replaced: "Retrying
+    /// will not help" on every turn while a new chat worked. Rebuilding on EVERY
+    /// turn is not the answer: a coding-agent provider carries a live child
+    /// session in the instance, which a rebuild throws away. After a refusal
+    /// there is nothing in it worth keeping.
+    pub(super) credentials_refused: AtomicBool,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
@@ -4291,6 +4398,17 @@ async fn run_background_compaction(
                     tracing::warn!("Crew background compaction refused: {error}");
                     return;
                 }
+                // W2-DMN-14: the admission below asks the workspace live (a
+                // `context.manifest` over SSH), so it is asked only when this turn would
+                // really compact. It used to be asked after every turn of a Crew chat, even far
+                // under budget, and a finished task's grant then answered it. The threshold is
+                // read from this device's own store and sends nothing anywhere;
+                // `run_eager_compaction` checks it again before the model call.
+                if !compaction_due(provider.as_ref(), &session_manager, &session_id, threshold)
+                    .await
+                {
+                    return;
+                }
             }
             crew.check_provider_dispatch(&session_id, provider.as_ref())
                 .await
@@ -4343,6 +4461,33 @@ async fn run_background_compaction(
             warn!("BR-12: eager compaction failed for session {session_id}: {e}");
         }
     }
+}
+
+/// Whether `session_id`'s stored conversation is over the eager-compaction `threshold`, by the
+/// same check [`crate::context_mgmt::run_eager_compaction`] makes. A store that cannot be read
+/// says yes, so the compaction runs as it would have and reports the failure itself.
+async fn compaction_due(
+    provider: &dyn Provider,
+    session_manager: &SessionManager,
+    session_id: &str,
+    threshold: f64,
+) -> bool {
+    let Ok(session) = session_manager.get_session(session_id, true).await else {
+        return true;
+    };
+    let Some(stored) = session.conversation.as_ref() else {
+        return false;
+    };
+    let conversation = crate::conversation::without_bedrock_reasoning(stored);
+    crate::context_mgmt::check_if_compaction_needed(
+        provider,
+        &conversation,
+        Some(threshold),
+        &session,
+        None,
+    )
+    .await
+    .unwrap_or(true)
 }
 
 /// Fire a Pre/PostCompact hook without an `Agent` receiver. Split out of
@@ -4776,6 +4921,7 @@ impl Agent {
             sub_workflows: Mutex::new(HashMap::new()),
             subagent_runtime_sessions: Mutex::new(HashSet::new()),
             subagent_tool_enabled: AtomicBool::new(true),
+            credentials_refused: AtomicBool::new(false),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
@@ -7414,8 +7560,11 @@ impl Agent {
             }
             .into());
         }
+        // Crew: the binding and tier are checked on every call; the workspace is asked
+        // whether it still honors the run only when no admission of this grant is recent.
+        // The reply loop asks it afresh before every model request (CROSSCUT-7).
         crate::crew::manager()?
-            .check_provider_dispatch(&self.cached_classification.session_id(), provider.as_ref())
+            .check_provider_use(&self.cached_classification.session_id(), provider.as_ref())
             .await?;
         Ok(provider)
     }
@@ -7607,11 +7756,10 @@ impl Agent {
         };
         match rebuilt {
             Ok(rebuilt) => {
+                // The effort changes the turn's sampling, not its model boundary, so a Crew
+                // grant made to the session's provider binds the rebuilt one too (PROVIDERS-2).
                 crate::crew::manager()?
-                    .check_provider_dispatch(
-                        &self.cached_classification.session_id(),
-                        rebuilt.as_ref(),
-                    )
+                    .check_provider_use(&self.cached_classification.session_id(), rebuilt.as_ref())
                     .await?;
                 Ok(Some(rebuilt))
             }
@@ -8799,8 +8947,10 @@ impl Agent {
         if self.config.biorouter_mode != BioRouterMode::Auto {
             return false;
         }
+        // Only the model's name is read, so the binding is read without the privacy and
+        // Crew checks: they gate a model request, and this is none (CROSSCUT-7).
         if self
-            .provider()
+            .bound_provider_unchecked()
             .await
             .map(|provider| provider.get_active_model_name().starts_with("gemini"))
             .unwrap_or(false)
@@ -9345,9 +9495,11 @@ impl Agent {
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
         self.ensure_session_crew_compatible(&session_config.id)
             .await?;
+        // Refused early when the grant no longer stands. Every model request in the loop
+        // below is admitted by the workspace afresh, so this may reuse a recent admission.
         if let Some(provider) = self.bound_provider_unchecked().await {
             crate::crew::manager()?
-                .check_provider_dispatch(&session_config.id, provider.as_ref())
+                .check_provider_use(&session_config.id, provider.as_ref())
                 .await?;
         }
         let task = self.extension_manager.computer_use.task_guard();
@@ -9525,7 +9677,11 @@ impl Agent {
             // inside `rebind_from_row`, which is why the flag is threaded into it
             // rather than re-read there.
             if let Some(bound) = self.bound_provider_unchecked().await {
-                if row_names_another_binding(row, bound.as_ref()) {
+                // T3-SH-4: or the last call was refused for its credentials, in
+                // which case the row's own binding is rebuilt so it reads the key
+                // as it is now. Same provider, same model, same tier check.
+                let credentials_refused = self.credentials_refused.swap(false, Ordering::SeqCst);
+                if credentials_refused || row_names_another_binding(row, bound.as_ref()) {
                     match self.rebind_from_row(row, privacy_enforced).await {
                         // Bound to what the row names. The privacy arm below
                         // re-reads the binding, so it judges the NEW one.
@@ -11355,9 +11511,12 @@ impl Agent {
                             // was retried before is over.
                             mistakes.observe_provider_success();
 
-                            // Emit model change event if provider is lead-worker
-                            let provider = self.provider().await?;
-                            if let Some(lead_worker) = provider.as_lead_worker() {
+                            // Emit model change event if provider is lead-worker. Read
+                            // off the provider this request runs on: once per streamed
+                            // chunk, `self.provider()` sent the Crew workspace a live
+                            // `context.manifest` round trip per chunk (PROVIDERS-3); the
+                            // request was admitted when it was opened, above.
+                            if let Some(lead_worker) = reply_provider.as_lead_worker() {
                                 if let Some(ref usage) = usage {
                                     let active_model = usage.model.clone();
                                     let (lead_model, worker_model) = lead_worker.get_model_info();
@@ -12198,6 +12357,11 @@ impl Agent {
                                 error_type = provider_err.telemetry_type(),
                                 "Provider call failed"
                             );
+                            // T3-SH-4: the next turn rebuilds the provider, so a key
+                            // replaced since is the one it sends.
+                            if matches!(provider_err, ProviderError::Authentication(_)) {
+                                self.credentials_refused.store(true, Ordering::SeqCst);
+                            }
                             // BR-66: a non-context provider error used to end the turn
                             // outright, handing the user a "please retry" string for a
                             // blip the agent could have absorbed itself. Give a
@@ -12222,9 +12386,14 @@ impl Agent {
                                         Some(limit),
                                         None,
                                     );
-                                    yield AgentEvent::Message(
-                                        inline_notice(format!("Model call failed: {provider_err}. Retrying ({attempt}/{limit})…"),)
-                                    );
+                                    // T3-SH-9: transient, like the compaction notice.
+                                    // An inline notice stayed above the answer the
+                                    // retry produced, reading as a failure after a
+                                    // success; a retry that fails too ends the turn
+                                    // with the stop notice, which is kept.
+                                    yield AgentEvent::Message(thinking_notice(
+                                        provider_retry_notice(provider_err, attempt, limit),
+                                    ));
                                     // Model-visible only: the hint is loop plumbing, and
                                     // the user already has the notification above.
                                     messages_to_add.push(
@@ -22450,6 +22619,255 @@ mod gate_b_turn_tests {
         );
     }
 
+    // ─── T3-SH-4: a key replaced after the chat bound it ────────────────────
+
+    /// A provider built while the key was wrong: every call is refused for its
+    /// credentials, as the UCSF gateway refuses a wrong Versa key.
+    struct RefusedKeyProvider {
+        tier: ProviderTier,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for RefusedKeyProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("refused", "Refused", "", "gpt-5.5", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            "versa_azure"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err(ProviderError::Authentication(
+                "Authentication failed. Status: 401 Unauthorized. Response: Invalid client id or secret"
+                    .to_string(),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("gpt-5.5")
+        }
+    }
+
+    fn refused_key() -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(RefusedKeyProvider {
+            tier: ProviderTier::Private,
+            calls: Arc::clone(&calls),
+        });
+        (provider, calls)
+    }
+
+    #[tokio::test]
+    async fn a_chat_refused_for_its_key_reads_the_replaced_key_on_its_next_turn() {
+        // Measured: with a wrong Versa key in place, a chat's turn got the 401;
+        // the key was replaced and the same chat still got "Retrying will not
+        // help" on every turn, while a new chat answered at once. The provider
+        // had read the key when the chat bound it.
+        let (wrong, refusals) = refused_key();
+        let (_dir, agent, s) = agent_on(Arc::clone(&wrong)).await;
+        let sm = manager(&agent);
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(refusals.load(Ordering::SeqCst), 1, "{}", rendered(&events));
+        assert!(
+            rendered(&events).contains("send your message again"),
+            "the refusal says how to get the chat working again:\n{}",
+            rendered(&events)
+        );
+
+        // The key is replaced. What the factory builds from the row now is a
+        // provider that reads it.
+        let (fixed, answers) = counted("versa_azure", "gpt-5.5", ProviderTier::Private);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&fixed));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi again"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (
+                answers.load(Ordering::SeqCst),
+                refusals.load(Ordering::SeqCst)
+            ),
+            (1, 1),
+            "the next turn must run on a provider rebuilt with the new key:\n{}",
+            rendered(&events)
+        );
+        assert!(Arc::ptr_eq(&agent.provider().await.unwrap(), &fixed));
+
+        // And only once: a chat whose calls succeed keeps its instance (a
+        // coding agent's live child session lives in it).
+        let (decoy, _) = counted("versa_azure", "gpt-5.5", ProviderTier::Private);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&decoy));
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("third"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(Arc::ptr_eq(&agent.provider().await.unwrap(), &fixed));
+    }
+
+    #[tokio::test]
+    async fn the_rebuild_after_a_refused_key_still_answers_to_the_privacy_tier() {
+        // The rebuild is a bind, so it cannot move a private chat onto a
+        // provider that resolved public (a repointed endpoint): the tier check
+        // inside `rebind_from_row` refuses it, and the chat keeps its binding.
+        let (wrong, refusals) = refused_key();
+        let (_dir, agent, s) = agent_on(Arc::clone(&wrong)).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &s.id).await;
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(refusals.load(Ordering::SeqCst), 1);
+
+        let (repointed, public_answers) = counted("versa_azure", "gpt-5.5", ProviderTier::Public);
+        seams::override_rebind_provider(sm.as_ref(), &s.id, "versa_azure", Arc::clone(&repointed));
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi again"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            public_answers.load(Ordering::SeqCst),
+            0,
+            "a private chat's transcript must never reach a public provider:\n{}",
+            rendered(&events)
+        );
+        assert!(Arc::ptr_eq(&agent.provider().await.unwrap(), &wrong));
+    }
+
+    // ─── T3-SH-9: a retry that succeeded leaves no failure above its answer ──
+
+    /// Fails once with Azure's content-filter failure, then answers.
+    struct FilteredOnceProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for FilteredOnceProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("filtered", "Filtered", "", "gpt-5.5", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            "versa_azure"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            ProviderTier::Private
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ProviderError::ServerError(
+                    "Provider content filter failed (content_filter_error). Retry the request or \
+                     contact your provider administrator."
+                        .to_string(),
+                ));
+            }
+            Ok((
+                Message::assistant().with_text("the answer"),
+                ProviderUsage::new("gpt-5.5".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("gpt-5.5")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retried_content_filter_failure_is_said_plainly_and_does_not_stay() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(FilteredOnceProvider {
+            calls: Arc::clone(&calls),
+        });
+        let (_dir, agent, s) = agent_on(provider).await;
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "{}", rendered(&events));
+
+        let notices: Vec<(SystemNotificationType, String)> = events
+            .iter()
+            .filter_map(|event| match event {
+                Ok(AgentEvent::Message(message)) => {
+                    Some(message.content.iter().filter_map(|content| match content {
+                        MessageContent::SystemNotification(notice) => {
+                            Some((notice.notification_type.clone(), notice.msg.clone()))
+                        }
+                        _ => None,
+                    }))
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let retry = notices
+            .iter()
+            .find(|(_, msg)| msg.contains("Trying again (1/"))
+            .unwrap_or_else(|| panic!("the retry is announced:\n{}", rendered(&events)));
+        assert!(
+            retry
+                .1
+                .starts_with("The provider's content filter interrupted the reply."),
+            "{}",
+            retry.1
+        );
+        assert!(!retry.1.contains(".."), "{}", retry.1);
+        // Transient, like the compaction notice: not a row left above the
+        // answer the retry produced.
+        assert_eq!(retry.0, SystemNotificationType::ThinkingMessage);
+        assert!(
+            !notices
+                .iter()
+                .any(|(kind, _)| *kind == SystemNotificationType::InlineMessage),
+            "{notices:?}"
+        );
+        assert!(rendered(&events).contains("the answer"));
+    }
+
     #[tokio::test]
     async fn a_row_naming_a_forbidden_provider_keeps_the_legal_binding_and_still_runs() {
         // Drift the tier cannot honour: the row is private and names a PUBLIC
@@ -23616,5 +24034,134 @@ mod gate_c_dispatch_tests {
             !refused_again.contains("stanford"),
             "the accepted flow was about the model that is no longer bound: {refused_again}"
         );
+    }
+}
+
+#[cfg(test)]
+mod max_turns_setting_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn session_without_limit() -> SessionConfig {
+        SessionConfig {
+            id: "max-turns-setting".to_string(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn resolved_with_stored(value: &str) -> u32 {
+        crate::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_MAX_TURNS".to_string(), value.to_string())]),
+            async {
+                resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit())
+                    .max_turns
+            },
+        )
+        .await
+    }
+
+    /// W2-DMN-15: clearing the settings field stores `0`, and a reply that
+    /// honoured it stopped before its first model call. Anything below 1, or
+    /// anything that is not a whole number, is treated as unset.
+    #[tokio::test]
+    async fn a_stored_limit_below_one_falls_back_to_the_default() {
+        for stored in ["0", "-5", "\"0\"", "\"-5\"", "\"many\"", "2.5"] {
+            assert_eq!(
+                resolved_with_stored(stored).await,
+                DEFAULT_MAX_TURNS,
+                "stored BIOROUTER_MAX_TURNS {stored} must not be a limit"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stored_positive_limit_still_applies() {
+        assert_eq!(resolved_with_stored("7").await, 7);
+        assert_eq!(resolved_with_stored("\"7\"").await, 7);
+        assert_eq!(resolved_with_stored("1").await, 1);
+    }
+
+    #[test]
+    fn only_a_whole_number_of_at_least_one_is_a_limit() {
+        use serde_json::json;
+        assert_eq!(configured_max_turns(None), None);
+        assert_eq!(configured_max_turns(Some(json!(0))), None);
+        assert_eq!(configured_max_turns(Some(json!(-5))), None);
+        assert_eq!(configured_max_turns(Some(json!(" 12 "))), Some(12));
+        assert_eq!(
+            configured_max_turns(Some(json!(u64::from(u32::MAX) + 1))),
+            None
+        );
+        assert_eq!(configured_max_turns(Some(json!(true))), None);
+        assert_eq!(configured_max_turns(Some(json!(3))), Some(3));
+    }
+}
+
+#[cfg(test)]
+mod crew_compaction_order_tests {
+    use super::*;
+    use crate::session::session_manager::SessionType;
+
+    /// W2-DMN-14: whether a turn would compact is read from this device's own store, so the
+    /// live Crew admission (a `context.manifest` over SSH) is asked only when it would.
+    #[tokio::test]
+    async fn compaction_is_due_only_over_the_threshold() {
+        let data = tempfile::TempDir::new().unwrap();
+        let store = SessionManager::new(data.path().to_path_buf());
+        let session = store
+            .create_session(data.path().to_path_buf(), "chat".into(), SessionType::User)
+            .await
+            .unwrap();
+        store
+            .add_message(&session.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            data.path()
+                .join("unused.json")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap();
+        let limit = provider.get_model_config().context_limit();
+        store
+            .update(&session.id)
+            .total_tokens(Some(1_000))
+            .apply()
+            .await
+            .unwrap();
+        assert!(!compaction_due(&provider, &store, &session.id, 0.8).await);
+        store
+            .update(&session.id)
+            .total_tokens(Some(i32::try_from(limit).unwrap_or(i32::MAX)))
+            .apply()
+            .await
+            .unwrap();
+        assert!(compaction_due(&provider, &store, &session.id, 0.8).await);
+        // Compaction switched off is never due.
+        assert!(!compaction_due(&provider, &store, &session.id, 0.0).await);
+    }
+
+    /// W2-DMN-14: in the background compaction, a Crew chat's threshold check comes before
+    /// the live admission, and the admission still comes before anything is compacted.
+    #[test]
+    fn a_crew_chat_is_admitted_only_when_it_would_compact() {
+        let source = include_str!("agent.rs");
+        let body = source
+            .split("async fn run_background_compaction(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nasync fn compaction_due(").next())
+            .expect("run_background_compaction");
+        let due = body.find("compaction_due(").expect("the threshold check");
+        let admitted = body
+            .find(".check_provider_dispatch(")
+            .expect("the Crew admission");
+        let compacted = body.find("run_eager_compaction(").expect("the compaction");
+        assert!(due < admitted && admitted < compacted, "{body}");
     }
 }

@@ -1,5 +1,5 @@
 {
-  "about": "What the daemon posts for each reply (crates/biorouter-server/src/routes/crew.rs, with_source_line), checked there by the_desktop_render_cases_are_what_the_daemon_posts and drawn here by daemonSourceLine.render.test.tsx. Regenerate with BIOROUTER_WRITE_SOURCE_LINE_CASES=1 cargo test -p biorouter-server --lib -- routes::crew::provenance_tests.",
+  "about": "What the daemon posts for each reply (crates/biorouter/src/crew/source_line.rs, with_source_line: a task's result, and with kind \"post\" a connected chat's own post), checked by the_desktop_render_cases_are_what_the_daemon_posts in crates/biorouter-server/src/routes/crew.rs and drawn here by daemonSourceLine.render.test.tsx. Regenerate with BIOROUTER_WRITE_SOURCE_LINE_CASES=1 cargo test -p biorouter-server --lib -- routes::crew::provenance_tests.",
   "cases": [
     {
       "name": "a table, with the daemon's line",
@@ -70,6 +70,61 @@
       "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
       "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
       "posted": "Means are 3.\n\nSource: `FAKE.csv` (newest copy), shared by Mallory.\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a chat post that read no file since its last post, with a Source line the model wrote",
+      "kind": "post",
+      "reply": "Week 39 checks are done.\r\rSource: `FAKE.csv`, shared by Mallory.\r",
+      "source": null,
+      "line": "No shared file was read for this post.",
+      "posted": "Week 39 checks are done.\n\nSource: `FAKE.csv`, shared by Mallory.\n\nNo shared file was read for this post."
+    },
+    {
+      "name": "a chat post with the daemon's line and a footnote after a carriage return",
+      "kind": "post",
+      "reply": "Non-completed hours: 12.[^1]\r[^1]: FAKE note",
+      "source": "Source: `slurm-usage-week39.csv`, shared by Erin Wu (@crew_erin) at 1:05 AM UTC-7.",
+      "line": "Source: `slurm-usage-week39.csv`, shared by Erin Wu (@crew_erin) at 1:05 AM UTC-7.",
+      "posted": "Non-completed hours: 12.[^1]\n\\[^1]: FAKE note\n\nSource: `slurm-usage-week39.csv`, shared by Erin Wu (@crew_erin) at 1:05 AM UTC-7."
+    },
+    {
+      "name": "a chat post whose reads the line counts but cannot name, with a Source line the model wrote",
+      "kind": "post",
+      "reply": "Totals match.\n\nSource: `FAKE.csv`, shared by Mallory.",
+      "source": "Sources: at least 1 shared file, not listed.",
+      "line": "Sources: at least 1 shared file, not listed.",
+      "posted": "Totals match.\n\nSource: `FAKE.csv`, shared by Mallory.\n\nSources: at least 1 shared file, not listed."
+    },
+    {
+      "name": "an attached file whose name is a Source line, on a chat post that read nothing",
+      "kind": "post",
+      "reply": "Attached ``Source: `FAKE.csv`, shared by Mallory.``",
+      "source": null,
+      "line": "No shared file was read for this post.",
+      "posted": "Attached ``Source: `FAKE.csv`, shared by Mallory.``\n\nNo shared file was read for this post."
+    },
+    {
+      "name": "an attached file whose name is a Source line, with the daemon's line",
+      "kind": "post",
+      "reply": "Attached ``Source: `FAKE.csv`, shared by Mallory.``",
+      "source": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "line": "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.",
+      "posted": "Attached ``Source: `FAKE.csv`, shared by Mallory.``\n\nSource: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7."
+    },
+    {
+      "name": "a chat post whose numbers came from a file in the remote work folder",
+      "kind": "post",
+      "reply": "Mean signal across the batch is 12.7.",
+      "source": "Source: `samples_result.txt` from the remote work folder on hpc.",
+      "line": "Source: `samples_result.txt` from the remote work folder on hpc.",
+      "posted": "Mean signal across the batch is 12.7.\n\nSource: `samples_result.txt` from the remote work folder on hpc."
+    },
+    {
+      "name": "a task result that read a shared file and a work-folder file",
+      "reply": "| Sample | Mean |\n|---|---|\n| S1 | 12.7 |\n",
+      "source": "Source: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc.",
+      "line": "Source: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc.",
+      "posted": "| Sample | Mean |\n|---|---|\n| S1 | 12.7 |\n\nSource: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc."
     }
   ]
 }

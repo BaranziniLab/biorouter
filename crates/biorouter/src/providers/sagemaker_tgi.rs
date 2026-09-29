@@ -67,10 +67,7 @@ impl SageMakerTgiProvider {
             .apply(
                 aws_config::defaults(aws_config::BehaviorVersion::latest()),
                 "SageMakerStoredSettings",
-                &[
-                    "AWS_ENDPOINT_URL_SAGEMAKER_RUNTIME",
-                    crate::providers::aws_stored_settings::ENDPOINT_URL,
-                ],
+                crate::providers::aws_stored_settings::AwsService::SageMakerRuntime,
             )
             .load()
             .await;

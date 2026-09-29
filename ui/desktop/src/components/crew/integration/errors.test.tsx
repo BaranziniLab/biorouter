@@ -1,5 +1,7 @@
-import { act, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { composerCopy } from '../composer/copy';
+import { CrewHttpError } from '../crewApi';
 import { crewObservationCopy } from '../state/copy';
 import type { ErrorSource, PaneIntent } from '../state/types';
 import { installResizeObserverStub } from '../test/crewTestUtils';
@@ -8,6 +10,7 @@ import {
   currentCrew,
   installDaemon,
   keepEndingWith,
+  mocked,
   renderCrew,
   richMessages,
 } from './harness';
@@ -151,5 +154,60 @@ describe('every error renders exactly once (ui-redesign-spec, “Where errors re
     expect(currentCrew().ui.pane).toBeNull();
     expect(document.querySelector('aside.crew-pane[data-state="open"]')).toBeNull();
     expect(screen.queryByRole('textbox', { name: 'Message #general' })).toBeNull();
+  });
+});
+
+/**
+ * QA M5 and M1: the composer printed the broker's `code: text` after "Couldn't send." for every
+ * refused post, and a message over the broker's 64 KB went to the broker to be refused.
+ */
+describe('a refused post, in the composer', () => {
+  const posts = () =>
+    mocked.crewRequest.mock.calls.filter(([, method]) => method === 'message.post');
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('keeps a message over 64 KB and says so, without sending it', async () => {
+    installDaemon({ messages: richMessages() });
+    renderCrew();
+    const box = await channelReady();
+    // 32,769 two-byte characters: under the limit in characters, over it in bytes.
+    const long = 'é'.repeat(32_769);
+    fireEvent.change(box, { target: { value: long } });
+    fireEvent.click(screen.getByRole('button', { name: composerCopy.send }));
+    const note = (await screen.findByText(composerCopy.sendErrorLead)).closest(
+      '.crew-compose-note'
+    ) as HTMLElement;
+    expect(note).toHaveTextContent(composerCopy.tooLong);
+    expect(posts()).toHaveLength(0);
+    expect(box).toHaveValue(long);
+  });
+
+  it('says what a refusal means, not the broker’s code', async () => {
+    installDaemon({
+      messages: richMessages(),
+      request: (method) =>
+        method === 'message.post'
+          ? Promise.reject(
+              new CrewHttpError(
+                'storage_failed: restart and recover before further mutations',
+                400,
+                'crew_request_refused',
+                undefined,
+                'storage_failed'
+              )
+            )
+          : undefined,
+    });
+    renderCrew();
+    const box = await channelReady();
+    fireEvent.change(box, { target: { value: 'hello' } });
+    fireEvent.click(screen.getByRole('button', { name: composerCopy.send }));
+    // The viewer hosts this workspace, so they are the one to restart it.
+    expect(await screen.findByText(composerCopy.storageFailedHost)).toBeInTheDocument();
+    expect(screen.queryByText(/storage_failed/)).toBeNull();
+    expect(box).toHaveValue('hello');
   });
 });

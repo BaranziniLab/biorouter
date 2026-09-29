@@ -1,7 +1,12 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostManagedModelNote } from './HostManagedModelNote';
-import { HOST_MANAGED_MODEL_REASON, HOST_MANAGED_MODEL_SHORT } from './hostManagedModelCopy';
+import {
+  HOST_MANAGED_DESTINATION_REASON,
+  HOST_MANAGED_DESTINATION_SHORT,
+  HOST_MANAGED_MODEL_REASON,
+  HOST_MANAGED_MODEL_SHORT,
+} from './hostManagedModelCopy';
 
 /**
  * The regression this file exists for is not a rendering bug — it is a prop
@@ -79,5 +84,24 @@ describe('HostManagedModelNote', () => {
     render(<HostManagedModelNote short testId="host-managed-config-BIOROUTER_MODEL" />);
     expect(screen.getByTestId('host-managed-config-BIOROUTER_MODEL')).toBeInTheDocument();
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+  });
+  /**
+   * W2-PRV-2, round 4. A setting that decides where a provider sends its key
+   * is the host's in a browser too, and its note says that, not that "the
+   * model comes from the machine".
+   */
+  it('names where a provider sends its key when that is what the host owns', () => {
+    render(<HostManagedModelNote topic="destination" />);
+    const note = screen.getByTestId('host-managed-model-note');
+    expect(note).toHaveTextContent(HOST_MANAGED_DESTINATION_REASON);
+    expect(note.textContent).not.toContain('the model comes from');
+    expect(note.textContent).toContain('biorouter configure');
+  });
+
+  it('has a one-line destination form for a settings row', () => {
+    render(<HostManagedModelNote short topic="destination" />);
+    expect(screen.getByTestId('host-managed-model-note')).toHaveTextContent(
+      HOST_MANAGED_DESTINATION_SHORT
+    );
   });
 });

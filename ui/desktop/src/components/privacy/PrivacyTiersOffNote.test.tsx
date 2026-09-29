@@ -127,7 +127,7 @@ describe('PrivacyTiersOffNote', () => {
     mount();
 
     const note = screen.getByTestId('privacy-tiers-off-note');
-    expect(note).toHaveTextContent(/Settings → Privacy/);
+    expect(note).toHaveTextContent(/Settings → App → Privacy/);
     expect(note).not.toHaveTextContent(/outside the app/i);
     expect(note).toHaveTextContent(PATH);
   });

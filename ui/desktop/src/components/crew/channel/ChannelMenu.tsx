@@ -40,8 +40,8 @@ export interface ChannelMenuProps {
 /**
  * `# name ▾` — the channel's name is its menu (ui-redesign-spec, "The channel header and channel
  * menu"). The trigger is the page title's content; `ChannelHeader` wraps it in the `<h1>`. Its
- * name is its content — "#general" and a visually hidden ", channel menu" — and never an
- * `aria-label`, which would replace the heading's own words with the control's.
+ * name is its content — one visually hidden "#general, channel menu" beside the drawn slug — and
+ * never an `aria-label`, which would replace the heading's own words with the control's.
  *
  * Items that open a dialog or the details pane first put focus back on this trigger, so the dialog
  * (or pane) records the trigger as its opener and returns focus to it when it closes; the menu
@@ -101,9 +101,13 @@ export function ChannelMenu({
           )}
         >
           <Hash aria-hidden="true" className="h-icon-row w-icon-row shrink-0 text-text-muted" />
-          <span className="sr-only">{channelHeaderCopy.hash}</span>
-          <span className="min-w-0 truncate">{slug}</span>
-          <span className="sr-only">{channelHeaderCopy.menuSuffix}</span>
+          {/* The name is one hidden run, never pieces around the visible slug: Chrome puts a space
+              around each visually hidden span it joins, and read "# general , channel menu"
+              (UXN-15). */}
+          <span aria-hidden="true" className="min-w-0 truncate">
+            {slug}
+          </span>
+          <span className="sr-only">{channelHeaderCopy.menuName(slug)}</span>
           <ChevronDown
             aria-hidden="true"
             className="crew-channel-chevron h-icon-row w-icon-row shrink-0 text-text-muted"

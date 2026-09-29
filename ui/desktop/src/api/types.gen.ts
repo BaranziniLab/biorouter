@@ -140,6 +140,29 @@ export type AddExtensionRequest = {
 };
 
 /**
+ * The display names of a run's identifiers, captured under the person's action when the
+ * run is admitted (naming design D13 and D14). Never authority: every check still compares
+ * the IDs, and the labels are not refreshed afterwards.
+ */
+export type AdmissionLabels = {
+    destination: ChannelLabel;
+    /**
+     * Every channel the run may read, the destination included, in the run's order.
+     */
+    sources?: Array<ChannelLabel>;
+    /**
+     * The workspace's own name, or this device's name for the connection when the
+     * workspace has none.
+     */
+    workspace: string;
+    /**
+     * The person the agent acts for: `Display name (@username)`, or `@username` when they
+     * never set a display name of their own (D13). `None` when the snapshot named no actor.
+     */
+    you?: string | null;
+};
+
+/**
  * One institution, as a surface that has to *print* it needs it (issue #56,
  * DR-26).
  *
@@ -241,6 +264,27 @@ export type AuthState = {
 } | {
     detail: string;
     state: 'indeterminate';
+};
+
+/**
+ * How to sign in to a connection's server in a terminal (`POST /crew/connections/{id}/auth-plan`).
+ */
+export type AuthenticationPlan = {
+    args: Array<string>;
+    authentication_id: string;
+    connection_id: string;
+    program: string;
+};
+
+/**
+ * A prepared terminal sign-in (`POST /crew/connections/{id}/authentication`). Open its
+ * terminal with the same controller.
+ */
+export type AuthenticationSession = {
+    authentication_id: string;
+    connection_id: string;
+    controller_id: string;
+    instance_id: string;
 };
 
 export type Author = {
@@ -526,6 +570,21 @@ export type CatalogView = {
 
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
+/**
+ * One channel's display name.
+ */
+export type ChannelLabel = {
+    channel_id: string;
+    /**
+     * `#methods`.
+     */
+    label: string;
+    /**
+     * The channel's team, when the snapshot showed it; qualifies `#general` and its kin.
+     */
+    team?: string | null;
+};
+
 export type ChatRequest = {
     /**
      * Opaque admission minted by an exact-generation Stop-and-Send. A live
@@ -593,6 +652,23 @@ export type CheckModelResponse = {
 };
 
 export type CheckProviderRequest = {
+    /**
+     * W2-PRV-2. Values to check BEFORE they are saved: keys this provider
+     * declares, applied as task-local overrides for the check only
+     * (`with_config_overrides`, the mechanism provider auto-detection uses).
+     * Nothing is written, so a rejected key never replaces a working one.
+     */
+    candidate?: {
+        [key: string]: string;
+    } | null;
+    /**
+     * W2-PRV-2. Also make one cheap authenticated call (listing the provider's
+     * models, bounded at [`LIVE_CHECK_TIMEOUT`]) and refuse the check when the
+     * provider rejects the credentials. Constructing a provider makes no
+     * network call, so without this a wrong key passed. A provider with no
+     * secret, or with no live model listing, is checked as before.
+     */
+    live?: boolean;
     provider: string;
 };
 
@@ -730,6 +806,42 @@ export type ConfirmToolActionRequest = {
     sessionId: string;
 };
 
+/**
+ * A connection saved on this computer, as the registry keeps it.
+ */
+export type Connection = {
+    cluster_connection_id: string;
+    device_id: string;
+    id: string;
+    identity_file?: string | null;
+    institution_id?: string | null;
+    /**
+     * Why the connection last failed or dropped, for a person; `null` when it has not.
+     */
+    last_error?: string | null;
+    mode: ClusterMode;
+    name: string;
+    node_id?: string | null;
+    owner_uid: number;
+    policy_epoch: number;
+    port?: number | null;
+    proxy_jump?: string | null;
+    public_key: string;
+    /**
+     * Always sent; the default only reads a registry saved before it was kept.
+     */
+    remote_execution: boolean;
+    remote_root?: string | null;
+    socket_path: string;
+    ssh_target: string;
+    /**
+     * `connected` or `disconnected`.
+     */
+    status: string;
+    workspace_id: string;
+    workspace_public_key: string;
+};
+
 export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | RawAudioContent | RawResource;
 
 export type ContinuationLeaseErrorResponse = {
@@ -761,6 +873,26 @@ export type CreateWorkflowResponse = {
     workflow?: Workflow | null;
 };
 
+/**
+ * Where this profile keeps its Crew keys, and whether that store can be used now
+ * (`GET /crew/credentials`, and the vault routes' answers).
+ */
+export type CredentialStatus = {
+    /**
+     * Whether `backend` can keep a Crew key on this computer now. Only the OS keyring can be
+     * unavailable: a headless Linux node often has no Secret Service, and every key write then
+     * fails (W2-DMN-1). `backend` itself keeps its three values, which clients validate.
+     */
+    available: boolean;
+    /**
+     * `keyring` (the OS keyring), `encrypted_vault` (the Crew vault) or `file` (a development
+     * profile with the keyring disabled).
+     */
+    backend: string;
+    initialized: boolean;
+    locked: boolean;
+};
+
 export type Credibility = {
     classifier_version: number;
     confidence: number;
@@ -778,11 +910,378 @@ export type CredibilityResponse = {
 
 export type CredibilityTier = 'peer_reviewed' | 'preprint' | 'book' | 'gray_lit' | 'web' | 'personal';
 
+/**
+ * A stop that has nothing more to say: `DELETE /crew/host/start/{job_id}` and
+ * `DELETE /crew/authentication/{id}`.
+ */
+export type CrewCancelled = {
+    /**
+     * Always `true`. Stopping something that already ended changes nothing.
+     */
+    cancelled: boolean;
+};
+
+/**
+ * `GET /crew/connections`.
+ */
+export type CrewConnectionList = {
+    /**
+     * Every connection saved on this computer.
+     */
+    connections: Array<CrewConnectionView>;
+};
+
+/**
+ * `DELETE /crew/connections/{id}`.
+ */
+export type CrewConnectionRemoved = {
+    /**
+     * Always `true`.
+     */
+    removed: boolean;
+};
+
+/**
+ * A saved connection as the routes answer it: its saved fields, plus what to call its server
+ * and, when the daemon has one, the code behind `last_error`.
+ */
+export type CrewConnectionView = Connection & {
+    last_error_code?: CrewErrorCode | null;
+    /**
+     * What to call the connection's server on screen (D-ALIAS): the person's own SSH alias
+     * for its address when one maps to it, else the host. Display only, and never saved, so
+     * it never enters the connection's binding or an invitation.
+     */
+    server_label: string;
+    server_storage?: ServerStorage | null;
+};
+
+/**
+ * `POST /crew/connections/{id}/disconnect`.
+ */
+export type CrewDisconnected = {
+    /**
+     * Always `true`.
+     */
+    disconnected: boolean;
+};
+
+/**
+ * A Crew route's refusal: `code` and `error` always, and beside them only the fields that
+ * refusal names. Branch on `code`, never on `error`, which is written for a person.
+ */
+export type CrewError = {
+    actual_mode?: 'public' | 'private' | null;
+    /**
+     * The workspace's own refusal code, when `code` is `crew_request_refused` because the
+     * workspace refused (`name_taken`, `forbidden`, `response_too_large`, ...).
+     */
+    broker_code?: string | null;
+    /**
+     * `ambiguous_name`: every saved connection the name matches, as a person reads them.
+     */
+    candidates?: Array<string> | null;
+    code: CrewErrorCode;
+    /**
+     * `crew_institution_mismatch` on a save: the other saved connection to the same
+     * workspace, by its name.
+     */
+    connection?: string | null;
+    /**
+     * The saved connection a `crew_invitation_conflict` or `crew_connection_exists` concerns.
+     */
+    connection_id?: string | null;
+    /**
+     * `crew_institution_mismatch` on a save: that connection's institution.
+     */
+    connection_institution?: string | null;
+    /**
+     * Diagnostic words for "Copy details", never shown by default: OpenSSH's own bounded
+     * words for an SSH failure, a request reader's diagnostic for `crew_request_invalid`, what
+     * could not be read in Crew's saved settings for `crew_registry_unreadable`, or why the
+     * workspace has not confirmed a revocation.
+     */
+    detail?: string | null;
+    /**
+     * One plain sentence for a person.
+     */
+    error: string;
+    expected_mode?: 'public' | 'private' | null;
+    /**
+     * The SSH hop an SSH failure concerns, a jump host's included.
+     */
+    host?: string | null;
+    /**
+     * `crew_institution_mismatch` on a save: the institution the save gave.
+     */
+    institution?: string | null;
+    institution_refusal?: CrewInstitutionRefusal | null;
+    /**
+     * `crew_institution_mismatch` when connections to one workspace disagree: every
+     * institution they name.
+     */
+    institutions?: Array<string> | null;
+    /**
+     * What a selector names.
+     */
+    kind?: 'person' | 'former_person' | 'team' | 'channel' | 'connection' | 'attachment' | null;
+    missing?: InvitationMissing | null;
+    /**
+     * Why `crew_invitation_invalid` refused a paste (the invitation codec's own code,
+     * `invalid_choice`, or `missing`), or why `crew_grant_ended` ended the grant
+     * (`settings_changed` or `ended`).
+     */
+    reason?: string | null;
+    /**
+     * `crew_revocation_unconfirmed`: `false`; the daemon asks the workspace again by itself.
+     */
+    remote_revocation_confirmed?: boolean | null;
+    /**
+     * `crew_outcome_unknown`: the request's idempotency key. Retrying with it is applied at
+     * most once.
+     */
+    request_id?: string | null;
+    /**
+     * A revocation refusal: the grant's run.
+     */
+    run_id?: string | null;
+    /**
+     * A revocation refusal: the chat or task whose grant it concerns.
+     */
+    session_id?: string | null;
+    /**
+     * `crew_outcome_unknown` and `crew_not_sent`: the SSH failure's code when one caused it.
+     */
+    ssh_code?: string | null;
+    /**
+     * `crew_revocation_unconfirmed`: `true`; the grant is stopped here and the stop is saved.
+     */
+    stopped_on_this_device?: boolean | null;
+    /**
+     * A task's revocation: the task's status after the stop (`cancelled`,
+     * `cancellation_unconfirmed`, ...).
+     */
+    task_status?: string | null;
+    /**
+     * A task's revocation: why its status could not be saved.
+     */
+    task_status_error?: string | null;
+    /**
+     * `unknown_name` and `ambiguous_name`: the name as sent.
+     */
+    text?: string | null;
+    /**
+     * The workspace as a person calls it: `crew_reconnecting`, `crew_public_model_refused`,
+     * `crew_channel_not_in_workspace`.
+     */
+    workspace?: string | null;
+    /**
+     * `crew_institution_mismatch` on a save whose institution is not the workspace's: the
+     * workspace's own institution, which its host fixed, and the one to use.
+     */
+    workspace_institution?: string | null;
+};
+
+/**
+ * Every code a Crew answer carries: a refusal's `code`, a saved connection's
+ * `last_error_code`, and a host-start run's `error.code`. Each route's responses say which it
+ * answers and when. A client branches on these, never on a refusal's words, so the generated
+ * client names every one; `openapi_contract_tests` fails on a code a Crew source answers that
+ * is missing here, and on one listed here that nothing answers any more.
+ */
+export type CrewErrorCode = 'crew_user_action_required' | 'crew_human_authority_unavailable' | 'crew_request_invalid' | 'crew_request_refused' | 'crew_credential_store_unavailable' | 'crew_credential_store_refused' | 'crew_registry_unreadable' | 'crew_connection_not_found' | 'crew_connection_required' | 'crew_not_connected' | 'crew_membership_ended' | 'crew_ssh_auth_required' | 'crew_ssh_key_refused' | 'crew_ssh_host_key_unknown' | 'crew_ssh_host_key_changed' | 'crew_ssh_unreachable' | 'crew_ssh_failed' | 'crew_bridge_missing' | 'crew_broker_not_running' | 'crew_handoff_failed' | 'crew_workspace_identity_mismatch' | 'crew_not_sent' | 'crew_outcome_unknown' | 'crew_reconnecting' | 'crew_mode_mismatch' | 'crew_institution_mismatch' | 'crew_public_model_refused' | 'crew_channel_not_in_workspace' | 'crew_model_fixed' | 'crew_typed_run_required' | 'crew_invalid_selector' | 'unknown_name' | 'ambiguous_name' | 'crew_idempotency_conflict' | 'crew_start_outcome_unknown' | 'crew_cancel_persistence_failed' | 'crew_session_unavailable' | 'crew_revocation_unconfirmed' | 'crew_revocation_not_saved' | 'crew_grant_not_found' | 'crew_grant_other_connection' | 'crew_grant_replaced' | 'crew_grant_ended' | 'crew_profile_refused' | 'crew_transfer_refused' | 'crew_file_is_credential' | 'crew_file_name_hidden' | 'crew_file_name_invisible' | 'crew_folder_shared' | 'crew_destination_is_folder' | 'crew_destination_exists' | 'crew_file_is_program' | 'observer_capacity_reached' | 'crew_invitation_invalid' | 'crew_invitation_conflict' | 'crew_connection_exists' | 'crew_join_unsupported' | 'crew_join_not_approved' | 'crew_join_code_mismatch' | 'crew_join_not_invited' | 'crew_join_expired' | 'crew_join_replaced' | 'crew_join_account_changed' | 'crew_join_device_conflict' | 'crew_join_identity_conflict' | 'crew_join_refused' | 'crew_host_setup_unknown' | 'crew_host_setup_used' | 'crew_host_start_busy' | 'crew_host_start_not_found' | 'crew_host_start_timed_out' | 'crew_host_start_cancelled';
+
+/**
+ * `DELETE /crew/files/{capability_id}`.
+ */
+export type CrewFileDiscarded = {
+    /**
+     * Always `true`, whether or not the selection was still pending.
+     */
+    discarded: boolean;
+};
+
+/**
+ * `GET /crew/connections/{id}/grants`.
+ */
+export type CrewGrantList = {
+    /**
+     * The chats and tasks holding a grant on this connection.
+     */
+    grants: Array<CrewGrantView>;
+    /**
+     * Earlier grants whose revocation the workspace has not confirmed yet (F3). The daemon
+     * keeps asking by itself.
+     */
+    replaced_grants: Array<CrewGrantView>;
+};
+
+/**
+ * One grant, as `GET /crew/connections/{id}/grants` lists it: the registry's row, and what
+ * the route adds for display. Nothing here decides a revocation.
+ */
+export type CrewGrantView = GrantRow & {
+    /**
+     * Whether a grant belongs to a chat connected with /crew or to an agent task started from
+     * Crew.
+     */
+    kind?: 'chat' | 'task' | null;
+    /**
+     * The chat's title; `null` when the chat is gone or untitled, and always for a replaced
+     * grant, whose ID may name a different chat now.
+     */
+    session_name?: string | null;
+};
+
+/**
+ * What a `crew_institution_mismatch` for a model names beside its sentence
+ * (`biorouter::crew::institution_refusal_details`).
+ */
+export type CrewInstitutionRefusal = {
+    /**
+     * The institutions that approved the model; `null` when it states none.
+     */
+    approved_for?: Array<string> | null;
+    /**
+     * The model, as requested.
+     */
+    model: string;
+    /**
+     * The workspace's signed name, else the saved connection's name.
+     */
+    workspace?: string | null;
+    /**
+     * The workspace's institution.
+     */
+    workspace_institution?: string | null;
+};
+
+/**
+ * `POST /crew/transfers/preview`: the image's bytes, verified against the attachment's
+ * digest, with its own media type.
+ */
+export type CrewPreviewImage = Blob | File;
+
 export type CrewRequest = {
     method: string;
     params?: unknown;
     request_id?: string | null;
 };
+
+/**
+ * `POST /crew/connections/{id}/sessions/{session_id}/revoke`: a grant stopped here and
+ * confirmed by the workspace. One the workspace did not confirm is refused instead
+ * (`crew_revocation_unconfirmed`).
+ */
+export type CrewRevocation = {
+    /**
+     * Always `true`.
+     */
+    remote_revocation_confirmed: boolean;
+    /**
+     * Always `true`.
+     */
+    revoked: boolean;
+    /**
+     * The workspace's revoked run, as it answered `run.revoke`.
+     */
+    run: {
+        [key: string]: unknown;
+    };
+    run_id: string;
+    session_id: string;
+    /**
+     * A task's grant: the task's status after the stop.
+     */
+    task_status?: string | null;
+    /**
+     * A task's grant: why its status could not be saved.
+     */
+    task_status_error?: string | null;
+};
+
+/**
+ * `POST /crew/connections/{id}/runs/{run_id}/cancel`: what stopping one of this computer's
+ * tasks did. A stop the workspace did not confirm is refused instead
+ * (`crew_revocation_unconfirmed`), so a 200 is a stop that took effect.
+ */
+export type CrewRunCancellation = {
+    /**
+     * `true`: the task had already ended, so nothing was stopped or revoked. Absent
+     * otherwise.
+     */
+    already_finished?: boolean | null;
+    /**
+     * The task's status is `cancelled` now.
+     */
+    cancelled: boolean;
+    /**
+     * What the stop did, for a person. Absent when the task had already ended.
+     */
+    message?: string | null;
+    /**
+     * `true`: the workspace confirmed revoking the task's grant. Absent when the task had
+     * already ended.
+     */
+    remote_revocation_confirmed?: boolean | null;
+    /**
+     * The task's status: `cancelled`, or the status a task that had already ended kept
+     * (`completed`, `failed`).
+     */
+    status: string;
+};
+
+/**
+ * `GET /crew/connections/{id}/runs`.
+ */
+export type CrewRunList = {
+    /**
+     * This computer's tasks on the connection, newest first.
+     */
+    runs: Array<RunView>;
+};
+
+/**
+ * `POST /crew/connections/{id}/sessions/{session_id}/grant`: the chat's new grant.
+ */
+export type CrewSessionGrant = {
+    /**
+     * The grant's run at the workspace.
+     */
+    run_id: string;
+    /**
+     * The chat the grant is for.
+     */
+    session_id: string;
+};
+
+/**
+ * `DELETE /crew/transfers/{id}`.
+ */
+export type CrewTransferForgotten = {
+    /**
+     * Always `true`.
+     */
+    forgotten: boolean;
+    /**
+     * What forgetting did, for a person.
+     */
+    message: string;
+};
+
+/**
+ * `GET /crew/transfers`.
+ */
+export type CrewTransferList = {
+    transfers: Array<Receipt>;
+};
+
+/**
+ * The workspace's own answer, forwarded unchanged: a protocol request's result
+ * (`POST /crew/connections/{id}/request`) or a chat's context manifest. Its shape is the
+ * Crew broker protocol's, not this API's.
+ */
+export type CrewWorkspaceAnswer = unknown;
 
 /**
  * Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
@@ -981,6 +1480,11 @@ export type Diagnostics = {
      */
     total?: number;
 };
+
+/**
+ * Which way a Crew transfer moves a file.
+ */
+export type Direction = 'upload' | 'download';
 
 export type DivergeSessionRequest = {
     /**
@@ -1236,6 +1740,57 @@ export type ExtensionResponse = {
 };
 
 /**
+ * A file selection the person made, as `POST /crew/files` and its confirm route answer it:
+ * the capability a transfer is started with, and what was chosen.
+ */
+export type FileCapability = {
+    /**
+     * A download's destination still waits for the person's confirmation.
+     */
+    approval_pending: boolean;
+    /**
+     * Pass it as `file_capability`. It expires five minutes after the selection.
+     */
+    capability_id: string;
+    /**
+     * The file's name.
+     */
+    name: string;
+    /**
+     * The source's size in bytes; `null` for a download's destination.
+     */
+    size?: number | null;
+    /**
+     * A download's destination already exists and will be replaced.
+     */
+    target_exists: boolean;
+};
+
+/**
+ * What a file selection is for: a transfer, or approving the cleanup of a download's
+ * partial file.
+ */
+export type FilePurpose = 'transfer' | 'cleanup';
+
+/**
+ * A local file the person chose (`POST /crew/files`): the source of an upload, or the
+ * destination of a download.
+ */
+export type FileRequest = {
+    approval_pending?: boolean;
+    blob_id?: string | null;
+    channel_id: string;
+    connection_id: string;
+    direction: Direction;
+    expected_mode?: 'public' | 'private' | null;
+    overwrite?: boolean;
+    path: string;
+    purpose?: FilePurpose;
+    request_id?: string | null;
+    transfer_id?: string | null;
+};
+
+/**
  * `POST /crew/connections/from-invitation`: the pasted invitation and the person's choices on
  * the Join screen. Every choice is optional; an absent one takes the invitation's.
  */
@@ -1256,6 +1811,11 @@ export type FromInvitationRequest = {
      */
     preview?: boolean;
     /**
+     * The preview's `replaceable_connection_id`, to save this invitation in place of that
+     * connection (same workspace, another login, never connected). It is removed with its key.
+     */
+    replace?: string | null;
+    /**
      * The joiner's account name on the server. Default: the username the host invited.
      */
     username?: string | null;
@@ -1265,14 +1825,7 @@ export type FromInvitationRequest = {
  * What `POST /crew/connections/from-invitation` answers: exactly one of the two fields.
  */
 export type FromInvitationResponse = {
-    /**
-     * The saved connection, pinned exactly as the invitation says (or the one this computer
-     * already had for the same workspace and settings), in the shape `GET /crew/connections`
-     * lists.
-     */
-    connection?: {
-        [key: string]: unknown;
-    } | null;
+    connection?: Connection | null;
     preview?: InvitationSummary | null;
 };
 
@@ -1286,6 +1839,48 @@ export type FrontendToolRequest = {
 export type GetToolsQuery = {
     extension_name?: string | null;
     session_id: string;
+};
+
+/**
+ * One row of the grants list ([`CrewManager::session_grant_rows`]): the grant stored under
+ * `session_id`. The HTTP grants list answers these rows, so this type is that wire shape.
+ */
+export type GrantRow = {
+    /**
+     * The channel the grant may post in.
+     */
+    channel_id: string;
+    connection_id: string;
+    /**
+     * Stopped on this device: revoked, ended, or its connection was removed.
+     */
+    expired: boolean;
+    /**
+     * When the workspace ends the grant on its own, in Unix seconds; `null` for a grant
+     * recorded before that was kept.
+     */
+    expires_at?: number | null;
+    labels?: AdmissionLabels | null;
+    /**
+     * The connection's policy epoch when the grant was made.
+     */
+    policy_epoch: number;
+    /**
+     * `false` only while the daemon is still asking the workspace to confirm a revocation,
+     * `true` once it has, and `null` for a live grant or a stop whose standing is not a
+     * revocation this device sent (see `revocation`).
+     */
+    remote_revocation_confirmed?: boolean | null;
+    revocation?: Revocation | null;
+    run_id: string;
+    /**
+     * The chat or task the grant is stored under.
+     */
+    session_id: string;
+    /**
+     * Every channel the grant may read.
+     */
+    source_channels: Array<string>;
 };
 
 export type GrantSessionRequest = {
@@ -1767,7 +2362,8 @@ export type InvitationMissing = 'username' | 'server' | 'institution';
  */
 export type InvitationPreview = {
     /**
-     * A connection on this computer that already pins this workspace.
+     * A connection on this computer that already pins this workspace, and is the one to use:
+     * it signs in as the login saving would use, or it has connected before.
      */
     existing_connection_id?: string | null;
     /**
@@ -1784,6 +2380,7 @@ export type InvitationPreview = {
     institution_conflict?: string | null;
     institution_id?: string | null;
     invitee_username?: string | null;
+    login_mismatch?: LoginMismatch | null;
     /**
      * What saving still needs; empty when it can save.
      */
@@ -1800,6 +2397,12 @@ export type InvitationPreview = {
     owner_uid: number;
     port?: number | null;
     proxy_jump?: string | null;
+    /**
+     * A connection on this computer that pins this workspace under another login and has
+     * never connected (someone else's invitation, say). Saving with `replace` set to it
+     * replaces it; it is never offered as the one to open (W2-DMN-3).
+     */
+    replaceable_connection_id?: string | null;
     /**
      * The server named by the invitation.
      */
@@ -2222,6 +2825,20 @@ export type LocationResponse = {
      * folder in the OS file explorer so users can inspect raw markdown.
      */
     path: string;
+};
+
+/**
+ * The invitation's account and the one this computer's SSH settings sign in as.
+ */
+export type LoginMismatch = {
+    /**
+     * The `User` the person's SSH settings give for this server.
+     */
+    config_user: string;
+    /**
+     * The account the invitation names.
+     */
+    invitee: string;
 };
 
 export type Manifest = {
@@ -2795,7 +3412,15 @@ export type ObserveEvent = {
             short: string;
         };
     };
-    runs: Array<unknown>;
+    /**
+     * This computer's tasks on the connection: every live one, and the newest finished
+     * ones of each channel.
+     */
+    runs: Array<RunView>;
+    /**
+     * The person's own `workspace.snapshot`, as the workspace answered it. Its shape is the
+     * Crew broker protocol's.
+     */
     snapshot: unknown;
     type: 'state';
 } | {
@@ -2983,6 +3608,9 @@ export type PlannedSkill = {
     name: string;
 };
 
+/**
+ * Open a terminal sign-in for a saved connection.
+ */
 export type Prepare = {
     cols: number;
     controller_id: string;
@@ -2990,9 +3618,28 @@ export type Prepare = {
     rows: number;
 };
 
+/**
+ * A device key prepared for a new connection (`POST /crew/devices/prepare`). Save the
+ * connection with its `preparation_id`.
+ */
+export type PreparedDevice = {
+    device_id: string;
+    preparation_id: string;
+    public_key: string;
+};
+
 export type PreviewBody = {
     commit_sha: string;
     path: string;
+};
+
+/**
+ * An image attachment to preview (`POST /crew/transfers/preview`).
+ */
+export type PreviewRequest = {
+    blob_id: string;
+    channel_id: string;
+    connection_id: string;
 };
 
 export type PreviewResponse = {
@@ -3066,6 +3713,13 @@ export type PrivacyDisclosureResponse = {
      * The long form: the blocking dialog and the settings panel.
      */
     long: string;
+    settings: string;
+    /**
+     * Settings > App > Privacy's heading and long form: about non-private
+     * models as a class, never "this model" or "this chat" (W2-PRV-14). The
+     * panel shows it whatever model is bound, beside that model's tier.
+     */
+    settings_title: string;
     /**
      * The one-line form: the model chip's tooltip and the provider grid's
      * Commercial section.
@@ -3364,6 +4018,54 @@ export type ReadResourceResponse = {
  */
 export type ReasoningEffort = 'quick' | 'normal' | 'deep';
 
+/**
+ * A transfer as this computer records it, and as every transfer route answers it. The
+ * fields after `error` are the daemon's own bookkeeping for resuming and cleaning up; a
+ * client reads only `destination_identity` of them.
+ */
+export type Receipt = {
+    binding: string;
+    /**
+     * The workspace's attachment, once an upload has one or for a download; `null` before.
+     */
+    blob_id: string | null;
+    channel_id: string;
+    connection_id: string;
+    destination_identity?: string | null;
+    destination_selection?: string | null;
+    direction: Direction;
+    /**
+     * Why the transfer stopped, for a person; `null` otherwise.
+     */
+    error: string | null;
+    id: string;
+    initial_target?: {
+        [key: string]: unknown;
+    } | null;
+    intent?: string;
+    local_selection?: string;
+    name: string;
+    offset: number;
+    /**
+     * Why a `needs_file_selection` (paused) transfer stopped, when the daemon has a code for it:
+     * `server_storage` when the workspace server could not save it (its disk is full, or its
+     * storage failed). Resume it once the host has freed space: it continues from `offset`
+     * (T3-BE-14). `null` otherwise; `error` says why in words either way.
+     */
+    pause_reason: string | null;
+    request_id: string;
+    /**
+     * A file selection for this upload required Private (T3-BE-5). Its attachment is begun as
+     * Private, which the daemon holds against the workspace's mode as it is when the attachment
+     * is begun, and it never adds a part to an attachment the workspace does not restrict. Once
+     * set, a later selection never clears it. Always `false` for a download.
+     */
+    requires_private?: boolean;
+    sha256: string;
+    size: number;
+    state: string;
+};
+
 export type RecoverContinuationAction = 'take_over' | 'abandon';
 
 export type RecoverContinuationRequest = {
@@ -3611,6 +4313,10 @@ export type RestoreResponse = {
     new_commit_sha: string;
 };
 
+/**
+ * A new file selection for a transfer (`POST /crew/transfers/{id}/resume`), or the cleanup
+ * approval for a download's partial file (`DELETE /crew/transfers/{id}`).
+ */
 export type Resume = {
     file_capability: string;
 };
@@ -3665,23 +4371,46 @@ export type RetryConfig = {
     timeout_seconds?: number | null;
 };
 
+/**
+ * Where a grant that stopped on this device stands with the workspace.
+ */
+export type Revocation = 'unconfirmed' | 'confirmed' | 'ended_by_workspace';
+
 export type Role = string;
 
 export type RunNowResponse = {
     session_id: string;
 };
 
+/**
+ * One of this computer's Crew tasks (`POST /crew/connections/{id}/runs`), as its task ledger
+ * keeps it and every route and `state` frame answers it.
+ */
 export type RunView = {
+    /**
+     * The channel the task posts its result in.
+     */
     channel_id: string;
     connection_id: string;
+    /**
+     * Why the task stopped or what is unconfirmed, for a person; `null` otherwise.
+     */
     error?: string | null;
     run_id: string;
+    /**
+     * The task's own conversation on this computer.
+     */
     session_id: string;
     /**
      * When this device admitted the task, in Unix milliseconds. Absent from a run recorded
      * before it was kept.
      */
     started_at?: number | null;
+    /**
+     * `starting`, `running`, `waiting_for_approval`, `completed`, `failed`, `cancelled`,
+     * `cancellation_pending`, `cancellation_unconfirmed`, `interrupted` (the daemon restarted
+     * while it ran) or `outcome_not_durable` (its outcome could not be saved).
+     */
     status: string;
 };
 
@@ -3714,6 +4443,27 @@ export type RunningTurnPhase = {
      */
     phase_age_ms: number;
     session_id: string;
+};
+
+/**
+ * A connection to save or edit (`POST /crew/connections`, `PATCH /crew/connections/{id}`).
+ */
+export type SaveConnection = {
+    cluster_connection_id?: string | null;
+    identity_file?: string | null;
+    institution_id?: string | null;
+    mode?: ClusterMode;
+    name: string;
+    owner_uid: number;
+    port?: number | null;
+    preparation_id?: string | null;
+    proxy_jump?: string | null;
+    remote_execution?: boolean;
+    remote_root?: string | null;
+    socket_path: string;
+    ssh_target: string;
+    workspace_id: string;
+    workspace_public_key: string;
 };
 
 export type SaveWorkflowRequest = {
@@ -3851,6 +4601,14 @@ export type ScheduledJob = {
 };
 
 /**
+ * The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing
+ * else. It must differ from the human approval secret.
+ */
+export type SecretBody = {
+    passphrase: string;
+};
+
+/**
  * Where the trusted surface must put the values it collects.
  */
 export type SecretDestination = {
@@ -3880,6 +4638,29 @@ export type SecretKeyRequest = {
      * Whether the request can be satisfied without this one.
      */
     required?: boolean;
+};
+
+/**
+ * A workspace server that has stopped saving changes (its disk or quota is full, or it could
+ * not write its storage), as its `hello` says since W2-BRK-3. Reading still works; every
+ * change is refused until the host frees space and restarts Crew (T3-BE-13). Served as a saved
+ * connection's `server_storage`, so a person is told before trying to write, not after.
+ */
+export type ServerStorage = {
+    /**
+     * Why: `storage_full` (the server's disk or the account's quota is full) or
+     * `storage_failed` (another storage error).
+     */
+    code: string;
+    /**
+     * When the server stopped saving, in seconds since the Unix epoch, as it says; `null` when
+     * it did not say.
+     */
+    since?: number | null;
+    /**
+     * Always `storage_failed`: the server has stopped saving changes.
+     */
+    state: string;
 };
 
 export type Session = {
@@ -4414,6 +5195,18 @@ export type StartOutput = {
     detail?: string | null;
     kind: 'problem';
     problem: string;
+};
+
+/**
+ * Start a transfer with a file selection the person made (`POST /crew/transfers`).
+ */
+export type StartRequest = {
+    blob_id?: string | null;
+    channel_id: string;
+    connection_id: string;
+    direction: Direction;
+    file_capability: string;
+    request_id: string;
 };
 
 export type StartRunRequest = {
@@ -5793,7 +6586,7 @@ export type UpdateAgentProviderErrors = {
      */
     403: unknown;
     /**
-     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text)
+     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user; on a daemon with no user-action key, any bind to a private model (SD-12) (body = plain text). Or a Crew chat, whose model is fixed by its access: `crew_model_fixed` (body = `{code, error}`, W2-DMN-10); start a new chat to use another model
      */
     409: PrivacyBarrierBody;
     /**
@@ -5977,6 +6770,28 @@ export type CheckProviderData = {
     url: '/config/check_provider';
 };
 
+export type CheckProviderErrors = {
+    /**
+     * The provider could not be built from the saved (or candidate) settings, or a candidate named a setting this provider does not declare
+     */
+    400: unknown;
+    /**
+     * `live` or `candidate` from a caller that could not prove a person asked, on a daemon that holds a user-action key; or, on one that holds none, a live check or a candidate that names a setting, without typing the key it would be checked with
+     */
+    403: unknown;
+    /**
+     * With `live` set: the provider rejected the credentials. The body is its message
+     */
+    422: unknown;
+};
+
+export type CheckProviderResponses = {
+    /**
+     * The provider could be built, and with `live` set its credentials were not rejected
+     */
+    200: unknown;
+};
+
 export type CreateCustomProviderData = {
     body: UpdateCustomProviderRequest;
     path?: never;
@@ -6076,6 +6891,10 @@ export type UpdateCustomProviderErrors = {
      * Provider not found
      */
     404: unknown;
+    /**
+     * Refused: the update moves the provider to a new URL while keeping its saved key or headers, and the request carried no proof it came from the user
+     */
+    409: unknown;
     /**
      * Internal server error
      */
@@ -6431,7 +7250,7 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
      */
     403: unknown;
     /**
@@ -6439,7 +7258,7 @@ export type RemoveConfigErrors = {
      */
     404: unknown;
     /**
-     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user. Also a key that decides where a provider sends its requests and credentials, when something other than its default is stored
      */
     409: unknown;
     /**
@@ -6507,15 +7326,15 @@ export type UpsertConfigData = {
 
 export type UpsertConfigErrors = {
     /**
-     * Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'
+     * Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'. Also `BIOROUTER_MAX_TURNS`, which must be a whole number of at least 1
      */
     400: unknown;
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
      */
     403: unknown;
     /**
-     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode. Also a key that decides where a provider sends its requests and credentials (a host, an endpoint), when the write would change what it resolves to
      */
     409: unknown;
     /**
@@ -6560,7 +7379,7 @@ export type CrewAuthenticationCancelData = {
     body?: never;
     path: {
         /**
-         * Authentication session
+         * The sign-in
          */
         id: string;
     };
@@ -6568,15 +7387,33 @@ export type CrewAuthenticationCancelData = {
     url: '/crew/authentication/{id}';
 };
 
-export type CrewAuthenticationCancelResponses = {
-    200: unknown;
+export type CrewAuthenticationCancelErrors = {
+    /**
+     * `crew_request_refused`: no such sign-in for this controller
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID
+     */
+    403: CrewError;
 };
+
+export type CrewAuthenticationCancelError = CrewAuthenticationCancelErrors[keyof CrewAuthenticationCancelErrors];
+
+export type CrewAuthenticationCancelResponses = {
+    /**
+     * The sign-in, stopped, and its connection disconnected
+     */
+    200: CrewCancelled;
+};
+
+export type CrewAuthenticationCancelResponse = CrewAuthenticationCancelResponses[keyof CrewAuthenticationCancelResponses];
 
 export type CrewAuthenticationTerminalData = {
     body?: never;
     path: {
         /**
-         * Authentication session
+         * The sign-in
          */
         id: string;
     };
@@ -6584,30 +7421,88 @@ export type CrewAuthenticationTerminalData = {
     url: '/crew/authentication/{id}/terminal';
 };
 
-export type ListConnectionsData = {
+export type CrewAuthenticationTerminalErrors = {
+    /**
+     * `crew_request_refused`: no such sign-in for this controller
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter
+     */
+    403: CrewError;
+};
+
+export type CrewAuthenticationTerminalError = CrewAuthenticationTerminalErrors[keyof CrewAuthenticationTerminalErrors];
+
+export type CrewListConnectionsData = {
     body?: never;
     path?: never;
     query?: never;
     url: '/crew/connections';
 };
 
-export type ListConnectionsResponses = {
+export type CrewListConnectionsErrors = {
     /**
-     * `connections`: every saved connection, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host); display only
+     * `crew_request_refused`: Crew's saved settings could not be read
      */
-    200: unknown;
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
-export type SaveConnectionData = {
-    body: unknown;
+export type CrewListConnectionsError = CrewListConnectionsErrors[keyof CrewListConnectionsErrors];
+
+export type CrewListConnectionsResponses = {
+    /**
+     * Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known
+     */
+    200: CrewConnectionList;
+};
+
+export type CrewListConnectionsResponse = CrewListConnectionsResponses[keyof CrewListConnectionsResponses];
+
+export type CrewSaveConnectionData = {
+    body: SaveConnection;
     path?: never;
     query?: never;
     url: '/crew/connections';
 };
 
-export type SaveConnectionResponses = {
-    200: unknown;
+export type CrewSaveConnectionErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`), or when the institution is not the workspace's own, as its host fixed it (`connection_institution`, `workspace_institution`, `workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
 };
+
+export type CrewSaveConnectionError = CrewSaveConnectionErrors[keyof CrewSaveConnectionErrors];
+
+export type CrewSaveConnectionResponses = {
+    /**
+     * The saved connection
+     */
+    200: CrewConnectionView;
+};
+
+export type CrewSaveConnectionResponse = CrewSaveConnectionResponses[keyof CrewSaveConnectionResponses];
 
 export type CrewConnectionFromInvitationData = {
     body: FromInvitationRequest;
@@ -6618,18 +7513,32 @@ export type CrewConnectionFromInvitationData = {
 
 export type CrewConnectionFromInvitationErrors = {
     /**
-     * `crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body in the wrong shape, or `crew_request_refused` with a fixed sentence for any other failure
+     * `crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body that is not JSON, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be saved, or `crew_request_refused` with a fixed sentence for any other failure
      */
-    400: unknown;
+    400: CrewError;
     /**
-     * No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
      * `crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`
      */
-    409: unknown;
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
 };
+
+export type CrewConnectionFromInvitationError = CrewConnectionFromInvitationErrors[keyof CrewConnectionFromInvitationErrors];
 
 export type CrewConnectionFromInvitationResponses = {
     /**
@@ -6640,11 +7549,11 @@ export type CrewConnectionFromInvitationResponses = {
 
 export type CrewConnectionFromInvitationResponse = CrewConnectionFromInvitationResponses[keyof CrewConnectionFromInvitationResponses];
 
-export type RemoveConnectionData = {
+export type CrewRemoveConnectionData = {
     body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6652,15 +7561,37 @@ export type RemoveConnectionData = {
     url: '/crew/connections/{id}';
 };
 
-export type RemoveConnectionResponses = {
-    200: unknown;
+export type CrewRemoveConnectionErrors = {
+    /**
+     * `crew_request_refused`: no saved connection has that ID, or it could not be removed
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support
+     */
+    409: CrewError;
 };
 
-export type UpdateConnectionData = {
-    body: unknown;
+export type CrewRemoveConnectionError = CrewRemoveConnectionErrors[keyof CrewRemoveConnectionErrors];
+
+export type CrewRemoveConnectionResponses = {
+    /**
+     * Removed, with its keys. A workspace that is online is asked to end the connection's grants
+     */
+    200: CrewConnectionRemoved;
+};
+
+export type CrewRemoveConnectionResponse = CrewRemoveConnectionResponses[keyof CrewRemoveConnectionResponses];
+
+export type CrewUpdateConnectionData = {
+    body: SaveConnection;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6668,15 +7599,45 @@ export type UpdateConnectionData = {
     url: '/crew/connections/{id}';
 };
 
-export type UpdateConnectionResponses = {
-    200: unknown;
+export type CrewUpdateConnectionErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`), or when the institution is not the workspace's own, as its host fixed it (`connection_institution`, `workspace_institution`, `workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
 };
 
-export type AuthenticationPlanData = {
+export type CrewUpdateConnectionError = CrewUpdateConnectionErrors[keyof CrewUpdateConnectionErrors];
+
+export type CrewUpdateConnectionResponses = {
+    /**
+     * The connection as saved. A save that would change nothing changes nothing, and answers the connection as it stands; a save that keeps the route of a connected connection reconnects it
+     */
+    200: CrewConnectionView;
+};
+
+export type CrewUpdateConnectionResponse = CrewUpdateConnectionResponses[keyof CrewUpdateConnectionResponses];
+
+export type CrewAuthenticationPlanData = {
     body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6684,15 +7645,33 @@ export type AuthenticationPlanData = {
     url: '/crew/connections/{id}/auth-plan';
 };
 
-export type AuthenticationPlanResponses = {
-    200: unknown;
+export type CrewAuthenticationPlanErrors = {
+    /**
+     * `crew_request_refused`: no saved connection has that ID, or it cannot be signed in to this way
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
+
+export type CrewAuthenticationPlanError = CrewAuthenticationPlanErrors[keyof CrewAuthenticationPlanErrors];
+
+export type CrewAuthenticationPlanResponses = {
+    /**
+     * The command that signs in to the connection's server in a terminal
+     */
+    200: AuthenticationPlan;
+};
+
+export type CrewAuthenticationPlanResponse = CrewAuthenticationPlanResponses[keyof CrewAuthenticationPlanResponses];
 
 export type CrewAuthenticationPrepareData = {
     body: Prepare;
     path: {
         /**
-         * Saved Crew connection
+         * The saved connection
          */
         id: string;
     };
@@ -6700,15 +7679,45 @@ export type CrewAuthenticationPrepareData = {
     url: '/crew/connections/{id}/authentication';
 };
 
-export type CrewAuthenticationPrepareResponses = {
-    200: unknown;
+export type CrewAuthenticationPrepareErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a connection that can't be signed in to this way, a sign-in already under way for another controller, or one that could not start; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
 };
 
-export type ConnectData = {
+export type CrewAuthenticationPrepareError = CrewAuthenticationPrepareErrors[keyof CrewAuthenticationPrepareErrors];
+
+export type CrewAuthenticationPrepareResponses = {
+    /**
+     * The sign-in, ready for its terminal
+     */
+    200: AuthenticationSession;
+};
+
+export type CrewAuthenticationPrepareResponse = CrewAuthenticationPrepareResponses[keyof CrewAuthenticationPrepareResponses];
+
+export type CrewConnectData = {
     body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6716,22 +7725,33 @@ export type ConnectData = {
     url: '/crew/connections/{id}/connect';
 };
 
-export type ConnectErrors = {
+export type CrewConnectErrors = {
     /**
-     * `code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message and `detail`, when present, OpenSSH's own bounded words for Copy details
+     * `code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message, `detail`, when present, OpenSSH's own bounded words for Copy details, and `host`, when present, the host the failure concerns (a jump host's included). Otherwise `crew_institution_mismatch` when the workspace's connections disagree about its institution, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused`
      */
-    400: unknown;
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
-export type ConnectResponses = {
-    200: unknown;
+export type CrewConnectError = CrewConnectErrors[keyof CrewConnectErrors];
+
+export type CrewConnectResponses = {
+    /**
+     * The connection, connected and verified against its pinned workspace key
+     */
+    200: CrewConnectionView;
 };
 
-export type DisconnectData = {
+export type CrewConnectResponse = CrewConnectResponses[keyof CrewConnectResponses];
+
+export type CrewDisconnectData = {
     body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6739,15 +7759,33 @@ export type DisconnectData = {
     url: '/crew/connections/{id}/disconnect';
 };
 
-export type DisconnectResponses = {
-    200: unknown;
+export type CrewDisconnectErrors = {
+    /**
+     * `crew_request_refused`: no saved connection has that ID
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
+
+export type CrewDisconnectError = CrewDisconnectErrors[keyof CrewDisconnectErrors];
+
+export type CrewDisconnectResponses = {
+    /**
+     * Disconnected. Disconnecting a connection that is not connected changes nothing
+     */
+    200: CrewDisconnected;
+};
+
+export type CrewDisconnectResponse = CrewDisconnectResponses[keyof CrewDisconnectResponses];
 
 export type CrewProfileGrantsData = {
     body?: never;
     path: {
         /**
-         * Crew connection ID
+         * The saved connection
          */
         id: string;
     };
@@ -6755,9 +7793,27 @@ export type CrewProfileGrantsData = {
     url: '/crew/connections/{id}/grants';
 };
 
-export type CrewProfileGrantsResponses = {
-    200: unknown;
+export type CrewProfileGrantsErrors = {
+    /**
+     * `crew_profile_refused`: no saved connection has that ID, or the grants could not be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
+
+export type CrewProfileGrantsError = CrewProfileGrantsErrors[keyof CrewProfileGrantsErrors];
+
+export type CrewProfileGrantsResponses = {
+    /**
+     * The chats and tasks holding a grant on this connection, and the earlier grants whose revocation the workspace has not confirmed yet
+     */
+    200: CrewGrantList;
+};
+
+export type CrewProfileGrantsResponse = CrewProfileGrantsResponses[keyof CrewProfileGrantsResponses];
 
 export type CrewConnectionInvitationData = {
     body?: never;
@@ -6779,22 +7835,28 @@ export type CrewConnectionInvitationData = {
 
 export type CrewConnectionInvitationErrors = {
     /**
-     * `crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)
+     * `crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, a typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)
      */
-    400: unknown;
+    400: CrewError;
     /**
-     * No proof that a person asked
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
-     * `crew_connection_not_found`
+     * `crew_connection_not_found`: no saved connection has that ID
      */
-    404: unknown;
+    404: CrewError;
     /**
      * `crew_not_connected`: connect first
      */
-    409: unknown;
+    409: CrewError;
+    /**
+     * The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)
+     */
+    503: CrewError;
 };
+
+export type CrewConnectionInvitationError = CrewConnectionInvitationErrors[keyof CrewConnectionInvitationErrors];
 
 export type CrewConnectionInvitationResponses = {
     /**
@@ -6819,22 +7881,28 @@ export type CrewConnectionJoinStatusData = {
 
 export type CrewConnectionJoinStatusErrors = {
     /**
-     * A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer
+     * A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer
      */
-    400: unknown;
+    400: CrewError;
     /**
-     * No proof that a person asked
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
-     * `crew_connection_not_found`
+     * `crew_connection_not_found`: no saved connection has that ID
      */
-    404: unknown;
+    404: CrewError;
     /**
      * `crew_not_connected`: connect first
      */
-    409: unknown;
+    409: CrewError;
+    /**
+     * The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)
+     */
+    503: CrewError;
 };
+
+export type CrewConnectionJoinStatusError = CrewConnectionJoinStatusErrors[keyof CrewConnectionJoinStatusErrors];
 
 export type CrewConnectionJoinStatusResponses = {
     /**
@@ -6859,22 +7927,28 @@ export type CrewConnectionJoinData = {
 
 export type CrewConnectionJoinErrors = {
     /**
-     * A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer
+     * A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), a failed sign-in handoff (`crew_handoff_failed`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer
      */
-    400: unknown;
+    400: CrewError;
     /**
-     * No proof that a person asked
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
-     * `crew_connection_not_found`
+     * `crew_connection_not_found`: no saved connection has that ID
      */
-    404: unknown;
+    404: CrewError;
     /**
      * `crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`
      */
-    409: unknown;
+    409: CrewError;
+    /**
+     * The claim did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace applied it is not known; claiming again is safe) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)
+     */
+    503: CrewError;
 };
+
+export type CrewConnectionJoinError = CrewConnectionJoinErrors[keyof CrewConnectionJoinErrors];
 
 export type CrewConnectionJoinResponses = {
     /**
@@ -6885,11 +7959,11 @@ export type CrewConnectionJoinResponses = {
 
 export type CrewConnectionJoinResponse = CrewConnectionJoinResponses[keyof CrewConnectionJoinResponses];
 
-export type ObserveData = {
+export type CrewObserveData = {
     body: ObserveRequest;
     path: {
         /**
-         * Saved Crew connection
+         * The saved connection
          */
         id: string;
     };
@@ -6897,20 +7971,57 @@ export type ObserveData = {
     url: '/crew/connections/{id}/observe';
 };
 
-export type ObserveResponses = {
+export type CrewObserveErrors = {
     /**
-     * Bounded NDJSON room events (one schema instance per line)
+     * `crew_request_invalid`: a body that is not JSON, or a channel or cursor that is empty, longer than 128 bytes, or a cursor without its channel
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_connection_not_found`: no saved connection has that ID
+     */
+    404: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * `observer_capacity_reached`: too many observations are open on this daemon
+     */
+    429: CrewError;
+    /**
+     * `crew_request_refused`: Crew could not start on this daemon
+     */
+    503: CrewError;
+};
+
+export type CrewObserveError = CrewObserveErrors[keyof CrewObserveErrors];
+
+export type CrewObserveResponses = {
+    /**
+     * Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed
      */
     200: ObserveEvent;
 };
 
-export type ObserveResponse = ObserveResponses[keyof ObserveResponses];
+export type CrewObserveResponse = CrewObserveResponses[keyof CrewObserveResponses];
 
-export type RequestData = {
+export type CrewRequestData = {
     body: CrewRequest;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6918,15 +8029,53 @@ export type RequestData = {
     url: '/crew/connections/{id}/request';
 };
 
-export type RequestResponses = {
-    200: unknown;
+export type CrewRequestErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` (with `broker_code` when the workspace itself refused), `crew_mode_mismatch` (`actual_mode`, `expected_mode`: the request required the other privacy mode; nothing was sent), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes
+     */
+    403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace applied it is not known; retry with `request_id`, its idempotency key, to apply it at most once) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)
+     */
+    503: CrewError;
 };
 
-export type ListRunsData = {
+export type CrewRequestError = CrewRequestErrors[keyof CrewRequestErrors];
+
+export type CrewRequestResponses = {
+    /**
+     * The workspace's own answer, forwarded unchanged
+     */
+    200: CrewWorkspaceAnswer;
+};
+
+export type CrewRequestResponse = CrewRequestResponses[keyof CrewRequestResponses];
+
+export type CrewListRunsData = {
     body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6934,15 +8083,33 @@ export type ListRunsData = {
     url: '/crew/connections/{id}/runs';
 };
 
-export type ListRunsResponses = {
-    200: unknown;
+export type CrewListRunsErrors = {
+    /**
+     * `crew_request_refused`: the task ledger could not be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
-export type StartRunData = {
+export type CrewListRunsError = CrewListRunsErrors[keyof CrewListRunsErrors];
+
+export type CrewListRunsResponses = {
+    /**
+     * This computer's tasks on the connection, newest first
+     */
+    200: CrewRunList;
+};
+
+export type CrewListRunsResponse = CrewListRunsResponses[keyof CrewListRunsResponses];
+
+export type CrewStartRunData = {
     body: StartRunRequest;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
     };
@@ -6950,19 +8117,57 @@ export type StartRunData = {
     url: '/crew/connections/{id}/runs';
 };
 
-export type StartRunResponses = {
-    200: unknown;
+export type CrewStartRunErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active, a model Crew cannot isolate) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)
+     */
+    503: CrewError;
 };
 
-export type CancelRunData = {
+export type CrewStartRunError = CrewStartRunErrors[keyof CrewStartRunErrors];
+
+export type CrewStartRunResponses = {
+    /**
+     * The task, running. The same `request_id` with the same request answers the same task again
+     */
+    200: RunView;
+};
+
+export type CrewStartRunResponse = CrewStartRunResponses[keyof CrewStartRunResponses];
+
+export type CrewCancelRunData = {
     body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
         /**
-         * Crew run_id
+         * One of this computer's tasks on it
          */
         run_id: string;
     };
@@ -6970,19 +8175,87 @@ export type CancelRunData = {
     url: '/crew/connections/{id}/runs/{run_id}/cancel';
 };
 
-export type CancelRunResponses = {
-    200: unknown;
+export type CrewCancelRunErrors = {
+    /**
+     * `crew_request_refused`: a run ID of another shape, a task that is not this computer's on this connection, or a ledger that could not be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * Stopped here, not confirmed: `crew_revocation_unconfirmed` (the workspace has not confirmed revoking the grant; retry to confirm it) or `crew_cancel_persistence_failed` (the task's status could not be saved; inspect the task before retrying)
+     */
+    503: CrewError;
 };
 
-export type GrantSessionData = {
-    body: GrantSessionRequest;
+export type CrewCancelRunError = CrewCancelRunErrors[keyof CrewCancelRunErrors];
+
+export type CrewCancelRunResponses = {
+    /**
+     * Stopped here, and the workspace confirmed revoking the task's grant; or the task had already ended (`already_finished`). Stopping the task's remote jobs is not confirmed
+     */
+    200: CrewRunCancellation;
+};
+
+export type CrewCancelRunResponse = CrewCancelRunResponses[keyof CrewCancelRunResponses];
+
+export type CrewProfileContextData = {
+    body?: never;
     path: {
         /**
-         * Crew id
+         * The saved connection
          */
         id: string;
         /**
-         * Crew session_id
+         * The chat or task holding the grant
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/crew/connections/{id}/sessions/{session_id}/context';
+};
+
+export type CrewProfileContextErrors = {
+    /**
+     * `crew_profile_refused` for a chat with no Crew grant, a grant on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent; `crew_grant_ended`: the grant has ended, with `reason` `settings_changed` (Crew's settings changed since access was granted) or `ended` (removed, timed out, or its task finished); grant access again to continue
+     */
+    409: CrewError;
+    /**
+     * The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)
+     */
+    503: CrewError;
+};
+
+export type CrewProfileContextError = CrewProfileContextErrors[keyof CrewProfileContextErrors];
+
+export type CrewProfileContextResponses = {
+    /**
+     * The workspace's own manifest of the grant's context, forwarded unchanged
+     */
+    200: CrewWorkspaceAnswer;
+};
+
+export type CrewProfileContextResponse = CrewProfileContextResponses[keyof CrewProfileContextResponses];
+
+export type CrewGrantSessionData = {
+    body: GrantSessionRequest;
+    path: {
+        /**
+         * The saved connection
+         */
+        id: string;
+        /**
+         * The chat to grant access to
          */
         session_id: string;
     };
@@ -6990,49 +8263,101 @@ export type GrantSessionData = {
     url: '/crew/connections/{id}/sessions/{session_id}/grant';
 };
 
-export type GrantSessionResponses = {
-    200: unknown;
+export type CrewGrantSessionErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a chat that is busy, not open, or can't use Crew, or a grant the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_session_unavailable`: the chat is out of this caller's reach
+     */
+    403: CrewError;
+    /**
+     * `crew_model_fixed`: the chat already has Crew access bound to another model; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent; `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)
+     */
+    503: CrewError;
 };
 
-export type CrewProfileContextData = {
-    body?: never;
-    path: {
-        /**
-         * Crew connection ID
-         */
-        id: string;
-        /**
-         * Session ID
-         */
-        session: string;
-    };
-    query?: never;
-    url: '/crew/connections/{id}/sessions/{session}/context';
+export type CrewGrantSessionError = CrewGrantSessionErrors[keyof CrewGrantSessionErrors];
+
+export type CrewGrantSessionResponses = {
+    /**
+     * The chat's grant
+     */
+    200: CrewSessionGrant;
 };
 
-export type CrewProfileContextResponses = {
-    200: unknown;
-};
+export type CrewGrantSessionResponse = CrewGrantSessionResponses[keyof CrewGrantSessionResponses];
 
 export type CrewProfileRevokeData = {
     body?: never;
     path: {
         /**
-         * Crew connection ID
+         * The saved connection
          */
         id: string;
         /**
-         * Session ID
+         * The chat or task holding the grant
          */
-        session: string;
+        session_id: string;
     };
     query?: never;
-    url: '/crew/connections/{id}/sessions/{session}/revoke';
+    url: '/crew/connections/{id}/sessions/{session_id}/revoke';
 };
 
-export type CrewProfileRevokeResponses = {
-    200: unknown;
+export type CrewProfileRevokeErrors = {
+    /**
+     * `crew_profile_refused`: the revocation could not be asked for
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_grant_not_found`: the chat holds no Crew grant on this computer
+     */
+    404: CrewError;
+    /**
+     * `crew_grant_other_connection`: the chat's grant is on another connection; `crew_grant_replaced`: the chat was granted access again while this grant was being revoked, and the new grant is live
+     */
+    409: CrewError;
+    /**
+     * `crew_revocation_not_saved`: stopped on this device, but the stop could not be saved, so a restart would honor the grant again. Retry
+     */
+    500: CrewError;
+    /**
+     * `crew_revocation_unconfirmed`: stopped here and saved (`stopped_on_this_device`), not yet confirmed by the workspace (`remote_revocation_confirmed: false`; `detail` says why). Biorouter asks the workspace again by itself; retrying asks at once. A task's grant adds `task_status` and `task_status_error`
+     */
+    503: CrewError;
 };
+
+export type CrewProfileRevokeError = CrewProfileRevokeErrors[keyof CrewProfileRevokeErrors];
+
+export type CrewProfileRevokeResponses = {
+    /**
+     * Stopped here and confirmed by the workspace. A task's grant adds `task_status`, and `task_status_error` when the task's status could not be saved
+     */
+    200: CrewRevocation;
+};
+
+export type CrewProfileRevokeResponse = CrewProfileRevokeResponses[keyof CrewProfileRevokeResponses];
 
 export type CrewProfileCredentialsData = {
     body?: never;
@@ -7041,20 +8366,72 @@ export type CrewProfileCredentialsData = {
     url: '/crew/credentials';
 };
 
-export type CrewProfileCredentialsResponses = {
-    200: unknown;
+export type CrewProfileCredentialsErrors = {
+    /**
+     * `crew_profile_refused`: the credential store's state could not be read
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
+export type CrewProfileCredentialsError = CrewProfileCredentialsErrors[keyof CrewProfileCredentialsErrors];
+
+export type CrewProfileCredentialsResponses = {
+    /**
+     * Where this profile keeps its Crew keys, and whether that store can be used now
+     */
+    200: CredentialStatus;
+};
+
+export type CrewProfileCredentialsResponse = CrewProfileCredentialsResponses[keyof CrewProfileCredentialsResponses];
+
 export type CrewProfileInitData = {
-    body: unknown;
+    body: SecretBody;
     path?: never;
     query?: never;
     url: '/crew/credentials/init';
 };
 
-export type CrewProfileInitResponses = {
-    200: unknown;
+export type CrewProfileInitErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body other than `{passphrase}`; `detail` says what
+     */
+    422: CrewError;
 };
+
+export type CrewProfileInitError = CrewProfileInitErrors[keyof CrewProfileInitErrors];
+
+export type CrewProfileInitResponses = {
+    /**
+     * The vault, created and unlocked; this profile keeps its Crew keys in it from now on
+     */
+    200: CredentialStatus;
+};
+
+export type CrewProfileInitResponse = CrewProfileInitResponses[keyof CrewProfileInitResponses];
 
 export type CrewProfileLockData = {
     body?: never;
@@ -7063,48 +8440,144 @@ export type CrewProfileLockData = {
     url: '/crew/credentials/lock';
 };
 
-export type CrewProfileLockResponses = {
-    200: unknown;
+export type CrewProfileLockErrors = {
+    /**
+     * `crew_profile_refused`: the vault could not be locked
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
+export type CrewProfileLockError = CrewProfileLockErrors[keyof CrewProfileLockErrors];
+
+export type CrewProfileLockResponses = {
+    /**
+     * The vault, locked; locking a locked vault changes nothing
+     */
+    200: CredentialStatus;
+};
+
+export type CrewProfileLockResponse = CrewProfileLockResponses[keyof CrewProfileLockResponses];
+
 export type CrewProfileUnlockData = {
-    body: unknown;
+    body: SecretBody;
     path?: never;
     query?: never;
     url: '/crew/credentials/unlock';
 };
 
-export type CrewProfileUnlockResponses = {
-    200: unknown;
+export type CrewProfileUnlockErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body other than `{passphrase}`; `detail` says what
+     */
+    422: CrewError;
 };
 
-export type PrepareDeviceData = {
+export type CrewProfileUnlockError = CrewProfileUnlockErrors[keyof CrewProfileUnlockErrors];
+
+export type CrewProfileUnlockResponses = {
+    /**
+     * The vault, unlocked
+     */
+    200: CredentialStatus;
+};
+
+export type CrewProfileUnlockResponse = CrewProfileUnlockResponses[keyof CrewProfileUnlockResponses];
+
+export type CrewPrepareDeviceData = {
     body?: never;
     path?: never;
     query?: never;
     url: '/crew/devices/prepare';
 };
 
-export type PrepareDeviceResponses = {
-    200: unknown;
+export type CrewPrepareDeviceErrors = {
+    /**
+     * The key could not be saved: `crew_credential_store_unavailable` (no keyring service answers and there is no Crew vault), `crew_credential_store_refused` (the keyring did not let Biorouter use it), or `crew_request_refused`
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
+export type CrewPrepareDeviceError = CrewPrepareDeviceErrors[keyof CrewPrepareDeviceErrors];
+
+export type CrewPrepareDeviceResponses = {
+    /**
+     * A new device key, or the one this profile already prepared. Save the connection with its `preparation_id`
+     */
+    200: PreparedDevice;
+};
+
+export type CrewPrepareDeviceResponse = CrewPrepareDeviceResponses[keyof CrewPrepareDeviceResponses];
+
 export type CrewTransferRegisterFileData = {
-    body: unknown;
+    body: FileRequest;
     path?: never;
     query?: never;
     url: '/crew/files';
 };
 
-export type CrewTransferRegisterFileResponses = {
-    200: unknown;
+export type CrewTransferRegisterFileErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_file_name_invisible` (a file to share whose name has an invisible or formatting character, or a blank-looking one such as a Hangul filler; rename it), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when `expected_mode` is neither the privacy in force (Private when the connection or, by its last signed hello, the workspace is) nor the connection's own mode
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
 };
+
+export type CrewTransferRegisterFileError = CrewTransferRegisterFileErrors[keyof CrewTransferRegisterFileErrors];
+
+export type CrewTransferRegisterFileResponses = {
+    /**
+     * The selection, as a capability a transfer is started with. A download's destination may still wait for confirmation (`approval_pending`)
+     */
+    200: FileCapability;
+};
+
+export type CrewTransferRegisterFileResponse = CrewTransferRegisterFileResponses[keyof CrewTransferRegisterFileResponses];
 
 export type CrewTransferDiscardFileData = {
     body?: never;
     path: {
         /**
-         * Unused file selection capability
+         * A file selection that will not be used
          */
         capability_id: string;
     };
@@ -7112,15 +8585,33 @@ export type CrewTransferDiscardFileData = {
     url: '/crew/files/{capability_id}';
 };
 
-export type CrewTransferDiscardFileResponses = {
-    200: unknown;
+export type CrewTransferDiscardFileErrors = {
+    /**
+     * `crew_transfer_refused`: the transfer service is unavailable
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
+
+export type CrewTransferDiscardFileError = CrewTransferDiscardFileErrors[keyof CrewTransferDiscardFileErrors];
+
+export type CrewTransferDiscardFileResponses = {
+    /**
+     * Given back, whether or not it was still pending
+     */
+    200: CrewFileDiscarded;
+};
+
+export type CrewTransferDiscardFileResponse = CrewTransferDiscardFileResponses[keyof CrewTransferDiscardFileResponses];
 
 export type CrewTransferConfirmFileData = {
     body?: never;
     path: {
         /**
-         * Pending file selection capability
+         * A download's pending file selection
          */
         capability_id: string;
     };
@@ -7128,9 +8619,27 @@ export type CrewTransferConfirmFileData = {
     url: '/crew/files/{capability_id}/confirm';
 };
 
-export type CrewTransferConfirmFileResponses = {
-    200: unknown;
+export type CrewTransferConfirmFileErrors = {
+    /**
+     * `crew_transfer_refused` for a selection that expired, is not a download's, or whose connection policy changed (select the file again); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
+
+export type CrewTransferConfirmFileError = CrewTransferConfirmFileErrors[keyof CrewTransferConfirmFileErrors];
+
+export type CrewTransferConfirmFileResponses = {
+    /**
+     * The selection, confirmed
+     */
+    200: FileCapability;
+};
+
+export type CrewTransferConfirmFileResponse = CrewTransferConfirmFileResponses[keyof CrewTransferConfirmFileResponses];
 
 export type CrewHostStartData = {
     body: HostStartRequest;
@@ -7141,18 +8650,28 @@ export type CrewHostStartData = {
 
 export type CrewHostStartErrors = {
     /**
-     * `crew_request_invalid`: a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses
+     * `crew_request_invalid`: a body that is not JSON, or a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses
      */
-    400: unknown;
+    400: CrewError;
     /**
-     * No proof that a person asked (`crew_user_action_required`, `crew_human_authority_unavailable`)
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
      * `crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once
      */
-    409: unknown;
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
 };
+
+export type CrewHostStartError = CrewHostStartErrors[keyof CrewHostStartErrors];
 
 export type CrewHostStartResponses = {
     /**
@@ -7177,21 +8696,25 @@ export type CrewHostStartCancelData = {
 
 export type CrewHostStartCancelErrors = {
     /**
-     * No proof that a person asked
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
-     * `crew_host_start_not_found`
+     * `crew_host_start_not_found`: no such run on this computer
      */
-    404: unknown;
+    404: CrewError;
 };
+
+export type CrewHostStartCancelError = CrewHostStartCancelErrors[keyof CrewHostStartCancelErrors];
 
 export type CrewHostStartCancelResponses = {
     /**
-     * `{"cancelled": true}`; stopping a finished run changes nothing
+     * Stopped; stopping a finished run changes nothing
      */
-    200: unknown;
+    200: CrewCancelled;
 };
+
+export type CrewHostStartCancelResponse = CrewHostStartCancelResponses[keyof CrewHostStartCancelResponses];
 
 export type CrewHostStartStatusData = {
     body?: never;
@@ -7207,96 +8730,219 @@ export type CrewHostStartStatusData = {
 
 export type CrewHostStartStatusErrors = {
     /**
-     * No proof that a person asked
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
-     * `crew_host_start_not_found`
+     * `crew_host_start_not_found`: no such run on this computer
      */
-    404: unknown;
+    404: CrewError;
 };
+
+export type CrewHostStartStatusError = CrewHostStartStatusErrors[keyof CrewHostStartStatusErrors];
 
 export type CrewHostStartStatusResponses = {
     /**
-     * `state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`)
+     * `state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`, `crew_host_start_timed_out` or `crew_host_start_cancelled`)
      */
     200: HostStartStatus;
 };
 
 export type CrewHostStartStatusResponse = CrewHostStartStatusResponses[keyof CrewHostStartStatusResponses];
 
-export type ResolveData = {
+export type CrewResolveData = {
     body: ResolveRequest;
     path?: never;
     query?: never;
     url: '/crew/resolve';
 };
 
-export type ResolveErrors = {
+export type CrewResolveErrors = {
     /**
-     * Invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`), or no connection named while several are saved (`crew_connection_required`)
+     * `crew_request_invalid` for a body that is not JSON; invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`, with `kind` and `text`), no connection named while several are saved (`crew_connection_required`), or the workspace's snapshot could not be read (`crew_request_refused`, with `broker_code` when the workspace refused)
      */
-    400: unknown;
+    400: CrewError;
     /**
-     * No proof that a person asked
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
      */
-    403: unknown;
+    403: CrewError;
     /**
-     * The connection matches more than one saved connection (`ambiguous_name`, with `candidates`)
+     * The connection matches more than one saved connection (`ambiguous_name`, with `kind`, `text` and `candidates`); `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent
      */
-    409: unknown;
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The workspace could not be asked for the snapshot: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it). Nothing changed
+     */
+    503: CrewError;
 };
 
-export type ResolveResponses = {
+export type CrewResolveError = CrewResolveErrors[keyof CrewResolveErrors];
+
+export type CrewResolveResponses = {
     /**
      * One resolution per selector, in the order sent
      */
     200: ResolveResponse;
 };
 
-export type ResolveResponse2 = ResolveResponses[keyof ResolveResponses];
+export type CrewResolveResponse = CrewResolveResponses[keyof CrewResolveResponses];
 
 export type CrewTransferListData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Only this saved connection's transfers.
+         */
+        connection_id?: string | null;
+        /**
+         * Only this channel's transfers.
+         */
+        channel_id?: string | null;
+    };
     url: '/crew/transfers';
 };
 
-export type CrewTransferListResponses = {
-    200: unknown;
+export type CrewTransferListErrors = {
+    /**
+     * `crew_transfer_refused`: the transfer service is unavailable
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
+export type CrewTransferListError = CrewTransferListErrors[keyof CrewTransferListErrors];
+
+export type CrewTransferListResponses = {
+    /**
+     * This computer's transfers
+     */
+    200: CrewTransferList;
+};
+
+export type CrewTransferListResponse = CrewTransferListResponses[keyof CrewTransferListResponses];
+
 export type CrewTransferStartData = {
-    body: unknown;
+    body: StartRequest;
     path?: never;
     query?: never;
     url: '/crew/transfers';
 };
 
-export type CrewTransferStartResponses = {
-    200: unknown;
+export type CrewTransferStartErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a file selection that expired or does not match, a transfer the workspace refused, or an idempotency key of another transfer; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add
+     */
+    503: CrewError;
 };
 
+export type CrewTransferStartError = CrewTransferStartErrors[keyof CrewTransferStartErrors];
+
+export type CrewTransferStartResponses = {
+    /**
+     * The transfer, recorded and under way (or the transfer this `request_id` already started)
+     */
+    200: Receipt;
+};
+
+export type CrewTransferStartResponse = CrewTransferStartResponses[keyof CrewTransferStartResponses];
+
 export type CrewTransferPreviewData = {
-    body: unknown;
+    body: PreviewRequest;
     path?: never;
     query?: never;
     url: '/crew/transfers/preview';
 };
 
-export type CrewTransferPreviewResponses = {
+export type CrewTransferPreviewErrors = {
     /**
-     * Digest-verified bounded image
+     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an attachment that is not an image, too large to preview, not in that channel, or refused by the workspace; `crew_mode_mismatch`
      */
-    200: unknown;
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add
+     */
+    503: CrewError;
 };
 
+export type CrewTransferPreviewError = CrewTransferPreviewErrors[keyof CrewTransferPreviewErrors];
+
+export type CrewTransferPreviewResponses = {
+    /**
+     * The image's bytes, verified against the attachment's digest and bounded in size, with its own media type (`image/png`, `image/jpeg`, `image/gif` or `image/webp`)
+     */
+    200: CrewPreviewImage;
+};
+
+export type CrewTransferPreviewResponse = CrewTransferPreviewResponses[keyof CrewTransferPreviewResponses];
+
 export type CrewTransferForgetData = {
+    /**
+     * A download's cleanup approval, to delete its partial file
+     */
     body?: Resume | null;
     path: {
         /**
-         * Transfer ID
+         * The transfer
          */
         id: string;
     };
@@ -7304,15 +8950,45 @@ export type CrewTransferForgetData = {
     url: '/crew/transfers/{id}';
 };
 
-export type CrewTransferForgetResponses = {
-    200: unknown;
+export type CrewTransferForgetErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, one still under way, or a cleanup approval that does not match it
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
 };
+
+export type CrewTransferForgetError = CrewTransferForgetErrors[keyof CrewTransferForgetErrors];
+
+export type CrewTransferForgetResponses = {
+    /**
+     * The record, removed after any authorized cleanup. The workspace's attachments and published downloads are not deleted
+     */
+    200: CrewTransferForgotten;
+};
+
+export type CrewTransferForgetResponse = CrewTransferForgetResponses[keyof CrewTransferForgetResponses];
 
 export type CrewTransferStatusData = {
     body?: never;
     path: {
         /**
-         * Transfer ID
+         * The transfer
          */
         id: string;
     };
@@ -7320,15 +8996,33 @@ export type CrewTransferStatusData = {
     url: '/crew/transfers/{id}';
 };
 
-export type CrewTransferStatusResponses = {
-    200: unknown;
+export type CrewTransferStatusErrors = {
+    /**
+     * `crew_transfer_refused`: no transfer has that ID
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
+
+export type CrewTransferStatusError = CrewTransferStatusErrors[keyof CrewTransferStatusErrors];
+
+export type CrewTransferStatusResponses = {
+    /**
+     * The transfer as this computer records it
+     */
+    200: Receipt;
+};
+
+export type CrewTransferStatusResponse = CrewTransferStatusResponses[keyof CrewTransferStatusResponses];
 
 export type CrewTransferPauseData = {
     body?: never;
     path: {
         /**
-         * Transfer ID
+         * The transfer
          */
         id: string;
     };
@@ -7336,15 +9030,33 @@ export type CrewTransferPauseData = {
     url: '/crew/transfers/{id}/pause';
 };
 
-export type CrewTransferPauseResponses = {
-    200: unknown;
+export type CrewTransferPauseErrors = {
+    /**
+     * `crew_transfer_refused`: no transfer has that ID, or it cannot be paused
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
 };
 
+export type CrewTransferPauseError = CrewTransferPauseErrors[keyof CrewTransferPauseErrors];
+
+export type CrewTransferPauseResponses = {
+    /**
+     * The transfer, paused
+     */
+    200: Receipt;
+};
+
+export type CrewTransferPauseResponse = CrewTransferPauseResponses[keyof CrewTransferPauseResponses];
+
 export type CrewTransferResumeData = {
-    body: unknown;
+    body: Resume;
     path: {
         /**
-         * Transfer ID
+         * The transfer
          */
         id: string;
     };
@@ -7352,9 +9064,47 @@ export type CrewTransferResumeData = {
     url: '/crew/transfers/{id}/resume';
 };
 
-export type CrewTransferResumeResponses = {
-    200: unknown;
+export type CrewTransferResumeErrors = {
+    /**
+     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, a selection that does not match it, or a step the workspace refused; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`
+     */
+    400: CrewError;
+    /**
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     */
+    403: CrewError;
+    /**
+     * `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again. Nothing was sent. Transfer routes answer the code and sentence without the fields other routes add
+     */
+    409: CrewError;
+    /**
+     * `crew_request_invalid`: the body is larger than the route takes
+     */
+    413: CrewError;
+    /**
+     * `crew_request_invalid`: the body is not sent as `application/json`
+     */
+    415: CrewError;
+    /**
+     * `crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which
+     */
+    422: CrewError;
+    /**
+     * The workspace could not be asked: `crew_not_sent` (nothing reached it), `crew_outcome_unknown` (whether it applied the step is not known) or `crew_reconnecting` (Biorouter is dialling it again). Transfer routes answer the code and sentence without the fields other routes add
+     */
+    503: CrewError;
 };
+
+export type CrewTransferResumeError = CrewTransferResumeErrors[keyof CrewTransferResumeErrors];
+
+export type CrewTransferResumeResponses = {
+    /**
+     * The transfer, under way again from where it stopped
+     */
+    200: Receipt;
+};
+
+export type CrewTransferResumeResponse = CrewTransferResumeResponses[keyof CrewTransferResumeResponses];
 
 export type DiagnosticsData = {
     body?: never;
@@ -9342,6 +11092,10 @@ export type DeclassifySessionErrors = {
      */
     404: unknown;
     /**
+     * The chat read Crew channels, whose permissions marking it public cannot remove. Nothing was changed (body = plain text, a sentence to show as it is)
+     */
+    409: unknown;
+    /**
      * Internal server error. Nothing was changed (body = plain text)
      */
     500: unknown;
@@ -9506,7 +11260,7 @@ export type ExportSessionErrors = {
      */
     401: unknown;
     /**
-     * Out of reach - a private or unreadable session named without the user-action proof
+     * Out of reach - a private or unreadable session named without the user-action proof. Or, to a request that carried that proof, refused because a Crew grant restricts the chat: nothing was exported, and the body is the plain sentence saying why
      */
     403: unknown;
     /**
@@ -10090,7 +11844,7 @@ export type CreateWorkflowErrors = {
      */
     400: unknown;
     /**
-     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     * Refused by a privacy boundary: `session_id` names a chat this caller may not reach, answered with the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text). Or, to a caller that may reach it, refused because a Crew grant restricts the chat: nothing was read or generated, and the body is the plain sentence saying why
      */
     403: unknown;
     /**

@@ -14,7 +14,11 @@ Layout (per app):
 ## Install + run
 
     scripts/agent-drafter-apps/install-examples.sh          # copy into the local store
-    biorouterd agent                                        # then open /apps/<id>/
+    biorouter apps open <id>                                # start a daemon and open the app
+
+An app's address opens only in a browser that followed the one-time link
+`biorouter apps open` (or the desktop app) hands it; the address alone answers
+"Open this app from Biorouter".
 
 ## Verify
 
@@ -24,7 +28,8 @@ Deterministic (no LLM) — runs in CI:
 
 Live (drives a real agent and asserts it emitted `ui` command frames):
 
-    node ui/desktop/scripts/appcheck/check-ui-app.mjs http://127.0.0.1:3000 <id> \
+    BIOROUTER_SERVER__SECRET_KEY=<that daemon's secret> \
+      node ui/desktop/scripts/appcheck/check-ui-app.mjs http://127.0.0.1:3000 <id> \
       "<prompt>" --expect=panel,chart
 
 Controls that intentionally update only local presentation state must declare

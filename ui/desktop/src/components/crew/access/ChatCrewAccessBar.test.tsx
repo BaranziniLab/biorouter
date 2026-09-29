@@ -705,12 +705,29 @@ describe('a chat whose Crew connection is offline', () => {
       ).toBe(true)
     );
     // Stopped here at once: the chat is held, and it says the workspace confirms by itself.
-    expect(await screen.findByText(accessCopy.unconfirmed)).toBeInTheDocument();
-    expect(await screen.findByText(accessCopy.chatRevoked('#general'))).toBeInTheDocument();
-    expect(screen.getByTestId('blocked')).toHaveTextContent('true');
+    expect(await screen.findByText(accessCopy.unconfirmedIn('Fixture'))).toBeInTheDocument();
+    expect(accessCopy.unconfirmedIn('Fixture')).toBe(
+      'Stopped on this device. Fixture confirms it when it reconnects.'
+    );
+    // AG-F11: one state, one note. "Access was removed, so this chat can't continue" beneath it
+    // said the same thing as settled.
+    await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    expect(screen.queryByText(accessCopy.chatRevoked('#general'))).toBeNull();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    // A new chat always works; granting access again waits for the connection it needs.
+    expect(screen.getByRole('button', { name: accessCopy.chatNewChat })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: accessCopy.chatGrantAgain })).toBeNull();
     expect(screen.queryByText(/reconnect and retry/i)).toBeNull();
     // Revoking is not connecting: nothing navigated to Crew.
     expect(mocks.navigate).not.toHaveBeenCalled();
+
+    // AG-F12: Retry while still offline got the same 503 and changed nothing on screen.
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.retry }));
+    const still = `${accessCopy.stillUnreachable('Fixture')} ${accessCopy.connectToConfirm}`;
+    expect(await screen.findByText(still)).toBeInTheDocument();
+    expect(still).toBe('Still can’t reach Fixture · checked just now. Connect to confirm it now.');
+    fireEvent.click(screen.getByRole('button', { name: accessCopy.connect }));
+    expect(mocks.navigate).toHaveBeenCalled();
   });
 
   it('reads as connected once the connection is back', async () => {
@@ -960,8 +977,12 @@ describe('a finished task’s chat', () => {
       // The daemon refuses its turns all the same, so the chat is held, and Enter says why.
       expect(screen.getByTestId('state')).toHaveTextContent('finished');
       expect(screen.getByTestId('blocked')).toHaveTextContent('true');
-      expect(screen.getByTestId('hold')).toHaveTextContent(
-        `${accessCopy.chatBlockedSendTitle} | ${accessCopy.chatBlockedSendTaskFinished('#general')}`
+      // The bar publishes the hold from an effect after it renders, so it can land a render
+      // after the note (seen on a loaded CI runner): wait for it rather than read it at once.
+      await waitFor(() =>
+        expect(screen.getByTestId('hold')).toHaveTextContent(
+          `${accessCopy.chatBlockedSendTitle} | ${accessCopy.chatBlockedSendTaskFinished('#general')}`
+        )
       );
       // A task is not granted again: its placeholder names the other way on (Q4-15).
       expect(screen.getByTestId('hold-placeholder')).toHaveTextContent(
@@ -1032,6 +1053,7 @@ describe('Enter after a revoke in the chat, and its toast', () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId('blocked')).toHaveTextContent('true');
+    await waitFor(() => expect(screen.getByTestId('hold')).not.toHaveTextContent('none'));
 
     pressEnter();
     expect(sent).not.toHaveBeenCalled();
@@ -1085,6 +1107,7 @@ describe('Enter after a revoke in the chat, and its toast', () => {
     installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired: true })] });
     const view = renderChatWithToasts();
     await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    await waitFor(() => expect(screen.getByTestId('hold')).not.toHaveTextContent('none'));
 
     pressEnter();
     pressEnter();
@@ -1105,6 +1128,8 @@ describe('Enter after a revoke in the chat, and its toast', () => {
     installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired: true })] });
     renderChatWithToasts();
     await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
+    // Enter shows the hold's reason, which the bar publishes a render after it blocks the chat.
+    await waitFor(() => expect(screen.getByTestId('hold')).not.toHaveTextContent('none'));
     pressEnter();
     const message = accessCopy.chatBlockedSendRevoked('#general');
     await screen.findByText(message);

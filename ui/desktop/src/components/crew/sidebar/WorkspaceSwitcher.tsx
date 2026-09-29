@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { ChevronDown } from '../../icons/app-icons';
 import { DropdownMenu, DropdownMenuTrigger } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
+import { useRememberHosting } from '../onboarding/joinContext';
 import { useCrew } from '../state/CrewControllerContext';
 import { sidebarCopy } from './copy';
 import { useMenuCopyItem } from './menuCopy';
@@ -36,7 +37,8 @@ export function isTruncated(element: HTMLElement | null): boolean {
  * unavailable"). A name that fits gets no tooltip at all: it would only repeat itself.
  *
  * The menu's open state lives here, with the fingerprint Copy's, so a landed copy closes the menu
- * the way every sidebar menu's copy does (Q3-57, Q4-49).
+ * the way every sidebar menu's copy does (Q3-57, Q4-49). Opening it reads the saved workspaces
+ * again, so its Switch section follows what a terminal saved or removed (MSG2-N9).
  */
 export function WorkspaceSwitcher() {
   const crew = useCrew();
@@ -46,10 +48,25 @@ export function WorkspaceSwitcher() {
   const [tipOpen, setTipOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const fingerprintCopy = useMenuCopyItem(setMenuOpen);
+  // Whether this person hosts the workspace, kept for when its server is not running and no view
+  // can say (R-7): the offline screen's start line or whom to ask.
+  useRememberHosting(
+    crew.connectionId,
+    Boolean(crew.snapshot && crew.observedPrivacy?.connectionId === crew.connectionId),
+    crew.isHost
+  );
 
   return (
     <div className="crew-sidebar-band" data-crew-band="switcher">
-      <DropdownMenu open={menuOpen} onOpenChange={fingerprintCopy.onOpenChange}>
+      <DropdownMenu
+        open={menuOpen}
+        onOpenChange={(open) => {
+          // Opening the menu reads the daemon's list again: a workspace saved or removed from a
+          // terminal since the last read is listed as it is now (MSG2-N9).
+          if (open) crew.reloadConnections?.();
+          fingerprintCopy.onOpenChange(open);
+        }}
+      >
         <Tooltip
           open={tipOpen}
           onOpenChange={(next) => setTipOpen(next && Boolean(name) && isTruncated(nameRef.current))}

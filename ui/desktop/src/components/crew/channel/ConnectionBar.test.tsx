@@ -10,6 +10,7 @@ import { ConnectionBar, actionErrorText, connectErrorText } from './ConnectionBa
 import { connectionBarCopy } from './copy';
 import {
   alice,
+  bob,
   connection,
   currentCrew,
   general,
@@ -130,6 +131,100 @@ describe('ConnectionBar', () => {
     fireEvent.click(screen.getByRole('button', { name: connectionBarCopy.retryName }));
     await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(before));
     await waitFor(() => expect(bar()).toBeEmptyDOMElement());
+  });
+
+  /**
+   * RES2-N7: after the app's background service restarted, "Live updates for okafor-lab stopped"
+   * offered Retry, which could only lead to "Crew couldn't load your saved workspaces".
+   */
+  it('says the background service is gone, with Reconnect, and offers no Retry until it is back', async () => {
+    let tell: (state: 'attached' | 'lost' | 'reconnecting') => void = () => undefined;
+    const reconnectDaemon = vi.fn(async () => true);
+    (window as { electron?: unknown }).electron = {
+      ...(electron as object),
+      getDaemonConnection: vi.fn(async () => 'lost'),
+      onDaemonConnection: (callback: typeof tell) => {
+        tell = callback;
+        return () => undefined;
+      },
+      reconnectDaemon,
+    };
+    renderCrew(Layout);
+    await verified();
+    observationFailure();
+    await act(async () => {
+      await currentCrew().refresh();
+    });
+    const away = await screen.findByTestId('crew-daemon-away');
+    expect(away).toHaveTextContent(connectionBarCopy.daemonAway);
+    expect(screen.queryByRole('button', { name: connectionBarCopy.retryName })).toBeNull();
+    expect(bar()).not.toHaveTextContent(crewObservationCopy.updatesStopped('lab'));
+    fireEvent.click(within(away).getByRole('button', { name: connectionBarCopy.daemonReconnect }));
+    expect(reconnectDaemon).toHaveBeenCalledTimes(1);
+    act(() => tell('reconnecting'));
+    expect(
+      within(away).getByRole('button', { name: connectionBarCopy.daemonReconnecting })
+    ).toBeDisabled();
+
+    // Attached again: Retry can reach the workspace now, and is offered.
+    act(() => tell('attached'));
+    expect(screen.queryByTestId('crew-daemon-away')).toBeNull();
+    expect(screen.getByRole('button', { name: connectionBarCopy.retryName })).toBeInTheDocument();
+  });
+
+  /**
+   * RES2-N2: the bar kept "Connected" from the moment the workspace server stopped saving until
+   * someone tried to write.
+   */
+  it.each([
+    ['storage_full', 'host', connectionBarCopy.serverStorageHost('storage_full')],
+    ['storage_failed', 'host', connectionBarCopy.serverStorageHost('storage_failed')],
+    [
+      'storage_full',
+      'member',
+      connectionBarCopy.serverStorageMember('storage_full', 'Alice Chen (@alice)'),
+    ],
+  ])(
+    'says the workspace server stopped saving (%s), with the %s’s next step',
+    async (code, who, next) => {
+      installDaemon([
+        {
+          ...connection,
+          server_storage: { state: 'storage_failed', code, since: 1_790_000_000 },
+        },
+      ]);
+      // Bob is a member; Alice (UID 1000) hosts.
+      if (who === 'member') installObserver({ snapshot: makeSnapshot({ actor: bob }) });
+      renderCrew(Layout);
+      await verified();
+      const note = await screen.findByTestId('crew-server-storage');
+      expect(note).toHaveTextContent(`${connectionBarCopy.serverStorage} ${next}`);
+      expect(note).not.toHaveTextContent(/ask the host/i);
+    }
+  );
+
+  it('says nothing about saving while the server saves', async () => {
+    installDaemon([{ ...connection, server_storage: null }]);
+    renderCrew(Layout);
+    await verified();
+    expect(screen.queryByTestId('crew-server-storage')).toBeNull();
+  });
+
+  /** RES2-N5: "Reconnecting … try again in a moment" over a main area that said "offline". */
+  it('leaves the daemon’s re-dial to the offline screen, which says it with its time', async () => {
+    installDaemon([{ ...connection, status: 'disconnected' }]);
+    observationFailure('Crew connection is not connected', 'observation_refused');
+    renderCrew(Layout);
+    await waitFor(() => expect(currentCrew().screen).toBe('offline'));
+    act(() =>
+      currentCrew().reportError(
+        'Reconnecting to lab. Nothing was sent; try again in a moment.',
+        'global',
+        'crew_reconnecting'
+      )
+    );
+    await waitFor(() => expect(currentCrew().redialSince).not.toBeNull());
+    expect(bar()).not.toHaveTextContent(/Reconnecting to lab/);
   });
 
   it('leaves a connection the daemon calls disconnected to its screen: no note, no Retry', async () => {
@@ -423,6 +518,72 @@ describe('ConnectionBar', () => {
     const note = await screen.findByText(connectionBarCopy.unreachable('hpc.example.edu'));
     expect(note.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText(connectionBarCopy.unreachable('hpc.example.edu'))).toHaveLength(1);
+  });
+
+  // F5: a publickey-only refusal read "asked you to sign in" and opened a password window that
+  // could never help. DW-03: the bar named the raw address while the main area named the alias.
+  it('says a refused key in its own words, opens no Sign in, and names the server by its label', async () => {
+    const labelled = { ...connection, server_label: 'lab-ubuntu' };
+    installDaemon([labelled]);
+    renderCrew(Layout);
+    await verified();
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [labelled] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError(TRANSPORT_TEXT, 400, 'crew_ssh_key_refused');
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(
+      await screen.findByText(connectionBarCopy.keyRefused('lab-ubuntu', 'alice'))
+    ).toBeInTheDocument();
+    expect(currentCrew().signIn.open).toBe(false);
+    expect(bar()).not.toHaveTextContent(/hpc\.example\.edu|password/);
+  });
+
+  // W2-UIW-3, DW-03: the daemon's `host` names the destination too, by the address OpenSSH
+  // resolved and as `[addr]:port` off port 22. That is still the server the person calls
+  // lab-ubuntu; only a separate hop keeps its own name.
+  it('names the server by its label when the host a key failure names is the saved server', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'alice@52.33.141.141',
+      port: 2222,
+      server_label: 'lab-ubuntu',
+    };
+    installDaemon([labelled]);
+    renderCrew(Layout);
+    await verified();
+    let host = '[52.33.141.141]:2222';
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [labelled] };
+      if (path === '/connections/conn-1/connect')
+        throw new CrewHttpError(
+          TRANSPORT_TEXT,
+          400,
+          'crew_ssh_host_key_unknown',
+          undefined,
+          undefined,
+          undefined,
+          { host }
+        );
+      return {};
+    });
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(await screen.findByText(connectionBarCopy.cantVerify('lab-ubuntu'))).toBeInTheDocument();
+    expect(bar()).not.toHaveTextContent('52.33.141.141');
+
+    host = 'gate.example.edu';
+    await act(async () => {
+      await currentCrew().connect({ userInitiated: true });
+    });
+    expect(
+      await screen.findByText(connectionBarCopy.cantVerify('gate.example.edu'))
+    ).toBeInTheDocument();
   });
 
   it('says any other SSH failure plainly — never the transport’s words — with Try again (NEW-1)', async () => {
@@ -759,6 +920,37 @@ describe('connectErrorText (NEW-1)', () => {
     );
   });
 
+  // F5, R-7 and W2-DMN-5: each cause in one sentence with its one action.
+  it('names a refused key, a stopped workspace server and the hop whose key failed', () => {
+    const refused = connectErrorText('ssh_key_refused', TRANSPORT_TEXT, 'lab-ubuntu', {
+      user: 'crew_bob',
+    });
+    expect(refused).toBe(
+      'lab-ubuntu refused this computer’s SSH key for crew_bob. Check Your server login in Connection settings.'
+    );
+    expect(refused).not.toMatch(/password|sign in/i);
+    expect(
+      connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11', { hosts: true })
+    ).toBe('Crew isn’t running on lab-debian11. Start it on the server, then connect.');
+    expect(
+      connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11', {
+        hosts: false,
+        hostName: 'Frank Okafor',
+      })
+    ).toBe(
+      // RES2-N4: not "Ask Frank Okafor to start Crew" for minutes after Frank had.
+      'The workspace server isn’t running. Once Frank Okafor starts Crew, this computer connects by itself within a few minutes, or you can connect now.'
+    );
+    expect(connectErrorText('broker_not_running', TRANSPORT_TEXT, 'lab-debian11')).toBe(
+      connectionBarCopy.brokerStopped('lab-debian11')
+    );
+    expect(
+      connectErrorText('host_key_unknown', TRANSPORT_TEXT, host, {
+        failureHost: 'jump.example.edu',
+      })
+    ).toBe(connectionBarCopy.cantVerify('jump.example.edu'));
+  });
+
   it('never passes machine text through, classified or not', () => {
     for (const kind of [undefined, 'unknown'] as const) {
       expect(connectErrorText(kind, TRANSPORT_TEXT, host)).toBe(
@@ -785,5 +977,15 @@ describe('connectErrorText (NEW-1)', () => {
       connectionBarCopy.cantConnect('')
     );
     expect(connectionBarCopy.cantConnect('')).toBe('Crew can’t connect.');
+  });
+});
+
+describe('actionErrorText (R-4)', () => {
+  it('never shows the transport’s record of a dropped link, and says the outcome is unknown', () => {
+    const text = actionErrorText(TRANSPORT_TEXT, 'lab-server');
+    expect(text).toBe(connectionBarCopy.linkLost('lab-server'));
+    expect(text).not.toMatch(RAW_TRANSPORT);
+    // A broker refusal still reads as its sentence.
+    expect(actionErrorText('forbidden: You can’t do that here.')).toBe('You can’t do that here.');
   });
 });

@@ -70,8 +70,15 @@ export const ProviderCard = function ProviderCard({
         </div>
         {metadata.description && (
           <Tooltip>
+            {/* Focusable, so a keyboard user can open the tooltip that holds the
+                rest of a truncated description: a Radix trigger opens on focus
+                as well as hover, but only if it can take focus. */}
             <TooltipTrigger asChild>
-              <p className="text-xs text-text-muted mt-0.5 truncate cursor-default">
+              <p
+                tabIndex={0}
+                data-testid={`provider-description-${slug}`}
+                className="text-xs text-text-muted mt-0.5 truncate cursor-default rounded-element biorouter-focus-surface"
+              >
                 {metadata.description}
               </p>
             </TooltipTrigger>
@@ -96,10 +103,17 @@ export const ProviderCard = function ProviderCard({
       {/* ⚠ Keyed on the MODE, not on whether the row expands. Exempting
           expandable rows left the two coding-agent rows wearing a permanent
           Configure button in a list where every other row reveals one on hover,
-          which reads as two different kinds of row rather than as one list. */}
+          which reads as two different kinds of row rather than as one list.
+          ⚠ Revealed on focus as well as hover. Hover alone left a keyboard
+          user tabbing onto a Configure button, and its focus ring, at opacity
+          0 (W2-PRV-4). This button is the row's keyboard path: the row's own
+          click is a mouse convenience that does the same thing. */}
       <div
+        data-testid={`provider-actions-${slug}`}
         className={
-          !isOnboarding ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-150' : ''
+          !isOnboarding
+            ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150'
+            : ''
         }
       >
         <DefaultCardButtons
@@ -148,6 +162,10 @@ export const ProviderCard = function ProviderCard({
     );
   }
 
+  // The row's click duplicates its Configure button for a mouse user. It is
+  // deliberately not a second focusable control: a role="button" wrapping a
+  // real <button> is nested interactive markup, and the Configure button,
+  // revealed on focus above, already reaches the same dialog by keyboard.
   return (
     <div
       data-testid={`provider-card-${slug}`}

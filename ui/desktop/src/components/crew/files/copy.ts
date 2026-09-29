@@ -57,8 +57,32 @@ export const filesCopy = {
   sending: 'Sending…',
   resume: 'Resume…',
   resumeNamed: (name: string) => `Resume ${name}`,
+  /**
+   * Under a transfer paused because the workspace server could not save it (T3-BE-14, RES2-N3):
+   * what the viewer does. The workspace's own sentence told the host to "ask the host".
+   */
+  serverStorageHost:
+    'Free space on the server, or check its storage, then restart Crew there and choose Resume.',
+  serverStorageMember: (host: string | null) =>
+    `Choose Resume once ${host ?? 'your host'} has freed space on the server.`,
   removeFromList: 'Remove from list',
   removeFromListHelp: 'Removes the record on this computer. Shared files and saved downloads stay.',
+  /**
+   * What an unfinished upload leaves behind (FILES-F7): the workspace removes an unfinished part a
+   * day after its last piece arrived, and nothing removes it sooner.
+   */
+  unfinishedPartStays:
+    'The unfinished part stays on the server for up to a day and counts toward the workspace’s file space until then.',
+  /** Remove from list, for an upload that never finished. */
+  removeUnfinishedUploadHelp:
+    'Removes the record on this computer. The unfinished part stays on the server for up to a day and counts toward the workspace’s file space until then.',
+  /** The upload chip's Cancel control and its confirmation (FILES-F7). */
+  cancelUpload: 'Cancel upload',
+  cancelUploadNamed: (name: string) => `Cancel uploading ${name}`,
+  cancelUploadTitle: (name: string) => `Cancel uploading ${name}?`,
+  keepUploading: 'Keep uploading',
+  keepUpload: 'Keep it',
+  cancelFailed: 'Crew couldn’t cancel that upload.',
   transferFailed: 'Crew couldn’t update that transfer.',
 
   serverPath: 'server path',

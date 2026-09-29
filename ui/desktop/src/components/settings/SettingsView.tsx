@@ -62,10 +62,17 @@ export default function SettingsView({
   }, [viewOptions.section]);
 
   useEffect(() => {
+    // ⚠ An Escape something else already handled is not ours. Radix's dialogs,
+    // menus and selects dismiss on a CAPTURE-phase listener and mark the event
+    // with preventDefault(), not stopPropagation(), so this bubble-phase
+    // listener still hears it: closing the Usage report with Escape also left
+    // Settings for Home. `sidebar.tsx` and the Crew `DetailsPane` guard the
+    // same way.
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) {
+        return;
       }
+      onClose();
     };
 
     document.addEventListener('keydown', handleKeyDown);

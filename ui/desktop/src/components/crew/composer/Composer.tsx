@@ -6,7 +6,9 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type FocusEvent,
   type KeyboardEvent,
+  type MutableRefObject,
   type ReactNode,
   type Ref,
 } from 'react';
@@ -17,10 +19,13 @@ import { ArrowUp, Bot, Loader2, X } from '../../icons/app-icons';
 import { cn } from '../../../utils';
 import { channelSlug } from '../identity';
 import { crewActionCopy } from '../state/copy';
-import type { DraftFile, DraftReference } from '../state/types';
+import { POST_NOTE_CODES, postDestination } from '../state/crewSend';
+import { draftTooLongToKeep } from '../state/draftStash';
+import type { CrewActionError, DraftFile, DraftReference } from '../state/types';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { postedLabel, useAttachmentIndexVersion } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
+import { visibleFileText } from '../files/fileName';
 import {
   CrewFileDropZone,
   useCrewDropTarget,
@@ -98,8 +103,13 @@ export interface ComposerProps {
  * - Send is `secondary` until there is something to send, then the accent. While posting it
  *   shows the spinner and stays the same node; `send()` itself is single flight (C15).
  * - The send is not optimistic: the draft stays until the broker answers, and a failure is
- *   shown above the card ("Couldn't send." and the daemon's words in their own node) while the
- *   draft and its idempotency key wait for another press.
+ *   shown above the card ("Couldn't send." and the reason in its own node) while the draft and
+ *   its idempotency key wait for another press. The text stays writable while the post is on its
+ *   way, and what is typed then stays: success takes out only what was sent (QA M8).
+ * - A send failure belongs to the channel and the draft it answered (QA M5): it shows only in
+ *   that channel's composer, goes at the draft's next edit, and comes back with the draft when the
+ *   person returns to the channel. A post whose outcome is unknown says it is checking, then that
+ *   it was sent or could not be confirmed (QA R-4).
  * - Without a verified snapshot the card is replaced by a bar of the same height, "Verifying
  *   access…", and the textarea is not mounted (C13); the draft stays in the controller. An
  *   archived channel shows "This channel is archived." instead.
@@ -141,8 +151,15 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
     channelId,
     expectedMode,
     onReady: addAttachment,
+    request: controller.request,
   });
   const [dropHint, setDropHint] = useState('');
+  // Several files dropped at once (DW-18): the note naming the one Crew took, until closed. Unlike
+  // an upload failure it does not go with any change to the draft: the file it names lands in the
+  // draft when its upload completes, which for a small file is within one transfer poll, and the
+  // note went with it. So it goes on the person's own edits (typing, removing a chip), a send, its
+  // dismiss control, a new drop or paste, and the surface resets listed below.
+  const [extraFiles, setExtraFiles] = useState('');
   const latestUpload = useRef(upload);
   latestUpload.current = upload;
   // What the native share confirmation calls this channel and its workspace: display text only.
@@ -169,12 +186,34 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
     ...draft.attachments.map((file) => file.id),
     ...draft.references.map((reference) => reference.id),
   ].join('\u0000');
+  // A send failure answers the draft it was about (QA M5): the draft's next edit takes it away too,
+  // as it does an upload failure. Only a failure that was already on show before the edit goes: one
+  // that arrives with the draft (the person came back to a channel and its draft brought its
+  // failure back) is news.
+  const destination = postDestination(connectionId, channelId);
+  const shownComposerError = useRef<CrewActionError | null>(null);
   useEffect(() => {
     latestUpload.current.dismissError();
-  }, [draftKey]);
+    const shown = shownComposerError.current;
+    if (shown) controller.dismissErrorIfShown?.(shown);
+  }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps -- runs per edit of the draft only
   const sendNow = () => {
     latestUpload.current.dismissError();
+    setExtraFiles('');
     void send();
+  };
+  // The person's own edits: what the note about several files goes with (an upload landing is not).
+  const editBody = (value: string) => {
+    setExtraFiles('');
+    setBody(value);
+  };
+  const removeOwnAttachment = (id: string) => {
+    setExtraFiles('');
+    removeAttachment(id);
+  };
+  const removeOwnReference = (id: string) => {
+    setExtraFiles('');
+    removeReference(id);
   };
   const dismissUploadError = () => {
     latestUpload.current.dismissError();
@@ -191,6 +230,12 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
       latestUpload.current.forget();
       setDropHint('');
     }
+    if (
+      reason === 'protected-cleared' ||
+      reason === 'channel-changed' ||
+      reason === 'channel-revoked'
+    )
+      setExtraFiles('');
   });
 
   // The observer clears the draft when the verified privacy scope changes under it (a new
@@ -246,6 +291,10 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
       ? filesCopy.confirmShare
       : filesCopy.chooseInWindow(first.name, folderName(path));
     setDropHint([hint, more].filter(Boolean).join(' '));
+    setExtraFiles('');
+    // The one file of several that Crew takes is named, once its upload has started, by the name
+    // the upload has: the file the dialog confirmed, or the one picked in the window.
+    if (files.length > 1) awaitingUpload.current = new Set(current.uploads.map((item) => item.id));
     try {
       if (confirm) await current.shareFile(first, shareNames.current);
       else await current.upload();
@@ -253,6 +302,18 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
       setDropHint('');
     }
   }, []);
+  // Several files dropped at once: when the upload of the one Crew took has started, say so in a
+  // note the person closes (DW-18). Nothing started (Cancel, a refusal): nothing to say.
+  const awaitingUpload = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const before = awaitingUpload.current;
+    if (!before) return;
+    const started = upload.uploads.find((item) => !before.has(item.id));
+    if (started) {
+      awaitingUpload.current = null;
+      setExtraFiles(composerCopy.oneFileAtATime(visibleFileText(started.name)));
+    } else if (!upload.choosing) awaitingUpload.current = null;
+  }, [upload.uploads, upload.choosing]);
   // A note about the file window lasts only while one is open: however it was opened (the
   // Attach menu, a drop, a paste), closing it clears the note.
   useEffect(() => {
@@ -274,24 +335,42 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   if (attachmentIndex) {
     for (const file of draft.attachments) {
       const sha256 = upload.uploads.find((item) => item.blob_id === file.id)?.sha256 ?? '';
-      const match = attachmentIndex.compare(file.name, sha256, file.id);
+      // Names as the cards show them (RENDERER-1): the index holds shown names, so a name is
+      // compared, and quoted, with its hidden characters made visible.
+      const fileName = visibleFileText(file.name);
+      const match = attachmentIndex.compare(fileName, sha256, file.id);
       if (!match) continue;
       const when = postedLabel(match.earlier.postedAt);
       duplicates[file.id] =
         match.kind === 'same'
-          ? composerCopy.sameFileShared(file.name, match.earlier.name, name, when)
+          ? composerCopy.sameFileShared(fileName, match.earlier.name, name, when)
           : match.kind === 'different'
-            ? composerCopy.differentFileShared(file.name, name, when)
-            : composerCopy.alreadyShared(file.name, name, when);
+            ? composerCopy.differentFileShared(fileName, name, when)
+            : composerCopy.alreadyShared(fileName, name, when);
     }
   }
   const agentOpen = ui.pane?.mode === 'agent';
 
-  const composerError = ownsError && error?.source === 'composer' ? error : null;
+  // Another channel's failure never shows here, nor comes along into it (QA M5).
+  const composerError =
+    ownsError &&
+    error?.source === 'composer' &&
+    (error.destination === undefined || error.destination === destination)
+      ? error
+      : null;
+  useEffect(() => {
+    shownComposerError.current = composerError;
+  });
   const notes = composerNote({
-    error: composerError?.message ?? null,
+    error: composerError,
+    tooLongToKeep: draftTooLongToKeep(draft.body),
     uploadError: upload.error,
     onDismissUpload: dismissUploadError,
+    extraFiles,
+    onDismissExtraFiles: () => {
+      setExtraFiles('');
+      ownInput.current?.focus();
+    },
     dropHint,
     note,
   });
@@ -322,14 +401,14 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
       <ComposerCard
         name={name}
         body={draft.body}
-        setBody={setBody}
+        setBody={editBody}
         attachments={draft.attachments}
         references={draft.references}
         upload={upload}
         duplicates={duplicates}
         server={serverLabel(controller.connection)}
-        onRemoveAttachment={removeAttachment}
-        onRemoveReference={removeReference}
+        onRemoveAttachment={removeOwnAttachment}
+        onRemoveReference={removeOwnReference}
         onSend={sendNow}
         posting={isPending('send')}
         agentOpen={agentOpen}
@@ -361,9 +440,68 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   );
 }
 
+/** The dismiss control a note the person closes carries: one word, as every other (Q2-61). */
+function DismissNote({ onDismiss }: { onDismiss(): void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          shape="round"
+          size="xs"
+          aria-label={composerCopy.dismissUploadError}
+          className="size-5"
+          onClick={onDismiss}
+        >
+          <X aria-hidden />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{composerCopy.dismissUploadError}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** The send's own answer above the card: a failure, or what became of a post in doubt. */
+function sendNote(error: CrewActionError): ReactNode {
+  if (error.message === crewActionCopy.sendTransferRecordKept)
+    return (
+      <Note tone="warning" role="status">
+        {composerCopy.postedMetadata}
+      </Note>
+    );
+  switch (error.code) {
+    case POST_NOTE_CODES.checking:
+      return (
+        <Note tone="neutral" role="status">
+          {error.message}
+        </Note>
+      );
+    case POST_NOTE_CODES.confirmed:
+      return (
+        <Note tone="success" role="status">
+          {error.message}
+        </Note>
+      );
+    case POST_NOTE_CODES.unconfirmed:
+      return (
+        <Note tone="warning" role="alert">
+          {error.message}
+        </Note>
+      );
+    default:
+      return (
+        <Note tone="danger" role="alert">
+          <span>{composerCopy.sendErrorLead}</span> <span>{error.message}</span>
+        </Note>
+      );
+  }
+}
+
 /**
- * The one note directly above the card, in priority order: the send failure, an upload
- * failure, the picker a drop just opened, then the layout's standing note. One at a time, so
+ * The one note directly above the card, in priority order: the send's answer, an upload failure,
+ * the note about several dropped files, a draft too long to keep across a channel switch
+ * (MSG2-N4), the picker a drop just opened, then the layout's standing note. One at a time, so
  * nothing stacks above the composer.
  *
  * The upload failure sits above the layout's note, beside the send failure, for the same
@@ -374,59 +512,49 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
  * did nothing. What keeps it from hiding the note is that it never lingers. It has its own
  * dismiss control, and it clears when the person edits the draft or sends, when the verified
  * privacy mode or scope changes, on a protected-state reset, and on another channel. The drop
- * hint lasts only while the picker it names is open.
+ * hint lasts only while the picker it names is open. The note about several files names the
+ * one Crew took, in red with its own dismiss control as the manual says (DW-18). It goes the
+ * same ways as an upload failure except one: the file it names landing in the draft is not an
+ * edit by the person, so that leaves it standing.
  */
 function composerNote({
   error,
+  tooLongToKeep,
   uploadError,
   onDismissUpload,
+  extraFiles,
+  onDismissExtraFiles,
   dropHint,
   note,
 }: {
-  error: string | null;
+  error: CrewActionError | null;
+  tooLongToKeep: boolean;
   uploadError: string;
   onDismissUpload(): void;
+  extraFiles: string;
+  onDismissExtraFiles(): void;
   dropHint: string;
   note: ReactNode;
 }): ReactNode {
   let content: ReactNode = null;
-  if (error === crewActionCopy.sendTransferRecordKept) {
-    content = (
-      <Note tone="warning" role="status">
-        {composerCopy.postedMetadata}
-      </Note>
-    );
-  } else if (error) {
-    content = (
-      <Note tone="danger" role="alert">
-        <span>{composerCopy.sendErrorLead}</span> <span>{error}</span>
-      </Note>
-    );
+  if (error) {
+    content = sendNote(error);
   } else if (uploadError) {
     content = (
-      <Note
-        tone="danger"
-        role="alert"
-        action={
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                shape="round"
-                size="xs"
-                aria-label={composerCopy.dismissUploadError}
-                className="size-5"
-                onClick={onDismissUpload}
-              >
-                <X aria-hidden />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{composerCopy.dismissUploadError}</TooltipContent>
-          </Tooltip>
-        }
-      >
+      <Note tone="danger" role="alert" action={<DismissNote onDismiss={onDismissUpload} />}>
         {uploadError}
+      </Note>
+    );
+  } else if (extraFiles) {
+    content = (
+      <Note tone="danger" role="alert" action={<DismissNote onDismiss={onDismissExtraFiles} />}>
+        {extraFiles}
+      </Note>
+    );
+  } else if (tooLongToKeep) {
+    content = (
+      <Note tone="warning" role="status">
+        {composerCopy.draftTooLongToKeep}
       </Note>
     );
   } else if (dropHint) {
@@ -461,6 +589,64 @@ interface ComposerCardProps {
 function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
   if (typeof ref === 'function') ref(value);
   else if (ref) (ref as { current: T | null }).current = value;
+}
+
+/**
+ * The caret of a draft put back into the composer (QA M9): at its end, so typing adds to it.
+ *
+ * Choosing a channel in the sidebar by mouse leaves Chromium's frame selection inside the text
+ * box's editor. When a kept draft is then written into the box, that selection collapses to the
+ * start and Chromium copies it into the box's own selection a moment later, so a focus by Tab or by
+ * script put the caret before the draft and the words typed went in front of it. The value the
+ * person typed never moves the caret; any other value (a draft put back, a send taking out what was
+ * sent) puts it at the end, clears the stale document selection that would undo it, and a focus
+ * that is not the person's pointer puts it there again if it was reset to the start meanwhile.
+ */
+export function useRestoredDraftCaret(
+  textarea: MutableRefObject<HTMLTextAreaElement | null>,
+  body: string
+) {
+  /** The value the person last typed: a body equal to it came through `onChange`. */
+  const typedValue = useRef<string | null>(null);
+  /** A value was put in by the app and the person has not placed the caret since. */
+  const placed = useRef(false);
+  useLayoutEffect(() => {
+    const node = textarea.current;
+    if (!node || body === typedValue.current) return;
+    typedValue.current = null;
+    if (!body) {
+      placed.current = false;
+      return;
+    }
+    placed.current = true;
+    const selection = typeof document.getSelection === 'function' ? document.getSelection() : null;
+    const card = node.parentElement;
+    if (
+      selection &&
+      document.activeElement !== node &&
+      selection.anchorNode &&
+      (node.contains(selection.anchorNode) || card?.contains(selection.anchorNode))
+    )
+      selection.removeAllRanges();
+    node.setSelectionRange(body.length, body.length);
+  }, [textarea, body]);
+  return {
+    typed: (value: string) => {
+      typedValue.current = value;
+      placed.current = false;
+    },
+    touched: () => {
+      placed.current = false;
+    },
+    focused: (event: FocusEvent<HTMLTextAreaElement>) => {
+      const node = event.currentTarget;
+      if (!placed.current) return;
+      placed.current = false;
+      const end = node.value.length;
+      if (end > 0 && node.selectionStart === 0 && node.selectionEnd === 0)
+        node.setSelectionRange(end, end);
+    },
+  };
 }
 
 function ComposerCard({
@@ -504,6 +690,8 @@ function ComposerCard({
     node.style.height = measured > 0 ? `${measured}px` : '';
   }, [body]);
 
+  const caret = useRestoredDraftCaret(textarea, body);
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (
       e.key !== 'Enter' ||
@@ -537,6 +725,9 @@ function ComposerCard({
         'biorouter-composer-card crew-compose-card relative flex min-w-0 flex-col rounded-container',
         'bg-background-default border border-border-subtle/60 py-2.5 pr-3 pl-4'
       )}
+      // A post on its way: the card says so, and Send shows its spinner. The text stays writable.
+      aria-busy={posting || undefined}
+      data-posting={posting ? 'true' : undefined}
     >
       <ComposerChips
         attachments={attachments}
@@ -555,13 +746,21 @@ function ComposerCard({
         aria-label={composerCopy.label(name)}
         placeholder={composerCopy.placeholder(name)}
         rows={1}
+        // Laid out in the direction of what is typed (QA M13): Hebrew or Arabic runs right to left.
+        dir="auto"
         value={body}
-        // Read-only, not disabled, while the post is in flight: focus stays here, and nothing
-        // typed now can be wiped by the success that clears what was sent.
-        readOnly={posting}
-        aria-busy={posting || undefined}
-        onChange={(event) => setBody(event.target.value)}
-        onKeyDown={onKeyDown}
+        // Writable while a post is on its way (QA M8): what is typed now stays, because success
+        // takes out only what was sent.
+        onChange={(event) => {
+          caret.typed(event.target.value);
+          setBody(event.target.value);
+        }}
+        onKeyDown={(event) => {
+          caret.touched();
+          onKeyDown(event);
+        }}
+        onPointerDown={caret.touched}
+        onFocus={caret.focused}
         onPaste={onPaste}
       />
       <div className="crew-compose-controls">

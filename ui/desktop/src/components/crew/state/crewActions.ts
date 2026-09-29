@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { crewActionCopy } from './copy';
 import { failureCode, failureMessage } from './observationFailure';
-import type { ActionKey, ActOptions, CrewActionError, ErrorSource } from './types';
+import type { ActionKey, ActOptions, CrewActionError, ErrorDetails, ErrorSource } from './types';
 
 /** Sources that always render in the connection bar. */
 const BAR_SOURCES: readonly ErrorSource[] = ['observer', 'global'];
@@ -46,7 +46,7 @@ export interface CrewActions {
     fn: () => Promise<T>,
     options?: ActOptions
   ): Promise<T | undefined>;
-  reportError(message: string, source?: ErrorSource, code?: string): void;
+  reportError(message: string, source?: ErrorSource, code?: string, details?: ErrorDetails): void;
   dismissError(): void;
   /**
    * Dismiss the error only when it came from `source`: a later error from anywhere else stays
@@ -54,8 +54,21 @@ export interface CrewActions {
    * else).
    */
   dismissErrorFrom(source: ErrorSource): void;
+  /** Dismiss `error` only while it is still the one on show. */
+  dismissErrorIfShown(error: CrewActionError): void;
+  /**
+   * Dismiss the error on show when it was the link's failure (`transport`): the connection has
+   * verified again, so it no longer describes anything (QA R-4: a stale transport error stayed
+   * under a green "Connected").
+   */
+  dismissTransportError(): void;
   isPending(key: ActionKey): boolean;
   busy: boolean;
+  /**
+   * Whether an action other than `key` is pending. A post gates on this rather than `busy`, so a
+   * post on its way in one channel does not hold another channel's Send (RENDERER-4).
+   */
+  busyExcept(key: ActionKey): boolean;
   errorSlotFor(source: ErrorSource): boolean;
   registerErrorSlot(source: ErrorSource): () => void;
 }
@@ -93,13 +106,27 @@ export function useCrewActions(): CrewActions {
     []
   );
   const reportError = useCallback(
-    (message: string, source: ErrorSource = 'global', code?: string) =>
-      setError({ message, source, ...(code !== undefined ? { code } : {}) }),
+    (message: string, source: ErrorSource = 'global', code?: string, details?: ErrorDetails) =>
+      setError({
+        message,
+        source,
+        ...(code !== undefined ? { code } : {}),
+        ...(details?.destination !== undefined ? { destination: details.destination } : {}),
+        ...(details?.transport ? { transport: true } : {}),
+      }),
     []
   );
   const dismissError = useCallback(() => setError(null), []);
   const dismissErrorFrom = useCallback(
     (source: ErrorSource) => setError((current) => (current?.source === source ? null : current)),
+    []
+  );
+  const dismissErrorIfShown = useCallback(
+    (shown: CrewActionError) => setError((current) => (current === shown ? null : current)),
+    []
+  );
+  const dismissTransportError = useCallback(
+    () => setError((current) => (current?.transport ? null : current)),
     []
   );
   const registerErrorSlot = useCallback((source: ErrorSource) => {
@@ -114,6 +141,10 @@ export function useCrewActions(): CrewActions {
   const target = useMemo(() => resolveErrorSlot(error, slots), [error, slots]);
   const errorSlotFor = useCallback((source: ErrorSource) => target === source, [target]);
   const isPending = useCallback((key: ActionKey) => (pending.get(key) ?? 0) > 0, [pending]);
+  const busyExcept = useCallback(
+    (key: ActionKey) => [...pending.keys()].some((pendingKey) => pendingKey !== key),
+    [pending]
+  );
 
   return {
     error,
@@ -121,8 +152,11 @@ export function useCrewActions(): CrewActions {
     reportError,
     dismissError,
     dismissErrorFrom,
+    dismissErrorIfShown,
+    dismissTransportError,
     isPending,
     busy: pending.size > 0,
+    busyExcept,
     errorSlotFor,
     registerErrorSlot,
   };

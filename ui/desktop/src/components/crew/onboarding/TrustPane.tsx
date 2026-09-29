@@ -4,6 +4,8 @@ import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { connectionServer, personFromProjection, personLabel } from '../identity';
+import { serverLabel } from '../sidebar/sidebarView';
+import { connectFailureHost } from '../state/connectFailure';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
 import { trustCopy } from './copy';
 import { useJoinContext } from './joinContext';
@@ -39,9 +41,31 @@ export function TrustPane() {
   }
 }
 
+/**
+ * The host a trust pane is about: a hop OpenSSH named that is not the saved server (a jump host's
+ * key is not the destination's, W2-DMN-5), else the server by the person's own name for it, as the
+ * rest of Crew names it (D-ALIAS). The daemon names the destination too, by its resolved address,
+ * so {@link connectFailureHost} sets that one aside (DW-03).
+ */
 function useHost() {
+  const { connection, lastConnectFailure } = useCrew();
+  return (
+    connectFailureHost(lastConnectFailure, connection) ||
+    serverLabel(connection) ||
+    connection?.name ||
+    ''
+  );
+}
+
+/**
+ * The saved login's own server, for "Copy details" when the pane names it by the person's alias:
+ * IT knows the address, not what the person's SSH settings call it. `null` when the pane already
+ * names the address, or a separate hop.
+ */
+function useAddressForDetails(host: string): string | null {
   const { connection } = useCrew();
-  return connectionServer(connection) || connection?.name || '';
+  const address = connectionServer(connection);
+  return address && host === serverLabel(connection) && host !== address ? address : null;
 }
 
 function UnknownHostKey() {
@@ -93,9 +117,10 @@ function UnknownHostKey() {
 function ChangedHostKey() {
   const { lastConnectFailure } = useCrew();
   const host = useHost();
+  const address = useAddressForDetails(host);
   const { offered, known } = hostKeyFingerprints(lastConnectFailure?.detail);
   const details = [
-    ...trustCopy.detailsHeader(host, trustCopy.changedProblem),
+    ...trustCopy.detailsHeader(host, trustCopy.changedProblem, address),
     '',
     lastConnectFailure?.detail || lastConnectFailure?.message || '',
   ]
@@ -125,6 +150,7 @@ function ChangedHostKey() {
 function WorkspaceMismatch() {
   const { lastConnectFailure, connectionId, openDialog } = useCrew();
   const host = useHost();
+  const address = useAddressForDetails(host);
   const context = useJoinContext(connectionId);
   const hostPerson = context.hostUsername
     ? personFromProjection({
@@ -133,7 +159,7 @@ function WorkspaceMismatch() {
       })
     : null;
   const details = [
-    ...trustCopy.detailsHeader(host, trustCopy.workspaceProblem),
+    ...trustCopy.detailsHeader(host, trustCopy.workspaceProblem, address),
     '',
     lastConnectFailure?.detail || lastConnectFailure?.message || '',
   ]

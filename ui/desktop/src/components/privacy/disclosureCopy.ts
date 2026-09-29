@@ -28,6 +28,13 @@ export interface DisclosureCopy {
   long: string;
   /** The one-line form: the model chip's tooltip, the provider grid. */
   short: string;
+  /**
+   * Settings > App > Privacy's heading and long form, written about the class
+   * rather than "this model" (W2-PRV-14). `null` from a daemon that predates
+   * them, where the panel falls back to the dialog's copy.
+   */
+  settingsTitle?: string | null;
+  settings?: string | null;
 }
 
 export interface DisclosureState {
@@ -173,11 +180,16 @@ function ensureFetched() {
       const result = await getPrivacyDisclosure();
       const served = result?.data;
       if (!served) return;
+      // Read structurally: the generated client describes the daemon this tree
+      // was built against, and an older daemon serves neither settings field.
+      const extra = served as { settings?: unknown; settings_title?: unknown };
       patch({
         copy: {
           titleTemplate: served.title_template,
           long: served.long,
           short: served.short,
+          settingsTitle: typeof extra.settings_title === 'string' ? extra.settings_title : null,
+          settings: typeof extra.settings === 'string' ? extra.settings : null,
         },
         acknowledged: served.acknowledged,
       });
@@ -188,6 +200,27 @@ function ensureFetched() {
       fetching = null;
     }
   })();
+}
+
+/**
+ * Whether the person may be taken past the disclosure right now, once the
+ * daemon has answered: `true` when it is acknowledged (or they were told it
+ * could not be saved and went on), `false` when it is still due, and `null`
+ * when the daemon could not say.
+ *
+ * T3-SH-1. For a send that has to wait for the answer rather than render
+ * whatever the store holds so far: a chat started on a model held for it before
+ * it was sent is bound in the same click that sends its first message, so the
+ * gates that key on a bound provider answer only after that message has gone.
+ *
+ * `null` is the same "renders nothing" answer every surface gives a failed
+ * fetch (see {@link useDisclosure}); the caller decides what to do with it.
+ */
+export async function readDisclosureAcknowledgement(): Promise<boolean | null> {
+  ensureFetched();
+  if (fetching) await fetching;
+  if (store.acknowledged === true || store.dismissedUnrecorded) return true;
+  return store.acknowledged;
 }
 
 /**

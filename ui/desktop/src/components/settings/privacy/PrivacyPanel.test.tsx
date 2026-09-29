@@ -77,6 +77,9 @@ describe('Settings > Privacy', () => {
     const dialog = screen.getByTestId('privacy-disable-confirm');
     expect(dialog).toHaveTextContent(/every.*privacy guardrail on this machine/i);
     expect(dialog).toHaveTextContent(/read and write your knowledge bases/i);
+    // T3-SH-8: the app calls them Public models everywhere else.
+    expect(dialog).toHaveTextContent(/Public models will be able to call your private extensions/);
+    expect(dialog).not.toHaveTextContent(/Commercial models/);
     expect(dialog).toHaveTextContent(/stops recording which chats touched private/i);
     expect(dialog).toHaveTextContent(/cannot go back and mark anything that happened/i);
   });
@@ -311,7 +314,9 @@ describe('Settings > Privacy', () => {
       await user.click(screen.getByRole('button', { name: /Turn off privacy tiers/ }));
 
       const strip = await screen.findByTestId('privacy-enforcement-off-strip');
-      await waitFor(() => expect(strip).toHaveTextContent(/turned off in Settings → Privacy/i));
+      await waitFor(() =>
+        expect(strip).toHaveTextContent(/turned off in Settings → App → Privacy/i)
+      );
       expect(strip).not.toHaveTextContent(/outside the app/i);
       expect(strip).toHaveTextContent(PATH);
     });

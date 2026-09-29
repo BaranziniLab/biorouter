@@ -135,3 +135,19 @@ describe('a toast stays clickable over a modal dialog', () => {
     expect(CSS).toMatch(/\.Toastify__toast-container\s*>\s*\*\s*\{[^}]*pointer-events:\s*auto\s*;/);
   });
 });
+
+/**
+ * W2-PRV-16. Errors never expire, and nothing dismissed toasts on navigation, so
+ * one chat's "Diverge failed" sat for minutes over the Crew details pane's
+ * primary buttons on another screen. App dismisses the screen-scoped toasts
+ * (`scope: 'screen'` in toasts.tsx) whenever the route or its query changes.
+ * Asserted at the source, like the rest of this file: App mounts the whole
+ * shell, and the behaviour of `dismissScreenToasts` itself is `toasts.test.tsx`'s.
+ */
+describe("a screen's toasts go when the person leaves it", () => {
+  it('dismisses screen-scoped toasts on every navigation', () => {
+    expect(APP).toMatch(/import \{[^}]*dismissScreenToasts[^}]*\} from '\.\/toasts'/);
+    expect(APP).toMatch(/const screen = `\$\{pathname\}\$\{search\}`/);
+    expect(APP).toMatch(/dismissScreenToasts\(\);\s*\}, \[screen\]\)/);
+  });
+});

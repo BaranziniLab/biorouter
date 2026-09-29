@@ -66,3 +66,124 @@ export function getSharedBackend(
 export function resetSharedBackend(): void {
   sharedBackend = null;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Reattaching after the shared daemon restarts (R-1)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Where the app stands with the shared daemon, as every window is told: `attached` (requests
+ * reach the instance this app verified), `lost` (that instance is gone or was replaced, and
+ * nothing will reach the daemon until the person reconnects or reopens Biorouter) or
+ * `reconnecting`.
+ */
+export type DaemonConnectionState = 'attached' | 'lost' | 'reconnecting';
+
+/** What the person chose in the "background service restarted" prompt. */
+export type DaemonRestartChoice = 'reconnect' | 'restart' | 'later';
+
+export interface DaemonReattachDeps {
+  /** The one native prompt: "Biorouter's background service restarted. Reconnect?". */
+  ask(): Promise<DaemonRestartChoice>;
+  /** A reconnect failed: say why, and offer to quit and reopen. */
+  reportFailure(message: string): Promise<'restart' | 'close'>;
+  /** Attach to the profile's daemon as it is now (`SharedDaemonLink.reconnect`). */
+  reconnect(): Promise<void>;
+  /** Quit and reopen Biorouter. */
+  restart(): void;
+  /** Tell every window the new state. */
+  broadcast(state: DaemonConnectionState): void;
+}
+
+export interface DaemonReattachController {
+  state(): DaemonConnectionState;
+  /**
+   * The attached instance was found lost. Tells every window, and asks the person once: never
+   * again while a prompt is open or a reconnect runs, nor after "Not Now" until the app is
+   * attached again. `ask: true` asks even after "Not Now" (the person opened a new window).
+   * Resolves to whether the app is attached afterwards.
+   */
+  lost(options?: { ask?: boolean }): Promise<boolean>;
+  /** The lost instance answered again by itself (it had only stopped answering for a moment). */
+  answered(): void;
+  /** The person asked to reconnect (the sidebar's Reconnect). Resolves to whether it worked. */
+  reconnect(): Promise<boolean>;
+}
+
+/**
+ * The main process's half of R-1: one prompt, one reconnect at a time, and every window told
+ * where things stand. Electron-free and injected, so it is tested without a window.
+ *
+ * A reconnect never reloads a window. The proxy keeps its local address, so every window's
+ * `BIOROUTER_API_HOST` stays valid, and a reload would throw away what a person was writing,
+ * including the message a failed "start chat" kept for them.
+ */
+export function createDaemonReattachController(deps: DaemonReattachDeps): DaemonReattachController {
+  let state: DaemonConnectionState = 'attached';
+  let declined = false;
+  let asking: Promise<boolean> | null = null;
+  let reconnecting: Promise<boolean> | null = null;
+  const set = (next: DaemonConnectionState) => {
+    if (next === state) return;
+    state = next;
+    deps.broadcast(next);
+  };
+
+  const reconnect = (): Promise<boolean> => {
+    if (reconnecting) return reconnecting;
+    if (state === 'attached') return Promise.resolve(true);
+    set('reconnecting');
+    reconnecting = (async () => {
+      try {
+        await deps.reconnect();
+        declined = false;
+        set('attached');
+        return true;
+      } catch (error) {
+        set('lost');
+        const message =
+          error instanceof Error && error.message
+            ? error.message
+            : 'Biorouter could not reconnect to its background service.';
+        if ((await deps.reportFailure(message)) === 'restart') deps.restart();
+        return false;
+      }
+    })().finally(() => {
+      reconnecting = null;
+    });
+    return reconnecting;
+  };
+
+  return {
+    state: () => state,
+    lost: (options = {}) => {
+      if (reconnecting) return reconnecting;
+      if (state === 'attached') set('lost');
+      if (asking) return asking;
+      if (declined && !options.ask) return Promise.resolve(false);
+      asking = (async () => {
+        const choice = await deps.ask();
+        if (choice === 'reconnect') return reconnect();
+        if (choice === 'restart') {
+          deps.restart();
+          return false;
+        }
+        if (state === 'attached') return true;
+        declined = true;
+        return false;
+      })().finally(() => {
+        asking = null;
+      });
+      return asking;
+    },
+    answered: () => {
+      // Also while the prompt is open: whatever the person then answers, the app is attached,
+      // and "Not Now" must not leave every window saying the service restarted.
+      if (state === 'lost') {
+        declined = false;
+        set('attached');
+      }
+    },
+    reconnect,
+  };
+}

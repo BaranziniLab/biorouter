@@ -110,7 +110,9 @@ describe('SignInDialog with its terminal', () => {
 
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('SSH authentication ended (exit 255)');
-    expect(alert).toHaveTextContent('Choose Reconnect to check the connection.');
+    // F5: the window has no Reconnect; the sentence names the way on that exists.
+    expect(alert).toHaveTextContent('Close this window, then choose Connect to try again.');
+    expect(alert).not.toHaveTextContent(/Reconnect/);
     expect(screen.getAllByRole('alert')).toHaveLength(1);
 
     const close = screen.getByRole('button', { name: signInCopy.closeName });

@@ -194,9 +194,19 @@ fn journal_fault_preserves_prior_ack_after_restart() {
         failed.result.is_none(),
         "faulted operation was not acknowledged"
     );
+    // The fault is named for what it is, in one code for the faulting request and every change
+    // after it: `storage_full` for a full disk, `storage_failed` for any other storage error.
+    // Never `request_denied` with the operating system's own text (R-2).
+    let expected_code = match std::env::var("CREW_FAULT_ERRNO").as_deref() {
+        Ok("ENOSPC") => "storage_full",
+        _ => "storage_failed",
+    };
+    let failed = failed.error.expect("faulted operation returned no error");
+    assert_eq!(failed.code, expected_code, "{}", failed.message);
     assert!(
-        failed.error.is_some(),
-        "faulted operation returned no error"
+        !failed.message.contains("os error"),
+        "the OS's text reached the member: {}",
+        failed.message
     );
     let replayed = signed(
         &mut broker,
@@ -234,7 +244,22 @@ fn journal_fault_preserves_prior_ack_after_restart() {
             .error
             .expect("poisoned broker rejects blob begin")
             .code,
-        "storage_failed"
+        expected_code
+    );
+    // `hello` says the broker stopped saving, and the host's log says what happened.
+    let hello = broker.handle(
+        uid(),
+        &mut connection,
+        request("stopped-hello", "hello", json!({})),
+    );
+    let hello = hello.result.expect("hello still answers");
+    assert_eq!(hello["state"], "storage_failed");
+    assert_eq!(hello["storage"]["code"], expected_code);
+    let log = fs::read_to_string(root.join("broker.log")).expect("broker.log was written");
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(
+        log.contains(&format!("{expected_code}: Crew stopped saving changes: ")),
+        "{log}"
     );
     assert_eq!(
         blob_snapshot(&root),

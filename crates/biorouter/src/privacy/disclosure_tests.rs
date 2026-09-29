@@ -269,3 +269,28 @@ fn an_unreadable_record_reads_as_not_yet_acknowledged() {
     .unwrap();
     assert!(!disclosure::is_acknowledged_in(config_dir));
 }
+
+/// W2-PRV-14. Settings > App > Privacy shows the long form permanently, above
+/// the switch, whatever model is bound, so its copy is written about the class:
+/// it keeps every property the dialog's copy states and never says "this
+/// model" or "this chat", which a person on a private model read as their own.
+#[test]
+fn the_settings_copy_is_about_the_class_and_says_everything_the_dialog_does() {
+    let c = disclosure::COPY_SETTINGS;
+    for phrase in ["this model", "this chat", "This model", "This chat"] {
+        assert!(!c.contains(phrase), "{phrase:?} in the settings copy: {c}");
+    }
+    assert!(c.contains("HIPAA"), "{c}");
+    assert!(c.contains("on-premise"), "{c}");
+    assert!(c.contains("does not run on this machine"), "{c}");
+    assert!(c.contains("**files on this computer**"), "{c}");
+    assert!(c.contains("**does not**"), "{c}");
+    assert!(c.contains("shell"), "{c}");
+    assert_eq!(c.matches("**").count() % 2, 0, "unbalanced emphasis: {c}");
+    // The same three paragraphs as the dialog's, in the same order.
+    assert_eq!(
+        c.split("\n\n").count(),
+        disclosure::COPY_LONG.split("\n\n").count()
+    );
+    assert!(!disclosure::COPY_SETTINGS_TITLE.contains("{provider}"));
+}

@@ -106,7 +106,7 @@ These variables control how biorouter manages conversation sessions and context.
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
 | `BIOROUTER_CONTEXT_STRATEGY` | Controls how biorouter handles context-limit-exceeded situations | `"summarize"`, `"truncate"`, `"clear"`, `"prompt"` | `"prompt"` (interactive), `"summarize"` (headless) |
-| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | Integer (e.g. 10, 50, 100) | 100 |
+| `BIOROUTER_MAX_TURNS` | Maximum number of turns allowed without user input | A whole number of at least 1 (e.g. 10, 50, 100). Any other value, such as `0`, is ignored with a warning in the log, and the default applies | 100 |
 | `BIOROUTER_SUBAGENT_MAX_TURNS` | Sets the maximum turns allowed for a [subagent](../agent-loop/subagents.md) to complete before timeout | Integer (e.g. 25) | 25 |
 | `CONTEXT_FILE_NAMES` | Specifies custom filenames for hint/context files | JSON array of strings (e.g. `["CLAUDE.md", ".biorouterhints"]`) | `[".biorouterhints"]` |
 | `BIOROUTER_CLI_THEME` | [Theme](../cli/command-reference.md#themes) for CLI response markdown | `"light"`, `"dark"`, `"ansi"` | `"dark"` |

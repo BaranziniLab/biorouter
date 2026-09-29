@@ -15,6 +15,7 @@ import { cn } from '../../../utils';
 import { identityCopy } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { runStatusPresentation, type RunStatusPresentation } from '../state/crewStatus';
+import { VisibleText } from './MessageBody';
 import { timelineCopy } from './copy';
 import type { TimelineTask } from './groupMessages';
 import { CopyForSupport, useMenuCopy, useTimelineCopy } from './TimelineCopy';
@@ -89,7 +90,9 @@ export function TaskStatusRow({ task }: { task: TimelineTask }) {
           <StatusWord presentation={presentation} />
         </p>
         {task.title && (
-          <p className="crew-task-title text-secondary text-text-muted">{task.title}</p>
+          <p className="crew-task-title text-secondary text-text-muted" dir="auto">
+            <VisibleText text={task.title} />
+          </p>
         )}
       </div>
       <div className="crew-task-actions">

@@ -322,8 +322,8 @@ async fn handle_existing_config() -> anyhow::Result<()> {
         .item("remove", "Remove Extension", "Remove an extension")
         .item(
             "settings",
-            "biorouter settings",
-            "Set the biorouter mode, Tool Output, Tool Permissions, Experiment, biorouter workflow github repo and more",
+            "Biorouter settings",
+            "Set the mode, tool output, tool permissions, experiments, the workflow GitHub repository and more",
         )
         .interact()?;
 
@@ -546,18 +546,225 @@ fn prompt_unlisted_model(
     Ok(model.trim().to_string())
 }
 
+/// W2-PRV-2 — a provider's settings as they were before `configure` changed
+/// them. `configure` stores each key as it is typed and only then asks the
+/// provider (a model listing, then one tool call), so a key the provider
+/// rejected had already replaced the working one. Captured before the first
+/// write, and put back when the provider refuses what was typed.
+struct PreviousProviderSettings {
+    config: &'static Config,
+    /// `(name, secret, stored value)`. A setting whose store could not be read
+    /// at capture is left out: restoring from a failed read would delete a key
+    /// that was there all along.
+    keys: Vec<(String, bool, Option<Value>)>,
+    /// Put the settings back if the dialog is left without [`Self::keep`]:
+    /// an error or an interrupt part-way through leaves nothing half-replaced.
+    armed: bool,
+}
+
+impl PreviousProviderSettings {
+    /// The stored value of every setting in `keys`, from the config file and
+    /// the secret store only: an environment variable is not a saved value.
+    fn capture(config: &'static Config, keys: &[biorouter::providers::base::ConfigKey]) -> Self {
+        let values = config.all_values().ok();
+        let secrets = if keys.iter().any(|key| key.secret) {
+            config.all_secrets().ok()
+        } else {
+            Some(HashMap::new())
+        };
+        Self {
+            config,
+            keys: keys
+                .iter()
+                .filter_map(|key| {
+                    let store = if key.secret {
+                        secrets.as_ref()
+                    } else {
+                        values.as_ref()
+                    }?;
+                    Some((key.name.clone(), key.secret, store.get(&key.name).cloned()))
+                })
+                .collect(),
+            armed: true,
+        }
+    }
+
+    /// The new settings stand: nothing will be put back.
+    fn keep(&mut self) {
+        self.armed = false;
+    }
+
+    /// Put back every setting that changed since [`Self::capture`], removing
+    /// one that did not exist then. Returns whether anything was put back.
+    fn restore(&mut self) -> anyhow::Result<bool> {
+        self.armed = false;
+        let config = self.config;
+        let values = config.all_values()?;
+        let secrets = if self.keys.iter().any(|(_, secret, _)| *secret) {
+            config.all_secrets()?
+        } else {
+            HashMap::new()
+        };
+        let mut restored = false;
+        for (name, secret, previous) in &self.keys {
+            let now = if *secret {
+                secrets.get(name)
+            } else {
+                values.get(name)
+            };
+            if now == previous.as_ref() {
+                continue;
+            }
+            let result = match previous {
+                Some(value) => config.set(name, value, *secret),
+                None if *secret => config.delete_secret(name),
+                None => config.delete(name),
+            };
+            match result {
+                Ok(()) | Err(ConfigError::FallbackToFileStorage) => restored = true,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(restored)
+    }
+
+    /// [`Self::restore`], said to the person, after the provider refused.
+    /// `typed_something` says whether values were typed, which since T3-SH-5
+    /// are never written before the check and so need no putting back.
+    fn restore_after_refusal(
+        &mut self,
+        display_name: &str,
+        typed_something: bool,
+    ) -> anyhow::Result<()> {
+        if self.restore()? || typed_something {
+            let _ = cliclack::log::info(format!(
+                "Your previous {display_name} settings were kept; nothing you typed was saved."
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PreviousProviderSettings {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(error) = self.restore() {
+                tracing::warn!("could not put the previous provider settings back: {error}");
+            }
+        }
+    }
+}
+
 fn try_store_secret(config: &Config, key_name: &str, value: String) -> anyhow::Result<bool> {
+    Ok(store_secret_reporting(config, key_name, value)?.is_some())
+}
+
+/// Where a secret [`try_store_secret`] stored ended up: the system keychain, or
+/// the private secrets file when there is no usable keychain (a headless Linux
+/// host, `BIOROUTER_DISABLE_KEYRING`, or a keychain that refused the write).
+///
+/// T3-SH-6. `configure` asked "save this value to your keyring?" and then said
+/// "Saved KEY to <config.yaml>" for a secret, on a host where it had gone to
+/// `secrets.yaml` and `config.yaml` held nothing of it.
+fn secret_home(file_before_write: bool, fell_back: bool) -> String {
+    if file_before_write || fell_back {
+        format!(
+            "the private file {}",
+            Paths::config_dir().join("secrets.yaml").display()
+        )
+    } else {
+        "the system keychain".to_string()
+    }
+}
+
+/// [`try_store_secret`], and where the secret went, for the confirmation line.
+/// `None` when it could not be stored (the reason has been said).
+fn store_secret_reporting(
+    config: &Config,
+    key_name: &str,
+    value: String,
+) -> anyhow::Result<Option<String>> {
+    let file_before_write = std::env::var("BIOROUTER_DISABLE_KEYRING").is_ok();
     match config.set_secret(key_name, &value) {
-        Ok(_) => Ok(true),
-        Err(ConfigError::FallbackToFileStorage) => Ok(true),
+        Ok(()) => Ok(Some(secret_home(file_before_write, false))),
+        Err(ConfigError::FallbackToFileStorage) => Ok(Some(secret_home(file_before_write, true))),
         Err(e) => {
             cliclack::outro(style(format!(
                 "Failed to store {} securely: {}. Please ensure your system's secure storage is accessible. Alternatively you can run with BIOROUTER_DISABLE_KEYRING=true or set the key in your environment variables",
                 key_name, e
             )).on_red().white())?;
-            Ok(false)
+            Ok(None)
         }
     }
+}
+
+/// T3-SH-5 — a value typed for a provider in `configure`, held in memory until
+/// the provider has accepted it.
+///
+/// `configure` used to store each value as it was typed and check the provider
+/// afterwards. A refusal, Esc or Ctrl-C put the old values back, but a SIGTERM
+/// or SIGHUP (closing the terminal) at "Enter a model from that provider" left
+/// the wrong key saved and the working one gone. Nothing typed is written now
+/// until the provider has answered the check with it.
+#[derive(Debug, Clone, PartialEq)]
+struct TypedSetting {
+    name: String,
+    secret: bool,
+    value: String,
+}
+
+/// The typed values as the task-local overrides the provider is built and
+/// checked under, the form `/config/check_provider` uses: keys upper-cased, a
+/// secret as a JSON string literal so an all-digit key stays a string.
+fn typed_overrides(typed: &[TypedSetting]) -> HashMap<String, String> {
+    typed
+        .iter()
+        .map(|setting| {
+            let value = if setting.secret {
+                serde_json::to_string(&setting.value).unwrap_or_else(|_| setting.value.clone())
+            } else {
+                setting.value.clone()
+            };
+            (setting.name.to_uppercase(), value)
+        })
+        .collect()
+}
+
+/// Write the typed values once the provider has accepted them: settings
+/// first, credentials last (a failed setting stops before any key is written),
+/// saying where each one went. `Ok(false)` when a secret could not be stored.
+fn save_typed_settings(config: &Config, typed: &[TypedSetting]) -> anyhow::Result<bool> {
+    for setting in typed.iter().filter(|setting| !setting.secret) {
+        config.set_param(&setting.name, &setting.value)?;
+        let _ = cliclack::log::info(format!("Saved {} to {}", setting.name, config.path()));
+    }
+    for setting in typed.iter().filter(|setting| setting.secret) {
+        match store_secret_reporting(config, &setting.name, setting.value.clone())? {
+            Some(home) => {
+                let _ = cliclack::log::info(format!("Saved {} in {home}", setting.name));
+            }
+            None => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+/// Run `check` with the typed values in force but not written, and write them
+/// only if it passes. Returns the check's own result; on `Err` nothing typed
+/// has been written.
+async fn check_then_save<T, F>(
+    config: &Config,
+    typed: &[TypedSetting],
+    check: F,
+) -> anyhow::Result<Option<T>>
+where
+    F: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let checked = biorouter::config::with_config_overrides(typed_overrides(typed), check).await?;
+    if !save_typed_settings(config, typed)? {
+        return Ok(None);
+    }
+    Ok(Some(checked))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -609,6 +816,13 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     // the master privacy switch, which turns off enforcement and not the truth.
     print_non_private_model_disclosure(provider_meta)?;
 
+    // W2-PRV-2: before the first write, so a key the provider refuses below
+    // never replaces the one that worked. Typed values are no longer written
+    // before the check (T3-SH-5, `TypedSetting`); what this still guards is an
+    // OAuth sign-in, which stores its own tokens as it completes.
+    let mut previous = PreviousProviderSettings::capture(config, &provider_meta.config_keys);
+    let mut typed: Vec<TypedSetting> = Vec::new();
+
     // Configure required provider keys
     for key in &provider_meta.config_keys {
         if !key.required {
@@ -622,18 +836,18 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
             Some(env_value) => {
                 let _ =
                     cliclack::log::info(format!("{} is set via environment variable", key.name));
-                if cliclack::confirm("Would you like to save this value to your keyring?")
+                // T3-SH-6: where a value is kept depends on the host (the
+                // system keychain, or a private file where there is none), and
+                // the confirmation after the check names the place it went.
+                if cliclack::confirm("Save this value in Biorouter's settings?")
                     .initial_value(true)
                     .interact()?
                 {
-                    if key.secret {
-                        if !try_store_secret(config, &key.name, env_value)? {
-                            return Ok(false);
-                        }
-                    } else {
-                        config.set_param(&key.name, &env_value)?;
-                    }
-                    let _ = cliclack::log::info(format!("Saved {} to {}", key.name, config.path()));
+                    typed.push(TypedSetting {
+                        name: key.name.clone(),
+                        secret: key.secret,
+                        value: env_value,
+                    });
                 }
             }
             None => {
@@ -667,13 +881,11 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
                                     input.interact()?
                                 };
 
-                                if key.secret {
-                                    if !try_store_secret(config, &key.name, value)? {
-                                        return Ok(false);
-                                    }
-                                } else {
-                                    config.set_param(&key.name, &value)?;
-                                }
+                                typed.push(TypedSetting {
+                                    name: key.name.clone(),
+                                    secret: key.secret,
+                                    value,
+                                });
                             }
                         }
                     }
@@ -700,13 +912,11 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
                                 input.interact()?
                             };
 
-                            if key.secret {
-                                if !try_store_secret(config, &key.name, value)? {
-                                    return Ok(false);
-                                }
-                            } else {
-                                config.set_param(&key.name, &value)?;
-                            }
+                            typed.push(TypedSetting {
+                                name: key.name.clone(),
+                                secret: key.secret,
+                                value,
+                            });
                         }
                     }
                 }
@@ -765,25 +975,64 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
                 }
                 input.interact()?
             };
-            if key.secret {
-                if !try_store_secret(config, &key.name, value)? {
-                    return Ok(false);
-                }
-            } else {
-                config.set_param(&key.name, &value)?;
-            }
+            typed.push(TypedSetting {
+                name: key.name.clone(),
+                secret: key.secret,
+                value,
+            });
         }
     }
 
+    // Everything below runs with the typed values in force and none of them
+    // written: the provider is built, listed and tried with them, and they are
+    // saved only once that passed (`check_then_save`).
+    let overrides = typed_overrides(&typed);
+    let nothing_typed_was_saved = !typed.is_empty();
     let spin = spinner();
     spin.start("Attempting to fetch supported models...");
-    let models_res = {
-        let temp_model_config = ModelConfig::new(&provider_meta.default_model)?;
-        let temp_provider = create(provider_name, temp_model_config).await?;
+    let temp_model_config = ModelConfig::new(&provider_meta.default_model)?;
+    let temp_provider = match biorouter::config::with_config_overrides(
+        overrides.clone(),
+        create(provider_name, temp_model_config),
+    )
+    .await
+    {
+        Ok(provider) => provider,
+        Err(error) => {
+            spin.stop(style("The provider could not be set up").red());
+            previous.restore_after_refusal(&provider_meta.display_name, nothing_typed_was_saved)?;
+            return Err(error);
+        }
+    };
+    let models_res = biorouter::config::with_config_overrides(
+        overrides.clone(),
         retry_operation(&RetryConfig::default(), || async {
             temp_provider.fetch_recommended_models().await
-        })
+        }),
+    )
+    .await;
+    // A provider with no model listing (the Versa gateways) sent nothing above,
+    // so ask it the way it can be asked before the model prompt: a key it
+    // refuses is said now, not after a model has been chosen (T3-SH-3).
+    let models_res = match models_res {
+        // Bounded, as the daemon's check is: a gateway that does not answer
+        // says nothing about the key, and the model prompt follows.
+        Ok(None) => match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            biorouter::config::with_config_overrides(overrides, temp_provider.check_credentials()),
+        )
         .await
+        {
+            Ok(Err(biorouter::providers::errors::ProviderError::Authentication(reason))) => Err(
+                biorouter::providers::errors::ProviderError::Authentication(format!(
+                    "{} rejected these credentials: {}",
+                    provider_meta.display_name,
+                    reason.trim()
+                )),
+            ),
+            _ => Ok(None),
+        },
+        other => other,
     };
     spin.stop(style("Model fetch complete").green());
 
@@ -791,6 +1040,7 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     let model: String = match models_res {
         Err(e) => {
             // Provider hook error
+            previous.restore_after_refusal(&provider_meta.display_name, nothing_typed_was_saved)?;
             cliclack::outro(style(e.to_string()).on_red().white())?;
             return Ok(false);
         }
@@ -813,15 +1063,25 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
         .unwrap_or(false);
     let toolshim_model = std::env::var("BIOROUTER_TOOLSHIM_OLLAMA_MODEL").ok();
 
-    match test_provider_configuration(provider_name, &model, toolshim_enabled, toolshim_model).await
+    match check_then_save(
+        config,
+        &typed,
+        test_provider_configuration(provider_name, &model, toolshim_enabled, toolshim_model),
+    )
+    .await
     {
-        Ok(()) => {
+        Ok(Some(())) => {
+            previous.keep();
             config.set_biorouter_provider_and_model(provider_name, &model)?;
             print_config_file_saved()?;
             Ok(true)
         }
+        // A setting was saved but a key could not be; the guard puts the
+        // settings back, and the reason has been said.
+        Ok(None) => Ok(false),
         Err(e) => {
             spin.stop(style(e.to_string()).red());
+            previous.restore_after_refusal(&provider_meta.display_name, nothing_typed_was_saved)?;
             cliclack::outro(style("Failed to configure provider: init chat completion request with tool did not succeed.").on_red().white())?;
             Ok(false)
         }
@@ -994,7 +1254,7 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         (
             "autovisualiser",
             "Auto Visualiser",
-            "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
+            "Interactive charts, diagrams, networks, maps and scientific plots, shown in the side panel.",
         ),
         (
             "computercontroller",
@@ -1231,8 +1491,8 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
     let setting_type = cliclack::select("What setting would you like to configure?")
         .item(
             "biorouter_mode",
-            "biorouter mode",
-            "Configure biorouter mode",
+            "Biorouter mode",
+            "Choose how much Biorouter does without asking",
         )
         .item(
             "tool_permission",
@@ -1266,8 +1526,8 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
         )
         .item(
             "workflow",
-            "biorouter workflow github repo",
-            "biorouter will pull workflows from this repo if not found locally.",
+            "Workflow GitHub repository",
+            "Where Biorouter looks for a workflow it does not find on this computer",
         )
         .interact()?;
 
@@ -1461,40 +1721,50 @@ pub fn configure_biorouter_mode_dialog() -> anyhow::Result<()> {
         let _ = cliclack::log::info("Notice: BIOROUTER_MODE environment variable is set and will override the configuration here.");
     }
 
-    let mode = cliclack::select("Which biorouter mode would you like to configure?")
-        .item(
-            BioRouterMode::Auto,
-            "Auto Mode",
-            "Full file modification, extension usage, edit, create and delete files freely"
-        )
-        .item(
-            BioRouterMode::Approve,
-            "Approve Mode",
-            "All tools, extensions and file modifications will require human approval"
-        )
-        .item(
-            BioRouterMode::SmartApprove,
-            "Smart Approve Mode",
-            "Editing, creating, deleting files and using extensions will require human approval"
-        )
-        .item(
-            BioRouterMode::Chat,
-            "Chat Mode",
-            "Engage with the selected provider without using tools, extensions, or file modification"
-        )
-        .interact()?;
+    let mut select = cliclack::select("Which mode should Biorouter use?");
+    for mode in MODES {
+        let (label, description) = mode_choice(mode);
+        select = select.item(mode, label, description);
+    }
+    let mode = select.interact()?;
 
     config.set_biorouter_mode(mode)?;
-    let msg = match mode {
-        BioRouterMode::Auto => "Set to Auto Mode - full file modification enabled",
-        BioRouterMode::Approve => {
-            "Set to Approve Mode - all tools and modifications require approval"
-        }
-        BioRouterMode::SmartApprove => "Set to Smart Approve Mode - modifications require approval",
-        BioRouterMode::Chat => "Set to Chat Mode - no tools or modifications enabled",
-    };
-    cliclack::outro(msg)?;
+    cliclack::outro(format!("Mode set to {}.", mode_choice(mode).0))?;
     Ok(())
+}
+
+/// The modes `configure` offers, in the desktop picker's order.
+const MODES: [BioRouterMode; 4] = [
+    BioRouterMode::Auto,
+    BioRouterMode::Approve,
+    BioRouterMode::SmartApprove,
+    BioRouterMode::Chat,
+];
+
+/// A mode's name and description, exactly as the desktop's mode picker
+/// (`ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx`) says them.
+/// `configure` used to say "Auto/Approve/Smart Approve/Chat Mode" while the app
+/// said "Autonomous/Manual/Smart/Chat only", so a person meeting a mode in one
+/// surface could not find it under the same name in the other.
+fn mode_choice(mode: BioRouterMode) -> (&'static str, &'static str) {
+    match mode {
+        BioRouterMode::Auto => (
+            "Autonomous",
+            "Use tools and edit, create, or delete files without asking first.",
+        ),
+        BioRouterMode::Approve => (
+            "Manual",
+            "Ask before using tools, extensions, or making file changes.",
+        ),
+        BioRouterMode::SmartApprove => (
+            "Smart",
+            "Ask only when an action\u{2019}s risk level requires your approval.",
+        ),
+        BioRouterMode::Chat => (
+            "Chat only",
+            "Chat with the selected model without tools or extensions.",
+        ),
+    }
 }
 
 pub fn configure_tool_output_dialog() -> anyhow::Result<()> {
@@ -1832,28 +2102,35 @@ pub fn configure_max_turns_dialog() -> anyhow::Result<()> {
         cliclack::input("Set maximum number of agent turns without user input:")
             .placeholder(&current_max_turns.to_string())
             .default_input(&current_max_turns.to_string())
-            .validate(|input: &String| match input.parse::<u32>() {
-                Ok(value) => {
-                    if value < 1 {
-                        Err("Value must be at least 1")
-                    } else {
-                        Ok(())
-                    }
-                }
-                Err(_) => Err("Please enter a valid number"),
-            })
+            .validate(|input: &String| parse_max_turns(input).map(|_| ()))
             .interact()?;
 
-    let max_turns: u32 = max_turns_input.parse()?;
+    let max_turns = parse_max_turns(&max_turns_input).map_err(anyhow::Error::msg)?;
     config.set_param("BIOROUTER_MAX_TURNS", max_turns)?;
 
     cliclack::outro(format!(
-        "Set maximum turns to {} - biorouter will ask for input after {} consecutive actions",
-        max_turns, max_turns
+        "Max turns set to {max_turns}: Biorouter asks for your input after {max_turns} actions in a row."
     ))?;
 
     Ok(())
 }
+
+/// A max-turns entry as a limit, or the sentence saying why it is not one.
+/// The same rule as Settings and `/config/upsert`: only a whole number of at
+/// least 1, because a stored 0 stops every new chat before its first reply.
+///
+/// T3-SH-8: one sentence for every entry that is not a limit, the one Settings
+/// shows. 0 used to get "Max turns must be at least 1" and -5 "Enter a whole
+/// number of at least 1", two answers to one mistake.
+fn parse_max_turns(input: &str) -> Result<u32, &'static str> {
+    match input.trim().parse::<u32>() {
+        Ok(value) if value >= 1 => Ok(value),
+        _ => Err(MAX_TURNS_REFUSAL),
+    }
+}
+
+/// Settings' own sentence (`ConversationLimitsDropdown.tsx`), asserted there too.
+const MAX_TURNS_REFUSAL: &str = "Enter a whole number of at least 1.";
 
 /// Handle OpenRouter authentication
 pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
@@ -2355,5 +2632,291 @@ mod needs_terminal_tests {
             "a refused first run must leave no file behind: {:?}",
             entries(dir.path())
         );
+    }
+}
+
+#[cfg(test)]
+mod mode_name_tests {
+    use super::{mode_choice, MODES};
+    use std::path::Path;
+
+    /// `configure` names and describes every mode exactly as the desktop's mode
+    /// picker does, read from its source so a rename on either side fails here.
+    #[test]
+    fn configure_uses_the_desktop_mode_names() {
+        let picker = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../ui/desktop/src/components/settings/mode/ModeSelectionItem.tsx"),
+        )
+        .expect("the desktop mode picker source");
+        for mode in MODES {
+            let (label, description) = mode_choice(mode);
+            assert!(
+                picker.contains(&format!("label: '{label}'")),
+                "the desktop has no mode named {label:?}"
+            );
+            assert!(
+                picker.contains(&format!("description: '{description}'")),
+                "the desktop describes {label} differently from {description:?}"
+            );
+        }
+        for retired in [
+            "Auto Mode",
+            "Approve Mode",
+            "Smart Approve Mode",
+            "Chat Mode",
+        ] {
+            assert!(
+                MODES.iter().all(|mode| mode_choice(*mode).0 != retired),
+                "{retired}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod max_turns_tests {
+    use super::parse_max_turns;
+
+    /// W2-PRV-10: `configure` refuses what Settings and `/config/upsert` refuse,
+    /// and (T3-SH-8) in the one sentence Settings uses, whatever was typed.
+    #[test]
+    fn configure_accepts_only_a_whole_number_of_at_least_one() {
+        let settings =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../../ui/desktop/src/components/settings/mode/ConversationLimitsDropdown.tsx",
+            ))
+            .expect("the Settings field's source");
+        for refused in ["", "0", "-5", "2.5", "many", "4294967296"] {
+            let refusal = parse_max_turns(refused).expect_err(refused);
+            assert_eq!(
+                refusal, "Enter a whole number of at least 1.",
+                "{refused:?}"
+            );
+            assert!(
+                settings.contains(&format!("'{refusal}'")),
+                "Settings says it differently"
+            );
+        }
+        assert_eq!(parse_max_turns("1"), Ok(1));
+        assert_eq!(parse_max_turns(" 250 "), Ok(250));
+    }
+}
+
+#[cfg(test)]
+mod previous_provider_settings_tests {
+    use super::PreviousProviderSettings;
+    use biorouter::config::Config;
+    use biorouter::providers::base::ConfigKey;
+
+    /// W2-PRV-2: a key the provider refused had already replaced the working
+    /// one. Whatever `configure` wrote is put back to what was saved before,
+    /// and a setting that did not exist before is removed again.
+    #[test]
+    fn a_refused_setup_leaves_the_saved_settings_as_they_were() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config: &'static Config = Box::leak(Box::new(
+            Config::new_with_file_secrets(
+                dir.path().join("config.yaml"),
+                dir.path().join("secrets.yaml"),
+            )
+            .unwrap(),
+        ));
+        config
+            .set_secret("W2PRV2_PROBE_API_KEY", &"working-key")
+            .unwrap();
+        config
+            .set_param("W2PRV2_PROBE_HOST", "https://api.example.test")
+            .unwrap();
+        let keys = vec![
+            ConfigKey::new("W2PRV2_PROBE_API_KEY", true, true, None),
+            ConfigKey::new("W2PRV2_PROBE_HOST", true, false, None),
+            ConfigKey::new("W2PRV2_PROBE_ORG", false, false, None),
+        ];
+
+        let mut previous = PreviousProviderSettings::capture(config, &keys);
+        config
+            .set_secret("W2PRV2_PROBE_API_KEY", &"typo-key")
+            .unwrap();
+        config
+            .set_param("W2PRV2_PROBE_HOST", "https://elsewhere.test")
+            .unwrap();
+        config.set_param("W2PRV2_PROBE_ORG", "new-org").unwrap();
+
+        assert!(previous.restore().unwrap());
+        assert_eq!(
+            config.get_secret::<String>("W2PRV2_PROBE_API_KEY").unwrap(),
+            "working-key"
+        );
+        assert_eq!(
+            config.get_param::<String>("W2PRV2_PROBE_HOST").unwrap(),
+            "https://api.example.test"
+        );
+        assert!(config.get_param::<String>("W2PRV2_PROBE_ORG").is_err());
+
+        // Nothing changed since: nothing to put back.
+        assert!(!previous.restore().unwrap());
+    }
+
+    /// An interrupt or error part-way through the dialog drops the capture
+    /// without `keep`, and that puts the settings back too.
+    #[test]
+    fn leaving_the_dialog_early_puts_the_settings_back() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config: &'static Config = Box::leak(Box::new(
+            Config::new_with_file_secrets(
+                dir.path().join("config.yaml"),
+                dir.path().join("secrets.yaml"),
+            )
+            .unwrap(),
+        ));
+        config
+            .set_secret("W2PRV2_DROP_API_KEY", &"working-key")
+            .unwrap();
+        let keys = vec![ConfigKey::new("W2PRV2_DROP_API_KEY", true, true, None)];
+        {
+            let _previous = PreviousProviderSettings::capture(config, &keys);
+            config
+                .set_secret("W2PRV2_DROP_API_KEY", &"half-typed")
+                .unwrap();
+        }
+        assert_eq!(
+            config.get_secret::<String>("W2PRV2_DROP_API_KEY").unwrap(),
+            "working-key"
+        );
+        {
+            let mut previous = PreviousProviderSettings::capture(config, &keys);
+            config
+                .set_secret("W2PRV2_DROP_API_KEY", &"accepted")
+                .unwrap();
+            previous.keep();
+        }
+        assert_eq!(
+            config.get_secret::<String>("W2PRV2_DROP_API_KEY").unwrap(),
+            "accepted"
+        );
+    }
+}
+
+#[cfg(test)]
+mod typed_settings_tests {
+    use super::{check_then_save, secret_home, typed_overrides, TypedSetting, MAX_TURNS_REFUSAL};
+    use biorouter::config::Config;
+
+    fn leaked_config(dir: &tempfile::TempDir) -> &'static Config {
+        Box::leak(Box::new(
+            Config::new_with_file_secrets(
+                dir.path().join("config.yaml"),
+                dir.path().join("secrets.yaml"),
+            )
+            .unwrap(),
+        ))
+    }
+
+    fn typed() -> Vec<TypedSetting> {
+        vec![
+            TypedSetting {
+                name: "T3SH5_PROBE_API_KEY".to_string(),
+                secret: true,
+                value: "1234567890".to_string(),
+            },
+            TypedSetting {
+                name: "T3SH5_PROBE_HOST".to_string(),
+                secret: false,
+                value: "https://typed.example.test".to_string(),
+            },
+        ]
+    }
+
+    #[test]
+    fn typed_values_become_overrides_the_way_the_daemon_passes_them() {
+        let overrides = typed_overrides(&typed());
+        // A secret is a JSON string literal, so an all-digit key stays a string.
+        assert_eq!(overrides["T3SH5_PROBE_API_KEY"], "\"1234567890\"");
+        assert_eq!(overrides["T3SH5_PROBE_HOST"], "https://typed.example.test");
+    }
+
+    /// T3-SH-5: a key was written as it was typed, so a session killed before
+    /// the check finished left it saved over the working one.
+    #[tokio::test]
+    async fn nothing_typed_is_written_unless_the_check_passes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = leaked_config(&dir);
+        config
+            .set_secret("T3SH5_PROBE_API_KEY", &"working-key")
+            .unwrap();
+
+        // The check sees what was typed…
+        let refused = check_then_save::<(), _>(config, &typed(), async {
+            let host: String = Config::global().get_param("T3SH5_PROBE_HOST")?;
+            let key: String = Config::global().get_secret("T3SH5_PROBE_API_KEY")?;
+            assert_eq!(host, "https://typed.example.test");
+            assert_eq!(key, "1234567890");
+            anyhow::bail!("401 Unauthorized: Invalid client id or secret")
+        })
+        .await;
+        // …and a refusal writes none of it.
+        assert!(refused.is_err());
+        assert_eq!(
+            config.get_secret::<String>("T3SH5_PROBE_API_KEY").unwrap(),
+            "working-key"
+        );
+        assert!(config.get_param::<String>("T3SH5_PROBE_HOST").is_err());
+
+        let accepted = check_then_save::<(), _>(config, &typed(), async { Ok(()) }).await;
+        assert!(matches!(accepted, Ok(Some(()))), "{accepted:?}");
+        assert_eq!(
+            config.get_secret::<String>("T3SH5_PROBE_API_KEY").unwrap(),
+            "1234567890"
+        );
+        assert_eq!(
+            config.get_param::<String>("T3SH5_PROBE_HOST").unwrap(),
+            "https://typed.example.test"
+        );
+    }
+
+    /// The dialog itself: no value is stored before `check_then_save`. Read
+    /// at the source, because the dialog is a terminal conversation.
+    #[test]
+    fn the_provider_dialog_stores_nothing_before_the_check() {
+        let source = include_str!("configure.rs");
+        let (_, body) = source
+            .split_once("pub async fn configure_provider_dialog()")
+            .expect("the dialog");
+        let (body, _) = body.split_once("\n}\n").expect("its end");
+        let body: String = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let checked_at = body
+            .find("check_then_save(")
+            .expect("the dialog checks first");
+        for write in [
+            "try_store_secret(",
+            "store_secret_reporting(",
+            "set_param(",
+            "set_secret(",
+            "save_typed_settings(",
+        ] {
+            if let Some(at) = body.find(write) {
+                assert!(
+                    at > checked_at,
+                    "the dialog writes with {write} before its check"
+                );
+            }
+        }
+    }
+
+    /// T3-SH-6: the confirmation names where a secret really went.
+    #[test]
+    fn a_secret_is_said_to_be_where_it_went() {
+        assert_eq!(secret_home(false, false), "the system keychain");
+        for (file_before, fell_back) in [(true, false), (false, true), (true, true)] {
+            let home = secret_home(file_before, fell_back);
+            assert!(home.starts_with("the private file "), "{home}");
+            assert!(home.ends_with("secrets.yaml"), "{home}");
+        }
+        assert!(MAX_TURNS_REFUSAL.ends_with('.'));
     }
 }

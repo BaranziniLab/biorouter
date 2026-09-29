@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AbandonContinuationLeaseData, AbandonContinuationLeaseErrors, AbandonContinuationLeaseResponses, AckPrivacyDisclosureData, AckPrivacyDisclosureErrors, AckPrivacyDisclosureResponses, AddExtensionData, AddExtensionErrors, AddExtensionResponses, AddRawSourceData, AddRawSourceErrors, AddRawSourceResponses, AgentAddExtensionData, AgentAddExtensionErrors, AgentAddExtensionResponses, AgentCrossAffiliationGrantData, AgentCrossAffiliationGrantErrors, AgentCrossAffiliationGrantResponses, AgentRemoveExtensionData, AgentRemoveExtensionErrors, AgentRemoveExtensionResponses, AuthenticationPlanData, AuthenticationPlanResponses, BackupConfigData, BackupConfigErrors, BackupConfigResponses, CallToolData, CallToolErrors, CallToolResponses, CancelActiveWorkData, CancelActiveWorkErrors, CancelActiveWorkResponses, CancelRunData, CancelRunResponses, CancelTurnData, CancelTurnErrors, CancelTurnResponses, CatalogChangesData, CatalogChangesErrors, CatalogChangesResponses, CatalogRevisionData, CatalogRevisionErrors, CatalogRevisionResponses, CheckModelData, CheckModelErrors, CheckModelResponses, CheckProviderData, CodingAgentsStatusData, CodingAgentsStatusResponses, ComputerUseConsentData, ComputerUseConsentErrors, ComputerUseConsentResponses, ComputerUseRevokeData, ComputerUseRevokeErrors, ComputerUseRevokeResponses, ComputerUseSetupData, ComputerUseSetupResponses, ComputerUseStatusData, ComputerUseStatusErrors, ComputerUseStatusResponses, ConfirmToolActionData, ConfirmToolActionErrors, ConfirmToolActionResponses, ConnectData, ConnectErrors, ConnectResponses, CreateBaseData, CreateBaseErrors, CreateBaseResponses, CreateCustomProviderData, CreateCustomProviderErrors, CreateCustomProviderResponses, CreateScheduleData, CreateScheduleErrors, CreateScheduleResponses, CreateWorkflowData, CreateWorkflowErrors, CreateWorkflowResponses, CrewAuthenticationCancelData, CrewAuthenticationCancelResponses, CrewAuthenticationPrepareData, CrewAuthenticationPrepareResponses, CrewAuthenticationTerminalData, CrewConnectionFromInvitationData, CrewConnectionFromInvitationErrors, CrewConnectionFromInvitationResponses, CrewConnectionInvitationData, CrewConnectionInvitationErrors, CrewConnectionInvitationResponses, CrewConnectionJoinData, CrewConnectionJoinErrors, CrewConnectionJoinResponses, CrewConnectionJoinStatusData, CrewConnectionJoinStatusErrors, CrewConnectionJoinStatusResponses, CrewHostStartCancelData, CrewHostStartCancelErrors, CrewHostStartCancelResponses, CrewHostStartData, CrewHostStartErrors, CrewHostStartResponses, CrewHostStartStatusData, CrewHostStartStatusErrors, CrewHostStartStatusResponses, CrewProfileContextData, CrewProfileContextResponses, CrewProfileCredentialsData, CrewProfileCredentialsResponses, CrewProfileGrantsData, CrewProfileGrantsResponses, CrewProfileInitData, CrewProfileInitResponses, CrewProfileLockData, CrewProfileLockResponses, CrewProfileRevokeData, CrewProfileRevokeResponses, CrewProfileUnlockData, CrewProfileUnlockResponses, CrewTransferConfirmFileData, CrewTransferConfirmFileResponses, CrewTransferDiscardFileData, CrewTransferDiscardFileResponses, CrewTransferForgetData, CrewTransferForgetResponses, CrewTransferListData, CrewTransferListResponses, CrewTransferPauseData, CrewTransferPauseResponses, CrewTransferPreviewData, CrewTransferPreviewResponses, CrewTransferRegisterFileData, CrewTransferRegisterFileResponses, CrewTransferResumeData, CrewTransferResumeResponses, CrewTransferStartData, CrewTransferStartResponses, CrewTransferStatusData, CrewTransferStatusResponses, DeclassifySessionData, DeclassifySessionErrors, DeclassifySessionResponses, DecodeWorkflowData, DecodeWorkflowErrors, DecodeWorkflowResponses, DeleteBaseData, DeleteBaseErrors, DeleteBaseResponses, DeleteScheduleData, DeleteScheduleErrors, DeleteScheduleResponses, DeleteSessionData, DeleteSessionErrors, DeleteSessionResponses, DeleteWorkflowData, DeleteWorkflowErrors, DeleteWorkflowResponses, DetectProviderData, DetectProviderResponses, DiagnosticsData, DiagnosticsErrors, DiagnosticsResponses, DisconnectData, DisconnectResponses, DivergeSessionData, DivergeSessionErrors, DivergeSessionResponses, EditMessageData, EditMessageErrors, EditMessageResponses, EncodeWorkflowData, EncodeWorkflowErrors, EncodeWorkflowResponses, ExportBrkbData, ExportBrkbErrors, ExportBrkbResponses, ExportSessionData, ExportSessionErrors, ExportSessionResponses, GetActiveData, GetActiveErrors, GetActiveResponses, GetBaseData, GetBaseErrors, GetBaseResponses, GetCallableToolCountData, GetCallableToolCountErrors, GetCallableToolCountResponses, GetCustomProviderData, GetCustomProviderErrors, GetCustomProviderResponses, GetDetectableProvidersData, GetDetectableProvidersResponses, GetExtensionCredentialsData, GetExtensionCredentialsErrors, GetExtensionCredentialsResponses, GetExtensionsData, GetExtensionsErrors, GetExtensionsResponses, GetGraphData, GetGraphErrors, GetGraphResponses, GetKbTierData, GetKbTierErrors, GetKbTierResponses, GetLocationData, GetLocationErrors, GetLocationResponses, GetPageBodyData, GetPageBodyErrors, GetPageBodyResponses, GetPricingData, GetPricingResponses, GetPrivacyDisclosureData, GetPrivacyDisclosureResponses, GetProviderModelsData, GetProviderModelsErrors, GetProviderModelsResponses, GetSessionActivityData, GetSessionActivityErrors, GetSessionActivityResponses, GetSessionData, GetSessionErrors, GetSessionExtensionsData, GetSessionExtensionsErrors, GetSessionExtensionsResponses, GetSessionInsightsData, GetSessionInsightsErrors, GetSessionInsightsResponses, GetSessionResponses, GetSessionUsageData, GetSessionUsageErrors, GetSessionUsageResponses, GetSlashCommandsData, GetSlashCommandsResponses, GetToolsData, GetToolsErrors, GetToolsResponses, GetTunnelStatusData, GetTunnelStatusResponses, GetUsageReportData, GetUsageReportErrors, GetUsageReportResponses, GetUsageSummaryData, GetUsageSummaryErrors, GetUsageSummaryResponses, GrantSessionData, GrantSessionResponses, ImportBrkbData, ImportBrkbErrors, ImportBrkbResponses, ImportSessionData, ImportSessionErrors, ImportSessionResponses, IngestConversationData, IngestConversationErrors, IngestConversationResponses, IngestData, IngestErrors, IngestResponses, InitConfigData, InitConfigErrors, InitConfigResponses, InspectRunningJobData, InspectRunningJobErrors, InspectRunningJobResponses, InstallSkillPackageData, InstallSkillPackageErrors, InstallSkillPackageResponses, InterruptData, InterruptErrors, InterruptResponses, KillRunningJobData, KillRunningJobErrors, KillRunningJobResponses, LintData, LintErrors, LintResponses, ListActiveWorkData, ListActiveWorkResponses, ListBasesData, ListBasesResponses, ListConnectionsData, ListConnectionsResponses, ListHistoryData, ListHistoryResponses, ListPagesData, ListPagesResponses, ListRunsData, ListRunsResponses, ListSchedulesData, ListSchedulesErrors, ListSchedulesResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListSidebarSessionsData, ListSidebarSessionsErrors, ListSidebarSessionsResponses, ListWorkflowsData, ListWorkflowsErrors, ListWorkflowsResponses, LlamacppDeleteData, LlamacppDeleteErrors, LlamacppDeleteResponses, LlamacppEnsureData, LlamacppEnsureErrors, LlamacppEnsureResponses, LlamacppStatusData, LlamacppStatusResponses, LlamacppStopData, LlamacppStopResponses, LlamacppWarmupData, LlamacppWarmupErrors, LlamacppWarmupResponses, MemoryDeleteCategoryData, MemoryDeleteCategoryErrors, MemoryDeleteCategoryResponses, MemoryDeleteEntryData, MemoryDeleteEntryErrors, MemoryDeleteEntryResponses, MemoryInventoryData, MemoryInventoryErrors, MemoryInventoryResponses, MergeBasesData, MergeBasesErrors, MergeBasesResponses, ObserveData, ObserveResponses, ObserveSessionEventsData, ObserveSessionEventsErrors, ObserveSessionEventsResponses, OverrideCredibilityData, OverrideCredibilityErrors, OverrideCredibilityResponses, ParseWorkflowData, ParseWorkflowErrors, ParseWorkflowResponses, PauseScheduleData, PauseScheduleErrors, PauseScheduleResponses, PrepareDeviceData, PrepareDeviceResponses, PreviewResetData, PreviewResetErrors, PreviewResetResponses, PreviewSkillPackageData, PreviewSkillPackageErrors, PreviewSkillPackageResponses, PreviewStateData, PreviewStateErrors, PreviewStateResponses, ProvidersData, ProvidersResponses, PurgeExtensionCredentialsData, PurgeExtensionCredentialsErrors, PurgeExtensionCredentialsResponses, QueryKbData, QueryKbErrors, QueryKbResponses, ReadAllConfigData, ReadAllConfigResponses, ReadConfigData, ReadConfigErrors, ReadConfigResponses, ReadPageData, ReadPageErrors, ReadPageResponses, ReadResourceData, ReadResourceErrors, ReadResourceResponses, ReclassifyData, ReclassifyErrors, ReclassifyResponses, RecoverConfigData, RecoverConfigErrors, RecoverConfigResponses, RecoverContinuationData, RecoverContinuationErrors, RecoverContinuationResponses, RefreshSkillCatalogData, RefreshSkillCatalogErrors, RefreshSkillCatalogResponses, RemoveConfigData, RemoveConfigErrors, RemoveConfigResponses, RemoveConnectionData, RemoveConnectionResponses, RemoveCustomProviderData, RemoveCustomProviderErrors, RemoveCustomProviderResponses, RemoveExtensionData, RemoveExtensionErrors, RemoveExtensionResponses, RemoveSkillPackageData, RemoveSkillPackageErrors, RemoveSkillPackageResponses, ReplyData, ReplyErrors, ReplyResponses, RequestData, RequestResponses, ResetAppDataData, ResetAppDataErrors, ResetAppDataResponses, ResolveData, ResolveErrors, ResolveResponses, RespondToElicitationData, RespondToElicitationErrors, RespondToElicitationResponses, RestartAgentData, RestartAgentErrors, RestartAgentResponses, RestoreStateData, RestoreStateErrors, RestoreStateResponses, ResumeAgentData, ResumeAgentErrors, ResumeAgentResponses, RunningSessionsData, RunningSessionsErrors, RunningSessionsResponses, RunNowHandlerData, RunNowHandlerErrors, RunNowHandlerResponses, SaveConnectionData, SaveConnectionResponses, SaveWorkflowData, SaveWorkflowErrors, SaveWorkflowResponses, ScanWorkflowData, ScanWorkflowResponses, ScheduleWorkflowData, ScheduleWorkflowErrors, ScheduleWorkflowResponses, SessionChangesData, SessionChangesErrors, SessionChangesResponses, SessionsHandlerData, SessionsHandlerErrors, SessionsHandlerResponses, SetActiveData, SetActiveErrors, SetActiveResponses, SetConfigProviderData, SetConfigProviderErrors, SetConfigProviderResponses, SetDefaultModelData, SetDefaultModelErrors, SetDefaultModelResponses, SetKbTierData, SetKbTierErrors, SetKbTierResponses, SetSessionSkillsData, SetSessionSkillsErrors, SetSessionSkillsResponses, SetWorkflowSlashCommandData, SetWorkflowSlashCommandErrors, SetWorkflowSlashCommandResponses, SkillCatalogHandlerData, SkillCatalogHandlerErrors, SkillCatalogHandlerResponses, StartAgentData, StartAgentErrors, StartAgentResponses, StartOpenrouterSetupData, StartOpenrouterSetupResponses, StartRunData, StartRunResponses, StartTetrateSetupData, StartTetrateSetupResponses, StartTunnelData, StartTunnelErrors, StartTunnelResponses, StatusData, StatusResponses, StopAgentData, StopAgentErrors, StopAgentResponses, StopTunnelData, StopTunnelErrors, StopTunnelResponses, SubmitSecretsData, SubmitSecretsErrors, SubmitSecretsResponses, SystemInfoData, SystemInfoResponses, UnpauseScheduleData, UnpauseScheduleErrors, UnpauseScheduleResponses, UpdateAgentProviderData, UpdateAgentProviderErrors, UpdateAgentProviderResponses, UpdateConnectionData, UpdateConnectionResponses, UpdateCustomProviderData, UpdateCustomProviderErrors, UpdateCustomProviderResponses, UpdateFromSessionData, UpdateFromSessionErrors, UpdateFromSessionResponses, UpdateScheduleData, UpdateScheduleErrors, UpdateScheduleResponses, UpdateSessionNameData, UpdateSessionNameErrors, UpdateSessionNameResponses, UpdateSessionUserWorkflowValuesData, UpdateSessionUserWorkflowValuesErrors, UpdateSessionUserWorkflowValuesResponses, UpdateWorkingDirData, UpdateWorkingDirErrors, UpdateWorkingDirResponses, UpsertConfigData, UpsertConfigErrors, UpsertConfigResponses, UpsertPermissionsData, UpsertPermissionsErrors, UpsertPermissionsResponses, ValidateConfigData, ValidateConfigErrors, ValidateConfigResponses, WorkflowToYamlData, WorkflowToYamlErrors, WorkflowToYamlResponses, WritePageData, WritePageErrors, WritePageResponses } from './types.gen';
+import type { AbandonContinuationLeaseData, AbandonContinuationLeaseErrors, AbandonContinuationLeaseResponses, AckPrivacyDisclosureData, AckPrivacyDisclosureErrors, AckPrivacyDisclosureResponses, AddExtensionData, AddExtensionErrors, AddExtensionResponses, AddRawSourceData, AddRawSourceErrors, AddRawSourceResponses, AgentAddExtensionData, AgentAddExtensionErrors, AgentAddExtensionResponses, AgentCrossAffiliationGrantData, AgentCrossAffiliationGrantErrors, AgentCrossAffiliationGrantResponses, AgentRemoveExtensionData, AgentRemoveExtensionErrors, AgentRemoveExtensionResponses, BackupConfigData, BackupConfigErrors, BackupConfigResponses, CallToolData, CallToolErrors, CallToolResponses, CancelActiveWorkData, CancelActiveWorkErrors, CancelActiveWorkResponses, CancelTurnData, CancelTurnErrors, CancelTurnResponses, CatalogChangesData, CatalogChangesErrors, CatalogChangesResponses, CatalogRevisionData, CatalogRevisionErrors, CatalogRevisionResponses, CheckModelData, CheckModelErrors, CheckModelResponses, CheckProviderData, CheckProviderErrors, CheckProviderResponses, CodingAgentsStatusData, CodingAgentsStatusResponses, ComputerUseConsentData, ComputerUseConsentErrors, ComputerUseConsentResponses, ComputerUseRevokeData, ComputerUseRevokeErrors, ComputerUseRevokeResponses, ComputerUseSetupData, ComputerUseSetupResponses, ComputerUseStatusData, ComputerUseStatusErrors, ComputerUseStatusResponses, ConfirmToolActionData, ConfirmToolActionErrors, ConfirmToolActionResponses, CreateBaseData, CreateBaseErrors, CreateBaseResponses, CreateCustomProviderData, CreateCustomProviderErrors, CreateCustomProviderResponses, CreateScheduleData, CreateScheduleErrors, CreateScheduleResponses, CreateWorkflowData, CreateWorkflowErrors, CreateWorkflowResponses, CrewAuthenticationCancelData, CrewAuthenticationCancelErrors, CrewAuthenticationCancelResponses, CrewAuthenticationPlanData, CrewAuthenticationPlanErrors, CrewAuthenticationPlanResponses, CrewAuthenticationPrepareData, CrewAuthenticationPrepareErrors, CrewAuthenticationPrepareResponses, CrewAuthenticationTerminalData, CrewAuthenticationTerminalErrors, CrewCancelRunData, CrewCancelRunErrors, CrewCancelRunResponses, CrewConnectData, CrewConnectErrors, CrewConnectionFromInvitationData, CrewConnectionFromInvitationErrors, CrewConnectionFromInvitationResponses, CrewConnectionInvitationData, CrewConnectionInvitationErrors, CrewConnectionInvitationResponses, CrewConnectionJoinData, CrewConnectionJoinErrors, CrewConnectionJoinResponses, CrewConnectionJoinStatusData, CrewConnectionJoinStatusErrors, CrewConnectionJoinStatusResponses, CrewConnectResponses, CrewDisconnectData, CrewDisconnectErrors, CrewDisconnectResponses, CrewGrantSessionData, CrewGrantSessionErrors, CrewGrantSessionResponses, CrewHostStartCancelData, CrewHostStartCancelErrors, CrewHostStartCancelResponses, CrewHostStartData, CrewHostStartErrors, CrewHostStartResponses, CrewHostStartStatusData, CrewHostStartStatusErrors, CrewHostStartStatusResponses, CrewListConnectionsData, CrewListConnectionsErrors, CrewListConnectionsResponses, CrewListRunsData, CrewListRunsErrors, CrewListRunsResponses, CrewObserveData, CrewObserveErrors, CrewObserveResponses, CrewPrepareDeviceData, CrewPrepareDeviceErrors, CrewPrepareDeviceResponses, CrewProfileContextData, CrewProfileContextErrors, CrewProfileContextResponses, CrewProfileCredentialsData, CrewProfileCredentialsErrors, CrewProfileCredentialsResponses, CrewProfileGrantsData, CrewProfileGrantsErrors, CrewProfileGrantsResponses, CrewProfileInitData, CrewProfileInitErrors, CrewProfileInitResponses, CrewProfileLockData, CrewProfileLockErrors, CrewProfileLockResponses, CrewProfileRevokeData, CrewProfileRevokeErrors, CrewProfileRevokeResponses, CrewProfileUnlockData, CrewProfileUnlockErrors, CrewProfileUnlockResponses, CrewRemoveConnectionData, CrewRemoveConnectionErrors, CrewRemoveConnectionResponses, CrewRequestData, CrewRequestErrors, CrewRequestResponses, CrewResolveData, CrewResolveErrors, CrewResolveResponses, CrewSaveConnectionData, CrewSaveConnectionErrors, CrewSaveConnectionResponses, CrewStartRunData, CrewStartRunErrors, CrewStartRunResponses, CrewTransferConfirmFileData, CrewTransferConfirmFileErrors, CrewTransferConfirmFileResponses, CrewTransferDiscardFileData, CrewTransferDiscardFileErrors, CrewTransferDiscardFileResponses, CrewTransferForgetData, CrewTransferForgetErrors, CrewTransferForgetResponses, CrewTransferListData, CrewTransferListErrors, CrewTransferListResponses, CrewTransferPauseData, CrewTransferPauseErrors, CrewTransferPauseResponses, CrewTransferPreviewData, CrewTransferPreviewErrors, CrewTransferPreviewResponses, CrewTransferRegisterFileData, CrewTransferRegisterFileErrors, CrewTransferRegisterFileResponses, CrewTransferResumeData, CrewTransferResumeErrors, CrewTransferResumeResponses, CrewTransferStartData, CrewTransferStartErrors, CrewTransferStartResponses, CrewTransferStatusData, CrewTransferStatusErrors, CrewTransferStatusResponses, CrewUpdateConnectionData, CrewUpdateConnectionErrors, CrewUpdateConnectionResponses, DeclassifySessionData, DeclassifySessionErrors, DeclassifySessionResponses, DecodeWorkflowData, DecodeWorkflowErrors, DecodeWorkflowResponses, DeleteBaseData, DeleteBaseErrors, DeleteBaseResponses, DeleteScheduleData, DeleteScheduleErrors, DeleteScheduleResponses, DeleteSessionData, DeleteSessionErrors, DeleteSessionResponses, DeleteWorkflowData, DeleteWorkflowErrors, DeleteWorkflowResponses, DetectProviderData, DetectProviderResponses, DiagnosticsData, DiagnosticsErrors, DiagnosticsResponses, DivergeSessionData, DivergeSessionErrors, DivergeSessionResponses, EditMessageData, EditMessageErrors, EditMessageResponses, EncodeWorkflowData, EncodeWorkflowErrors, EncodeWorkflowResponses, ExportBrkbData, ExportBrkbErrors, ExportBrkbResponses, ExportSessionData, ExportSessionErrors, ExportSessionResponses, GetActiveData, GetActiveErrors, GetActiveResponses, GetBaseData, GetBaseErrors, GetBaseResponses, GetCallableToolCountData, GetCallableToolCountErrors, GetCallableToolCountResponses, GetCustomProviderData, GetCustomProviderErrors, GetCustomProviderResponses, GetDetectableProvidersData, GetDetectableProvidersResponses, GetExtensionCredentialsData, GetExtensionCredentialsErrors, GetExtensionCredentialsResponses, GetExtensionsData, GetExtensionsErrors, GetExtensionsResponses, GetGraphData, GetGraphErrors, GetGraphResponses, GetKbTierData, GetKbTierErrors, GetKbTierResponses, GetLocationData, GetLocationErrors, GetLocationResponses, GetPageBodyData, GetPageBodyErrors, GetPageBodyResponses, GetPricingData, GetPricingResponses, GetPrivacyDisclosureData, GetPrivacyDisclosureResponses, GetProviderModelsData, GetProviderModelsErrors, GetProviderModelsResponses, GetSessionActivityData, GetSessionActivityErrors, GetSessionActivityResponses, GetSessionData, GetSessionErrors, GetSessionExtensionsData, GetSessionExtensionsErrors, GetSessionExtensionsResponses, GetSessionInsightsData, GetSessionInsightsErrors, GetSessionInsightsResponses, GetSessionResponses, GetSessionUsageData, GetSessionUsageErrors, GetSessionUsageResponses, GetSlashCommandsData, GetSlashCommandsResponses, GetToolsData, GetToolsErrors, GetToolsResponses, GetTunnelStatusData, GetTunnelStatusResponses, GetUsageReportData, GetUsageReportErrors, GetUsageReportResponses, GetUsageSummaryData, GetUsageSummaryErrors, GetUsageSummaryResponses, ImportBrkbData, ImportBrkbErrors, ImportBrkbResponses, ImportSessionData, ImportSessionErrors, ImportSessionResponses, IngestConversationData, IngestConversationErrors, IngestConversationResponses, IngestData, IngestErrors, IngestResponses, InitConfigData, InitConfigErrors, InitConfigResponses, InspectRunningJobData, InspectRunningJobErrors, InspectRunningJobResponses, InstallSkillPackageData, InstallSkillPackageErrors, InstallSkillPackageResponses, InterruptData, InterruptErrors, InterruptResponses, KillRunningJobData, KillRunningJobErrors, KillRunningJobResponses, LintData, LintErrors, LintResponses, ListActiveWorkData, ListActiveWorkResponses, ListBasesData, ListBasesResponses, ListHistoryData, ListHistoryResponses, ListPagesData, ListPagesResponses, ListSchedulesData, ListSchedulesErrors, ListSchedulesResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListSidebarSessionsData, ListSidebarSessionsErrors, ListSidebarSessionsResponses, ListWorkflowsData, ListWorkflowsErrors, ListWorkflowsResponses, LlamacppDeleteData, LlamacppDeleteErrors, LlamacppDeleteResponses, LlamacppEnsureData, LlamacppEnsureErrors, LlamacppEnsureResponses, LlamacppStatusData, LlamacppStatusResponses, LlamacppStopData, LlamacppStopResponses, LlamacppWarmupData, LlamacppWarmupErrors, LlamacppWarmupResponses, MemoryDeleteCategoryData, MemoryDeleteCategoryErrors, MemoryDeleteCategoryResponses, MemoryDeleteEntryData, MemoryDeleteEntryErrors, MemoryDeleteEntryResponses, MemoryInventoryData, MemoryInventoryErrors, MemoryInventoryResponses, MergeBasesData, MergeBasesErrors, MergeBasesResponses, ObserveSessionEventsData, ObserveSessionEventsErrors, ObserveSessionEventsResponses, OverrideCredibilityData, OverrideCredibilityErrors, OverrideCredibilityResponses, ParseWorkflowData, ParseWorkflowErrors, ParseWorkflowResponses, PauseScheduleData, PauseScheduleErrors, PauseScheduleResponses, PreviewResetData, PreviewResetErrors, PreviewResetResponses, PreviewSkillPackageData, PreviewSkillPackageErrors, PreviewSkillPackageResponses, PreviewStateData, PreviewStateErrors, PreviewStateResponses, ProvidersData, ProvidersResponses, PurgeExtensionCredentialsData, PurgeExtensionCredentialsErrors, PurgeExtensionCredentialsResponses, QueryKbData, QueryKbErrors, QueryKbResponses, ReadAllConfigData, ReadAllConfigResponses, ReadConfigData, ReadConfigErrors, ReadConfigResponses, ReadPageData, ReadPageErrors, ReadPageResponses, ReadResourceData, ReadResourceErrors, ReadResourceResponses, ReclassifyData, ReclassifyErrors, ReclassifyResponses, RecoverConfigData, RecoverConfigErrors, RecoverConfigResponses, RecoverContinuationData, RecoverContinuationErrors, RecoverContinuationResponses, RefreshSkillCatalogData, RefreshSkillCatalogErrors, RefreshSkillCatalogResponses, RemoveConfigData, RemoveConfigErrors, RemoveConfigResponses, RemoveCustomProviderData, RemoveCustomProviderErrors, RemoveCustomProviderResponses, RemoveExtensionData, RemoveExtensionErrors, RemoveExtensionResponses, RemoveSkillPackageData, RemoveSkillPackageErrors, RemoveSkillPackageResponses, ReplyData, ReplyErrors, ReplyResponses, ResetAppDataData, ResetAppDataErrors, ResetAppDataResponses, RespondToElicitationData, RespondToElicitationErrors, RespondToElicitationResponses, RestartAgentData, RestartAgentErrors, RestartAgentResponses, RestoreStateData, RestoreStateErrors, RestoreStateResponses, ResumeAgentData, ResumeAgentErrors, ResumeAgentResponses, RunningSessionsData, RunningSessionsErrors, RunningSessionsResponses, RunNowHandlerData, RunNowHandlerErrors, RunNowHandlerResponses, SaveWorkflowData, SaveWorkflowErrors, SaveWorkflowResponses, ScanWorkflowData, ScanWorkflowResponses, ScheduleWorkflowData, ScheduleWorkflowErrors, ScheduleWorkflowResponses, SessionChangesData, SessionChangesErrors, SessionChangesResponses, SessionsHandlerData, SessionsHandlerErrors, SessionsHandlerResponses, SetActiveData, SetActiveErrors, SetActiveResponses, SetConfigProviderData, SetConfigProviderErrors, SetConfigProviderResponses, SetDefaultModelData, SetDefaultModelErrors, SetDefaultModelResponses, SetKbTierData, SetKbTierErrors, SetKbTierResponses, SetSessionSkillsData, SetSessionSkillsErrors, SetSessionSkillsResponses, SetWorkflowSlashCommandData, SetWorkflowSlashCommandErrors, SetWorkflowSlashCommandResponses, SkillCatalogHandlerData, SkillCatalogHandlerErrors, SkillCatalogHandlerResponses, StartAgentData, StartAgentErrors, StartAgentResponses, StartOpenrouterSetupData, StartOpenrouterSetupResponses, StartTetrateSetupData, StartTetrateSetupResponses, StartTunnelData, StartTunnelErrors, StartTunnelResponses, StatusData, StatusResponses, StopAgentData, StopAgentErrors, StopAgentResponses, StopTunnelData, StopTunnelErrors, StopTunnelResponses, SubmitSecretsData, SubmitSecretsErrors, SubmitSecretsResponses, SystemInfoData, SystemInfoResponses, UnpauseScheduleData, UnpauseScheduleErrors, UnpauseScheduleResponses, UpdateAgentProviderData, UpdateAgentProviderErrors, UpdateAgentProviderResponses, UpdateCustomProviderData, UpdateCustomProviderErrors, UpdateCustomProviderResponses, UpdateFromSessionData, UpdateFromSessionErrors, UpdateFromSessionResponses, UpdateScheduleData, UpdateScheduleErrors, UpdateScheduleResponses, UpdateSessionNameData, UpdateSessionNameErrors, UpdateSessionNameResponses, UpdateSessionUserWorkflowValuesData, UpdateSessionUserWorkflowValuesErrors, UpdateSessionUserWorkflowValuesResponses, UpdateWorkingDirData, UpdateWorkingDirErrors, UpdateWorkingDirResponses, UpsertConfigData, UpsertConfigErrors, UpsertConfigResponses, UpsertPermissionsData, UpsertPermissionsErrors, UpsertPermissionsResponses, ValidateConfigData, ValidateConfigErrors, ValidateConfigResponses, WorkflowToYamlData, WorkflowToYamlErrors, WorkflowToYamlResponses, WritePageData, WritePageErrors, WritePageResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean> = Options2<TData, ThrowOnError> & {
     /**
@@ -296,7 +296,7 @@ export const readAllConfig = <ThrowOnError extends boolean = false>(options?: Op
 
 export const backupConfig = <ThrowOnError extends boolean = false>(options?: Options<BackupConfigData, ThrowOnError>) => (options?.client ?? client).post<BackupConfigResponses, BackupConfigErrors, ThrowOnError>({ url: '/config/backup', ...options });
 
-export const checkProvider = <ThrowOnError extends boolean = false>(options: Options<CheckProviderData, ThrowOnError>) => (options.client ?? client).post<unknown, unknown, ThrowOnError>({
+export const checkProvider = <ThrowOnError extends boolean = false>(options: Options<CheckProviderData, ThrowOnError>) => (options.client ?? client).post<CheckProviderResponses, CheckProviderErrors, ThrowOnError>({
     url: '/config/check_provider',
     ...options,
     headers: {
@@ -428,13 +428,22 @@ export const upsertConfig = <ThrowOnError extends boolean = false>(options: Opti
 
 export const validateConfig = <ThrowOnError extends boolean = false>(options?: Options<ValidateConfigData, ThrowOnError>) => (options?.client ?? client).get<ValidateConfigResponses, ValidateConfigErrors, ThrowOnError>({ url: '/config/validate', ...options });
 
-export const crewAuthenticationCancel = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationCancelData, ThrowOnError>) => (options.client ?? client).delete<CrewAuthenticationCancelResponses, unknown, ThrowOnError>({ url: '/crew/authentication/{id}', ...options });
+export const crewAuthenticationCancel = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationCancelData, ThrowOnError>) => (options.client ?? client).delete<CrewAuthenticationCancelResponses, CrewAuthenticationCancelErrors, ThrowOnError>({ url: '/crew/authentication/{id}', ...options });
 
-export const crewAuthenticationTerminal = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationTerminalData, ThrowOnError>) => (options.client ?? client).get<unknown, unknown, ThrowOnError>({ url: '/crew/authentication/{id}/terminal', ...options });
+/**
+ * The sign-in's terminal, as a WebSocket: binary frames carry the terminal's bytes; text
+ *
+ * frames carry `{"type":"input","data"}` and `{"type":"resize","cols","rows"}` from the client
+ * and `{"type":"exit","exit_code","authenticated"}` or `{"type":"error","code","error"}` from
+ * the daemon, where `code` is `crew_handoff_failed` (signed in, but Crew did not start behind
+ * it), `crew_workspace_identity_mismatch`, `authentication_handoff_failed` (the sign-in was
+ * replaced or closed) or `authentication_attach_failed` (the terminal could not be attached).
+ */
+export const crewAuthenticationTerminal = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationTerminalData, ThrowOnError>) => (options.client ?? client).get<unknown, CrewAuthenticationTerminalErrors, ThrowOnError>({ url: '/crew/authentication/{id}/terminal', ...options });
 
-export const listConnections = <ThrowOnError extends boolean = false>(options?: Options<ListConnectionsData, ThrowOnError>) => (options?.client ?? client).get<ListConnectionsResponses, unknown, ThrowOnError>({ url: '/crew/connections', ...options });
+export const crewListConnections = <ThrowOnError extends boolean = false>(options?: Options<CrewListConnectionsData, ThrowOnError>) => (options?.client ?? client).get<CrewListConnectionsResponses, CrewListConnectionsErrors, ThrowOnError>({ url: '/crew/connections', ...options });
 
-export const saveConnection = <ThrowOnError extends boolean = false>(options: Options<SaveConnectionData, ThrowOnError>) => (options.client ?? client).post<SaveConnectionResponses, unknown, ThrowOnError>({
+export const crewSaveConnection = <ThrowOnError extends boolean = false>(options: Options<CrewSaveConnectionData, ThrowOnError>) => (options.client ?? client).post<CrewSaveConnectionResponses, CrewSaveConnectionErrors, ThrowOnError>({
     url: '/crew/connections',
     ...options,
     headers: {
@@ -452,9 +461,9 @@ export const crewConnectionFromInvitation = <ThrowOnError extends boolean = fals
     }
 });
 
-export const removeConnection = <ThrowOnError extends boolean = false>(options: Options<RemoveConnectionData, ThrowOnError>) => (options.client ?? client).delete<RemoveConnectionResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}', ...options });
+export const crewRemoveConnection = <ThrowOnError extends boolean = false>(options: Options<CrewRemoveConnectionData, ThrowOnError>) => (options.client ?? client).delete<CrewRemoveConnectionResponses, CrewRemoveConnectionErrors, ThrowOnError>({ url: '/crew/connections/{id}', ...options });
 
-export const updateConnection = <ThrowOnError extends boolean = false>(options: Options<UpdateConnectionData, ThrowOnError>) => (options.client ?? client).patch<UpdateConnectionResponses, unknown, ThrowOnError>({
+export const crewUpdateConnection = <ThrowOnError extends boolean = false>(options: Options<CrewUpdateConnectionData, ThrowOnError>) => (options.client ?? client).patch<CrewUpdateConnectionResponses, CrewUpdateConnectionErrors, ThrowOnError>({
     url: '/crew/connections/{id}',
     ...options,
     headers: {
@@ -463,9 +472,9 @@ export const updateConnection = <ThrowOnError extends boolean = false>(options: 
     }
 });
 
-export const authenticationPlan = <ThrowOnError extends boolean = false>(options: Options<AuthenticationPlanData, ThrowOnError>) => (options.client ?? client).post<AuthenticationPlanResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/auth-plan', ...options });
+export const crewAuthenticationPlan = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationPlanData, ThrowOnError>) => (options.client ?? client).post<CrewAuthenticationPlanResponses, CrewAuthenticationPlanErrors, ThrowOnError>({ url: '/crew/connections/{id}/auth-plan', ...options });
 
-export const crewAuthenticationPrepare = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationPrepareData, ThrowOnError>) => (options.client ?? client).post<CrewAuthenticationPrepareResponses, unknown, ThrowOnError>({
+export const crewAuthenticationPrepare = <ThrowOnError extends boolean = false>(options: Options<CrewAuthenticationPrepareData, ThrowOnError>) => (options.client ?? client).post<CrewAuthenticationPrepareResponses, CrewAuthenticationPrepareErrors, ThrowOnError>({
     url: '/crew/connections/{id}/authentication',
     ...options,
     headers: {
@@ -474,9 +483,9 @@ export const crewAuthenticationPrepare = <ThrowOnError extends boolean = false>(
     }
 });
 
-export const connect = <ThrowOnError extends boolean = false>(options: Options<ConnectData, ThrowOnError>) => (options.client ?? client).post<ConnectResponses, ConnectErrors, ThrowOnError>({ url: '/crew/connections/{id}/connect', ...options });
+export const crewConnect = <ThrowOnError extends boolean = false>(options: Options<CrewConnectData, ThrowOnError>) => (options.client ?? client).post<CrewConnectResponses, CrewConnectErrors, ThrowOnError>({ url: '/crew/connections/{id}/connect', ...options });
 
-export const disconnect = <ThrowOnError extends boolean = false>(options: Options<DisconnectData, ThrowOnError>) => (options.client ?? client).post<DisconnectResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/disconnect', ...options });
+export const crewDisconnect = <ThrowOnError extends boolean = false>(options: Options<CrewDisconnectData, ThrowOnError>) => (options.client ?? client).post<CrewDisconnectResponses, CrewDisconnectErrors, ThrowOnError>({ url: '/crew/connections/{id}/disconnect', ...options });
 
 /**
  * The chats and tasks holding a grant on this connection (RV-D2). Each row adds, to what
@@ -497,7 +506,7 @@ export const disconnect = <ThrowOnError extends boolean = false>(options: Option
  * F3) get the same `kind` and `expires_at`, and a `null` `session_name`: the id may now name a
  * different conversation, whose title would mislabel the grant.
  */
-export const crewProfileGrants = <ThrowOnError extends boolean = false>(options: Options<CrewProfileGrantsData, ThrowOnError>) => (options.client ?? client).get<CrewProfileGrantsResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/grants', ...options });
+export const crewProfileGrants = <ThrowOnError extends boolean = false>(options: Options<CrewProfileGrantsData, ThrowOnError>) => (options.client ?? client).get<CrewProfileGrantsResponses, CrewProfileGrantsErrors, ThrowOnError>({ url: '/crew/connections/{id}/grants', ...options });
 
 export const crewConnectionInvitation = <ThrowOnError extends boolean = false>(options: Options<CrewConnectionInvitationData, ThrowOnError>) => (options.client ?? client).get<CrewConnectionInvitationResponses, CrewConnectionInvitationErrors, ThrowOnError>({ url: '/crew/connections/{id}/invitation', ...options });
 
@@ -505,7 +514,12 @@ export const crewConnectionJoinStatus = <ThrowOnError extends boolean = false>(o
 
 export const crewConnectionJoin = <ThrowOnError extends boolean = false>(options: Options<CrewConnectionJoinData, ThrowOnError>) => (options.client ?? client).post<CrewConnectionJoinResponses, CrewConnectionJoinErrors, ThrowOnError>({ url: '/crew/connections/{id}/join', ...options });
 
-export const observe = <ThrowOnError extends boolean = false>(options: Options<ObserveData, ThrowOnError>) => (options.client ?? client).post<ObserveResponses, unknown, ThrowOnError>({
+/**
+ * Watch a connection's workspace, and one channel of it, as the person: NDJSON frames until
+ *
+ * the observation ends.
+ */
+export const crewObserve = <ThrowOnError extends boolean = false>(options: Options<CrewObserveData, ThrowOnError>) => (options.client ?? client).post<CrewObserveResponses, CrewObserveErrors, ThrowOnError>({
     url: '/crew/connections/{id}/observe',
     ...options,
     headers: {
@@ -514,7 +528,12 @@ export const observe = <ThrowOnError extends boolean = false>(options: Options<O
     }
 });
 
-export const request = <ThrowOnError extends boolean = false>(options: Options<RequestData, ThrowOnError>) => (options.client ?? client).post<RequestResponses, unknown, ThrowOnError>({
+/**
+ * Send one Crew protocol request to the workspace as the person, and answer the workspace's
+ *
+ * own result.
+ */
+export const crewRequest = <ThrowOnError extends boolean = false>(options: Options<CrewRequestData, ThrowOnError>) => (options.client ?? client).post<CrewRequestResponses, CrewRequestErrors, ThrowOnError>({
     url: '/crew/connections/{id}/request',
     ...options,
     headers: {
@@ -523,9 +542,12 @@ export const request = <ThrowOnError extends boolean = false>(options: Options<R
     }
 });
 
-export const listRuns = <ThrowOnError extends boolean = false>(options: Options<ListRunsData, ThrowOnError>) => (options.client ?? client).get<ListRunsResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/runs', ...options });
+export const crewListRuns = <ThrowOnError extends boolean = false>(options: Options<CrewListRunsData, ThrowOnError>) => (options.client ?? client).get<CrewListRunsResponses, CrewListRunsErrors, ThrowOnError>({ url: '/crew/connections/{id}/runs', ...options });
 
-export const startRun = <ThrowOnError extends boolean = false>(options: Options<StartRunData, ThrowOnError>) => (options.client ?? client).post<StartRunResponses, unknown, ThrowOnError>({
+/**
+ * Start an agent task that posts its result in a channel, under a grant the workspace admits.
+ */
+export const crewStartRun = <ThrowOnError extends boolean = false>(options: Options<CrewStartRunData, ThrowOnError>) => (options.client ?? client).post<CrewStartRunResponses, CrewStartRunErrors, ThrowOnError>({
     url: '/crew/connections/{id}/runs',
     ...options,
     headers: {
@@ -534,9 +556,19 @@ export const startRun = <ThrowOnError extends boolean = false>(options: Options<
     }
 });
 
-export const cancelRun = <ThrowOnError extends boolean = false>(options: Options<CancelRunData, ThrowOnError>) => (options.client ?? client).post<CancelRunResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/runs/{run_id}/cancel', ...options });
+export const crewCancelRun = <ThrowOnError extends boolean = false>(options: Options<CrewCancelRunData, ThrowOnError>) => (options.client ?? client).post<CrewCancelRunResponses, CrewCancelRunErrors, ThrowOnError>({ url: '/crew/connections/{id}/runs/{run_id}/cancel', ...options });
 
-export const grantSession = <ThrowOnError extends boolean = false>(options: Options<GrantSessionData, ThrowOnError>) => (options.client ?? client).post<GrantSessionResponses, unknown, ThrowOnError>({
+/**
+ * The context a chat's grant reads, as the workspace lists it (`context.manifest`).
+ */
+export const crewProfileContext = <ThrowOnError extends boolean = false>(options: Options<CrewProfileContextData, ThrowOnError>) => (options.client ?? client).get<CrewProfileContextResponses, CrewProfileContextErrors, ThrowOnError>({ url: '/crew/connections/{id}/sessions/{session_id}/context', ...options });
+
+/**
+ * Give a chat access to a channel (`/crew`): the workspace admits a run for it, and the chat
+ *
+ * gets the Crew tools, bound to its model.
+ */
+export const crewGrantSession = <ThrowOnError extends boolean = false>(options: Options<CrewGrantSessionData, ThrowOnError>) => (options.client ?? client).post<CrewGrantSessionResponses, CrewGrantSessionErrors, ThrowOnError>({
     url: '/crew/connections/{id}/sessions/{session_id}/grant',
     ...options,
     headers: {
@@ -545,15 +577,13 @@ export const grantSession = <ThrowOnError extends boolean = false>(options: Opti
     }
 });
 
-export const crewProfileContext = <ThrowOnError extends boolean = false>(options: Options<CrewProfileContextData, ThrowOnError>) => (options.client ?? client).get<CrewProfileContextResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/sessions/{session}/context', ...options });
-
 /**
  * Revoke a chat's or task's grant (RV-D1, RV-D3). The grant stops on this device first,
  *
  * and is saved, before the workspace is asked; so:
  *
- * - 200 `{revoked: true, session_id, run_id, remote_revocation_confirmed: true, run}`: stopped
- * here and confirmed by the workspace. `run` is the workspace's revoked run.
+ * - 200 [`CrewRevocation`]: stopped here and confirmed by the workspace. `run` is the
+ * workspace's revoked run.
  * - 503 [`REVOCATION_UNCONFIRMED`]: stopped here and saved, not yet confirmed. The daemon
  * asks the workspace again by itself at every reconnect until it confirms (F3), and the
  * grants list says when it has; retrying asks at once.
@@ -564,11 +594,11 @@ export const crewProfileContext = <ThrowOnError extends boolean = false>(options
  * `cancelled` or `cancellation_unconfirmed` rather than a stale `running`; its answer adds
  * `task_status`. The request body, if any, is ignored.
  */
-export const crewProfileRevoke = <ThrowOnError extends boolean = false>(options: Options<CrewProfileRevokeData, ThrowOnError>) => (options.client ?? client).post<CrewProfileRevokeResponses, unknown, ThrowOnError>({ url: '/crew/connections/{id}/sessions/{session}/revoke', ...options });
+export const crewProfileRevoke = <ThrowOnError extends boolean = false>(options: Options<CrewProfileRevokeData, ThrowOnError>) => (options.client ?? client).post<CrewProfileRevokeResponses, CrewProfileRevokeErrors, ThrowOnError>({ url: '/crew/connections/{id}/sessions/{session_id}/revoke', ...options });
 
-export const crewProfileCredentials = <ThrowOnError extends boolean = false>(options?: Options<CrewProfileCredentialsData, ThrowOnError>) => (options?.client ?? client).get<CrewProfileCredentialsResponses, unknown, ThrowOnError>({ url: '/crew/credentials', ...options });
+export const crewProfileCredentials = <ThrowOnError extends boolean = false>(options?: Options<CrewProfileCredentialsData, ThrowOnError>) => (options?.client ?? client).get<CrewProfileCredentialsResponses, CrewProfileCredentialsErrors, ThrowOnError>({ url: '/crew/credentials', ...options });
 
-export const crewProfileInit = <ThrowOnError extends boolean = false>(options: Options<CrewProfileInitData, ThrowOnError>) => (options.client ?? client).post<CrewProfileInitResponses, unknown, ThrowOnError>({
+export const crewProfileInit = <ThrowOnError extends boolean = false>(options: Options<CrewProfileInitData, ThrowOnError>) => (options.client ?? client).post<CrewProfileInitResponses, CrewProfileInitErrors, ThrowOnError>({
     url: '/crew/credentials/init',
     ...options,
     headers: {
@@ -577,9 +607,9 @@ export const crewProfileInit = <ThrowOnError extends boolean = false>(options: O
     }
 });
 
-export const crewProfileLock = <ThrowOnError extends boolean = false>(options?: Options<CrewProfileLockData, ThrowOnError>) => (options?.client ?? client).post<CrewProfileLockResponses, unknown, ThrowOnError>({ url: '/crew/credentials/lock', ...options });
+export const crewProfileLock = <ThrowOnError extends boolean = false>(options?: Options<CrewProfileLockData, ThrowOnError>) => (options?.client ?? client).post<CrewProfileLockResponses, CrewProfileLockErrors, ThrowOnError>({ url: '/crew/credentials/lock', ...options });
 
-export const crewProfileUnlock = <ThrowOnError extends boolean = false>(options: Options<CrewProfileUnlockData, ThrowOnError>) => (options.client ?? client).post<CrewProfileUnlockResponses, unknown, ThrowOnError>({
+export const crewProfileUnlock = <ThrowOnError extends boolean = false>(options: Options<CrewProfileUnlockData, ThrowOnError>) => (options.client ?? client).post<CrewProfileUnlockResponses, CrewProfileUnlockErrors, ThrowOnError>({
     url: '/crew/credentials/unlock',
     ...options,
     headers: {
@@ -588,9 +618,9 @@ export const crewProfileUnlock = <ThrowOnError extends boolean = false>(options:
     }
 });
 
-export const prepareDevice = <ThrowOnError extends boolean = false>(options?: Options<PrepareDeviceData, ThrowOnError>) => (options?.client ?? client).post<PrepareDeviceResponses, unknown, ThrowOnError>({ url: '/crew/devices/prepare', ...options });
+export const crewPrepareDevice = <ThrowOnError extends boolean = false>(options?: Options<CrewPrepareDeviceData, ThrowOnError>) => (options?.client ?? client).post<CrewPrepareDeviceResponses, CrewPrepareDeviceErrors, ThrowOnError>({ url: '/crew/devices/prepare', ...options });
 
-export const crewTransferRegisterFile = <ThrowOnError extends boolean = false>(options: Options<CrewTransferRegisterFileData, ThrowOnError>) => (options.client ?? client).post<CrewTransferRegisterFileResponses, unknown, ThrowOnError>({
+export const crewTransferRegisterFile = <ThrowOnError extends boolean = false>(options: Options<CrewTransferRegisterFileData, ThrowOnError>) => (options.client ?? client).post<CrewTransferRegisterFileResponses, CrewTransferRegisterFileErrors, ThrowOnError>({
     url: '/crew/files',
     ...options,
     headers: {
@@ -599,9 +629,9 @@ export const crewTransferRegisterFile = <ThrowOnError extends boolean = false>(o
     }
 });
 
-export const crewTransferDiscardFile = <ThrowOnError extends boolean = false>(options: Options<CrewTransferDiscardFileData, ThrowOnError>) => (options.client ?? client).delete<CrewTransferDiscardFileResponses, unknown, ThrowOnError>({ url: '/crew/files/{capability_id}', ...options });
+export const crewTransferDiscardFile = <ThrowOnError extends boolean = false>(options: Options<CrewTransferDiscardFileData, ThrowOnError>) => (options.client ?? client).delete<CrewTransferDiscardFileResponses, CrewTransferDiscardFileErrors, ThrowOnError>({ url: '/crew/files/{capability_id}', ...options });
 
-export const crewTransferConfirmFile = <ThrowOnError extends boolean = false>(options: Options<CrewTransferConfirmFileData, ThrowOnError>) => (options.client ?? client).post<CrewTransferConfirmFileResponses, unknown, ThrowOnError>({ url: '/crew/files/{capability_id}/confirm', ...options });
+export const crewTransferConfirmFile = <ThrowOnError extends boolean = false>(options: Options<CrewTransferConfirmFileData, ThrowOnError>) => (options.client ?? client).post<CrewTransferConfirmFileResponses, CrewTransferConfirmFileErrors, ThrowOnError>({ url: '/crew/files/{capability_id}/confirm', ...options });
 
 /**
  * Start Crew on the server for this computer's host setup ("Start it for me").
@@ -640,7 +670,7 @@ export const crewHostStartStatus = <ThrowOnError extends boolean = false>(option
  * person is its gate. The answer is a lookup, never a permission: the broker authorizes every
  * mutation that uses it.
  */
-export const resolve = <ThrowOnError extends boolean = false>(options: Options<ResolveData, ThrowOnError>) => (options.client ?? client).post<ResolveResponses, ResolveErrors, ThrowOnError>({
+export const crewResolve = <ThrowOnError extends boolean = false>(options: Options<CrewResolveData, ThrowOnError>) => (options.client ?? client).post<CrewResolveResponses, CrewResolveErrors, ThrowOnError>({
     url: '/crew/resolve',
     ...options,
     headers: {
@@ -649,9 +679,9 @@ export const resolve = <ThrowOnError extends boolean = false>(options: Options<R
     }
 });
 
-export const crewTransferList = <ThrowOnError extends boolean = false>(options?: Options<CrewTransferListData, ThrowOnError>) => (options?.client ?? client).get<CrewTransferListResponses, unknown, ThrowOnError>({ url: '/crew/transfers', ...options });
+export const crewTransferList = <ThrowOnError extends boolean = false>(options?: Options<CrewTransferListData, ThrowOnError>) => (options?.client ?? client).get<CrewTransferListResponses, CrewTransferListErrors, ThrowOnError>({ url: '/crew/transfers', ...options });
 
-export const crewTransferStart = <ThrowOnError extends boolean = false>(options: Options<CrewTransferStartData, ThrowOnError>) => (options.client ?? client).post<CrewTransferStartResponses, unknown, ThrowOnError>({
+export const crewTransferStart = <ThrowOnError extends boolean = false>(options: Options<CrewTransferStartData, ThrowOnError>) => (options.client ?? client).post<CrewTransferStartResponses, CrewTransferStartErrors, ThrowOnError>({
     url: '/crew/transfers',
     ...options,
     headers: {
@@ -660,7 +690,7 @@ export const crewTransferStart = <ThrowOnError extends boolean = false>(options:
     }
 });
 
-export const crewTransferPreview = <ThrowOnError extends boolean = false>(options: Options<CrewTransferPreviewData, ThrowOnError>) => (options.client ?? client).post<CrewTransferPreviewResponses, unknown, ThrowOnError>({
+export const crewTransferPreview = <ThrowOnError extends boolean = false>(options: Options<CrewTransferPreviewData, ThrowOnError>) => (options.client ?? client).post<CrewTransferPreviewResponses, CrewTransferPreviewErrors, ThrowOnError>({
     url: '/crew/transfers/preview',
     ...options,
     headers: {
@@ -669,7 +699,7 @@ export const crewTransferPreview = <ThrowOnError extends boolean = false>(option
     }
 });
 
-export const crewTransferForget = <ThrowOnError extends boolean = false>(options: Options<CrewTransferForgetData, ThrowOnError>) => (options.client ?? client).delete<CrewTransferForgetResponses, unknown, ThrowOnError>({
+export const crewTransferForget = <ThrowOnError extends boolean = false>(options: Options<CrewTransferForgetData, ThrowOnError>) => (options.client ?? client).delete<CrewTransferForgetResponses, CrewTransferForgetErrors, ThrowOnError>({
     url: '/crew/transfers/{id}',
     ...options,
     headers: {
@@ -678,11 +708,11 @@ export const crewTransferForget = <ThrowOnError extends boolean = false>(options
     }
 });
 
-export const crewTransferStatus = <ThrowOnError extends boolean = false>(options: Options<CrewTransferStatusData, ThrowOnError>) => (options.client ?? client).get<CrewTransferStatusResponses, unknown, ThrowOnError>({ url: '/crew/transfers/{id}', ...options });
+export const crewTransferStatus = <ThrowOnError extends boolean = false>(options: Options<CrewTransferStatusData, ThrowOnError>) => (options.client ?? client).get<CrewTransferStatusResponses, CrewTransferStatusErrors, ThrowOnError>({ url: '/crew/transfers/{id}', ...options });
 
-export const crewTransferPause = <ThrowOnError extends boolean = false>(options: Options<CrewTransferPauseData, ThrowOnError>) => (options.client ?? client).post<CrewTransferPauseResponses, unknown, ThrowOnError>({ url: '/crew/transfers/{id}/pause', ...options });
+export const crewTransferPause = <ThrowOnError extends boolean = false>(options: Options<CrewTransferPauseData, ThrowOnError>) => (options.client ?? client).post<CrewTransferPauseResponses, CrewTransferPauseErrors, ThrowOnError>({ url: '/crew/transfers/{id}/pause', ...options });
 
-export const crewTransferResume = <ThrowOnError extends boolean = false>(options: Options<CrewTransferResumeData, ThrowOnError>) => (options.client ?? client).post<CrewTransferResumeResponses, unknown, ThrowOnError>({
+export const crewTransferResume = <ThrowOnError extends boolean = false>(options: Options<CrewTransferResumeData, ThrowOnError>) => (options.client ?? client).post<CrewTransferResumeResponses, CrewTransferResumeErrors, ThrowOnError>({
     url: '/crew/transfers/{id}/resume',
     ...options,
     headers: {

@@ -16,10 +16,78 @@ export interface DaemonRuntime {
   user_action_installed: boolean;
 }
 
+/**
+ * How the attached daemon instance was lost. `replaced`: something answers on the profile's socket
+ * but it is not the instance this app verified (a restart always brings a new instance id and pid,
+ * and usually a new secret), so the old one cannot come back. `gone`: nothing answers on the socket
+ * (it was removed, or nothing listens on it); the same instance could still be restarting.
+ */
+export type DaemonLossReason = 'replaced' | 'gone';
+
+export interface DaemonLoss {
+  reason: DaemonLossReason;
+  /** The instance that was lost. */
+  instanceId: string;
+}
+
 export interface DaemonProxy {
   baseUrl: string;
   close: () => void;
+  /** The instance every request is checked against now. */
+  instanceId(): string;
+  /**
+   * Called each time a request finds the attached instance lost, and once when a `gone` instance
+   * answers again. Returns an unsubscribe.
+   */
+  onConnection(listener: (event: DaemonConnectionEvent) => void): () => void;
+  /** Check the attached instance now: the loss, or `undefined` when it answers as itself. */
+  probe(): Promise<DaemonLoss | undefined>;
+  /**
+   * Point this proxy, at the same local address, at another instance of the same profile's
+   * daemon. Only after a person agreed to it: the proxy never follows a different instance on its
+   * own. The new instance is verified first (its identity on the private socket, and that it
+   * accepts `daemonProof` as a person's approval); if either check fails nothing changes.
+   */
+  retarget(runtime: DaemonRuntime, daemonProof: string | undefined): Promise<void>;
 }
+
+export type DaemonConnectionEvent =
+  | ({ kind: 'lost' } & DaemonLoss)
+  | { kind: 'answered'; instanceId: string };
+
+/**
+ * The attached instance answered as a different one: its identity, or its refusal of the secret
+ * this app holds for it. Never followed; a person decides whether to reattach.
+ */
+export class DaemonIdentityChangedError extends Error {
+  constructor() {
+    super('Daemon instance identity changed; reconnect explicitly.');
+    this.name = 'DaemonIdentityChangedError';
+  }
+}
+
+/** The loss a failed verification means, or `undefined` for a failure that says nothing about it. */
+export function daemonLossOf(error: unknown): DaemonLossReason | undefined {
+  if (error instanceof DaemonIdentityChangedError) return 'replaced';
+  const failure = error as { code?: unknown; syscall?: unknown } | null;
+  if (
+    failure &&
+    failure.syscall === 'connect' &&
+    (failure.code === 'ENOENT' || failure.code === 'ECONNREFUSED')
+  )
+    return 'gone';
+  return undefined;
+}
+
+/** The status a proxied request fails with when the attached instance is lost. */
+export const DAEMON_RESTARTED_CODE = 'daemon_restarted';
+/** What a person reads for it, wherever a surface shows the daemon's own words. */
+export const DAEMON_RESTARTED_MESSAGE =
+  "Biorouter's background service restarted. Reconnect when Biorouter asks, or quit and reopen Biorouter.";
+/** The status a proxied request fails with for any other verification failure. */
+export const DAEMON_UNAVAILABLE_CODE = 'daemon_unavailable';
+export const DAEMON_UNAVAILABLE_MESSAGE =
+  "Biorouter couldn't reach its background service. Try again in a moment, or quit and reopen Biorouter.";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -162,21 +230,33 @@ async function authenticatedAgent(runtime: DaemonRuntime): Promise<http.Agent> {
           });
           response.on('error', reject);
           response.on('end', () => {
-            try {
-              const identity = JSON.parse(body);
-              if (
-                response.statusCode !== 200 ||
-                identity.version !== 1 ||
-                identity.profile_id !== runtime.profile_id ||
-                identity.instance_id !== runtime.instance_id ||
-                identity.pid !== runtime.pid ||
-                identity.user_action_installed !== runtime.user_action_installed
-              )
-                throw new Error('Daemon instance identity changed; reconnect explicitly.');
-              resolve();
-            } catch (error) {
-              reject(error);
+            // A daemon that refuses this instance's secret is another instance: the secret is
+            // per instance, and the socket path is the profile's, not the instance's.
+            if (response.statusCode === 401 || response.statusCode === 403) {
+              reject(new DaemonIdentityChangedError());
+              return;
             }
+            let identity: Record<string, unknown> | null = null;
+            try {
+              identity = JSON.parse(body);
+            } catch {
+              identity = null;
+            }
+            if (response.statusCode !== 200 || !identity || typeof identity !== 'object') {
+              reject(new Error('Daemon identity could not be read.'));
+              return;
+            }
+            if (
+              identity.version !== 1 ||
+              identity.profile_id !== runtime.profile_id ||
+              identity.instance_id !== runtime.instance_id ||
+              identity.pid !== runtime.pid ||
+              identity.user_action_installed !== runtime.user_action_installed
+            ) {
+              reject(new DaemonIdentityChangedError());
+              return;
+            }
+            resolve();
           });
         }
       );
@@ -198,6 +278,50 @@ export async function verifyDaemonRuntime(runtime: DaemonRuntime): Promise<void>
   agent.destroy();
 }
 
+/**
+ * Whether the verified instance accepts `daemonProof` as a person's approval: a person-gated
+ * route (`GET /crew/connections`) asked over the same verified connection, with the instance's
+ * own secret. What the desktop's first attach asks through its proxy, asked before a proxy is
+ * pointed at the instance.
+ */
+export async function verifyHumanAuthorizedAccess(
+  runtime: DaemonRuntime,
+  daemonProof: string | undefined
+): Promise<void> {
+  const agent = await authenticatedAgent(runtime);
+  try {
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = http.request(
+        {
+          socketPath: runtime.endpoint.path,
+          path: '/crew/connections',
+          agent,
+          headers: {
+            'X-Secret-Key': runtime.api_secret,
+            ...(daemonProof ? { 'X-User-Action': daemonProof } : {}),
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on('error', reject);
+          response.on('end', () => resolve(response.statusCode ?? 0));
+        }
+      );
+      request.setTimeout(10000, () =>
+        request.destroy(new Error('Daemon approval check timed out.'))
+      );
+      request.on('error', reject);
+      request.end();
+    });
+    if (status < 200 || status >= 300)
+      throw new Error(
+        'The background service did not accept that approval secret. Check it, then reconnect again.'
+      );
+  } finally {
+    agent.destroy();
+  }
+}
+
 function matches(value: string | string[] | undefined, expected: string): boolean {
   if (typeof value !== 'string') return false;
   const actual = Buffer.from(value);
@@ -205,6 +329,16 @@ function matches(value: string | string[] | undefined, expected: string): boolea
   return actual.length === secret.length && timingSafeEqual(actual, secret);
 }
 
+/**
+ * The desktop's local proxy to the profile's shared daemon, on an ephemeral loopback port.
+ *
+ * Every request is checked against the ONE instance this proxy is attached to: its identity on the
+ * private socket is verified on the same connection the request then travels, so a request never
+ * reaches a different instance. When that instance is lost (restarted, stopped, replaced), requests
+ * fail with `daemon_restarted` and listeners hear `lost`; the proxy never follows the new instance
+ * by itself. {@link DaemonProxy.retarget} is how a person's decision to reattach is carried out,
+ * at the same local address, so every window's `BIOROUTER_API_HOST` stays valid (R-1).
+ */
 export async function createDaemonProxy(
   runtime: DaemonRuntime,
   desktopSecret: string,
@@ -212,7 +346,34 @@ export async function createDaemonProxy(
   daemonProof: string | undefined,
   rendererOrigin: string | undefined
 ): Promise<DaemonProxy> {
-  const agents = new Set<http.Agent>();
+  interface Target {
+    runtime: DaemonRuntime;
+    daemonProof: string | undefined;
+    /** Answered as another instance: it cannot come back, so nothing is asked of it again. */
+    replaced: boolean;
+    /** Nothing answered on the socket last time; the next answer is reported. */
+    gone: boolean;
+    agents: Set<http.Agent>;
+  }
+  const targetFor = (next: DaemonRuntime, proof: string | undefined): Target => ({
+    runtime: next,
+    daemonProof: proof,
+    replaced: false,
+    gone: false,
+    agents: new Set(),
+  });
+  let target = targetFor(runtime, daemonProof);
+  let closed = false;
+  const listeners = new Set<(event: DaemonConnectionEvent) => void>();
+  const emit = (event: DaemonConnectionEvent) => {
+    for (const listener of [...listeners]) {
+      try {
+        listener(event);
+      } catch {
+        // A listener's failure is its own; the proxy keeps answering.
+      }
+    }
+  };
   const sockets = new Set<net.Socket>();
   const workspaceUrl = (request: http.IncomingMessage) => {
     try {
@@ -235,32 +396,79 @@ export async function createDaemonProxy(
       matches(url.searchParams.get('secret') ?? undefined, desktopSecret)
     );
   };
-  const upstreamPath = (request: http.IncomingMessage) => {
+  const upstreamPath = (request: http.IncomingMessage, current: Target) => {
     const url = workspaceUrl(request);
     if (!url?.searchParams.has('secret')) return request.url;
-    url.searchParams.set('secret', runtime.api_secret);
+    url.searchParams.set('secret', current.runtime.api_secret);
     return `${url.pathname}${url.search}`;
   };
-  const headersFor = (request: http.IncomingMessage): http.OutgoingHttpHeaders => {
+  const headersFor = (request: http.IncomingMessage, current: Target): http.OutgoingHttpHeaders => {
     const headers: http.OutgoingHttpHeaders = {
       ...request.headers,
       host: 'localhost',
-      'x-secret-key': runtime.api_secret,
+      'x-secret-key': current.runtime.api_secret,
     };
     delete headers.origin;
     delete headers['x-user-action'];
-    if (desktopProof && daemonProof && matches(request.headers['x-user-action'], desktopProof))
-      headers['x-user-action'] = daemonProof;
+    if (
+      desktopProof &&
+      current.daemonProof &&
+      matches(request.headers['x-user-action'], desktopProof)
+    )
+      headers['x-user-action'] = current.daemonProof;
     return headers;
   };
-  const connect = async () => {
-    const agent = await authenticatedAgent(runtime);
-    agents.add(agent);
+  /**
+   * A connection to `current`, verified as that instance. A request whose target was replaced
+   * while it verified is refused rather than sent on: it was checked against the old instance.
+   */
+  const connect = async (current: Target) => {
+    if (closed || current.replaced) throw new DaemonIdentityChangedError();
+    let agent: http.Agent;
+    try {
+      agent = await authenticatedAgent(current.runtime);
+    } catch (error) {
+      const reason = daemonLossOf(error);
+      // Reported once per change: every later request fails the same way without a new report.
+      if (
+        reason &&
+        current === target &&
+        !closed &&
+        !current.replaced &&
+        !(reason === 'gone' && current.gone)
+      ) {
+        if (reason === 'replaced') current.replaced = true;
+        else current.gone = true;
+        emit({ kind: 'lost', reason, instanceId: current.runtime.instance_id });
+      }
+      throw error;
+    }
+    if (closed || current !== target) {
+      agent.destroy();
+      throw new DaemonIdentityChangedError();
+    }
+    current.agents.add(agent);
+    if (current.gone) {
+      current.gone = false;
+      emit({ kind: 'answered', instanceId: current.runtime.instance_id });
+    }
     return agent;
   };
-  const release = (agent: http.Agent) => {
-    agents.delete(agent);
+  const release = (agent: http.Agent, current: Target) => {
+    current.agents.delete(agent);
     agent.destroy();
+  };
+  /** The JSON refusal for a request that did not reach the daemon. */
+  const refuse = (response: http.ServerResponse, error: unknown) => {
+    const lost = error === undefined ? false : daemonLossOf(error) !== undefined;
+    const message = lost ? DAEMON_RESTARTED_MESSAGE : DAEMON_UNAVAILABLE_MESSAGE;
+    response.writeHead(502, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        code: lost ? DAEMON_RESTARTED_CODE : DAEMON_UNAVAILABLE_CODE,
+        error: message,
+        message,
+      })
+    );
   };
   const server = http.createServer(async (request, response) => {
     const cors: http.OutgoingHttpHeaders =
@@ -294,43 +502,44 @@ export async function createDaemonProxy(
       response.writeHead(403).end();
       return;
     }
+    // One instance for the whole request: verified, addressed and authenticated as the same one.
+    const current = target;
     let agent: http.Agent | undefined;
     try {
-      agent = await connect();
+      agent = await connect(current);
       if (request.destroyed) {
-        release(agent);
+        release(agent, current);
         return;
       }
       const owned = agent;
       const upstream = http.request(
         {
-          socketPath: runtime.endpoint.path,
+          socketPath: current.runtime.endpoint.path,
           method: request.method,
-          path: upstreamPath(request),
-          headers: headersFor(request),
+          path: upstreamPath(request, current),
+          headers: headersFor(request, current),
           agent,
         },
         (remote) => {
           response.writeHead(remote.statusCode ?? 502, { ...remote.headers, ...cors });
           remote.pipe(response);
           remote.on('error', () => response.destroy());
-          remote.on('end', () => release(owned));
+          remote.on('end', () => release(owned, current));
         }
       );
       upstream.on('error', () => {
-        release(owned);
-        if (!response.headersSent)
-          response.writeHead(502).end('Daemon connection unavailable; reconnect explicitly.');
+        release(owned, current);
+        if (!response.headersSent) refuse(response, undefined);
         else response.destroy();
       });
       response.on('close', () => {
         upstream.destroy();
-        release(owned);
+        release(owned, current);
       });
       request.pipe(upstream);
-    } catch {
-      if (agent) release(agent);
-      response.writeHead(502).end('Daemon identity could not be verified; reconnect explicitly.');
+    } catch (error) {
+      if (agent) release(agent, current);
+      refuse(response, error);
     }
   });
   server.on('connection', (socket) => {
@@ -343,19 +552,20 @@ export async function createDaemonProxy(
       socket.destroy();
       return;
     }
+    const current = target;
     let agent: http.Agent | undefined;
     try {
-      agent = await connect();
+      agent = await connect(current);
       if (socket.destroyed) {
-        release(agent);
+        release(agent, current);
         return;
       }
       const owned = agent;
       const upstream = http.request({
-        socketPath: runtime.endpoint.path,
+        socketPath: current.runtime.endpoint.path,
         method: request.method,
-        path: upstreamPath(request),
-        headers: headersFor(request),
+        path: upstreamPath(request, current),
+        headers: headersFor(request, current),
         agent,
       });
       upstream.on('upgrade', (response, remote, remainder) => {
@@ -372,26 +582,26 @@ export async function createDaemonProxy(
         remote.on('error', () => socket.destroy());
         socket.on('close', () => {
           remote.destroy();
-          release(owned);
+          release(owned, current);
         });
         remote.on('close', () => {
           socket.destroy();
-          release(owned);
+          release(owned, current);
         });
       });
       upstream.on('response', (response) => {
         response.resume();
         socket.destroy();
-        release(owned);
+        release(owned, current);
       });
       upstream.on('error', () => {
         socket.destroy();
-        release(owned);
+        release(owned, current);
       });
       socket.on('close', () => upstream.destroy());
       upstream.end();
     } catch {
-      if (agent) release(agent);
+      if (agent) release(agent, current);
       socket.destroy();
     }
   });
@@ -402,11 +612,44 @@ export async function createDaemonProxy(
   const address = server.address() as net.AddressInfo;
   return {
     baseUrl: `http://127.0.0.1:${address.port}`,
+    instanceId: () => target.runtime.instance_id,
+    onConnection: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    probe: async () => {
+      const current = target;
+      try {
+        release(await connect(current), current);
+        return undefined;
+      } catch (error) {
+        const reason = daemonLossOf(error);
+        return reason ? { reason, instanceId: current.runtime.instance_id } : undefined;
+      }
+    },
+    retarget: async (next, proof) => {
+      if (closed) throw new Error('The daemon proxy is closed.');
+      if (next.profile_id !== target.runtime.profile_id)
+        throw new Error('That background service belongs to another Biorouter profile.');
+      // Verified before anything changes: the instance on the private socket, and that it takes
+      // the secret the person gave as a person's approval.
+      await verifyHumanAuthorizedAccess(next, proof);
+      if (closed) throw new Error('The daemon proxy is closed.');
+      const previous = target;
+      target = targetFor(next, proof);
+      previous.daemonProof = undefined;
+      for (const agent of previous.agents) agent.destroy();
+      previous.agents.clear();
+      emit({ kind: 'answered', instanceId: next.instance_id });
+    },
     close: () => {
-      daemonProof = undefined;
+      if (closed) return;
+      closed = true;
+      target.daemonProof = undefined;
       desktopProof = undefined;
-      for (const agent of agents) agent.destroy();
-      agents.clear();
+      listeners.clear();
+      for (const agent of target.agents) agent.destroy();
+      target.agents.clear();
       for (const socket of sockets) socket.destroy();
       sockets.clear();
       server.close();

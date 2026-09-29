@@ -2,11 +2,12 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewTransfer } from '../crewTransfers';
-import { AttachmentCard, type CrewBlob } from './AttachmentCard';
+import { AttachmentCard, SAVE_PATIENCE_MS, type CrewBlob } from './AttachmentCard';
 import { AttachmentIndexProvider } from './attachmentIndex';
 import { cachedBlob, clearBlobCache } from './blobMetadataCache';
 import { filesCopy } from './copy';
-import { TRANSFER_POLL_MS } from './useCrewTransfers';
+import { openFileWindow } from './fileWindows';
+import { TRANSFER_PAUSED_POLL_MS, TRANSFER_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
   crewRequest: vi.fn(),
@@ -367,6 +368,86 @@ describe('AttachmentCard', () => {
   });
 });
 
+describe('a Save that another window is in the way of (FILES-F2, FILES-F6)', () => {
+  beforeEach(() => {
+    for (const mock of Object.values(mocks)) mock.mockReset();
+    mocks.listTransfers.mockResolvedValue([]);
+    installBlobs();
+    clearBlobCache();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows the refusal as one plain sentence, without Electron’s wrapper, and offers Save again', async () => {
+    mocks.beginTransfer.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'crew:select-transfer-file': Error: Finish the open Save or Open window first."
+      )
+    );
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /^Finish the open Save or Open window first\.$/
+    );
+    expect(document.body.textContent).not.toContain('Error invoking remote method');
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeEnabled();
+  });
+
+  /**
+   * FILES2-N5: the note stayed after the Save sheet it named had closed, and after later saves
+   * worked, until this card was used again.
+   */
+  it('lets “Finish the open … first.” go once the window it names has closed', async () => {
+    const close = openFileWindow(); // Another card's Save sheet is open.
+    mocks.beginTransfer.mockRejectedValue(new Error('Finish the open Save or Open window first.'));
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Finish the open Save or Open window first.'
+    );
+    act(() => close());
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('keeps any other refusal when a file window closes', async () => {
+    const close = openFileWindow();
+    mocks.beginTransfer.mockRejectedValue(new Error('The daemon refused this file selection.'));
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    await screen.findByRole('alert');
+    act(() => close());
+    expect(screen.getByRole('alert')).toHaveTextContent('The daemon refused this file selection.');
+  });
+
+  it('offers Save again after a window that never answers, and ignores that window’s late answer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let late: (reason: unknown) => void = () => undefined;
+    mocks.beginTransfer.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (late = reject))
+    );
+    render(<AttachmentCard connectionId="connection-1" blobId="counts" />);
+    await screen.findByText('counts.csv');
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeDisabled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_PATIENCE_MS);
+    });
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeEnabled();
+    // A second Save runs as its own action; the first one's answer, when it finally comes,
+    // changes nothing.
+    mocks.beginTransfer.mockImplementationOnce(() => new Promise(() => {}));
+    await user.click(screen.getByRole('button', { name: 'Save counts.csv' }));
+    await act(async () => late(new Error('stale')));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save counts.csv' })).toBeDisabled();
+  });
+});
+
 describe('the one transfers poller (L13)', () => {
   beforeEach(() => {
     for (const mock of Object.values(mocks)) mock.mockReset();
@@ -420,6 +501,50 @@ describe('the one transfers poller (L13)', () => {
     await tick();
     await tick();
     expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps asking, slowly, while a transfer is paused, so a resume from the command line shows (R-8)', async () => {
+    const paused = download('a', {
+      state: 'needs_file_selection',
+      error: 'Transfer paused. Reselect the original local file or destination to resume.',
+    });
+    let transfers: CrewTransfer[] = [paused];
+    mocks.listTransfers.mockImplementation(async () => transfers);
+    render(cards(['a']));
+    await flush();
+    expect(screen.getByText(/Paused/)).toBeInTheDocument();
+    await tick();
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+    // `biorouter crew files resume` on this computer, which nothing here hears.
+    transfers = [download('a', { offset: 600 })];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TRANSFER_PAUSED_POLL_MS - TRANSFER_POLL_MS);
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '60');
+  });
+
+  it('asks again when the window comes back to the front, and not while it is hidden', async () => {
+    mocks.listTransfers.mockResolvedValue([download('a', { state: 'completed' })]);
+    const { unmount } = render(cards(['a']));
+    await flush();
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+    visibility.mockRestore();
+    unmount();
+    // No card left: nothing listens any more.
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
   });
 
   it('stops polling when the last card leaves, and lists afresh for the next one', async () => {

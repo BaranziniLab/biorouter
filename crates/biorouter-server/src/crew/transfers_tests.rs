@@ -167,7 +167,9 @@ async fn cleanup_selection_uses_receipt_binding_without_requiring_a_live_connect
             blob_id: Some("blob".into()),
             state: "needs_file_selection".into(),
             error: None,
+            pause_reason: None,
             binding: "receipt-binding".into(),
+            requires_private: false,
             intent: "intent".into(),
             local_selection: String::new(),
             destination_identity: None,
@@ -212,7 +214,9 @@ async fn pending_download_capability_cannot_be_consumed_by_start_or_resume_gate(
         blob_id: Some("pending-blob".into()),
         state: "needs_file_selection".into(),
         error: None,
+        pause_reason: None,
         binding: "pending-binding".into(),
+        requires_private: false,
         intent: "pending-intent".into(),
         local_selection: String::new(),
         destination_identity: None,
@@ -231,6 +235,7 @@ async fn pending_download_capability_cannot_be_consumed_by_start_or_resume_gate(
             format!("pending-capability-{resuming}"),
             Capability {
                 approval_pending: true,
+                requires_private: false,
                 purpose: FilePurpose::Transfer,
                 selection,
                 connection_id: receipt.connection_id.clone(),
@@ -278,7 +283,9 @@ async fn expired_capability_cannot_be_consumed_and_does_not_receive_a_new_ttl() 
         blob_id: Some("expired-blob".into()),
         state: "needs_file_selection".into(),
         error: None,
+        pause_reason: None,
         binding: "expired-binding".into(),
+        requires_private: false,
         intent: "expired-intent".into(),
         local_selection: String::new(),
         destination_identity: None,
@@ -291,6 +298,7 @@ async fn expired_capability_cannot_be_consumed_and_does_not_receive_a_new_ttl() 
         "expired-capability".into(),
         Capability {
             approval_pending: false,
+            requires_private: false,
             purpose: FilePurpose::Transfer,
             selection,
             connection_id: receipt.connection_id.clone(),
@@ -339,7 +347,9 @@ async fn discarding_a_pending_capability_releases_a_selection_slot() {
             blob_id: Some("blob".into()),
             state: "needs_file_selection".into(),
             error: None,
+            pause_reason: None,
             binding: "binding".into(),
+            requires_private: false,
             intent: "intent".into(),
             local_selection: String::new(),
             destination_identity: None,
@@ -355,6 +365,7 @@ async fn discarding_a_pending_capability_releases_a_selection_slot() {
             format!("capability-{index}"),
             Capability {
                 approval_pending: true,
+                requires_private: false,
                 purpose: FilePurpose::Transfer,
                 selection,
                 connection_id: "connection".into(),
@@ -388,6 +399,7 @@ async fn discarding_a_pending_capability_releases_a_selection_slot() {
         "replacement-capability".into(),
         Capability {
             approval_pending: true,
+            requires_private: false,
             purpose: FilePurpose::Transfer,
             selection: replacement,
             connection_id: "connection".into(),
@@ -432,7 +444,9 @@ async fn completed_replay_helpers_restore_original_receipt_and_target_approval()
             blob_id: Some("blob".into()),
             state: "completed".into(),
             error: None,
+            pause_reason: None,
             binding: "binding".into(),
+            requires_private: false,
             intent: "intent".into(),
             local_selection: local_files::selection_identity(&selection).unwrap(),
             destination_identity: Some(
@@ -508,7 +522,9 @@ async fn launch_returns_starting_receipt_and_reserves_active_before_worker_progr
         blob_id: None,
         state: "needs_file_selection".into(),
         error: Some("stale resume error".into()),
+        pause_reason: Some("server_storage".into()),
         binding: "binding".into(),
+        requires_private: false,
         intent: "intent".into(),
         local_selection: String::new(),
         destination_identity: None,
@@ -520,6 +536,10 @@ async fn launch_returns_starting_receipt_and_reserves_active_before_worker_progr
     let accepted = service.launch(&mut state, receipt, selection).unwrap();
     assert_eq!(accepted.state, "starting");
     assert!(accepted.error.is_none());
+    assert!(
+        accepted.pause_reason.is_none(),
+        "a resumed transfer is not paused"
+    );
     assert!(state.active.contains_key(id));
     assert_eq!(state.receipts[id].state, "starting");
     assert!(state.receipts[id].error.is_none());
@@ -563,7 +583,9 @@ fn stopped_receipt(direction: Direction, state: &str) -> Receipt {
         blob_id: Some("blob".into()),
         state: state.into(),
         error: None,
+        pause_reason: None,
         binding: "binding".into(),
+        requires_private: false,
         intent: "intent".into(),
         local_selection: String::new(),
         destination_identity: None,
@@ -586,10 +608,7 @@ fn a_transfer_the_workspace_refused_ends_failed_with_its_reason() {
         for state in ["starting", "downloading", "uploading"] {
             let (stopped, message) = stopped_transfer(&stopped_receipt(direction, state), &refused);
             assert_eq!(stopped, "failed");
-            assert_eq!(
-                message,
-                "That channel isn't available to you. It may be archived, or you may not be in it."
-            );
+            assert_eq!(message, "You're not in that channel.");
             assert!(!message.contains("Reselect") && !message.contains('{'));
         }
     }
@@ -616,15 +635,94 @@ fn a_transfer_the_workspace_refused_ends_failed_with_its_reason() {
     assert_eq!(stopped, "needs_file_selection");
 }
 
+/// T3-BE-14: a transfer the workspace's server could not save (its disk is full, or its storage
+/// failed) is paused, not failed: it keeps its offset, says why in the workspace's own sentence,
+/// and carries `pause_reason: server_storage`, so the app offers Resume as the CLI always could.
+/// Whether the server merely could not write this one file or has stopped saving, the resume is
+/// the same. Any other refusal still fails, with no pause reason.
+#[test]
+fn a_transfer_the_server_could_not_save_is_paused_not_failed() {
+    let refused = |code: &str, message: &str| {
+        anyhow::anyhow!(
+            "Crew broker refused request: {}",
+            json!({"code": code, "message": format!("{code}: {message}")})
+        )
+        .context("Couldn't send the next part")
+    };
+    for (error, sentence) in [
+        (
+            refused("storage_full", "The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again."),
+            "The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again.",
+        ),
+        (
+            refused("storage_failed", "The workspace server could not save a change to disk and has stopped saving changes. Reading still works. Ask the host to check the server's storage and restart Crew."),
+            "The workspace server could not save a change to disk and has stopped saving changes. Reading still works. Ask the host to check the server's storage and restart Crew.",
+        ),
+    ] {
+        for (direction, state) in [
+            (Direction::Upload, "uploading"),
+            (Direction::Upload, "starting"),
+            (Direction::Download, "downloading"),
+        ] {
+            let mut receipt = stopped_receipt(direction, state);
+            receipt.offset = 2;
+            let (stopped, message) = stopped_transfer(&receipt, &error);
+            assert_eq!(stopped, "needs_file_selection", "{error:#}");
+            assert_eq!(message, sentence);
+            assert_eq!(pause_reason(stopped, &error), Some("server_storage"));
+        }
+    }
+    let forbidden = refused("forbidden", "channel unavailable");
+    let (stopped, _) =
+        stopped_transfer(&stopped_receipt(Direction::Upload, "uploading"), &forbidden);
+    assert_eq!(stopped, "failed");
+    assert_eq!(pause_reason(stopped, &forbidden), None);
+    let paused = anyhow::anyhow!("Transfer paused");
+    assert_eq!(pause_reason("needs_file_selection", &paused), None);
+}
+
+/// T3-BE-14: a paused transfer keeps its reason and its offset across a restart, so it is
+/// still offered for resuming, from where it stopped.
+#[tokio::test]
+async fn a_transfer_paused_for_server_storage_stays_resumable_across_a_restart() {
+    let root = private_root();
+    let mut receipt = stopped_receipt(Direction::Upload, "needs_file_selection");
+    receipt.offset = 2;
+    receipt.error = Some("The workspace server is out of disk space.".into());
+    receipt.pause_reason = Some("server_storage".into());
+    let id = receipt.id.clone();
+    let mut receipts = serde_json::Map::new();
+    receipts.insert(id.clone(), serde_json::to_value(&receipt).unwrap());
+    fs::write(
+        root.path().join("receipts.json"),
+        serde_json::to_vec(&receipts).unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(
+        root.path().join("receipts.json"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let service = TransferService::open(root.path()).unwrap();
+    let state = service.state.lock().await;
+    let reopened = &state.receipts[&id];
+    assert_eq!(reopened.state, "needs_file_selection");
+    assert_eq!(reopened.offset, 2);
+    assert_eq!(reopened.pause_reason.as_deref(), Some("server_storage"));
+    // An older receipt, saved before the field existed, reads as having no reason.
+    let mut older = serde_json::to_value(&receipt).unwrap();
+    older.as_object_mut().unwrap().remove("pause_reason");
+    let older: Receipt = serde_json::from_value(older).unwrap();
+    assert_eq!(older.pause_reason, None);
+}
+
 /// F-1: a refused transfer stays refused, with its reason, when the daemon restarts; it is
 /// not turned back into one that asks for the file again.
 #[tokio::test]
 async fn a_refused_transfer_stays_failed_across_a_restart() {
     let root = private_root();
     let mut receipt = stopped_receipt(Direction::Download, "failed");
-    receipt.error = Some(
-        "That channel isn't available to you. It may be archived, or you may not be in it.".into(),
-    );
+    receipt.error = Some("You're not in that channel.".into());
     let id = receipt.id.clone();
     let mut receipts = serde_json::Map::new();
     receipts.insert(id.clone(), serde_json::to_value(&receipt).unwrap());
@@ -644,6 +742,323 @@ async fn a_refused_transfer_stays_failed_across_a_restart() {
     assert_eq!(reopened.state, "failed");
     assert_eq!(
         reopened.error.as_deref(),
-        Some("That channel isn't available to you. It may be archived, or you may not be in it.")
+        Some("You're not in that channel.")
+    );
+}
+
+/// A saved connection in `mode`, as the Crew registry keeps it.
+fn crew_connection(mode: biorouter::crew::ClusterMode) -> biorouter::crew::Connection {
+    biorouter::crew::Connection {
+        id: "mode-connection".into(),
+        node_id: None,
+        name: "okafor-lab".into(),
+        ssh_target: "crew@example.test".into(),
+        port: Some(22),
+        identity_file: None,
+        proxy_jump: None,
+        socket_path: "/run/crew.sock".into(),
+        owner_uid: 10001,
+        workspace_id: "mode-workspace".into(),
+        workspace_public_key: "11".repeat(32),
+        remote_root: None,
+        remote_execution: false,
+        cluster_connection_id: "mode-cluster".into(),
+        mode,
+        institution_id: None,
+        policy_epoch: 1,
+        status: "connected".into(),
+        last_error: None,
+        device_id: "22".repeat(32),
+        public_key: "33".repeat(32),
+    }
+}
+
+const MODE_MISMATCH_TEXT: &str =
+    "Your connection is Public, but this request required Private. Nothing was sent.";
+
+/// T3-BE-5 (review): a file selection (`POST /crew/files`) is judged by the rule every other door
+/// judges by. A personal Public connection whose workspace's signed `hello` says it is Private
+/// for everyone is Private in force, so an upload that required Private (a terminal's
+/// `--expected-mode private`) goes ahead. It used to be refused as "Your connection is Public,
+/// but this request required Private" while status and privacy show said Private. The upload's
+/// receipt then holds the requirement, and its attachment is begun as Private, so the workspace
+/// restricts it even if that `hello` has gone stale since.
+#[tokio::test]
+async fn a_selection_that_required_the_privacy_in_force_begins_its_attachment_private() {
+    use biorouter::crew::ClusterMode::{Private, Public};
+    let connection = crew_connection(Public);
+    let binding = judged_binding(&connection, Some(Private), Some(Private)).unwrap();
+    assert_eq!(binding, binding_for_connection(&connection).unwrap());
+    // What the desktop sends (the connection's own mode), and no expectation, go ahead too.
+    for expected in [Some(Public), None] {
+        assert_eq!(
+            judged_binding(&connection, Some(Private), expected).unwrap(),
+            binding
+        );
+    }
+    // A workspace that allows Public, or one no signed `hello` has described: Public in force.
+    for workspace in [Some(Public), None] {
+        let refused = judged_binding(&connection, workspace, Some(Private)).unwrap_err();
+        let typed = biorouter::crew::CrewRefusal::find(&refused).expect("a typed refusal");
+        assert_eq!(typed.code(), "crew_mode_mismatch", "{workspace:?}");
+        assert_eq!(refused.to_string(), MODE_MISMATCH_TEXT);
+    }
+
+    // The selection as `POST /crew/files` records it, and the transfer it starts.
+    let root = private_root();
+    let service = Arc::new(TransferService::open(root.path()).unwrap());
+    let source = root.path().join("assay.csv");
+    fs::write(&source, b"sample,signal\nS1,12.7\n").unwrap();
+    let request = FileRequest {
+        approval_pending: false,
+        expected_mode: Some(Private),
+        purpose: FilePurpose::Transfer,
+        connection_id: connection.id.clone(),
+        channel_id: "channel".into(),
+        direction: Direction::Upload,
+        path: source.clone(),
+        overwrite: false,
+        blob_id: None,
+        transfer_id: None,
+        request_id: Some("private-upload".into()),
+    };
+    let mut state = service.state.lock().await;
+    state.capabilities.insert(
+        "private-selection".into(),
+        Capability {
+            approval_pending: false,
+            requires_private: selection_requires_private(&request),
+            purpose: FilePurpose::Transfer,
+            selection: local_files::select(&source, Direction::Upload, false).unwrap(),
+            connection_id: connection.id.clone(),
+            channel_id: "channel".into(),
+            blob_id: None,
+            transfer_id: None,
+            expires: Instant::now() + Duration::from_secs(300),
+            binding: binding.clone(),
+            request_id: request.request_id.clone(),
+            replay_receipt_id: None,
+        },
+    );
+    let receipt = service
+        .start_bound(
+            &mut state,
+            StartRequest {
+                request_id: "private-upload".into(),
+                connection_id: connection.id.clone(),
+                channel_id: "channel".into(),
+                direction: Direction::Upload,
+                file_capability: "private-selection".into(),
+                blob_id: None,
+            },
+            binding.clone(),
+        )
+        .unwrap();
+    // Stop its worker before it reaches a workspace: this test has none.
+    state.active[&receipt.id].cancel();
+    assert!(receipt.requires_private);
+    assert!(state.receipts[&receipt.id].requires_private);
+    let persisted: Value =
+        serde_json::from_slice(&fs::read(root.path().join("receipts.json")).unwrap()).unwrap();
+    assert_eq!(persisted[&receipt.id]["requires_private"], json!(true));
+    drop(state);
+
+    // Its attachment is begun as Private, which the daemon then holds against the workspace's
+    // latest `hello` and tells the workspace as Private.
+    let begin = |receipt: &Receipt| {
+        transfer_params(
+            receipt,
+            &connection,
+            "blob.begin",
+            json!({"channel_id": "channel", "personal_mode": "public"}),
+        )
+        .unwrap()["personal_mode"]
+            .clone()
+    };
+    assert_eq!(begin(&receipt), json!("private"));
+    // An upload that required nothing more is begun in the connection's own mode, as before.
+    let mut own = receipt.clone();
+    own.requires_private = false;
+    assert_eq!(begin(&own), json!("public"));
+    // Only `blob.begin` carries a mode.
+    let chunk = transfer_params(&receipt, &connection, "blob.chunk", json!({"blob_id": "b"}));
+    assert_eq!(chunk.unwrap(), json!({"blob_id": "b"}));
+    assert!(transfer_params(&receipt, &connection, "blob.begin", json!([])).is_err());
+}
+
+/// T3-BE-5 (review): only an upload's selection that required Private is held to it: a download
+/// has no attachment to begin, a cleanup approval moves nothing, and an upload that required
+/// Public (what the desktop sends for a Public connection) or nothing is begun in the
+/// connection's own mode.
+#[test]
+fn only_an_uploads_selection_that_required_private_holds_it() {
+    use biorouter::crew::ClusterMode::{Private, Public};
+    let request = |purpose, direction, expected_mode| FileRequest {
+        approval_pending: false,
+        expected_mode,
+        purpose,
+        connection_id: "connection".into(),
+        channel_id: "channel".into(),
+        direction,
+        path: PathBuf::from("/tmp/fixture.txt"),
+        overwrite: false,
+        blob_id: None,
+        transfer_id: None,
+        request_id: None,
+    };
+    for (purpose, direction, expected, holds) in [
+        (
+            FilePurpose::Transfer,
+            Direction::Upload,
+            Some(Private),
+            true,
+        ),
+        (
+            FilePurpose::Transfer,
+            Direction::Upload,
+            Some(Public),
+            false,
+        ),
+        (FilePurpose::Transfer, Direction::Upload, None, false),
+        (
+            FilePurpose::Transfer,
+            Direction::Download,
+            Some(Private),
+            false,
+        ),
+        (
+            FilePurpose::Cleanup,
+            Direction::Download,
+            Some(Private),
+            false,
+        ),
+    ] {
+        assert_eq!(
+            selection_requires_private(&request(purpose, direction, expected)),
+            holds,
+            "{direction:?} {expected:?}"
+        );
+    }
+}
+
+/// T3-BE-5 (review): a resume never clears an upload's requirement of Private, and a resume
+/// that requires it adds it, so an attachment not begun yet is begun as Private.
+#[tokio::test]
+async fn a_resume_keeps_a_private_requirement_and_can_add_one() {
+    for (held, selected, holds) in [
+        (true, false, true),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let root = private_root();
+        let service = Arc::new(TransferService::open(root.path()).unwrap());
+        let source = root.path().join("assay.csv");
+        fs::write(&source, b"sample,signal\n").unwrap();
+        // Its digest is not the file's, so its worker stops before any workspace is asked.
+        let mut receipt = stopped_receipt(Direction::Upload, "needs_file_selection");
+        receipt.blob_id = None;
+        receipt.requires_private = held;
+        let id = receipt.id.clone();
+        {
+            let mut state = service.state.lock().await;
+            state.receipts.insert(id.clone(), receipt.clone());
+            state.capabilities.insert(
+                "resume-selection".into(),
+                Capability {
+                    approval_pending: false,
+                    requires_private: selected,
+                    purpose: FilePurpose::Transfer,
+                    selection: local_files::select(&source, Direction::Upload, false).unwrap(),
+                    connection_id: receipt.connection_id.clone(),
+                    channel_id: receipt.channel_id.clone(),
+                    blob_id: None,
+                    transfer_id: Some(id.clone()),
+                    expires: Instant::now() + Duration::from_secs(300),
+                    binding: receipt.binding.clone(),
+                    request_id: None,
+                    replay_receipt_id: None,
+                },
+            );
+        }
+        let accepted = service.resume(&id, "resume-selection").await.unwrap();
+        if let Some(token) = service.state.lock().await.active.get(&id) {
+            token.cancel();
+        }
+        assert_eq!(accepted.requires_private, holds, "{held} then {selected}");
+    }
+}
+
+/// T3-BE-5 (review): an upload that required Private never adds a part to an attachment the
+/// workspace does not restrict. One begun for it is restricted (it was begun as Private); one a
+/// resume finds, begun earlier under no such requirement while the workspace allowed Public, is
+/// refused before any part is sent. A refusal of the requirement, there or where the daemon
+/// re-reads the workspace's mode as the attachment is begun, ends the transfer `failed` with the
+/// refusal's sentence: the requirement stays with it, so reselecting the file would only meet it
+/// again.
+#[test]
+fn an_upload_that_required_private_never_adds_to_an_unrestricted_attachment() {
+    let blob = |restricted: Option<bool>| {
+        let mut blob = json!({"id": "blob", "channel_id": "channel", "size": 4,
+            "sha256": "a".repeat(64), "offset": 0, "complete": false});
+        if let Some(restricted) = restricted {
+            blob["restricted"] = json!(restricted);
+        }
+        serde_json::from_value::<Blob>(blob).unwrap()
+    };
+    let mut receipt = stopped_receipt(Direction::Upload, "uploading");
+    receipt.requires_private = true;
+    refuse_unrestricted(&receipt, &blob(Some(true))).unwrap();
+    for unrestricted in [Some(false), None] {
+        let refused = refuse_unrestricted(&receipt, &blob(unrestricted)).unwrap_err();
+        let typed = biorouter::crew::CrewRefusal::find(&refused).expect("a typed refusal");
+        assert_eq!(typed.code(), "crew_mode_mismatch");
+        assert_eq!(refused.to_string(), MODE_MISMATCH_TEXT);
+    }
+    receipt.requires_private = false;
+    refuse_unrestricted(&receipt, &blob(Some(false))).unwrap();
+
+    let refused = anyhow::Error::from(biorouter::crew::CrewRefusal::mode_mismatch(
+        biorouter::crew::ClusterMode::Public,
+        biorouter::crew::ClusterMode::Private,
+    ))
+    .context("Couldn't begin the attachment");
+    for state in ["starting", "uploading"] {
+        let (stopped, message) =
+            stopped_transfer(&stopped_receipt(Direction::Upload, state), &refused);
+        assert_eq!(stopped, "failed");
+        assert_eq!(message, MODE_MISMATCH_TEXT);
+        assert_eq!(pause_reason(stopped, &refused), None);
+    }
+}
+
+/// T3-BE-5 (review): a replay of a start request is the same transfer only if it asks for the
+/// same privacy, so a replay that required Private never answers with an upload begun without
+/// it. A receipt that did not require Private keeps the digest it was saved with.
+#[test]
+fn a_replay_that_requires_private_is_not_the_upload_that_did_not() {
+    let mut receipt = stopped_receipt(Direction::Upload, "uploading");
+    receipt.local_selection = "selection".into();
+    let saved = digest(
+        &serde_json::to_vec(&json!([
+            "crew-transfer-intent-v2",
+            receipt.connection_id,
+            receipt.channel_id,
+            receipt.direction,
+            receipt.blob_id,
+            receipt.binding,
+            receipt.local_selection
+        ]))
+        .unwrap(),
+    );
+    assert_eq!(transfer_intent(&receipt).unwrap(), saved);
+    receipt.requires_private = true;
+    assert_ne!(transfer_intent(&receipt).unwrap(), saved);
+    // A receipt saved before the field existed reads as not requiring it.
+    let mut older = serde_json::to_value(&receipt).unwrap();
+    older.as_object_mut().unwrap().remove("requires_private");
+    assert!(
+        !serde_json::from_value::<Receipt>(older)
+            .unwrap()
+            .requires_private
     );
 }

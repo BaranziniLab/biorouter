@@ -120,12 +120,22 @@ fn signed_hello(node: &str, v2: bool, capabilities: &[&str]) -> Value {
 /// run credential) as a run the workspace no longer honors (`grant_expired`), and
 /// `channel-gone` as a channel the person is no longer in (`forbidden: channel unavailable`);
 /// `refuse-revoke` refuses `run.revoke` as a run the workspace does not know; `auth` and
-/// `unreachable` fail before any request, as OpenSSH does. `run.create` answers
+/// `unreachable` fail before any request, as OpenSSH does; `broker-stopped` fails before any
+/// request as the bridge does when its workspace server is not running (`Error: No such file
+/// or directory (os error 2)`, exit 1: SSH worked); `broker-lost-after-N` answers N requests and
+/// then, at the next, exits as the bridge does when its server went away under it (`Error:
+/// broker_unavailable: …`, exit 1). `run.create` answers
 /// [`REGRANTED_RUN`], and `workspace.snapshot` answers [`grant_snapshot`] once a test has created
 /// `grant-snapshot` under the root ([`allow_grants`]); every other test's probes get the generic
 /// answer they always did. `context.manifest` answers [`manifest`]; `blob.read` and `blob.status` answer for
-/// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]) and refuse any other blob, as
-/// the broker refuses one outside the run. Every request line is logged as `<spawn> <line>` to
+/// `blob-new` and `blob-old` ([`blob_read`], [`blob_status`]), `blob.read` answers for any
+/// `blob-bulk-N` as a file named `blob-bulk-N.csv` ([`bulk_read`]), and every other blob is
+/// refused, as the broker refuses one outside the run. `remote.read` answers [`remote_file`] and
+/// `blob.begin` [`BEGUN_BLOB`], for `remote.attach`; `drop-at-post` exits at the first
+/// `run.project`, once it is written. `storage-stops` refuses `message.post` as a server that
+/// has stopped saving (`storage_full`), after which every `hello` says so
+/// ([`storage_stopped_hello`]) until a test removes `storage-stopped` under the root; it refuses
+/// `blob.chunk` as one attachment that could not be written, which stops nothing. Every request line is logged as `<spawn> <line>` to
 /// `requests.log`.
 fn write_fake_ssh(root: &Path, plan: &[&str]) {
     use std::os::unix::fs::PermissionsExt;
@@ -136,11 +146,15 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
     let hello_v2 = signed_hello(NODE, true, &["human_chat"]).to_string();
     let hello_other = signed_hello(&"5d".repeat(32), false, &["human_chat"]).to_string();
     let hello_join = signed_hello(NODE, false, &["human_chat", "join_by_name_v1"]).to_string();
+    let hello_storage = storage_stopped_hello().to_string();
     let manifest = manifest().to_string();
     let read_new = blob_read("blob-new", NEW_CSV).to_string();
     let read_old = blob_read("blob-old", OLD_CSV).to_string();
     let status_new = blob_status("blob-new", NEW_CSV).to_string();
     let status_old = blob_status("blob-old", OLD_CSV).to_string();
+    let read_bulk = bulk_read().to_string();
+    let read_remote = remote_file().to_string();
+    let begun = json!({"id": BEGUN_BLOB}).to_string();
     let snapshot = grant_snapshot().to_string();
     let run_create = json!({"run": {"id": REGRANTED_RUN, "protected_context": false,
         "expires_at": 4_102_444_800u64}, "credential": "regranted-credential"})
@@ -152,11 +166,15 @@ fn write_fake_ssh(root: &Path, plan: &[&str]) {
         &hello_v2,
         &hello_other,
         &hello_join,
+        &hello_storage,
         &manifest,
         &read_new,
         &read_old,
         &status_new,
         &status_old,
+        &read_bulk,
+        &read_remote,
+        &begun,
     ] {
         assert!(!text.contains('\'') && !text.contains('%'));
     }
@@ -188,13 +206,22 @@ case "$plan" in
   unreachable)
     printf '%s\n' 'ssh: connect to host example.test port 22: Connection refused' >&2
     exit 255 ;;
+  broker-stopped)
+    printf '%s\n' 'Error: No such file or directory (os error 2)' >&2
+    exit 1 ;;
 esac
 answered=0
 signed=0
 while IFS= read -r line; do
   printf '%s %s\n' "$n" "$line" >> "$root/requests.log"
   case "$plan" in
+    drop-at-post) case "$line" in *'"method":"run.project"'*) exit 0 ;; esac ;;
     *drop-after-*) [ "$answered" -ge "${{plan##*drop-after-}}" ] && exit 0 ;;
+    broker-lost-after-*)
+      if [ "$answered" -ge "${{plan##*broker-lost-after-}}" ]; then
+        printf '%s\n' 'Error: broker_unavailable: the workspace server closed the connection; reconnect to continue' >&2
+        exit 1
+      fi ;;
   esac
   answered=$((answered+1))
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
@@ -205,6 +232,7 @@ while IFS= read -r line; do
       other-node-after-1) [ "$answered" -gt 1 ] && body='{hello_other}' ;;
       join-drop-after-1) body='{hello_join}' ;;
     esac
+    [ -e "$root/storage-stopped" ] && body='{hello_storage}'
     printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
   elif [ "$plan" = grant-expired ] && printf '%s\n' "$line" | grep -q '"credential":'; then
     printf '{{"id":"%s","error":{{"code":"grant_expired","message":"grant_expired: run revoked, expired or policy changed"}}}}\n' "$id"
@@ -225,6 +253,9 @@ while IFS= read -r line; do
       *'"method":"blob.read"'*'"blob_id":"blob-old"'*|*'"blob_id":"blob-old"'*'"method":"blob.read"'*) body='{read_old}' ;;
       *'"method":"blob.status"'*'"blob_id":"blob-new"'*|*'"blob_id":"blob-new"'*'"method":"blob.status"'*) body='{status_new}' ;;
       *'"method":"blob.status"'*'"blob_id":"blob-old"'*|*'"blob_id":"blob-old"'*'"method":"blob.status"'*) body='{status_old}' ;;
+      *'"method":"blob.read"'*'"blob_id":"blob-bulk-'*|*'"blob_id":"blob-bulk-'*'"method":"blob.read"'*)
+        bulk=$(printf '%s\n' "$line" | sed -n 's/.*"blob_id":"\(blob-bulk-[0-9]*\)".*/\1/p')
+        [ -n "$bulk" ] && body=$(printf '%s\n' '{read_bulk}' | sed "s/BULK-ID/$bulk/g") ;;
     esac
     if [ -n "$body" ]; then
       printf '{{"id":"%s","result":%s}}\n' "$id" "$body"
@@ -240,8 +271,17 @@ while IFS= read -r line; do
     esac
     if [ "$refuse" = 1 ]; then
       printf '{{"id":"%s","error":{{"code":"unauthorized","message":"unauthorized: unknown device"}}}}\n' "$id"
+    elif [ "$plan" = storage-stops ] && printf '%s\n' "$line" | grep -q '"method":"message.post"'; then
+      : > "$root/storage-stopped"
+      printf '{{"id":"%s","error":{{"code":"storage_full","message":"storage_full: The workspace server ran out of disk space and has stopped saving changes."}}}}\n' "$id"
+    elif [ "$plan" = storage-stops ] && printf '%s\n' "$line" | grep -q '"method":"blob.chunk"'; then
+      printf '{{"id":"%s","error":{{"code":"storage_full","message":"storage_full: The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again."}}}}\n' "$id"
     elif printf '%s\n' "$line" | grep -q '"method":"run.create"'; then
       printf '{{"id":"%s","result":%s}}\n' "$id" '{run_create}'
+    elif printf '%s\n' "$line" | grep -q '"method":"remote.read"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" '{read_remote}'
+    elif printf '%s\n' "$line" | grep -q '"method":"blob.begin"'; then
+      printf '{{"id":"%s","result":%s}}\n' "$id" '{begun}'
     elif [ -e "$root/grant-snapshot" ] && printf '%s\n' "$line" | grep -q '"method":"workspace.snapshot"'; then
       printf '{{"id":"%s","result":%s}}\n' "$id" '{snapshot}'
     else
@@ -258,6 +298,17 @@ done
     let ssh = bin.join("ssh");
     fs::write(&ssh, script).unwrap();
     fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// A `hello` from a server that has stopped saving changes (W2-BRK-3): the fixture's own, with
+/// the unsigned `state` and `storage` the broker adds.
+fn storage_stopped_hello() -> Value {
+    let mut hello = hello();
+    hello["state"] = json!("storage_failed");
+    hello["storage"] = json!({"code": "storage_full",
+        "message": "The workspace server ran out of disk space and has stopped saving changes.",
+        "since": 1_790_000_000u64});
+    hello
 }
 
 /// The run a grant made against the scripted broker gets.
@@ -289,17 +340,18 @@ const OLD_CSV: &str = "sample,signal\nS1,99.9\nS2,7.8\n";
 /// `context.manifest`: two messages in `#data`, each sharing a `gina-assay.csv`, with the
 /// broker's `people` map naming their author.
 fn manifest() -> Value {
-    let message = |id: &str, created_at: u64, blob: &str| {
+    let message = |id: &str, created_at: u64, blob: &str, run: Value| {
         json!({"id": id, "sequence": id, "channel_id": "keepalive-channel",
-            "actor_id": "principal-gina", "run_id": null, "body": "Shared a file",
+            "actor_id": "principal-gina", "run_id": run, "body": "Shared a file",
             "created_at": created_at, "restricted": false, "source_channels": [],
             "attachments": [blob], "references": [], "status": null})
     };
+    // The newer post is Gina's agent's (a run's), the older her own.
     json!({
         "run_id": "keepalive-run", "policy_epoch": 1, "source_channels": ["keepalive-channel"],
         "messages": [
-            message("message-new", 1_790_214_527, "blob-new"),
-            message("message-old", 1_790_214_441, "blob-old"),
+            message("message-new", 1_790_214_527, "blob-new", json!("gina-agent-run")),
+            message("message-old", 1_790_214_441, "blob-old", Value::Null),
         ],
         "restricted": false,
         "people": {"principal-gina": {"username": "crew_gina", "display_name": "Gina Rossi", "active": true}},
@@ -328,6 +380,22 @@ fn blob_read(id: &str, csv: &str) -> Value {
         "complete": true,
     })
 }
+
+/// `blob.read` of a `blob-bulk-N` file, with `BULK-ID` where the fixture writes the blob's ID:
+/// one of as many distinct files as a test reads, each named after its ID.
+fn bulk_read() -> Value {
+    let mut read = blob_read("BULK-ID", NEW_CSV);
+    read["blob"]["name"] = json!("BULK-ID.csv");
+    read
+}
+
+/// `remote.read` of the file `remote.attach` attaches: two bytes, hex-encoded.
+fn remote_file() -> Value {
+    json!({"size": 2, "sha256": hex(&Sha256::digest(b"hi")), "data_hex": hex(b"hi")})
+}
+
+/// The upload `blob.begin` starts for `remote.attach`.
+const BEGUN_BLOB: &str = "blob-attached";
 
 fn spawns(root: &Path) -> usize {
     fs::read_to_string(root.join("spawns"))
@@ -367,6 +435,7 @@ fn fast(retry: Duration) -> KeepaliveTiming {
         // No later tries unless a test asks for them (see `with_late_retries`).
         late_retry_every: retry,
         late_retry_for: Duration::ZERO,
+        broker_down_every: retry,
         ended_check: Duration::from_millis(40),
         revocation_retry_first: Duration::from_millis(40),
         revocation_retry_max: Duration::from_millis(160),
@@ -636,6 +705,7 @@ async fn a_request_after_a_long_idle_is_never_written_to_a_dropped_bridge() {
             retry_delays: [Duration::from_secs(600); 3],
             late_retry_every: Duration::from_secs(600),
             late_retry_for: Duration::ZERO,
+            broker_down_every: Duration::from_secs(600),
             ended_check: Duration::from_secs(600),
             revocation_retry_first: Duration::from_secs(600),
             revocation_retry_max: Duration::from_secs(600),
@@ -778,6 +848,7 @@ fn slept() -> KeepaliveTiming {
         retry_delays: [Duration::from_secs(600); 3],
         late_retry_every: Duration::from_secs(600),
         late_retry_for: Duration::ZERO,
+        broker_down_every: Duration::from_secs(600),
         ended_check: Duration::from_secs(600),
         revocation_retry_first: Duration::from_secs(600),
         revocation_retry_max: Duration::from_secs(600),
@@ -822,6 +893,7 @@ async fn a_scoped_worker_request_after_a_long_idle_dials_again_first() {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         },
     );
@@ -904,6 +976,7 @@ async fn grant_worker(f: &Fixture) {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         },
     );
@@ -939,10 +1012,17 @@ async fn a_first_file_read_starts_at_zero_comes_back_as_text_and_is_recorded() {
     grant_worker(&f).await;
     let cap = CallCapability::for_test(ProviderTier::Private, true);
     assert_eq!(f.manager.run_source_line(WORKER), None, "nothing read yet");
-    f.manager
+    let page = f
+        .manager
         .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
         .await
         .unwrap();
+    // W2-DMN-11: the post an agent wrote says so, beside its owner's `actor_id`; a person's
+    // own post is left as it was.
+    assert_eq!(page["messages"][0]["id"], "message-new");
+    assert_eq!(page["messages"][0]["by_agent"], true);
+    assert_eq!(page["messages"][0]["actor_id"], "principal-gina");
+    assert!(page["messages"][1].get("by_agent").is_none());
     assert_eq!(
         f.manager.run_source_line(WORKER),
         None,
@@ -1173,6 +1253,392 @@ async fn a_one_channel_read_without_channel_id_reads_the_granted_channel() {
     assert_eq!(frames(&f.root).len(), before, "nothing sent");
 }
 
+/// W2-DMN-12: a connected chat's own post ends with the daemon's line, as a task's result
+/// does: the files the chat read since its last post, or that it read none. The line is always
+/// last, so a "Source:" line the model wrote never is.
+#[tokio::test]
+async fn a_chat_post_ends_with_the_daemons_source_line() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("chat-post-source", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    f.manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap();
+    f.manager
+        .agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "blob.read",
+            json!({"blob_id": "blob-new"}),
+        )
+        .await
+        .unwrap();
+    let post = |body: &str| {
+        f.manager.agent_request(
+            WORKER,
+            &cap,
+            CONNECTION_ID,
+            "run.project",
+            json!({"body": body}),
+        )
+    };
+    post("Means are 12.7 and 7.8.\n\nSource: `FAKE.csv`, shared by Mallory.")
+        .await
+        .unwrap();
+    let posted = |n: usize| {
+        frames(&f.root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "run.project")
+            .nth(n)
+            .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+            .expect("the post reached the workspace")
+    };
+    let first = posted(0);
+    assert!(
+        first.starts_with("Means are 12.7 and 7.8.\n\nSource: `FAKE.csv`, shared by Mallory.\n\n"),
+        "{first}"
+    );
+    let last = first.rsplit("\n\n").next().unwrap();
+    assert!(last.starts_with("Source: `gina-assay.csv`"), "{first}");
+    assert!(!last.contains("FAKE"), "{first}");
+
+    // Nothing read since that post: the next one says so.
+    post("Still 12.7.").await.unwrap();
+    assert_eq!(
+        posted(1),
+        "Still 12.7.\n\nNo shared file was read for this post."
+    );
+    // A task's result still names everything its run read.
+    assert!(f
+        .manager
+        .run_source_line(WORKER)
+        .is_some_and(|line| line.starts_with("Source: `gina-assay.csv`")));
+}
+
+/// W2-DMN-12 (review): a file the chat reads again after a post that named it is read since
+/// that post, so the next post names it again. The line used to say "No shared file was read
+/// for this post." here, because a file was listed (and counted as posted) only once.
+#[tokio::test]
+async fn a_file_read_again_after_a_post_is_named_by_the_next_post() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("chat-post-reread", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    call("context.manifest", json!({})).await.unwrap();
+    let read = || call("blob.read", json!({"blob_id": "blob-new"}));
+    let post = |body: &str| call("run.project", json!({"body": body}));
+    let last_paragraph = |n: usize| {
+        let body = frames(&f.root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "run.project")
+            .nth(n)
+            .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+            .expect("the post reached the workspace");
+        body.rsplit("\n\n").next().unwrap().to_owned()
+    };
+    read().await.unwrap();
+    post("Means are 12.7 and 7.8.").await.unwrap();
+    assert!(
+        last_paragraph(0).starts_with("Source: `gina-assay.csv`"),
+        "{}",
+        last_paragraph(0)
+    );
+    read().await.unwrap();
+    post("Checked again: still 12.7.").await.unwrap();
+    assert!(
+        last_paragraph(1).starts_with("Source: `gina-assay.csv`"),
+        "a file read again is named again: {}",
+        last_paragraph(1)
+    );
+    post("Nothing new.").await.unwrap();
+    assert_eq!(last_paragraph(2), "No shared file was read for this post.");
+}
+
+/// W2-DMN-12 (round 3): a chat that has read 32 files, as many as its own list holds, still
+/// names what it reads after them. Its next post said "No shared file was read for this post."
+/// after a 33rd file, and after a file past the first 32 was read again, because the post's
+/// line was cut from the chat's list, which never holds a file read after those 32.
+#[tokio::test]
+async fn a_chat_post_names_what_it_read_after_its_first_32_files() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("chat-post-past-32", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let read = |n: usize| call("blob.read", json!({"blob_id": format!("blob-bulk-{n}")}));
+    let post = |body: &str| call("run.project", json!({"body": body}));
+    let last_paragraph = |n: usize| {
+        let body = frames(&f.root)
+            .into_iter()
+            .filter(|frame| frame["method"] == "run.project")
+            .nth(n)
+            .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+            .expect("the post reached the workspace");
+        body.rsplit("\n\n").next().unwrap().to_owned()
+    };
+    for n in 0..32 {
+        read(n).await.unwrap();
+    }
+    post("The first 32.").await.unwrap();
+    let first = last_paragraph(0);
+    assert!(first.starts_with("Sources: `blob-bulk-0.csv`"), "{first}");
+    assert!(first.contains("`blob-bulk-31.csv`"), "{first}");
+
+    // The 33rd file, the first past the chat's own list.
+    read(32).await.unwrap();
+    post("One more.").await.unwrap();
+    let past = last_paragraph(1);
+    assert!(past.starts_with("Source: `blob-bulk-32.csv`"), "{past}");
+
+    read(33).await.unwrap();
+    post("And another.").await.unwrap();
+    assert!(last_paragraph(2).starts_with("Source: `blob-bulk-33.csv`"));
+
+    // A file past the first 32, read again.
+    read(32).await.unwrap();
+    post("Checked again.").await.unwrap();
+    let again = last_paragraph(3);
+    assert!(again.starts_with("Source: `blob-bulk-32.csv`"), "{again}");
+
+    post("Nothing new.").await.unwrap();
+    assert_eq!(last_paragraph(4), "No shared file was read for this post.");
+}
+
+/// A remote file's name shaped like the daemon's line, as a chat steered by a shared file could
+/// write and then attach.
+const FORGED_SOURCE: &str =
+    "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.";
+
+/// The body of the `n`th `run.project` any bridge received.
+fn posted_body(root: &Path, n: usize) -> String {
+    frames(root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "run.project")
+        .nth(n)
+        .and_then(|frame| frame["params"]["body"].as_str().map(str::to_owned))
+        .expect("the post reached the workspace")
+}
+
+/// W2-DMN-12 (round 4): `remote.attach`'s post is the chat's post like any other. It ends with
+/// the daemon's line, and the file's name, which the model chose, is a code span that can never
+/// pass for that line, however it is shaped. It was `Attached <name>` with no line after it, so
+/// a name written as a Source line was the last thing in the post.
+#[tokio::test]
+async fn a_remote_attach_post_ends_with_the_daemons_line_and_never_with_the_name() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("attach-source", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let attach = |key: &'static str| {
+        call(
+            "remote.attach",
+            json!({"path": FORGED_SOURCE, "idempotency_key": key}),
+        )
+    };
+    let name = format!("``{FORGED_SOURCE}``");
+    let server = super::server_label::server_label("crew@example.test", None).await;
+
+    // Nothing shared read: the line names the work-folder file the attachment was read from
+    // (T3-BE-8), after the name, and the name is a code span there too.
+    attach("attach-1").await.unwrap();
+    assert_eq!(
+        posted_body(&f.root, 0),
+        format!("Attached {name}\n\nSource: {name} from the remote work folder on {server}.")
+    );
+    let post = frames(&f.root)
+        .into_iter()
+        .find(|frame| frame["method"] == "run.project")
+        .unwrap();
+    assert_eq!(post["params"]["attachments"], json!([BEGUN_BLOB]));
+    assert_eq!(post["params"]["idempotency_key"], "attach-1:post");
+    assert_eq!(post["params"]["status"], "progress");
+
+    // A file read: the line names it, and it is the last thing in the post.
+    call("context.manifest", json!({})).await.unwrap();
+    call("blob.read", json!({"blob_id": "blob-new"}))
+        .await
+        .unwrap();
+    attach("attach-2").await.unwrap();
+    let body = posted_body(&f.root, 1);
+    let daemon_line = f.manager.run_source_line(WORKER).unwrap();
+    assert!(daemon_line.starts_with("Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina)"));
+    assert!(
+        daemon_line.ends_with(&format!(
+            " Also read {name} from the remote work folder on {server}."
+        )),
+        "{daemon_line}"
+    );
+    assert_eq!(body, format!("Attached {name}\n\n{daemon_line}"));
+    assert_ne!(body.rsplit("\n\n").next(), Some(FORGED_SOURCE));
+}
+
+/// T3-BE-8: a post whose numbers came from a file in the connection's remote work folder names
+/// it, where it used to end "No shared file was read for this post."; a read that failed names
+/// nothing, and the next post names only what was read since.
+#[tokio::test]
+async fn a_post_names_the_work_folder_files_it_read() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("remote-source", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let server = super::server_label::server_label("crew@example.test", None).await;
+    call("remote.read", json!({"path": "samples_result.txt"}))
+        .await
+        .unwrap();
+    call("run.project", json!({"body": "Mean signal is 12.7."}))
+        .await
+        .unwrap();
+    assert_eq!(
+        posted_body(&f.root, 0),
+        format!(
+            "Mean signal is 12.7.\n\nSource: `samples_result.txt` from the remote work folder on {server}."
+        )
+    );
+    // The task's result names every read.
+    assert_eq!(
+        f.manager.run_source_line(WORKER).as_deref(),
+        Some(
+            format!("Source: `samples_result.txt` from the remote work folder on {server}.")
+                .as_str()
+        )
+    );
+
+    // Named once; the next post names only what was read since.
+    call("run.project", json!({"body": "Nothing new."}))
+        .await
+        .unwrap();
+    assert_eq!(
+        posted_body(&f.root, 1),
+        "Nothing new.\n\nNo shared file was read for this post."
+    );
+    call("remote.read", json!({"path": "a.txt"})).await.unwrap();
+    call("remote.read", json!({"path": "b/c.txt"}))
+        .await
+        .unwrap();
+    call("remote.read", json!({"path": "samples_result.txt"}))
+        .await
+        .unwrap();
+    call("run.project", json!({"body": "Three."}))
+        .await
+        .unwrap();
+    assert_eq!(
+        posted_body(&f.root, 2),
+        format!(
+            "Three.\n\nSources: `samples_result.txt`, `a.txt` and `b/c.txt` from the remote work folder on {server}."
+        )
+    );
+}
+
+/// W2-DMN-12 (round 4): a post sent again under its idempotency key after an uncertain answer
+/// carries the line it was first sent with, though the chat read another file in between: the
+/// workspace replays a key only for the identical request, and a line built again would have
+/// made the retry a different one. The file read in between is named by the next post.
+#[tokio::test]
+async fn a_post_retried_under_its_key_carries_the_line_it_was_first_sent_with() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "attach-retry",
+        &["drop-at-post", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let call = |method: &'static str, params: Value| {
+        f.manager
+            .agent_request(WORKER, &cap, CONNECTION_ID, method, params)
+    };
+    let attach = || {
+        call(
+            "remote.attach",
+            json!({"path": "results/means.csv", "idempotency_key": "attach-retry"}),
+        )
+    };
+    call("context.manifest", json!({})).await.unwrap();
+    call("blob.read", json!({"blob_id": "blob-new"}))
+        .await
+        .unwrap();
+    let error = attach().await.unwrap_err();
+    assert_eq!(
+        super::CrewRefusal::find(&error).map(super::CrewRefusal::code),
+        Some(super::refusal::OUTCOME_UNKNOWN),
+        "{error:#}"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await.0 == "connected").await;
+
+    // Read in between: a line built now would name both copies.
+    call("blob.read", json!({"blob_id": "blob-old"}))
+        .await
+        .unwrap();
+    attach().await.unwrap();
+    let first = posted_body(&f.root, 0);
+    assert_eq!(
+        posted_body(&f.root, 1),
+        first,
+        "the retry is the same request"
+    );
+    assert!(
+        first.starts_with("Attached `means.csv`\n\nSource: `gina-assay.csv`"),
+        "{first}"
+    );
+    assert!(!first.contains("earlier copy"), "{first}");
+    let keys: Vec<Value> = frames(&f.root)
+        .into_iter()
+        .filter(|frame| frame["method"] == "run.project")
+        .map(|frame| frame["params"]["idempotency_key"].clone())
+        .collect();
+    assert_eq!(
+        keys,
+        [json!("attach-retry:post"), json!("attach-retry:post")]
+    );
+
+    call("run.project", json!({"body": "Next."})).await.unwrap();
+    let next = posted_body(&f.root, 2);
+    let line = next.rsplit("\n\n").next().unwrap();
+    assert!(
+        line.contains("earlier copy"),
+        "the file read in between: {next}"
+    );
+}
+
 /// Q3-12: a device the workspace accepted, then no longer knows, is identity-final: the bridge
 /// is retired, no heartbeat or re-dial follows, and the connection says why with a typed code.
 #[tokio::test]
@@ -1367,6 +1833,7 @@ fn request_finds(retry: Duration) -> KeepaliveTiming {
     KeepaliveTiming {
         retry_delays: [retry; 3],
         late_retry_every: retry,
+        broker_down_every: retry,
         ..quiet()
     }
 }
@@ -1404,6 +1871,14 @@ async fn a_drop_a_request_finds_first_is_dialled_again_until_the_network_is_back
             .any(|cause| cause.downcast_ref::<SshFailure>().is_some()),
         "{refused:#}"
     );
+    // W2-DMN-7: lost before anything was written, and said so.
+    let typed = super::CrewRefusal::find(&refused).expect("a typed refusal");
+    assert_eq!(typed.code(), "crew_not_sent");
+    assert_eq!(typed.http_status(), 503);
+    assert!(
+        refused.to_string().contains("nothing was sent"),
+        "{refused}"
+    );
     assert_eq!(
         methods_on(&f.root, 1),
         ["hello"],
@@ -1426,10 +1901,14 @@ async fn a_drop_a_request_finds_first_is_dialled_again_until_the_network_is_back
 }
 
 /// Q4-01: a bridge that breaks while carrying a request is a drop that request found. The
-/// request is not sent again (its outcome is unknown); the connection is dialled again on the
-/// same schedule.
+/// request is not sent again; the connection is dialled again.
+///
+/// W2-DMN-6: dialled at once, as a drop the keepalive finds is. The first try used to wait the
+/// schedule's first gap (20 s, then 60 s), and here the gap is a minute: only an immediate dial
+/// reconnects within the five seconds `until` waits. And a read that broke changed nothing, so
+/// neither its answer nor the saved error raises the "submitted operation" alarm.
 #[tokio::test]
-async fn a_bridge_that_breaks_under_a_request_is_dialled_again_later() {
+async fn a_bridge_that_breaks_under_a_request_is_dialled_again_at_once() {
     if !crate::test_sandbox::in_a_process_of_its_own() {
         return;
     }
@@ -1458,6 +1937,687 @@ async fn a_bridge_that_breaks_under_a_request_is_dialled_again_later() {
         "never re-sent"
     );
     assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    drop(f);
+
+    let f = fixture(
+        "request-breaks-now",
+        &["drop-after-1", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_not_sent", "a read changed nothing");
+    assert!(
+        !error.to_string().contains("submitted operation"),
+        "{error}"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// W2-DMN-6: while a broken bridge is being dialled again, a request is told the connection is
+/// coming back (`crew_reconnecting`), not to sign in, and nothing is dialled or written for it.
+/// A bridge that broke under a read leaves the plain "dropped" error, not the alarm about a
+/// submitted operation.
+#[tokio::test]
+async fn a_request_while_a_redial_is_owed_is_told_it_is_reconnecting() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-reconnecting",
+        &["drop-after-1", "unreachable", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    // The immediate dial meets the network still down; the next try is a minute away.
+    let root = f.root.clone();
+    until(async || spawns(&root) == 2).await;
+    let manager = Arc::clone(&f.manager);
+    until(async || !manager.transports.lock().await.contains_key(CONNECTION_ID)).await;
+    assert!(!f.manager.idle_redial.lock().unwrap().is_empty(), "armed");
+    let asked = requests(&f.root).len();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_reconnecting");
+    assert_eq!(typed.http_status(), 503);
+    assert!(error.to_string().starts_with("Reconnecting to "), "{error}");
+    assert!(!error.to_string().contains("authenticate"), "{error}");
+    assert_eq!(spawns(&f.root), 2, "nothing dialled for it");
+    assert_eq!(requests(&f.root).len(), asked, "nothing written for it");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// T3-BE-3: a request on a connection that is down with nothing dialling it again is refused
+/// typed, `crew_not_connected` with `409` and the workspace named, so each client can say it in
+/// its own words. The sentence is unchanged, byte for byte, because older clients still match
+/// it. Nothing is dialled or written for it.
+#[tokio::test]
+async fn a_request_on_a_connection_nobody_is_dialling_is_refused_as_not_connected() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("request-not-connected", &["serve"], quiet()).await;
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_not_connected");
+    assert_eq!(typed.http_status(), 409);
+    assert_eq!(
+        error.to_string(),
+        "Crew connection is disconnected; authenticate and connect in Crew"
+    );
+    assert_eq!(
+        typed.fields(),
+        &[("workspace", json!("keepalive fixture"))],
+        "the workspace as a person calls it"
+    );
+    assert_eq!(spawns(&f.root), 0, "nothing dialled for it");
+    assert!(requests(&f.root).is_empty(), "nothing written for it");
+}
+
+/// T3-BE-13: a workspace server that has stopped saving changes is shown on the connection,
+/// from its own `hello`, so a person is told before trying to write. A change it refuses for
+/// its storage asks `hello` again at once; one attachment it could not write, which stops
+/// nothing, marks nothing. A later `hello` that no longer says so clears it.
+#[tokio::test]
+async fn a_server_that_stopped_saving_is_shown_on_the_connection() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("storage-stopped", &["storage-stops"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let connection = || async { f.manager.connection(CONNECTION_ID).await.unwrap() };
+    assert_eq!(f.manager.server_storage(&connection().await), None);
+
+    // One attachment the server could not write: it keeps saving, and says so.
+    let hellos = |root: &Path| {
+        requests(root)
+            .iter()
+            .filter(|(_, method)| method == "hello")
+            .count()
+    };
+    let before = hellos(&f.root);
+    f.manager
+        .human_request(CONNECTION_ID, "blob.chunk", json!({}), None)
+        .await
+        .unwrap_err();
+    let root = f.root.clone();
+    until(async || hellos(&root) > before).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(f.manager.server_storage(&connection().await), None);
+
+    f.manager
+        .human_request(CONNECTION_ID, "message.post", json!({}), None)
+        .await
+        .unwrap_err();
+    let manager = Arc::clone(&f.manager);
+    until(async || {
+        let c = manager.connection(CONNECTION_ID).await.unwrap();
+        manager.server_storage(&c).is_some()
+    })
+    .await;
+    assert_eq!(
+        f.manager.server_storage(&connection().await),
+        Some(super::ServerStorage {
+            state: "storage_failed".into(),
+            code: "storage_full".into(),
+            since: Some(1_790_000_000),
+        })
+    );
+
+    // The host freed space and restarted Crew: the next `hello` clears it.
+    fs::remove_file(f.root.join("storage-stopped")).unwrap();
+    f.manager.refresh_broker_hello(CONNECTION_ID).await.unwrap();
+    assert_eq!(f.manager.server_storage(&connection().await), None);
+
+    // Not connected is not known, whatever the last `hello` said.
+    fs::write(f.root.join("storage-stopped"), "").unwrap();
+    f.manager.refresh_broker_hello(CONNECTION_ID).await.unwrap();
+    assert!(f.manager.server_storage(&connection().await).is_some());
+    let mut down = connection().await;
+    down.status = "disconnected".into();
+    assert_eq!(f.manager.server_storage(&down), None);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// T3-BE-1: a bridge that broke under a request is retired with the alarm about a submitted
+/// operation only when a change was written and its answer lost. A post answered `crew_not_sent`
+/// (only its challenge was lost) or `crew_reconnecting`, and a failure that lost no change,
+/// leave the plain "dropped" error.
+#[tokio::test]
+async fn only_a_lost_change_leaves_the_submitted_operation_alarm() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("bridge-loss-message", &["serve"], quiet()).await;
+    let ssh = |outcome_unknown| {
+        anyhow::Error::new(SshFailure {
+            kind: SshFailureKind::Other,
+            code: "ssh_eof".into(),
+            status: "exit_255".into(),
+            description: "SSH connection closed".into(),
+            detail: None,
+            host: None,
+            outcome_unknown,
+        })
+    };
+    let typed = |code: &'static str| {
+        ssh(code == super::refusal::OUTCOME_UNKNOWN)
+            .context(super::CrewRefusal::new(code, "typed").status(503))
+    };
+    for (method, answer, alarm) in [
+        ("message.post", typed(super::refusal::NOT_SENT), false),
+        ("message.post", typed(super::refusal::RECONNECTING), false),
+        ("message.post", typed(super::refusal::OUTCOME_UNKNOWN), true),
+        ("run.project", ssh(false), false),
+        ("run.project", ssh(true), true),
+        ("run.project", anyhow::anyhow!("of no known kind"), true),
+        (
+            "messages.history",
+            anyhow::anyhow!("of no known kind"),
+            false,
+        ),
+    ] {
+        f.manager.connect(CONNECTION_ID).await.unwrap();
+        let bridge = f.manager.transports.lock().await[CONNECTION_ID].clone();
+        let answer: Result<Value> = Err(answer);
+        f.manager
+            .retire_broken_bridge(CONNECTION_ID, &bridge, method, &answer)
+            .await
+            .unwrap();
+        let (state, saved) = status(&f.manager).await;
+        assert_eq!(state, "disconnected");
+        let saved = saved.expect("why it is down");
+        assert_eq!(
+            saved.contains("inspect any submitted operation"),
+            alarm,
+            "{method} answered {:#}: {saved}",
+            answer.as_ref().unwrap_err()
+        );
+        f.manager.disarm_idle_redial(CONNECTION_ID);
+    }
+}
+
+/// T3-BE-5 (review): an expectation met by the workspace's last `hello` is met again where it
+/// could have gone stale. A post or an upload's attachment (`blob.begin`, which a file transfer
+/// that required Private sends as Private) that required Private is told to the workspace as
+/// Private, so it is restricted even if the workspace stopped being Private for everyone since;
+/// once a `hello` says the workspace allows Public, the same request is refused and nothing is
+/// written. A task that required Private is judged again against the snapshot admission reads,
+/// whose policy epoch the workspace checks, so one that allows Public now is refused before any
+/// run exists.
+#[tokio::test]
+async fn an_expectation_met_by_a_stale_hello_is_held_where_it_counts() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("mode-in-force-stale", &["serve"], quiet()).await;
+    allow_grants(&f.root);
+    let (_store, chat, _incarnation) = saved_chat(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    // The last signed `hello` said Private for everyone; the snapshot says it allows Public.
+    let mut hello = f.manager.broker_hello(CONNECTION_ID).unwrap();
+    hello.signature_version = 2;
+    hello.mode = Some(ClusterMode::Private);
+    f.manager
+        .brokers
+        .lock()
+        .unwrap()
+        .insert(CONNECTION_ID.into(), hello);
+
+    let told_mode = |root: &Path, method: &str| {
+        frames(root)
+            .into_iter()
+            .rfind(|frame| frame["method"] == method)
+            .map(|frame| frame["params"]["personal_mode"].clone())
+    };
+    let params = |method: &str, expected: &str| match method {
+        "message.post" => {
+            json!({"channel_id": "keepalive-channel", "body": "x", "personal_mode": expected})
+        }
+        _ => json!({"channel_id": "keepalive-channel", "name": "assay.csv",
+            "media_type": "text/csv", "size": 2, "sha256": "00".repeat(32),
+            "personal_mode": expected}),
+    };
+    for method in ["message.post", "blob.begin"] {
+        for (expected, told) in [("private", "private"), ("public", "public")] {
+            f.manager
+                .human_request(CONNECTION_ID, method, params(method, expected), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                told_mode(&f.root, method),
+                Some(json!(told)),
+                "{method} {expected}"
+            );
+        }
+    }
+    // A later `hello` says the workspace allows Public: an expectation of Private no longer
+    // holds on this personal Public connection, and neither request is written.
+    let mut hello = f.manager.broker_hello(CONNECTION_ID).unwrap();
+    hello.mode = Some(ClusterMode::Public);
+    f.manager
+        .brokers
+        .lock()
+        .unwrap()
+        .insert(CONNECTION_ID.into(), hello.clone());
+    for method in ["message.post", "blob.begin"] {
+        let asked = requests(&f.root).len();
+        let refused = f
+            .manager
+            .human_request(CONNECTION_ID, method, params(method, "private"), None)
+            .await
+            .expect_err("the workspace allows Public now");
+        assert_eq!(
+            super::CrewRefusal::find(&refused).map(super::CrewRefusal::code),
+            Some("crew_mode_mismatch"),
+            "{method}: {refused:#}"
+        );
+        assert_eq!(
+            requests(&f.root).len(),
+            asked,
+            "{method}: nothing was written"
+        );
+    }
+    hello.mode = Some(ClusterMode::Private);
+    f.manager
+        .brokers
+        .lock()
+        .unwrap()
+        .insert(CONNECTION_ID.into(), hello);
+
+    let asked = requests(&f.root).len();
+    let refused = f
+        .manager
+        .begin_run_with_policy(
+            &chat,
+            CONNECTION_ID,
+            "keepalive-channel",
+            vec![],
+            &TurnProvider,
+            RunPolicy {
+                expected_mode: Some(ClusterMode::Private),
+                ..RunPolicy::default()
+            },
+        )
+        .await
+        .err()
+        .expect("the workspace allows Public now");
+    assert_eq!(
+        super::CrewRefusal::find(&refused).map(super::CrewRefusal::code),
+        Some("crew_mode_mismatch"),
+        "{refused:#}"
+    );
+    assert!(
+        !requests(&f.root)[asked..]
+            .iter()
+            .any(|(_, method)| method == "run.create"),
+        "no run was asked for"
+    );
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// T3-BE-15: while the workspace's server is not running (the host stopped or restarted it, or
+/// its computer rebooted), the daemon tries again at a steady short interval instead of the
+/// growing gaps, so a server the host started again is noticed within that interval. Members
+/// used to come back 2 to 3 minutes after it was up again, while being told to ask the host.
+#[tokio::test]
+async fn a_workspace_server_that_is_down_is_tried_again_at_a_steady_pace() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let steady = KeepaliveTiming {
+        // The growing gaps: a second try 10 s after the first would fail this test.
+        retry_delays: [
+            Duration::from_millis(50),
+            Duration::from_secs(10),
+            Duration::from_secs(30),
+        ],
+        late_retry_every: Duration::from_secs(60),
+        late_retry_for: Duration::from_secs(120),
+        broker_down_every: Duration::from_millis(100),
+        ..fast(Duration::from_millis(50))
+    };
+    let f = fixture(
+        "broker-down-steady",
+        &[
+            "broker-lost-after-1",
+            "broker-stopped",
+            "broker-stopped",
+            "broker-stopped",
+            "broker-stopped",
+            "serve",
+        ],
+        steady,
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    // Five tries that meet no server, then one that does, in well under the 10 s gap.
+    until(async || spawns(&root) == 6 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    drop(f);
+
+    // Any other failure keeps the growing gaps: after the network fails twice, the next try is
+    // the 10 s gap away.
+    let f = fixture(
+        "network-down-grows",
+        &["drop-after-1", "unreachable", "unreachable", "serve"],
+        steady,
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 3).await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(spawns(&f.root), 3, "the growing gap is kept");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// T3-BE-15 (review): the tries while the server is down use up the schedule's time without
+/// taking gaps from the growing list. When the failure then changes kind (the host stopped the
+/// server, then its computer went off the network), the schedule ends there. Before, the next
+/// failure took every gap still listed, each cut to the zero time left, and dialled back to back
+/// until the list ran out: about 12 SSH spawns in well under a second under the default timing.
+#[tokio::test]
+async fn a_schedule_whose_time_the_steady_tries_used_up_ends_at_the_next_failure() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let timing = KeepaliveTiming {
+        // 50 ms, then 30 later gaps of 10 ms: a budget of 450 ms, and 32 gaps listed.
+        retry_delays: [Duration::from_millis(50); 3],
+        late_retry_every: Duration::from_millis(10),
+        late_retry_for: Duration::from_millis(300),
+        // One steady wait is longer than the whole budget, so the first one uses it up.
+        broker_down_every: Duration::from_secs(5),
+        ..fast(Duration::from_millis(50))
+    };
+    // The connect; the dial at once when the bridge is found gone, which arms the schedule;
+    // the schedule's first try after its first gap, which meets no server and so waits the
+    // steady interval, cut to the 400 ms left; and the try after it, which is unreachable.
+    let plan = [
+        &["broker-lost-after-1", "broker-stopped", "broker-stopped"][..],
+        &["unreachable"; 40][..],
+    ]
+    .concat();
+    let f = fixture("broker-down-then-unreachable", &plan, timing).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 4).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        spawns(&f.root),
+        4,
+        "no dial after the schedule's time ran out"
+    );
+    assert!(
+        !f.manager.redial_pending(CONNECTION_ID),
+        "the schedule ended and disarmed itself"
+    );
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// T3-BE-16: a send refused while a re-dial is owed says how long the wait is when it is longer
+/// than a moment, and that Connect tries at once. The code is unchanged.
+#[tokio::test]
+async fn a_request_while_a_long_redial_is_owed_says_how_long() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-reconnecting-long",
+        &["drop-after-1", "unreachable", "serve"],
+        request_finds(Duration::from_secs(90)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let root = f.root.clone();
+    until(async || spawns(&root) == 2).await;
+    let manager = Arc::clone(&f.manager);
+    until(async || !manager.transports.lock().await.contains_key(CONNECTION_ID)).await;
+    // The immediate dial has failed and the schedule waits its gap. While that dial is still
+    // under way the wait is "a moment", which is true then.
+    let manager = Arc::clone(&f.manager);
+    until(async || {
+        manager
+            .next_redial_in(CONNECTION_ID)
+            .is_some_and(|wait| wait > Duration::from_secs(10))
+    })
+    .await;
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_reconnecting");
+    let text = error.to_string();
+    assert!(
+        text.starts_with("Reconnecting to keepalive fixture in about ")
+            && text.ends_with(" seconds. Nothing was sent. Connect now to try at once."),
+        "{text}"
+    );
+    let seconds: u64 = text
+        .trim_start_matches("Reconnecting to keepalive fixture in about ")
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((80..=90).contains(&seconds), "{seconds}");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+#[test]
+fn the_reconnecting_sentence_names_a_wait_longer_than_a_moment() {
+    use super::reconnecting_sentence;
+    for wait in [None, Some(Duration::ZERO), Some(Duration::from_secs(10))] {
+        assert_eq!(
+            reconnecting_sentence("okafor-lab", wait),
+            "Reconnecting to okafor-lab. Nothing was sent; try again in a moment."
+        );
+    }
+    assert_eq!(
+        reconnecting_sentence("okafor-lab", Some(Duration::from_millis(59_200))),
+        "Reconnecting to okafor-lab in about 60 seconds. Nothing was sent. Connect now to try at once."
+    );
+    assert_eq!(
+        reconnecting_sentence("okafor-lab", Some(Duration::from_secs(179))),
+        "Reconnecting to okafor-lab in about 3 minutes. Nothing was sent. Connect now to try at once."
+    );
+}
+
+/// W2-DMN-6 (review): a bridge that breaks right after every connect (each one answers `hello`
+/// and drops the next request, as a relay that resets new sessions would) is never dialled in a
+/// tight loop. The drop a request finds is dialled at once; that dial's membership check breaks
+/// the new bridge, and a drop so soon after the daemon's own dial waits the first gap. Before,
+/// every such drop was dialled at once, as fast as SSH could connect, for as long as it went on.
+#[tokio::test]
+async fn a_bridge_that_breaks_after_every_connect_is_never_dialled_in_a_tight_loop() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let plan = [&["drop-after-3"][..], &["drop-after-1"; 60][..]].concat();
+    let f = fixture(
+        "request-flapping",
+        &plan,
+        request_finds(Duration::from_millis(1500)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    // A member: the workspace accepted a signed request, so every dial is followed by a
+    // membership check.
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let root = f.root.clone();
+    // Dialled at once: the daemon had not dialled this connection itself.
+    until(async || spawns(&root) >= 2).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let dialled = spawns(&f.root);
+    // The immediate dial, then one dial per 1.5 s gap at most.
+    assert!((2..=4).contains(&dialled), "{dialled} dials in 2.5 s");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert_eq!(spawns(&f.root), dialled, "nothing after a Disconnect");
+}
+
+/// W2-DMN-6 (review): a request that finds a bridge ended right after the daemon dialled it
+/// does not dial it again at once. The bridge is retired, the retries are armed, and the request
+/// is told the connection is coming back, with nothing sent; the connection comes back after the
+/// first gap.
+#[tokio::test]
+async fn a_request_that_finds_a_fresh_redial_ended_waits_the_gap() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-finds-fresh-redial-ended",
+        &["end-after-1", "end-after-3", "serve"],
+        request_finds(Duration::from_millis(1500)),
+    )
+    .await;
+    connect_then_lose_the_bridge(&f).await;
+    // Finds the connect's bridge ended: the daemon had not dialled, so it dials at once, and
+    // the new bridge carries the request, then ends.
+    f.manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap();
+    assert_eq!(spawns(&f.root), 2);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let asked = requests(&f.root).len();
+    let error = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_reconnecting", "{error}");
+    assert_eq!(spawns(&f.root), 2, "not dialled again at once");
+    assert_eq!(requests(&f.root).len(), asked, "nothing written");
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
+/// W2-DMN-6 (review): the same bound holds for a bridge the keepalive finds ended: one whose
+/// `ssh` exits right after every connect is dialled at once the first time, and after that no
+/// sooner than the first gap after the daemon's last own dial, where it used to be dialled again
+/// at every check for an ended bridge.
+#[tokio::test]
+async fn a_bridge_that_ends_after_every_connect_is_never_dialled_in_a_tight_loop() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "ended-flapping",
+        &["end-after-1"; 60],
+        KeepaliveTiming {
+            ended_check: Duration::from_millis(40),
+            retry_delays: [Duration::from_millis(1500); 3],
+            ..quiet()
+        },
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let root = f.root.clone();
+    until(async || spawns(&root) >= 2).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let dialled = spawns(&f.root);
+    assert!((2..=4).contains(&dialled), "{dialled} dials in 2.5 s");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    assert_eq!(spawns(&f.root), dialled, "nothing after a Disconnect");
+}
+
+/// W2-DMN-7: a request that could have changed something, lost with its frame written, is an
+/// unknown outcome with its request ID, never a refusal; and the saved error keeps the alarm.
+#[tokio::test]
+async fn a_post_lost_in_flight_is_an_unknown_outcome_with_its_request_id() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "request-unknown",
+        &["drop-after-2", "serve"],
+        request_finds(Duration::from_secs(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let error = f
+        .manager
+        .human_request(
+            CONNECTION_ID,
+            "message.post",
+            json!({"channel_id": "keepalive-channel", "body": "hi"}),
+            Some("post-key-1".into()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        methods_on(&f.root, 1),
+        ["hello", "auth.challenge", "message.post"],
+        "the post itself was written"
+    );
+    let typed = super::CrewRefusal::find(&error).expect("typed");
+    assert_eq!(typed.code(), "crew_outcome_unknown");
+    assert_eq!(typed.http_status(), 503);
+    assert!(typed
+        .fields()
+        .iter()
+        .any(|(key, value)| *key == "request_id" && value == "post-key-1"));
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.downcast_ref::<SshFailure>().is_some()),
+        "the SSH failure stays underneath: {error:#}"
+    );
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await.0 == "connected").await;
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .filter(|(spawn, _)| *spawn == 2)
+            .any(|(_, method)| method == "message.post"),
+        "never re-sent"
+    );
 }
 
 /// Q4-01: a Disconnect during the retries a request armed stops them for good.
@@ -1647,6 +2807,110 @@ async fn an_ended_bridge_is_noticed_between_ticks() {
     assert_eq!(spawns(&f.root), 1);
 }
 
+/// The typed code beside the connection's saved error, as `GET /crew/connections` serves it.
+async fn error_code(manager: &CrewManager) -> Option<&'static str> {
+    let c = manager.connection(CONNECTION_ID).await.unwrap();
+    manager.last_error_code(&c)
+}
+
+/// W2-DMN-5 (review): a workspace server that stopped (restarted, or its computer rebooted) is
+/// its state for now, not a reason to give up. The heartbeat that finds the bridge's server gone
+/// dials again; that dial and the next meet no server yet (after a reboot SSH answers before
+/// Biorouter is open on the host), and the connection comes back by itself on the schedule once
+/// the server does. While it is down it says why, with its code.
+#[tokio::test]
+async fn a_workspace_server_that_restarts_is_reconnected_by_itself() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "broker-restart",
+        &[
+            "broker-lost-after-1",
+            "broker-stopped",
+            "broker-stopped",
+            "serve",
+        ],
+        fast(Duration::from_millis(300)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = Arc::clone(&f.manager);
+    until(async || error_code(&manager).await == Some("crew_broker_not_running")).await;
+    assert_eq!(status(&f.manager).await.0, "disconnected");
+    // T3-BE-1: a dial that met no server lost nothing, so its saved error says nothing about a
+    // submitted operation, and keeps the prefix renderers read.
+    let saved = status(&f.manager).await.1.expect("why it is down");
+    assert!(saved.starts_with("Crew SSH failure ["), "{saved}");
+    assert!(!saved.contains("Submitted operation"), "{saved}");
+    assert!(
+        !f.manager.idle_redial.lock().unwrap().is_empty(),
+        "the retries are armed"
+    );
+    let root = f.root.clone();
+    until(async || spawns(&root) == 4 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    assert_eq!(error_code(&f.manager).await, None);
+}
+
+/// W2-DMN-5 (review): the same for a bridge whose server goes away under a request, and for a
+/// person's Connect that meets no server: both keep trying by themselves, so nobody has to press
+/// Connect again once the workspace server is back. The request itself is never sent again.
+#[tokio::test]
+async fn a_request_or_connect_that_meets_no_workspace_server_keeps_trying() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture(
+        "broker-lost-request",
+        &["broker-lost-after-1", "broker-stopped", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let lost = f
+        .manager
+        .human_request(CONNECTION_ID, "workspace.snapshot", json!({}), None)
+        .await
+        .unwrap_err();
+    let failure = lost
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        .expect("the SSH failure stays underneath");
+    assert_eq!(failure.kind, SshFailureKind::BrokerNotRunning);
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 3 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+    assert!(
+        !requests(&f.root)
+            .iter()
+            .any(|(_, method)| method == "workspace.snapshot"),
+        "never sent, and never sent again"
+    );
+    drop(f);
+
+    let f = fixture(
+        "broker-stopped-connect",
+        &["broker-stopped", "serve"],
+        request_finds(Duration::from_millis(60)),
+    )
+    .await;
+    let refused = f.manager.connect(CONNECTION_ID).await.unwrap_err();
+    let failure = refused
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        .expect("an SSH failure");
+    assert_eq!(failure.kind, SshFailureKind::BrokerNotRunning);
+    let root = f.root.clone();
+    let manager = Arc::clone(&f.manager);
+    until(async || spawns(&root) == 2 && status(&manager).await == ("connected".to_owned(), None))
+        .await;
+    assert!(f.manager.idle_redial.lock().unwrap().is_empty());
+}
+
 #[test]
 fn only_a_refusal_that_names_the_device_or_account_ends_a_membership() {
     use super::keepalive::membership_refused;
@@ -1789,6 +3053,102 @@ fn worker_frames(root: &Path) -> usize {
 /// change on this device gets, the grant stops here (and is saved stopped, as ended by the
 /// workspace), the list says so, and nothing more is sent under it: no second worker request
 /// and no revocation, because the workspace already refused the run.
+#[tokio::test]
+async fn a_run_its_own_task_ended_is_not_called_a_settings_change() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    // W2-DMN-14: a finished task's terminal post ends its run at the workspace, and a request
+    // just behind it (background compaction) meets `grant_expired`. That is the task ending,
+    // not a policy change, and nothing is stamped on the grant, whose own stop is under way.
+    let f = fixture("task-ended-post", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager
+        .publish_run(WORKER, "progress note", "progress")
+        .await
+        .unwrap();
+    assert!(!f
+        .manager
+        .ended_runs
+        .lock()
+        .unwrap()
+        .contains("keepalive-run"));
+    f.manager
+        .publish_run(WORKER, "the result", "completed")
+        .await
+        .unwrap();
+    assert!(f
+        .manager
+        .ended_runs
+        .lock()
+        .unwrap()
+        .contains("keepalive-run"));
+    drop(f);
+
+    let f = fixture("task-ended", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    f.manager.note_run_ended("keepalive-run");
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    let refused = f
+        .manager
+        .agent_request(WORKER, &cap, CONNECTION_ID, "context.manifest", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        refused,
+        "This task has ended, so its access to the workspace has ended too."
+    );
+    let kept = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert_eq!(
+        kept.revocation, None,
+        "not stamped as ended by the workspace"
+    );
+}
+
+/// W2-DMN-14: a person's Stop marks the grant before the workspace is asked, so a request
+/// the workspace refuses meanwhile reads as the task ending too.
+#[tokio::test]
+async fn a_run_stopped_here_is_not_called_a_settings_change() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("stopped-here", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .revocation = Some(Revocation::Unconfirmed);
+    let refused = f
+        .manager
+        .heed_worker_refusal(
+            WORKER,
+            &scope,
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "grant_expired", "message": "grant_expired: run revoked, expired or policy changed"})
+            ),
+        )
+        .await
+        .to_string();
+    assert_eq!(
+        refused,
+        "This task has ended, so its access to the workspace has ended too."
+    );
+    assert_eq!(
+        f.manager.registry.lock().await.scopes[WORKER].revocation,
+        Some(Revocation::Unconfirmed)
+    );
+}
+
 #[tokio::test]
 async fn a_run_the_workspace_ended_stops_here_with_the_policy_sentence() {
     if !crate::test_sandbox::in_a_process_of_its_own() {
@@ -2174,6 +3534,7 @@ async fn grant_chat(f: &Fixture, chat: &str, incarnation: i64) {
             expires_at: Some(4_102_444_800),
             labels: None,
             session_incarnation: Some(incarnation),
+            session_store: f.manager.own_store(),
             revocation: None,
         },
     );
@@ -2396,6 +3757,7 @@ fn only_an_unconfirmed_stop_is_kept_when_replaced() {
         expires_at: Some(4_102_444_800),
         labels: None,
         session_incarnation: None,
+        session_store: None,
         revocation,
     };
     let mut registry = Registry::default();
@@ -2452,6 +3814,7 @@ fn an_earlier_grant_is_forgotten_only_once_settled() {
             expires_at: end,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: Some(revocation),
         },
     };
@@ -2513,6 +3876,7 @@ fn an_earlier_grant_survives_a_registry_merge() {
         expires_at: Some(4_102_444_800),
         labels: None,
         session_incarnation: None,
+        session_store: None,
         revocation: Some(revocation),
     };
     let kept = |run: &str, revocation: Revocation| ReplacedGrant {
@@ -2607,6 +3971,7 @@ fn a_confirmed_revocation_is_never_forgotten_across_processes() {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         scope.revocation = revocation;
@@ -2758,12 +4123,18 @@ async fn saving_a_connection_unchanged_changes_nothing() {
     assert_eq!(resaved.name, before.name);
     assert!(resaved.policy_epoch > before.policy_epoch);
 
-    // A real change is a save: the epoch moves, the bridge drops, and the grant ends.
+    // A real change is a save: the epoch moves, the bridge is replaced, and the grant ends.
+    // The route is the same, so the save reconnects it over a new, verified bridge
+    // (W2-DMN-8); that does not revive the grant.
     let mut renamed = same(&before, before.mode);
     renamed.name = "renamed fixture".into();
     let saved = f.manager.update(CONNECTION_ID, renamed).await.unwrap();
     assert!(saved.policy_epoch > before.policy_epoch);
-    assert_eq!(saved.status, "disconnected");
+    assert_eq!(saved.status, "connected");
+    assert!(!Arc::ptr_eq(
+        &bridge,
+        &f.manager.transport(CONNECTION_ID).await.unwrap()
+    ));
     assert_eq!(
         f.manager
             .check_dispatch(WORKER, &cap)
@@ -2772,4 +4143,377 @@ async fn saving_a_connection_unchanged_changes_nothing() {
             .to_string(),
         GRANT_POLICY_CHANGED
     );
+}
+
+/// W2-DMN-8: a person's own privacy save on a connected connection reconnects it, verified
+/// again, with the new mode; a save that changes where the bridge goes does not; and a
+/// reconnect that fails leaves it offline, saying why.
+#[tokio::test]
+async fn a_privacy_save_reconnects_a_connected_connection() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("privacy-save", &["serve", "serve", "unreachable"], quiet()).await;
+    f.manager.registry.lock().await.connections[0].cluster_connection_id =
+        "6b6b6b6b-6b6b-46b6-86b6-6b6b6b6b6b6b".into();
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let before = f.manager.connection(CONNECTION_ID).await.unwrap();
+    let edit = |c: &Connection, mode: ClusterMode, institution: Option<&str>| SaveConnection {
+        preparation_id: None,
+        name: c.name.clone(),
+        ssh_target: c.ssh_target.clone(),
+        port: c.port,
+        identity_file: c.identity_file.clone(),
+        proxy_jump: c.proxy_jump.clone(),
+        socket_path: c.socket_path.clone(),
+        owner_uid: c.owner_uid,
+        workspace_id: c.workspace_id.clone(),
+        workspace_public_key: c.workspace_public_key.clone(),
+        remote_root: c.remote_root.clone(),
+        remote_execution: c.remote_execution,
+        cluster_connection_id: Some(c.cluster_connection_id.clone()),
+        mode,
+        institution_id: institution.map(str::to_owned),
+    };
+    let other = match before.mode {
+        ClusterMode::Public => ClusterMode::Private,
+        ClusterMode::Private => ClusterMode::Public,
+    };
+    let saved = f
+        .manager
+        .update(CONNECTION_ID, edit(&before, other, Some("ucsf")))
+        .await
+        .unwrap();
+    assert_eq!(saved.mode, other);
+    assert_eq!(saved.status, "connected");
+    assert!(saved.policy_epoch > before.policy_epoch);
+    assert_eq!(spawns(&f.root), 2, "one new bridge");
+    assert_eq!(methods_on(&f.root, 2), ["hello"], "verified from scratch");
+
+    // A reconnect that fails leaves it offline with the reason.
+    let saved = f
+        .manager
+        .update(CONNECTION_ID, edit(&saved, before.mode, Some("ucsf")))
+        .await
+        .unwrap();
+    assert_eq!(saved.mode, before.mode);
+    assert_eq!(saved.status, "disconnected");
+    assert!(saved.last_error.is_some());
+    assert_eq!(spawns(&f.root), 3);
+
+    // Disconnected, a save connects nothing.
+    let saved = f
+        .manager
+        .update(CONNECTION_ID, edit(&saved, other, Some("ucsf")))
+        .await
+        .unwrap();
+    assert_eq!(saved.status, "disconnected");
+    assert_eq!(spawns(&f.root), 3);
+}
+
+/// How many `context.manifest` requests any bridge received: the live admissions.
+fn manifests(root: &Path) -> usize {
+    requests(root)
+        .iter()
+        .filter(|(_, method)| method == "context.manifest")
+        .count()
+}
+
+/// CROSSCUT-7 and PROVIDERS-3: the workspace admits a scoped chat's provider once per model
+/// request. Every other use of the provider (the reply loop read it once per streamed chunk,
+/// and again to name the model, count tokens or title the chat) used to send its own
+/// `context.manifest` over SSH, hundreds for one answer. Now those reuse the last admission of
+/// the same grant, while a model request always asks afresh, and a grant stopped here is
+/// refused at once whatever was admitted before.
+#[tokio::test]
+async fn provider_uses_share_one_live_admission_and_each_model_request_asks_afresh() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("provider-use", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let provider = TurnProvider;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .provider_binding = provider_binding(&provider);
+
+    for _ in 0..40 {
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap();
+    }
+    assert_eq!(manifests(&f.root), 1, "forty uses, one admission");
+
+    // A model request asks the workspace afresh, and later uses share that answer.
+    f.manager
+        .check_provider_dispatch(WORKER, &provider)
+        .await
+        .unwrap();
+    assert_eq!(manifests(&f.root), 2);
+    f.manager
+        .check_provider_use(WORKER, &provider)
+        .await
+        .unwrap();
+    assert_eq!(manifests(&f.root), 2);
+
+    // An admission of one grant never stands for another: the chat granted again (a new run)
+    // is admitted afresh.
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .run_id = "keepalive-run-again".into();
+    f.manager
+        .check_provider_use(WORKER, &provider)
+        .await
+        .unwrap();
+    assert_eq!(manifests(&f.root), 3);
+
+    // A stop here is refused at once, with nothing asked of the workspace.
+    f.manager.revoke_session(WORKER).await.unwrap();
+    assert_eq!(
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_REVOKED
+    );
+    assert_eq!(manifests(&f.root), 3);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// A live admission the workspace refused is never reused: the next use asks again, and the
+/// refusal the workspace answered ends the grant here.
+#[tokio::test]
+async fn a_refused_admission_is_never_reused() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("provider-use-refused", &["grant-expired"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    let provider = TurnProvider;
+    f.manager
+        .registry
+        .lock()
+        .await
+        .scopes
+        .get_mut(WORKER)
+        .unwrap()
+        .provider_binding = provider_binding(&provider);
+    assert_eq!(
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_POLICY_CHANGED
+    );
+    assert_eq!(
+        f.manager
+            .check_provider_use(WORKER, &provider)
+            .await
+            .unwrap_err()
+            .to_string(),
+        GRANT_POLICY_CHANGED
+    );
+    assert_eq!(manifests(&f.root), 1, "the stop is refused here, unasked");
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// DAEMON-1: granting a chat again while its earlier grant is still live (another context
+/// channel added, or Grant access again after a settings change) used to drop that grant with
+/// no `run.revoke`: the workspace honored its run until it lapsed, and it was listed nowhere,
+/// so nothing on this device could revoke it. Now the earlier grant is stopped by the new one,
+/// listed as replaced, and revoked at the workspace by the daemon itself, while the new grant
+/// is the chat's, live and never revoked.
+#[tokio::test]
+async fn granting_a_chat_again_revokes_its_still_live_earlier_run() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("regrant-live", &["serve"], quiet()).await;
+    allow_grants(&f.root);
+    let (_store, chat, incarnation) = saved_chat(&f).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_chat(&f, &chat, incarnation).await;
+    assert_eq!(
+        rows_of(&f.manager, "grants", &chat).await[0]["expired"],
+        false
+    );
+
+    let admission = f
+        .manager
+        .begin_run(
+            &chat,
+            CONNECTION_ID,
+            "keepalive-channel",
+            vec![],
+            &TurnProvider,
+        )
+        .await
+        .unwrap();
+    assert_eq!(admission.run_id, REGRANTED_RUN);
+
+    let manager = f.manager.clone();
+    let id = chat.clone();
+    until(async || manager.remote_revocation_confirmed(&id, EARLIER_RUN).await).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 1);
+    assert_eq!(revokes_of(&f.root, REGRANTED_RUN), 0);
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["run_id"], EARLIER_RUN);
+    assert_eq!(replaced[0]["expired"], true);
+    assert_eq!(replaced[0]["revocation"], "confirmed");
+    let current = rows_of(&f.manager, "grants", &chat).await;
+    assert_eq!(current.len(), 1, "{current:?}");
+    assert_eq!(current[0]["run_id"], REGRANTED_RUN);
+    assert_eq!(current[0]["expired"], false);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// DAEMON-1, the other door: a still-live grant made to an earlier chat under a reissued id
+/// is pruned when the id is next looked up (SCOPE-BIND). It used to go with no `run.revoke`;
+/// now it is stopped, listed as replaced, and revoked when the connection is up.
+#[tokio::test]
+async fn a_reissued_chat_id_revokes_the_deleted_chats_still_live_grant() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("reissue-live", &["serve"], quiet()).await;
+    let (store, chat, incarnation) = saved_chat(&f).await;
+    grant_chat(&f, &chat, incarnation).await;
+    store.delete_session(&chat).await.unwrap();
+    store.forget_minted_session_ids_for_test().await.unwrap();
+    let reissued = new_chat(&store, &f.root.join("work")).await;
+    assert_eq!(
+        reissued, chat,
+        "the fixture must hand the deleted chat's id to the next chat, or it proves nothing"
+    );
+
+    assert!(!f.manager.is_scoped_session(&chat).await);
+    let replaced = rows_of(&f.manager, "replaced_grants", &chat).await;
+    assert_eq!(replaced.len(), 1, "{replaced:?}");
+    assert_eq!(replaced[0]["run_id"], EARLIER_RUN);
+    assert_eq!(replaced[0]["expired"], true);
+    assert_eq!(replaced[0]["revocation"], "unconfirmed");
+
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    let manager = f.manager.clone();
+    let id = chat.clone();
+    until(async || manager.remote_revocation_confirmed(&id, EARLIER_RUN).await).await;
+    assert_eq!(revokes_of(&f.root, EARLIER_RUN), 1);
+    assert!(!f.manager.is_scoped_session(&chat).await);
+    f.manager.disconnect(CONNECTION_ID).await.unwrap();
+}
+
+/// What a grant becomes when its id stops holding it: stopped, and unconfirmed unless the
+/// workspace already confirmed the revocation or ended the run itself.
+#[test]
+fn a_grant_stopped_by_another_door_is_a_stop_the_workspace_is_asked_about() {
+    let scope = |expired: bool, revocation: Option<Revocation>| Scope {
+        connection_id: CONNECTION_ID.into(),
+        run_id: "superseded".into(),
+        channel_id: "keepalive-channel".into(),
+        source_channels: vec![],
+        epoch: 1,
+        provider_binding: "keepalive-provider".into(),
+        public_provider: false,
+        origin_restricted: false,
+        institution_ids: BTreeSet::new(),
+        institution_policy: true,
+        expired,
+        expires_at: Some(4_102_444_800),
+        labels: None,
+        session_incarnation: None,
+        session_store: None,
+        revocation,
+    };
+    for (expired, before, after) in [
+        (false, None, Revocation::Unconfirmed),
+        (true, None, Revocation::Unconfirmed),
+        (true, Some(Revocation::Unconfirmed), Revocation::Unconfirmed),
+        (true, Some(Revocation::Confirmed), Revocation::Confirmed),
+        (
+            true,
+            Some(Revocation::EndedByWorkspace),
+            Revocation::EndedByWorkspace,
+        ),
+    ] {
+        let stopped = scope(expired, before).into_stopped();
+        assert!(stopped.expired, "{before:?}");
+        assert_eq!(stopped.revocation, Some(after), "{before:?}");
+    }
+    // A live grant stopped so is kept for its revocation when its id no longer holds it.
+    let mut registry = Registry::default();
+    assert!(registry.keep_replaced(WORKER, scope(false, None).into_stopped()));
+}
+
+/// DAEMON-7: removing a connection revokes its grants' runs at the workspace while this device
+/// can still sign for them, and deletes their run credentials. Removal used to mark them
+/// expired here and delete the device key without asking the workspace anything: every live run
+/// stayed honored until it lapsed, its credential stayed on disk, and nothing on this device
+/// could revoke it or list it.
+#[tokio::test]
+async fn removing_a_connection_revokes_its_live_runs_and_deletes_their_credentials() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("remove-live", &["serve"], quiet()).await;
+    f.manager.connect(CONNECTION_ID).await.unwrap();
+    grant_worker(&f).await;
+    assert!(f.manager.read_credential(&format!("run:{WORKER}")).is_ok());
+
+    f.manager.remove(CONNECTION_ID).await.unwrap();
+
+    assert_eq!(
+        revokes_of(&f.root, "keepalive-run"),
+        1,
+        "the live run was revoked"
+    );
+    let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert!(scope.expired);
+    assert_eq!(scope.revocation, Some(Revocation::Confirmed));
+    assert!(
+        f.manager.read_credential(&format!("run:{WORKER}")).is_err(),
+        "the run credential went with the connection"
+    );
+    assert!(f
+        .manager
+        .read_credential(&format!("device:{CONNECTION_ID}"))
+        .is_err());
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    assert!(f.manager.check_dispatch(WORKER, &cap).await.is_err());
+}
+
+/// A connection that is down when it is removed is not dialled: its grants stop here, their
+/// credentials go, and what the workspace was never told is recorded as unconfirmed.
+#[tokio::test]
+async fn removing_a_disconnected_connection_stops_its_grants_without_dialling() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let f = fixture("remove-offline", &["serve"], quiet()).await;
+    grant_worker(&f).await;
+
+    f.manager.remove(CONNECTION_ID).await.unwrap();
+
+    assert_eq!(spawns(&f.root), 0, "removal never dials");
+    let scope = f.manager.registry.lock().await.scopes[WORKER].clone();
+    assert!(scope.expired);
+    assert_eq!(scope.revocation, Some(Revocation::Unconfirmed));
+    assert!(f.manager.read_credential(&format!("run:{WORKER}")).is_err());
+    let cap = CallCapability::for_test(ProviderTier::Private, true);
+    assert!(f.manager.check_dispatch(WORKER, &cap).await.is_err());
 }

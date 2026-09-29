@@ -1,5 +1,5 @@
 import { NavigateFunction } from 'react-router-dom';
-import { Workflow } from '../api/types.gen';
+import { Workflow, type SessionClassification } from '../api/types.gen';
 import type { UserAttachment } from '../types/message';
 
 export type View =
@@ -39,6 +39,19 @@ export type ViewOptions = {
   shareToken?: string;
   resumeSessionId?: string;
   pendingScheduleDeepLink?: string;
+  /**
+   * The route to go back to when a detour ends: the provider catalog opened
+   * from a chat's model picker returns there (W2-PRV-5).
+   */
+  returnTo?: string;
+  /** The tier of the chat `resumeSessionId` names, for a picker opened on its behalf. */
+  privacyTier?: SessionClassification;
+  /**
+   * The tab of a chat not sent yet, for a picker opened on its behalf: the
+   * provider catalog holds the model chosen after a setup for that chat
+   * (`pendingChatModel.ts`) instead of making it every new chat's (T3-SH-2).
+   */
+  heldChatTabId?: string;
 };
 
 export const navigateWithViewTransition = (

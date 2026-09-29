@@ -1,5 +1,5 @@
 use biorouter::agents::turn_abort::{exit as abort_exit, TurnFailed};
-use biorouter_cli::cli::cli;
+use biorouter_cli::cli::{cli, read_command_line};
 use biorouter_cli::commands::needs_terminal::{self, NeedsTerminal};
 use std::process::ExitCode;
 
@@ -37,6 +37,9 @@ async fn async_main() -> ExitCode {
     // restrictions and `execve` the target program. Never returns in that case;
     // a normal invocation falls straight through. Must run before any real work.
     biorouter_mcp::run_shell_sandbox_helper_if_invoked();
+    // Before logging and the privacy loads below, every one of which writes: `--help`,
+    // `--version` and a usage mistake are answered here, and touch nothing on disk (SF-F8).
+    let command_line = read_command_line();
     tune_allocator();
     if let Err(e) = biorouter_cli::logging::setup_logging(None, None) {
         eprintln!("Warning: Failed to initialize logging: {}", e);
@@ -70,7 +73,9 @@ async fn async_main() -> ExitCode {
     // kind of silence.
     biorouter::privacy::load_mixing_policy_from_record();
 
-    match cli().await {
+    let result = cli(command_line).await;
+    stop_local_model_server().await;
+    match result {
         Ok(()) => ExitCode::from(abort_exit::OK),
         Err(e) => {
             // A command that needs a person at a terminal and was run without
@@ -91,6 +96,26 @@ async fn async_main() -> ExitCode {
                 None => ExitCode::from(abort_exit::GENERIC),
             }
         }
+    }
+}
+
+/// Stop the Llama Server this run started, if it started one (PROV-F11).
+///
+/// Its owner is a static, and statics never drop, so the child's `kill_on_drop` never fires at
+/// exit: `biorouter run --provider llamacpp` left a llama-server holding 4 to 6.5 GB behind,
+/// reaped only by the next local-model start under the same data root. `biorouterd` stops it
+/// the same way on its way out. Every return from a command passes here, a turn stopped with
+/// Ctrl-C included; a terminal's Ctrl-C at any other moment reaches the server too, as it runs
+/// in the same process group; and a kill is left to the pidfile the server's start wrote.
+async fn stop_local_model_server() {
+    let stop = biorouter::providers::llamacpp_sidecar::global().stop();
+    if tokio::time::timeout(std::time::Duration::from_secs(5), stop)
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "Warning: Llama Server did not stop in time; the next local model start stops it."
+        );
     }
 }
 

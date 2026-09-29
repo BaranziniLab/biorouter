@@ -1,9 +1,12 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MESSAGE_MAX_BYTES } from '../composer/sendFailure';
 import {
   DRAFT_STASH_MAX_BODY_BYTES,
   DRAFT_STASH_MAX_ENTRIES,
+  DRAFT_STASH_MAX_TOTAL_BYTES,
   LAST_CHANNEL_STORAGE_PREFIX,
+  draftTooLongToKeep,
   forgetConnectionDrafts,
   forgetLastChannel,
   forgetStashedDraft,
@@ -84,6 +87,33 @@ describe('the draft stash', () => {
     expect(Object.keys(stashedDraft('conn-1', 'general') ?? {}).sort()).toEqual(['body', 'scope']);
   });
 
+  it('keeps a message attempt with its body, and forgets it with the body', () => {
+    const attempt = { current: { digest: 'a'.repeat(64), key: 'key-1' } };
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    expect(Object.keys(stashedDraft('conn-1', 'general') ?? {}).sort()).toEqual([
+      'attempt',
+      'body',
+      'scope',
+    ]);
+    // Handed back with the body, as the same object, so a post answered later still reaches it.
+    expect(takeStashedDraft('conn-1', 'general')?.attempt).toBe(attempt);
+
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    // The same channel kept again with a text that has no attempt: the old attempt goes.
+    stashDraft('conn-1', 'general', 'written anew', scope('general'), null);
+    expect(stashedDraft('conn-1', 'general')?.attempt).toBeUndefined();
+
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    stashDraft('conn-1', 'general', 'x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1), scope('general'));
+    expect(stashedDraft('conn-1', 'general')).toBeUndefined();
+
+    stashDraft('conn-1', 'general', 'sent once', scope('general'), attempt);
+    stashDraft('conn-1', 'methods', 'sent too', scope('methods'), { current: null });
+    forgetStashedDraft('conn-1', 'general');
+    forgetConnectionDrafts('conn-1', () => false);
+    expect(stashedDraftCount()).toBe(0);
+  });
+
   it('drops a body over the size bound rather than cutting it, and the older draft with it', () => {
     stashDraft('conn-1', 'general', 'short', scope('general'));
     const tooLong = 'é'.repeat(DRAFT_STASH_MAX_BODY_BYTES / 2 + 1); // two bytes each in UTF-8
@@ -93,6 +123,43 @@ describe('the draft stash', () => {
     const fits = 'a'.repeat(DRAFT_STASH_MAX_BODY_BYTES);
     stashDraft('conn-1', 'general', fits, scope('general'));
     expect(stashedDraft('conn-1', 'general')?.body).toHaveLength(DRAFT_STASH_MAX_BODY_BYTES);
+  });
+
+  /**
+   * MSG2-N4: the bound was the message limit itself, so a draft the composer had just called too
+   * long to send, and told the person to attach as a file, went the moment they switched channel.
+   */
+  it('keeps a draft over the message limit, with the note that says so', () => {
+    const long = 'x'.repeat(MESSAGE_MAX_BYTES + 5_000);
+    const note = { message: 'Messages can be up to 64 KB.', code: 'crew_post_too_long' };
+    stashDraft('conn-1', 'general', long, scope('general'), null, note);
+    expect(stashedDraft('conn-1', 'general')).toMatchObject({ body: long, note });
+    expect(DRAFT_STASH_MAX_BODY_BYTES).toBeGreaterThanOrEqual(16 * MESSAGE_MAX_BYTES);
+  });
+
+  it('says a draft is too long to keep exactly when the stash would drop it', () => {
+    expect(draftTooLongToKeep('short')).toBe(false);
+    expect(draftTooLongToKeep('a'.repeat(DRAFT_STASH_MAX_BODY_BYTES))).toBe(false);
+    expect(draftTooLongToKeep('a'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1))).toBe(true);
+    // Measured in UTF-8 bytes, not characters: three bytes each.
+    const wide = '€'.repeat(Math.floor(DRAFT_STASH_MAX_BODY_BYTES / 3) + 1);
+    expect(draftTooLongToKeep(wide)).toBe(true);
+    stashDraft('conn-1', 'general', wide, scope('general'));
+    expect(stashedDraft('conn-1', 'general')).toBeUndefined();
+  });
+
+  it('keeps at most so much text across every draft, dropping the oldest first', () => {
+    const big = 'b'.repeat(DRAFT_STASH_MAX_BODY_BYTES);
+    const fit = Math.floor(DRAFT_STASH_MAX_TOTAL_BYTES / DRAFT_STASH_MAX_BODY_BYTES);
+    for (let index = 0; index <= fit; index += 1)
+      stashDraft('conn-1', `channel-${index}`, big, scope(`channel-${index}`));
+    expect(stashedDraftCount()).toBe(fit);
+    expect(stashedDraft('conn-1', 'channel-0')).toBeUndefined();
+    expect(stashedDraft('conn-1', `channel-${fit}`)?.body).toBe(big);
+    // A forgotten draft gives its room back.
+    forgetStashedDraft('conn-1', `channel-${fit}`);
+    stashDraft('conn-1', 'small', 'small', scope('small'));
+    expect(stashedDraft('conn-1', 'channel-1')?.body).toBe(big);
   });
 
   it('keeps at most 50 drafts, dropping the oldest first', () => {

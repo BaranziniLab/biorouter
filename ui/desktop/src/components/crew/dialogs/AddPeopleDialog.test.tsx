@@ -2,6 +2,7 @@ import type * as React from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Invitation, Snapshot } from '../crewApi';
+import { forgetJoinerNames, rememberJoinerNames } from '../identity';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
 import { AddPeopleDialog, type AddPeopleDialogProps } from './AddPeopleDialog';
 import { addPeopleCopy } from './copy';
@@ -131,6 +132,26 @@ describe('AddPeopleDialog and its checklist', () => {
     expect(rowNames(await checklist())).toEqual(['Eve Park (@eve)']);
   });
 
+  // M17: the pickers listed people in principal-ID order, which is random.
+  it('lists people in the one order every people list uses, whatever order the snapshot sends', async () => {
+    const zed = { id: 'person-0zed', uid: 1010, username: 'zed', nickname: 'Zed Adams' };
+    const amy = { id: 'person-zzz', uid: 1011, username: 'amy', nickname: 'Amy Zhou' };
+    const snapshot = makeSnapshot({
+      principals: [zed, ...makeSnapshot().principals, amy],
+      teams: [{ ...makeSnapshot().teams[0], members: [alice.id] }],
+    });
+    renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+      snapshot,
+    });
+    expect(rowNames(await checklist())).toEqual([
+      'Amy Zhou (@amy)',
+      'Bob Lee (@bob)',
+      'Carol Diaz (@carol)',
+      'Dan Wu (@dan)',
+      'Zed Adams (@zed)',
+    ]);
+  });
+
   it('offers a channel only members of its team who are not in the channel', async () => {
     renderWithCrew(
       <AddPeopleDialog target="channel" targetId="channel-general" onClose={vi.fn()} />
@@ -160,6 +181,96 @@ describe('AddPeopleDialog and its checklist', () => {
     expect(screen.getByText(addPeopleCopy.noMatch('zed'))).toBeInTheDocument();
   });
 
+  // F8: Henry joined without choosing a name. The sidebar's Joined row and the toast said "Henry
+  // Ito (@crew_henry)", while this list said "@crew_henry" and searching "Ito" found no one.
+  it('names someone who joined without choosing a name by the name on their server account', async () => {
+    const henry = {
+      id: 'person-henry',
+      uid: 1005,
+      username: 'crew_henry',
+      nickname: 'crew_henry',
+      display_name: 'crew_henry',
+    };
+    // The host's view while Henry waited, then the view once he joined.
+    rememberJoinerNames({
+      workspace: makeSnapshot().workspace,
+      pending_joins: [{ username: 'crew_henry', full_name: 'Henry Ito' }],
+    });
+    try {
+      const snapshot = makeSnapshot({
+        principals: [...makeSnapshot().principals, henry],
+        teams: [{ ...makeSnapshot().teams[0], members: [alice.id] }],
+      });
+      renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+        snapshot,
+      });
+      const list = await checklist();
+      expect(rowNames(list)).toContain('Henry Ito (@crew_henry)');
+      const search = screen.getByRole('searchbox', { name: addPeopleCopy.search });
+      fireEvent.change(search, { target: { value: 'Ito' } });
+      expect(rowNames(list)).toEqual(['Henry Ito (@crew_henry)']);
+    } finally {
+      forgetJoinerNames();
+    }
+  });
+
+  /**
+   * SC2-N3: "Already in {team}" was sorted before the names on server accounts stood in, so Gina
+   * Rossi was placed as `crew_gina` and landed last, below the fold.
+   */
+  it('lists who is already in the team by the names it shows', async () => {
+    const gina = {
+      id: 'person-gina',
+      uid: 1006,
+      username: 'crew_gina',
+      nickname: 'crew_gina',
+      display_name: 'crew_gina',
+    };
+    const zoe = { id: 'person-zoe', uid: 1007, username: 'zoe', nickname: 'Zoe Hart' };
+    rememberJoinerNames({
+      workspace: makeSnapshot().workspace,
+      pending_joins: [{ username: 'crew_gina', full_name: 'Gina Rossi' }],
+    });
+    try {
+      const everyone = [alice.id, bob.id, carol.id, dan.id, gina.id, zoe.id];
+      const snapshot = makeSnapshot({
+        principals: [...makeSnapshot().principals, gina, zoe],
+        teams: [{ ...makeSnapshot().teams[0], members: everyone }],
+      });
+      renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+        snapshot,
+      });
+      const dialog = await screen.findByRole('dialog');
+      const members = within(dialog).getByRole('region', { name: /^Already in/ });
+      const names = within(members)
+        .getAllByRole('listitem')
+        .map((row) => row.querySelector('[data-person-context]')?.textContent ?? '');
+      // The owner leads (who is also you); then by the name each row shows.
+      expect(names.slice(1)).toEqual([
+        expect.stringContaining('Bob Lee'),
+        expect.stringContaining('Carol Diaz'),
+        expect.stringContaining('Dan Wu'),
+        expect.stringContaining('Gina Rossi'),
+        expect.stringContaining('Zoe Hart'),
+      ]);
+    } finally {
+      forgetJoinerNames();
+    }
+  });
+
+  it('names a member by @username alone when no server-account name was ever seen', async () => {
+    forgetJoinerNames();
+    const henry = { id: 'person-henry', uid: 1005, username: 'crew_henry', nickname: 'crew_henry' };
+    const snapshot = makeSnapshot({
+      principals: [...makeSnapshot().principals, henry],
+      teams: [{ ...makeSnapshot().teams[0], members: [alice.id] }],
+    });
+    renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
+      snapshot,
+    });
+    expect(rowNames(await checklist())).toContain('@crew_henry');
+  });
+
   it('invites the ticked person with their expected username, says they still have to accept, and stays open', async () => {
     const onClose = vi.fn();
     const { crew } = renderWithCrew(
@@ -181,7 +292,9 @@ describe('AddPeopleDialog and its checklist', () => {
       ])
     );
     expect(
-      await screen.findByText('Invited @carol. They’ll see it in Crew and need to accept.')
+      await screen.findByText(
+        'Invited Carol Diaz (@carol). They’ll see it in Crew and need to accept.'
+      )
     ).toBeInTheDocument();
     expect(toasts.toastSuccess).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
@@ -201,7 +314,7 @@ describe('AddPeopleDialog and its checklist', () => {
       snapshot,
     });
     expect(
-      await screen.findByText(addPeopleCopy.allInvited('lab', 'Analysis Lab', '@dan'))
+      await screen.findByText(addPeopleCopy.allInvited('lab', 'Analysis Lab', 'Dan Wu (@dan)'))
     ).toBeInTheDocument();
     // The host still has somewhere to go.
     fireEvent.click(screen.getByRole('button', { name: addPeopleCopy.inviteToWorkspace('lab') }));
@@ -216,7 +329,7 @@ describe('AddPeopleDialog and its checklist', () => {
       <AddPeopleDialog target="channel" targetId="channel-general" onClose={vi.fn()} />,
       { snapshot }
     );
-    expect(await screen.findByText(addPeopleCopy.waiting('@dan'))).toBeInTheDocument();
+    expect(await screen.findByText(addPeopleCopy.waiting('Dan Wu (@dan)'))).toBeInTheDocument();
     expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
   });
 
@@ -234,7 +347,7 @@ describe('AddPeopleDialog and its checklist', () => {
     );
     expect(
       await screen.findByText(
-        `${addPeopleCopy.noOneInTeam('Analysis Lab')} ${addPeopleCopy.waitingToAccept('@bob and @carol')}`
+        `${addPeopleCopy.noOneInTeam('Analysis Lab')} ${addPeopleCopy.waitingToAccept('Bob Lee (@bob) and Carol Diaz (@carol)')}`
       )
     ).toBeInTheDocument();
     expect(screen.queryByText(addPeopleCopy.noOne('lab'))).toBeNull();
@@ -339,7 +452,7 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob, carol, dan] });
     renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'Members of Analysis Lab' });
-    const text = 'Only @alice or the host can add people to Analysis Lab.';
+    const text = 'Only Alice Chen (@alice), the host, can add people to Analysis Lab.';
     expect(within(dialog).getByText(text)).toBeInTheDocument();
     expect(dialog).toHaveAccessibleDescription(text);
     expect(within(dialog).queryByRole('list', { name: addPeopleCopy.people })).toBeNull();
@@ -370,7 +483,9 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     ]);
     expect(within(list).getAllByRole('listitem')[1]).toHaveTextContent('you');
     // The list first, then the muted line saying who may add people, and no Note box.
-    const who = within(dialog).getByText('Only @alice or the host can add people to Analysis Lab.');
+    const who = within(dialog).getByText(
+      'Only Alice Chen (@alice), the host, can add people to Analysis Lab.'
+    );
     expect(who).toHaveClass('text-text-muted');
     expect(list.compareDocumentPosition(who) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(dialog).queryByRole('heading', { name: /^Already in/ })).toBeNull();
@@ -381,6 +496,34 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
         .map((button) => button.textContent)
     ).toEqual(['Done', expect.anything()]);
     expect(within(dialog).queryByRole('checkbox')).toBeNull();
+  });
+
+  /**
+   * UXN-6: the list held ten people and showed nine; nothing in it took focus, so a keyboard could
+   * not scroll to the tenth, and it said neither how many there were nor who owns the team or is
+   * online, as the Members tab does.
+   */
+  it('makes the member list a region a keyboard can scroll, with its count, the owner and who is online', async () => {
+    const snapshot = makeSnapshot({
+      actor: bob,
+      principals: [alice, bob, carol, dan],
+      online_principal_ids: [carol.id],
+    });
+    renderDirect({ target: 'team', targetId: 'team-1', view: 'members' }, { snapshot });
+    const dialog = await screen.findByRole('dialog', {
+      name: addPeopleCopy.membersOf('Analysis Lab'),
+    });
+    const region = within(dialog).getByRole('region', { name: addPeopleCopy.memberCount(3) });
+    expect(region).toHaveAttribute('tabindex', '0');
+    expect(within(dialog).getByText('3 members')).toBeInTheDocument();
+    const rows = within(region).getAllByRole('listitem');
+    // Alice created the team: the owner's badge, as the Members tab marks a channel's owner.
+    expect(within(rows[0]).getByText(addPeopleCopy.teamOwner)).toBeInTheDocument();
+    expect(within(rows[1]).queryByText(addPeopleCopy.teamOwner)).toBeNull();
+    // Carol is online; no one else is said to be.
+    expect(rows[2].querySelector('[data-crew-online]')).not.toBeNull();
+    expect(rows[0].querySelector('[data-crew-online]')).toBeNull();
+    expect(rows[1].querySelector('[data-crew-online]')).toBeNull();
   });
 
   it('opens "Members of {team}…" on the member list for the owner, with Add people one step away (QA Q4-35)', async () => {
@@ -429,7 +572,7 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     const dialog = await screen.findByRole('dialog', {
       name: addPeopleCopy.membersOf('Analysis Lab'),
     });
-    const text = 'Only @alice or the host can add people to Analysis Lab.';
+    const text = 'Only Alice Chen (@alice), the host, can add people to Analysis Lab.';
     expect(within(dialog).getByText(text)).toBeInTheDocument();
     expect(dialog).toHaveAccessibleDescription(text);
     expect(
@@ -454,13 +597,38 @@ describe('AddPeopleDialog with no one left to add (QA Q2-22)', () => {
     ).toHaveLength(2);
   });
 
+  /**
+   * UXN-9: "Only @crew_alice or the host can add people to Chen Lab." when Alice is the host: the
+   * owner by handle alone, and the host as if someone else. The owner is named in full, and once.
+   */
+  it('names the owner in full, and says "or the host" only when the host is someone else', async () => {
+    const hostOwns = makeSnapshot({ actor: bob, principals: [alice, bob, carol, dan] });
+    const first = renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot: hostOwns });
+    expect(
+      await screen.findByText('Only Alice Chen (@alice), the host, can add people to Analysis Lab.')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/or the host/)).toBeNull();
+    first.unmount();
+    const carolOwns = makeSnapshot({
+      actor: bob,
+      principals: [alice, bob, carol, dan],
+      teams: [{ ...makeSnapshot().teams[0], created_by: carol.id }],
+    });
+    renderDirect({ target: 'team', targetId: 'team-1' }, { snapshot: carolOwns });
+    expect(
+      await screen.findByText(
+        'Only Carol Diaz (@carol) or the host can add people to Analysis Lab.'
+      )
+    ).toBeInTheDocument();
+  });
+
   it('says only the owner invites under an older broker', async () => {
     const snapshot = makeSnapshot({ actor: bob, principals: [alice, bob] });
     renderWithCrew(<AddPeopleDialog target="team" targetId="team-1" onClose={vi.fn()} />, {
       snapshot,
     });
     expect(
-      await screen.findByText('Only @alice can add people to Analysis Lab.')
+      await screen.findByText('Only Alice Chen (@alice) can add people to Analysis Lab.')
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Invite people to/ })).toBeNull();
   });
@@ -493,6 +661,12 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     expect(general).toBeChecked();
     expect(general).toBeDisabled();
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).toBeChecked();
+    // M19: before Add, what an addition shows them: the channels' whole past, files included.
+    expect(
+      screen.getByText(
+        'They’ll be able to read everything already posted in #general and the channels you pick, including files.'
+      )
+    ).toBeVisible();
 
     await add('Add');
     await waitFor(() =>
@@ -507,7 +681,9 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     );
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
     expect(
-      await screen.findByText('Added @dan to Analysis Lab. They can now see #general and #methods.')
+      await screen.findByText(
+        'Added Dan Wu (@dan) to Analysis Lab. They can now see #general and #methods.'
+      )
     ).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -527,7 +703,7 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
       ])
     );
     expect(
-      await screen.findByText('Added @dan to Analysis Lab. They can now see #general.')
+      await screen.findByText('Added Dan Wu (@dan) to Analysis Lab. They can now see #general.')
     ).toBeInTheDocument();
   });
 
@@ -544,7 +720,18 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
         { channel_id: 'channel-general', principal_id: carol.id, expected_username: 'carol' },
       ])
     );
-    expect(await screen.findByText('Added @carol to #general.')).toBeInTheDocument();
+    expect(await screen.findByText('Added Carol Diaz (@carol) to #general.')).toBeInTheDocument();
+  });
+
+  it('says before Add that people added to a channel read everything already posted in it', async () => {
+    renderDirect({ target: 'channel', targetId: 'channel-general' });
+    await checklist();
+    expect(screen.getByTestId('crew-add-history')).toHaveTextContent(
+      'They’ll be able to read everything already posted in #general, including files.'
+    );
+    expect(addPeopleCopy.historyChannel('#general')).toBe(
+      'They’ll be able to read everything already posted in #general, including files.'
+    );
   });
 
   it('shows a refusal in words, in the dialog, and adds no one', async () => {
@@ -566,7 +753,7 @@ describe('AddPeopleDialog, adding directly (direct_add_v1)', () => {
     // Its sentence, without the code: written for a person, shown to one.
     expect(
       await screen.findByText(
-        "Couldn’t add @carol: Only the channel's owner or the workspace host can add people to it."
+        "Couldn’t add Carol Diaz (@carol): Only the channel's owner or the workspace host can add people to it."
       )
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('forbidden:');
@@ -604,7 +791,9 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
         expected_username: person.username,
       }))
     );
-    const summary = await screen.findByText('Added @bob, @carol, @dan and @eve to #methods.');
+    const summary = await screen.findByText(
+      'Added Bob Lee (@bob), Carol Diaz (@carol), Dan Wu (@dan) and Eve Park (@eve) to #methods.'
+    );
     expect(summary.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText(/^Added /)).toHaveLength(1);
     expect(onClose).not.toHaveBeenCalled();
@@ -628,8 +817,10 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: addPeopleCopy.selectAll(4) }));
     await add(addPeopleCopy.addMany(4));
     await waitFor(() => expect(requestsFor(crew, 'channel.add_member')).toHaveLength(4));
-    const summary = await screen.findByText(/^Added @bob, @dan and @eve to #methods\. /);
-    expect(summary).toHaveTextContent(/Couldn’t add @carol: /);
+    const summary = await screen.findByText(
+      /^Added Bob Lee \(@bob\), Dan Wu \(@dan\) and Eve Park \(@eve\) to #methods\. /
+    );
+    expect(summary).toHaveTextContent(/Couldn’t add Carol Diaz \(@carol\): /);
     // The one refused stays on the list, ticked, to try again; the others have gone.
     expect(rowNames(await checklist())).toEqual(['Carol Diaz (@carol)']);
     expect(screen.getByRole('checkbox', { name: /Carol Diaz/ })).toBeChecked();
@@ -652,12 +843,49 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
         { channel_id: 'channel-methods', principal_id: dan.id, expected_username: 'dan' },
       ])
     );
-    expect(await screen.findByText('Added @dan to #methods.')).toBeInTheDocument();
+    expect(await screen.findByText('Added Dan Wu (@dan) to #methods.')).toBeInTheDocument();
     // The Add that had focus is disabled now that no one is ticked: focus moves to the search.
     expect(submit).toBeDisabled();
     await waitFor(() =>
       expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveFocus()
     );
+  });
+
+  /**
+   * UXN-12: after adding Bob, the search still read "bob" and said "No one matches “bob”.", the
+   * person it found being gone from the list.
+   */
+  it('starts the search over once the person it found is added', async () => {
+    renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      { snapshot: four(), answer: { already_member: false } }
+    );
+    const search = await screen.findByRole('searchbox', { name: addPeopleCopy.search });
+    fireEvent.change(search, { target: { value: 'dan' } });
+    await tick(/Dan Wu/);
+    await add('Add');
+    expect(await screen.findByText('Added Dan Wu (@dan) to #methods.')).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveValue('');
+    expect(screen.queryByText(/No one matches/)).toBeNull();
+  });
+
+  it('keeps the search when no one was added', async () => {
+    renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      {
+        snapshot: four(),
+        request: (method) => {
+          if (method === 'channel.add_member') throw new Error('forbidden: Not allowed.');
+          return {};
+        },
+      }
+    );
+    const search = await screen.findByRole('searchbox', { name: addPeopleCopy.search });
+    fireEvent.change(search, { target: { value: 'dan' } });
+    await tick(/Dan Wu/);
+    await add('Add');
+    expect(await screen.findByText(/^Couldn’t add Dan Wu/)).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveValue('dan');
   });
 });
 

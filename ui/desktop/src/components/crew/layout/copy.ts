@@ -28,9 +28,17 @@ export const layoutCopy = {
   joined: (person: string, workspace: string) => `${person} joined ${workspace}`,
   /**
    * A toast when someone adds you to a channel while you are elsewhere (Q2-63). `person` is
-   * `@username` (or `personLabel(…, 'inline')` when there is none); `channel` is `#name`.
+   * `personLabel(…, 'inline')`, as `joined` takes it (M11); `channel` is `#name`, or `Team /
+   * #name` where two teams share the name.
    */
   channelAdded: (person: string, channel: string) => `${person} added you to ${channel}`,
+  /** The same for a team, which brings its #general: `team` is the team's name (M11). */
+  teamAdded: (person: string, team: string) => `${person} added you to ${team}`,
+  /**
+   * A channel or team the viewer is in was renamed elsewhere (M12): `before` and `after` as the
+   * sidebar names them, `#name` (or `Team / #name`) for a channel, the team's name for a team.
+   */
+  renamed: (before: string, after: string) => `${before} is now ${after}`,
 
   ownership: {
     /** `owner` is `personLabel(…, 'authority')`; `channel` is `#name`. */

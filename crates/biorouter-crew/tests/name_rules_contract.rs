@@ -2,7 +2,7 @@
 //! device code and the workspace invitation codec (S3a), and the `hello` signing payloads.
 //!
 //! Pure functions only: no broker, socket or account lookup, so this runs on every platform.
-//! See `docs/research/biorouter-crew/naming-design.md`.
+//! See `docs/crew/design/naming-design.md`.
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
@@ -223,7 +223,7 @@ fn team_names_follow_the_team_rules() {
         validate_team_name("  Analysis   Lab ").as_deref(),
         Ok("Analysis Lab")
     );
-    let refused: [(&str, NameProblem); 14] = [
+    let refused: [(&str, NameProblem); 15] = [
         ("", NameProblem::Empty),
         ("Lab\u{FE0F}", NameProblem::InvisibleCharacter),
         ("Lab\u{202E}", NameProblem::InvisibleCharacter),
@@ -234,7 +234,12 @@ fn team_names_follow_the_team_rules() {
         ("Lab \u{FF03}1", NameProblem::ReservedCharacter),
         ("Lab 🧬", NameProblem::DisallowedCharacter),
         ("Lab!", NameProblem::DisallowedCharacter),
-        ("\u{FF2C}\u{FF41}\u{FF42}", NameProblem::DisallowedCharacter),
+        // Fullwidth letters fold to ASCII, but a fullwidth symbol is still a symbol.
+        ("Lab \u{FF01}", NameProblem::DisallowedCharacter),
+        (
+            "\u{FF2C}\u{FF41}\u{FF42} \u{0410}",
+            NameProblem::MixedScripts,
+        ),
         ("Laq\u{301}b", NameProblem::UnattachedMark),
         ("\u{0410}nalysis", NameProblem::MixedScripts),
         ("- _ .", NameProblem::NoLetterOrDigit),
@@ -247,6 +252,30 @@ fn team_names_follow_the_team_rules() {
         Ok("Café"),
         "a combining accent that composes under NFC is stored composed"
     );
+    // Team names fold fullwidth letters exactly as channel names do, and store the folded form
+    // (setup F9: a fullwidth team name was refused with a sentence saying letters are allowed).
+    for (typed, stored) in [
+        ("\u{FF2C}\u{FF41}\u{FF42}", "Lab"),
+        ("\u{FF21}\u{FF4E}\u{FF41}\u{FF4C}\u{FF59}\u{FF53}\u{FF49}\u{FF53} \u{FF2C}\u{FF41}\u{FF42}", "Analysis Lab"),
+        ("Lab\u{3000}\u{FF12}", "Lab 2"),
+        ("\u{FF08}R\u{FF06}D\u{FF09} Lab", "(R&D) Lab"),
+    ] {
+        assert_eq!(validate_team_name(typed).as_deref(), Ok(stored), "{typed:?}");
+        assert_eq!(
+            canonical_channel_name(typed).map(|_| ()),
+            canonical_channel_name(stored).map(|_| ()),
+            "a team and a channel treat {typed:?} alike"
+        );
+    }
+    assert_eq!(
+        name_key("\u{FF2C}\u{FF41}\u{FF42}"),
+        name_key(&validate_team_name("\u{FF2C}\u{FF41}\u{FF42}").unwrap()),
+        "the folded name keeps the key it collides by"
+    );
+    // A name accepted before the fold is stored exactly as before.
+    for unchanged in ["Analysis Lab", "Équipe Génomique", "日本語 ラボ", "Lab_2.0"] {
+        assert_eq!(validate_team_name(unchanged).as_deref(), Ok(unchanged));
+    }
     assert_eq!(
         problem(validate_team_name(&"a".repeat(65))),
         NameProblem::TooLong
@@ -783,6 +812,144 @@ fn garbage_oversize_and_unknown_versions_are_refused() {
     // The first token is the one parsed, even when a valid one follows it.
     let two = format!("brcrew1:!!! then {}", token_for(&wire));
     assert_eq!(invitation::parse(&two), Err(InvitationError::Malformed));
+}
+
+/// `line` with its token (the text after `brcrew1:`) cut every `width` characters and the
+/// pieces joined by `separator`.
+fn wrap_token(line: &str, width: usize, separator: &str) -> String {
+    let body = line.strip_prefix(invitation::PREFIX).unwrap();
+    let pieces: Vec<String> = body
+        .as_bytes()
+        .chunks(width)
+        .map(|chunk| String::from_utf8(chunk.to_vec()).unwrap())
+        .collect();
+    format!("{}{}", invitation::PREFIX, pieces.join(separator))
+}
+
+/// Plain-text mail and ticket tools wrap long lines, so a token the host sent on one line
+/// often arrives on several. Whitespace inside the token is not part of it, and the prose
+/// after the token is not swallowed into it (setup-chen F1).
+#[test]
+fn a_wrapped_invitation_token_still_parses() {
+    let original = sample_invitation();
+    let line = invitation::encode(&original).unwrap();
+    assert!(line.len() > 160, "the sample must be long enough to wrap");
+    let intro = "Join lab on Crew.\nIn Biorouter, open Crew, choose Join a workspace, and paste \
+                 this whole message.\n";
+
+    // A mail client wraps the whole line, `brcrew1:` included, at a fixed column.
+    let hard = |width: usize, separator: &str| {
+        line.as_bytes()
+            .chunks(width)
+            .map(|chunk| String::from_utf8(chunk.to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .join(separator)
+    };
+    let wrapped = vec![
+        ("hard wrap at 64", hard(64, "\n")),
+        ("hard wrap at 72", hard(72, "\n")),
+        ("hard wrap at 76", hard(76, "\n")),
+        ("indented continuation lines", hard(72, "\n    ")),
+        ("tab-indented continuation lines", hard(72, "\n\t")),
+        ("soft wrap with a space", wrap_token(&line, 70, " ")),
+        ("CRLF wrap", hard(76, "\r\n")),
+        (
+            "brcrew1: alone on its line",
+            format!(
+                "{}\n{}",
+                invitation::PREFIX,
+                line.get(invitation::PREFIX.len()..).unwrap()
+            ),
+        ),
+        (
+            "brcrew1: alone, then a wrapped token",
+            format!(
+                "{}\r\n{}",
+                invitation::PREFIX,
+                wrap_token(&line, 76, "\r\n")
+                    .strip_prefix(invitation::PREFIX)
+                    .unwrap()
+            ),
+        ),
+        (
+            "a zero-width space at each break",
+            wrap_token(&line, 60, "\u{200B}"),
+        ),
+        (
+            "quoted-printable soft line breaks",
+            wrap_token(&line, 75, "=\r\n"),
+        ),
+        (
+            "a quoted reply that was re-wrapped",
+            format!("> {}", hard(72, "\n> ")),
+        ),
+    ];
+    for (case, token) in wrapped {
+        for pasted in [
+            token.clone(),
+            format!("{intro}{token}"),
+            format!("{intro}{token}\n"),
+            // Prose right after the token, on the same line and on the next one with no blank
+            // line between, is not part of the token.
+            format!("{intro}{token} IT says the server is up\nThanks Alice"),
+            format!("{intro}{token}\nIT says the server is up\n\nAlice"),
+            format!("{intro}{token}\r\nIT says hi\r\n"),
+            format!("{intro}{token}\n\nbrcrew1 is the prefix"),
+        ] {
+            let parsed = invitation::parse(&pasted);
+            assert_eq!(
+                parsed.map(|parsed| parsed.invitation),
+                Ok(original.clone()),
+                "{case}: {pasted:?}"
+            );
+        }
+    }
+
+    // A wrapped token that lost a piece is still refused as damaged, not guessed at.
+    let body = line.strip_prefix(invitation::PREFIX).unwrap();
+    let damaged = format!(
+        "{}{}\n{}",
+        invitation::PREFIX,
+        body.get(..64).unwrap(),
+        body.get(128..).unwrap()
+    );
+    assert_eq!(invitation::parse(&damaged), Err(InvitationError::Malformed));
+    // A blank line ends the token: the rest after it is not joined in.
+    let split_by_blank = format!(
+        "{}{}\n\n{}",
+        invitation::PREFIX,
+        body.get(..64).unwrap(),
+        body.get(64..).unwrap()
+    );
+    assert_eq!(
+        invitation::parse(&split_by_blank),
+        Err(InvitationError::Malformed)
+    );
+    // So does punctuation: only whitespace separates the pieces of one token.
+    let split_by_comma = format!(
+        "{}{}, {}",
+        invitation::PREFIX,
+        body.get(..64).unwrap(),
+        body.get(64..).unwrap()
+    );
+    assert_eq!(
+        invitation::parse(&split_by_comma),
+        Err(InvitationError::Malformed)
+    );
+    // A wrapped token keeps its own refusals: a newer version is still named as one.
+    let newer = token_for(&json!({"v": 2, "anything": "x".repeat(200)}));
+    assert_eq!(
+        invitation::parse(&wrap_token(&newer, 64, "\n")),
+        Err(InvitationError::UnsupportedVersion)
+    );
+    // And a wrapped token with a bad field names the field.
+    let mut bad = serde_json::to_value(sample_invitation()).unwrap();
+    bad["v"] = json!(1);
+    bad["owner_uid"] = json!(0);
+    assert_eq!(
+        invitation::parse(&wrap_token(&token_for(&bad), 64, "\n")),
+        Err(InvitationError::InvalidField(InvitationField::OwnerUid))
+    );
 }
 
 /// One invalid value per rule, each with the field the refusal must name.

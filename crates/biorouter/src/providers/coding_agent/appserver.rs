@@ -173,6 +173,14 @@ impl AppServer {
     }
 
     /// Send a request and await its response.
+    ///
+    /// This has no timeout of its own, by design. The wait ends when the child
+    /// answers, when the child exits (the reader then fails every waiter), or
+    /// when the caller drops this future on cancellation. A turn has a wall
+    /// clock only if an operator sets `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`,
+    /// and the provider applies it through [`super::await_turn`], not here. A
+    /// caller that awaits this against a child that never answers therefore
+    /// waits forever.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, ProviderError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();

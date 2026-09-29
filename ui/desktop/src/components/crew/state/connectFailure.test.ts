@@ -4,6 +4,8 @@ import {
   arrivalConnectDecision,
   CONNECT_FAILURE_CODES,
   classifyConnectFailure,
+  connectFailureHost,
+  savedFailureKind,
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
@@ -20,6 +22,9 @@ const sshText = (status: string) =>
 describe('classifyConnectFailure', () => {
   it.each([
     ['crew_ssh_auth_required', 'auth_required'],
+    // W2-DMN-5: a publickey-only refusal, and a workspace server that is not running.
+    ['crew_ssh_key_refused', 'ssh_key_refused'],
+    ['crew_broker_not_running', 'broker_not_running'],
     ['crew_ssh_host_key_unknown', 'host_key_unknown'],
     ['crew_ssh_host_key_changed', 'host_key_changed'],
     ['crew_ssh_unreachable', 'unreachable'],
@@ -98,6 +103,77 @@ describe('classifyConnectFailure', () => {
     });
   });
 
+  // W2-DMN-5: a jump host's unknown key concerns the jump host, and the daemon now says which hop.
+  it('keeps the hop the daemon names, and only a host-shaped one', () => {
+    const saved = { ssh_target: 'crew_alice@52.33.141.141' };
+    const jump = classifyConnectFailure(
+      new CrewHttpError(
+        'Host key verification failed.',
+        400,
+        'crew_ssh_host_key_unknown',
+        undefined,
+        undefined,
+        undefined,
+        { host: 'jump.example.edu' }
+      )
+    );
+    expect(connectFailureHost(jump, saved)).toBe('jump.example.edu');
+    expect(
+      connectFailureHost(
+        classifyConnectFailure(new CrewHttpError('x', 400, 'crew_ssh_failed')),
+        saved
+      )
+    ).toBeNull();
+    expect(connectFailureHost(null, saved)).toBeNull();
+  });
+
+  // W2-UIW-3, DW-03: the daemon names the destination's own host too, by its RESOLVED name and as
+  // `[addr]:port` off port 22. That is the saved server, which the rest of Crew calls by its alias,
+  // so it is never named as a separate hop.
+  it('sets aside a named host that is the saved server, however OpenSSH writes it', () => {
+    const failure = (host: string) =>
+      classifyConnectFailure(
+        new CrewHttpError(
+          'Host key verification failed.',
+          400,
+          'crew_ssh_host_key_unknown',
+          undefined,
+          undefined,
+          undefined,
+          { host }
+        )
+      );
+    const saved = { ssh_target: 'crew_alice@52.33.141.141' };
+    expect(connectFailureHost(failure('52.33.141.141'), saved)).toBeNull();
+    expect(connectFailureHost(failure('[52.33.141.141]:2222'), saved)).toBeNull();
+    expect(
+      connectFailureHost(failure('HPC.Example.EDU'), { ssh_target: 'bob@hpc.example.edu' })
+    ).toBeNull();
+    expect(
+      connectFailureHost(failure('hpc.example.edu'), { ssh_target: 'hpc.example.edu' })
+    ).toBeNull();
+    // IPv6, bracketed by OpenSSH only off port 22.
+    expect(
+      connectFailureHost(failure('[2001:db8::7]:2222'), { ssh_target: 'crew_bob@2001:db8::7' })
+    ).toBeNull();
+    // A different machine is still the hop, bracketed or not, even one whose address shares a
+    // prefix with the server's.
+    expect(connectFailureHost(failure('[10.0.0.5]:2200'), saved)).toBe('[10.0.0.5]:2200');
+    expect(connectFailureHost(failure('52.33.141.14'), saved)).toBe('52.33.141.14');
+    // With no saved login to compare against, the named host is all there is.
+    expect(connectFailureHost(failure('gate.example.edu'), null)).toBe('gate.example.edu');
+  });
+
+  it('reads a saved connection’s last failure by its typed code', () => {
+    expect(savedFailureKind({ last_error_code: 'crew_broker_not_running' })).toBe(
+      'broker_not_running'
+    );
+    expect(savedFailureKind({ last_error_code: 'crew_ssh_key_refused' })).toBe('ssh_key_refused');
+    expect(savedFailureKind({ last_error_code: 'something_new' })).toBeUndefined();
+    expect(savedFailureKind({ last_error_code: '__proto__' })).toBeUndefined();
+    expect(savedFailureKind(null)).toBeUndefined();
+  });
+
   it('gives a non-Error failure the action fallback text', () => {
     expect(classifyConnectFailure('boom')).toEqual({
       kind: 'unknown',
@@ -152,6 +228,8 @@ describe('arrivalConnectDecision (Q3-08, SECURITY-SENSITIVE)', () => {
     for (const kind of TRUST_FAILURE_KINDS)
       expect(decide({ lastConnectFailure: { kind } })).toBe('skip');
     expect(decide({ lastConnectFailure: { kind: 'auth_required' } })).toBe('skip');
+    // A refused key is refused again until the person changes the login or the key (F5).
+    expect(decide({ lastConnectFailure: { kind: 'ssh_key_refused' } })).toBe('skip');
     expect(decide({ signInPending: true })).toBe('skip');
     expect(
       decide({
@@ -174,6 +252,8 @@ describe('arrivalConnectDecision (Q3-08, SECURITY-SENSITIVE)', () => {
       'unknown',
       'bridge_missing',
       'handoff_failed',
+      // Its host may start it at any moment.
+      'broker_not_running',
     ];
     for (const kind of retryable) expect(decide({ lastConnectFailure: { kind } })).toBe('connect');
   });

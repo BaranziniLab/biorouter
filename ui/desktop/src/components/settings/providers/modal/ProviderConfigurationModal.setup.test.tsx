@@ -1,4 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../api';
 import type {
@@ -225,6 +227,34 @@ it('keeps Anthropic API configuration separate from Claude Code setup', async ()
   expect(mocks.status).not.toHaveBeenCalled();
 });
 
+// W2-PRV-13: Llama Server and Ollama declare no secret, and were asked for
+// "API key(s)".
+it('does not ask a provider with no secret for an API key', () => {
+  const llama = {
+    ...provider('claude_code'),
+    name: 'llamacpp',
+    metadata: {
+      ...provider('claude_code').metadata,
+      name: 'llamacpp',
+      display_name: 'Llama Server',
+      config_keys: [
+        {
+          name: 'LLAMACPP_EXTERNAL_HOST',
+          required: false,
+          secret: false,
+          oauth_flow: false,
+          default: null,
+        },
+      ],
+    },
+  } as ProviderDetails;
+  render(<ProviderConfigurationModal provider={llama} onClose={vi.fn()} />);
+  expect(screen.queryByText(/API key\(s\)/)).not.toBeInTheDocument();
+  expect(
+    screen.getByText('Llama Server needs no API key. Adjust how Biorouter reaches it.')
+  ).toBeInTheDocument();
+});
+
 describe.each(['codex', 'claude_code'] as const)(
   '%s readiness after a successful provider check',
   (kind) => {
@@ -286,4 +316,111 @@ it('does not advance after the configuration modal was closed during its readine
   finish({ agents: [fixture('codex', { state: 'signed_in_subscription' })] });
   await Promise.resolve();
   expect(onConfigured).not.toHaveBeenCalled();
+});
+
+/**
+ * PROVIDERS-4 of the 2026-09-27 Crew QA audit, end to end through the modal.
+ * The public Azure OpenAI card's endpoint came up filled in with UCSF's Versa
+ * gateway, so a user who typed only a deployment and a key saved it, and their
+ * first chat sent that key and the transcript to UCSF. The endpoint is the
+ * user's own resource: setup must stop and ask for it.
+ */
+it('does not save an Azure OpenAI setup until the user names their own endpoint', async () => {
+  mocks.submit.mockReset().mockResolvedValue(undefined);
+  const azure = {
+    name: 'azure_openai',
+    is_configured: false,
+    provider_type: 'Builtin',
+    metadata: {
+      name: 'azure_openai',
+      display_name: 'Azure OpenAI',
+      description: '',
+      default_model: 'gpt-6-sol-2026-09-22',
+      known_models: [],
+      model_doc_link: '',
+      config_keys: [
+        {
+          name: 'AZURE_OPENAI_ENDPOINT',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: null,
+        },
+        {
+          name: 'AZURE_OPENAI_DEPLOYMENT_NAME',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: null,
+        },
+        {
+          name: 'AZURE_OPENAI_API_VERSION',
+          required: true,
+          secret: false,
+          oauth_flow: false,
+          default: '2025-01-01-preview',
+        },
+        {
+          name: 'AZURE_OPENAI_API_KEY',
+          required: false,
+          secret: true,
+          oauth_flow: false,
+          default: '',
+        },
+      ],
+    },
+  } as ProviderDetails;
+  render(<ProviderConfigurationModal provider={azure} onClose={vi.fn()} />);
+
+  fireEvent.change(await screen.findByLabelText(/\(AZURE_OPENAI_DEPLOYMENT_NAME\)/), {
+    target: { value: 'my-gpt-6-sol' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  // W2-PRV-13: the field's name in words, not its env var.
+  expect(await screen.findByText('Azure OpenAI Endpoint is required')).toBeInTheDocument();
+  expect(mocks.submit).not.toHaveBeenCalled();
+
+  fireEvent.change(screen.getByLabelText(/\(AZURE_OPENAI_ENDPOINT\)/), {
+    target: { value: 'https://contoso.openai.azure.com' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(mocks.submit).toHaveBeenCalledTimes(1));
+  expect(mocks.submit.mock.calls[0][2]).toMatchObject({
+    AZURE_OPENAI_ENDPOINT: 'https://contoso.openai.azure.com',
+    AZURE_OPENAI_DEPLOYMENT_NAME: 'my-gpt-6-sol',
+  });
+});
+
+// T3-SH-12: opened from a row's Configure button with no Dialog.Trigger, the
+// dialog left the focus on the page when Escape closed it.
+describe('closing with Escape', () => {
+  function Row() {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Configure
+        </button>
+        {open ? (
+          <ProviderConfigurationModal provider={provider('codex')} onClose={() => setOpen(false)} />
+        ) : null}
+      </>
+    );
+  }
+
+  it('gives the focus back to the Configure button', async () => {
+    mocks.submit.mockReset();
+    mocks.status.mockResolvedValue({ agents: [] });
+    const user = userEvent.setup();
+    render(<Row />);
+    await user.click(screen.getByRole('button', { name: 'Configure' }));
+    await screen.findByDisplayValue('/custom/codex');
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Configure' })).toHaveFocus());
+  });
 });

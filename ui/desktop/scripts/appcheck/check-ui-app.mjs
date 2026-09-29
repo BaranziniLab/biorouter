@@ -6,15 +6,24 @@
 // Speaks the app WebSocket protocol directly (no browser), so it can assert on
 // the `ui` command frames the agent's `ui_*` tools emit. Complements
 // check-app.mjs, which only checks that a reply streams back.
+//
+// Set BIOROUTER_SERVER__SECRET_KEY to the daemon's secret. An app's page and
+// socket answer 401 to anyone without that app's access cookie or the secret
+// (W2-HRD-1), and the socket also wants the per-app token the page carries.
 import WebSocket from 'ws';
 
 const [, , base, id, prompt = 'Summarize this app and show me a chart.'] = process.argv;
 const expectArg = process.argv.find((a) => a.startsWith('--expect='));
 const expected = expectArg ? expectArg.slice('--expect='.length).split(',').filter(Boolean) : [];
 const TIMEOUT_MS = Number(process.env.UI_CHECK_TIMEOUT_MS || 180000);
+const SECRET = process.env.BIOROUTER_SERVER__SECRET_KEY || '';
+const auth = SECRET ? { 'X-Secret-Key': SECRET } : {};
+let wsToken = '';
 
 if (!base || !id) {
-  console.error('usage: node check-ui-app.mjs <base> <id> "<prompt>" [--expect=panel,chart]');
+  console.error(
+    'usage: BIOROUTER_SERVER__SECRET_KEY=<daemon secret> node check-ui-app.mjs <base> <id> "<prompt>" [--expect=panel,chart]'
+  );
   process.exit(2);
 }
 
@@ -35,22 +44,32 @@ const res = {
 };
 
 try {
-  const idx = await fetch(`${base}/apps/${id}/`);
+  const idx = await fetch(`${base}/apps/${id}/`, { headers: auth });
   res.httpIndex = idx.status;
   const html = await idx.text();
+  // The per-app socket token the served page carries in its config island.
+  const island = /<script type="application\/json" id="biorouter-app-config">([\s\S]*?)<\/script>/.exec(html);
+  try {
+    wsToken = (island && JSON.parse(island[1]).wsToken) || '';
+  } catch {
+    /* no config island */
+  }
   // The regions the author exposed for `ui_render(target="@region:…")`.
   res.declaresRegions = [...html.matchAll(/data-br-region=["']([^"']+)["']/g)].map((m) => m[1]);
-  const b = await fetch(`${base}/apps/${id}/dist/app.js`);
+  const b = await fetch(`${base}/apps/${id}/dist/app.js`, { headers: auth });
   res.httpBundle = b.status;
   res.bundleBytes = (await b.text()).length;
 } catch (e) {
   res.error = 'http: ' + e.message;
 }
 
-const wsUrl = base.replace(/^http/, 'ws') + `/apps/${id}/agent`;
+const wsUrl =
+  base.replace(/^http/, 'ws') +
+  `/apps/${id}/agent` +
+  (wsToken ? `?token=${encodeURIComponent(wsToken)}` : '');
 await new Promise((resolve) => {
   let settled = false;
-  const ws = new WebSocket(wsUrl);
+  const ws = new WebSocket(wsUrl, { headers: auth });
   const finish = (why) => {
     if (settled) return;
     settled = true;

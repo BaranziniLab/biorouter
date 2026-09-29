@@ -211,6 +211,18 @@ type TerminalExitEvent = {
 
 const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}');
 
+/** Mirrors `DaemonConnectionState` in `biorouterdSingleton.ts` (the preload imports no main code). */
+type DaemonConnectionState = 'attached' | 'lost' | 'reconnecting';
+
+/** Mirrors `AttentionNotification` in `components/crew/attention/crewAttention.ts`. */
+interface CrewAttentionNotification {
+  key: string;
+  title: string;
+  body: string;
+  connectionId: string;
+  channelId: string;
+}
+
 interface UpdaterEvent {
   event: string;
   data?: unknown;
@@ -338,6 +350,8 @@ type ElectronAPI = {
   deleteTempFile: (filePath: string) => void;
   // Opens only after public-target validation and exact-host native confirmation.
   openExternal: (url: string) => Promise<void>;
+  /** Open a built app in the system browser; main mints and hands over its launch link. */
+  openAppInBrowser: (appId: string) => Promise<void>;
   // Function to serve temp images
   getTempImage: (filePath: string) => Promise<string | null>;
   // Function to read temp image as raw base64 + mimeType for API use
@@ -348,6 +362,26 @@ type ElectronAPI = {
   downloadUpdate: () => Promise<{ success: boolean; error: string | null }>;
   installUpdate: () => void;
   restartApp: () => void;
+  /**
+   * Where the app stands with the shared background service (R-1): `lost` once the instance it
+   * verified is gone or replaced, until the person reconnects. Optional: a browser surface and an
+   * external backend have no shared daemon to lose.
+   */
+  getDaemonConnection?: () => Promise<DaemonConnectionState>;
+  onDaemonConnection?: (callback: (state: DaemonConnectionState) => void) => () => void;
+  /** Reattach to the profile's background service; the main process asks for its secret. */
+  reconnectDaemon?: () => Promise<boolean>;
+  /**
+   * Crew's attention signals outside Crew (M2): this window's unread count, for the dock badge
+   * (the main process shows the largest any window reports), and a notification for new
+   * messages, which the main process shows at most once per channel a minute, and not while
+   * another window of the app is in front. Clicking it sends `onCrewAttentionOpen`.
+   */
+  setCrewAttentionBadge?: (count: number) => void;
+  notifyCrewAttention?: (notification: CrewAttentionNotification) => void;
+  onCrewAttentionOpen?: (
+    callback: (target: { connectionId: string; channelId: string }) => void
+  ) => () => void;
   /** Subscribe to main-process updater events. Returns a disposer that removes
    * the listener; call it on unmount to avoid duplicate registrations. */
   onUpdaterEvent: (callback: (event: UpdaterEvent) => void) => () => void;
@@ -758,6 +792,8 @@ const electronAPI: ElectronAPI = {
   openExternal: (url: string): Promise<void> => {
     return ipcRenderer.invoke('open-external', url);
   },
+  openAppInBrowser: (appId: string): Promise<void> =>
+    ipcRenderer.invoke('apps:open-in-browser', appId),
   getTempImage: (filePath: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-temp-image', filePath);
   },
@@ -778,6 +814,27 @@ const electronAPI: ElectronAPI = {
   },
   restartApp: (): void => {
     ipcRenderer.send('restart-app');
+  },
+  getDaemonConnection: () => ipcRenderer.invoke('daemon-connection:get'),
+  onDaemonConnection: (callback: (state: DaemonConnectionState) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: DaemonConnectionState) =>
+      callback(state);
+    ipcRenderer.on('daemon-connection', listener);
+    return () => ipcRenderer.removeListener('daemon-connection', listener);
+  },
+  reconnectDaemon: () => ipcRenderer.invoke('daemon-connection:reconnect'),
+  setCrewAttentionBadge: (count: number) => ipcRenderer.send('crew-attention:badge', count),
+  notifyCrewAttention: (notification: CrewAttentionNotification) =>
+    ipcRenderer.send('crew-attention:notify', notification),
+  onCrewAttentionOpen: (
+    callback: (target: { connectionId: string; channelId: string }) => void
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      target: { connectionId: string; channelId: string }
+    ) => callback(target);
+    ipcRenderer.on('crew-attention:open', listener);
+    return () => ipcRenderer.removeListener('crew-attention:open', listener);
   },
   onUpdaterEvent: (callback: (event: UpdaterEvent) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, data: UpdaterEvent) => callback(data);

@@ -24,6 +24,8 @@ async fn inspect_route(args: &[String], target: &str) -> Result<()> {
     let mut invocation = args.to_vec();
     let mut host = target.to_string();
     let mut seen = HashSet::new();
+    // Whether the destination is this machine: a jump host is then never needed (W2-DMN-2).
+    let mut destination_here = false;
     for depth in 0..16 {
         // Crew constructs separate option arguments, never bundled flags. Older
         // clients have only -f and do not report ForkAfterAuthentication in -G.
@@ -34,7 +36,24 @@ async fn inspect_route(args: &[String], target: &str) -> Result<()> {
         let settings = resolve(&invocation)
             .await
             .with_context(|| format!("Cannot inspect Crew SSH host {host}"))?;
-        validate(&settings, &host, depth > 0)?;
+        if depth == 0 {
+            destination_here = settings.get("hostname").is_some_and(|name| {
+                name.eq_ignore_ascii_case("localhost")
+                    || name
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .parse()
+                        .is_ok_and(super::local_host::is_this_machine_address)
+            });
+        }
+        if let Err(error) = validate(&settings, &host, depth > 0) {
+            if depth > 0 && destination_here {
+                anyhow::bail!(
+                    "{error} This computer is the workspace's server, so it needs no jump host: join with --ssh-target localhost, or remove the jump host in Connection settings."
+                );
+            }
+            return Err(error);
+        }
         let Some(jump) = settings
             .get("proxyjump")
             .filter(|value| value.as_str() != "none")
@@ -99,6 +118,14 @@ async fn resolve(args: &[String]) -> Result<Settings> {
 }
 
 fn validate(settings: &Settings, host: &str, jump: bool) -> Result<()> {
+    // W2-DMN-2: a jump hop is named as one, so the person knows the host is not the server
+    // they typed but a hop on the route to it (often the invitation's).
+    let named = if jump {
+        format!("{host} (the jump host on this connection's route)")
+    } else {
+        host.to_owned()
+    };
+    let host = named.as_str();
     for (field, permitted, setting) in [
         (
             "stricthostkeychecking",
@@ -527,6 +554,33 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("ForwardAgent no"), "{err}");
+        // W2-DMN-2: the refusal names the hop as a jump host, and, since the destination is
+        // this machine, says no jump host is needed.
+        assert!(
+            err.contains("Crew SSH host gate-a (the jump host on this connection's route) requires ForwardAgent no"),
+            "{err}"
+        );
+        assert!(err.contains("--ssh-target localhost"), "{err}");
+
+        // A destination elsewhere keeps its jump host: no such advice.
+        let text = fs::read_to_string(&config).unwrap().replacen(
+            "Host target\n  HostName 127.0.0.1",
+            "Host target\n  HostName 192.0.2.10",
+            1,
+        );
+        fs::write(&config, text).unwrap();
+        let err = preflight(
+            &["-F".into(), config_argument(&config), "target".into()],
+            "target",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("the jump host on this connection's route"),
+            "{err}"
+        );
+        assert!(!err.contains("--ssh-target localhost"), "{err}");
     }
 
     #[tokio::test]

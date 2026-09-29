@@ -273,7 +273,7 @@ describe('CodingAgentInlineCard', () => {
       expect(screen.getByText('Ready · signed in on your subscription')).toBeInTheDocument();
     });
 
-    it('persists the defaulted command key before the provider, then hands off', async () => {
+    it('persists the defaulted command key, and only that, then hands off', async () => {
       const onSuccess = vi.fn();
       respondWith(claude({ state: 'signed_in_subscription', plan: null, account: null }));
       render(<CodingAgentInlineCard onSuccess={onSuccess} />);
@@ -284,7 +284,11 @@ describe('CodingAgentInlineCard', () => {
       // Writing the defaulted key is what makes check_provider_configured report
       // the provider as configured — the whole reason this call exists.
       expect(mockUpsert).toHaveBeenNthCalledWith(1, 'CLAUDE_CODE_COMMAND', 'claude', false);
-      expect(mockUpsert).toHaveBeenNthCalledWith(2, 'BIOROUTER_PROVIDER', 'claude_code', false);
+      // W2-PRV-5: NOT the model every new chat starts on. That moved on this
+      // click, before any model was chosen; the model step that follows writes
+      // the provider and model together, to the scope picked there.
+      expect(mockUpsert).toHaveBeenCalledTimes(1);
+      expect(mockUpsert).not.toHaveBeenCalledWith('BIOROUTER_PROVIDER', expect.anything(), false);
       // The command name, never the resolved absolute path.
       expect(mockUpsert).not.toHaveBeenCalledWith(
         'CLAUDE_CODE_COMMAND',

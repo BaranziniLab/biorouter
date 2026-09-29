@@ -1,6 +1,6 @@
 import { act, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Channel } from '../crewApi';
+import type { Channel, Team } from '../crewApi';
 import { installResizeObserverStub } from '../test/crewTestUtils';
 import {
   bob,
@@ -15,6 +15,7 @@ import {
   type ScriptedDaemon,
 } from '../integration/harness';
 import { layoutCopy } from './copy';
+import { forgetOwnRenames, noteOwnRename } from './useChannelAddedToast';
 
 const toasts = vi.hoisted(() => ({ toastSuccess: vi.fn() }));
 vi.mock('../../../toasts', async () => {
@@ -81,10 +82,13 @@ describe('the person hears when someone adds them to a channel (Q2-63)', () => {
 
     await waitFor(() =>
       expect(toasts.toastSuccess).toHaveBeenCalledWith({
-        msg: layoutCopy.channelAdded('@alice', '#plots'),
+        msg: layoutCopy.channelAdded('Alice Chen (@alice)', '#plots'),
       })
     );
-    expect(layoutCopy.channelAdded('@alice', '#plots')).toBe('@alice added you to #plots');
+    // M11: the adder by the one rule for inline text, as the joined toast names people.
+    expect(layoutCopy.channelAdded('Alice Chen (@alice)', '#plots')).toBe(
+      'Alice Chen (@alice) added you to #plots'
+    );
     expect(toasts.toastSuccess).toHaveBeenCalledTimes(1);
 
     // The same channels again announce nothing.
@@ -105,9 +109,172 @@ describe('the person hears when someone adds them to a channel (Q2-63)', () => {
     act(() => daemon.emit(stateFrame(daemon)));
     await waitFor(() =>
       expect(toasts.toastSuccess).toHaveBeenCalledWith({
-        msg: layoutCopy.channelAdded('@alice', '#methods'),
+        msg: layoutCopy.channelAdded('Alice Chen (@alice)', '#methods'),
       })
     );
+  });
+
+  // M11: a direct team add brought #general (and ticked channels) and was announced as "added you
+  // to #general", which every team has.
+  it('says once that they were added to a team, naming the team, not its #general', async () => {
+    const daemon = installDaemon({ snapshot: richSnapshot({ actor: bob }) });
+    renderCrew();
+    await channelReady();
+    const imaging: Team = {
+      id: '7f6a5b4c-3d2e-4f1a-8b9c-0d1e2f3a4b5c',
+      name: 'Imaging Core',
+      created_by: general.owner_id,
+      members: [general.owner_id, bob.id],
+      general_channel_id: '7a1c2a3b-0000-4000-8000-0000000c0010',
+    };
+    const imagingGeneral = channel({
+      id: imaging.general_channel_id,
+      team_id: imaging.id,
+      name: 'general',
+      created_by: general.owner_id,
+      owner_id: general.owner_id,
+      members: [general.owner_id, bob.id],
+    });
+    const scans = channel({
+      id: '7a1c2a3b-0000-4000-8000-0000000c0011',
+      team_id: imaging.id,
+      name: 'scans',
+      created_by: general.owner_id,
+      owner_id: general.owner_id,
+      members: [general.owner_id, bob.id],
+    });
+    const base = richSnapshot({ actor: bob });
+    daemon.state.snapshot = richSnapshot({
+      actor: bob,
+      teams: [...base.teams, imaging],
+      channels: [general, methods, imagingGeneral, scans],
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: layoutCopy.teamAdded('Alice Chen (@alice)', 'Imaging Core'),
+      })
+    );
+    expect(layoutCopy.teamAdded('Alice Chen (@alice)', 'Imaging Core')).toBe(
+      'Alice Chen (@alice) added you to Imaging Core'
+    );
+    await act(async () => {});
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the team of a channel whose name another of their teams also has', async () => {
+    const imaging: Team = {
+      id: '7f6a5b4c-3d2e-4f1a-8b9c-0d1e2f3a4b5c',
+      name: 'Imaging Core',
+      created_by: general.owner_id,
+      members: [general.owner_id, bob.id],
+      general_channel_id: '7a1c2a3b-0000-4000-8000-0000000c0010',
+    };
+    const imagingGeneral = channel({
+      id: imaging.general_channel_id,
+      team_id: imaging.id,
+      name: 'general',
+      created_by: general.owner_id,
+      owner_id: general.owner_id,
+      members: [general.owner_id, bob.id],
+    });
+    const base = richSnapshot({ actor: bob });
+    const daemon = installDaemon({
+      snapshot: richSnapshot({
+        actor: bob,
+        teams: [...base.teams, imaging],
+        channels: [general, methods, imagingGeneral],
+      }),
+    });
+    renderCrew();
+    await channelReady();
+    // Imaging Core gains a #methods, as Analysis Lab has, and Bob is in it.
+    const imagingMethods = channel({
+      id: '7a1c2a3b-0000-4000-8000-0000000c0012',
+      team_id: imaging.id,
+      name: 'methods',
+      created_by: general.owner_id,
+      owner_id: general.owner_id,
+      members: [general.owner_id, bob.id],
+    });
+    daemon.state.snapshot = richSnapshot({
+      actor: bob,
+      teams: [...base.teams, imaging],
+      channels: [general, methods, imagingGeneral, imagingMethods],
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: layoutCopy.channelAdded('Alice Chen (@alice)', 'Imaging Core / #methods'),
+      })
+    );
+  });
+
+  // M12: a rename overwrote the name and nobody was told; the old name then failed in the CLI.
+  it('says once that a channel or team they are in was renamed, but not to whoever renamed it', async () => {
+    forgetOwnRenames();
+    const daemon = installDaemon({ snapshot: richSnapshot({ actor: bob }) });
+    renderCrew();
+    await channelReady();
+    const base = richSnapshot({ actor: bob });
+    daemon.state.snapshot = richSnapshot({
+      actor: bob,
+      teams: [{ ...base.teams[0], name: 'Analysis Group' }],
+      channels: [{ ...general, name: 'lobby' }, methods],
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: layoutCopy.renamed('#general', '#lobby'),
+      })
+    );
+    expect(toasts.toastSuccess).toHaveBeenCalledWith({
+      msg: layoutCopy.renamed('Analysis Lab', 'Analysis Group'),
+    });
+    expect(layoutCopy.renamed('#general', '#lobby')).toBe('#general is now #lobby');
+    // #methods, which Bob is not in, is never announced; each rename once.
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
+    act(() => daemon.emit(stateFrame(daemon)));
+    await act(async () => {});
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
+
+    // Renamed on this computer: the person who did it is not told again.
+    noteOwnRename(general.id);
+    daemon.state.snapshot = richSnapshot({
+      actor: bob,
+      teams: [{ ...base.teams[0], name: 'Analysis Group' }],
+      channels: [{ ...general, name: 'front-desk' }, methods],
+    });
+    act(() => daemon.emit(stateFrame(daemon)));
+    await act(async () => {});
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * MSG2-N8: the views compared were one Crew screen's, so an add made while the person was on
+   * Home was never said: the first view after they came back had nothing to compare with.
+   */
+  it('says it when they come back to Crew after being added while away', async () => {
+    const daemon = installDaemon({ snapshot: richSnapshot({ actor: bob }) });
+    const first = renderCrew();
+    await channelReady();
+    first.unmount();
+
+    // On Home meanwhile: Alice adds Bob to #plots.
+    const plots = channel({
+      created_by: general.owner_id,
+      owner_id: general.owner_id,
+      members: [general.owner_id, bob.id],
+    });
+    daemon.state.snapshot = richSnapshot({ actor: bob, channels: [general, methods, plots] });
+    renderCrew();
+    await channelReady();
+    await waitFor(() =>
+      expect(toasts.toastSuccess).toHaveBeenCalledWith({
+        msg: layoutCopy.channelAdded('Alice Chen (@alice)', '#plots'),
+      })
+    );
+    expect(toasts.toastSuccess).toHaveBeenCalledTimes(1);
   });
 
   it('says nothing for a channel they made themselves', async () => {

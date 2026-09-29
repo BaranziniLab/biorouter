@@ -1,7 +1,7 @@
 # Privacy and security
 
 > **What this is.** The Crew manual page on privacy and security: which AI models may read your work, and what other people can see.
-> **Status:** Current. Checked against the Crew code on 2026-09-25.
+> **Status:** Current. Checked against the Crew code on 2026-09-28.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app, and workspace hosts.
 
 Privacy in Crew decides which AI models may read your lab's messages and files, never which people see them. Only people the host lets in see a workspace, and only a channel's members see the channel. The host is the member who runs the workspace on the server. A word in braces, such as {workspace}, stands for a name Crew fills in.
@@ -53,7 +53,9 @@ Names are not private: a taken team or channel name reveals that it exists, and 
 
 ## Change your connection's privacy
 
-Crew does not show your choice to the host or other members. Your messages, uploads and agent tasks carry it to the server, where the host's server account can read it. To change it from a terminal, see [Privacy settings](command-line.md#privacy-settings), where the commands ask for no typed confirmation.
+Crew does not show your choice to the host or other members. Your messages, uploads and agent tasks carry it to the server, where the host's server account can read it. To change it from a terminal, see [Privacy settings](command-line.md#privacy-settings). Going public there asks you to type the workspace name, as the desktop does; in a script, add `--confirm WORKSPACE`.
+
+Saving a new privacy or institution ends chat access granted through this connection. If the workspace was connected, Crew reconnects at once and the chip shows the new setting.
 
 ### Make your connection Public
 
@@ -95,7 +97,7 @@ When Crew refuses an agent or a setting for privacy, the message names the rule.
 
 You send your code, such as `7QK2-M9XA-3JTP-WZ4D`, to the host to be let in. Your computer makes it, so the server cannot change it. The workspace fingerprint, such as `3F2A 9C1E 77B0 D4E1`, is never sent. To check an invitation, open **Check this invitation (optional)** when you join, and join only if your host reads the same fingerprint from Crew.
 
-Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account. If Biorouter asks you to "Set approval secret for shared BioRouter daemon", keep your own copy. You need it to reconnect.
+Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account. If Biorouter asks you to "Set approval secret for shared Biorouter daemon", keep your own copy. You need it to reconnect.
 
 ### New device notice
 
@@ -103,7 +105,7 @@ When a device joins your account, the connection bar says "A new device was adde
 
 ### Use an encrypted vault
 
-A vault keeps your device keys in a file locked by a passphrase, instead of the system keychain. Set it up before you host or join your first workspace on this computer, because keys already in the keychain do not move. If Crew has already used them, setup fails with "Vault initialization was refused. Use a fresh Crew profile…".
+A vault keeps your device keys in a file locked by a passphrase, instead of the system keychain. Set it up before you host or join your first workspace on this computer, because keys already in the keychain do not move. A Linux computer with no keyring service, such as a server you reach only over SSH, needs the vault: Crew never keeps a device key in a plain file, so without one it cannot save a key and says "This computer has no keyring service Biorouter can use…". If Crew has already used them, setup fails with "Vault initialization was refused. Use a fresh Crew profile…".
 
 1. Open **Keys and security…** from the You menu.
 2. Choose **Use an encrypted vault instead**, then **Set up vault…**.
@@ -120,19 +122,33 @@ Crew reaches the server over SSH and connects only to a server whose key is alre
 
 ## Files Crew will not share
 
-Crew refuses to share credential files such as `.env`, `secrets.*`, private keys, cloud credentials and password stores, even renamed. It shares public keys such as `id_ed25519.pub`. It also refuses to save into a credential or settings folder. See [Messages and files](messages-and-files.md).
+Crew refuses to share credential files such as `.env`, `secrets.*`, private keys, cloud credentials and password stores. It judges each file by its name and by its content, reading the first and last 64 KB of the file, so a renamed key file is refused too. A credential in the middle of a file larger than 128 KB is beyond this check. It shares public keys such as `id_ed25519.pub`. It also refuses to save into a credential or settings folder. See [Messages and files](messages-and-files.md).
 
 Your remote work folder, under **Advanced** in **Connection settings…**, cannot be your home folder or overlap a protected folder such as `~/.ssh` or `~/.aws`. Only a private model can use it.
 
 ## What other people can see
 
-Other members see your name, `@username` and posts in channels you share, with their "Restricted" labels. Your agent posts as "{your name}'s agent", and a task's Source line names the shared files it read. Members never see channels they are not in, your privacy, institution, devices or connected chats.
+Other members see your name, `@username` and posts in channels you share, with their "Restricted" labels. Everyone in the workspace sees whether you are online, meaning your computer is connected to the workspace now or made a request in the last three minutes. Your agent posts as "{your name}'s agent", and the Source line Crew adds to each task result and each connected chat's post names the shared files it read. Members never see channels they are not in, your privacy, institution, devices or connected chats.
 
 In Crew, the host sees only the channels the host is in, plus the members, people waiting to join, and a warning when a computer shows a different code. The host never sees your password, the verification codes you sign in with, or your keys, and cannot start, stop or approve your agent. Some workspace changes end every agent's access, yours included ([Why settings changes end access](agents-and-chat-access.md#why-settings-changes-end-access)).
 
 > **Warning.** The workspace's data sits in files owned by the host's server account. That account, programs running under it and the server's administrators can read everything, including Restricted messages and channels the host is not in.
 
 A history file under the host's account records each change and who made it. Nothing is removed from it, but the host's account can edit it. Crew has no screen for it. See [Administration](administration.md).
+
+### Other accounts on the server
+
+People who can sign in to the lab server, members or not, can learn some things about a workspace without joining it:
+
+- The workspace's name, from the name of its folder and from the host's `biorouter-crew` process.
+- Who is connected, and when. While your computer is connected, a `biorouter-crew bridge` process runs under your username with the workspace's ID on its command line, so `ps` shows it to every account on a server that does not hide other people's processes.
+- The workspace's name, privacy mode, institution and key fingerprint. Any account on the server can ask the workspace's socket for them, because members' own accounts reach it the same way.
+
+They cannot read messages, files, member lists or channel names this way: every other request needs a member's key. An administrator can hide other accounts' processes on a shared server, as [Administration](administration.md#what-other-accounts-can-see) describes. Keep patient, sample and study identifiers out of workspace, team and channel names.
+
+### Other accounts on your computer
+
+The background service on your computer listens on a network port that only programs on the same computer can reach. Another account on a shared computer, such as a Linux login node, can find the port. Every request except a health check needs the service's secret or a short lived key the service handed out itself, such as an app's one time link. The health check answers only that a Biorouter service runs there.
 
 ## Related documentation
 

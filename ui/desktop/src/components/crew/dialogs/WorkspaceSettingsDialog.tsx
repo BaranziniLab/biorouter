@@ -22,13 +22,17 @@ import { AlertTriangle, MoreHorizontal } from '../../icons/app-icons';
 import type { PendingJoin } from '../crewApi';
 import {
   InstitutionName,
+  institutionLabel,
   joinerPerson,
+  OnlineMark,
+  onlineSet,
   PersonName,
   personLabel,
   type CrewPerson,
 } from '../identity';
 import { sidebarCopy } from '../sidebar/copy';
-import { useKnownInstitutions } from '../sidebar/sidebarView';
+import { keepNamesWhole, useKnownInstitutions, verifiedPrivacy } from '../sidebar/sidebarView';
+import { fullnessNeedsAttention, workspaceFullness } from '../sidebar/workspaceFullness';
 import { useFocusReturn } from '../state/focusReturn';
 import { useMenuCopy } from '../timeline/TimelineCopy';
 import { connectionUpdateBody } from '../state/useCrewConnections';
@@ -75,6 +79,13 @@ export interface WorkspaceSettingsDialogProps {
  *
  * No tab repeats its own name as a caps label (QA Q3-40): the tab says it. The only section labels
  * are the ones that divide a tab — People's MEMBERS and WAITING TO JOIN.
+ *
+ * It stays open through a refresh, including the reconnect its own privacy change causes (SF2-N7,
+ * `survivesRefresh`). A manual refresh keeps the last verified copy to draw from; the end that
+ * reconnect brings says `clear: true`, which drops that copy too, so until the view verifies again
+ * there is no snapshot at all ({@link isChecking}). Every tab then says Checking… in place of what
+ * the snapshot decides (who hosts, who is in, the workspace's own privacy), because without it the
+ * people directory names nobody as the host and the host would read a member's wording.
  */
 export function WorkspaceSettingsDialog({
   tab,
@@ -131,7 +142,7 @@ export function WorkspaceSettingsDialog({
             <TabsTrigger value="agent-access">{copy.tabs.agentAccess}</TabsTrigger>
           ) : null}
         </TabsList>
-        <div className="crew-settings-panels">
+        <div className="crew-settings-panels" aria-busy={isChecking(view) || undefined}>
           <TabsContent {...panel('general')}>
             <GeneralTab view={view} />
           </TabsContent>
@@ -231,12 +242,47 @@ function savedConnection({ crew }: DialogView) {
   return crew.connections.find((item) => item.id === crew.connectionId) ?? null;
 }
 
+/**
+ * No verified copy to draw from while the view is observed again (SF2-N7): a `clear: true` end
+ * drops the last verified copy with the live one. The directory built from no snapshot names
+ * nobody, not even the host, so nothing it decides may be drawn until the view verifies again.
+ */
+function isChecking(view: DialogView): boolean {
+  return view.snapshot === null;
+}
+
+/** A row's value while {@link isChecking}: neither the host's words nor a member's. */
+function Checking() {
+  return <span data-crew-settings-checking="">{copy.checking}</span>;
+}
+
 /** A label and its value, one settings row. */
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="biorouter-settings-row crew-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
+function Row({
+  label,
+  children,
+  note,
+}: {
+  label: string;
+  children: React.ReactNode;
+  /** A line under the row, inside it, about its control (AG-F17). */
+  note?: React.ReactNode;
+}) {
+  const line = (
+    <>
       <span className="text-label text-text-default">{label}</span>
       <div className="flex min-w-0 items-center gap-2 text-body text-text-muted">{children}</div>
+    </>
+  );
+  if (!note)
+    return (
+      <div className="biorouter-settings-row crew-settings-row flex min-w-0 items-center justify-between gap-4 px-3 py-2.5">
+        {line}
+      </div>
+    );
+  return (
+    <div className="biorouter-settings-row crew-settings-row flex min-w-0 flex-col gap-1 px-3 py-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-4">{line}</div>
+      {note}
     </div>
   );
 }
@@ -271,8 +317,11 @@ function Section({
 }
 
 function GeneralTab({ view }: { view: DialogView }) {
-  const { crew, dir, snapshot, server, address } = view;
+  const { crew, dir, snapshot, server, address, workspace } = view;
   const canRename = dir.viewerIsHost && uniqueNamesSupported(snapshot, crew.capabilities);
+  // How full the workspace is (M1, W2-UIW-20): the host's snapshot alone carries usage, and a
+  // broker too old to send it shows no row. The consequence is said from 80%, in the row.
+  const fullness = dir.viewerIsHost ? workspaceFullness(snapshot?.usage) : null;
   // The server as the person names it (D-ALIAS), with its address beside it to copy: "lab-server ·
   // 52.33.141.141 [Copy]" (QA Q3-39). The name alone where it IS the address. This is the one
   // place outside Connection settings that shows the address (QA Q4-34).
@@ -280,7 +329,11 @@ function GeneralTab({ view }: { view: DialogView }) {
     <div className="flex flex-col">
       <div className="biorouter-settings-list">
         <Row label={copy.hostedBy}>
-          <PersonName person={dir.host} context="inline" dir={dir} />
+          {isChecking(view) ? (
+            <Checking />
+          ) : (
+            <PersonName person={dir.host} context="inline" dir={dir} />
+          )}
         </Row>
         <Row label={copy.server}>
           {server && server !== address ? (
@@ -300,6 +353,29 @@ function GeneralTab({ view }: { view: DialogView }) {
             />
           ) : null}
         </Row>
+        {fullness ? (
+          <Row
+            label={copy.storage}
+            note={
+              fullnessNeedsAttention(fullness) ? (
+                <p
+                  className={`text-supporting ${
+                    fullness.level === 'warn' ? 'text-text-warning' : 'text-text-danger'
+                  }`}
+                  data-crew-settings-storage-note=""
+                >
+                  {fullness.level === 'full'
+                    ? `${sidebarCopy.storage.full(workspace)} ${sidebarCopy.storage.nowFull}`
+                    : `${sidebarCopy.storage.filling(workspace, fullness.percent)} ${sidebarCopy.storage.whenFull}`}
+                </p>
+              ) : undefined
+            }
+          >
+            <span data-crew-settings-storage={fullness.level}>
+              {fullness.level === 'full' ? copy.storageFull : copy.storageUsed(fullness.percent)}
+            </span>
+          </Row>
+        ) : null}
       </div>
       {canRename && snapshot ? (
         <div className="biorouter-settings-control-strip mt-3">
@@ -334,6 +410,22 @@ function PeopleTab({
   const waiting = isHost ? (snapshot?.pending_joins ?? []) : [];
   const people = React.useMemo(() => peopleInOrder(dir.people), [dir.people]);
   const others = people.filter((person) => !person.isYou);
+  // Who is online, from the verified view only: a kept view is not now (M18).
+  const online =
+    crew.snapshot && crew.observedPrivacy?.connectionId === crew.connectionId
+      ? onlineSet(crew.snapshot)
+      : null;
+
+  // Who is in, who is waiting and who may invite all come from the view: with none, say so rather
+  // than "No one else has joined" and "Only the host can invite" to the host (SF2-N7).
+  if (isChecking(view))
+    return (
+      <div className="flex flex-col">
+        <p className="px-3 py-2.5 text-supporting text-text-muted" data-crew-settings-checking="">
+          {copy.checkingPeople(workspace)}
+        </p>
+      </div>
+    );
 
   const invite = isHost ? (
     <Button
@@ -360,6 +452,7 @@ function PeopleTab({
             key={person.id ?? person.username}
             person={person}
             view={view}
+            online={Boolean(person.id && online?.has(person.id))}
             canRemove={isHost && !person.isYou && !person.isHost}
             onRemove={() =>
               person.id && onConfirm({ action: 'remove-person', principalId: person.id })
@@ -372,6 +465,11 @@ function PeopleTab({
           {copy.noMembers(workspace)}
         </Note>
       ) : null}
+      {isHost ? null : (
+        <p className="text-supporting text-text-muted mt-2">
+          {copy.onlyHostInvites(dir.host ? personLabel(dir.host, 'authority', dir) : null)}
+        </p>
+      )}
     </div>
   );
 }
@@ -379,11 +477,14 @@ function PeopleTab({
 function MemberRow({
   person,
   view,
+  online = false,
   canRemove,
   onRemove,
 }: {
   person: CrewPerson;
   view: DialogView;
+  /** The broker says this person is online now (M18). */
+  online?: boolean;
   canRemove: boolean;
   onRemove(): void;
 }) {
@@ -408,6 +509,7 @@ function MemberRow({
       />
       <div className="min-w-0 flex-1 truncate text-label">
         <PersonName person={person} context="header" dir={dir} you={person.isYou} />
+        <OnlineMark online={online} />
       </div>
       {person.isHost ? (
         // What "Host" means, on hover and on focus (QA Q2-69): the badge takes a tab stop only
@@ -593,9 +695,13 @@ function PrivacyTab({
   const saved = savedConnection(view);
   const effectId = React.useId();
   const isHost = dir.viewerIsHost;
+  // Your connection is the saved record and is drawn as it is; the workspace's own mode and
+  // institution, and whether this person may change them, come from the view (SF2-N7).
+  const checking = isChecking(view);
   const workspaceMode = snapshot?.workspace.mode ?? null;
   const workspaceInstitution = snapshot?.workspace.institution_id ?? null;
   const connectionInstitution = saved?.institution_id ?? connection?.institution_id ?? null;
+  const inForce = workspaceInstitution ?? connectionInstitution;
   const verified = crew.snapshot !== null && crew.observedPrivacy !== null;
   const makePrivateKey = 'connection.update';
   // Read-only institutions in their display form — `UCSF` where a configured provider publishes
@@ -627,11 +733,36 @@ function PrivacyTab({
   const publicEffect = offerPublic
     ? sidebarCopy.privacy.makePublicEffect(workspace, 'public')
     : null;
+  // The popover's first sentence, which models may read the workspace, from the same verified
+  // privacy (UXN-13): the tab said what each setting is and never what they add up to. Nothing is
+  // said while the view is not verified, as the popover does not open then.
+  const privacy = verifiedPrivacy(crew, known);
+  const readers = privacy
+    ? privacy.effective === 'private'
+      ? sidebarCopy.privacy.private(workspace, privacy.institution)
+      : sidebarCopy.privacy.public(workspace)
+    : null;
 
   return (
     <div className="flex flex-col">
+      {readers ? (
+        <p className="px-3 pb-2 text-secondary text-text-default" data-crew-privacy-readers="">
+          {keepNamesWhole(readers, [workspace])}
+        </p>
+      ) : null}
       <div className="biorouter-settings-list">
-        <Row label={copy.yourConnection}>
+        {/* The line saying what "Make my connection public…" changes sits under that row, not
+            after the whole list, under Institution (AG-F17). */}
+        <Row
+          label={copy.yourConnection}
+          note={
+            publicEffect ? (
+              <p id={effectId} className="text-supporting text-text-muted">
+                {publicEffect}
+              </p>
+            ) : undefined
+          }
+        >
           {connection ? (
             <>
               {/* ONE badge, `🔒 Private · UCSF`, as the sidebar chip draws it (QA Q2-45, Q3-40):
@@ -642,7 +773,10 @@ function PrivacyTab({
               >
                 <PrivacyBadge tier={connection.mode} enforcementOff={false} />
                 {connection.mode === 'private' && connectionInstitution ? (
-                  <span className="crew-settings-privacy-institution">
+                  <span
+                    className="crew-settings-privacy-institution"
+                    title={institutionLabel(connectionInstitution, known) ?? undefined}
+                  >
                     {' · '}
                     <InstitutionName id={connectionInstitution} known={known} />
                   </span>
@@ -677,7 +811,9 @@ function PrivacyTab({
           ) : null}
         </Row>
         <Row label={copy.workspace}>
-          {workspaceMode ? (
+          {checking ? (
+            <Checking />
+          ) : workspaceMode ? (
             <span>{workspaceMode === 'private' ? copy.privateForEveryone : copy.allowsPublic}</span>
           ) : null}
           {isHost && workspaceMode ? (
@@ -698,8 +834,25 @@ function PrivacyTab({
           ) : null}
         </Row>
         <Row label={copy.institution}>
-          {workspaceInstitution ? (
-            <InstitutionName id={workspaceInstitution} known={known} />
+          {/* The institution in force, as the status-row popover names it (SF-F10): the
+              workspace's own, else this connection's alone, saying which. */}
+          {checking ? (
+            // Not this connection's alone: the workspace's own, if it has one, would win.
+            <Checking />
+          ) : inForce ? (
+            <span className="min-w-0">
+              <InstitutionName id={inForce} known={known} />
+              <span data-crew-institution-source="">
+                {' '}
+                (
+                {
+                  sidebarCopy.privacy.values.institutionFrom[
+                    workspaceInstitution ? 'workspace' : 'connection'
+                  ]
+                }
+                )
+              </span>
+            </span>
           ) : (
             <span>{copy.notSet}</span>
           )}
@@ -717,17 +870,12 @@ function PrivacyTab({
           ) : null}
         </Row>
       </div>
-      {publicEffect ? (
-        <p id={effectId} className="mt-2 px-3 text-supporting text-text-muted">
-          {publicEffect}
-        </p>
-      ) : null}
       {!workspaceInstitution && isHost && !connectionInstitution ? (
         <p className="mt-2 px-3 text-supporting text-text-muted">
           {copy.institutionNeedsConnection}
         </p>
       ) : null}
-      {!isHost ? (
+      {!isHost && !checking ? (
         <p className="mt-2 px-3 text-supporting text-text-muted">{copy.hostOnly(workspace)}</p>
       ) : null}
     </div>

@@ -6,6 +6,7 @@ import ModelsBottomBar, {
   NEW_CHATS_MODEL_NOTE,
 } from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
+import { PendingChatModelContext } from '../pendingChatModel';
 
 /**
  * Issue #56 / F2 — the chip states what runs in THIS chat.
@@ -51,7 +52,15 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 
-vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
+const switchModal = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
+vi.mock('../subcomponents/SwitchModelModal', () => ({
+  SwitchModelModal: (props: Record<string, unknown>) => {
+    switchModal.props = props;
+    return null;
+  },
+}));
+/** Read through a function, so TypeScript does not narrow it after a reset. */
+const lastSwitchProps = (): Record<string, unknown> | null => switchModal.props;
 vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
@@ -179,7 +188,7 @@ describe('a chat bound to something other than the app-wide selection', () => {
 });
 
 /**
- * F3 — where there is no chat yet (Home, a chat not started), the chip names
+ * F3 — where there is no chat yet (Home), the chip names
  * the APP-WIDE selection, and a switch from it changes that selection for every
  * window. The dropdown says whose model it is and how far a change reaches,
  * beside the control that makes the change.
@@ -210,5 +219,41 @@ describe('the chip where there is no chat yet', () => {
 
     expect(await screen.findByText('Current model')).toBeInTheDocument();
     expect(screen.queryByTestId('new-chats-model-note')).toBeNull();
+  });
+
+  /**
+   * W2-PRV-6. An unsent chat (BaseChat with no session provides the pending
+   * scope; Home does not) is a chat: its chip is about this chat, and its
+   * switch holds a model for it rather than moving every new chat.
+   */
+  it('treats an unsent chat as a chat, and hands its switch the chat\u2019s own pick', async () => {
+    const choose = vi.fn();
+    switchModal.props = null;
+    render(
+      <PendingChatModelContext.Provider value={{ choose, tabId: 'tab-3' }}>
+        <ModelsBottomBar sessionId={null} dropdownRef={dropdownRef} setView={vi.fn()} alerts={[]} />
+      </PendingChatModelContext.Provider>
+    );
+    await openDropdown();
+
+    expect(await screen.findByText('Current model')).toBeInTheDocument();
+    expect(screen.queryByText(NEW_CHATS_MODEL_HEADING)).toBeNull();
+    expect(screen.queryByTestId('new-chats-model-note')).toBeNull();
+
+    fireEvent.click(await screen.findByText('Change model'));
+    await waitFor(() => expect(switchModal.props).not.toBeNull());
+    expect(lastSwitchProps()?.onChooseForUnsentChat).toBe(choose);
+    // T3-SH-2: and the tab that names it, for "Use other provider".
+    expect(lastSwitchProps()?.unsentChatTabId).toBe('tab-3');
+  });
+
+  it('gives Home\u2019s switch no unsent chat to hold a pick for', async () => {
+    switchModal.props = null;
+    renderSessionless();
+    await openDropdown();
+    fireEvent.click(await screen.findByText('Change model'));
+    await waitFor(() => expect(switchModal.props).not.toBeNull());
+    expect(lastSwitchProps()?.onChooseForUnsentChat).toBeUndefined();
+    expect(lastSwitchProps()?.unsentChatTabId).toBeUndefined();
   });
 });

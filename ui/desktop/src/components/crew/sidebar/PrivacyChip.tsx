@@ -8,6 +8,7 @@ import type { ConnectionStatusKey } from '../state/crewStatus';
 import { sidebarCopy } from './copy';
 import { PrivacyPopover } from './PrivacyPopover';
 import { useKnownInstitutions, verifiedPrivacy } from './sidebarView';
+import { useTitleWhenCut } from './useTitleWhenCut';
 import './crew-sidebar.css';
 
 const copy = sidebarCopy.chip;
@@ -70,9 +71,10 @@ export function privacyCheckDeferred(
  * re-verifying it ("Updating…"), it reads "Checking privacy…" with a tooltip, BELOW the row,
  * saying what it waits for (T-06, T-68); in a status where nothing is verifying it
  * ({@link CHIP_SILENT_STATUSES}), or whose word already says a check runs
- * ({@link CHIP_DEFERRED_STATUSES}), it renders nothing. The verified badge carries no tooltip: its
- * full words are its name and the popover's title, and a tooltip reading "UCSF" over "UCSF" would
- * only repeat it (Q2-17).
+ * ({@link CHIP_DEFERRED_STATUSES}), it renders nothing. The verified badge carries no tooltip of
+ * its own: its full words are its name and the popover's title, and a tooltip reading "UCSF" over
+ * "UCSF" would only repeat it (Q2-17). Its institution carries a `title` while it is cut short,
+ * though: in the 240px column a longer one (`stanford-synthetic`) read "stanf…" (SF-F6).
  *
  * The popover is named by its own title and opens with focus on itself, never on an action: the
  * first may be "Make my connection public…", and landing on it invites an Enter nobody meant
@@ -89,6 +91,9 @@ export function PrivacyChip() {
   const contentRef = useRef<HTMLDivElement>(null);
   const known = useKnownInstitutions();
   const privacy = verifiedPrivacy(crew, known);
+  const institutionRef = useTitleWhenCut<HTMLElement>(
+    privacy?.effective === 'private' ? privacy.institution : null
+  );
 
   if (!privacy) {
     if (
@@ -127,7 +132,7 @@ export function PrivacyChip() {
             {institution && (
               <span className="crew-sidebar-chip-institution">
                 {' · '}
-                <bdi className="crew-sidebar-truncate" translate="no">
+                <bdi ref={institutionRef} className="crew-sidebar-truncate" translate="no">
                   {institution}
                 </bdi>
               </span>

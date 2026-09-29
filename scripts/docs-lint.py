@@ -41,6 +41,13 @@ FENCE_RE = re.compile(r"^([ \t]*)```([A-Za-z0-9_+-]*)\s*$", re.M)
 # [text](target) — skip images and external/anchor-only links
 LINK_RE = re.compile(r"(?<!!)\[([^\]]*)\]\(([^)]+)\)")
 
+# docs/organization.md §2: research/ holds studies of systems outside this repo, which is why
+# its reports "cite no BioRouter source" and stay current while the code changes. A document
+# there that links into this repository's code (anything outside docs/) is BioRouter's own design
+# or record, filed in the wrong place: Crew's protocol contract, plans and evidence sat under
+# docs/research/ until 2026-09-28 (DOCS-3), and nothing flagged it.
+RESEARCH_DIR = "docs/research/"
+
 
 def rel(p: str) -> str:
     return os.path.relpath(p, REPO)
@@ -186,6 +193,13 @@ def check_file(path: str, findings: list[dict]) -> None:
         if not os.path.exists(dest):
             findings.append({"file": r, "rule": "link/broken",
                              "detail": f"[{text_[:34]}]({t})"})
+        # --- research/ cites no BioRouter source (organization.md §2) ---
+        if r.startswith(RESEARCH_DIR) and not dest.startswith(DOCS + os.sep):
+            findings.append({"file": r, "rule": "tree/research-cites-repo",
+                             "detail": f"[{text_[:34]}]({t}) links this repository's code; "
+                                       "research/ holds studies of systems outside it, so a "
+                                       "BioRouter design belongs with its subsystem and a "
+                                       "record of finished work under history/"})
 
 
 def check_tree(findings: list[dict]) -> None:
@@ -224,8 +238,9 @@ def main() -> int:
     # gate: the tree carries a real backlog (156 findings across 10 rules,
     # measured 2026-09-22), so a blocking gate over all of them would fail on
     # arrival — and a gate that fails on arrival gets disabled rather than
-    # obeyed. Three rules ARE clean today and can be held that way:
-    # tree/loose-at-root, tree/no-index and status/folder-disagreement.
+    # obeyed. Four rules ARE clean today and can be held that way:
+    # tree/loose-at-root, tree/no-index, status/folder-disagreement and, since the Crew
+    # documents left docs/research/ on 2026-09-28, tree/research-cites-repo.
     # Widen this list as the backlog for a rule reaches zero; never widen it
     # past zero.
     ap.add_argument(

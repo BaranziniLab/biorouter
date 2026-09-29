@@ -8,7 +8,7 @@
 //! text stays reachable through [`HandoffFailed::log_message`].
 //!
 //! **Workspace admission (S3a).** Joining a workspace by a host's invitation and a device code,
-//! as `docs/research/biorouter-crew/naming-design.md` ("Joining a workspace (S3a)", "The
+//! as `docs/crew/design/naming-design.md` ("Joining a workspace (S3a)", "The
 //! invitation", "The device code") specifies. The `impl CrewManager` blocks below add:
 //!
 //! - [`CrewManager::connection_from_invitation`]: parse a pasted `brcrew1:` invitation (or the
@@ -126,7 +126,9 @@ static SESSIONS: LazyLock<Mutex<HashMap<String, Arc<AuthSession>>>> =
     LazyLock::new(Default::default);
 static INSTANCE: LazyLock<String> = LazyLock::new(|| uuid::Uuid::new_v4().to_string());
 
-#[derive(Clone, Serialize)]
+/// A prepared terminal sign-in (`POST /crew/connections/{id}/authentication`). Open its
+/// terminal with the same controller.
+#[derive(Clone, Serialize, utoipa::ToSchema)]
 pub struct AuthenticationSession {
     pub authentication_id: String,
     pub connection_id: String,
@@ -369,15 +371,153 @@ fn command(plan: &AuthenticationPlan) -> CommandBuilder {
     command.env("TERM", "xterm-256color");
     command
 }
+/// Turn the terminal's own echo off (`ECHO` and `ECHONL`) before `ssh` starts in it (T3-BE-17).
+/// OpenSSH turns echo off only while it reads a password, and restores what it found after, so
+/// with echo on, text typed while no prompt was reading (during PAM's delay after a wrong
+/// password) was drawn in clear in the Sign in window, and stayed in its scrollback and its
+/// accessibility text. With echo off from the start, what OpenSSH restores is off too. The one
+/// prompt that shows its answer is drawn by [`PromptEcho`] instead. Set through the terminal's
+/// own device, opened without making it this process's controlling terminal.
+#[cfg(unix)]
+fn echo_off(master: &dyn MasterPty) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = master
+        .tty_name()
+        .context("The sign-in terminal has no device name")?;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let fd = unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        )
+    };
+    ensure!(
+        fd >= 0,
+        "Couldn't open the sign-in terminal: {}",
+        std::io::Error::last_os_error()
+    );
+    let result = (|| {
+        let mut term = std::mem::MaybeUninit::<libc::termios>::uninit();
+        ensure!(
+            unsafe { libc::tcgetattr(fd, term.as_mut_ptr()) } == 0,
+            "Couldn't read the sign-in terminal's settings: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut term = unsafe { term.assume_init() };
+        term.c_lflag &= !(libc::ECHO | libc::ECHONL);
+        ensure!(
+            unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } == 0,
+            "Couldn't turn the sign-in terminal's echo off: {}",
+            std::io::Error::last_os_error()
+        );
+        Ok(())
+    })();
+    unsafe { libc::close(fd) };
+    result
+}
+
+/// The ends of the prompts OpenSSH asks with echo on, so their answer is meant to be seen: the
+/// host-key question (`Are you sure you want to continue connecting (yes/no/[fingerprint])?`)
+/// and its older and update-host-keys forms. A keyboard-interactive prompt marked echo-on cannot
+/// be told from one that is not, so it is not among them.
+const PROMPTS_THAT_SHOW_THEIR_ANSWER: [&str; 3] =
+    ["(yes/no/[fingerprint])?", "(yes/no)?", "(yes/no):"];
+
+/// Draws what is typed at a prompt that shows its answer, since the terminal's own echo is off
+/// ([`echo_off`], T3-BE-17). It follows the last line `ssh` wrote; while that line is one of
+/// [`PROMPTS_THAT_SHOW_THEIR_ANSWER`], printable input is written back to the window, and an
+/// erase takes back one typed character. Enter ends it: `ssh` writes the newline itself. Only
+/// the window's stream is written; what reaches `ssh` is unchanged.
+#[derive(Default)]
+struct PromptEcho {
+    /// What `ssh` wrote since its last newline, at most [`PromptEcho::LINE`] bytes.
+    line: Vec<u8>,
+    /// How many characters were drawn at the current prompt, which an erase may take back.
+    typed: usize,
+    /// Enter was typed at the prompt, and `ssh` has not ended its line yet.
+    answered: bool,
+}
+
+impl PromptEcho {
+    const LINE: usize = 512;
+
+    fn note_output(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            match byte {
+                b'\n' => {
+                    self.line.clear();
+                    self.typed = 0;
+                    self.answered = false;
+                }
+                b'\r' => {}
+                _ => {
+                    if self.line.len() >= Self::LINE {
+                        self.line.remove(0);
+                    }
+                    self.line.push(byte);
+                }
+            }
+        }
+    }
+
+    fn answer_is_shown(&self) -> bool {
+        let line = String::from_utf8_lossy(&self.line);
+        let line = line.trim_end();
+        !self.answered
+            && PROMPTS_THAT_SHOW_THEIR_ANSWER
+                .iter()
+                .any(|prompt| line.ends_with(prompt))
+    }
+
+    /// What to draw for `input`, typed now; `None` when nothing is to be shown.
+    fn mirror(&mut self, input: &[u8]) -> Option<Vec<u8>> {
+        if !self.answer_is_shown() {
+            return None;
+        }
+        let mut drawn = Vec::new();
+        for &byte in input {
+            match byte {
+                0x20..=0x7e => {
+                    drawn.push(byte);
+                    self.typed += 1;
+                }
+                0x7f | 0x08 if self.typed > 0 => {
+                    drawn.extend_from_slice(b"\x08 \x08");
+                    self.typed -= 1;
+                }
+                b'\r' | b'\n' => {
+                    self.answered = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (!drawn.is_empty()).then_some(drawn)
+    }
+}
+
 fn spawn(
     plan: &AuthenticationPlan,
     size: PtySize,
     adopted: Arc<AtomicBool>,
 ) -> Result<(Runtime, mpsc::Receiver<TerminalEvent>)> {
+    spawn_in_terminal(command(plan), size, adopted)
+}
+
+/// Start `command` in a new terminal of `size` with its own echo off ([`echo_off`]): what it
+/// writes, and what [`PromptEcho`] draws, reach the window as [`TerminalEvent::Data`], until
+/// `adopted`; what is typed goes to it unchanged.
+fn spawn_in_terminal(
+    command: CommandBuilder,
+    size: PtySize,
+    adopted: Arc<AtomicBool>,
+) -> Result<(Runtime, mpsc::Receiver<TerminalEvent>)> {
     let pair = native_pty_system().openpty(size)?;
+    #[cfg(unix)]
+    echo_off(&*pair.master)?;
     let mut reader = pair.master.try_clone_reader()?;
     let mut writer = pair.master.take_writer()?;
-    let child = pair.slave.spawn_command(command(plan))?;
+    let child = pair.slave.spawn_command(command)?;
     let pid = child
         .process_id()
         .context("SSH child process identity unavailable")?;
@@ -390,8 +530,21 @@ fn spawn(
     drop(pair.slave);
     let (input, receive_input) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
     let (output, receive_output) = mpsc::channel(16);
+    let prompt = Arc::new(Mutex::new(PromptEcho::default()));
+    let writer_prompt = prompt.clone();
+    // Weak, so the window's stream still ends when the reader does.
+    let drawn = output.downgrade();
+    let writer_adopted = adopted.clone();
     std::thread::spawn(move || {
         while let Ok(mut bytes) = receive_input.recv() {
+            let mirror = if writer_adopted.load(Ordering::Acquire) {
+                None
+            } else {
+                writer_prompt.lock().unwrap().mirror(&bytes)
+            };
+            if let (Some(mirror), Some(output)) = (mirror, drawn.upgrade()) {
+                let _ = output.blocking_send(TerminalEvent::Data(mirror));
+            }
             let result = writer.write_all(&bytes).and_then(|_| writer.flush());
             bytes.fill(0);
             if result.is_err() {
@@ -410,6 +563,7 @@ fn spawn(
                         buffer.fill(0);
                         continue;
                     }
+                    prompt.lock().unwrap().note_output(&buffer[..count]);
                     if output
                         .blocking_send(TerminalEvent::Data(buffer[..count].to_vec()))
                         .is_err()
@@ -666,6 +820,11 @@ pub struct InvitationOverrides {
     pub institution_id: Option<String>,
     #[serde(default)]
     pub advanced: InvitationAdvanced,
+    /// The saved connection this save replaces: one the preview offered as
+    /// `replaceable_connection_id` (same workspace, another login, never connected). It is
+    /// removed, with its key, and the invitation saved in its place (W2-DMN-3).
+    #[serde(default)]
+    pub replace: Option<String>,
 }
 
 /// The Join screen's Advanced settings. None of them can change the pinned workspace.
@@ -754,8 +913,19 @@ pub struct InvitationPreview {
     pub mode_differs: bool,
     /// The connection name saving would use.
     pub name: String,
-    /// A connection on this computer that already pins this workspace.
+    /// A connection on this computer that already pins this workspace, and is the one to use:
+    /// it signs in as the login saving would use, or it has connected before.
     pub existing_connection_id: Option<String>,
+    /// A connection on this computer that pins this workspace under another login and has
+    /// never connected (someone else's invitation, say). Saving with `replace` set to it
+    /// replaces it; it is never offered as the one to open (W2-DMN-3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaceable_connection_id: Option<String>,
+    /// The invitation names one account, and this computer's SSH settings sign in to the
+    /// server as another (W2-DMN-3). Only when the person typed no username and chose no
+    /// server login of their own, and only a `User` their settings set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_mismatch: Option<LoginMismatch>,
     /// What saving still needs; empty when it can save.
     pub missing: Vec<InvitationMissing>,
     /// Another saved connection reaches the same server under a different institution, in
@@ -768,6 +938,15 @@ pub struct InvitationPreview {
     /// and `ssh_target` stay the invitation's resolved address. See [`super::server_label`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_label: Option<String>,
+}
+
+/// The invitation's account and the one this computer's SSH settings sign in as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct LoginMismatch {
+    /// The `User` the person's SSH settings give for this server.
+    pub config_user: String,
+    /// The account the invitation names.
+    pub invitee: String,
 }
 
 /// The result of [`CrewManager::connection_from_invitation`].
@@ -1132,6 +1311,8 @@ struct InvitationPlan {
     preview: InvitationPreview,
     save: SaveConnection,
     existing: Option<Connection>,
+    /// See [`InvitationPreview::replaceable_connection_id`].
+    replaceable: Option<Connection>,
 }
 
 /// The SSH login and route saving would use.
@@ -1142,9 +1323,13 @@ struct PlannedRoute {
     proxy_jump: Option<String>,
 }
 
+/// The SSH login and route saving would use. `here`: the invitation's server is this machine
+/// ([`super::local_host`]), so the route is `localhost`, with no jump host unless the person
+/// typed one (W2-DMN-2). A login the person chose is theirs either way.
 fn planned_route(
     invitation: &WorkspaceInvitation,
     overrides: &InvitationOverrides,
+    here: bool,
 ) -> Result<PlannedRoute, InvitationRefused> {
     let server = invitation.ssh_host.as_deref();
     let advanced = &overrides.advanced;
@@ -1162,6 +1347,13 @@ fn planned_route(
             "Type a server login from your SSH settings, like hpc or bob@hpc.ucsf.edu.",
         ));
     }
+    // On the server itself, the member signs in to their own account over loopback: the
+    // invitation's address and jump host are for reaching the server from elsewhere.
+    let server = if here && alias.is_none() && server.is_some() {
+        Some("localhost")
+    } else {
+        server
+    };
     let ssh_target = match (alias, &username, server) {
         (Some(alias), _, _) => Some(alias.to_owned()),
         (None, Some(user), Some(host)) => {
@@ -1191,8 +1383,8 @@ fn planned_route(
             Some(route.to_owned())
         }
         // The invitation's hints describe its own server; a login from the person's SSH
-        // settings brings its own port and route.
-        None if alias.is_none() => invitation.proxy_jump.clone(),
+        // settings brings its own port and route, and this machine needs no jump host.
+        None if alias.is_none() && !here => invitation.proxy_jump.clone(),
         None => None,
     };
     let port = match (advanced.port, alias) {
@@ -1277,14 +1469,36 @@ fn save_input(
     }
 }
 
+/// The saved connection pinning this workspace as the one to reuse, or as one to replace: a
+/// connection under another login than `route`'s that never connected (a paste of someone
+/// else's invitation) is not the one to open, and is offered for replacement (W2-DMN-3).
+fn reusable_or_replaceable(
+    matched: Option<Connection>,
+    route: &PlannedRoute,
+) -> (Option<Connection>, Option<Connection>) {
+    match matched {
+        Some(saved)
+            if saved.node_id.is_none()
+                && route
+                    .ssh_target
+                    .as_deref()
+                    .is_some_and(|planned| planned != saved.ssh_target) =>
+        {
+            (None, Some(saved))
+        }
+        other => (other, None),
+    }
+}
+
 fn plan_invitation(
     parsed: &ParsedInvitation,
     overrides: &InvitationOverrides,
     connections: &[Connection],
+    here: bool,
 ) -> Result<InvitationPlan, InvitationRefused> {
     let invitation = &parsed.invitation;
     let advanced = &overrides.advanced;
-    let route = planned_route(invitation, overrides)?;
+    let route = planned_route(invitation, overrides, here)?;
     if let Some(identity) = &advanced.identity_file {
         if !std::path::Path::new(identity).is_absolute() || identity.contains('\n') {
             return Err(InvitationRefused::choice(
@@ -1314,8 +1528,15 @@ fn plan_invitation(
     if mode == ClusterMode::Private && institution_id.is_none() {
         missing.push(InvitationMissing::Institution);
     }
-    let existing = saved_match(connections, invitation)?;
-    let name = planned_name(invitation, advanced, &route, connections, existing.as_ref())?;
+    let (existing, replaceable) =
+        reusable_or_replaceable(saved_match(connections, invitation)?, &route);
+    let name = planned_name(
+        invitation,
+        advanced,
+        &route,
+        connections,
+        existing.as_ref().or(replaceable.as_ref()),
+    )?;
     let fingerprint = crew_invitation::workspace_key_fingerprint(&invitation.workspace_public_key)
         .ok_or_else(|| {
             InvitationRefused::new(
@@ -1358,6 +1579,8 @@ fn plan_invitation(
         mode_differs: workspace_mode.is_some_and(|workspace| workspace != mode),
         name,
         existing_connection_id: existing.as_ref().map(|saved| saved.id.clone()),
+        replaceable_connection_id: replaceable.as_ref().map(|saved| saved.id.clone()),
+        login_mismatch: None,
         missing,
         institution_conflict: None,
         server_label: None,
@@ -1366,6 +1589,7 @@ fn plan_invitation(
         preview,
         save,
         existing,
+        replaceable,
     })
 }
 
@@ -1651,6 +1875,90 @@ fn hello_is_stale(hello: &super::BrokerHello, workspace: &Value) -> bool {
 /// Where an SSH login really goes: the lowercase hostname and port `ssh -G` resolves under
 /// the same configuration the bridge reads, else the login's own host part and port. `None`
 /// for a login that can't safely be passed to `ssh`.
+/// Whether this computer's SSH settings sign in to the invitation's server as another account
+/// than the one it names (W2-DMN-3): asked only when the login saving would use is the
+/// invitation's own (`{invitee}@{server}`), and answered only for a `User` the person's settings
+/// set for the server, under its address or under their own alias for it
+/// ([`super::server_label`]). OpenSSH's default user (the local account) is not a setting.
+async fn login_mismatch(
+    invitation: &WorkspaceInvitation,
+    overrides: &InvitationOverrides,
+    preview: &InvitationPreview,
+) -> Option<LoginMismatch> {
+    let typed = overrides
+        .username
+        .as_deref()
+        .is_some_and(|typed| !typed.trim().is_empty());
+    let alias = overrides
+        .advanced
+        .ssh_target
+        .as_deref()
+        .is_some_and(|alias| !alias.trim().is_empty());
+    if typed || alias {
+        return None;
+    }
+    let invitee = invitation.invitee_username.as_deref()?;
+    let host = invitation.ssh_host.as_deref()?;
+    let name = preview
+        .server_label
+        .as_deref()
+        .filter(|label| safe_atom(label) && !label.eq_ignore_ascii_case(host));
+    let (name, port) = match name {
+        Some(alias) => (alias, None),
+        None => (host, preview.port),
+    };
+    let config_user = configured_user(name, port).await?;
+    (config_user != invitee).then(|| LoginMismatch {
+        config_user,
+        invitee: invitee.to_owned(),
+    })
+}
+
+/// The `User` the person's SSH settings set for `name`: what `ssh -G` resolves under their
+/// settings, when it differs from what it resolves under none (`-F none`, OpenSSH's own default,
+/// the local account). `None` when nothing sets one, or it can't be read.
+async fn configured_user(name: &str, port: Option<u16>) -> Option<String> {
+    if !safe_atom(name) {
+        return None;
+    }
+    let tail = |mut args: Vec<String>| {
+        if let Some(port) = port {
+            args.extend(["-p".to_owned(), port.to_string()]);
+        }
+        args.push(name.to_owned());
+        args
+    };
+    let mut configured = Vec::new();
+    if let Some(profile) = std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT") {
+        configured.extend([
+            "-F".to_owned(),
+            PathBuf::from(profile)
+                .join("home/.ssh/config")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
+    let user = |settings: HashMap<String, String>| {
+        settings
+            .get("user")
+            .filter(|user| biorouter_crew::valid_username(user))
+            .cloned()
+    };
+    let resolved = tokio::time::timeout(SSH_RESOLVE_TIMEOUT, async {
+        let set = user(resolve_ssh(&tail(configured)).await.ok()?)?;
+        // An ssh that can't read settings from none can't say what the default is, and a
+        // warning then might be about the local account: nothing is said.
+        let default = user(
+            resolve_ssh(&tail(vec!["-F".to_owned(), "none".to_owned()]))
+                .await
+                .ok()?,
+        )?;
+        (default != set).then_some(set)
+    })
+    .await;
+    resolved.ok().flatten()
+}
+
 pub(super) async fn ssh_endpoint(target: &str, port: Option<u16>) -> Option<(String, u16)> {
     if !safe_atom(target) {
         return None;
@@ -1733,19 +2041,43 @@ impl CrewManager {
                 error.to_string(),
             )
         })?;
+        let here = match parsed.invitation.ssh_host.as_deref() {
+            Some(host) => super::local_host::names_this_machine(host),
+            None => false,
+        };
         if preview {
-            let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
+            let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
             let mut preview = plan.preview;
             preview.institution_conflict = self.institution_conflict(&preview).await;
             if let Some(target) = preview.ssh_target.as_deref() {
                 preview.server_label = Some(super::server_label(target, preview.port).await);
             }
+            preview.login_mismatch = login_mismatch(&parsed.invitation, &overrides, &preview).await;
             return Ok(InvitationOutcome::Preview(Box::new(preview)));
         }
         let _serial = INVITATION_SAVES.lock().await;
-        let plan = plan_invitation(&parsed, &overrides, &self.list().await)?;
+        let plan = plan_invitation(&parsed, &overrides, &self.list().await, here)?;
         if let Some(missing) = plan.preview.missing.first() {
             return Err(missing_refusal(*missing, &plan.preview).into());
+        }
+        if let Some(replaceable) = plan.replaceable {
+            // Replaced only when the person chose it, naming this very connection: a saved
+            // connection that never connected holds no membership, only a key never used.
+            if overrides.replace.as_deref() != Some(replaceable.id.as_str()) {
+                let mut refused = InvitationRefused::new(
+                    InvitationRefusal::AlreadySaved,
+                    format!(
+                        "This computer already has \u{201c}{}\u{201d} for this workspace, signing in as another account, and it has never connected. Replace it with this invitation, or change it in its connection settings.",
+                        super::plain_label(&replaceable.name)
+                    ),
+                );
+                refused.connection_id = Some(replaceable.id.clone());
+                return Err(refused.into());
+            }
+            self.remove(&replaceable.id).await?;
+            return Ok(InvitationOutcome::Saved(Box::new(
+                self.save(plan.save).await?,
+            )));
         }
         if let Some(existing) = plan.existing {
             if same_settings(&existing, &plan.save) {
@@ -1778,6 +2110,7 @@ impl CrewManager {
             .await
             .into_iter()
             .filter(|saved| Some(saved.id.as_str()) != preview.existing_connection_id.as_deref())
+            .filter(|saved| Some(saved.id.as_str()) != preview.replaceable_connection_id.as_deref())
             .filter(|saved| {
                 saved
                     .institution_id
@@ -2236,7 +2569,8 @@ impl CrewManager {
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_failed_transport(id, &transport).await?;
+            self.retire_failed_transport(id, &transport, method, &result)
+                .await?;
         }
         result
     }
@@ -3212,6 +3546,7 @@ done
                 mode: signed.then_some(ClusterMode::Private),
                 institution_id: signed.then(|| "ucsf".into()),
                 policy_epoch: signed.then_some(1),
+                storage: None,
             },
         );
     }
@@ -3327,6 +3662,228 @@ done
         assert_eq!(refused(&error).connection_id(), Some(saved.id.as_str()));
         let restarted = CrewManager::new(profile).unwrap();
         assert_eq!(restarted.list().await.len(), 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// A fake `ssh -G` whose settings sign in to `hpc.example.org` as `user`, where OpenSSH's
+    /// own default (`-F none`) is `localme`, the local account.
+    #[cfg(unix)]
+    fn write_user_ssh(root: &Path, user: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let script = format!(
+            r#"#!/bin/sh
+[ "$1" = "-G" ] || exit 1
+none=0
+prev=
+for arg; do [ "$prev" = "-F" ] && [ "$arg" = "none" ] && none=1; prev=$arg; done
+for last; do :; done
+host=${{last##*@}}
+if [ "$none" = 0 ] && [ "$host" = "hpc.example.org" ]; then
+  printf 'user %s
+hostname %s
+port 22
+' '{user}' "$host"
+else
+  printf 'user localme
+hostname %s
+port 22
+' "$host"
+fi
+"#
+        );
+        fs::write(bin.join("ssh"), script).unwrap();
+        fs::set_permissions(bin.join("ssh"), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// W2-DMN-2: on the workspace's own server, the join plans the member's own account over
+    /// loopback, with no jump host: the invitation's address and jump host are for reaching the
+    /// server from elsewhere. A jump host or a login the person typed is still theirs.
+    #[test]
+    fn on_the_server_itself_the_route_is_localhost_with_no_jump_host() {
+        let invitation = WorkspaceInvitation {
+            ssh_host: Some("172.31.33.135".into()),
+            proxy_jump: Some("34.213.212.212".into()),
+            ..lab_invitation()
+        };
+        let route = planned_route(&invitation, &InvitationOverrides::default(), true).unwrap();
+        assert_eq!(route.ssh_target.as_deref(), Some("bob@localhost"));
+        assert_eq!(route.proxy_jump, None);
+        let elsewhere = planned_route(&invitation, &InvitationOverrides::default(), false).unwrap();
+        assert_eq!(elsewhere.ssh_target.as_deref(), Some("bob@172.31.33.135"));
+        assert_eq!(elsewhere.proxy_jump.as_deref(), Some("34.213.212.212"));
+        let typed_jump = InvitationOverrides {
+            advanced: InvitationAdvanced {
+                proxy_jump: Some("gateway.example.org".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            planned_route(&invitation, &typed_jump, true)
+                .unwrap()
+                .proxy_jump
+                .as_deref(),
+            Some("gateway.example.org")
+        );
+        let alias = InvitationOverrides {
+            advanced: InvitationAdvanced {
+                ssh_target: Some("hpc".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            planned_route(&invitation, &alias, true)
+                .unwrap()
+                .ssh_target
+                .as_deref(),
+            Some("hpc")
+        );
+    }
+
+    /// W2-DMN-3: an invitation that names another account than the one this computer's SSH
+    /// settings sign in to the server as says so, with both. A username the person typed, or a
+    /// login of their own, is theirs; and OpenSSH's default user is not a setting.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_preview_says_when_the_invitation_names_another_account() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("login-mismatch");
+        let _env = isolated_env(&root);
+        write_user_ssh(&root, "crew_gina");
+        let manager = CrewManager::new(root.join("crew")).unwrap();
+        let message = crew_invitation::message(&lab_invitation()).unwrap();
+        let preview = preview_with(&manager, &message, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            preview.login_mismatch,
+            Some(LoginMismatch {
+                config_user: "crew_gina".into(),
+                invitee: "bob".into(),
+            })
+        );
+        let typed = InvitationOverrides {
+            username: Some("bob".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            preview_with(&manager, &message, typed)
+                .await
+                .unwrap()
+                .login_mismatch,
+            None
+        );
+        // Settings that name the invited account, or none at all: nothing to say.
+        write_user_ssh(&root, "bob");
+        assert_eq!(
+            preview_with(&manager, &message, InvitationOverrides::default())
+                .await
+                .unwrap()
+                .login_mismatch,
+            None
+        );
+        write_user_ssh(&root, "localme");
+        assert_eq!(
+            preview_with(&manager, &message, InvitationOverrides::default())
+                .await
+                .unwrap()
+                .login_mismatch,
+            None
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// W2-DMN-3: a saved connection to the workspace under another login that never connected
+    /// (someone else's invitation, pasted first) is not offered as the one to open. The preview
+    /// offers it for replacement; a save replaces it only when asked to, by its ID; and one
+    /// that has connected, or signs in as the planned login, is still the one to open.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_never_connected_connection_under_another_login_can_be_replaced() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("replace");
+        let _env = isolated_env(&root);
+        write_user_ssh(&root, "localme");
+        let profile = root.join("crew");
+        let manager = CrewManager::new(profile.clone()).unwrap();
+        let theirs = crew_invitation::message(&WorkspaceInvitation {
+            invitee_username: Some("crew_bob".into()),
+            ..lab_invitation()
+        })
+        .unwrap();
+        let mine = crew_invitation::message(&lab_invitation()).unwrap();
+        let wrong = saved_of(
+            manager
+                .connection_from_invitation(&theirs, false, InvitationOverrides::default())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(wrong.ssh_target, "crew_bob@hpc.example.org");
+        assert!(wrong.node_id.is_none(), "it never connected");
+
+        let preview = preview_with(&manager, &mine, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(preview.existing_connection_id, None);
+        assert_eq!(
+            preview.replaceable_connection_id.as_deref(),
+            Some(wrong.id.as_str())
+        );
+        assert_eq!(preview.name, "lab", "its own name, not a second one");
+
+        // Not asked to replace: refused, naming the way on, and nothing changes.
+        let error = manager
+            .connection_from_invitation(&mine, false, InvitationOverrides::default())
+            .await
+            .unwrap_err();
+        assert_eq!(refused(&error).api_code(), "crew_connection_exists");
+        assert!(error.to_string().contains("Replace it"), "{error}");
+        let other_id = InvitationOverrides {
+            replace: Some("some-other-id".into()),
+            ..Default::default()
+        };
+        assert!(manager
+            .connection_from_invitation(&mine, false, other_id)
+            .await
+            .is_err());
+        assert_eq!(manager.list().await.len(), 1);
+
+        // Asked to: the never-connected connection and its key go, and mine is saved.
+        let replace = InvitationOverrides {
+            replace: Some(wrong.id.clone()),
+            ..Default::default()
+        };
+        let saved = saved_of(
+            manager
+                .connection_from_invitation(&mine, false, replace)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(saved.ssh_target, "bob@hpc.example.org");
+        let listed = manager.list().await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, saved.id);
+        assert!(manager
+            .read_credential(&format!("device:{}", wrong.id))
+            .is_err());
+
+        // A connection that has connected is the one to open, whatever its login.
+        manager.registry.lock().await.connections[0].node_id = Some("ab".repeat(32));
+        let preview = preview_with(&manager, &theirs, InvitationOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            preview.existing_connection_id.as_deref(),
+            Some(saved.id.as_str())
+        );
+        assert_eq!(preview.replaceable_connection_id, None);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3972,6 +4529,7 @@ done
                 mode: Some(ClusterMode::Private),
                 institution_id: None,
                 policy_epoch: Some(1),
+                storage: None,
             },
         );
         (root, connection, manager, env)
@@ -4200,5 +4758,113 @@ done
         let preview = preview_with(vec![foreign], same).await;
         assert_eq!(preview.institution_conflict, None);
         let _ = fs::remove_dir_all(root);
+    }
+}
+
+/// T3-BE-17: the Sign in window's terminal draws nothing it was not meant to. Text typed while
+/// no prompt is reading (during PAM's delay after a wrong password) never reaches the window;
+/// an answer typed at the host-key question does, and what reaches the program is unchanged.
+#[cfg(all(test, unix))]
+mod echo_tests {
+    use super::*;
+
+    fn size() -> PtySize {
+        PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+
+    /// Everything the window is sent until the program exits.
+    async fn drawn_until_exit(mut output: mpsc::Receiver<TerminalEvent>) -> String {
+        let mut drawn = Vec::new();
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(10), output.recv())
+            .await
+            .expect("the program ends")
+        {
+            match event {
+                TerminalEvent::Data(bytes) => drawn.extend(bytes),
+                TerminalEvent::Exit(_) => break,
+            }
+        }
+        String::from_utf8_lossy(&drawn).into_owned()
+    }
+
+    /// Wait until `ready` exists, the program's sign that it is waiting where the test wants.
+    async fn wait_for(ready: &std::path::Path) {
+        for _ in 0..500 {
+            if ready.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the program never got there");
+    }
+
+    #[tokio::test]
+    async fn typed_ahead_text_is_never_drawn_and_a_yes_no_answer_is() {
+        let root = tempfile::TempDir::new().unwrap();
+        let ready = root.path().join("ready");
+        let asked = root.path().join("asked");
+        let got = root.path().join("got");
+        // A stand-in for ssh after a wrong password: nothing reads while PAM delays, then the
+        // host-key question is asked with the terminal as OpenSSH leaves it for a prompt that
+        // shows its answer.
+        let script = format!(
+            "printf 'Password: '; touch '{ready}'; sleep 1; read -r early; \
+             printf '\\nAre you sure you want to continue connecting (yes/no/[fingerprint])? '; \
+             touch '{asked}'; read -r answer; printf '%s|%s' \"$early\" \"$answer\" > '{got}'; \
+             printf 'done\\n'",
+            ready = ready.display(),
+            asked = asked.display(),
+            got = got.display(),
+        );
+        let mut command = CommandBuilder::new("sh");
+        command.args(["-c", &script]);
+        let (runtime, output) =
+            spawn_in_terminal(command, size(), Arc::new(AtomicBool::new(false))).unwrap();
+        wait_for(&ready).await;
+        // Typed while nothing reads.
+        runtime
+            .input
+            .send(b"hunter2-typed-ahead\r".to_vec())
+            .unwrap();
+        wait_for(&asked).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        runtime.input.send(b"yex\x7fs\r".to_vec()).unwrap();
+        let drawn = drawn_until_exit(output).await;
+        assert!(
+            !drawn.contains("hunter2"),
+            "typed-ahead text was drawn: {drawn:?}"
+        );
+        assert!(
+            drawn.contains("(yes/no/[fingerprint])? yex\x08 \x08s"),
+            "the answer was not drawn: {drawn:?}"
+        );
+        // The program read exactly what was typed.
+        assert_eq!(
+            std::fs::read_to_string(&got).unwrap(),
+            "hunter2-typed-ahead|yes"
+        );
+        drop(runtime);
+    }
+
+    #[test]
+    fn only_a_prompt_that_shows_its_answer_draws_what_is_typed() {
+        let mut prompt = PromptEcho::default();
+        prompt.note_output(b"crew_bob@lab's password: ");
+        assert_eq!(prompt.mirror(b"secret"), None);
+        prompt.note_output(b"\r\nAre you sure you want to continue connecting (yes/no)? ");
+        assert_eq!(prompt.mirror(b"ye"), Some(b"ye".to_vec()));
+        assert_eq!(
+            prompt.mirror(b"\x7f\x7f\x7f"),
+            Some(b"\x08 \x08\x08 \x08".to_vec())
+        );
+        assert_eq!(prompt.mirror(b"yes\rmore"), Some(b"yes".to_vec()));
+        assert_eq!(prompt.mirror(b"more"), None, "answered");
+        prompt.note_output(b"\n");
+        assert_eq!(prompt.mirror(b"x"), None);
     }
 }

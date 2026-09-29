@@ -428,6 +428,43 @@ async fn a_revoke_the_workspace_cannot_confirm_stops_the_grant_here_and_says_so(
     );
 }
 
+/// T3-BE-3 and T3-BE-7: the context route says why it is refused in a code a client can word
+/// itself. While the chat's grant stands, the connection being down is `crew_not_connected`
+/// (409, with the workspace named) where it used to be `crew_request_refused`; once the grant
+/// ended it is `crew_grant_ended` (409) with `reason`, where it used to be the catch-all
+/// `crew_profile_refused`. Each keeps the sentence it had.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_chats_context_says_why_it_is_refused_in_a_code() {
+    let (state, chat) = setup().await;
+    let context = format!("/crew/connections/{CONNECTION}/sessions/{chat}/context");
+    // Another test may have revoked the chat first; each state has its own answer.
+    let standing = grants(&state).await[chat.as_str()]["expired"] == json!(false);
+    let (status, body) = send(&state, "GET", &context, Credential::Proof).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    if standing {
+        assert_eq!(body["code"], "crew_not_connected", "{body}");
+        assert_eq!(
+            body["error"],
+            "Crew connection is disconnected; authenticate and connect in Crew"
+        );
+        assert_eq!(body["workspace"], "Methods lab", "{body}");
+    } else {
+        assert_eq!(body["code"], "crew_grant_ended", "{body}");
+    }
+
+    let (status, body) = revoke(&state, CONNECTION, &chat, Credential::Proof).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let (status, body) = send(&state, "GET", &context, Credential::Proof).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "crew_grant_ended", "{body}");
+    assert_eq!(body["reason"], "ended", "{body}");
+    assert_eq!(
+        body["error"],
+        "This chat's Crew access was removed. Start a new chat, or grant access again from Crew."
+    );
+}
+
 /// RV-D2: every row says what kind of grant it is and which chat holds it, and when the
 /// workspace ends it, so the list reads without a network call.
 #[tokio::test(flavor = "multi_thread")]

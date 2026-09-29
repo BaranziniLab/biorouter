@@ -17,6 +17,15 @@ export {
   type PersonLayout,
 } from './personLabel';
 export {
+  carriesJoinerName,
+  forgetJoinerNames,
+  joinedAsNamed,
+  joinedLabel,
+  joinerServerName,
+  rememberJoinerNames,
+  withJoinerNames,
+} from './joinerNames';
+export {
   buildPeopleDirectory,
   usePeopleDirectory,
   type PeopleDirectory,
@@ -53,6 +62,7 @@ export {
   type TeamNameInput,
 } from './objectNames';
 export { identityCopy } from './copy';
+export { OnlineMark, onlineSet } from './presence';
 export {
   PERSON_CONTEXTS,
   type CrewPeopleMap,

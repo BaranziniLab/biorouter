@@ -731,6 +731,29 @@ impl Provider for LlamaCppProvider {
 }
 
 #[cfg(test)]
+impl LlamaCppProvider {
+    /// A provider on the managed sidecar for `model`, built as `from_env` builds one but
+    /// without reading any configuration, for tests outside this module.
+    pub(crate) fn managed_for_test(model: ModelConfig) -> Self {
+        Self {
+            model,
+            external_base: None,
+            client: tokio::sync::Mutex::new(None),
+            live_context_limit: AtomicUsize::new(0),
+            request_timeout: Duration::from_secs(LLAMACPP_TIMEOUT),
+            startup_timeout: Duration::from_secs(LLAMACPP_STARTUP_TIMEOUT),
+            name: "llamacpp".to_string(),
+        }
+    }
+
+    /// Record `window` as the loaded model's real context window, as `ensure_client` does
+    /// once the server is up on the first request.
+    pub(crate) fn observe_live_context_for_test(&self, window: usize) {
+        self.live_context_limit.store(window, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

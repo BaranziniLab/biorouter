@@ -620,6 +620,57 @@ fn close_ephemeral_store_blocking(ephemeral_store_dir: Option<tempfile::TempDir>
     }
 }
 
+/// The model a run on `provider` uses (PROV-F10): the one typed with `--model`; else the first
+/// of `candidates` (the saved chat's, the workflow's and the configured model, each with the
+/// provider it belongs to) that belongs to `provider`; else `provider`'s own default model.
+///
+/// Provider and model used to be resolved separately, so `--provider codex` with nothing else
+/// sent the configured Versa model to Codex, which refused it; worse, a configured model name
+/// that the chosen provider also has ran silently, a model nobody chose. The in-app workspace
+/// tool already used the provider's default. A provider the registry does not know falls back
+/// to the first model named, so its own refusal (an unknown provider) is what is shown.
+pub(crate) async fn model_for_run(
+    provider: Option<&str>,
+    typed: Option<String>,
+    candidates: &[(Option<&str>, Option<String>)],
+) -> Option<String> {
+    if let Some(model) = owned_model(provider, typed, candidates) {
+        return Some(model);
+    }
+    if let Some(provider) = provider {
+        if let Some(model) = provider_default_model(provider).await {
+            return Some(model);
+        }
+    }
+    candidates.iter().find_map(|(_, model)| model.clone())
+}
+
+/// [`model_for_run`] without the registry: the typed model, else the first candidate that
+/// belongs to `provider`. A candidate with no provider belongs to any.
+pub(crate) fn owned_model(
+    provider: Option<&str>,
+    typed: Option<String>,
+    candidates: &[(Option<&str>, Option<String>)],
+) -> Option<String> {
+    typed.or_else(|| {
+        candidates
+            .iter()
+            .filter(|(owner, _)| owner.is_none() || provider.is_none() || *owner == provider)
+            .find_map(|(_, model)| model.clone())
+    })
+}
+
+/// A provider's own default model, from the provider registry.
+pub(crate) async fn provider_default_model(provider: &str) -> Option<String> {
+    biorouter::providers::providers()
+        .await
+        .into_iter()
+        .map(|(metadata, _)| metadata)
+        .find(|metadata| metadata.name == provider)
+        .map(|metadata| metadata.default_model)
+        .filter(|model| !model.is_empty())
+}
+
 /// The message for a run that cannot name a provider or a model, or `None`
 /// when both are resolved.
 ///
@@ -766,6 +817,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // somebody mailed them, the global default — so "why will this chat not
     // start" has four answers and only one of them is obvious.
     let workflow_provider = workflow_settings.and_then(|s| s.biorouter_provider.clone());
+    let global_provider = config.get_biorouter_provider().ok();
+    // A workflow's model belongs to the provider it pins, else to the configured one.
+    let workflow_model_owner = workflow_provider
+        .clone()
+        .or_else(|| global_provider.clone());
     let (resolved_provider, provider_source) = match (
         session_config.provider,
         saved_provider.clone(),
@@ -774,16 +830,29 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         (Some(p), _, _) => (Some(p), ProviderSource::CliFlag),
         (None, Some(p), _) => (Some(p), ProviderSource::SavedSession),
         (None, None, Some(p)) => (Some(p), ProviderSource::Workflow),
-        (None, None, None) => (
-            config.get_biorouter_provider().ok(),
-            ProviderSource::GlobalDefault,
-        ),
+        (None, None, None) => (global_provider.clone(), ProviderSource::GlobalDefault),
     };
-    let resolved_model = session_config
-        .model
-        .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
-        .or_else(|| workflow_settings.and_then(|s| s.biorouter_model.clone()))
-        .or_else(|| config.get_biorouter_model().ok());
+    // PROV-F10: each fallback model belongs to a provider, and only the resolved provider's
+    // own is used; a provider nothing names a model for runs its own default model.
+    let resolved_model = model_for_run(
+        resolved_provider.as_deref(),
+        session_config.model,
+        &[
+            (
+                saved_provider.as_deref(),
+                saved_model_config.as_ref().map(|mc| mc.model_name.clone()),
+            ),
+            (
+                workflow_model_owner.as_deref(),
+                workflow_settings.and_then(|s| s.biorouter_model.clone()),
+            ),
+            (
+                global_provider.as_deref(),
+                config.get_biorouter_model().ok(),
+            ),
+        ],
+    )
+    .await;
 
     // A fresh install has neither, and this is the first thing it reaches. Both
     // slots used to be `.expect()`, so the answer to "you have not configured a
@@ -1521,6 +1590,75 @@ mod tests {
 
         ephemeral.close().await;
         close_ephemeral_store(Some(dir)).await;
+    }
+
+    /// PROV-F10: `--provider X` without `--model` never sends another provider's model to X.
+    #[test]
+    fn a_fallback_model_is_used_only_by_the_provider_it_belongs_to() {
+        let configured = [(Some("versa_azure"), Some("gpt-5.5".to_owned()))];
+        assert_eq!(
+            owned_model(Some("codex"), None, &configured),
+            None,
+            "the configured Versa model is not Codex's"
+        );
+        assert_eq!(
+            owned_model(Some("versa_azure"), None, &configured).as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            owned_model(Some("codex"), Some("gpt-6-astra".into()), &configured).as_deref(),
+            Some("gpt-6-astra"),
+            "--model always wins"
+        );
+        // A resumed chat keeps its own model on its own provider; a workflow's model goes with
+        // the provider it pins.
+        let chain = [
+            (Some("anthropic"), Some("claude-opus-5".to_owned())),
+            (Some("openai"), Some("gpt-6-sol".to_owned())),
+            (Some("versa_azure"), Some("gpt-5.5".to_owned())),
+        ];
+        assert_eq!(
+            owned_model(Some("anthropic"), None, &chain).as_deref(),
+            Some("claude-opus-5")
+        );
+        assert_eq!(
+            owned_model(Some("openai"), None, &chain).as_deref(),
+            Some("gpt-6-sol")
+        );
+        assert_eq!(owned_model(Some("codex"), None, &chain), None);
+        // A model with no provider of its own belongs to any.
+        assert_eq!(
+            owned_model(Some("codex"), None, &[(None, Some("m".to_owned()))]).as_deref(),
+            Some("m")
+        );
+    }
+
+    /// PROV-F10: the chosen provider's own default model, from the registry, when no
+    /// fallback belongs to it; an unknown provider keeps the first model named, so its own
+    /// refusal is what the person sees.
+    #[tokio::test]
+    async fn a_provider_nothing_names_a_model_for_runs_its_own_default() {
+        let configured = [(Some("versa_azure"), Some("gpt-5.5".to_owned()))];
+        let codex_default = provider_default_model("codex")
+            .await
+            .expect("codex is a registered provider with a default model");
+        assert_ne!(codex_default, "gpt-5.5");
+        assert_eq!(
+            model_for_run(Some("codex"), None, &configured).await,
+            Some(codex_default)
+        );
+        assert_eq!(
+            model_for_run(Some("no_such_provider_exists"), None, &configured)
+                .await
+                .as_deref(),
+            Some("gpt-5.5")
+        );
+        assert_eq!(
+            model_for_run(Some("versa_azure"), None, &configured)
+                .await
+                .as_deref(),
+            Some("gpt-5.5")
+        );
     }
 
     /// A run that cannot name a provider or a model is refused with something

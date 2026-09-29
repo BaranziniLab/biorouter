@@ -225,6 +225,35 @@ describe('previewInvitation', () => {
     });
   });
 
+  // W2-DMN-3: the preview says when the invitation is someone else's, and which never-joined
+  // saved connection saving would replace.
+  it('reads a login mismatch and a replaceable connection, and only in their own shapes', async () => {
+    mocks.crewHttp.mockResolvedValue({
+      ...summary,
+      replaceable_connection_id: 'conn-wrong',
+      login_mismatch: { config_user: 'crew_gina', invitee: 'crew_bob' },
+    });
+    await expect(previewInvitation(LINE)).resolves.toMatchObject({
+      replaceable_connection_id: 'conn-wrong',
+      login_mismatch: { config_user: 'crew_gina', invitee: 'crew_bob' },
+    });
+
+    mocks.crewHttp.mockResolvedValue({
+      ...summary,
+      replaceable_connection_id: '../../credentials',
+      login_mismatch: { config_user: 'crew_bob', invitee: 'crew_bob' },
+    });
+    const preview = await previewInvitation(LINE);
+    expect(preview).not.toHaveProperty('replaceable_connection_id');
+    expect(preview).not.toHaveProperty('login_mismatch');
+
+    // An older daemon names neither.
+    mocks.crewHttp.mockResolvedValue(summary);
+    const older = await previewInvitation(LINE);
+    expect(older.replaceable_connection_id ?? null).toBeNull();
+    expect(older.login_mismatch ?? null).toBeNull();
+  });
+
   it('refuses a summary with no workspace', async () => {
     mocks.crewHttp.mockResolvedValue({ workspace_name: 'lab' });
     expect((await failureOf(previewInvitation(LINE))).code).toBe(CREW_UNEXPECTED_RESPONSE);

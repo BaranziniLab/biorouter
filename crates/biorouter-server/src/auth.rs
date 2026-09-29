@@ -251,16 +251,17 @@ pub fn served_operator_capability(
     headers: &axum::http::HeaderMap,
 ) -> biorouter::privacy::ProviderTier {
     match SERVED_OPERATOR.get() {
-        Some(operator)
-            if served_document_matches(
-                crate::routes::web_ui::session_cookie(headers),
-                &operator.browser_token,
-            ) =>
-        {
-            operator.capability
-        }
+        Some(operator) if from_served_document(headers, operator) => operator.capability,
         _ => biorouter::privacy::ProviderTier::Public,
     }
+}
+
+/// Whether `headers` carry the cookie of the document a serve daemon served.
+fn from_served_document(headers: &axum::http::HeaderMap, operator: &ServedOperator) -> bool {
+    served_document_matches(
+        crate::routes::web_ui::session_cookie(headers),
+        &operator.browser_token,
+    )
 }
 
 /// Does the presented cookie carry the served document's token?
@@ -312,33 +313,286 @@ fn failed_attempt_verdict(attempts: &mut Vec<Instant>, now: Instant) -> StatusCo
     StatusCode::UNAUTHORIZED
 }
 
-fn is_public_app_get(method: &axum::http::Method, path: &str) -> bool {
-    if method != axum::http::Method::GET {
-        return false;
+// --- Agent Drafter apps: the browser surface (W2-HRD-1) ---------------------
+//
+// A browser tab cannot send `X-Secret-Key`, so an app's page, bundle and agent
+// socket take a credential a browser can carry: a per-app access cookie, set by
+// redeeming a launch link that only a caller holding the secret can mint
+// (`POST /apps/{id}/launch`). These routes used to be exempt outright, on the
+// premise that the daemon is loopback-only; loopback is not one account. On a
+// shared login node any local account could GET an app's page, read the socket
+// token in it and drive that app's agent under the owner's account and key, and
+// the 404 for a guessed title slug said which apps existed.
+//
+// Two values, deliberately. The LAUNCH token rides a URL, into the browser's
+// history and whatever hands the URL to the browser. It is single-use and
+// expires within minutes, so a copy found afterwards opens nothing. The COOKIE
+// value never appears in a URL or on a command line; it lives for the daemon's
+// run, so a reload, the agent socket and every asset keep working after the one
+// redemption.
+//
+// ⚠ Single use does nothing against a reader who is FIRST. Whoever redeems the
+// link gets the cookie, and the victim's browser sees only the refusal below. So
+// a launch link must never go on a command line, where every account on the
+// machine can read it (`ps` on macOS, `/proc/<pid>/cmdline` on Linux) while
+// `open`, `xdg-open` or a starting browser run, and a co-tenant polling for
+// `?t=` outruns the browser. Every opener Biorouter ships writes the link into a
+// file only this account can read and opens the file (`biorouter apps open`,
+// the exported `run.sh` and `run.ps1`, the desktop's Applications view), and
+// the exchange answers with a page rather than a redirect so that works under
+// `SameSite=Strict` (`routes::apps::launch_bounce`). The desktop preview loads
+// the link in-process. `biorouter serve --open` hands over the served
+// document's browser token the same way, and `routes::web_ui::exchange_bounce`
+// answers it the same way: that token opens every app below on a serve daemon
+// (`app_access_granted_by`), and it is not single use.
+//
+// ⚠ The stores live HERE, in the lib-only `auth`, and not in `routes::apps`:
+// `src/routes/` is compiled twice (`lib.rs`), so a static there exists once for
+// the daemon binary's routes and once for this module, and a link the launch
+// route minted would never match what is checked below. `routes::apps` names
+// these functions through `biorouter_server::auth`.
+
+/// How long a launch link may wait to be opened.
+const APP_LAUNCH_TTL: Duration = Duration::from_secs(5 * 60);
+
+/// How many unredeemed launch links are kept at once; the oldest goes first. A
+/// caller that holds the secret mints them, so this is a bound, not a defense.
+const APP_LAUNCH_LIMIT: usize = 256;
+
+#[derive(Default)]
+struct AppAccess {
+    /// The access cookie's value for each app a link was minted for, for the
+    /// daemon's run. Never written to disk, so a restarted daemon hands out new
+    /// ones and an old cookie stops working.
+    cookies: HashMap<String, String>,
+    /// Unredeemed launch tokens: which app each opens, and until when.
+    launches: HashMap<String, (String, Instant)>,
+}
+
+impl AppAccess {
+    fn mint(&mut self, app_id: &str, now: Instant) -> String {
+        self.cookies
+            .entry(app_id.to_string())
+            .or_insert_with(random_token);
+        self.launches.retain(|_, (_, until)| *until > now);
+        while self.launches.len() >= APP_LAUNCH_LIMIT {
+            let oldest = self
+                .launches
+                .iter()
+                .min_by_key(|(_, (_, until))| *until)
+                .map(|(token, _)| token.clone());
+            match oldest {
+                Some(token) => self.launches.remove(&token),
+                None => break,
+            };
+        }
+        let token = random_token();
+        self.launches
+            .insert(token.clone(), (app_id.to_string(), now + APP_LAUNCH_TTL));
+        token
     }
-    let Some(rest) = path.strip_prefix("/apps/") else {
-        return false;
-    };
+
+    fn pending(&self, app_id: &str, presented: &str, now: Instant) -> bool {
+        self.launches
+            .get(presented)
+            .is_some_and(|(app, until)| app == app_id && *until > now)
+    }
+
+    /// The cookie value `presented` redeems for, once. A token for another app
+    /// is left alone, so it cannot be spent by a page it does not open.
+    fn redeem(&mut self, app_id: &str, presented: &str, now: Instant) -> Option<String> {
+        let (app, until) = self.launches.get(presented)?.clone();
+        if app != app_id {
+            return None;
+        }
+        self.launches.remove(presented);
+        if until <= now {
+            return None;
+        }
+        self.cookies.get(app_id).cloned()
+    }
+
+    /// Compares against a stand-in when `app_id` has no cookie, so the work done
+    /// does not say whether a link was ever minted for that app.
+    fn cookie_matches(&self, app_id: &str, presented: &str) -> bool {
+        const STAND_IN: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+        let expected = self.cookies.get(app_id);
+        let matched = secret_matches(presented, expected.map_or(STAND_IN, String::as_str));
+        matched && expected.is_some()
+    }
+}
+
+static APP_ACCESS: OnceLock<Mutex<AppAccess>> = OnceLock::new();
+
+fn app_access() -> std::sync::MutexGuard<'static, AppAccess> {
+    APP_ACCESS
+        .get_or_init(|| Mutex::new(AppAccess::default()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn random_token() -> String {
+    let bytes: [u8; 32] = rand::random();
+    hex::encode(bytes)
+}
+
+/// The access cookie's name, unique to this daemon run.
+///
+/// A cookie is scoped by host and path but not by port, so two daemons on
+/// 127.0.0.1 (the desktop's and one `biorouter apps open` started, both serving
+/// the same app store) would otherwise overwrite each other's cookie for the
+/// same app id, and the first tab would stop working.
+fn app_access_cookie_name() -> &'static str {
+    static NAME: OnceLock<String> = OnceLock::new();
+    NAME.get_or_init(|| {
+        let run: [u8; 8] = rand::random();
+        format!("biorouter_app_{}", hex::encode(run))
+    })
+}
+
+/// A new single-use launch token for `app_id`, good for [`APP_LAUNCH_TTL`].
+/// Called by the launch route, which requires the secret, after checking the
+/// app exists; nothing an unauthenticated caller can reach mints, so such a
+/// caller can neither grow these stores nor learn from them which apps exist.
+pub fn mint_app_launch(app_id: &str) -> String {
+    app_access().mint(app_id, Instant::now())
+}
+
+/// Redeem `presented` for `app_id`: once, the `Set-Cookie` value that grants the
+/// app's browser surface. A token that is unknown, expired, already redeemed or
+/// for another app gets `None`, and a redeemed one is gone.
+///
+/// `Path=/apps/{id}` (no trailing slash) covers the redirect route, the page and
+/// everything below it, and no other app. `HttpOnly` keeps the page's own script
+/// from reading it, and `SameSite=Strict` keeps it off every request another site
+/// starts: the two flags `routes::web_ui` sets on the served document's cookie.
+pub fn redeem_app_launch(app_id: &str, presented: &str) -> Option<String> {
+    let value = app_access().redeem(app_id, presented, Instant::now())?;
+    Some(format!(
+        "{}={value}; Path=/apps/{app_id}; HttpOnly; SameSite=Strict",
+        app_access_cookie_name()
+    ))
+}
+
+/// The access cookie a request carries, if any.
+fn app_access_cookie(headers: &axum::http::HeaderMap) -> Option<&str> {
+    let name = app_access_cookie_name();
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| key.trim() == name)
+        .map(|(_, value)| value.trim())
+}
+
+/// The launch token in a page request's query string (`?t=…`), if any.
+fn launch_token(query: Option<&str>) -> Option<&str> {
+    query?
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == "t")
+        .map(|(_, value)| value)
+}
+
+/// One of an app's browser-facing GETs, as [`is_app_browser_get`] recognised it.
+#[derive(Debug, PartialEq, Eq)]
+struct AppBrowserGet<'a> {
+    id: &'a str,
+    /// `/apps/{id}/` itself: the one path that may carry the launch token.
+    page: bool,
+}
+
+/// The routes a browser loads for a live app: its page, bundle, assets, model
+/// catalog, run state and agent socket. Recognised by shape, before any handler
+/// runs, so the answer never depends on whether the app exists.
+fn is_app_browser_get<'a>(method: &axum::http::Method, path: &'a str) -> Option<AppBrowserGet<'a>> {
+    if method != axum::http::Method::GET {
+        return None;
+    }
+    let rest = path.strip_prefix("/apps/")?;
     let mut segments = rest.split('/');
-    let Some(id) = segments.next() else {
-        return false;
-    };
+    let id = segments.next()?;
     if id.is_empty()
         || id.len() > 128
         || !id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
-        return false;
+        return None;
     }
     // Keep this route list explicit so a future management GET does not become
-    // unauthenticated merely because it lives below `/apps/{id}`.
+    // reachable on a browser's cookie merely because it lives below `/apps/{id}`.
     let tail = segments.collect::<Vec<_>>();
-    matches!(
+    let browser = matches!(
         tail.as_slice(),
         [] | [""] | ["agent"] | ["models"] | ["runstate"]
-    ) || matches!(tail.as_slice(), ["dist" | "assets", _, ..])
+    ) || matches!(tail.as_slice(), ["dist" | "assets", _, ..]);
+    browser.then_some(AppBrowserGet {
+        id,
+        page: tail.as_slice() == [""],
+    })
 }
+
+/// Whether a request to an app's browser surface carries that app's access: its
+/// cookie, the launch token on the page itself, or, on a `biorouter serve`
+/// daemon, the cookie of the document it served (whose holder was handed the
+/// daemon secret with it, so this grants nothing new). The answer depends on
+/// nothing but these, so it is the same for an app that exists and one that
+/// does not.
+fn app_access_granted(
+    app: &AppBrowserGet<'_>,
+    query: Option<&str>,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    app_access_granted_by(app, query, headers, SERVED_OPERATOR.get())
+}
+
+/// [`app_access_granted`] with the serve daemon's standing passed in, so a test
+/// can drive it without installing the process global.
+fn app_access_granted_by(
+    app: &AppBrowserGet<'_>,
+    query: Option<&str>,
+    headers: &axum::http::HeaderMap,
+    operator: Option<&ServedOperator>,
+) -> bool {
+    if operator.is_some_and(|operator| from_served_document(headers, operator)) {
+        return true;
+    }
+    let access = app_access();
+    if app_access_cookie(headers).is_some_and(|value| access.cookie_matches(app.id, value)) {
+        return true;
+    }
+    app.page
+        && launch_token(query).is_some_and(|token| access.pending(app.id, token, Instant::now()))
+}
+
+/// The refusal an app's browser surface gets without access: the same status and
+/// body for every app id, existing or not, so it answers nothing about which
+/// apps exist. Written for the person who followed an old or bare link.
+fn app_access_refused(status: StatusCode) -> Response {
+    let mut response = Response::new(axum::body::Body::from(APP_ACCESS_REFUSED_HTML));
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+const APP_ACCESS_REFUSED_HTML: &str =
+    "<!doctype html><meta charset=utf-8><title>Biorouter app</title>\
+     <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+     <h1 style=\"font-size:1.2rem\">Open this app from Biorouter</h1>\
+     <p>An app's address works only in the browser Biorouter opened it in, and only until \
+     Biorouter restarts. Open the app again from its preview in the chat, from Applications, \
+     or with <code>biorouter apps open</code> and the app's name.</p>";
 
 /// Paths served without the `X-Secret-Key` header. Each one carries its own
 /// gate; the list is a predicate rather than a chain of `||` inside
@@ -390,17 +644,23 @@ pub async fn check_token(
         return Ok(next.run(request).await);
     }
     // Biorouter apps are opened directly in the browser (and connect a WebSocket),
-    // so they can't send the secret-key header. Allow browser-facing GET reads
-    // of a *specific* app (serving the bundle + the per-app agent socket);
-    // management operations and source/content export still require the secret.
+    // so they can't send the secret-key header. A browser-facing GET of a
+    // *specific* app is admitted on that app's access cookie (W2-HRD-1, see
+    // `app_access_granted`); management operations and source/content export
+    // still require the secret, and so does `GET /apps`, the list.
     //
-    // `GET /apps` -- the list -- is deliberately NOT exempt: it enumerates app
-    // ids, and an id is all `/apps/{id}/agent` needs. That socket runs agent
-    // turns and carries its own tool-approval frames, so it additionally
-    // validates `Origin` (see `apps::agent_ws`).
-    if is_public_app_get(request.method(), path) {
+    // Nothing here is exempt any more. The agent socket runs agent turns and
+    // carries its own tool-approval frames, and its Origin check and socket token
+    // (`apps::agent_ws`) were the only gates while the page holding that token
+    // was served to every local account.
+    let app = is_app_browser_get(request.method(), path);
+    if app
+        .as_ref()
+        .is_some_and(|app| app_access_granted(app, request.uri().query(), request.headers()))
+    {
         return Ok(next.run(request).await);
     }
+    let app_browser = app.is_some();
 
     let secret_key = request
         .headers()
@@ -443,12 +703,17 @@ pub async fn check_token(
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(addr)| addr.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string());
-    Err(refuse_unauthenticated(&client_ip))
+    let refused = refuse_unauthenticated(&client_ip);
+    if app_browser {
+        // One answer for every app id, existing or not (W2-HRD-1).
+        return Ok(app_access_refused(refused));
+    }
+    Err(refused)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public_app_get, is_unauthenticated_path, secret_matches, user_action_matches};
+    use super::{is_app_browser_get, is_unauthenticated_path, secret_matches, user_action_matches};
     /// The shared handler-body extractor. It lives under `src/routes/` rather
     /// than here for the reason [`secret_matches`] does — see its doc.
     use crate::routes::body_of;
@@ -934,17 +1199,400 @@ mod tests {
 
     #[test]
     fn app_exports_still_require_the_server_secret() {
-        assert!(is_public_app_get(&Method::GET, "/apps/example/"));
-        assert!(is_public_app_get(&Method::GET, "/apps/example/dist/app.js"));
-        assert!(is_public_app_get(&Method::GET, "/apps/example/agent"));
-        assert!(!is_public_app_get(&Method::GET, "/apps/example/export"));
-        assert!(!is_public_app_get(&Method::GET, "/apps/example/export/"));
-        assert!(!is_public_app_get(
-            &Method::GET,
-            "/apps/example/future-admin"
+        let browser = |method: &Method, path: &str| is_app_browser_get(method, path).is_some();
+        assert!(browser(&Method::GET, "/apps/example/"));
+        assert!(browser(&Method::GET, "/apps/example/dist/app.js"));
+        assert!(browser(&Method::GET, "/apps/example/agent"));
+        assert!(!browser(&Method::GET, "/apps/example/export"));
+        assert!(!browser(&Method::GET, "/apps/example/export/"));
+        assert!(!browser(&Method::GET, "/apps/example/future-admin"));
+        assert!(!browser(&Method::GET, "/apps/bad%2Fid/"));
+        assert!(!browser(&Method::POST, "/apps/example/build"));
+        assert!(!browser(&Method::POST, "/apps/example/launch"));
+        assert!(!browser(&Method::GET, "/apps"));
+        // Only the page itself may carry the launch token.
+        assert!(is_app_browser_get(&Method::GET, "/apps/example/").is_some_and(|app| app.page));
+        for not_the_page in [
+            "/apps/example",
+            "/apps/example/agent",
+            "/apps/example/dist/app.js",
+        ] {
+            assert!(
+                is_app_browser_get(&Method::GET, not_the_page).is_some_and(|app| !app.page),
+                "{not_the_page}"
+            );
+        }
+    }
+
+    // --- W2-HRD-1: an app's browser surface ---------------------------------
+
+    use super::{
+        app_access_granted_by, check_token as the_middleware, mint_app_launch, redeem_app_launch,
+        AppAccess, ServedOperator, APP_LAUNCH_LIMIT, APP_LAUNCH_TTL,
+    };
+
+    /// Stand-ins for the app routes: `present-app` exists and every other id
+    /// answers the handler's own 404, which a caller without access must never see.
+    async fn stand_in(
+        axum::extract::Path(params): axum::extract::Path<std::collections::HashMap<String, String>>,
+    ) -> (StatusCode, &'static str) {
+        if params.get("id").map(String::as_str) == Some("present-app") {
+            (StatusCode::OK, "reached the app route")
+        } else {
+            (StatusCode::NOT_FOUND, "no such app")
+        }
+    }
+
+    /// The real middleware in front of the app routes' shapes, as
+    /// `commands::agent::run` layers it in front of the real router.
+    fn guarded_apps() -> axum::Router {
+        axum::Router::new()
+            .route("/status", axum::routing::get(|| async { "ok" }))
+            .route("/apps/{id}", axum::routing::get(stand_in))
+            .route("/apps/{id}/", axum::routing::get(stand_in))
+            .route("/apps/{id}/agent", axum::routing::get(stand_in))
+            .route("/apps/{id}/models", axum::routing::get(stand_in))
+            .route("/apps/{id}/dist/{*path}", axum::routing::get(stand_in))
+            .route("/apps/{id}/launch", axum::routing::post(stand_in))
+            .layer(axum::middleware::from_fn_with_state(
+                TEST_SECRET.to_string(),
+                the_middleware,
+            ))
+    }
+
+    /// One request from `peer` (addresses from TEST-NET-2, which no other test
+    /// here uses: the throttle's map is one process-wide static).
+    async fn app_request(
+        app: &axum::Router,
+        peer: [u8; 4],
+        method: Method,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> (StatusCode, String) {
+        let mut request = axum::http::Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        for (name, value) in headers {
+            request.headers_mut().append(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((peer, 51_000))));
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// The `Cookie` header a browser sends after opening a launch link for
+    /// `app_id`.
+    fn cookie_for(app_id: &str) -> String {
+        let launch = mint_app_launch(app_id);
+        redeem_app_launch(app_id, &launch)
+            .expect("a fresh launch link redeems")
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// W2-HRD-1, as the QA probe found it: from another account on the login
+    /// node, with no secret, `/apps/<guess>/` answered 404 `no such app` for a
+    /// miss, and the page (with the socket token in it) for a hit. Every
+    /// browser-facing app route now answers one 401, the same for both.
+    #[tokio::test]
+    async fn an_app_route_answers_the_same_401_whether_or_not_the_app_exists() {
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 41];
+        let mut answers = Vec::new();
+        for uri in [
+            "/apps/present-app/",
+            "/apps/missing-app/",
+            "/apps/present-app",
+            "/apps/missing-app",
+            "/apps/present-app/agent?token=0123",
+            "/apps/missing-app/agent",
+            "/apps/present-app/models",
+            "/apps/present-app/dist/app.js",
+        ] {
+            let (status, body) = app_request(&app, peer, Method::GET, uri, &[]).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+            assert!(!body.contains("no such app"), "{uri}: {body}");
+            answers.push(body);
+        }
+        answers.dedup();
+        assert_eq!(answers.len(), 1, "every app route answers the same body");
+        // Liveness stays open.
+        assert_eq!(
+            app_request(&app, peer, Method::GET, "/status", &[]).await.0,
+            StatusCode::OK
+        );
+    }
+
+    /// The socket's own gates, an `Origin` check and a token read off the page,
+    /// admitted any local client that sent no `Origin`. An `Origin` is proof of
+    /// nothing outside a browser, so the upgrade needs the cookie (or the secret)
+    /// whatever `Origin` it sends.
+    #[tokio::test]
+    async fn the_agent_socket_needs_the_access_cookie_whatever_origin_it_sends() {
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 42];
+        let launch = mint_app_launch("present-app");
+        let upgrade = [
+            ("connection", "upgrade"),
+            ("upgrade", "websocket"),
+            ("sec-websocket-version", "13"),
+            ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+        ];
+        let uri = "/apps/present-app/agent?token=from-the-page";
+        let bare = app_request(&app, peer, Method::GET, uri, &upgrade).await;
+        assert_eq!(bare.0, StatusCode::UNAUTHORIZED, "no Origin");
+        let mut same_origin = upgrade.to_vec();
+        same_origin.push(("host", "127.0.0.1:41841"));
+        same_origin.push(("origin", "http://127.0.0.1:41841"));
+        assert_eq!(
+            app_request(&app, peer, Method::GET, uri, &same_origin)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED,
+            "a matching Origin"
+        );
+        // The launch token is for the page, not the socket.
+        let with_launch_token = format!("/apps/present-app/agent?t={launch}");
+        assert_eq!(
+            app_request(&app, peer, Method::GET, &with_launch_token, &upgrade)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let cookie = cookie_for("present-app");
+        let mut with_cookie = upgrade.to_vec();
+        with_cookie.push(("cookie", &cookie));
+        assert_eq!(
+            app_request(&app, peer, Method::GET, uri, &with_cookie)
+                .await
+                .0,
+            StatusCode::OK,
+            "the cookie reaches the socket's own gates"
+        );
+    }
+
+    /// One app's cookie opens that app's routes and no other app's; a cookie
+    /// with the right value under another name, or a wrong value, opens nothing;
+    /// and the launch token opens the page it is exchanged on and nothing else.
+    #[tokio::test]
+    async fn an_apps_access_opens_that_app_and_nothing_else() {
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 43];
+        let cookie = cookie_for("present-app");
+        let (name, value) = cookie.split_once('=').unwrap();
+        for uri in [
+            "/apps/present-app/",
+            "/apps/present-app",
+            "/apps/present-app/agent",
+            "/apps/present-app/models",
+            "/apps/present-app/dist/app.js",
+        ] {
+            let (status, _) =
+                app_request(&app, peer, Method::GET, uri, &[("cookie", &cookie)]).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+        }
+        // Another app, on this app's cookie: nothing minted for it, so nothing matches.
+        assert_eq!(
+            app_request(
+                &app,
+                peer,
+                Method::GET,
+                "/apps/other-app/",
+                &[("cookie", &cookie)]
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let unredeemed = mint_app_launch("present-app");
+        for wrong in [
+            format!("{name}={}", "0".repeat(64)),
+            format!("{name}="),
+            format!("biorouter_app={value}"),
+            format!("x{name}={value}"),
+            // A launch token is not a cookie value.
+            format!("{name}={unredeemed}"),
+        ] {
+            assert_eq!(
+                app_request(
+                    &app,
+                    peer,
+                    Method::GET,
+                    "/apps/present-app/",
+                    &[("cookie", &wrong)]
+                )
+                .await
+                .0,
+                StatusCode::UNAUTHORIZED,
+                "{wrong}"
+            );
+        }
+        // An unredeemed launch token, on the page only.
+        let page = format!("/apps/present-app/?t={unredeemed}");
+        assert_eq!(
+            app_request(&app, peer, Method::GET, &page, &[]).await.0,
+            StatusCode::OK
+        );
+        let bundle = format!("/apps/present-app/dist/app.js?t={unredeemed}");
+        assert_eq!(
+            app_request(&app, peer, Method::GET, &bundle, &[]).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let other = format!("/apps/other-app/?t={unredeemed}");
+        assert_eq!(
+            app_request(&app, peer, Method::GET, &other, &[]).await.0,
+            StatusCode::UNAUTHORIZED,
+            "a launch link opens the app it was minted for"
+        );
+        // Once redeemed, the same link opens nothing.
+        assert!(redeem_app_launch("present-app", &unredeemed).is_some());
+        assert_eq!(
+            app_request(&app, peer, Method::GET, &page, &[]).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        // Neither the cookie nor the launch token mints a link: that takes the secret.
+        assert_eq!(
+            app_request(
+                &app,
+                peer,
+                Method::POST,
+                "/apps/present-app/launch",
+                &[("cookie", &cookie)]
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            app_request(
+                &app,
+                peer,
+                Method::POST,
+                "/apps/present-app/launch",
+                &[("x-secret-key", TEST_SECRET)]
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+
+    /// The secret still opens every app route, and a caller holding it may learn
+    /// whether an app exists: it could list them anyway.
+    #[tokio::test]
+    async fn the_secret_still_opens_every_app_route() {
+        let app = guarded_apps();
+        let peer = [198, 51, 100, 44];
+        let secret = [("x-secret-key", TEST_SECRET)];
+        assert_eq!(
+            app_request(&app, peer, Method::GET, "/apps/present-app/", &secret)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        let (status, body) =
+            app_request(&app, peer, Method::GET, "/apps/missing-app/", &secret).await;
+        assert_eq!(
+            (status, body.as_str()),
+            (StatusCode::NOT_FOUND, "no such app")
+        );
+    }
+
+    /// A launch link rides a URL, and a URL outlives its use in browser history;
+    /// so it opens once, for a few minutes, and only its own app. (Keeping it off
+    /// command lines is the openers' job: single use cannot stop a reader who
+    /// redeems it first.) The cookie value it redeems for is not in it, and is the
+    /// same however many links are redeemed.
+    #[test]
+    fn a_launch_link_opens_once_and_only_until_it_expires() {
+        let mut access = AppAccess::default();
+        let t0 = Instant::now();
+        let first = access.mint("ttl-app", t0);
+        assert!(access.pending("ttl-app", &first, t0));
+        assert!(!access.pending("other-app", &first, t0));
+        assert_eq!(access.redeem("other-app", &first, t0), None);
+        assert!(
+            access.pending("ttl-app", &first, t0),
+            "a token for another app is not spent by a page it does not open"
+        );
+        let cookie = access.redeem("ttl-app", &first, t0).expect("redeems once");
+        assert_eq!(access.redeem("ttl-app", &first, t0), None, "and only once");
+        assert!(!access.pending("ttl-app", &first, t0));
+        assert!(access.cookie_matches("ttl-app", &cookie));
+        assert!(!access.cookie_matches("ttl-app", &first));
+        assert!(!access.cookie_matches("other-app", &cookie));
+
+        let late = access.mint("ttl-app", t0);
+        let deadline = t0 + APP_LAUNCH_TTL;
+        assert!(access.pending("ttl-app", &late, deadline - Duration::from_millis(1)));
+        assert!(!access.pending("ttl-app", &late, deadline));
+        assert_eq!(access.redeem("ttl-app", &late, deadline), None);
+
+        let again = access.mint("ttl-app", t0);
+        assert_eq!(access.redeem("ttl-app", &again, t0), Some(cookie));
+    }
+
+    /// Unredeemed links are bounded, oldest out first, and expired ones are
+    /// dropped as new ones are minted.
+    #[test]
+    fn unredeemed_launch_links_are_bounded() {
+        let mut access = AppAccess::default();
+        let t0 = Instant::now();
+        let oldest = access.mint("bound-app", t0);
+        for n in 1..=APP_LAUNCH_LIMIT {
+            access.mint("bound-app", t0 + Duration::from_millis(n as u64));
+        }
+        assert!(access.launches.len() <= APP_LAUNCH_LIMIT);
+        assert!(!access.pending("bound-app", &oldest, t0));
+        access.mint("bound-app", t0 + APP_LAUNCH_TTL + Duration::from_secs(1));
+        assert_eq!(access.launches.len(), 1, "expired links are dropped");
+    }
+
+    /// On a `biorouter serve` daemon the browser holding the served document's
+    /// cookie was handed the daemon secret with it, so that cookie opens apps
+    /// too; on any other daemon, or with another value, it opens nothing.
+    #[test]
+    fn a_serve_documents_cookie_opens_its_daemons_apps() {
+        let page = is_app_browser_get(&Method::GET, "/apps/some-app/").unwrap();
+        let operator = ServedOperator {
+            browser_token: "served-document-token".into(),
+            capability: biorouter::privacy::ProviderTier::Public,
+        };
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            "biorouter_session=served-document-token".parse().unwrap(),
+        );
+        assert!(app_access_granted_by(
+            &page,
+            None,
+            &headers,
+            Some(&operator)
         ));
-        assert!(!is_public_app_get(&Method::GET, "/apps/bad%2Fid/"));
-        assert!(!is_public_app_get(&Method::POST, "/apps/example/build"));
+        assert!(!app_access_granted_by(&page, None, &headers, None));
+        headers.insert(
+            axum::http::header::COOKIE,
+            "biorouter_session=another-token".parse().unwrap(),
+        );
+        assert!(!app_access_granted_by(
+            &page,
+            None,
+            &headers,
+            Some(&operator)
+        ));
     }
 
     // --- The failed-attempt throttle (QA-D F3) ------------------------------

@@ -1,11 +1,15 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type Model from '../modelInterface';
 import {
   ALSO_FOR_NEW_CHATS_HINT,
   ALSO_FOR_NEW_CHATS_LABEL,
   SWITCH_SCOPE_NEW_CHATS,
   SWITCH_SCOPE_THIS_CHAT,
   SwitchModelModal,
+  configureProvidersReturn,
 } from './SwitchModelModal';
 
 const mocks = vi.hoisted(() => ({
@@ -322,7 +326,7 @@ describe('SwitchModelModal — what the switch changes', () => {
     expect(mocks.changeModel).toHaveBeenCalledWith(
       's-1',
       expect.objectContaining({ name: 'gpt-5.5-2026-04-24', provider: 'versa_azure' }),
-      { alsoForNewChats: false }
+      expect.objectContaining({ alsoForNewChats: false })
     );
   });
 
@@ -335,7 +339,7 @@ describe('SwitchModelModal — what the switch changes', () => {
     expect(mocks.changeModel).toHaveBeenCalledWith(
       's-1',
       expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
-      { alsoForNewChats: true }
+      expect.objectContaining({ alsoForNewChats: true })
     );
   });
 
@@ -355,7 +359,140 @@ describe('SwitchModelModal — what the switch changes', () => {
     await waitFor(() => expect(mocks.changeModel).toHaveBeenCalledTimes(1));
     expect(mocks.changeModel).toHaveBeenCalledWith(
       null,
-      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' })
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
+      expect.objectContaining({ onRefusal: expect.any(Function) })
+    );
+  });
+
+  /**
+   * W2-PRV-6. A chat that has not been sent yet is a chat: the dialog offers the
+   * started-chat scope and holds the pick for it, instead of rewriting the model
+   * every new chat starts on.
+   */
+  const renderUnsent = (onChooseForUnsentChat: (model: Model) => void) =>
+    render(
+      <SwitchModelModal
+        sessionId={null}
+        onChooseForUnsentChat={onChooseForUnsentChat}
+        onClose={vi.fn()}
+        setView={vi.fn()}
+        initialProvider="versa_azure"
+        initialModel="gpt-5.5-2026-04-24"
+      />
+    );
+
+  it('in an unsent chat, says it is for this chat and holds the pick for it', async () => {
+    const choose = vi.fn();
+    renderUnsent(choose);
+
+    expect(screen.getByText(SWITCH_SCOPE_THIS_CHAT)).toBeInTheDocument();
+    expect(screen.queryByText(SWITCH_SCOPE_NEW_CHATS)).toBeNull();
+    const box = screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) });
+    expect(box).not.toBeChecked();
+
+    await settle();
+    fireEvent.click(await confirm());
+
+    await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+    expect(choose).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24', provider: 'versa_azure' })
+    );
+    // Nothing app-wide moved.
+    expect(mocks.changeModel).not.toHaveBeenCalled();
+  });
+
+  it('in an unsent chat, a ticked box also sets the model new chats start on', async () => {
+    const choose = vi.fn();
+    renderUnsent(choose);
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) }));
+    await settle();
+    fireEvent.click(await confirm());
+
+    await waitFor(() => expect(choose).toHaveBeenCalledTimes(1));
+    expect(mocks.changeModel).toHaveBeenCalledWith(
+      null,
+      expect.objectContaining({ name: 'gpt-5.5-2026-04-24' }),
+      expect.objectContaining({ onRefusal: expect.any(Function) })
+    );
+  });
+
+  it('in an unsent chat, holds nothing when the new-chats default could not be set', async () => {
+    mocks.changeModel.mockResolvedValue(false);
+    const choose = vi.fn();
+    renderUnsent(choose);
+    fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(ALSO_FOR_NEW_CHATS_LABEL) }));
+    await settle();
+    fireEvent.click(await confirm());
+
+    expect(await screen.findByTestId('switch-model-submit-error')).toBeInTheDocument();
+    expect(choose).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T3-SH-2. "Use other provider" from a chat not sent yet carried nothing that
+ * named the chat, so the catalog's model step set the model every new chat
+ * starts on. The chat is named by its tab.
+ */
+describe('configureProvidersReturn', () => {
+  beforeEach(() => {
+    window.location.hash = '#/pair';
+  });
+
+  it('names a started chat by its session and tier', () => {
+    expect(configureProvidersReturn('s-7', 'private', 'tab-3')).toEqual({
+      returnTo: '/pair',
+      resumeSessionId: 's-7',
+      privacyTier: 'private',
+    });
+  });
+
+  it('names a chat not sent yet by its tab', () => {
+    expect(configureProvidersReturn(null, undefined, 'tab-3')).toEqual({
+      returnTo: '/pair',
+      heldChatTabId: 'tab-3',
+    });
+  });
+
+  it('names no chat when opened from no chat', () => {
+    expect(configureProvidersReturn(null, undefined)).toEqual({ returnTo: '/pair' });
+  });
+});
+
+// T3-SH-12: Settings opens this from its "Switch models" button with no
+// Dialog.Trigger, and Escape used to leave the focus on the page.
+describe('closing with Escape', () => {
+  function SettingsButton() {
+    const [open, setOpen] = useState(false);
+    return (
+      <>
+        <button type="button" onClick={() => setOpen(true)}>
+          Switch models
+        </button>
+        {open ? (
+          <SwitchModelModal sessionId={null} setView={vi.fn()} onClose={() => setOpen(false)} />
+        ) : null}
+      </>
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.read.mockResolvedValue('');
+  });
+
+  it('gives the focus back to the button that opened it', async () => {
+    const user = userEvent.setup();
+    render(<SettingsButton />);
+    await user.click(screen.getByRole('button', { name: 'Switch models' }));
+    await screen.findByRole('dialog');
+
+    await user.keyboard('{Escape}');
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Switch models' })).toHaveFocus()
     );
   });
 });

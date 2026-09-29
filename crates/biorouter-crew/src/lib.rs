@@ -17,11 +17,11 @@ pub use invitation::{
 };
 pub use names::{
     canonical_channel_name, clean, display_name_claims_username, display_name_valid,
-    is_default_ignorable, is_uuid_shaped, name_key, names_collide, restriction_level_ok,
-    sanitize_channel_name, sanitize_display_name, sanitize_team_name, skeleton_key,
-    strip_ignorable, team_handle, valid_username, validate_display_name, validate_display_name_for,
-    validate_team_name, validate_workspace_name, workspace_name_valid, NameError, NameKind,
-    NameProblem,
+    hidden_in_shared_name, is_default_ignorable, is_uuid_shaped, name_key, names_collide,
+    restriction_level_ok, sanitize_channel_name, sanitize_display_name, sanitize_team_name,
+    shared_name_shows_every_character, skeleton_key, strip_ignorable, team_handle, valid_username,
+    validate_display_name, validate_display_name_for, validate_team_name, validate_workspace_name,
+    workspace_name_valid, NameError, NameKind, NameProblem,
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -216,6 +216,11 @@ pub struct Blob {
     pub complete: bool,
     pub restricted: bool,
     pub source_channels: BTreeSet<String>,
+    /// When the upload last began or received a chunk (seconds since the Unix epoch). An
+    /// unfinished upload untouched for a day is removed and stops counting against the
+    /// attachment quotas; one begun before this field existed counts as untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub touched_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -365,6 +370,8 @@ fn canonical(value: &Value) -> Value {
 mod broker;
 #[cfg(unix)]
 pub use broker::{bridge, lifecycle, serve, Account, Broker, Connection, Directory};
+#[cfg(all(unix, feature = "test-seams"))]
+pub use broker::{JournalCall, Quotas};
 
 #[cfg(unix)]
 pub mod remote;

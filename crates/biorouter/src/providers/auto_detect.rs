@@ -187,6 +187,44 @@ pub fn detectable_providers() -> Vec<&'static str> {
     CANDIDATES.iter().map(|c| c.provider).collect()
 }
 
+/// A registered provider's shipped default model and its curated model list, in
+/// the order its metadata declares them. Empty when the name is not registered.
+async fn shipped_catalog(provider: &str) -> (String, Vec<String>) {
+    crate::providers::providers()
+        .await
+        .into_iter()
+        .find(|(metadata, _)| metadata.name == provider)
+        .map(|(metadata, _)| {
+            let curated = metadata
+                .known_models
+                .into_iter()
+                .map(|model| model.name)
+                .collect();
+            (metadata.default_model, curated)
+        })
+        .unwrap_or_default()
+}
+
+/// The model a detected key should start on, when the provider has a say.
+///
+/// The shipped default wins if the key serves it: it is what `biorouter
+/// configure` and the desktop picker start the same provider on, and a
+/// provider may hold it back from a newer model on purpose (Anthropic keeps
+/// Opus 4.8 until Opus 5.5 passes a smoke test). Otherwise the first curated
+/// model the key serves, because a curated list is ordered by preference.
+/// `None` when the key serves none of them, and the caller falls back.
+fn preferred_served_model(
+    shipped_default: &str,
+    curated: &[String],
+    served: &[String],
+) -> Option<String> {
+    let is_served = |model: &str| served.iter().any(|id| id == model);
+    if !shipped_default.is_empty() && is_served(shipped_default) {
+        return Some(shipped_default.to_string());
+    }
+    curated.iter().find(|model| is_served(model)).cloned()
+}
+
 /// Probe a single candidate with the key, scoped via a task-local override so we
 /// never touch the process environment.
 async fn probe_candidate(c: &'static Candidate, key: String) -> Result<Detected, ProbeError> {
@@ -211,15 +249,23 @@ async fn probe_candidate(c: &'static Candidate, key: String) -> Result<Detected,
             Err(e) => return Err(classify(&e)),
         };
 
-        // Prefer a recommended (text-capable, canonical) model over an arbitrary
-        // first entry, which may be an embedding/image model. Best-effort.
-        let default_model = provider
-            .fetch_recommended_models()
-            .await
-            .ok()
-            .flatten()
-            .and_then(|recommended| recommended.into_iter().next())
-            .or_else(|| models.first().cloned());
+        // Start the key on the provider's own choice of model whenever the key
+        // serves it: the shipped default, else the first model of its curated
+        // list. Only when the key serves none of them fall back to a recommended
+        // (text-capable, canonical) model, which is the first of an arbitrary
+        // ordering (Anthropic's `/v1/models` comes back sorted by name), and
+        // last to whatever the key listed first. Best-effort.
+        let (shipped_default, curated) = shipped_catalog(c.provider).await;
+        let default_model = match preferred_served_model(&shipped_default, &curated, &models) {
+            Some(model) => Some(model),
+            None => provider
+                .fetch_recommended_models()
+                .await
+                .ok()
+                .flatten()
+                .and_then(|recommended| recommended.into_iter().next())
+                .or_else(|| models.first().cloned()),
+        };
 
         let extra_config = c
             .extra_config
@@ -435,5 +481,94 @@ mod tests {
             .unwrap();
         assert_eq!(mimo.extra_config.len(), 1);
         assert_eq!(mimo.extra_config[0].0, "XIAOMI_MIMO_HOST");
+    }
+
+    fn ids(models: &[&str]) -> Vec<String> {
+        models.iter().map(|model| model.to_string()).collect()
+    }
+
+    #[test]
+    fn a_served_default_wins_over_every_newer_model() {
+        let curated = ids(&["claude-opus-4-8", "claude-opus-5-5", "claude-fable-5-1"]);
+        let served = ids(&["claude-fable-5-1", "claude-opus-4-8", "claude-opus-5-5"]);
+        assert_eq!(
+            preferred_served_model("claude-opus-4-8", &curated, &served).as_deref(),
+            Some("claude-opus-4-8")
+        );
+    }
+
+    #[test]
+    fn an_unserved_default_falls_to_the_first_curated_model_the_key_serves() {
+        let curated = ids(&["gpt-6-sol", "gpt-6-astra", "gpt-5.5"]);
+        let served = ids(&["babbage-002", "gpt-5.5", "gpt-6-astra"]);
+        assert_eq!(
+            preferred_served_model("gpt-6-sol", &curated, &served).as_deref(),
+            Some("gpt-6-astra")
+        );
+    }
+
+    #[test]
+    fn a_key_serving_nothing_curated_leaves_the_choice_to_the_caller() {
+        let served = ids(&["some-model"]);
+        assert_eq!(
+            preferred_served_model("gpt-6-sol", &ids(&["gpt-6-sol"]), &served),
+            None
+        );
+        // An unregistered provider has an empty catalog.
+        assert_eq!(preferred_served_model("", &[], &served), None);
+    }
+
+    /// End to end against a stand-in for Anthropic's `/v1/models`, which
+    /// answers every model the key can call, including newer ones than the
+    /// default; the provider sorts them by name. Before 2026-09-27 onboarding
+    /// started the key on the first recommended model of that sorted list,
+    /// whatever it was, not on the default the provider holds Opus 5.5 back
+    /// behind.
+    #[tokio::test]
+    async fn a_detected_anthropic_key_starts_on_the_shipped_default() {
+        use crate::providers::anthropic::ANTHROPIC_DEFAULT_MODEL;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    { "id": "claude-opus-5-5" },
+                    { "id": "claude-fable-5-1" },
+                    { "id": "claude-sonnet-5" },
+                    { "id": ANTHROPIC_DEFAULT_MODEL },
+                    { "id": "claude-haiku-4-5" },
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        // The real anthropic candidate, pointed at the stand-in. `extra_config`
+        // is `'static`, and one leaked string per test run is the price.
+        let host: &'static str = Box::leak(server.uri().into_boxed_str());
+        let extra: &'static [(&'static str, &'static str)] =
+            Box::leak(vec![("ANTHROPIC_HOST", host)].into_boxed_slice());
+        let anthropic = CANDIDATES
+            .iter()
+            .find(|c| c.provider == "anthropic")
+            .expect("anthropic is detectable");
+        let candidate: &'static Candidate = Box::leak(Box::new(Candidate {
+            extra_config: extra,
+            ..*anthropic
+        }));
+
+        let detected = probe_candidate(candidate, "sk-ant-test-not-a-real-key".to_string())
+            .await
+            .expect("the stand-in accepts the key");
+        assert_eq!(detected.provider, "anthropic");
+        assert_eq!(
+            detected.default_model.as_deref(),
+            Some(ANTHROPIC_DEFAULT_MODEL),
+            "onboarding would start this key on a model other than the shipped default \
+             (served: {:?})",
+            detected.models
+        );
     }
 }

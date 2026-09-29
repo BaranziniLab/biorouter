@@ -379,12 +379,13 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
     withSections({
       key: 'commercial',
       // ⚠ §14.5's note, and the wording matters. The obvious copy — "a direct
-      // cloud account, even if your institution pays for it" — is NOT accurate
-      // as shipped: `azure.rs` defaults `AZURE_OPENAI_ENDPOINT` to
-      // `https://unified-api.ucsf.edu/general`, the same UCSF gateway
-      // `versa_azure` uses. A name-keyed tier calls `azure_openai` Public even
-      // when it in fact resolves to that gateway — conservative and fail-safe,
-      // but the copy must not claim something the configuration contradicts.
+      // cloud account, even if your institution pays for it" — is NOT
+      // accurate: `azure_openai` takes whatever endpoint the user types, and
+      // that can be `https://unified-api.ucsf.edu/general`, the same UCSF
+      // gateway `versa_azure` uses (it was even the card's shipped default
+      // until 2026-09-27). A name-keyed tier calls `azure_openai` Public even
+      // when it resolves to that gateway — conservative and fail-safe, but the
+      // copy must not claim something a configuration can contradict.
       label: 'Public · Commercial',
       tabLabel: 'Public',
       note: "Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.",

@@ -78,11 +78,11 @@ Biorouter needs an LLM provider to function. On first launch, you will be prompt
 - Select "Ollama" in Biorouter — no API key needed.
 - Data stays entirely on your device.
 
-> **Note.** The desktop app also ships a bundled **Llama Server** (`llamacpp`) local provider, which the app's own provider grid ranks first under Local Models — ahead of Ollama. It is not documented in the options above or in [Choosing a model provider](choosing-a-model-provider.md); use the Settings > Models panel in the app for its current setup steps.
+> **Note.** The desktop app also ships a bundled **Llama Server** (`llamacpp`) local provider, which the app lists first on the **Local** tab, ahead of Ollama. It needs no install. [Choosing a model provider](choosing-a-model-provider.md#llama-server) describes it.
 
 ### Commercial cloud providers
 
-For direct access using your own API key:
+These are on the **Public** tab of the provider screens. For direct access using your own API key:
 
 | Provider | Where to get a key |
 |---|---|
@@ -109,7 +109,7 @@ biorouter configure
 
 ### Switch or update your provider
 
-**Desktop:** Settings > Models > select a provider card > Configure or Launch.
+**Desktop:** to change the model of a chat, choose the model chip under its message box. To set up or change a provider, open **Settings** > **Models** > **Configure providers**, and choose **Configure** on its row.
 
 **CLI:**
 
@@ -217,7 +217,7 @@ The main configuration file is at:
 
 This file stores provider settings, extension configurations, and model preferences. It is shared between the Desktop app and the CLI.
 
-> **Warning.** API keys are **not** stored in `config.yaml`. Secrets live in your operating system's native credential store — the macOS Keychain, the Windows Credential Manager, or the Linux Secret Service. See [Secret storage](../security/secret-storage.md) for how that works and how to opt out.
+> **Warning.** API keys are **not** stored in `config.yaml`. Secrets live in your operating system's native credential store (the macOS Keychain, the Windows Credential Manager, or the Linux Secret Service) when one is available. Where none answers, such as a Linux server without a desktop session, or when you opt out, they go to a plaintext `secrets.yaml` beside `config.yaml` that only your account can read. See [Secret storage](../security/secret-storage.md) for how that works and how to opt out.
 
 **Electron app state** (Desktop only) is stored at:
 

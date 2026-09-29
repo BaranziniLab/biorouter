@@ -4,7 +4,7 @@
 > **Status:** Current.
 > **Audience:** Lab members, workspace hosts, and their IT staff.
 
-Crew is where your lab works together in the Biorouter desktop app. Open **Crew** in the app sidebar. You chat in channels, share files, and give your AI agent tasks the whole channel can see.
+Crew is where your lab works together in the Biorouter desktop app. Open **Crew** in the app sidebar. You chat in channels, share files, and give your AI agent tasks the whole channel can see. The `biorouter crew` [commands](command-line.md) do the same from a terminal. Crew does not work in a web browser opened with `biorouter serve`: it shows "Crew needs the Biorouter desktop app" there, for the reason [Getting started](getting-started.md) gives.
 
 A lab's shared space is a workspace. The host, a lab member, runs it on a Linux server. Each member connects with their own server account over SSH (the secure login lab servers use). Only people the host lets in can see it.
 
@@ -46,15 +46,16 @@ Crew then says the person can now see the team's channels. See [Hosting a worksp
 | [Getting started](getting-started.md) | What you need, the first screen, the Crew view, and a glossary. |
 | [Hosting a workspace](hosting-a-workspace.md) | Creating a workspace, inviting and letting people in, and keeping Crew running. |
 | [Joining a workspace](joining-a-workspace.md) | The invitation, your code, waiting for your host, and fixing a failed join. |
-| [Teams, channels and people](teams-channels-and-people.md) | Teams, channels, adding and removing people, channel owners, archiving, and display names. |
-| [Messages and files](messages-and-files.md) | Messages, unread counts, drafts, files up to 1 GB, and server paths. |
+| [Teams, channels and people](teams-channels-and-people.md) | Teams, channels, adding and removing people, who is online, channel owners, archiving, and display names. |
+| [Messages and files](messages-and-files.md) | Messages, mentions, unread counts and notifications, drafts, files up to 1 GB, and server paths. |
 | [Agents and chat access](agents-and-chat-access.md) | Asking your agent for tasks, connecting a Biorouter chat with `/crew`, and ending access. |
-| [Privacy and security](privacy-and-security.md) | **Private** and **Public**, institutions, **Restricted** and **Public-safe** channels, keys, fingerprints, and what others, including the host, can see. |
+| [Privacy and security](privacy-and-security.md) | **Private** and **Public**, institutions, **Restricted** and **Public-safe** channels, keys, fingerprints, and what others, including the host and other accounts on the server, can see. |
 | [Connections and troubleshooting](connections-and-troubleshooting.md) | Connection statuses, signing in, checking the server's identity, and error messages. |
 | [Command line](command-line.md) | The `biorouter crew` commands for terminals and scripts. |
-| [Administration](administration.md) | Server requirements, installing `biorouter-crew`, where Crew keeps data, limits, upgrades and backups. |
+| [Administration](administration.md) | Server requirements, installing `biorouter-crew`, what other accounts can see, a full disk, where Crew keeps data, limits, upgrades and backups. |
 
 ## Related documentation
 
 - [Privacy tiers](../security/privacy-tiers.md): the app's privacy rules, for developers.
-- [BioRouter Crew implementation and evidence](../research/biorouter-crew/README.md): Crew's design, plan and test evidence, for developers.
+- [Crew design and reference](design/README.md): the broker protocol, naming design, interface specification and CLI guide, for developers.
+- [Crew build campaign](../history/biorouter-crew/README.md): the plans, reviews and test evidence of the campaign that built Crew.

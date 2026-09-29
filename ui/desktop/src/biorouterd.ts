@@ -18,6 +18,9 @@ import {
   createDaemonProxy,
   discoverDaemonRuntime,
   verifyDaemonRuntime,
+  type DaemonConnectionEvent,
+  type DaemonLoss,
+  type DaemonProxy,
   type DaemonRuntime,
 } from './daemonRuntime';
 
@@ -234,6 +237,28 @@ export interface BiorouterdResult {
   workingDir: string;
   process: ChildProcess;
   errorLog: string[];
+  /** Present when this backend is an attachment to the profile's shared daemon. */
+  sharedDaemon?: SharedDaemonLink;
+}
+
+/**
+ * The attachment to the profile's shared daemon, for the main process to watch and to reattach
+ * (R-1). A daemon restart (a crash, `biorouter crew daemon stop`, a CLI that started a new one)
+ * always brings a new instance, which the proxy refuses to follow; this is how the app learns of
+ * it and, once the person agrees, attaches the same local address to the new instance.
+ */
+export interface SharedDaemonLink {
+  /** Every loss of the attached instance, and a `gone` one answering again. */
+  onConnection(listener: (event: DaemonConnectionEvent) => void): () => void;
+  /** Check the attached instance now: the loss, or `undefined` when it answers as itself. */
+  probe(): Promise<DaemonLoss | undefined>;
+  /**
+   * Attach to the profile's daemon as it is now: the instance that answers (asking for its
+   * independently held approval secret, never reading one from disk), or, when none does, a new
+   * one this app starts (asking for a new secret, as a first launch does). Call only after the
+   * person asked for it. Rejects, changing nothing, when it cannot.
+   */
+  reconnect(): Promise<void>;
 }
 
 /**
@@ -327,15 +352,28 @@ export interface StartBiorouterdOptions {
   }) => Promise<string | undefined>;
 }
 
+/** An existing attachment a reconnect points at the profile's current daemon. */
+interface Reattach {
+  proxy: DaemonProxy;
+}
+
 async function attachSharedDaemon(
   options: StartBiorouterdOptions,
   runtime: DaemonRuntime,
   workingDir: string,
   ownedProcess?: ChildProcess,
   errorLog: string[] = [],
-  ownedProof?: string
+  ownedProof?: string,
+  reattach?: Reattach
 ): Promise<BiorouterdResult> {
   await verifyDaemonRuntime(runtime);
+  if (reattach && runtime.instance_id === reattach.proxy.instanceId()) {
+    // The instance this app verified still answers as itself: nothing to follow, and no secret
+    // to ask for. The check reports it answering, which settles a `gone` loss.
+    const loss = await reattach.proxy.probe();
+    if (loss) throw new Error('The background service stopped answering. Try again in a moment.');
+    return reattachedResult(options, reattach, workingDir, errorLog);
+  }
   const owned = ownedProcess?.pid === runtime.pid;
   if (!owned && !runtime.user_action_installed)
     throw new Error(
@@ -353,6 +391,13 @@ async function attachSharedDaemon(
       'This profile daemon requires its independently held approval secret. Enter it through the desktop attachment prompt; it is never loaded from daemon metadata.'
     );
   validateDaemonApprovalSecret(daemonProof);
+  if (reattach) {
+    // The same local address, now checked against the new instance. `retarget` verifies it and
+    // that it accepts this approval secret before anything changes.
+    await reattach.proxy.retarget(runtime, daemonProof);
+    if (ownedProcess) options.app.once('will-quit', () => ownedProcess.unref());
+    return reattachedResult(options, reattach, workingDir, errorLog);
+  }
   const proxy = await createDaemonProxy(
     runtime,
     options.serverSecret,
@@ -392,7 +437,42 @@ async function attachSharedDaemon(
     return true;
   };
   options.app.on('will-quit', detach);
-  return { baseUrl: proxy.baseUrl, managed: true, workingDir, process: handle, errorLog };
+  return {
+    baseUrl: proxy.baseUrl,
+    managed: true,
+    workingDir,
+    process: handle,
+    errorLog,
+    sharedDaemon: sharedDaemonLink(options, proxy),
+  };
+}
+
+/** The link the main process watches and reattaches through, for one proxy. */
+function sharedDaemonLink(options: StartBiorouterdOptions, proxy: DaemonProxy): SharedDaemonLink {
+  return {
+    onConnection: (listener) => proxy.onConnection(listener),
+    probe: () => proxy.probe(),
+    reconnect: async () => {
+      await startOrAttachBiorouterd(options, { proxy });
+    },
+  };
+}
+
+/** What a reconnect answers: the attachment it changed, at the address it always had. */
+function reattachedResult(
+  options: StartBiorouterdOptions,
+  reattach: Reattach,
+  workingDir: string,
+  errorLog: string[]
+): BiorouterdResult {
+  return {
+    baseUrl: reattach.proxy.baseUrl,
+    managed: true,
+    workingDir,
+    process: new ChildProcess(),
+    errorLog,
+    sharedDaemon: sharedDaemonLink(options, reattach.proxy),
+  };
 }
 
 async function stopFailedSharedStartup(child: ChildProcess): Promise<boolean> {
@@ -416,9 +496,18 @@ async function stopFailedSharedStartup(child: ChildProcess): Promise<boolean> {
   });
 }
 
-export const startBiorouterd = async (
-  options: StartBiorouterdOptions
-): Promise<BiorouterdResult> => {
+export const startBiorouterd = (options: StartBiorouterdOptions): Promise<BiorouterdResult> =>
+  startOrAttachBiorouterd(options);
+
+/**
+ * `startBiorouterd`, and a shared attachment's reconnect: the same discovery, the same prompts
+ * and, when no daemon answers, the same start of a new one. With `reattach`, what is found is
+ * attached to that existing proxy instead of a new one.
+ */
+async function startOrAttachBiorouterd(
+  options: StartBiorouterdOptions,
+  reattach?: Reattach
+): Promise<BiorouterdResult> {
   const { app, serverSecret, userActionKey, dir: inputDir, env = {}, externalBiorouterd } = options;
   const isWindows = process.platform === 'win32';
   const profileRoot = !app.isPackaged ? process.env.BIOROUTER_DEV_PROFILE_ROOT : undefined;
@@ -427,15 +516,17 @@ export const startBiorouterd = async (
     throw new Error('Isolated development profiles cannot reuse an external backend.');
   const dir = path.resolve(path.normalize(inputDir));
 
-  if (externalBiorouterd?.enabled && externalBiorouterd.url) {
+  if (!reattach && externalBiorouterd?.enabled && externalBiorouterd.url) {
     return connectToExternalBackend(dir, externalBiorouterd.url);
   }
 
-  if (process.env.BIOROUTER_EXTERNAL_BACKEND) {
+  if (!reattach && process.env.BIOROUTER_EXTERNAL_BACKEND) {
     return connectToExternalBackend(dir, externalBackendUrlFromEnv(process.env));
   }
 
   const sharedRuntime = !isWindows && isSharedDaemonEnabled();
+  if (reattach && !sharedRuntime)
+    throw new Error('Only a shared background service can be reconnected.');
   if (isWindows && process.env.BIOROUTER_SHARED_DAEMON !== undefined && isSharedDaemonEnabled())
     throw new Error(
       'Shared profile daemon attachment on Windows requires an owner-protected named pipe and is not available yet.'
@@ -455,7 +546,8 @@ export const startBiorouterd = async (
           throw error;
         staleInstance = existing.instance_id;
       }
-      if (!staleInstance) return attachSharedDaemon(options, existing, dir);
+      if (!staleInstance)
+        return attachSharedDaemon(options, existing, dir, undefined, [], undefined, reattach);
     }
   }
 
@@ -663,7 +755,8 @@ export const startBiorouterd = async (
             dir,
             biorouterdProcess,
             stderrLines,
-            newDaemonProof
+            newDaemonProof,
+            reattach
           );
         if (
           biorouterdProcess.exitCode !== null ||
@@ -736,7 +829,7 @@ export const startBiorouterd = async (
     process: biorouterdProcess,
     errorLog: stderrLines,
   };
-};
+}
 
 /**
  * Resolve the bundled `biorouter` CLI binary (sibling of biorouterd). Used to

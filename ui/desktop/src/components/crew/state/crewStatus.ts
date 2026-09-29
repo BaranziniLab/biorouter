@@ -80,6 +80,13 @@ export interface ConnectionStatusInput {
    * "Offline" and "Updates unavailable". Absent: false.
    */
   reconnecting?: boolean;
+  /**
+   * The verified view ended while this window's own save of the connection is on its way, and the
+   * end is left to that save (T3-UI-15). The daemon drops the bridge, saves and connects again
+   * inside the save, so the saved record's `disconnected` meanwhile is the save's doing: read as a
+   * connected connection being updated, never "Offline". Absent: false.
+   */
+  awaitingSave?: boolean;
 }
 
 /**
@@ -102,7 +109,7 @@ export function deriveConnectionStatus(input: ConnectionStatusInput): Connection
   if (input.reconnecting === true) return 'reconnecting';
   if (inFlight) return 'connecting';
   if (notJoined) return 'not-joined';
-  if (connection.status === 'connected') {
+  if (connection.status === 'connected' || (input.awaitingSave === true && !observationError)) {
     if (observationError) return 'updates-unavailable';
     return reverifying ? 'updating' : 'checking';
   }
@@ -161,6 +168,11 @@ export interface CrewScreenInput {
    * stopped" one. Absent: false.
    */
   reconnecting?: boolean;
+  /**
+   * The view ended into this window's own save of the connection (T3-UI-15): the neutral checking
+   * screen while the save reconnects, never the offline one and its Connect. Absent: false.
+   */
+  awaitingSave?: boolean;
 }
 
 /** Exactly one main-area screen for the controller's state. Pure and table-tested. */
@@ -186,6 +198,7 @@ export function deriveCrewScreen(input: CrewScreenInput): CrewScreen {
   if (failure === 'auth_required' && !input.signInOpen) return 'sign-in';
   if (isNotSetUpFailure(failure)) return 'not-set-up';
   if (input.notJoined) return 'join';
+  if (input.awaitingSave === true && !input.observationError) return 'checking';
   // Mirrors the status table: an observation error pauses updates only on a connection the
   // daemon calls connected. The observer also runs for a saved-disconnected connection (after an
   // app restart or a dropped SSH bridge), and the daemon answers it with an error frame; showing
@@ -276,6 +289,14 @@ export interface TransferStatePresentation {
   active: boolean;
   /** Whole percent for the progress bar, when the state has one. */
   percent?: number;
+  /** Why a paused transfer stopped, in a few words ("You paused it"), when the daemon said. */
+  reason?: string;
+  /**
+   * Paused because the workspace server could not save it (`pause_reason: server_storage`,
+   * T3-BE-14): Resume works once its host has freed space, which the row says in the viewer's
+   * words.
+   */
+  serverStorage?: boolean;
 }
 
 export interface TransferStateInput {
@@ -284,7 +305,14 @@ export interface TransferStateInput {
   offset: number;
   size: number;
   error?: string | null;
+  pause_reason?: string | null;
 }
+
+/** The daemon's `pause_reason` for a transfer the workspace server could not save (T3-BE-14). */
+export const SERVER_STORAGE_PAUSE = 'server_storage';
+
+/** Said of a transfer paused because the workspace server could not save it. */
+export const SERVER_STORAGE_PAUSE_REASON = 'The workspace server couldn’t save it';
 
 function percentOf(offset: number, size: number): number {
   if (!(size > 0) || !Number.isFinite(offset)) return 0;
@@ -292,9 +320,36 @@ function percentOf(offset: number, size: number): number {
 }
 
 /**
+ * Why a `needs_file_selection` transfer stopped, from the daemon's recovery sentence
+ * (`transfer_recovery_message` in `crates/biorouter-server/src/crew/transfers.rs`), in the few
+ * words a row has room for. A sentence this renderer does not know is shown as it came; none (a
+ * receipt the daemon reloaded after a restart) gives no reason.
+ */
+const PAUSE_REASONS: readonly (readonly [RegExp, string])[] = [
+  [/^Transfer paused\b/, 'You paused it'],
+  [/^Authenticate and reconnect the saved connection\b/, 'The connection dropped'],
+  [/^Unlock the Crew credential vault\b/, 'The credential vault is locked'],
+  [/^Two transfers are active\b/, 'Two other transfers were running'],
+  [/^The Crew connection or privacy policy changed\b/, 'The connection’s privacy changed'],
+  [/^Transfer stopped\b/, 'It stopped'],
+];
+
+export function transferPauseReason(error: string | null | undefined): string | undefined {
+  const text = typeof error === 'string' ? error.trim() : '';
+  if (!text) return undefined;
+  return PAUSE_REASONS.find(([pattern]) => pattern.test(text))?.[1] ?? text;
+}
+
+/**
  * The word a transfer row shows. The daemon's receipt states are `starting`, `uploading`,
- * `downloading`, `publishing`, `pause_requested`, `needs_file_selection` (paused, or stopped by a
- * failure when `error` is set), `completed` and `publication_unconfirmed`.
+ * `downloading`, `publishing`, `pause_requested`, `needs_file_selection`, `failed`, `completed`
+ * and `publication_unconfirmed`.
+ *
+ * `needs_file_selection` is every stop a reselection resumes: the person paused it, the
+ * connection dropped, the vault locked, two other transfers were running. The daemon stores each
+ * with its reason in `error`, a pause included, so it always reads "Paused" with that reason
+ * (FILES-F4: it read "Failed" whenever `error` was set, which for a pause is always). "Failed" is
+ * `failed` alone: a transfer the workspace refused, which reselecting cannot fix.
  */
 export function transferStatePresentation(transfer: TransferStateInput): TransferStatePresentation {
   const percent = percentOf(transfer.offset, transfer.size);
@@ -309,10 +364,27 @@ export function transferStatePresentation(transfer: TransferStateInput): Transfe
       return { key: 'finishing', word: 'Finishing…', active: true };
     case 'pause_requested':
       return { key: 'pausing', word: 'Pausing…', active: true, percent };
-    case 'needs_file_selection':
-      return transfer.error
-        ? { key: 'failed', word: 'Failed', active: false }
-        : { key: 'paused', word: 'Paused', active: false, percent };
+    case 'needs_file_selection': {
+      // The workspace's own sentence tells a member to ask the host, whoever reads it: the row
+      // words it by who is reading (RES2-N3).
+      if (transfer.pause_reason === SERVER_STORAGE_PAUSE)
+        return {
+          key: 'paused',
+          word: 'Paused',
+          active: false,
+          percent,
+          reason: SERVER_STORAGE_PAUSE_REASON,
+          serverStorage: true,
+        };
+      const reason = transferPauseReason(transfer.error);
+      return {
+        key: 'paused',
+        word: 'Paused',
+        active: false,
+        percent,
+        ...(reason ? { reason } : {}),
+      };
+    }
     case 'completed':
       return transfer.direction === 'upload'
         ? { key: 'ready', word: 'Ready', active: false }

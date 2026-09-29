@@ -99,20 +99,76 @@ fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     files
 }
 
+/// SF-F8: `biorouter --version` names the program, and a version or help probe, the first
+/// thing an install script runs, writes nothing: no `config.yaml`, no privacy master-switch
+/// record, no log directory. The root starts empty and stays empty.
+#[test]
+fn a_version_or_help_probe_names_the_program_and_writes_nothing() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let root = dir.path().join("root");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&root).unwrap();
+    let probe = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_biorouter"))
+            .args(args)
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_STATE_HOME", home.join(".local/state"))
+            .env("BIOROUTER_PATH_ROOT", &root)
+            .env("BIOROUTER_DISABLE_KEYRING", "true")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the biorouter binary")
+    };
+    let version = probe(&["--version"]);
+    assert_eq!(version.status.code(), Some(0), "{}", text(&version.stderr));
+    assert_eq!(
+        text(&version.stdout),
+        format!("biorouter {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    for args in [
+        &["--help"][..],
+        &["session", "--help"],
+        &["help", "run"],
+        &["-V"],
+    ] {
+        let out = probe(args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+    }
+    for written in [&root, &home] {
+        assert_eq!(
+            snapshot(written),
+            Vec::new(),
+            "a probe wrote under {}",
+            written.display()
+        );
+        let entries: Vec<_> = std::fs::read_dir(written).unwrap().collect();
+        assert!(entries.is_empty(), "a probe created {entries:?}");
+    }
+}
+
 /// `echo | biorouter configure` exits 2 with the sentence, and the whole
 /// configuration directory is byte-identical afterwards.
 ///
-/// The sandbox is started once first. Every `biorouter` process — `--version`
-/// included — runs the privacy master switch's one-time migration at start-up,
+/// The sandbox is started once first. Every `biorouter` process that runs a
+/// command runs the privacy master switch's one-time migration at start-up,
 /// which writes `privacy-tiers.json` beside a config that lacks one; a real
 /// install already has it. Snapshotting after that start makes the comparison
 /// about what `configure` does, not about what start-up does once per install.
+/// `info` starts up and only reads; `--version` no longer starts up at all.
 #[test]
 fn configure_under_a_pipe_exits_2_with_guidance_and_leaves_config_byte_identical() {
     let sandbox = Sandbox::new();
     let original = b"# hand-edited\nBIOROUTER_PROVIDER:   versa_azure\nBIOROUTER_MODEL: gpt-5.5\n";
     std::fs::write(sandbox.config_yaml(), original).unwrap();
-    let warm = sandbox.run(&["--version"], "");
+    let warm = sandbox.run(&["info"], "");
     assert_eq!(warm.status.code(), Some(0), "{}", text(&warm.stderr));
     let before = snapshot(&sandbox.root.join("config"));
     assert!(

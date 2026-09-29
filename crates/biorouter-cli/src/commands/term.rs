@@ -142,7 +142,7 @@ pub async fn handle_term_init(
             // every shell that sourced the script. The guard resolves the
             // configured default itself, which is why no flags are passed —
             // `term init` accepts none.
-            crate::cli::refuse_unconfigured_before_creating_a_row(None, None)?;
+            crate::cli::refuse_unconfigured_before_creating_a_row(None, None).await?;
             let session = session_manager
                 .create_session(
                     working_dir,

@@ -13,6 +13,19 @@ describe('surface resets', () => {
     expect(nextUiAfterReset(ui, 'refresh')).toEqual({ dialog: null, pane });
   });
 
+  /**
+   * SF2-N7: Make private in Workspace settings made the daemon connect again, and the refresh that
+   * follows closed the dialog half a second after its own change was saved.
+   */
+  it('keeps Workspace settings open through a refresh, and closes it when the view is gone', () => {
+    const settings: DialogIntent = { kind: 'workspace-settings', tab: 'privacy' };
+    const ui: CrewUi = { dialog: settings, pane };
+    expect(nextUiAfterReset(ui, 'refresh')).toBe(ui);
+    for (const reason of ['protected-cleared', 'channel-revoked', 'connection-changed'] as const)
+      expect(nextUiAfterReset(ui, reason)).toEqual({ dialog: null, pane: null });
+    expect(nextUiAfterReset(ui, 'mutated')).toEqual({ dialog: null, pane });
+  });
+
   it.each<DialogIntent>([
     { kind: 'join' },
     { kind: 'host' },

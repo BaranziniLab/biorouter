@@ -12,8 +12,13 @@
 
 BioRouter stores provider API keys and other secrets in the operating system's native
 credential store: the **macOS Keychain**, the **Windows Credential Manager**, or the **Linux
-Secret Service** (GNOME Keyring / KWallet). Secrets never touch disk in plaintext, custody
-stays with the OS, and access is gated by the same mechanisms the rest of the platform uses.
+Secret Service** (GNOME Keyring / KWallet). While the credential store answers, secrets never
+touch disk in plaintext, custody stays with the OS, and access is gated by the same mechanisms the
+rest of the platform uses. Where no credential store answers, or you opt out, secrets go to a
+plaintext file instead, which Biorouter creates readable only by your account (see
+[Escape hatches](#escape-hatches)). The provider screens say so in one sentence: "Keys are kept
+in your system keychain when one is available, otherwise in a private file in Biorouter's
+settings folder."
 
 BioRouter reads the credential store **once per process** and caches secrets in memory for the
 rest of the run, so a single authorization covers an entire session — you will never see
@@ -68,6 +73,15 @@ your password is needed **twice, ever**, once per binary. Usually it is once or 
 The `secrets.yaml` path above is the macOS and Linux location. It sits alongside `config.yaml`;
 for the per-platform config directory, including Windows, see the
 [configuration file reference](../configuration/config-file-reference.md).
+
+On macOS and Linux, Biorouter writes `secrets.yaml` with mode 0600 (readable and writable by your
+account only), whatever your umask, and creates a missing folder with mode 0700. A `secrets.yaml`
+that is readable by others is tightened to 0600 before the next write. Anyone who can act as your
+account, or as root, can still read the file, so prefer the credential store where one exists.
+
+Crew device keys are the exception: they never go to `secrets.yaml`. On a computer with no
+credential store, Crew keeps them in an encrypted vault instead; see
+[Keep device keys in an encrypted vault](../crew/command-line.md#keep-device-keys-in-an-encrypted-vault).
 
 ## Developer builds: rebuilds re-prompt unless you sign
 

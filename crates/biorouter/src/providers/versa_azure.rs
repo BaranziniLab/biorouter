@@ -252,8 +252,39 @@ fn no_deployment_error(model: &str) -> ProviderError {
         .unwrap_or_default();
     ProviderError::RequestFailed(format!(
         "no Versa deployment for model `{model}` (Azure deployment not found, so nothing \
-         was sent).{retired} Available: {available}. Switch this chat to one of those models."
+         was sent).{retired} Available: {available}. Choose one of those models."
     ))
+}
+
+/// T3-SH-3 — the Versa gateway's answer to [`VersaAzureProvider::check_credentials`]'s
+/// probe, read as a refusal of the key (`Some`, in the gateway's words) or as
+/// anything else (`None`).
+///
+/// A 401 is always the credential: the gateway answers a key it does not know
+/// with `{"error": "Invalid client id or secret"}` before it looks at the
+/// request. A 403 is the credential only in those words
+/// ([`super::names_a_rejected_credential`]); otherwise it is something a valid
+/// key can meet too, and a check that refused it would roll a working key back.
+fn versa_gateway_credential_refusal(status: reqwest::StatusCode, body: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let said = parsed.as_ref().and_then(|value| {
+        value
+            .get("error")
+            .and_then(|error| error.as_str().or_else(|| error.get("message")?.as_str()))
+            .or_else(|| value.get("message")?.as_str())
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_string)
+    });
+    match status {
+        reqwest::StatusCode::UNAUTHORIZED => {
+            Some(said.unwrap_or_else(|| "the gateway answered 401 Unauthorized".to_string()))
+        }
+        reqwest::StatusCode::FORBIDDEN => {
+            said.filter(|message| super::names_a_rejected_credential(message))
+        }
+        _ => None,
+    }
 }
 
 fn versa_azure_model_supports_vision(name: &str) -> bool {
@@ -750,6 +781,37 @@ impl Provider for VersaAzureProvider {
         true
     }
 
+    /// T3-SH-3. Versa has no model listing, so the default check sent nothing
+    /// and a wrong key was saved over the working one and shown Configured.
+    ///
+    /// The probe is a chat request with no messages. The gateway checks the key
+    /// before it forwards anything, so a wrong key is refused (401) and a right
+    /// one reaches Azure, which rejects the empty request (400) without running
+    /// the model: nothing is generated and nothing is billed. Measured against
+    /// the UCSF gateway on 2026-09-28: a wrong key got 401 `Invalid client id or
+    /// secret` in 0.2 s, the real key got 400 `empty_array` in 0.6 s.
+    async fn check_credentials(&self) -> Result<(), ProviderError> {
+        // The route of the model this instance was built for, or of the default
+        // model when that one has no deployment: the key is the gateway's
+        // question, not the deployment's.
+        let path = self
+            .chat_completions_path(&self.model.model_name)
+            .or_else(|_| self.chat_completions_path(VERSA_AZURE_DEFAULT_MODEL))?;
+        let response = self
+            .api_client
+            .response_post(&path, &serde_json::json!({ "messages": [] }))
+            .await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        match versa_gateway_credential_refusal(status, &body) {
+            Some(reason) => Err(ProviderError::Authentication(reason)),
+            None => Ok(()),
+        }
+    }
+
     async fn stream(
         &self,
         system: &str,
@@ -1096,6 +1158,18 @@ mod tests {
                 "{model}: retirement date `{retires}` does not parse"
             );
         }
+    }
+
+    /// `biorouter configure` runs the same model check as a chat, so the refusal
+    /// must not tell someone at the configure prompt to switch "this chat".
+    #[test]
+    fn the_no_deployment_refusal_names_no_chat() {
+        let refusal = no_deployment_error("gpt-4.1-bogus-qa-probe").to_string();
+        assert!(!refusal.contains("chat"), "{refusal}");
+        assert!(
+            refusal.ends_with("Choose one of those models."),
+            "{refusal}"
+        );
     }
 
     /// Both halves of a retiring deployment: routed until its retirement date,
@@ -2117,5 +2191,116 @@ mod routing_tests {
                 "{model} has no MODEL_CONTEXT_WINDOWS entry of its own"
             );
         }
+    }
+
+    /// T3-SH-3. A stand-in gateway answering the credential probe the way the
+    /// UCSF one was measured to (2026-09-28), and what it received.
+    async fn probed(
+        status: u16,
+        body: serde_json::Value,
+    ) -> (Result<(), ProviderError>, Vec<Request>) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .mount(&server)
+            .await;
+        let provider = aimed_at(
+            bound(VERSA_AZURE_DEFAULT_MODEL, config("", "")).await,
+            &server,
+        );
+        let outcome = provider.check_credentials().await;
+        (
+            outcome,
+            server.received_requests().await.unwrap_or_default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_key_the_gateway_does_not_know_is_refused_in_its_words() {
+        let (outcome, requests) = probed(
+            401,
+            serde_json::json!({"error": "Invalid client id or secret"}),
+        )
+        .await;
+        match outcome {
+            Err(ProviderError::Authentication(reason)) => {
+                assert_eq!(reason, "Invalid client id or secret")
+            }
+            other => panic!("a 401 is the key being refused, got {other:?}"),
+        }
+        // One request, to the model's own deployment, asking for nothing to be
+        // generated: an empty message list, which Azure rejects unrun.
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), path_of(VERSA_AZURE_DEFAULT_MODEL));
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(sent, serde_json::json!({"messages": []}));
+    }
+
+    #[tokio::test]
+    async fn a_key_the_gateway_forwards_is_accepted_whatever_azure_says_next() {
+        // What the real key got: the gateway let it through and Azure refused
+        // the empty request. That says the key is good.
+        let (outcome, _) = probed(
+            400,
+            serde_json::json!({"error": {"message": "Invalid 'messages': empty array.", "code": "empty_array"}}),
+        )
+        .await;
+        assert!(outcome.is_ok(), "{outcome:?}");
+        for status in [404, 429, 500, 503] {
+            let (outcome, _) =
+                probed(status, serde_json::json!({"error": {"message": "busy"}})).await;
+            assert!(
+                outcome.is_ok(),
+                "{status} says nothing about the key: {outcome:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_403_refuses_only_when_it_names_the_credential() {
+        // A 403 a valid key can meet too (a network rule, a policy) must never
+        // roll a working key back.
+        let (outcome, _) = probed(
+            403,
+            serde_json::json!({"error": {"message": "Access denied due to Virtual Network/Firewall rules."}}),
+        )
+        .await;
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let (outcome, _) = probed(
+            403,
+            serde_json::json!({"error": "Invalid client id or secret"}),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Authentication(_))),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_cannot_be_reached_says_nothing_about_the_key() {
+        // A port nothing listens on. Not a dropped MockServer: wiremock hands a
+        // dropped server back to its pool, still listening, and the probe would
+        // land in whichever test took it next.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let uri = format!("http://127.0.0.1:{port}");
+        let mut provider = bound(VERSA_AZURE_DEFAULT_MODEL, config("", "")).await;
+        provider.api_client = ApiClient::new(
+            uri,
+            AuthMethod::ApiKey {
+                header_name: "api-key".to_string(),
+                key: "test-key".to_string(),
+            },
+        )
+        .unwrap();
+        let outcome = provider.check_credentials().await;
+        assert!(
+            !matches!(outcome, Err(ProviderError::Authentication(_))),
+            "a network failure is not a refusal: {outcome:?}"
+        );
     }
 }

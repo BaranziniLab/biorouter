@@ -121,9 +121,20 @@ cannot gate the initial document. The exchange is therefore:
 
 1. `biorouter serve` mints a random browser token for the launch and prints it in the URL.
 2. `GET /?t=<token>` validates it, sets an `httpOnly`, `SameSite=Strict` session cookie, and
-   redirects to `/`.
+   answers a short page of the daemon's own origin that moves the browser on to `/`. It is a page
+   and not a redirect because a redirect keeps a `SameSite=Strict` cookie off a navigation another
+   site started, and `serve --open` starts one from a `file:` page (below).
 3. `GET /` with that cookie returns the shell, with the daemon's secret injected into it.
 4. From then on the application presents `X-Secret-Key` exactly as the desktop renderer does.
+
+**How `--open` hands the address to a browser.** The address carries the token, which works until
+the daemon stops, and whoever redeems it gets the shell and the daemon's secret with it. A browser
+opener's arguments can be read by every account on the machine (`ps` on macOS, and
+`/proc/<pid>/cmdline` on Linux for as long as a browser started that way runs), so `serve` never
+hands the address to one. It writes the address into a page only the operator's account can read
+(mode 0600, in a 0700 folder in Biorouter's state directory) and hands the opener that page's path.
+The page sends the browser on with a meta refresh, and `serve` removes it two minutes later, or
+when it stops. `biorouter apps open` hands over an app's launch link the same way.
 
 The cookie gates **the document only**. It is deliberately not accepted as authentication on the
 API routes: doing so would make every API route reachable by a cookie the browser attaches

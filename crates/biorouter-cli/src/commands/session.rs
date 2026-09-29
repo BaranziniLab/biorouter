@@ -533,13 +533,21 @@ async fn print_grouped_sessions(
 ///
 /// `Ok(false)` means "refused, and the reason has been printed" — the caller
 /// returns without writing anything.
+///
+/// A chat a Crew grant restricts is an `Err` holding
+/// [`CrewContextRefusal`](biorouter::session::session_manager::CrewContextRefusal)
+/// instead, whose text is the plain sentence the desktop shows for the same
+/// chat. An error rather than a printed refusal because nothing here can
+/// satisfy it (no model, no prompt), and a script that redirected stdout to a
+/// file must see a failure, not a file holding the refusal and a zero exit.
 async fn authorize_export_at_terminal(
     session_manager: &SessionManager,
     session_id: &str,
 ) -> Result<bool> {
     use biorouter::privacy::system_auth::AuthOutcome;
     use biorouter::session::session_manager::{
-        authenticate_export, ExportDecision, EXPORT_NOT_PROTECTED,
+        authenticate_export, CrewContextRefusal, ExportDecision, CREW_EXPORT_REFUSAL,
+        EXPORT_NOT_PROTECTED,
     };
 
     let capability = crate::session::privacy::caller_capability().await;
@@ -559,6 +567,9 @@ async fn authorize_export_at_terminal(
             .await?
         {
             ExportDecision::Unrestricted | ExportDecision::Authorized => return Ok(true),
+            ExportDecision::CrewContext => {
+                return Err(CrewContextRefusal(CREW_EXPORT_REFUSAL).into())
+            }
             ExportDecision::SessionNotFound => {
                 return Err(anyhow::anyhow!("Session '{session_id}' not found."))
             }
@@ -1117,6 +1128,66 @@ pub async fn prompt_interactive_session_selection(
     }
 }
 
+/// Save a Crew registry in which a grant that stands restricts each of
+/// `session_ids`, for a test running in a process of its own.
+///
+/// ⚠ Call it before anything in the process opens the Crew registry: it is
+/// read from disk once per process, so a registry written after that first read
+/// restricts nothing, and the test relying on it fails.
+#[cfg(test)]
+pub(crate) fn restrict_by_crew_grant(session_ids: &[&str]) {
+    let root = biorouter::config::paths::Paths::config_dir().join("crew");
+    std::fs::create_dir_all(&root).unwrap();
+    let registry = root.join("connections.json");
+    assert!(
+        !registry.exists(),
+        "a Crew registry was saved before the fixture"
+    );
+    let scopes: serde_json::Map<String, serde_json::Value> = session_ids
+        .iter()
+        .map(|id| {
+            (
+                id.to_string(),
+                serde_json::json!({
+                    "connection_id": "conn-cli-fixture",
+                    "run_id": format!("run-{id}"),
+                    "channel_id": "chan-cohort",
+                    "source_channels": ["chan-cohort"],
+                    "epoch": 1,
+                    "provider_binding": "openai",
+                    "public_provider": true,
+                    "institution_policy": false,
+                    "expired": false,
+                    "expires_at": 4_000_000_000_u64,
+                }),
+            )
+        })
+        .collect();
+    let saved = serde_json::json!({
+        "connections": [{
+            "id": "conn-cli-fixture",
+            "name": "Cohort lab",
+            "ssh_target": "crew@crew.invalid",
+            "port": null,
+            "identity_file": null,
+            "proxy_jump": null,
+            "socket_path": "/tmp/crew-cli-fixture.sock",
+            "owner_uid": 501,
+            "workspace_id": "workspace-cohort",
+            "workspace_public_key": "00".repeat(32),
+            "cluster_connection_id": "cluster-cohort",
+            "mode": "public",
+            "policy_epoch": 1,
+            "status": "disconnected",
+            "last_error": null,
+            "device_id": "11".repeat(32),
+            "public_key": "22".repeat(32),
+        }],
+        "scopes": scopes,
+    });
+    std::fs::write(&registry, serde_json::to_vec(&saved).unwrap()).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1482,6 +1553,68 @@ mod tests {
             presenter.contains("export_capability_refusal("),
             "the terminal does not offer the repair for a public-model export"
         );
+    }
+
+    /// `biorouter session export` refuses a chat a Crew grant restricts, with
+    /// the plain sentence the desktop shows for the same chat, and writes
+    /// nothing. It asked only the privacy tier, so a Crew chat on a public
+    /// workspace and model came out whole, hidden channel context included,
+    /// with no prompt and no record. A chat no grant restricts still exports,
+    /// so the refusal is Crew's and not a refusal of every export.
+    ///
+    /// Driven for real, in a process of its own: there the
+    /// `SessionManager::instance()` singleton the handler is bound to lives in
+    /// that process's own sandbox, and the Crew registry, read once per
+    /// process, is the one this test saves.
+    #[tokio::test]
+    async fn session_export_refuses_a_crew_chat_and_writes_nothing() {
+        use biorouter::session::session_manager::{CrewContextRefusal, CREW_EXPORT_REFUSAL};
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let sm = SessionManager::instance();
+        let mut chats = Vec::new();
+        for (name, text) in [
+            (
+                "Crew task",
+                "<crew_context>cohort-7 enrolment notes</crew_context> Summarize them.",
+            ),
+            ("Plain chat", "What changed this week?"),
+        ] {
+            let chat = sm
+                .create_session(std::env::temp_dir(), name.to_string(), SessionType::User)
+                .await
+                .unwrap();
+            sm.add_message(&chat.id, &Message::user().with_text(text))
+                .await
+                .unwrap();
+            chats.push(chat.id);
+        }
+        restrict_by_crew_grant(&[&chats[0]]);
+        let out = TempDir::new().unwrap();
+
+        for format in ["json", "yaml", "markdown"] {
+            let file = out.path().join(format!("crew.{format}"));
+            let error = handle_session_export(chats[0].clone(), Some(file.clone()), format.into())
+                .await
+                .expect_err("a Crew chat must not be exported from the terminal");
+            assert_eq!(
+                error.downcast_ref::<CrewContextRefusal>(),
+                Some(&CrewContextRefusal(CREW_EXPORT_REFUSAL)),
+                "{format}: refused for the wrong reason: {error:#}"
+            );
+            assert_eq!(error.to_string(), CREW_EXPORT_REFUSAL);
+            assert!(!file.exists(), "{format}: the refused export wrote a file");
+        }
+
+        let file = out.path().join("plain.json");
+        handle_session_export(chats[1].clone(), Some(file.clone()), "json".into())
+            .await
+            .expect("a chat no grant restricts exports as before");
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("What changed this week?"));
     }
 
     /// The subagent listing shows a child that produced NOTHING.

@@ -7,6 +7,7 @@ import type {
   Snapshot,
   Team,
 } from '../crewApi';
+import type * as Api from '../../../api/types.gen';
 import type { ConnectFailureKind } from './connectFailure';
 import type { ConnectionStatusKey, CrewScreen } from './crewStatus';
 
@@ -70,30 +71,11 @@ export interface CrewDraft {
 }
 
 /** The body the daemon accepts for `POST /crew/connections` and `PATCH /crew/connections/{id}`. */
-export interface SaveConnectionInput {
-  name: string;
-  ssh_target: string;
-  port?: number;
-  identity_file?: string;
-  proxy_jump?: string;
-  socket_path: string;
-  owner_uid: number;
-  workspace_id: string;
-  workspace_public_key: string;
-  cluster_connection_id?: string;
-  remote_root?: string;
-  remote_execution: boolean;
-  mode: 'private' | 'public';
-  institution_id: string | null;
-  preparation_id?: string;
-}
+/** `POST /crew/connections` and `PATCH …/{id}`: the body the daemon's spec declares (CROSSCUT-6). */
+export type SaveConnectionInput = Api.SaveConnection;
 
 /** `POST /crew/devices/prepare`: the prepared (or recovered) hosting identity. */
-export interface PreparedDevice {
-  preparation_id: string;
-  public_key: string;
-  device_id: string;
-}
+export type PreparedDevice = Api.PreparedDevice;
 
 export interface LastConnectFailure {
   kind: ConnectFailureKind;
@@ -192,6 +174,37 @@ export interface CrewActionError {
   message: string;
   code?: string;
   source: ErrorSource;
+  /**
+   * The connection and channel (`postDestination`) whose composer this error belongs to: a send
+   * failure answers the draft of one channel, so another channel's composer never shows it
+   * (QA M5, R-4).
+   */
+  destination?: string;
+  /**
+   * The link to the workspace failed, rather than the workspace answering: stale once the
+   * connection verifies again, so it is dismissed then instead of staying under "Connected".
+   */
+  transport?: boolean;
+}
+
+/**
+ * A channel's unsent words the person can no longer send (QA M10): the channel was closed to them,
+ * with the words in the composer or kept aside for it. They are offered once, in a note above the
+ * message box with Copy draft, and live only in that note: dismissing it drops them, and they are
+ * never put back into any composer.
+ */
+export interface LostDraft {
+  id: number;
+  connectionId: string;
+  /** The channel as `#name`, from the last view that still had it; null when none named it. */
+  channel: string | null;
+  body: string;
+}
+
+/** What an error may say beyond its words: the composer it belongs to, and whether it is the link's. */
+export interface ErrorDetails {
+  destination?: string;
+  transport?: boolean;
 }
 
 /**
@@ -248,6 +261,21 @@ export interface StartOwnedRunInput {
   clearBody?: boolean;
 }
 
+/**
+ * Where a task start whose outcome is unknown went (RENDERER-5): the IDs, for comparing, and the
+ * names as the rest of Crew shows them, for saying. The names are sanitized display names and are
+ * never an ID: an object missing from the view reads "Untitled team" or `#untitled`.
+ */
+export interface UnknownRunDestination {
+  connectionId: string;
+  teamId: string;
+  channelId: string;
+  /** `#slug`, as `channelName` shows it. */
+  channel: string;
+  /** The team's name, as `teamName` shows it. */
+  team: string;
+}
+
 export interface CrewController {
   // Connections
   connections: CrewConnection[];
@@ -257,9 +285,19 @@ export interface CrewController {
   /** `loading` until the first `GET /crew/connections` answers; `failed` if it never has. */
   connectionsState: 'loading' | 'loaded' | 'failed';
   selectConnection(id: string): void;
+  /**
+   * Read the saved connections again, in the background: the workspace menu asks as it opens, so
+   * it lists what the daemon has now (MSG2-N9). A failure keeps the list. Absent: the list is read
+   * only by the controller's own schedule.
+   */
+  reloadConnections?(): void;
   /** POST, reload the list and select the saved connection. Throws on failure. */
   saveConnection(input: SaveConnectionInput): Promise<CrewConnection>;
-  /** Full-body PATCH (L18) and reload the list. Throws on failure. */
+  /**
+   * Full-body PATCH (L18) and reload the list. Throws on failure. The daemon reconnects inside
+   * it, so an observation end meanwhile is left to it and observed again once it is back, never
+   * decided as a lost connection (T3-UI-15).
+   */
   updateConnection(id: string, input: SaveConnectionInput): Promise<CrewConnection>;
   /** DELETE and reload the list. Throws on failure. */
   removeConnection(id: string): Promise<void>;
@@ -283,6 +321,13 @@ export interface CrewController {
    * never connects it by itself. Absent: false.
    */
   reconnecting?: boolean;
+  /**
+   * When the daemon first said it is dialling the selected connection again by itself (a request
+   * answered `crew_reconnecting`, W2-DMN-6), in ms since the epoch, while that stands: the main
+   * area then says so, with the time and Connect, rather than "offline" under a bar that says
+   * "Reconnecting" (RES2-N5). Null or absent otherwise.
+   */
+  redialSince?: number | null;
   lastConnectFailure: LastConnectFailure | null;
   /** Classify and record a failure a layout observed (for example sign-in ending with a code). */
   reportConnectFailure(failure: unknown): void;
@@ -348,7 +393,17 @@ export interface CrewController {
    * Absent: the bar falls back to `refresh()`.
    */
   retryUpdates?(): Promise<void>;
+  /** Add the page before the window's first message above it (QA M6). */
   loadOlder(): void;
+  /**
+   * Add the page after the window's last message below it, while the window does not reach the
+   * live tail. Absent on a stand-in controller.
+   */
+  loadNewer?(): void;
+  /** The window reaches the channel's first message (an older page came back short). */
+  reachesStart?: boolean;
+  /** A page being added to the window, if one is on its way. */
+  historyLoading?: 'older' | 'newer' | null;
   jumpToLatest(): void;
 
   // Selection
@@ -384,8 +439,13 @@ export interface CrewController {
   errorSlotFor(source: ErrorSource): boolean;
   /** A surface that can show its own errors registers while mounted; returns the unregister. */
   registerErrorSlot(source: ErrorSource): () => void;
-  reportError(message: string, source?: ErrorSource, code?: string): void;
+  reportError(message: string, source?: ErrorSource, code?: string, details?: ErrorDetails): void;
   dismissError(): void;
+  /**
+   * Dismiss `error` only if it is still the one on show: a surface letting go of the error it
+   * showed never takes a newer one with it. Absent on a stand-in controller.
+   */
+  dismissErrorIfShown?(error: CrewActionError): void;
   isPending(key: ActionKey): boolean;
   /** The coarse view: true while any action is pending. */
   busy: boolean;
@@ -415,11 +475,19 @@ export interface CrewController {
   setContextChannels(ids: string[]): void;
   send(): Promise<void>;
   clearBodyIfEquals(seed: string): void;
+  /**
+   * Unsent words of channels the person lost access to on this connection (QA M10), offered for
+   * copying in a note above the message box until dismissed. Never put back into a composer.
+   * Absent on a stand-in controller.
+   */
+  lostDrafts?: readonly LostDraft[];
+  dismissLostDraft?(id: number): void;
 
   // Owned runs (module-scoped unknown-outcome lock, C10)
   /** Records its error under `pane:agent`; resolves true only when the start was accepted. */
   startOwnedRun(input: StartOwnedRunInput): Promise<boolean>;
-  unknownRunDestination: string | null;
+  /** Where a start whose outcome is unknown went, while that lock holds; else null. */
+  unknownRunDestination: UnknownRunDestination | null;
   inspectedPriorRun: boolean;
   setInspectedPriorRun(value: boolean): void;
   /** POST cancel, then refresh. Records its error under `global`; never throws. */

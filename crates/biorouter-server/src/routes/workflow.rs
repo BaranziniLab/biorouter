@@ -5,6 +5,7 @@ use std::sync::Arc;
 use axum::extract::rejection::JsonRejection;
 use axum::routing::get;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use biorouter::session::session_manager::CrewContextRefusal;
 use biorouter::workflow::service;
 use biorouter::workflow::validate_workflow::validate_workflow_template_from_content;
 use biorouter::workflow::Workflow;
@@ -156,7 +157,10 @@ pub struct WorkflowToYamlResponse {
         (status = 403, description = "Refused by a privacy boundary: `session_id` names a chat \
                                       this caller may not reach, answered with the same refusal, \
                                       word for word, that `GET /sessions/{session_id}` gives \
-                                      (body = plain text)"),
+                                      (body = plain text). Or, to a caller that may reach it, \
+                                      refused because a Crew grant restricts the chat: nothing \
+                                      was read or generated, and the body is the plain sentence \
+                                      saying why"),
         (status = 412, description = "Precondition failed - Agent not available"),
         (status = 500, description = "Internal server error")
     ),
@@ -181,6 +185,31 @@ async fn create_workflow(
     .await
     {
         return refusal.into_response();
+    }
+    // Crew. A workflow made from this chat is its transcript again, rewritten by
+    // a model, and it outlives the grant: it is saved, shared and run in chats no
+    // grant scopes. So a Crew chat is refused as its export and its copy are,
+    // before the chat is loaded or an agent is built for it, so nothing of the
+    // channel's context reaches the generator. After the reach gate, which keeps
+    // a Crew chat's standing from a caller without the person's proof.
+    if let Err(error) = service::refuse_crew_source(&request.session_id).await {
+        return match error.downcast_ref::<CrewContextRefusal>() {
+            Some(refusal) => {
+                tracing::info!(
+                    session_id = %request.session_id,
+                    "Refused to make a workflow from a chat a Crew grant restricts; nothing was read"
+                );
+                (StatusCode::FORBIDDEN, refusal.to_string()).into_response()
+            }
+            None => {
+                tracing::error!(
+                    session_id = %request.session_id,
+                    %error,
+                    "Couldn't open the Crew registry to check a workflow's source; nothing was read"
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        };
     }
     let caller = crate::routes::session_reach::http_caller(&headers).await;
     match workflow_from_session(&state, request).await {

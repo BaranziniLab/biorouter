@@ -46,6 +46,7 @@ import {
   startBiorouterd,
   getBiorouterCliBinaryPath,
   validateDaemonApprovalSecret,
+  type SharedDaemonLink,
 } from './biorouterd';
 import {
   TerminalSessionRegistry,
@@ -53,7 +54,12 @@ import {
   terminalSessionLimitMessage,
   type RegisteredTerminalSession,
 } from './terminalSessionRegistry';
-import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
+import {
+  createDaemonReattachController,
+  getSharedBackend,
+  isSharedDaemonEnabled,
+  resetSharedBackend,
+} from './biorouterdSingleton';
 import {
   StripBandRegistry,
   detachRefusal,
@@ -95,15 +101,22 @@ import {
 import { artifactSourceRevision } from './utils/artifactSourceRevision';
 import { sanitizeUntrustedLabel } from './utils/untrustedText';
 import {
-  CrewSharePending,
+  CrewSheetGate,
   DEV_AUTO_CONFIRM_SHARE_ENV,
-  crewFileRefusal,
-  crewShareCopy,
+  holdCrewSheet,
+  parseCrewPickerRequest,
   parseCrewShareRequest,
   resolveDevAutoConfirmShare,
+  selectCrewTransferFile,
   shareDroppedFile,
 } from './utils/crewSharePath';
 import { CREW_SHARE_DROPPED_FILE_CHANNEL } from './utils/crewSharePathBridge';
+import {
+  AttentionBadges,
+  AttentionThrottle,
+  attentionNotificationAllowed,
+  parseAttentionRequest,
+} from './components/crew/attention/attentionMain';
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
@@ -177,6 +190,7 @@ import {
 } from './utils/embeddedBrowser';
 import { heicToPng } from './utils/heicConvert';
 import { bindManagedAppPreviewBackend } from './utils/managedAppPreviewBackend';
+import { openAppInSystemBrowser } from './utils/appBrowserLaunch';
 import {
   managedAppPreviewScope,
   type ManagedAppPreviewBackend,
@@ -1295,6 +1309,15 @@ const windowMap = new Map<number, BrowserWindow>();
 const copilotPermissionSettings = new CopilotPermissionSettings();
 const biorouterdClients = new Map<number, Client>();
 const managedAppPreviewBackends = new Map<number, ManagedAppPreviewBackend>();
+/**
+ * The window a Save or Open panel may be attached to, or `undefined` for an app-modal panel. On
+ * macOS AppKit neither shows nor queues a panel asked for while the window already has a sheet,
+ * and the promise never settles (FILES-F2), so a panel asked for then is shown on its own.
+ */
+function panelParent(window: BrowserWindow | null | undefined): BrowserWindow | undefined {
+  if (!window || window.isDestroyed()) return undefined;
+  return crewSheetGate.hasSheet(window.id) ? undefined : window;
+}
 
 const trackArtifactPreviewFrames = (contents: Electron.WebContents) => {
   const frameIds = new Set<string>();
@@ -1370,7 +1393,7 @@ let readDevelopmentApprovalSecret: (() => Promise<string>) | undefined;
 const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => {
   if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
   const secret = await promptNativeSecret(
-    'Set approval secret for shared BioRouter daemon',
+    'Set approval secret for shared Biorouter daemon',
     'Enter a secret you hold independently, using 32–4096 printable ASCII characters, with no spaces or other whitespace. Keep it in your password manager: you will need it to reconnect from the desktop or CLI. This is not your computer login password, SSH password, or Crew vault passphrase.'
   );
   if (secret === undefined)
@@ -1380,7 +1403,7 @@ const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => 
   validateDaemonApprovalSecret(secret);
   const confirmation = await promptNativeSecret(
     'Confirm shared daemon approval secret',
-    'Enter the same independently held approval secret again. BioRouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
+    'Enter the same independently held approval secret again. Biorouter will not save it in your profile; keep your own copy for future desktop and CLI connections.'
   );
   if (confirmation === undefined)
     throw new Error('Shared daemon startup cancelled. No daemon was started.');
@@ -1389,6 +1412,133 @@ const requestNewDaemonApprovalSecret = async (): Promise<string | undefined> => 
       'Approval secrets did not match. No daemon was started. Reopen the app to try again.'
     );
   return secret;
+};
+
+/** The approval secret of a daemon this app did not start: asked for, never read from disk. */
+const requestExistingDaemonApprovalSecret = async (runtime: {
+  profileId: string;
+  instanceId: string;
+  userActionInstalled: boolean;
+}): Promise<string | undefined> => {
+  if (!runtime.userActionInstalled)
+    throw new Error(
+      'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
+    );
+  if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
+  const key = await promptNativeSecret(
+    'Connect to existing Biorouter daemon',
+    `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
+  );
+  if (!key)
+    throw new Error(
+      'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
+    );
+  validateDaemonApprovalSecret(key);
+  return key;
+};
+
+// ─── Reattaching after the shared daemon restarts (R-1) ───────────────────────────────────────
+//
+// The shared daemon outlives the app, and a restart (a crash, `biorouter crew daemon stop`, a
+// CLI that started a new one) always brings a new instance, which the proxy refuses to follow.
+// This is the one place that notices, asks the person once, and reattaches the same local
+// address to the new instance when they agree. Every window is told where things stand over
+// `daemon-connection`, and the sidebar offers Reconnect and Quit and Reopen from then on.
+
+// M2: the dock badge across windows, and the one limit on Crew notifications.
+const crewAttentionBadges = new AttentionBadges();
+const crewAttentionThrottle = new AttentionThrottle();
+const applyCrewAttentionBadge = (count: number) => {
+  try {
+    app.setBadgeCount(count);
+  } catch (error) {
+    log.warn('[crew-attention] could not set the badge count:', error);
+  }
+};
+
+/** The attachment the controller reconnects through; set by the first shared `createChat`. */
+let sharedDaemonLink: SharedDaemonLink | undefined;
+const wiredDaemonLinks = new WeakSet<SharedDaemonLink>();
+
+/**
+ * T3-SH-10. The window a main-process prompt belongs to: the focused one, else the first one
+ * on screen. `undefined` only when none is showing.
+ *
+ * ⚠ A prompt with NO parent is an app-modal alert, and on macOS `showMessageBox` runs it on the
+ * main thread's modal loop: every window stops painting and answering until someone finds it
+ * (MainThreadWatchdog measured 74 s and 42 s for the reattach prompt below, and CDP could not
+ * even list targets). Given a window it is a sheet on that window, and the app keeps running.
+ * A hidden window is never the parent: a sheet on it would be a prompt nobody can see.
+ */
+function promptParentWindow(): BrowserWindow | undefined {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused && !focused.isDestroyed()) return focused;
+  return BrowserWindow.getAllWindows().find(
+    (window) => !window.isDestroyed() && window.isVisible()
+  );
+}
+
+/** `dialog.showMessageBox` as a sheet on {@link promptParentWindow} whenever there is one. */
+function showWindowPrompt(options: Electron.MessageBoxOptions) {
+  const parent = promptParentWindow();
+  return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+}
+
+const daemonReattach = createDaemonReattachController({
+  ask: async () => {
+    const { response } = await showWindowPrompt({
+      type: 'warning',
+      title: 'Background service restarted',
+      message: "Biorouter's background service restarted. Reconnect?",
+      detail:
+        "Chats and Crew can't reach it until Biorouter reconnects. Reconnecting asks for the approval secret you set for the background service. Quit and Reopen connects again when Biorouter opens.",
+      buttons: ['Reconnect', 'Quit and Reopen', 'Not Now'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    });
+    return response === 0 ? 'reconnect' : response === 1 ? 'restart' : 'later';
+  },
+  reportFailure: async (message) => {
+    const { response } = await showWindowPrompt({
+      type: 'error',
+      title: 'Could not reconnect',
+      message: "Biorouter couldn't reconnect to its background service.",
+      detail: `${message}\n\nQuit and reopen Biorouter to connect again.`,
+      buttons: ['Quit and Reopen', 'Close'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    return response === 0 ? 'restart' : 'close';
+  },
+  reconnect: async () => {
+    if (!sharedDaemonLink) throw new Error('Biorouter is not attached to a background service.');
+    await sharedDaemonLink.reconnect();
+  },
+  restart: () => {
+    app.relaunch();
+    app.exit(0);
+  },
+  broadcast: (state) => {
+    for (const window of BrowserWindow.getAllWindows())
+      if (!window.isDestroyed()) window.webContents.send('daemon-connection', state);
+  },
+});
+
+/** Watch a shared attachment, once. */
+const watchSharedDaemon = (link: SharedDaemonLink) => {
+  sharedDaemonLink = link;
+  if (wiredDaemonLinks.has(link)) return;
+  wiredDaemonLinks.add(link);
+  link.onConnection((event) => {
+    if (event.kind === 'lost') {
+      log.warn(`[daemon] the attached instance was lost (${event.reason})`);
+      void daemonReattach.lost();
+    } else {
+      daemonReattach.answered();
+    }
+  });
 };
 
 const createChat = async (
@@ -1447,23 +1597,7 @@ const createChat = async (
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
         requestNewUserActionKey: requestNewDaemonApprovalSecret,
-        requestUserActionKey: async (runtime) => {
-          if (!runtime.userActionInstalled)
-            throw new Error(
-              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
-            );
-          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
-          const key = await promptNativeSecret(
-            'Connect to existing BioRouter daemon',
-            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
-          );
-          if (!key)
-            throw new Error(
-              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
-            );
-          validateDaemonApprovalSecret(key);
-          return key;
-        },
+        requestUserActionKey: requestExistingDaemonApprovalSecret,
       })
     : await startBiorouterd({
         app,
@@ -1473,26 +1607,18 @@ const createChat = async (
         env: daemonEnv,
         externalBiorouterd: settings.externalBiorouterd,
         requestNewUserActionKey: requestNewDaemonApprovalSecret,
-        requestUserActionKey: async (runtime) => {
-          if (!runtime.userActionInstalled)
-            throw new Error(
-              'This daemon has no human approval key. Stop and restart it through a trusted launcher; attachment cannot install one.'
-            );
-          if (readDevelopmentApprovalSecret) return readDevelopmentApprovalSecret();
-          const key = await promptNativeSecret(
-            'Connect to existing BioRouter daemon',
-            `Enter the existing, independently held approval secret for profile ${runtime.profileId}. Use 32–4096 printable ASCII characters with no spaces or other whitespace. This is not your computer login password, SSH password, or Crew vault passphrase.`
-          );
-          if (!key)
-            throw new Error(
-              'Daemon attachment cancelled. Reopen the app and supply the existing approval secret to connect.'
-            );
-          validateDaemonApprovalSecret(key);
-          return key;
-        },
+        requestUserActionKey: requestExistingDaemonApprovalSecret,
       });
 
   const { baseUrl, process: biorouterdProcess, errorLog } = biorouterdResult;
+  // A new window after the shared daemon restarted would otherwise open onto a proxy that
+  // refuses every request, fail its readiness check and quit the app: ask first (R-1).
+  let daemonAttached = true;
+  if (biorouterdResult.sharedDaemon) {
+    watchSharedDaemon(biorouterdResult.sharedDaemon);
+    if (daemonReattach.state() !== 'attached' || (await biorouterdResult.sharedDaemon.probe()))
+      daemonAttached = await daemonReattach.lost({ ask: true });
+  }
   // Per-window working dir — NOT the shared daemon's spawn cwd. In the
   // per-window (non-shared) path this equals biorouterdResult.workingDir.
   const workingDir = windowWorkingDir;
@@ -1632,6 +1758,15 @@ const createChat = async (
   });
 
   copilotPermissionSettings.bindWindow(mainWindow, Boolean(settings.externalBiorouterd?.enabled));
+  {
+    const sheetWindowId = mainWindow.id;
+    mainWindow.on('sheet-begin', () => crewSheetGate.sheetBegan(sheetWindowId));
+    mainWindow.on('sheet-end', () => crewSheetGate.sheetEnded(sheetWindowId));
+    mainWindow.once('closed', () => {
+      crewSheetGate.forget(sheetWindowId);
+      applyCrewAttentionBadge(crewAttentionBadges.forget(sheetWindowId));
+    });
+  }
 
   if (!app.isPackaged) {
     installExtension(REACT_DEVELOPER_TOOLS, {
@@ -1652,7 +1787,11 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
-  const managedPreviewBackend = bindManagedAppPreviewBackend(biorouterdResult, mainWindow);
+  const managedPreviewBackend = bindManagedAppPreviewBackend(
+    biorouterdResult,
+    mainWindow,
+    serverSecret
+  );
   if (managedPreviewBackend) managedAppPreviewBackends.set(mainWindow.id, managedPreviewBackend);
   // With a shared daemon the backend is app-lifetime (killed only in
   // startBiorouterd's own `will-quit` sweep), so windows must NOT ref-count it —
@@ -1662,7 +1801,9 @@ const createChat = async (
     retainBackend(mainWindow.id, biorouterdProcess);
   }
 
-  const serverReady = await checkServerStatus(biorouterdClient, errorLog);
+  // A window opened while the person chose not to reconnect yet opens anyway: its sidebar
+  // says what happened and offers Reconnect, where a failed readiness check would quit the app.
+  const serverReady = daemonAttached ? await checkServerStatus(biorouterdClient, errorLog) : true;
   if (!serverReady) {
     const isUsingExternalBackend = settings.externalBiorouterd?.enabled;
 
@@ -2869,6 +3010,24 @@ ipcMain.handle('open-external', async (event, url: string) => {
   } catch (err) {
     console.error('open-external blocked:', err);
   }
+});
+
+// Applications' "Launch in browser" (W2-HRD-1). The renderer names the app and
+// nothing else: the one-time launch link is minted here, with the secret, and
+// handed to the system browser through a page only this account can read,
+// never on an opener's command line. See `utils/appBrowserLaunch`.
+ipcMain.handle('apps:open-in-browser', async (event, appId: unknown) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
+  if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
+  if (typeof appId !== 'string') throw new Error('That is not an app name.');
+  await openAppInSystemBrowser({
+    baseUrl,
+    appId,
+    secretKey: getServerSecret(loadSettings()),
+    directory: path.join(app.getPath('userData'), 'app-launch'),
+    openPath: (page) => shell.openPath(page),
+  });
 });
 
 ipcMain.handle('directory-chooser', async () => {
@@ -4094,7 +4253,7 @@ ipcMain.handle(
       }
 
       const bytes = diagnosticsArchiveBytes(archive);
-      const parent = BrowserWindow.fromWebContents(event.sender);
+      const parent = panelParent(BrowserWindow.fromWebContents(event.sender));
       const options = {
         title: 'Save Diagnostics Bundle',
         defaultPath: path.join(app.getPath('downloads'), diagnosticsArchiveFilename(sessionId)),
@@ -4237,12 +4396,15 @@ ipcMain.handle('brxt:open-file-dialog', async (event) => {
   if (process.env.PLAYWRIGHT_BRXT_FILE) {
     return process.env.PLAYWRIGHT_BRXT_FILE;
   }
-  const win = BrowserWindow.fromWebContents(event.sender);
-  const result = await dialog.showOpenDialog(win!, {
+  const win = panelParent(BrowserWindow.fromWebContents(event.sender));
+  const options: OpenDialogOptions = {
     title: 'Select Biorouter Extension Bundle',
     filters: [{ name: 'Biorouter Extension Bundle', extensions: ['brxt'] }],
     properties: ['openFile'],
-  });
+  };
+  const result = win
+    ? await dialog.showOpenDialog(win, options)
+    : await dialog.showOpenDialog(options);
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
 });
@@ -4749,7 +4911,10 @@ function disposeTerminalSession(sessionId: string) {
 // live in `utils/crewSharePath.ts`; this is only the Electron and daemon wiring.
 // Set once in `appMain` from `resolveDevAutoConfirmShare`, and false everywhere else.
 let crewShareAutoConfirm = false;
-const crewSharePending = new CrewSharePending();
+// One Crew native flow per window (the drop confirmation here, the picker in
+// `crew:select-transfer-file`), and none while another sheet is attached (FILES-F2). Fed by
+// each window's `sheet-begin`/`sheet-end` in `createChat`; `panelParent` asks it too.
+const crewSheetGate = new CrewSheetGate();
 
 function registerCrewShareHandler() {
   ipcMain.handle(CREW_SHARE_DROPPED_FILE_CHANNEL, async (event, raw: unknown) => {
@@ -4757,9 +4922,9 @@ function registerCrewShareHandler() {
     const owner = BrowserWindow.fromWebContents(event.sender);
     const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
     if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
-    const ownerId = event.sender.id;
-    if (!crewSharePending.enter(ownerId))
-      return { outcome: 'refused', message: crewShareCopy.busy };
+    const ownerId = owner.id;
+    const busy = crewSheetGate.enter(ownerId, 'share');
+    if (busy) return { outcome: 'refused', message: busy };
     const windowClosed = () => event.sender.isDestroyed() || owner.isDestroyed();
     const crewFiles = async (endpoint: string, method: 'POST' | 'DELETE', body: unknown) => {
       const settings = loadSettings();
@@ -4792,7 +4957,7 @@ function registerCrewShareHandler() {
         log: (message) => log.warn(message),
       });
     } finally {
-      crewSharePending.leave(ownerId);
+      crewSheetGate.leave(ownerId);
     }
   });
 }
@@ -4927,186 +5092,35 @@ function registerCliInstallHandlers() {
     }
   });
 
+  // The rules (what each window asks, what a refusal says) live in `utils/crewSharePath.ts`;
+  // this is only the Electron and daemon wiring, and the per-window gate (FILES-F2).
   ipcMain.handle('crew:select-transfer-file', async (event, raw: unknown) => {
-    if (!raw || typeof raw !== 'object') throw new Error('Invalid transfer request.');
-    const options = raw as Record<string, unknown>;
-    if (
-      options.expectedMode !== undefined &&
-      options.expectedMode !== 'private' &&
-      options.expectedMode !== 'public'
-    )
-      throw new Error(
-        'Invalid expected transfer privacy. Refresh the workspace before choosing a file.'
-      );
-    if (
-      !['upload', 'download'].includes(String(options.direction)) ||
-      typeof options.connectionId !== 'string' ||
-      typeof options.channelId !== 'string' ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.connectionId) ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(options.channelId)
-    )
-      throw new Error('Invalid transfer destination.');
-    for (const field of ['blobId', 'transferId']) {
-      const value = options[field];
-      if (
-        value !== undefined &&
-        (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(value))
-      )
-        throw new Error('Invalid transfer capability binding.');
-    }
-    const purpose = options.purpose ?? 'transfer';
-    if (!['transfer', 'cleanup'].includes(String(purpose)))
-      throw new Error('Invalid transfer selection purpose.');
-    if (purpose === 'cleanup' && (options.direction !== 'download' || !options.transferId))
-      throw new Error('Temporary download cleanup needs its original transfer.');
+    const request = parseCrewPickerRequest(raw);
     const owner = BrowserWindow.fromWebContents(event.sender);
     const baseUrl = owner && biorouterdClients.get(owner.id)?.getConfig().baseUrl;
     if (!owner || !baseUrl) throw new Error('The local daemon is not available.');
-    let selected: string | undefined;
-    if (purpose === 'cleanup') {
-      if (
-        typeof options.suggestedName !== 'string' ||
-        !options.suggestedName ||
-        path.basename(options.suggestedName) !== options.suggestedName ||
-        ['.', '..'].includes(options.suggestedName)
-      )
-        throw new Error('The original download filename is unavailable.');
-      const folder = await dialog.showOpenDialog(owner, {
-        title: `Locate the original folder for ${options.suggestedName}`,
-        properties: ['openDirectory'],
-      });
-      if (folder.canceled || !folder.filePaths[0]) return null;
-      selected = path.join(folder.filePaths[0], options.suggestedName);
-      const cleanup = await dialog.showMessageBox(owner, {
-        type: 'question',
-        title: 'Remove incomplete Crew download',
-        message: `Remove the temporary download for ${options.suggestedName}?`,
-        detail:
-          'Only this transfer’s verified temporary file will be removed. The destination file and the attachment in Crew are kept.',
-        buttons: ['Cancel', 'Remove temporary file'],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      });
-      if (cleanup.response !== 1) return null;
-    } else if (options.direction === 'upload') {
-      const result = await dialog.showOpenDialog(owner, {
-        title: 'Choose a file for Crew',
-        properties: ['openFile'],
-      });
-      if (!result.canceled) selected = result.filePaths[0];
-    } else {
-      const suggested =
-        typeof options.suggestedName === 'string'
-          ? Array.from(path.basename(options.suggestedName))
-              .filter((character) => character.charCodeAt(0) >= 32)
-              .join('')
-          : 'crew-download';
-      const result = await dialog.showSaveDialog(owner, {
-        title: 'Save Crew file',
-        defaultPath: suggested,
-      });
-      if (!result.canceled) selected = result.filePath;
-    }
-    if (!selected) return null;
-    const pendingDownload = options.direction === 'download' && purpose !== 'cleanup';
-    const postSelection = async (
-      endpoint: string,
-      body: Record<string, unknown>,
-      method: 'POST' | 'DELETE' = 'POST'
-    ) => {
-      if (event.sender.isDestroyed() || owner.isDestroyed())
-        throw new Error('The file selection window closed.');
-      const settings = loadSettings();
-      const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
-        method,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Secret-Key': getServerSecret(settings),
-          'X-User-Action': getUserActionKey(settings),
+    return holdCrewSheet(crewSheetGate, owner.id, 'picker', () =>
+      selectCrewTransferFile(request, {
+        showOpenDialog: (options) => dialog.showOpenDialog(owner, options),
+        showSaveDialog: (options) => dialog.showSaveDialog(owner, options),
+        showMessageBox: (options) => dialog.showMessageBox(owner, options),
+        crewFiles: async (endpoint, method, body) => {
+          const settings = loadSettings();
+          const response = await fetch(`${baseUrl}/crew/files${endpoint}`, {
+            method,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Secret-Key': getServerSecret(settings),
+              'X-User-Action': getUserActionKey(settings),
+            },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(15000),
+          });
+          return { ok: response.ok, body: await response.json().catch(() => null) };
         },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(15000),
-      });
-      if (!response.ok) {
-        const failure = await response.json().catch(() => null);
-        // Q3-01: the daemon's credential floor has a sentence of its own, rebuilt here from the
-        // name this process chose, never relayed from the daemon's text.
-        const credential = crewFileRefusal(
-          failure,
-          options.direction === 'upload' ? 'upload' : 'download',
-          path.basename(selected ?? '')
-        );
-        if (credential) throw new Error(credential);
-        if (
-          failure?.error ===
-          'Crew connection privacy changed; refresh the verified workspace before selecting a file'
-        )
-          throw new Error('Connection privacy changed. Refresh Crew and choose the file again.');
-        if (endpoint)
-          throw new Error(
-            'The selected destination could not be confirmed. Choose the destination again and review any replacement request.'
-          );
-        throw new Error(
-          'The daemon refused this file selection. Choose an accessible file or a new destination filename.'
-        );
-      }
-      return method === 'DELETE' ? null : response.json();
-    };
-    let result = await postSelection('', {
-      direction: options.direction,
-      purpose,
-      path: selected,
-      overwrite: pendingDownload,
-      approval_pending: pendingDownload,
-      connection_id: options.connectionId,
-      channel_id: options.channelId,
-      blob_id: options.blobId,
-      transfer_id: options.transferId,
-      expected_mode: options.expectedMode,
-    });
-    if (
-      typeof result?.capability_id !== 'string' ||
-      !/^[a-zA-Z0-9_-]{1,128}$/.test(result.capability_id) ||
-      typeof result.name !== 'string'
-    )
-      throw new Error('Invalid daemon file capability.');
-    if (pendingDownload) {
-      if (typeof result.target_exists !== 'boolean')
-        throw new Error(
-          'The daemon did not verify this destination. Update the daemon before downloading.'
-        );
-      if (event.sender.isDestroyed() || owner.isDestroyed())
-        throw new Error('The file selection window closed.');
-      if (result.target_exists) {
-        const replacement = await dialog.showMessageBox(owner, {
-          type: 'warning',
-          title: 'Replace Crew download destination',
-          message: `Replace ${path.basename(selected)} after the download is verified?`,
-          detail:
-            'The daemon has checked the existing file. It remains in place until the download passes verification; any destination change requires a new selection.',
-          buttons: ['Cancel', 'Replace file'],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-        });
-        if (replacement.response !== 1) {
-          await postSelection(`/${encodeURIComponent(result.capability_id)}`, {}, 'DELETE').catch(
-            () => undefined
-          );
-          return null;
-        }
-      }
-      const capabilityId = result.capability_id;
-      result = await postSelection(`/${encodeURIComponent(capabilityId)}/confirm`, {});
-      if (result?.capability_id !== capabilityId || typeof result.name !== 'string')
-        throw new Error('The daemon did not confirm the selected destination. Choose it again.');
-    }
-    return {
-      capability_id: result.capability_id,
-      name: result.name,
-      ...(typeof result.size === 'number' ? { size: result.size } : {}),
-    };
+        isClosed: () => event.sender.isDestroyed() || owner.isDestroyed(),
+      })
+    );
   });
 
   ipcMain.handle('crew:authenticate', async (event, connectionId: unknown) => {
@@ -6727,6 +6741,41 @@ async function appMain() {
   ipcMain.on('restart-app', () => {
     app.relaunch();
     app.exit(0);
+  });
+
+  // R-1: where the app stands with the shared daemon, and the sidebar's Reconnect. A reconnect
+  // asks the person for the approval secret natively; the renderer never sees or sends one.
+  ipcMain.handle('daemon-connection:get', () => daemonReattach.state());
+  ipcMain.handle('daemon-connection:reconnect', () => daemonReattach.reconnect());
+
+  // M2: Crew's attention signals outside Crew. Each window reports its unread count and the
+  // dock shows the largest; a window asks for a notification, shown at most once per channel a
+  // minute across every window, and never while another window of the app is in front.
+  ipcMain.on('crew-attention:badge', (event, count: unknown) => {
+    const window = BrowserWindow.fromWebContents(event.sender);
+    if (!window) return;
+    applyCrewAttentionBadge(crewAttentionBadges.set(window.id, count));
+  });
+  ipcMain.on('crew-attention:notify', (event, raw: unknown) => {
+    const request = parseAttentionRequest(raw);
+    const sender = BrowserWindow.fromWebContents(event.sender);
+    if (!request || !sender || sender.isDestroyed()) return;
+    const focused = BrowserWindow.getFocusedWindow();
+    if (!attentionNotificationAllowed(sender.id, focused?.id ?? null)) return;
+    if (!crewAttentionThrottle.allow(request.key, Date.now())) return;
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({ title: request.title, body: request.body });
+    notification.on('click', () => {
+      if (sender.isDestroyed()) return;
+      if (sender.isMinimized()) sender.restore();
+      sender.show();
+      sender.focus();
+      sender.webContents.send('crew-attention:open', {
+        connectionId: request.connectionId,
+        channelId: request.channelId,
+      });
+    });
+    notification.show();
   });
 
   // Handler for getting app version

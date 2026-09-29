@@ -4,12 +4,14 @@
 //! terminal-safe and nothing else, so scripts keep every ID. Text output is for people:
 //! type-specific formatters name people, teams and channels, and machine IDs appear only when
 //! [`HumanOptions::show_ids`] asks for them ("Machine IDs stay internal" in
-//! `docs/research/biorouter-crew/naming-design.md`).
+//! `docs/crew/design/naming-design.md`).
 //!
 //! A person renders as `"Display name" (@username)`. The display name is text a colleague
-//! chose, so it is quoted, escaped and wrapped in Unicode isolates (U+2068 … U+2069): right-to-
-//! left text inside it cannot reorder the `@username` that follows. When the display name equals
-//! the username, `@username` alone is printed, so the username is on every line either way.
+//! chose, so it is quoted and escaped, and a name that is not ASCII is wrapped in Unicode
+//! isolates (U+2068 … U+2069): right-to-left text inside it cannot reorder the `@username` that
+//! follows. ASCII holds no right-to-left text, so it is printed bare, and a copied name holds no
+//! invisible characters. When the display name equals the username, `@username` alone is
+//! printed, so the username is on every line either way.
 //!
 //! Names come from a [`Directory`]: the value being printed (a snapshot, or a message page's
 //! `people` and `channel_names` maps) plus whatever the caller already knows, such as the
@@ -40,17 +42,81 @@ fn terminal_control(ch: char) -> bool {
     ch.is_control() || biorouter::utils::is_invisible_formatting(ch)
 }
 
+/// Whether a zero-width joiner or non-joiner between `before` and `after` is part of the text
+/// a person sees (M14), so it is printed as itself rather than as `\u{200d}`.
+///
+/// Emoji sequences are joined with U+200D (👩🏽‍🔬, 👨‍👩‍👧‍👦, 🏳️‍🌈), and Persian, Arabic and
+/// the Indic scripts use U+200C and U+200D between letters and marks (می‌خواهم, क्‍ष). Printed
+/// as escape text, every one of them broke. A joiner beside ASCII, or beside whitespace, a
+/// control or another invisible character, stays escaped: there it is invisible and joins
+/// nothing, and `crew\u{200d}_alice` would read as `crew_alice`. A username is ASCII, so no
+/// joiner the rule keeps can touch one.
+///
+/// Kept here rather than by narrowing `biorouter::utils::is_invisible_formatting`, which prompt
+/// labels rely on.
+fn joins_visible_text(before: Option<char>, after: Option<char>) -> bool {
+    let visible = |ch: Option<char>| {
+        ch.is_some_and(|ch| !ch.is_ascii() && !ch.is_whitespace() && !terminal_control(ch))
+    };
+    visible(before) && visible(after)
+}
+
 pub fn safe_text(value: &str) -> String {
-    value
-        .chars()
-        .flat_map(|ch| {
-            if terminal_control(ch) {
-                ch.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![ch]
+    let chars: Vec<char> = value.chars().collect();
+    let mut out = String::with_capacity(value.len());
+    for (index, &ch) in chars.iter().enumerate() {
+        let joiner = matches!(ch, '\u{200c}' | '\u{200d}');
+        let before = index.checked_sub(1).map(|at| chars[at]);
+        let after = chars.get(index + 1).copied();
+        if terminal_control(ch) && !(joiner && joins_visible_text(before, after)) {
+            out.extend(ch.escape_default());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// [`safe_text`] for text the CLI already made safe once and may have isolated: a balanced
+/// U+2068 … U+2069 pair passes through, and everything else, any other isolate included, is
+/// escaped as [`safe_text`] escapes it.
+///
+/// The CLI wraps a display name in that pair (`quoted_name`, `display_text`) so right-to-left
+/// text in it cannot reorder the words around it. Such a name reaches an error sentence, and
+/// escaping the sentence again printed the pair as the literal text `\u{2068}` (CLI-4). A
+/// balanced pair can only keep what is inside it from reordering what is outside, so passing
+/// it through gives a hostile name nothing: every raw isolate inside a name was escaped when
+/// the name was made safe, and one that is not part of a pair is escaped here.
+///
+/// The text between pairs is made safe as a whole, not a character at a time, so a joiner in
+/// it keeps its neighbours ([`safe_text`]).
+pub fn safe_text_keeping_isolates(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    let mut out = String::with_capacity(value.len());
+    let mut plain = String::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\u{2068}' {
+            let rest = &chars[index + 1..];
+            let next = rest
+                .iter()
+                .position(|c| matches!(c, '\u{2066}'..='\u{2069}'));
+            if let Some(end) = next.filter(|&end| rest[end] == '\u{2069}') {
+                out.push_str(&safe_text(&plain));
+                plain.clear();
+                out.push(ch);
+                out.push_str(&safe_text(&rest[..end].iter().collect::<String>()));
+                out.push('\u{2069}');
+                index += end + 2;
+                continue;
             }
-        })
-        .collect()
+        }
+        plain.push(ch);
+        index += 1;
+    }
+    out.push_str(&safe_text(&plain));
+    out
 }
 
 /// Print `value` with the default text rendering: no IDs, names from the value alone.
@@ -65,6 +131,11 @@ pub fn emit_with(value: &Value, format: OutputFormat, options: &HumanOptions) ->
     writeln!(stdout, "{output}")?;
     stdout.flush()?;
     Ok(())
+}
+
+/// `value` as [`emit_with`] prints it, without the line break.
+pub fn formatted(value: &Value, format: OutputFormat, options: &HumanOptions) -> Result<String> {
+    format_output(value, format, options)
 }
 
 fn format_output(value: &Value, format: OutputFormat, options: &HumanOptions) -> Result<String> {
@@ -110,8 +181,63 @@ const STORAGE_FULL_PREFIXES: [&str; 4] = [
     "retained audit journal exceeds",
     "journal exceeds",
     "workspace logical state exceeds",
-    "workspace operation quota requires maintenance",
+    LEGACY_OPERATION_QUOTA,
 ];
+/// The operation quota an older broker refused with once its table of remembered request IDs
+/// was full. The broker no longer writes it (that table now evicts), but a workspace still
+/// running an older broker does, so it is still said as [`STORAGE_FULL`].
+const LEGACY_OPERATION_QUOTA: &str = "workspace operation quota requires maintenance";
+/// The limits that stop ordinary changes a little short of full, so the host can still remove
+/// members and change policy (`commit`'s admin headroom in `broker.rs`).
+const FULL_BUT_HOST_CAN_ADMINISTER: &str = "This workspace is full. Reading still works, and the host can still remove members and change its privacy, but nothing else can change. Ask the host about starting a new workspace.";
+/// How the `quota_exceeded` texts that [`FULL_BUT_HOST_CAN_ADMINISTER`] rewords begin, in
+/// lowercase.
+const FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES: [&str; 2] = [
+    "workspace logical state is full",
+    "retained audit journal is nearly full",
+];
+/// [`STORAGE_FULL`] and [`FULL_BUT_HOST_CAN_ADMINISTER`] as the host reads them (MSG2-N6): the
+/// host is the one to ask, so they say what the host can still do. The desktop's
+/// `refusalCopy.storageFullHost` and `refusalCopy.fullButHostCanAdministerHost`, byte for byte.
+const STORAGE_FULL_FOR_HOST: &str = "This workspace has grown past the size Crew supports and cannot take more changes. To keep working together, start a new workspace.";
+const FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST: &str = "This workspace is full. Reading still works, and you can still remove members and change its privacy. To keep posting, start a new workspace.";
+
+/// Which "this workspace is full" a `quota_exceeded` refusal is, if it is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Full {
+    /// Nothing more can change ([`STORAGE_FULL`]).
+    Storage,
+    /// Only the host's removals and privacy changes can ([`FULL_BUT_HOST_CAN_ADMINISTER`]).
+    HostCanAdminister,
+}
+
+/// `broker.rs`'s limits that mean "this workspace is full" (the audit journal and state-size
+/// limits in `commit` and the operation quota in `apply_mutation`, which are what a request
+/// meets, plus the journal limit in `open_inner`, which only stops the broker starting). The
+/// join quota's own sentence means "too many people are waiting", and is not one. `message` is
+/// the broker's `code: text` or the text alone.
+fn workspace_full(code: &str, message: &str) -> Option<Full> {
+    if code != "quota_exceeded" {
+        return None;
+    }
+    let message = message.trim();
+    let text = message
+        .split_once(": ")
+        .filter(|(prefix, _)| *prefix == code)
+        .map_or(message, |(_, rest)| rest.trim())
+        .to_ascii_lowercase();
+    if STORAGE_FULL_PREFIXES.iter().any(|p| text.starts_with(p)) {
+        Some(Full::Storage)
+    } else if FULL_BUT_HOST_CAN_ADMINISTER_PREFIXES
+        .iter()
+        .any(|p| text.starts_with(p))
+    {
+        Some(Full::HostCanAdminister)
+    } else {
+        None
+    }
+}
+
 const IDENTITY_CONFLICT_UNNAMED: &str =
     "Another active member already has this username. Remove the old member first.";
 
@@ -202,9 +328,12 @@ const TECHNICAL_TEXTS: &[(&str, &str)] = &[
         "signed device required",
         "This computer isn't signed in to this workspace.",
     ),
+    // Only a channel the person is not in (or that does not exist) is unavailable: an archived
+    // one stays readable to its members, so "it may be archived" was never the reason (M20).
+    ("channel unavailable", "You're not in that channel."),
     (
-        "channel unavailable",
-        "That channel isn't available to you. It may be archived, or you may not be in it.",
+        "attachment unavailable",
+        "That file isn't available to you. It may have been removed, or you may not be in its channel.",
     ),
     (
         "principal unavailable",
@@ -214,7 +343,185 @@ const TECHNICAL_TEXTS: &[(&str, &str)] = &[
         "invalid grant",
         "This task's access to the workspace has ended.",
     ),
+    // `message.post`'s size limit (MSG2-N7).
+    ("message too long", MESSAGE_TOO_LONG),
 ];
+
+/// A message over the workspace's size limit, before it is sent or as the broker refuses it
+/// (MSG2-N7). The desktop says "Attach long text as a file"; here that is `files upload`.
+pub const MESSAGE_TOO_LONG: &str = "Messages can be up to 64 KB. Save the text to a file and share it with biorouter crew files upload.";
+
+/// What a refusal can name when the command knows it (DW-11, M20, R-2, FILES-F9): the channel
+/// it acted on, where a shared file came from, whether the person hosts the workspace, and the
+/// server. Every text is already made safe by the caller. Without it the sentence names none of
+/// them and stays true.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RefusalPlace {
+    /// The channel the request named, as a person reads it: `#methods`.
+    pub channel: Option<String>,
+    /// The channel an attachment or remote reference was shared in.
+    pub shared_in: Option<String>,
+    /// Whether the person hosts the workspace, when that could be read.
+    pub host: Option<bool>,
+    /// The host, as a person reads them: `"Alice Chen" (@alice)`.
+    pub host_label: Option<String>,
+    /// The server the workspace runs on.
+    pub server: Option<String>,
+}
+
+/// What a refusal can name, and so what the command should read for it: the channel the
+/// request named, where a shared file came from, or who hosts a server that can no longer save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefusalSubject {
+    Channel,
+    SharedIn(SharedKind),
+    Storage,
+}
+
+/// What was shared in another channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharedKind {
+    Attachment,
+    Reference,
+}
+
+/// What `code: message` could name that its text does not ([`placed_refusal`]), or `None`.
+pub fn refusal_subject(code: &str, message: &str) -> Option<RefusalSubject> {
+    if matches!(code, "storage_failed" | "storage_full") || workspace_full(code, message).is_some()
+    {
+        return Some(RefusalSubject::Storage);
+    }
+    let text = message
+        .trim()
+        .split_once(": ")
+        .filter(|(prefix, _)| *prefix == code)
+        .map_or(message.trim(), |(_, rest)| rest.trim())
+        .trim_end_matches(['.', '!', '?'])
+        .to_ascii_lowercase();
+    match text.as_str() {
+        "current owner required" | "channel is read-only" => Some(RefusalSubject::Channel),
+        "attachment provenance cannot be dropped" => {
+            Some(RefusalSubject::SharedIn(SharedKind::Attachment))
+        }
+        "reference provenance cannot be dropped" => {
+            Some(RefusalSubject::SharedIn(SharedKind::Reference))
+        }
+        _ => None,
+    }
+}
+
+/// The workspace's host as a person reads them, when the directory names them.
+pub fn host_label(directory: &Directory) -> Option<String> {
+    let host = directory.host_id()?;
+    directory.people.get(host).map(Person::label)
+}
+
+/// A request whose required privacy (`--expected-mode`) is not the connection's (DW-12): both
+/// modes named, and that nothing was sent.
+pub fn mode_mismatch_text(actual: &str, expected: &str) -> String {
+    format!(
+        "Your connection is {}, but this request required {}. Nothing was sent.",
+        mode_word(Some(actual)),
+        mode_word(Some(expected))
+    )
+}
+
+/// The broker's role, archive, provenance and storage refusals in words for a person, naming
+/// what `place` knows. `key` is the refusal's text after its code, lowercase, without a closing
+/// full stop. `None` for any other refusal.
+fn placed_refusal(code: &str, sentence: &str, key: &str, place: &RefusalPlace) -> Option<String> {
+    if matches!(code, "storage_failed" | "storage_full") {
+        return Some(storage_refusal(code, sentence, place));
+    }
+    Some(match key {
+        // `manager()`'s check is the host's account, not one of its devices.
+        "workspace host device required"
+        | "human host policy decision required"
+        | "human host decision required"
+        | "only host account can stop broker" => "Only the workspace host can do this.".to_owned(),
+        "current owner required" => match &place.channel {
+            Some(channel) => format!("Only {channel}'s owner can do this."),
+            None => "Only the channel's owner can do this.".to_owned(),
+        },
+        "team owner required" => "Only the team's owner can do this.".to_owned(),
+        "team creator required" => "Only the team's creator can do this.".to_owned(),
+        "channel is read-only" => match &place.channel {
+            Some(channel) => format!("{channel} is archived, so it's read-only."),
+            None => "That channel is archived, so it's read-only.".to_owned(),
+        },
+        "attachment provenance cannot be dropped" => format!(
+            "That file was shared in {}. Share it there, or upload it again here.",
+            place.shared_in.as_deref().unwrap_or("another channel")
+        ),
+        "reference provenance cannot be dropped" => format!(
+            "That remote reference was shared in {}. Share it there, or add it again here.",
+            place.shared_in.as_deref().unwrap_or("another channel")
+        ),
+        _ => return None,
+    })
+}
+
+/// A workspace server that cannot save a change (R-2, W2-BRK-3): `storage_full` for a full
+/// disk or quota, `storage_failed` for any other write fault. Reading still works, and only the
+/// host can put it right, on the server.
+///
+/// A current broker says what happened in a sentence of its own, and it matters which: the
+/// change was not saved, it may not have been ([`storage_outcome_unknown`]), or nothing more
+/// can be saved until Crew restarts. That sentence is kept, naming the host when this command
+/// could read who they are, and a host is told, on a line of its own, what to run. An older
+/// broker's "restart and recover before further mutations" was written for no one, and is said
+/// plainly instead.
+fn storage_refusal(code: &str, sentence: &str, place: &RefusalPlace) -> String {
+    const LEAD: &str = "The workspace server can't save changes right now.";
+    let host = place.host == Some(true);
+    let said = if reads_as_sentence(sentence) {
+        match place.host_label.as_deref().filter(|_| !host) {
+            Some(label) => sentence.replacen("Ask the host ", &format!("Ask {label} "), 1),
+            None => sentence.to_owned(),
+        }
+    } else if host {
+        LEAD.to_owned()
+    } else {
+        format!(
+            "{LEAD} Ask {} to restart Crew.",
+            place.host_label.as_deref().unwrap_or("the host")
+        )
+    };
+    if !host {
+        return said;
+    }
+    let server = place.server.as_deref().unwrap_or("the server");
+    let first = match code {
+        "storage_full" => format!("Free space on {server}"),
+        _ if reads_as_sentence(sentence) => format!("Check the storage on {server}"),
+        // An older broker said storage_failed for a full disk too.
+        _ => format!("Free space on {server} if it is full"),
+    };
+    format!("{said}\n{}", host_restart_steps(&first))
+}
+
+/// What the host of a server that stopped saving runs, after `first` ("Free space on hpc").
+fn host_restart_steps(first: &str) -> String {
+    format!(
+        "You host this workspace. {first}, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+    )
+}
+
+/// Said under a connection whose workspace server has stopped saving changes, as the daemon
+/// reads it from the server (`server_storage`, T3-BE-13, RES2-N2): before anyone tries to write,
+/// not only after a change is refused. The host is told what to run on the server.
+pub const SERVER_STOPPED_SAVING: &str =
+    "The workspace server has stopped saving changes. Reading still works.";
+
+/// Whether a storage refusal says the change may have been saved after all (the broker's
+/// "…so it may not have been saved."): an outcome that is not known, so the one safe retry,
+/// the same request ID, is offered. The broker has no code of its own for it.
+pub fn storage_outcome_unknown(code: &str, message: &str) -> bool {
+    matches!(code, "storage_failed" | "storage_full")
+        && message
+            .to_ascii_lowercase()
+            .contains("may not have been saved")
+}
 
 /// What a refusal that carried only its code says (`stale_cursor`, with no text of its own).
 fn code_only_sentence(code: &str) -> &'static str {
@@ -266,6 +573,11 @@ fn plain_refusal(code: &str, sentence: &str) -> String {
 /// the same words here; anything else becomes a sentence ([`plain_refusal`]). JSON output keeps
 /// the code as `broker_code`, which is what scripts and support match.
 pub fn broker_refusal_text(code: &str, message: &str) -> String {
+    broker_refusal_text_in(code, message, &RefusalPlace::default())
+}
+
+/// [`broker_refusal_text`], naming what `place` knows about the refusal.
+pub fn broker_refusal_text_in(code: &str, message: &str, place: &RefusalPlace) -> String {
     let message = message.trim();
     let sentence = message
         .split_once(": ")
@@ -277,22 +589,33 @@ pub fn broker_refusal_text(code: &str, message: &str) -> String {
         })
         .map_or(message, |(_, rest)| rest.trim());
     let lower = sentence.to_ascii_lowercase();
+    let key = lower.trim().trim_end_matches(['.', '!', '?']);
+    if let Some(placed) = placed_refusal(code, sentence, key, place) {
+        return placed;
+    }
     let shown = match (code, username_in(sentence)) {
         ("identity_conflict", named) if lower.starts_with("another active member is @") => {
             identity_conflict(named)
         }
         ("device_conflict", _) => DEVICE_CONFLICT.to_owned(),
         ("identity_mismatch", _) if !reads_as_sentence(sentence) => IDENTITY_MISMATCH.to_owned(),
-        // `broker.rs`'s limits that mean "this workspace is full": the audit journal and
-        // state-size limits in `commit` and the operation quota in `apply_mutation`, which are
-        // what a request meets, plus the journal limit in `open_inner`, which only stops the
-        // broker starting. The join quota's own sentence means "too many people are waiting" and
-        // is kept. The desktop matches the same texts (`STORAGE_FULL_TEXT` in `refusals.ts`).
-        ("quota_exceeded", _) if STORAGE_FULL_PREFIXES.iter().any(|p| lower.starts_with(p)) => {
-            STORAGE_FULL.to_owned()
+        // A full workspace ([`workspace_full`]). The desktop matches the same texts
+        // (`STORAGE_FULL_TEXT` in `refusals.ts`). Its host reads what the host can do (MSG2-N6).
+        ("quota_exceeded", _) if workspace_full(code, sentence).is_some() => {
+            let host = place.host == Some(true);
+            match (workspace_full(code, sentence), host) {
+                (Some(Full::Storage), false) => STORAGE_FULL,
+                (Some(Full::Storage), true) => STORAGE_FULL_FOR_HOST,
+                (_, false) => FULL_BUT_HOST_CAN_ADMINISTER,
+                (_, true) => FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST,
+            }
+            .to_owned()
         }
         ("rate_limited", _) if !reads_as_sentence(sentence) => TOO_MANY_ATTEMPTS.to_owned(),
         ("already_approved", Some(name)) => already_approved(name),
+        // CLIDOCS-F12: the broker's "Choose Add device…" names the desktop's control; the
+        // hint below names this terminal's flag.
+        ("already_member", Some(name)) => format!("@{name} is already a member."),
         _ if SENTENCE_CODES.contains(&code) && reads_as_sentence(sentence) => sentence.to_owned(),
         _ => plain_refusal(code, sentence),
     };
@@ -335,32 +658,126 @@ pub fn institution_refusal_text(requested_model: &str, details: Option<&Value>) 
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|text| !text.is_empty())
-            .map(safe_text)
     };
-    let model = field("model").unwrap_or_else(|| safe_text(requested_model));
-    let workspace = field("workspace").unwrap_or_else(|| "This workspace".to_owned());
+    let model = field("model").map_or_else(|| safe_text(requested_model), safe_text);
+    let workspace = field("workspace").map_or_else(|| "This workspace".to_owned(), safe_text);
     let approved_for: Option<Vec<String>> = details
         .and_then(|details| details.get("approved_for"))
         .and_then(Value::as_array)
         .map(|ids| {
             ids.iter()
                 .filter_map(Value::as_str)
-                .map(safe_text)
+                .map(institution_label)
                 .collect::<Vec<_>>()
         })
         .filter(|ids| !ids.is_empty());
-    const CHOOSE: &str = "Choose a model approved for it, or a local model.";
-    match (field("workspace_institution"), approved_for) {
+    // SF-F4: named as the desktop's `institutionMismatch` names them, the workspace's
+    // institution in the advice too, not "it".
+    match (field("workspace_institution").map(institution_label), approved_for) {
         (Some(institution), Some(approved)) => format!(
-            "{model} is approved for {}. {workspace} uses {institution}. {CHOOSE}",
+            "{model} is approved for {}. {workspace} uses {institution}. Choose a model approved for {institution}, or a local model.",
             approved.join(" and ")
         ),
         (Some(institution), None) => format!(
-            "{model} doesn't say which institution approved it. {workspace} uses {institution}. {CHOOSE}"
+            "{model} doesn't say which institution approved it. {workspace} uses {institution}. Choose a model approved for {institution}, or a local model."
         ),
-        (None, _) => {
-            format!("{model} isn't approved for this workspace's institution. {CHOOSE}")
+        (None, _) => format!(
+            "{model} isn't approved for this workspace's institution. Choose a model approved for it, or a local model."
+        ),
+    }
+}
+
+/// An institution as running text names it, as the desktop's `institutionLabel` does: the name
+/// the model registry publishes for that exact ID (`ucsf` is UCSF), else the ID itself.
+pub fn institution_label(id: &str) -> String {
+    use biorouter::privacy::affiliation::{institution_display_name, InstitutionId};
+    let id = id.trim();
+    // Only a canonical ID can be one the registry names; nothing else is looked up.
+    let canonical = (1..=64).contains(&id.len())
+        && id.starts_with(|ch: char| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    canonical
+        .then(|| InstitutionId::new(id))
+        .filter(|key| key.as_str() == id)
+        .and_then(institution_display_name)
+        .map_or_else(|| safe_text(id), str::to_owned)
+}
+
+/// The daemon's typed connect failures (`connect_refusal` in `routes/crew.rs`) in words for a
+/// person, each with what to do next, as the desktop's connection-problem screens say them.
+/// `crew_handoff_failed` is not here: its own text is already written for a person.
+pub fn connect_failure_text(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "crew_ssh_auth_required" => {
+            "The server wants your password or a verification code. Run biorouter crew auth to sign in."
         }
+        // W2-DMN-5: a publickey-only refusal is a login matter, not a password one.
+        "crew_ssh_key_refused" => {
+            "The server refused this computer's SSH key. Check the server login and key file of the saved connection (biorouter crew connections show), then connect again."
+        }
+        // W2-DMN-5, R-7: the server answered, but the workspace server on it is not running.
+        "crew_broker_not_running" => {
+            "Crew isn't running on the server. If you host this workspace, start it there as the manual's After the server restarts shows, then connect again. Otherwise, ask your host to start Crew."
+        }
+        "crew_ssh_host_key_unknown" => {
+            "Crew can't verify the server yet: its host key isn't in your known hosts file. Get the server's fingerprint from your IT team, compare it, add the full key to your known hosts file, then connect again."
+        }
+        "crew_ssh_host_key_changed" => {
+            "The server's host key changed since Crew last connected. Don't connect until your IT team confirms the change; Crew won't connect while the old key is in your known hosts file."
+        }
+        "crew_ssh_unreachable" => {
+            "Couldn't reach the server. Check your network or your VPN, then connect again."
+        }
+        "crew_bridge_missing" => {
+            "Crew isn't set up for your account on the server: ~/.local/bin/biorouter-crew is missing there. Install it yourself, or ask your host or IT team to, then connect again."
+        }
+        "crew_ssh_failed" => {
+            "SSH or Crew on the server failed. If the server restarted, ask your host to start the workspace again, then connect again."
+        }
+        "crew_workspace_identity_mismatch" => {
+            "This isn't the workspace you joined: the server answered with a different workspace key than the one saved. Don't continue until your host confirms what changed."
+        }
+        _ => return None,
+    })
+}
+
+/// The user and host of an SSH login that signs in to this machine over loopback
+/// (`crew_iris@localhost`, `127.0.0.1`, `[::1]`): what the daemon's `SignInTarget::is_loopback`
+/// in `crew/transport.rs` treats as the same host. `None` for any other login, an SSH alias
+/// included, which only the person's SSH settings resolve.
+pub fn loopback_login(ssh_target: &str) -> Option<(Option<&str>, &str)> {
+    let ssh_target = ssh_target.trim();
+    let (user, host) = match ssh_target.rsplit_once('@') {
+        Some((user, host)) if !user.is_empty() && !host.is_empty() => (Some(user), host),
+        _ => (None, ssh_target),
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback = bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    loopback.then_some((user, host))
+}
+
+/// A refused connect to a login on this machine, in the daemon's same-host words (W2-DMN-2,
+/// SETUPHPC2-F-A): a member on the workspace's own server needs this machine's host key in
+/// their own known hosts file, and their own key in their own `authorized_keys`, so "get the
+/// fingerprint from your IT team" and "check the saved connection" point the wrong way.
+/// `None` for another code, or another server.
+pub fn same_host_connect_failure_text(code: &str, ssh_target: &str) -> Option<String> {
+    let (user, host) = loopback_login(ssh_target)?;
+    match code {
+        "crew_ssh_host_key_unknown" => Some(format!(
+            "{}'s host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.",
+            safe_text(host)
+        )),
+        "crew_ssh_key_refused" => Some(format!(
+            "Couldn't sign in as {} on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.",
+            user.map_or_else(|| "yourself".to_owned(), safe_text)
+        )),
+        _ => None,
     }
 }
 
@@ -373,6 +790,8 @@ pub struct HumanOptions {
     pub view: View,
     /// Names known from elsewhere, such as the workspace snapshot behind a history page.
     pub directory: Directory,
+    /// Lines printed after the value in text, such as that a list is not complete.
+    pub notes: Vec<String>,
     clock: Clock,
 }
 
@@ -393,6 +812,23 @@ impl HumanOptions {
     pub fn with_directory(mut self, directory: Directory) -> Self {
         self.directory = directory;
         self
+    }
+
+    pub fn with_notes(mut self, notes: impl IntoIterator<Item = String>) -> Self {
+        self.notes.extend(notes);
+        self
+    }
+
+    /// Dates in UTC with a fixed "now", so a test reads the same in every time zone.
+    #[cfg(test)]
+    pub fn in_utc_at(now: i64) -> Self {
+        Self {
+            clock: Clock::Fixed {
+                now,
+                offset_seconds: 0,
+            },
+            ..Self::default()
+        }
     }
 }
 
@@ -466,6 +902,18 @@ pub struct Directory {
     channels: BTreeMap<String, ChannelInfo>,
     references: BTreeMap<String, (String, String)>,
     unread: BTreeMap<String, u64>,
+    /// The people the workspace reports online.
+    online: std::collections::BTreeSet<String>,
+    /// Why this directory could not read the workspace's names, and which workspace: an ID it
+    /// cannot name is then said as that, with its ID, rather than as "this channel" (R-8,
+    /// AG-F17).
+    unavailable: Option<Unavailable>,
+}
+
+#[derive(Clone, Debug)]
+struct Unavailable {
+    workspace: String,
+    disconnected: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -485,11 +933,45 @@ struct ChannelInfo {
 }
 
 impl Directory {
+    /// No names, because the workspace snapshot could not be read. `workspace` is what the
+    /// person calls the workspace (the saved connection's name, unescaped); `disconnected` says
+    /// the connection is down, which is the usual reason.
+    pub fn names_unavailable(workspace: &str, disconnected: bool) -> Self {
+        Self {
+            unavailable: Some(Unavailable {
+                workspace: workspace.to_owned(),
+                disconnected,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// "a channel in lab (names unavailable while disconnected)", for an ID this directory
+    /// cannot name because the names could not be read.
+    fn unnamed(&self, what: &str) -> Option<String> {
+        let unavailable = self.unavailable.as_ref()?;
+        let why = if unavailable.disconnected {
+            "names unavailable while disconnected"
+        } else {
+            "names unavailable"
+        };
+        Some(format!(
+            "{what} in {} ({why})",
+            display_text(&unavailable.workspace)
+        ))
+    }
+
     #[allow(dead_code)] // The command layer passes a snapshot's names to history and lists.
     pub fn from_snapshot(snapshot: &Value) -> Self {
         let mut directory = Self::default();
         directory.absorb(snapshot);
         directory
+    }
+
+    /// Whether the workspace reports this person online (`online_principal_ids`, W2-BRK-6).
+    /// Presence is shown only when the broker reports it: an older one names no one.
+    fn online(&self, id: &str) -> bool {
+        self.online.contains(id)
     }
 
     /// A channel's `#name` for a sentence, or "a channel" when this directory can't name it
@@ -546,6 +1028,10 @@ impl Directory {
                     channel.name = name.as_str().map(str::to_owned);
                 }
             }
+        }
+        if let Some(Value::Array(online)) = fields.get("online_principal_ids") {
+            self.online
+                .extend(online.iter().filter_map(Value::as_str).map(str::to_owned));
         }
         if let Some(Value::Object(unread)) = fields.get("unread") {
             for (id, count) in unread {
@@ -665,8 +1151,14 @@ impl Person {
     }
 }
 
-/// A display name quoted like a string literal, escaped for the terminal and isolated so its
-/// direction cannot leak into the text around it.
+/// A display name quoted like a string literal, escaped for the terminal, and isolated when it
+/// could hold right-to-left text, so its direction cannot leak into the text around it.
+///
+/// A name that is ASCII once escaped holds no right-to-left text, so it is left bare, as
+/// [`display_text`] leaves a team or file name (F10): the isolates are invisible in a terminal
+/// but travel into anything copied, so `"Alice Chen"` failed a search for that very text.
+/// Escaping comes first, so a name's own bidi controls are printed as `\u{…}` text and cannot
+/// make it look ASCII.
 fn quoted_name(name: &str) -> String {
     let mut escaped = String::with_capacity(name.len());
     for ch in name.chars() {
@@ -675,7 +1167,12 @@ fn quoted_name(name: &str) -> String {
         }
         escaped.push(ch);
     }
-    format!("\"\u{2068}{}\u{2069}\"", safe_text(&escaped))
+    let text = safe_text(&escaped);
+    if text.is_ascii() {
+        format!("\"{text}\"")
+    } else {
+        format!("\"\u{2068}{text}\u{2069}\"")
+    }
 }
 
 /// A team name or file name: escaped, and isolated when it could hold right-to-left text.
@@ -687,6 +1184,26 @@ fn display_text(name: &str) -> String {
     } else {
         format!("\u{2068}{text}\u{2069}")
     }
+}
+
+/// A channel as a sentence names it when another team of the person's may have one of the
+/// same name (M11): `Chen Lab / #general` when another listed team has a channel of that name,
+/// else `#general`. `None` when the directory cannot name the channel.
+pub fn channel_across_teams(directory: &Directory, id: &str) -> Option<String> {
+    let channel = directory.channels.get(id)?;
+    let name = channel.name.as_deref().filter(|name| !name.is_empty())?;
+    let shared = directory.channels.iter().any(|(other, info)| {
+        other != id && info.name.as_deref() == Some(name) && info.team_id != channel.team_id
+    });
+    let team = channel
+        .team_id
+        .as_deref()
+        .and_then(|team| directory.teams.get(team))
+        .filter(|_| shared);
+    Some(match team {
+        Some(team) => format!("{} / {}", display_text(team), channel_name(name)),
+        None => channel_name(name),
+    })
 }
 
 /// `"Bob Lee" (@bob)`, or `@bob` when the display name is the username.
@@ -707,6 +1224,52 @@ pub fn authority_label(directory: &Directory, principal_id: &str, show_ids: bool
     Ctx::new(directory.clone(), show_ids, Clock::System).with_id(label, "ID", Some(principal_id))
 }
 
+/// One computer enrolled as the person, as their profile lists it: its fingerprint, the date
+/// it was added and how.
+pub fn device_text(device: &Value, options: &HumanOptions) -> String {
+    Ctx::new(options.directory.clone(), options.show_ids, options.clock).device_row(device)
+}
+
+/// A chat's Crew access for a person (AG-F7): `Access: #methods · also reads #general`, then
+/// the messages it can read, oldest first (the manifest lists them newest first).
+/// `destination` is the channel the chat posts in, when the grants list says; without it the
+/// line names every channel the chat reads.
+pub fn context_lines(
+    manifest: &Value,
+    destination: Option<&str>,
+    options: &HumanOptions,
+) -> Vec<String> {
+    let mut directory = options.directory.clone();
+    directory.absorb(manifest);
+    let ctx = Ctx::new(directory, options.show_ids, options.clock);
+    let sources = str_list(manifest, "source_channels");
+    let others: Vec<String> = sources
+        .iter()
+        .filter(|source| Some(**source) != destination)
+        .map(|source| ctx.channel_in_team(Some(source)))
+        .collect();
+    let mut out = vec![match destination {
+        Some(destination) if others.is_empty() => {
+            format!("Access: {}", ctx.channel_in_team(Some(destination)))
+        }
+        Some(destination) => format!(
+            "Access: {} · also reads {}",
+            ctx.channel_in_team(Some(destination)),
+            others.join(", ")
+        ),
+        None if others.is_empty() => "Access: no channels".to_owned(),
+        None => format!("Access: reads {}", others.join(", ")),
+    }];
+    let messages = list_key(manifest, "messages");
+    if messages.is_empty() {
+        out.push("No messages.".into());
+    }
+    for message in messages.iter().rev() {
+        out.extend(ctx.message(message));
+    }
+    out
+}
+
 /// Render `value` as text for a person.
 pub fn render_text(value: &Value, options: &HumanOptions) -> String {
     let mut directory = options.directory.clone();
@@ -716,7 +1279,91 @@ pub fn render_text(value: &Value, options: &HumanOptions) -> String {
         View::Auto => detect(value),
         view => view,
     };
-    ctx.render(view, value).join("\n")
+    let mut lines = ctx.render(view, value);
+    lines.extend(options.notes.iter().cloned());
+    lines.join("\n")
+}
+
+/// "Showing 100 of your 140 channels." when a snapshot left some out (`totals`): the broker
+/// lists as many teams and channels as fit in one answer, and the rest are still the person's.
+pub fn partial_list_note(noun: &str, listed: usize, total: Option<u64>) -> Option<String> {
+    let total = usize::try_from(total?).ok()?;
+    (total > listed).then(|| format!("Showing {listed} of your {total} {noun}."))
+}
+
+/// Channels as a person reads them (M17, F6, SF-F10): grouped by team, teams by name, each
+/// team's `#general` first and then its channels by name. A channel whose team is not listed
+/// comes last. The broker sends them in the order of their random IDs.
+pub fn channels_in_order(channels: &mut [Value], teams: &[Value]) {
+    let team_rank: BTreeMap<&str, (String, &str)> = teams
+        .iter()
+        .filter_map(|team| {
+            let id = str_field(team, "id")?;
+            let name = display_or_name(team).unwrap_or_default().to_lowercase();
+            Some((
+                id,
+                (
+                    name,
+                    str_field(team, "general_channel_id").unwrap_or_default(),
+                ),
+            ))
+        })
+        .collect();
+    let key = |channel: &Value| {
+        let id = str_field(channel, "id").unwrap_or_default().to_owned();
+        let team = str_field(channel, "team_id").and_then(|team| team_rank.get(team));
+        let name = display_or_name(channel)
+            .unwrap_or_default()
+            .trim_start_matches('#')
+            .to_lowercase();
+        (
+            team.is_none(),
+            team.map(|(name, _)| name.clone()).unwrap_or_default(),
+            str_field(channel, "team_id").unwrap_or_default().to_owned(),
+            team.is_none_or(|(_, general)| *general != id),
+            name,
+            id,
+        )
+    };
+    channels.sort_by_cached_key(key);
+}
+
+/// Teams by name, case aside.
+pub fn teams_in_order(teams: &mut [Value]) {
+    teams.sort_by_cached_key(|team| {
+        (
+            display_or_name(team).unwrap_or_default().to_lowercase(),
+            str_field(team, "id").unwrap_or_default().to_owned(),
+        )
+    });
+}
+
+/// People as a person reads them (SF-F10, M17): the host, then you, then everyone else by the
+/// name their row leads with, a leading `@` and letter case aside, then by username. The
+/// desktop's `peopleInOrder`, so the terminal lists a team the way the app does.
+pub fn people_in_order(people: &mut [Value], host_id: Option<&str>, actor_id: Option<&str>) {
+    people.sort_by_cached_key(|person| {
+        let id = str_field(person, "id");
+        let rank = if id.is_some() && id == host_id {
+            0
+        } else if id.is_some() && id == actor_id {
+            1
+        } else {
+            2
+        };
+        let username = str_field(person, "username").unwrap_or_default();
+        let display = str_field(person, "display_name")
+            .or_else(|| str_field(person, "nickname"))
+            .map(str::trim)
+            .filter(|display| {
+                !display.is_empty() && display.to_lowercase() != username.to_lowercase()
+            });
+        let shown = display
+            .unwrap_or(username)
+            .trim_start_matches('@')
+            .to_lowercase();
+        (rank, shown, username.to_lowercase(), username.to_owned())
+    });
 }
 
 fn detect(value: &Value) -> View {
@@ -831,7 +1478,7 @@ impl Ctx {
             View::Grants => self.grants(value),
             View::Privacy => self.privacy(value),
             View::Transfers => self.transfers(value),
-            View::Transfer => self.transfer(value),
+            View::Transfer => self.transfer(value, true),
             View::Reference => self.rows(
                 value,
                 "references",
@@ -889,19 +1536,31 @@ impl Ctx {
     }
 
     fn team(&self, id: Option<&str>) -> String {
-        let name = id
-            .and_then(|id| self.dir.teams.get(id))
-            .map_or_else(|| "this team".to_owned(), |name| display_text(name));
-        self.with_id(name, "team ID", id)
+        match id.and_then(|id| self.dir.teams.get(id)) {
+            Some(name) => self.with_id(display_text(name), "team ID", id),
+            None => self.unnamed_id("a team", "this team", "team ID", id),
+        }
     }
 
     fn channel(&self, id: Option<&str>) -> String {
         let name = id
             .and_then(|id| self.dir.channels.get(id))
             .and_then(|channel| channel.name.as_deref())
-            .filter(|name| !name.is_empty())
-            .map_or_else(|| "this channel".to_owned(), channel_name);
-        self.with_id(name, "channel ID", id)
+            .filter(|name| !name.is_empty());
+        match name {
+            Some(name) => self.with_id(channel_name(name), "channel ID", id),
+            None => self.unnamed_id("a channel", "this channel", "channel ID", id),
+        }
+    }
+
+    /// An ID the directory cannot name: `fallback` ("this channel") when the value simply
+    /// does not say, and, when the names could not be read, what it is, where, why, and its
+    /// ID, which is then the only way to tell two rows apart (R-8, AG-F17).
+    fn unnamed_id(&self, what: &str, fallback: &str, label: &str, id: Option<&str>) -> String {
+        match (self.dir.unnamed(what), id) {
+            (Some(unnamed), Some(id)) => format!("{unnamed} [{label} {}]", safe_text(id)),
+            _ => self.with_id(fallback.to_owned(), label, id),
+        }
     }
 
     fn channel_in_team(&self, id: Option<&str>) -> String {
@@ -961,17 +1620,36 @@ impl Ctx {
             ("Agent grants", "runs", Self::run_grant_row),
         ];
         for (title, key, row) in sections {
-            let items = list_key(snapshot, key);
-            if items.is_empty() {
+            let mut items = list_key(snapshot, key).to_vec();
+            let noun = match key {
+                "principals" | "former_principals" => {
+                    people_in_order(&mut items, self.dir.host_id(), self.dir.actor_id.as_deref());
+                    ""
+                }
+                "teams" => {
+                    teams_in_order(&mut items);
+                    "teams"
+                }
+                "channels" => {
+                    channels_in_order(&mut items, list_key(snapshot, "teams"));
+                    "channels"
+                }
+                "invitations" => "invitations",
+                "references" => "remote references",
+                _ => "agent grants",
+            };
+            let note = partial_list_note(noun, items.len(), snapshot["totals"][key].as_u64());
+            if items.is_empty() && note.is_none() {
                 if matches!(title, "People" | "Teams" | "Channels") {
                     out.push(format!("{title}: none"));
                 }
                 continue;
             }
             out.push(format!("{title} ({}):", items.len()));
-            for item in items {
+            for item in &items {
                 out.extend(row(self, item).into_iter().map(|line| format!("  {line}")));
             }
+            out.extend(note.map(|note| format!("  {note}")));
         }
         out
     }
@@ -1007,6 +1685,9 @@ impl Ctx {
         }
         if person.stale {
             row.push_str(" · account no longer valid");
+        }
+        if id.is_some_and(|id| self.dir.online(id)) {
+            row.push_str(" · online");
         }
         row = self.with_id(row, "ID", id);
         if let Some(uid) = person.uid.filter(|_| self.show_ids) {
@@ -1109,7 +1790,7 @@ impl Ctx {
         let mut out = self.rows(
             value,
             "invitations",
-            "No invitations.",
+            "No pending invitations.",
             Self::invitation_row,
         );
         if !list(value, "invitations").is_empty() {
@@ -1166,18 +1847,28 @@ impl Ctx {
         if let Some(target) = str_field(connection, "ssh_target") {
             parts.push(safe_text(target));
         }
-        if let Some(status) = str_field(connection, "status") {
-            parts.push(sentence_case(status));
+        if let Some(status) = connection_status(connection) {
+            parts.push(status);
         }
-        parts.push(connection_privacy(connection));
+        parts.push(match Effective::of(connection) {
+            None | Some(Effective::Own) => connection_privacy(connection),
+            Some(Effective::Workspace(workspace)) => {
+                format!(
+                    "Private because {workspace} is Private for everyone · your connection: Public"
+                )
+            }
+            Some(Effective::Unknown) => format!(
+                "Your connection: Public · workspace privacy unknown {}",
+                unchecked_because(connection)
+            ),
+        });
         let mut out = vec![self.with_id(
             parts.join(" · "),
             "connection ID",
             str_field(connection, "id"),
         )];
-        if let Some(error) = str_field(connection, "last_error") {
-            out.push(format!("  Last error: {}", safe_text(error)));
-        }
+        out.extend(server_storage_lines(connection));
+        out.extend(last_error_lines(connection));
         out
     }
 
@@ -1195,15 +1886,35 @@ impl Ctx {
             }
             out.push(server);
         }
-        if let Some(status) = str_field(connection, "status") {
-            out.push(format!("  Status: {}", sentence_case(status)));
+        if let Some(status) = connection_status(connection) {
+            out.push(format!("  Status: {status}"));
         }
+        out.extend(server_storage_lines(connection));
         let mut privacy = vec![mode_word(str_field(connection, "mode"))];
         privacy.push(institution(connection));
         if let Some(epoch) = connection.get("policy_epoch").and_then(Value::as_u64) {
             privacy.push(format!("policy epoch {epoch}"));
         }
-        out.push(format!("  Privacy: {}", privacy.join(" · ")));
+        // SF-F1: the effective privacy comes first, and the connection's own setting is said
+        // as that whenever the two differ or the workspace's cannot be read.
+        match Effective::of(connection) {
+            None | Some(Effective::Own) => {
+                out.push(format!("  Privacy: {}", privacy.join(" · ")));
+            }
+            Some(Effective::Workspace(workspace)) => {
+                out.push(format!(
+                    "  Privacy: Private ({workspace} is Private for everyone)"
+                ));
+                out.push(format!("  Your connection: {}", privacy.join(" · ")));
+            }
+            Some(Effective::Unknown) => {
+                out.push(format!(
+                    "  Privacy: can't be checked {}",
+                    unchecked_because(connection)
+                ));
+                out.push(format!("  Your connection: {}", privacy.join(" · ")));
+            }
+        }
         if let Some(root) = str_field(connection, "remote_root") {
             let execution = connection.get("remote_execution").and_then(Value::as_bool);
             let access = if execution == Some(true) {
@@ -1216,9 +1927,7 @@ impl Ctx {
         if let Some(file) = str_field(connection, "identity_file") {
             out.push(format!("  SSH key file: {}", safe_text(file)));
         }
-        if let Some(error) = str_field(connection, "last_error") {
-            out.push(format!("  Last error: {}", safe_text(error)));
-        }
+        out.extend(last_error_lines(connection));
         out.extend(self.detail_ids(connection, CONNECTION_IDS));
         out
     }
@@ -1290,16 +1999,39 @@ impl Ctx {
         out
     }
 
+    /// A message's attachments, each by name and size where the command looked it up
+    /// (`attachment_details`, DW-17), so `files download ID` can be given the right one; any
+    /// it could not look up are counted, as before.
     fn message_extras(&self, message: &Value) -> Vec<String> {
         let mut out = Vec::new();
         let attachments = str_list(message, "attachments");
-        if !attachments.is_empty() {
+        let details = message.get("attachment_details");
+        let (named, unnamed): (Vec<&str>, Vec<&str>) = attachments
+            .iter()
+            .partition(|id| details.and_then(|details| details.get(**id)).is_some());
+        for id in &named {
+            let blob = &details.expect("partitioned on it")[*id];
+            let mut text = format!("Attachment: {}", text_or(blob, "name", "Unnamed file"));
+            if let Some(size) = blob.get("size").and_then(Value::as_u64) {
+                let _ = write!(text, " ({})", human_size(size));
+            }
+            out.push(format!(
+                "    {}",
+                self.with_id(text, "attachment ID", Some(id))
+            ));
+        }
+        if !unnamed.is_empty() {
+            let more = if named.is_empty() { "" } else { "more " };
             let mut line = format!(
                 "    {}",
-                count(attachments.len(), "attachment", "attachments")
+                count(
+                    unnamed.len(),
+                    &format!("{more}attachment"),
+                    &format!("{more}attachments")
+                )
             );
             if self.show_ids {
-                let _ = write!(line, " [attachment IDs {}]", join_safe(&attachments));
+                let _ = write!(line, " [attachment IDs {}]", join_safe(&unnamed));
             }
             out.push(line);
         }
@@ -1441,20 +2173,30 @@ impl Ctx {
         let stopped = grant.get("expired").and_then(Value::as_bool) == Some(true);
         let expires_at = grant.get("expires_at").and_then(Value::as_i64);
         let now = self.clock.now();
+        // AGT2-N3: a task the person stopped reads Stopped, as its card in the channel does; one
+        // that finished (or whose status the command could not read) reads Ended. The grant
+        // cannot tell them apart, so the command adds the task's status (`task_status`).
+        let task_over = || {
+            if str_field(grant, "task_status") == Some("cancelled") {
+                "Stopped".to_owned()
+            } else {
+                "Ended".to_owned()
+            }
+        };
         if stopped {
             return match str_field(grant, "revocation") {
                 Some("unconfirmed") => {
                     "Stopped on this device; the workspace hasn't confirmed yet".into()
                 }
                 Some("ended_by_workspace") => "Ended: Crew settings changed".into(),
-                _ if task => "Ended".into(),
+                _ if task => task_over(),
                 _ => "Revoked".into(),
             };
         }
         match expires_at {
             Some(at) if at <= now => {
                 if task {
-                    "Ended".into()
+                    task_over()
                 } else {
                     "Expired".into()
                 }
@@ -1485,17 +2227,40 @@ impl Ctx {
             connection.push(format!("policy epoch {epoch}"));
         }
         let workspace = value.get("workspace").unwrap_or(&Value::Null);
+        // Read only while connected (SF2-N3): a `privacy show` made offline has none.
+        let unread = !workspace.is_object();
+        // SF-F1: privacy is Public only when the connection is and the workspace allows it.
+        let effective = match (
+            str_field(value, "personal_mode"),
+            str_field(workspace, "mode"),
+        ) {
+            (Some("public"), Some("private")) => format!(
+                "Private ({} is Private for everyone)",
+                str_field(workspace, "name")
+                    .map_or_else(|| "the workspace".to_owned(), display_text)
+            ),
+            (Some("public"), Some("public")) => "Public".to_owned(),
+            (Some("public"), _) if unread => "can't be checked while disconnected".to_owned(),
+            (Some("public"), _) => "can't be checked".to_owned(),
+            (own, _) => mode_word(own),
+        };
+        let workspace_line = if unread {
+            "Workspace: can't be checked while disconnected".to_owned()
+        } else {
+            self.with_id(
+                format!("Workspace: {}", workspace_privacy(workspace)),
+                "workspace ID",
+                str_field(workspace, "id"),
+            )
+        };
         let mut out = vec![
+            format!("Privacy: {effective}"),
             self.with_id(
                 format!("Your connection: {}", connection.join(" · ")),
                 "connection ID",
                 str_field(value, "connection_id"),
             ),
-            self.with_id(
-                format!("Workspace: {}", workspace_privacy(workspace)),
-                "workspace ID",
-                str_field(workspace, "id"),
-            ),
+            workspace_line,
         ];
         let channels = list_key(value, "channels");
         if !channels.is_empty() {
@@ -1527,13 +2292,16 @@ impl Ctx {
         }
         let mut out: Vec<String> = transfers
             .iter()
-            .flat_map(|transfer| self.transfer(transfer))
+            .flat_map(|transfer| self.transfer(transfer, false))
             .collect();
         self.ids_hint(&mut out, "files status, resume, pause and forget");
         out
     }
 
-    fn transfer(&self, transfer: &Value) -> Vec<String> {
+    /// One transfer. `alone` is a single receipt (`files status`), whose resume command names
+    /// its ID: the person just typed it. In a list the ID is there only with `--show-ids`, as
+    /// every other ID is.
+    fn transfer(&self, transfer: &Value, alone: bool) -> Vec<String> {
         let name = text_or(transfer, "name", "Unnamed file");
         let direction = str_field(transfer, "direction").unwrap_or("upload");
         let channel = self.channel(str_field(transfer, "channel_id"));
@@ -1559,7 +2327,25 @@ impl Ctx {
             None => {}
         }
         let mut out = vec![self.with_id(row, "transfer ID", str_field(transfer, "id"))];
-        if let Some(error) = str_field(transfer, "error") {
+        if matches!(state, "paused" | "needs_file_selection") {
+            // CLIDOCS-F10: a pause is a state, not an error. Its reason in the desktop's few
+            // words, then this terminal's way on, which the daemon's "Reselect the original
+            // local file" is not.
+            if let Some(reason) = str_field(transfer, "error").and_then(pause_reason) {
+                out.push(format!("  {reason}"));
+            }
+            let what = if direction == "download" {
+                "the same destination"
+            } else {
+                "the original file"
+            };
+            let id = str_field(transfer, "id")
+                .filter(|_| alone || self.show_ids)
+                .map_or_else(|| "ID".to_owned(), safe_text);
+            out.push(format!(
+                "  Resume with {what}: biorouter crew files resume {id} FILE"
+            ));
+        } else if let Some(error) = str_field(transfer, "error") {
             out.push(format!("  Error: {}", safe_text(error)));
         }
         out.extend(self.detail_ids(transfer, TRANSFER_IDS));
@@ -1678,8 +2464,14 @@ impl Ctx {
             let text = if flag("detached") == Some(true) {
                 "Stopped watching. The transfer continues.".to_owned()
             } else {
+                // The direction decides the word a finished transfer ends with: an upload is
+                // Ready to attach, a download is Saved.
                 let state = str_field(value, "state").unwrap_or("unknown");
-                format!("Transfer {}.", transfer_state_word(state, "", 0, None))
+                let direction = str_field(value, "direction").unwrap_or("");
+                format!(
+                    "Transfer {}.",
+                    transfer_state_word(state, direction, 0, None)
+                )
             };
             return vec![self.with_id(text, "transfer ID", Some(transfer))];
         }
@@ -1705,11 +2497,17 @@ impl Ctx {
         out
     }
 
+    /// A prepared device key (SF-F3). `connections prepare` and `enroll prepare` are one
+    /// command, and nothing in it says which use the key is for: a host passes it to
+    /// `biorouter-crew start` and the preparation ID to `connections join-invitation`, while a
+    /// joiner sends the key to the host and puts the ID in a `connections save` descriptor. So
+    /// both uses are named, and neither reader is sent down the other's path.
     fn prepared(&self, value: &Value) -> Vec<String> {
         let key = str_field(value, "public_key").map_or_else(String::new, safe_text);
         let mut out = vec![
-            "Device key prepared. Give this public key to the workspace host:".to_owned(),
+            "Device key prepared. Its public key:".to_owned(),
             format!("  {key}"),
+            PREPARED_KEY_USES.to_owned(),
         ];
         if self.show_ids {
             out.extend(self.detail_ids(
@@ -1719,8 +2517,11 @@ impl Ctx {
                     ("device_id", "Device ID"),
                 ],
             ));
+            out.push(format!("The preparation ID {PREPARATION_ID_USES}."));
         } else {
-            out.push("Add --show-ids for the preparation ID that connections save takes.".into());
+            out.push(format!(
+                "Add --show-ids for the preparation ID, which {PREPARATION_ID_USES}."
+            ));
         }
         out
     }
@@ -1831,6 +2632,67 @@ impl Ctx {
         }
     }
 }
+
+/// A saved connection's status word, as the desktop's status row says it: "Not joined yet" for a
+/// connection the host has not let in (`joined: false`, SC2-N5), which is connected but not a
+/// member, before the transport's own status.
+fn connection_status(connection: &Value) -> Option<String> {
+    if connection.get("joined").and_then(Value::as_bool) == Some(false) {
+        return Some("Not joined yet".to_owned());
+    }
+    str_field(connection, "status").map(sentence_case)
+}
+
+/// [`SERVER_STOPPED_SAVING`] for a connection whose `server_storage` says so, and, for its host
+/// (`you_host`), what to run on the server. Nothing for an absent or `null` `server_storage`:
+/// the server is saving, or it is an older one that does not say.
+fn server_storage_lines(connection: &Value) -> Vec<String> {
+    let Some(storage) = connection.get("server_storage").filter(|s| s.is_object()) else {
+        return Vec::new();
+    };
+    let mut out = vec![format!("  {SERVER_STOPPED_SAVING}")];
+    if connection.get("you_host").and_then(Value::as_bool) == Some(true) {
+        let server = str_field(connection, "server_label")
+            .or_else(|| {
+                str_field(connection, "ssh_target").and_then(|target| target.rsplit('@').next())
+            })
+            .map_or_else(|| "the server".to_owned(), safe_text);
+        let first = match str_field(storage, "code") {
+            Some("storage_full") => format!("Free space on {server}"),
+            _ => format!("Check the storage on {server}"),
+        };
+        out.push(format!("  {}", host_restart_steps(&first)));
+    }
+    out
+}
+
+/// A saved connection's last error. When the daemon types it (`last_error_code`) with a code
+/// the connect failures share, the sentence that says what to do comes first and the daemon's
+/// own text follows as its details (a wave-1 follow-up to CLI-7); otherwise the text is shown
+/// as it is.
+fn last_error_lines(connection: &Value) -> Vec<String> {
+    let Some(error) = str_field(connection, "last_error") else {
+        return Vec::new();
+    };
+    let code = str_field(connection, "last_error_code");
+    // A login on this machine is told what a member on the server itself must fix.
+    let same_host = code
+        .zip(str_field(connection, "ssh_target"))
+        .and_then(|(code, ssh_target)| same_host_connect_failure_text(code, ssh_target));
+    match same_host.or_else(|| code.and_then(connect_failure_text).map(str::to_owned)) {
+        Some(sentence) => vec![
+            format!("  Last error: {sentence}"),
+            format!("    Details: {}", safe_text(error)),
+        ],
+        None => vec![format!("  Last error: {}", safe_text(error))],
+    }
+}
+
+/// What a prepared device key is for, both ways (`command-line.md` "Host a workspace", and
+/// `cli-guide.md` "Save a connection from a descriptor").
+const PREPARED_KEY_USES: &str = "To host a workspace, pass this key to biorouter-crew start --bootstrap-key on the server. To join one, send it to the workspace's host.";
+/// Where each reader puts the preparation ID, completing "The preparation ID …".
+const PREPARATION_ID_USES: &str = "goes to connections join-invitation --preparation-id when you host, or into the descriptor for connections save when you join";
 
 const CONNECTION_IDS: &[(&str, &str)] = &[
     ("id", "Connection ID"),
@@ -1978,7 +2840,7 @@ fn sentence_case(value: &str) -> String {
 }
 
 /// The run status words the desktop shows (`crewStatus.ts`).
-fn run_status_word(status: &str) -> String {
+pub(super) fn run_status_word(status: &str) -> String {
     match status {
         "starting" => "Starting…".into(),
         "running" => "Working…".into(),
@@ -1992,6 +2854,46 @@ fn run_status_word(status: &str) -> String {
         "cancelled" => "Stopped".into(),
         other => sentence_case(other),
     }
+}
+
+/// Why a paused transfer stopped, from the daemon's recovery sentence
+/// (`transfer_recovery_message` in `crates/biorouter-server/src/crew/transfers.rs`), in the
+/// desktop's few words (`PAUSE_REASONS` in `ui/desktop/src/components/crew/state/crewStatus.ts`),
+/// with a full stop. A sentence neither knows is said as it came.
+fn pause_reason(error: &str) -> Option<String> {
+    const REASONS: [(&str, &str); 6] = [
+        ("Transfer paused", "You paused it."),
+        (
+            "Authenticate and reconnect the saved connection",
+            "The connection dropped.",
+        ),
+        (
+            "Unlock the Crew credential vault",
+            "The credential vault is locked.",
+        ),
+        (
+            "Two transfers are active",
+            "Two other transfers were running.",
+        ),
+        (
+            "The Crew connection or privacy policy changed",
+            "The connection's privacy changed.",
+        ),
+        ("Transfer stopped", "It stopped."),
+    ];
+    let text = error.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(
+        REASONS
+            .iter()
+            .find(|(start, _)| {
+                text.strip_prefix(start)
+                    .is_some_and(|rest| !rest.starts_with(|ch: char| ch.is_alphanumeric()))
+            })
+            .map_or_else(|| safe_text(text), |(_, words)| (*words).to_owned()),
+    )
 }
 
 fn transfer_state_word(state: &str, direction: &str, offset: u64, size: Option<u64>) -> String {
@@ -2046,6 +2948,54 @@ fn connection_privacy(connection: &Value) -> String {
     }
 }
 
+/// A saved connection's effective privacy, as the CLI annotated it (`effective_mode`,
+/// `workspace_mode`, `workspace_name`; SF-F1). `None` for a value it did not annotate.
+enum Effective {
+    /// The connection's own setting is the effective one.
+    Own,
+    /// The connection is Public, but the workspace, named here, is Private for everyone.
+    Workspace(String),
+    /// The connection is Public, and the workspace's setting could not be read.
+    Unknown,
+}
+
+impl Effective {
+    fn of(connection: &Value) -> Option<Self> {
+        let effective = connection.get("effective_mode")?;
+        let own = str_field(connection, "mode");
+        Some(match effective.as_str() {
+            None => Self::Unknown,
+            Some(mode) if Some(mode) == own => Self::Own,
+            Some(_) => Self::Workspace(
+                str_field(connection, "workspace_name")
+                    .map_or_else(|| "the workspace".to_owned(), display_text),
+            ),
+        })
+    }
+}
+
+/// Why a Public connection's workspace privacy was not read: it is disconnected, or the
+/// workspace did not answer in time.
+fn unchecked_because(connection: &Value) -> &'static str {
+    if str_field(connection, "status") == Some("connected") {
+        "right now"
+    } else {
+        "while disconnected"
+    }
+}
+
+/// The privacy a connection in `own` mode has in a workspace in `workspace` mode (SF-F1, the
+/// manual's definition): Private when either is, Public only when both allow it, and unknown
+/// when the connection is Public and the workspace's mode could not be read.
+pub fn effective_mode(own: Option<&str>, workspace: Option<&str>) -> Option<&'static str> {
+    match (own, workspace) {
+        (Some("public"), Some("public")) => Some("public"),
+        (Some("public"), Some(_)) => Some("private"),
+        (Some("public"), None) => None,
+        _ => Some("private"),
+    }
+}
+
 fn workspace_privacy(workspace: &Value) -> String {
     let mode = match str_field(workspace, "mode") {
         Some("private") => "Private for everyone".into(),
@@ -2068,6 +3018,13 @@ fn credentials(value: &Value) -> String {
         (_, Some(true)) => "Locked",
         _ => "Unlocked",
     };
+    // SETUPHPC2-F-C: a keyring that cannot keep a key (a headless Linux node with no Secret
+    // Service) is not the normal "Not set up · keyring": say so, and what to run instead.
+    if value.get("available").and_then(Value::as_bool) == Some(false) {
+        return format!(
+            "Credential vault: {state} · no keyring on this computer; run biorouter crew credentials init"
+        );
+    }
     match str_field(value, "backend") {
         Some(backend) => format!("Credential vault: {state} · {}", safe_text(backend)),
         None => format!("Credential vault: {state}"),
@@ -2179,6 +3136,37 @@ mod tests {
         assert!(!safe.contains('\u{202e}'));
     }
 
+    /// CLI-4: the CLI's own isolates around a name survive a second pass; any other isolate,
+    /// and every other control, is still escaped.
+    #[test]
+    fn a_balanced_isolate_pair_passes_through_and_nothing_else_does() {
+        let named = "Ask \"\u{2068}Alice Chen\u{2069}\" (@alice) again.";
+        assert_eq!(safe_text_keeping_isolates(named), named);
+        assert_eq!(
+            safe_text_keeping_isolates("\u{2068}#données\u{2069}: gone"),
+            "\u{2068}#données\u{2069}: gone"
+        );
+        assert_eq!(
+            safe_text_keeping_isolates("\u{2068}a\u{202e}b\u{2069}"),
+            "\u{2068}a\\u{202e}b\u{2069}"
+        );
+        for (hostile, escaped) in [
+            ("open \u{2068}forever", "open \\u{2068}forever"),
+            ("\u{2069}close", "\\u{2069}close"),
+            ("\u{2066}ltr\u{2069}", "\\u{2066}ltr\\u{2069}"),
+            (
+                "\u{2068}a\u{2068}b\u{2069}c\u{2069}",
+                "\\u{2068}a\u{2068}b\u{2069}c\\u{2069}",
+            ),
+            ("bell\u{7}", "bell\\u{7}"),
+        ] {
+            assert_eq!(safe_text_keeping_isolates(hostile), escaped, "{hostile:?}");
+        }
+        // M14: a joiner outside the pairs keeps its neighbours too.
+        let joined = "Posted 👩🏽\u{200d}🔬 to \u{2068}#données\u{2069}.";
+        assert_eq!(safe_text_keeping_isolates(joined), joined);
+    }
+
     #[test]
     fn terminal_controls_escape_without_losing_emoji_or_non_ascii_text() {
         let input = "safe🙂 café\u{202e}bidi\u{200b}zero\u{feff}bom\u{e0041}tag\n\x1b";
@@ -2191,6 +3179,46 @@ mod tests {
         assert!(escaped.contains("\\n"));
         assert!(escaped.contains("\\u{1b}"));
         assert!(escaped.chars().all(|ch| !terminal_control(ch)));
+    }
+
+    /// M14: joiners inside emoji sequences and between letters of scripts that use them print
+    /// as themselves; a joiner anywhere else is escaped, the spoof `crew\u{200d}_alice` first.
+    #[test]
+    fn joiners_print_where_they_join_text_and_are_escaped_everywhere_else() {
+        for kept in [
+            "👩🏽\u{200d}🔬",
+            "👨\u{200d}👩\u{200d}👧\u{200d}👦",
+            "🏳\u{fe0f}\u{200d}🌈",
+            "❤\u{fe0f}\u{200d}🔥",
+            "می\u{200c}خواهم",
+            "क्\u{200d}ष",
+            "क्\u{200c}ष",
+        ] {
+            assert_eq!(safe_text(kept), kept, "{kept:?}");
+        }
+        for (hostile, escaped) in [
+            ("crew\u{200d}_alice", "crew\\u{200d}_alice"),
+            ("ali\u{200c}ce", "ali\\u{200c}ce"),
+            ("\u{200d}🔬", "\\u{200d}🔬"),
+            ("🔬\u{200d}", "🔬\\u{200d}"),
+            ("🔬\u{200d} 🔬", "🔬\\u{200d} 🔬"),
+            ("🔬\u{200d}\u{200d}🔬", "🔬\\u{200d}\\u{200d}🔬"),
+            ("🔬\u{200d}\u{202e}🔬", "🔬\\u{200d}\\u{202e}🔬"),
+            ("é\u{200b}é", "é\\u{200b}é"),
+        ] {
+            assert_eq!(safe_text(hostile), escaped, "{hostile:?}");
+        }
+        // A message body keeps its emoji on every line.
+        let body = plain(&message(
+            "m",
+            ALICE,
+            NOW,
+            "Emoji check: 👩🏽\u{200d}🔬 and می\u{200c}خواهم",
+        ));
+        assert!(
+            body.ends_with("Emoji check: 👩🏽\u{200d}🔬 and می\u{200c}خواهم"),
+            "{body}"
+        );
     }
 
     #[test]
@@ -2286,9 +3314,13 @@ mod tests {
         render_text(value, &options(true, Directory::from_snapshot(snapshot)))
     }
 
-    /// The display-name half of a person label: quoted and isolated.
+    /// The display-name half of a person label: quoted, and isolated only when it is not ASCII.
     fn q(name: &str) -> String {
-        format!("\"\u{2068}{name}\u{2069}\"")
+        if name.is_ascii() {
+            format!("\"{name}\"")
+        } else {
+            format!("\"\u{2068}{name}\u{2069}\"")
+        }
     }
 
     fn alice() -> String {
@@ -2451,6 +3483,57 @@ mod tests {
         assert_no_machine_ids(&text);
     }
 
+    /// DW-17: an attachment the command looked up is named with its size, beside its ID with
+    /// `--show-ids`; one it could not look up is counted.
+    #[test]
+    fn history_names_each_attachment_it_looked_up() {
+        let mut page = history();
+        page["messages"][3]["attachments"] = json!([BLOB, TRANSFER]);
+        page["messages"][3]["attachment_details"] =
+            json!({BLOB: {"name": "counts.csv", "size": 56_320, "media_type": "text/csv"}});
+        let text = named(&page, &alice_snapshot());
+        assert!(
+            text.contains("    Attachment: counts.csv (55 KB)\n    1 more attachment\n"),
+            "{text}"
+        );
+        assert_no_machine_ids(&text);
+        let ids = with_ids(&page, &alice_snapshot());
+        assert!(
+            ids.contains(&format!("    Attachment: counts.csv (55 KB) [attachment ID {BLOB}]\n    1 more attachment [attachment IDs {TRANSFER}]")),
+            "{ids}"
+        );
+    }
+
+    /// AG-F7: `crew context` shows the grant's scope, then the messages oldest first.
+    #[test]
+    fn a_chats_context_shows_its_access_then_its_messages_oldest_first() {
+        let mut manifest = json!({"run_id": RUN, "policy_epoch": 4,
+            "source_channels": [METHODS, GENERAL], "restricted": true,
+            "people": {BOB: {"username": "crew_bob", "display_name": "Bob Lee"}},
+            "channel_names": {METHODS: "methods", GENERAL: "general"}});
+        manifest["messages"] = json!([
+            message("m-2", BOB, NOW, "Second."),
+            message("m-1", BOB, NOW - 60, "First."),
+        ]);
+        let lines = context_lines(
+            &manifest,
+            Some(METHODS),
+            &options(false, Directory::default()),
+        );
+        assert_eq!(lines[0], "Access: #methods · also reads #general");
+        let first = lines
+            .iter()
+            .position(|line| line.ends_with("First."))
+            .unwrap();
+        let second = lines
+            .iter()
+            .position(|line| line.ends_with("Second."))
+            .unwrap();
+        assert!(first < second, "{lines:?}");
+        let unknown = context_lines(&manifest, None, &options(false, Directory::default()));
+        assert_eq!(unknown[0], "Access: reads #methods, #general");
+    }
+
     #[test]
     fn history_without_names_degrades_to_unknown_member_and_marks_restriction() {
         let text = plain(&history());
@@ -2506,9 +3589,9 @@ mod tests {
             "Privacy: Private for everyone · institution ucsf · policy epoch 4".into(),
             format!("You: {}", alice()),
             "People (3):".into(),
-            "  @crew_carol".into(),
             format!("  {} · you · host", alice()),
             format!("  {}", bob()),
+            "  @crew_carol".into(),
             "Teams (1):".into(),
             "  Crew QA Lab · 3 members · created by you".into(),
             "Channels (2):".into(),
@@ -2530,6 +3613,91 @@ mod tests {
         .join("\n");
         assert_eq!(text, expected);
         assert_no_machine_ids(&text);
+    }
+
+    /// M17, F6, SF-F10: lists read in one order everywhere, not in the order of random IDs:
+    /// channels by team with each `#general` first, teams by name, and people with the host
+    /// first, then you, then by the name their row leads with.
+    #[test]
+    fn channels_teams_and_people_are_listed_in_a_readers_order() {
+        let team = |id: &str, name: &str, general: &str| json!({"id": id, "name": name, "general_channel_id": general, "members": []});
+        let place = |id: &str, team: &str, name: &str| json!({"id": id, "team_id": team, "name": name, "classification": "restricted"});
+        let teams = vec![
+            team("t-b", "bench crew", "c-4"),
+            team("t-a", "Chen Lab", "c-6"),
+        ];
+        let mut channels = vec![
+            place("c-1", "t-a", "msg-qa"),
+            place("c-2", "t-a", "random"),
+            place("c-3", "t-a", "methods"),
+            place("c-4", "t-b", "general"),
+            place("c-5", "t-b", "scratch"),
+            place("c-6", "t-a", "general"),
+            place("c-7", "t-gone", "orphan"),
+        ];
+        channels_in_order(&mut channels, &teams);
+        let order: Vec<&str> = channels
+            .iter()
+            .map(|channel| channel["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["c-4", "c-5", "c-6", "c-3", "c-1", "c-2", "c-7"]);
+
+        let mut sorted_teams = teams.clone();
+        teams_in_order(&mut sorted_teams);
+        assert_eq!(sorted_teams[0]["id"], "t-b");
+
+        let mut people = vec![
+            json!({"id": "p-jack", "username": "crew_jack", "display_name": "Jack Moreno"}),
+            json!({"id": "p-mal", "username": "crew_mallory"}),
+            json!({"id": "p-alice", "username": "crew_alice", "display_name": "Alice Chen"}),
+            json!({"id": "p-carol", "username": "crew_carol", "display_name": "carol nguyen"}),
+            json!({"id": "p-bob", "username": "crew_bob", "display_name": "Bob Lee"}),
+        ];
+        people_in_order(&mut people, Some("p-alice"), Some("p-mal"));
+        let order: Vec<&str> = people
+            .iter()
+            .map(|person| person["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(order, ["p-alice", "p-mal", "p-bob", "p-carol", "p-jack"]);
+    }
+
+    /// The broker lists as many teams and channels as fit in one answer (`totals` counts them
+    /// all), so a list that leaves some out says so, and one that does not says nothing more.
+    #[test]
+    fn a_partial_list_says_how_many_it_shows() {
+        assert_eq!(
+            partial_list_note("channels", 100, Some(140)).as_deref(),
+            Some("Showing 100 of your 140 channels.")
+        );
+        assert_eq!(partial_list_note("channels", 3, Some(3)), None);
+        assert_eq!(partial_list_note("channels", 3, None), None);
+        let mut snapshot = alice_snapshot();
+        snapshot["totals"] =
+            json!({"teams": 1, "channels": 5, "invitations": 1, "runs": 1, "references": 1});
+        let text = plain(&snapshot);
+        assert!(
+            text.contains("Channels (2):\n  #general · Crew QA Lab · Restricted · 3 members · you own it · 2 unread\n  #methods"),
+            "{text}"
+        );
+        assert!(text.contains("\n  Showing 2 of your 5 channels."), "{text}");
+        assert!(!text.contains("of your 1 teams"), "{text}");
+    }
+
+    /// M18 with W2-BRK-6: a person the broker reports online says so; a broker that reports no
+    /// presence shows none.
+    #[test]
+    fn members_the_broker_reports_online_say_so() {
+        let mut snapshot = alice_snapshot();
+        snapshot["online_principal_ids"] = json!([BOB]);
+        let people = render_text(
+            &snapshot["principals"],
+            &options(false, Directory::from_snapshot(&snapshot)).with_view(View::Members),
+        );
+        assert_eq!(
+            people,
+            format!("@crew_carol\n{} · you · host\n{} · online", alice(), bob())
+        );
+        assert!(!plain(&alice_snapshot()["principals"]).contains("online"));
     }
 
     #[test]
@@ -2662,6 +3830,82 @@ mod tests {
         assert_eq!(plain(&json!({"connections":[]})), "No saved connections.");
     }
 
+    /// SF-F1: every surface gives one answer to effective privacy, Private when the connection
+    /// or the workspace is, and says the connection's own setting as that.
+    #[test]
+    fn a_public_connection_in_a_private_workspace_reads_private_everywhere() {
+        let mut public = connection();
+        public["name"] = json!("okafor-lab");
+        public["mode"] = json!("public");
+        public["institution_id"] = json!("stanford");
+        let mut annotated = public.clone();
+        annotated["effective_mode"] = json!("private");
+        annotated["workspace_mode"] = json!("private");
+        annotated["workspace_name"] = json!("okafor-lab");
+        assert_eq!(
+            plain(&json!({"connections": [annotated.clone()]})),
+            "okafor-lab · crew_bob@34.217.178.174 · Connected · Private because okafor-lab is Private for everyone · your connection: Public"
+        );
+        let show = plain(&annotated);
+        assert!(
+            show.contains("  Privacy: Private (okafor-lab is Private for everyone)\n  Your connection: Public · institution stanford · policy epoch 2"),
+            "{show}"
+        );
+        // Connected but unanswered, it says it can't be checked right now.
+        let mut unanswered = public.clone();
+        unanswered["effective_mode"] = Value::Null;
+        assert!(plain(&unanswered).contains("  Privacy: can't be checked right now\n"));
+        // Offline, the workspace's setting can't be read, and it says so.
+        let mut offline = public.clone();
+        offline["status"] = json!("disconnected");
+        offline["effective_mode"] = Value::Null;
+        assert!(plain(&json!({"connections": [offline.clone()]})).ends_with(
+            "Disconnected · Your connection: Public · workspace privacy unknown while disconnected"
+        ));
+        assert!(plain(&offline)
+            .contains("  Privacy: can't be checked while disconnected\n  Your connection: Public"));
+        // A Private connection is Private whatever the workspace allows, and reads as before.
+        let mut private = connection();
+        private["effective_mode"] = json!("private");
+        assert_eq!(
+            plain(&json!({"connections": [private]})),
+            "Bob UCSF · crew_bob@34.217.178.174 · Connected · Private (ucsf)"
+        );
+        // privacy show leads with the effective privacy.
+        let mut shown = privacy();
+        shown["personal_mode"] = json!("public");
+        shown["workspace"]["name"] = json!("okafor-lab");
+        assert!(plain(&shown).starts_with(
+            "Privacy: Private (okafor-lab is Private for everyone)\nYour connection: Public"
+        ));
+        assert_eq!(
+            effective_mode(Some("public"), Some("public")),
+            Some("public")
+        );
+        assert_eq!(effective_mode(Some("public"), None), None);
+        assert_eq!(effective_mode(Some("private"), None), Some("private"));
+    }
+
+    /// A last error the daemon typed with a connect code leads with what to do; an untyped
+    /// one, or one typed with a code of its own (`crew_membership_ended`), reads as it is.
+    #[test]
+    fn a_typed_last_error_says_what_to_do_first() {
+        let mut failed = connection();
+        failed["status"] = json!("disconnected");
+        failed["last_error"] = json!("Crew SSH failure [ssh_eof]: ssh exited");
+        failed["last_error_code"] = json!("crew_ssh_unreachable");
+        let rows = plain(&json!({"connections": [failed.clone()]}));
+        assert!(
+            rows.ends_with("  Last error: Couldn't reach the server. Check your network or your VPN, then connect again.\n    Details: Crew SSH failure [ssh_eof]: ssh exited"),
+            "{rows}"
+        );
+        failed["last_error"] = json!("This computer is no longer a member of lab.");
+        failed["last_error_code"] = json!("crew_membership_ended");
+        assert!(
+            plain(&failed).contains("  Last error: This computer is no longer a member of lab.")
+        );
+    }
+
     #[test]
     fn tasks_grants_and_privacy_name_their_channels() {
         let snapshot = alice_snapshot();
@@ -2692,6 +3936,7 @@ mod tests {
         assert_eq!(
             named(&privacy(), &snapshot),
             [
+                "Privacy: Private",
                 "Your connection: Private · institution ucsf · policy epoch 2",
                 "Workspace: Private for everyone · institution ucsf · policy epoch 4",
                 "Channels (1):",
@@ -2738,6 +3983,19 @@ mod tests {
             (
                 json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true}),
                 format!("Task 20260924_3 {base} · Ended · policy epoch 4"),
+            ),
+            // AGT2-N3: a task the person stopped reads Stopped, as its card in the channel does.
+            (
+                json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true, "task_status": "cancelled"}),
+                format!("Task 20260924_3 {base} · Stopped · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "task", "expired": true, "revocation": "confirmed", "remote_revocation_confirmed": true, "task_status": "completed"}),
+                format!("Task 20260924_3 {base} · Ended · policy epoch 4"),
+            ),
+            (
+                json!({"kind": "task", "expires_at": NOW - 60, "task_status": "cancelled"}),
+                format!("Task 20260924_3 {base} · Stopped · policy epoch 4"),
             ),
             (
                 json!({"kind": "task", "expires_at": NOW - 60}),
@@ -2840,6 +4098,67 @@ mod tests {
         assert_eq!(plain(&json!({"transfers":[]})), "No file transfers.");
     }
 
+    /// CLIDOCS-F10: a paused transfer is a state with its reason in the desktop's words and
+    /// this terminal's resume command, never an "Error:" with desktop wording. A failed one
+    /// keeps its error.
+    #[test]
+    fn a_paused_transfer_says_why_and_how_to_resume() {
+        let snapshot = alice_snapshot();
+        let mut paused = transfers()["transfers"][0].clone();
+        paused["state"] = json!("needs_file_selection");
+        paused["error"] =
+            json!("Transfer paused. Reselect the original local file or destination to resume.");
+        let text = named(&paused, &snapshot);
+        assert_eq!(
+            text,
+            [
+                "counts.csv · upload to #methods · Paused · 55 B",
+                "  You paused it.",
+                &format!(
+                    "  Resume with the original file: biorouter crew files resume {TRANSFER} FILE"
+                ),
+            ]
+            .join("\n")
+        );
+        assert!(!text.contains("Error"), "{text}");
+        assert!(!text.contains("Reselect"), "{text}");
+        // In a list, the ID is there only with --show-ids, as every other ID is.
+        let listed = named(&json!({"transfers": [paused.clone()]}), &snapshot);
+        assert!(
+            listed.contains("  Resume with the original file: biorouter crew files resume ID FILE"),
+            "{listed}"
+        );
+        assert_no_machine_ids(&listed);
+        // A download resumes with its destination; a reason Crew doesn't know is said as is.
+        let mut download = transfers()["transfers"][1].clone();
+        download["state"] = json!("needs_file_selection");
+        download["error"] = json!("The workspace server ran out of disk space while saving this change, so it may not have been saved.");
+        let text = named(&download, &snapshot);
+        assert!(text.contains("\n  The workspace server ran out of disk space while saving this change, so it may not have been saved.\n"), "{text}");
+        assert!(
+            text.contains("  Resume with the same destination: biorouter crew files resume"),
+            "{text}"
+        );
+        for (error, reason) in [
+            ("Authenticate and reconnect the saved connection in Crew, then reselect the original local file or destination and resume.", "The connection dropped."),
+            ("Unlock the Crew credential vault for this daemon session, then reselect the original local file or destination and resume.", "The credential vault is locked."),
+            ("Two transfers are active; reselect and resume when one finishes", "Two other transfers were running."),
+            ("Transfer stopped. Reselect the original local file or destination to resume. Inspect any unconfirmed publication before retrying.", "It stopped."),
+        ] {
+            assert_eq!(pause_reason(error).as_deref(), Some(reason));
+        }
+        assert_eq!(pause_reason("  "), None);
+        let mut failed = transfers()["transfers"][0].clone();
+        failed["state"] = json!("failed");
+        failed["error"] = json!("You're not in that channel.");
+        let text = named(&failed, &snapshot);
+        assert!(
+            text.ends_with("\n  Error: You're not in that channel."),
+            "{text}"
+        );
+        assert!(!text.contains("Resume"), "{text}");
+    }
+
     #[test]
     fn every_fixture_prints_no_machine_ids_by_default_and_ids_with_show_ids() {
         let snapshot = alice_snapshot();
@@ -2874,18 +4193,29 @@ mod tests {
         let hostile = json!([{"id":"p1","username":"mallory",
             "nickname":"Bob \"Lee\" (@bob)\\\u{202e}gnp.exe\u{2069}\n"}]);
         let text = plain(&hostile);
+        // Every control in the name is printed as escape text, so what is left is ASCII: it
+        // holds no right-to-left text to isolate, and no raw control survives.
         assert_eq!(
             text,
-            "\"\u{2068}Bob \\\"Lee\\\" (@bob)\\\\\\u{202e}gnp.exe\\u{2069}\u{2069}\" (@mallory)"
+            "\"Bob \\\"Lee\\\" (@bob)\\\\\\u{202e}gnp.exe\\u{2069}\" (@mallory)"
         );
-        // One isolate pair, opened and closed by the formatter: the name's own U+2069 was
-        // escaped, so it cannot close the isolate early.
-        assert_eq!(text.matches('\u{2068}').count(), 1);
-        assert_eq!(text.matches('\u{2069}').count(), 1);
-        assert!(!text.contains('\u{202e}'));
+        assert!(!text.contains(['\u{202e}', '\u{2068}', '\u{2069}']));
         assert!(text.ends_with("\" (@mallory)"));
+        // A name with right-to-left text keeps one isolate pair, opened and closed by the
+        // formatter: the name's own U+2069 is escaped, so it cannot close the isolate early.
+        let mixed =
+            plain(&json!([{"id":"p3","username":"eve","nickname":"דנה\u{2069}\u{202e} (@bob)"}]));
+        assert_eq!(
+            mixed,
+            "\"\u{2068}דנה\\u{2069}\\u{202e} (@bob)\u{2069}\" (@eve)"
+        );
+        assert_eq!(mixed.matches('\u{2068}').count(), 1);
+        assert_eq!(mixed.matches('\u{2069}').count(), 1);
         let rtl = plain(&json!([{"id":"p2","username":"dana","nickname":"דנה"}]));
         assert_eq!(rtl, "\"\u{2068}דנה\u{2069}\" (@dana)");
+        // F10: a plain Latin name is printed bare, so a copy of it matches "Alice Chen".
+        let latin = plain(&json!([{"id":"p4","username":"alice","nickname":"Alice Chen"}]));
+        assert_eq!(latin, "\"Alice Chen\" (@alice)");
         let team = plain(
             &json!([{"id":"t","name":"מעבדה","created_by":"p","members":[],"general_channel_id":"g"}]),
         );
@@ -2947,6 +4277,30 @@ mod tests {
         let nameless = plain(&json!({"messages":[message("m", DAVE, NOW, "hi")],
             "people":{DAVE:{"active":false}}}));
         assert!(nameless.starts_with("Former member · 01:50"), "{nameless}");
+    }
+
+    /// R-8, AG-F17: offline, a row says the names could not be read and shows the ID, the one
+    /// thing that tells two rows apart, instead of pretending with "this channel".
+    #[test]
+    fn rows_say_when_names_are_unavailable_and_show_the_id() {
+        let offline = options(false, Directory::names_unavailable("okafor-lab", true));
+        let grant_rows = render_text(&grants(), &offline);
+        assert_eq!(
+            grant_rows,
+            format!("Chat 20260924_3 → a channel in okafor-lab (names unavailable while disconnected) [channel ID {METHODS}] (also reads a channel in okafor-lab (names unavailable while disconnected) [channel ID {GENERAL}]) · Active · policy epoch 4")
+        );
+        let transfer_rows = render_text(&transfers(), &offline);
+        assert!(
+            transfer_rows.starts_with(&format!("counts.csv · upload to a channel in okafor-lab (names unavailable while disconnected) [channel ID {METHODS}] · Uploading 40%")),
+            "{transfer_rows}"
+        );
+        assert!(!transfer_rows.contains("this channel"), "{transfer_rows}");
+        // For another reason, it says only that the names are unavailable.
+        let unreadable = options(false, Directory::names_unavailable("lab", false));
+        assert!(render_text(&grants(), &unreadable)
+            .contains("a channel in lab (names unavailable) [channel ID"));
+        // A value that simply does not name a channel reads as it did.
+        assert!(plain(&task()).starts_with("Task posting to this channel"));
     }
 
     #[test]
@@ -3031,6 +4385,16 @@ mod tests {
                 json!({"backend":"file","initialized":true,"locked":false}),
                 "Credential vault: Unlocked · file",
             ),
+            // Normal on a desktop, where the OS keyring keeps the keys.
+            (
+                json!({"backend":"keyring","initialized":false,"locked":false,"available":true}),
+                "Credential vault: Not set up · keyring",
+            ),
+            // SETUPHPC2-F-C: a headless node's keyring cannot keep a key.
+            (
+                json!({"backend":"keyring","initialized":false,"locked":false,"available":false}),
+                "Credential vault: Not set up · no keyring on this computer; run biorouter crew credentials init",
+            ),
             (
                 json!({"detached":true,"transfer_id":TRANSFER}),
                 "Stopped watching. The transfer continues.",
@@ -3050,12 +4414,31 @@ mod tests {
     fn deliverable_keys_and_tokens_are_printed_but_their_ids_are_not() {
         let prepared = json!({"preparation_id":CONNECTION,"public_key":KEY,"device_id":DEVICE});
         let text = plain(&prepared);
+        // SF-F3: one command serves a host and a joiner, and nothing in it says which, so the
+        // key and the preparation ID are described for both, each with its own next command.
         assert_eq!(
             text,
-            format!("Device key prepared. Give this public key to the workspace host:\n  {KEY}\nAdd --show-ids for the preparation ID that connections save takes.")
+            format!(
+                "Device key prepared. Its public key:\n  {KEY}\n\
+                 To host a workspace, pass this key to biorouter-crew start --bootstrap-key on the server. \
+                 To join one, send it to the workspace's host.\n\
+                 Add --show-ids for the preparation ID, which goes to connections join-invitation \
+                 --preparation-id when you host, or into the descriptor for connections save when you join."
+            )
         );
         assert!(!text.contains(CONNECTION) && !text.contains(DEVICE));
-        assert!(with_ids(&prepared, &json!({})).contains(CONNECTION));
+        let shown = with_ids(&prepared, &json!({}));
+        assert_eq!(
+            shown,
+            format!(
+                "Device key prepared. Its public key:\n  {KEY}\n\
+                 To host a workspace, pass this key to biorouter-crew start --bootstrap-key on the server. \
+                 To join one, send it to the workspace's host.\n  \
+                 Preparation ID: {CONNECTION}\n  Device ID: {DEVICE}\n\
+                 The preparation ID goes to connections join-invitation --preparation-id when you \
+                 host, or into the descriptor for connections save when you join."
+            )
+        );
         let token = "4f".repeat(32);
         let invite =
             json!({"invitation":token,"expires_at":NOW + 3600,"uid":10002,"device_id":DEVICE});
@@ -3194,10 +4577,26 @@ mod tests {
             "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported",
             STORAGE_FULL,
         ),
+        // An older broker's operation quota; the current one no longer writes it.
         (
             "quota_exceeded",
             "quota_exceeded: workspace operation quota requires maintenance",
             STORAGE_FULL,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported",
+            FULL_BUT_HOST_CAN_ADMINISTER,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: retained audit journal is nearly full; reads remain available and the host can still remove members and change policy; preserve the complete store and use a new workspace",
+            FULL_BUT_HOST_CAN_ADMINISTER,
+        ),
+        (
+            "quota_exceeded",
+            "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.",
+            "You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.",
         ),
         (
             "identity_conflict",
@@ -3247,7 +4646,7 @@ mod tests {
         (
             "already_member",
             "already_member: @bob is already a member. Choose Add device to add another computer for them.",
-            "@bob is already a member. Choose Add device to add another computer for them.\nTo add another computer for them, run: biorouter crew enroll invite @bob --add-device",
+            "@bob is already a member.\nTo add another computer for them, run: biorouter crew enroll invite @bob --add-device",
         ),
         (
             "code_mismatch",
@@ -3268,7 +4667,61 @@ mod tests {
         (
             "forbidden",
             "forbidden: channel unavailable",
-            "That channel isn't available to you. It may be archived, or you may not be in it.",
+            "You're not in that channel.",
+        ),
+        // DW-11, M20, FILES-F9: the role, archive and provenance texts in words. With nothing
+        // known about the request, each names what it can and stays true.
+        (
+            "forbidden",
+            "forbidden: workspace host device required",
+            "Only the workspace host can do this.",
+        ),
+        (
+            "forbidden",
+            "forbidden: current owner required",
+            "Only the channel's owner can do this.",
+        ),
+        (
+            "forbidden",
+            "forbidden: team creator required",
+            "Only the team's creator can do this.",
+        ),
+        (
+            "forbidden",
+            "forbidden: team owner required",
+            "Only the team's owner can do this.",
+        ),
+        (
+            "channel_archived",
+            "channel_archived: channel is read-only",
+            "That channel is archived, so it's read-only.",
+        ),
+        (
+            "forbidden",
+            "forbidden: attachment provenance cannot be dropped",
+            "That file was shared in another channel. Share it there, or upload it again here.",
+        ),
+        (
+            "forbidden",
+            "forbidden: reference provenance cannot be dropped",
+            "That remote reference was shared in another channel. Share it there, or add it again here.",
+        ),
+        // R-2: never "restart and recover" to someone who cannot restart. An older broker's
+        // technical text is said plainly; a current broker's own sentence is kept.
+        (
+            "storage_failed",
+            "storage_failed: restart and recover before further mutations",
+            "The workspace server can't save changes right now. Ask the host to restart Crew.",
+        ),
+        (
+            "storage_full",
+            "storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.",
+            "The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.",
+        ),
+        (
+            "storage_failed",
+            "storage_failed: The workspace server could not confirm this change was saved to disk, so it may not have been saved. Reading still works. Ask the host to check the server's storage and restart Crew.",
+            "The workspace server could not confirm this change was saved to disk, so it may not have been saved. Reading still works. Ask the host to check the server's storage and restart Crew.",
         ),
         (
             "unauthorized",
@@ -3294,23 +4747,162 @@ mod tests {
     /// A reworded text that the broker never writes makes a check that can never fire, and a
     /// fixture row for it passes all the same. The storage-full rows are therefore read back
     /// against the broker's source, where each must appear exactly as written.
+    ///
+    /// The one exception is [`LEGACY_OPERATION_QUOTA`], which only an older broker writes and
+    /// which must therefore be absent from the current one.
     #[test]
     fn each_storage_full_fixture_is_the_brokers_literal_text() {
         const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
-        let storage_full: Vec<&str> = BROKER_REFUSALS
+        let legacy = format!("quota_exceeded: {LEGACY_OPERATION_QUOTA}");
+        let full: Vec<&str> = BROKER_REFUSALS
             .iter()
-            .filter(|(_, _, shown)| *shown == STORAGE_FULL)
+            .filter(|(_, _, shown)| {
+                *shown == STORAGE_FULL || *shown == FULL_BUT_HOST_CAN_ADMINISTER
+            })
             .map(|(_, broker, _)| *broker)
+            .filter(|broker| *broker != legacy)
             .collect();
-        // The journal limit at startup and in `commit`, the state-size limit and the operation
-        // quota.
-        assert_eq!(storage_full.len(), 4, "{storage_full:#?}");
-        for text in storage_full {
+        // The journal limit at startup and in `commit`, the state-size limit, and the two
+        // limits that leave the host room to administer.
+        assert_eq!(full.len(), 5, "{full:#?}");
+        for text in full {
             assert!(
                 BROKER.contains(&format!("\"{text}\"")),
                 "{text} is not a literal in broker.rs"
             );
         }
+        assert!(
+            !BROKER.contains(&format!("\"{legacy}\"")),
+            "the broker writes {legacy} again: it is no longer legacy"
+        );
+        assert_eq!(broker_refusal_text("quota_exceeded", &legacy), STORAGE_FULL);
+    }
+
+    /// The broker's storage sentences the CLI keeps, and the words it reads an unknown outcome
+    /// from, are the broker's own: if they drift, this says so.
+    #[test]
+    fn each_storage_sentence_fixture_is_the_brokers_literal_text() {
+        const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
+        let current: Vec<&str> = BROKER_REFUSALS
+            .iter()
+            .filter(|(code, broker, _)| {
+                matches!(*code, "storage_full" | "storage_failed") && !broker.contains("recover")
+            })
+            .map(|(_, broker, _)| *broker)
+            .collect();
+        assert_eq!(current.len(), 2, "{current:#?}");
+        for text in current {
+            assert!(
+                BROKER.contains(&format!("\"{text}\"")),
+                "{text} is not a literal in broker.rs"
+            );
+        }
+        assert!(
+            BROKER.contains("so it may not have been saved."),
+            "the broker no longer says an outcome is unknown this way"
+        );
+    }
+
+    /// A reworded text the broker never writes is a check that can never fire, so the role,
+    /// archive and provenance fixtures are read back against the broker's source.
+    #[test]
+    fn each_role_archive_and_provenance_fixture_is_the_brokers_literal_text() {
+        const BROKER: &str = include_str!("../../../../biorouter-crew/src/broker.rs");
+        for text in [
+            "forbidden: workspace host device required",
+            "forbidden: current owner required",
+            "forbidden: team creator required",
+            "forbidden: team owner required",
+            "channel_archived: channel is read-only",
+            "forbidden: attachment provenance cannot be dropped",
+            "forbidden: reference provenance cannot be dropped",
+        ] {
+            assert!(
+                BROKER.contains(&format!("\"{text}\"")),
+                "{text} is not a literal in broker.rs"
+            );
+            assert!(
+                BROKER_REFUSALS.iter().any(|(_, broker, _)| *broker == text),
+                "{text} has no fixture row"
+            );
+        }
+    }
+
+    /// DW-11, M20, R-2, FILES-F9: what the command knows about the refusal is named in it.
+    #[test]
+    fn a_refusal_names_the_channel_host_and_server_the_command_knows() {
+        let place = RefusalPlace {
+            channel: Some("#methods".into()),
+            shared_in: Some("#raw-data".into()),
+            host: Some(false),
+            host_label: Some("\"Alice Chen\" (@alice)".into()),
+            server: Some("hpc.ucsf.edu".into()),
+        };
+        let said = |code: &str, text: &str, place: &RefusalPlace| {
+            broker_refusal_text_in(code, text, place)
+        };
+        assert_eq!(
+            said("forbidden", "forbidden: current owner required", &place),
+            "Only #methods's owner can do this."
+        );
+        assert_eq!(
+            said(
+                "channel_archived",
+                "channel_archived: channel is read-only",
+                &place
+            ),
+            "#methods is archived, so it's read-only."
+        );
+        assert_eq!(
+            said(
+                "forbidden",
+                "forbidden: attachment provenance cannot be dropped",
+                &place
+            ),
+            "That file was shared in #raw-data. Share it there, or upload it again here."
+        );
+        assert_eq!(
+            said("storage_failed", "storage_failed: restart and recover before further mutations", &place),
+            "The workspace server can't save changes right now. Ask \"Alice Chen\" (@alice) to restart Crew."
+        );
+        const FULL: &str = "storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+        assert_eq!(
+            said("storage_full", FULL, &place),
+            "The workspace server is out of disk space, so this change was not saved. Reading still works. Ask \"Alice Chen\" (@alice) to free space on the server and restart Crew."
+        );
+        let host = RefusalPlace {
+            host: Some(true),
+            ..place.clone()
+        };
+        let text = said("storage_full", FULL, &host);
+        assert_eq!(
+            text,
+            "The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.\nYou host this workspace. Free space on hpc.ucsf.edu, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+        );
+        let old = said(
+            "storage_failed",
+            "storage_failed: restart and recover before further mutations",
+            &host,
+        );
+        assert_eq!(
+            old,
+            "The workspace server can't save changes right now.\nYou host this workspace. Free space on hpc.ucsf.edu if it is full, then restart Crew there: biorouter-crew stop, then biorouter-crew start, each with this workspace's --state-dir."
+        );
+        assert!(!old.to_ascii_lowercase().contains("recover"), "{old}");
+        assert!(storage_outcome_unknown(
+            "storage_full",
+            "storage_full: The workspace server ran out of disk space while saving this change, so it may not have been saved."
+        ));
+        assert!(!storage_outcome_unknown("storage_full", FULL));
+        assert!(!storage_outcome_unknown(
+            "forbidden",
+            "may not have been saved"
+        ));
+        // Only the texts it rewords take the place: another refusal is unchanged.
+        assert_eq!(
+            said("forbidden", "forbidden: channel unavailable", &place),
+            "You're not in that channel."
+        );
     }
 
     #[test]
@@ -3345,6 +4937,9 @@ mod tests {
             DEVICE_CONFLICT,
             IDENTITY_MISMATCH,
             STORAGE_FULL,
+            STORAGE_FULL_FOR_HOST,
+            FULL_BUT_HOST_CAN_ADMINISTER,
+            FULL_BUT_HOST_CAN_ADMINISTER_FOR_HOST,
             TOO_MANY_ATTEMPTS,
             IDENTITY_CONFLICT_UNNAMED,
         ] {
@@ -3406,15 +5001,38 @@ mod tests {
             "workspace": "foreign-lab",
             "workspace_institution": "stanford",
         });
+        // SF-F4: institutions are named as the desktop names them, by the registry's name for
+        // an ID it publishes (ucsf is UCSF) and by the ID otherwise, and the advice names the
+        // workspace's institution rather than "it".
         assert_eq!(
             institution_refusal_text("gpt-5.5-2026-04-24", Some(&details)),
-            "gpt-5.5-2026-04-24 is approved for ucsf. foreign-lab uses stanford. Choose a model approved for it, or a local model."
+            "gpt-5.5-2026-04-24 is approved for UCSF. foreign-lab uses stanford. Choose a model approved for stanford, or a local model."
         );
         let unstated = json!({"model": "private-model", "approved_for": null, "workspace": "lab", "workspace_institution": "ucsf"});
         assert_eq!(
             institution_refusal_text("private-model", Some(&unstated)),
-            "private-model doesn't say which institution approved it. lab uses ucsf. Choose a model approved for it, or a local model."
+            "private-model doesn't say which institution approved it. lab uses UCSF. Choose a model approved for UCSF, or a local model."
         );
+        assert_eq!(
+            institution_label("stanford-synthetic"),
+            "stanford-synthetic"
+        );
+        assert_eq!(
+            institution_label("UCSF"),
+            "UCSF",
+            "not an ID: said as it came"
+        );
+        assert_eq!(institution_label("ucsf-west"), "ucsf-west");
+        // The desktop's own sentences (`agentCopy` in pane/copy.ts), read where both are visible.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/pane/copy.ts");
+        let copy = std::fs::read_to_string(&path).expect("the desktop copy deck");
+        for template in [
+            "`${model} is approved for ${affiliation}. ${workspace} uses ${institution}. Choose a model approved for ${institution}, or a local model.`",
+            "`${model} doesn\u{2019}t say which institution approved it. ${workspace} uses ${institution}. Choose a model approved for ${institution}, or a local model.`",
+        ] {
+            assert!(copy.contains(template), "{template} is not in {}", path.display());
+        }
         // An older daemon sends no details: the model the person asked for, and nothing made up.
         assert_eq!(
             institution_refusal_text("gpt-5.5", None),

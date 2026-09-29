@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event';
 import { useEffect, useState, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { crewActionCopy } from '../state/copy';
+import { DRAFT_STASH_MAX_BODY_BYTES } from '../state/draftStash';
 import type { CrewController, CrewDraft, SurfaceResetListener } from '../state/types';
 import { AttachmentIndexProvider, useAttachmentIndex } from '../files/attachmentIndex';
 import { filesCopy } from '../files/copy';
@@ -76,6 +77,13 @@ function StatefulComposer({
     draft,
     setBody: (body) => setDraft((current) => ({ ...current, body })),
     send: async () => setDraft({ body: '', attachments: [], references: [] }),
+    addAttachment: (file) =>
+      setDraft((current) => ({ ...current, attachments: [...current.attachments, file] })),
+    removeAttachment: (id) =>
+      setDraft((current) => ({
+        ...current,
+        attachments: current.attachments.filter((file) => file.id !== id),
+      })),
     ...overrides,
   });
   return (
@@ -100,6 +108,68 @@ describe('Crew composer', () => {
     expect(input).toHaveAttribute('placeholder', 'Message #general');
     expect(input).toHaveAttribute('rows', '1');
     expect(input).not.toBeDisabled();
+  });
+
+  /**
+   * QA M9: a draft put back into the box had its caret at the start in the real app (Chromium
+   * collapses a leftover frame selection to 0 as the value is written), so typing went in front of
+   * it. jsdom has no frame selection, so this pins what places the caret, and when; the stale
+   * selection itself was checked in the running app.
+   */
+  describe('the caret of a draft put back', () => {
+    it('is at the end of a draft the app puts back, and clears a stale selection in the card', () => {
+      const { rerenderWith } = renderComposer(withBody(''));
+      const input = screen.getByLabelText('Message #general') as HTMLTextAreaElement;
+      const card = input.closest('.crew-compose-card') as HTMLElement;
+      // The frame selection a mouse click in the sidebar leaves behind, collapsed in the card.
+      const stale = document.createRange();
+      stale.setStart(card, 0);
+      stale.collapse(true);
+      document.getSelection()?.removeAllRanges();
+      document.getSelection()?.addRange(stale);
+
+      rerenderWith(withBody('Draft caret test'));
+      expect(input.selectionStart).toBe(16);
+      expect(input.selectionEnd).toBe(16);
+      expect(document.getSelection()?.rangeCount).toBe(0);
+    });
+
+    it('puts it back at the end when a keyboard focus finds it reset to the start', () => {
+      const { rerenderWith } = renderComposer(withBody(''));
+      const input = screen.getByLabelText('Message #general') as HTMLTextAreaElement;
+      rerenderWith(withBody('Draft caret test'));
+      // What Chromium did a moment after the value was written.
+      input.setSelectionRange(0, 0);
+      fireEvent.focus(input);
+      expect(input.selectionStart).toBe(16);
+    });
+
+    it('leaves the caret where the person puts it', () => {
+      const { rerenderWith } = renderComposer(withBody(''));
+      const input = screen.getByLabelText('Message #general') as HTMLTextAreaElement;
+      rerenderWith(withBody('Draft caret test'));
+      // A click places the caret: the focus that follows keeps it, even at the start.
+      fireEvent.pointerDown(input);
+      input.setSelectionRange(0, 0);
+      fireEvent.focus(input);
+      expect(input.selectionStart).toBe(0);
+    });
+
+    it('never moves the caret of what the person types', () => {
+      render(<StatefulComposer initialBody="Draft caret test" />);
+      const input = screen.getByLabelText('Message #general') as HTMLTextAreaElement;
+      input.setSelectionRange(5, 5);
+      fireEvent.change(input, { target: { value: 'Draft! caret test' } });
+      input.setSelectionRange(6, 6);
+      fireEvent.focus(input);
+      expect(input).toHaveValue('Draft! caret test');
+      expect(input.selectionStart).toBe(6);
+    });
+  });
+
+  it('lays out what is typed in its own direction, so Hebrew runs right to left (QA M13)', () => {
+    renderComposer();
+    expect(screen.getByLabelText('Message #general')).toHaveAttribute('dir', 'auto');
   });
 
   describe('keys', () => {
@@ -208,7 +278,7 @@ describe('Crew composer', () => {
       expect(screen.getByRole('button', { name: 'Send message' })).toBe(button);
     });
 
-    it('keeps the text read-only, not disabled, while posting, and focus in it after a press', async () => {
+    it('keeps the text writable while posting, says the card is busy, and focus in it after a press (QA M8)', async () => {
       const send = vi.fn(async () => undefined);
       const { rerenderWith } = renderComposer({ ...withBody('post me'), send });
       const input = screen.getByLabelText('Message #general');
@@ -216,12 +286,16 @@ describe('Crew composer', () => {
       expect(input).toHaveFocus();
 
       rerenderWith({ ...withBody('post me'), send, isPending: (key) => key === 'send' });
-      expect(input).toHaveAttribute('readonly');
+      // Nothing typed now is dropped: the box takes it, and success takes out only what was sent.
+      expect(input).not.toHaveAttribute('readonly');
       expect(input).not.toBeDisabled();
       expect(input).toHaveFocus();
+      const card = input.closest('.crew-compose-card') as HTMLElement;
+      expect(card).toHaveAttribute('aria-busy', 'true');
+      expect(card).toHaveAttribute('data-posting', 'true');
 
       rerenderWith({ ...withBody(''), send });
-      expect(input).not.toHaveAttribute('readonly');
+      expect(card).not.toHaveAttribute('aria-busy');
     });
   });
 
@@ -588,6 +662,27 @@ describe('Crew composer', () => {
       expect(screen.queryByText(composerCopy.sendErrorLead)).toBeNull();
     });
 
+    /**
+     * MSG2-N4: a draft too long to keep across a channel switch went without a word. The composer
+     * says so while the words are still there to be saved.
+     */
+    it('says a draft is too long to keep before the person switches channel (MSG2-N4)', () => {
+      const note = <p>Allow this chat?</p>;
+      const { rerenderWith } = renderComposer(withBody('x'.repeat(70_007)), note);
+      // Over the message limit is still kept: nothing to say beyond the send's own answer.
+      expect(screen.queryByText(composerCopy.draftTooLongToKeep)).toBeNull();
+      rerenderWith(withBody('x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1)));
+      expect(screen.getByRole('status')).toHaveTextContent(composerCopy.draftTooLongToKeep);
+      expect(screen.queryByText('Allow this chat?')).toBeNull();
+      // The send's answer still comes first.
+      rerenderWith({
+        ...withBody('x'.repeat(DRAFT_STASH_MAX_BODY_BYTES + 1)),
+        error: { message: composerCopy.tooLong, source: 'composer' },
+      });
+      expect(screen.queryByText(composerCopy.draftTooLongToKeep)).toBeNull();
+      expect(screen.getByRole('alert')).toHaveTextContent(composerCopy.tooLong);
+    });
+
     it('shows the layout note only while nothing more urgent is showing', () => {
       const note = <p>Allow this chat?</p>;
       const { rerenderWith } = renderComposer({}, note);
@@ -873,6 +968,209 @@ describe('Crew composer', () => {
       );
       expect(picker).not.toHaveBeenCalled();
       expect(screen.queryByText(filesCopy.confirmShare)).toBeNull();
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+
+    /**
+     * DW-18: a drop of several files merged "Crew shares one file at a time." into the neutral
+     * status note, which went as soon as the dialog closed. The manual promises a red note.
+     */
+    it('names the one file Crew took from several, in a red note the person closes', async () => {
+      const record = {
+        id: 'transfer-7',
+        request_id: 'request-7',
+        connection_id: 'connection-1',
+        channel_id: 'channel-1',
+        direction: 'upload',
+        name: 'counts.csv',
+        size: 3,
+        sha256: '',
+        offset: 0,
+        blob_id: null,
+        state: 'uploading',
+        error: null,
+      };
+      share.mockResolvedValue({
+        outcome: 'shared',
+        capability_id: 'cap-7',
+        name: 'counts.csv',
+        size: 3,
+      });
+      mocks.beginTransfer.mockImplementation(async () => {
+        mocks.listTransfers.mockResolvedValue([record]);
+        return { id: 'transfer-7' };
+      });
+      renderComposer(named());
+      const zone = screen.getByLabelText('Message #general').closest('[data-drop-zone="true"]');
+      const files = [counts(), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+      await act(async () => {
+        fireEvent.drop(zone as HTMLElement, {
+          dataTransfer: {
+            types: ['Files'],
+            files,
+            items: files.map(() => ({
+              kind: 'file',
+              webkitGetAsEntry: () => ({ isDirectory: false }),
+            })),
+            dropEffect: 'none',
+          },
+        });
+      });
+      const note = await screen.findByRole('alert');
+      expect(note).toHaveTextContent(composerCopy.oneFileAtATime('counts.csv'));
+      expect(share).toHaveBeenCalledTimes(1);
+      // It stays after the dialog closed, until the person closes it.
+      await userEvent.click(
+        within(note).getByRole('button', { name: composerCopy.dismissUploadError })
+      );
+      expect(screen.queryByText(composerCopy.oneFileAtATime('counts.csv'))).toBeNull();
+    });
+
+    /**
+     * W2-UIC-15: the note went with any change to the draft, and the file it names lands in the
+     * draft when its upload completes, which for a small file is within one transfer poll. So it
+     * still read as passing news rather than a note the person closes.
+     */
+    it('keeps the note about several files when the file it names finishes uploading', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      const record = (state: 'uploading' | 'completed') => ({
+        id: 'transfer-8',
+        request_id: 'request-8',
+        connection_id: 'connection-1',
+        channel_id: 'channel-1',
+        direction: 'upload',
+        name: 'counts.csv',
+        size: 3,
+        sha256: state === 'completed' ? 'b'.repeat(64) : '',
+        offset: state === 'completed' ? 3 : 0,
+        blob_id: state === 'completed' ? 'blob-8' : null,
+        state,
+        error: null,
+      });
+      try {
+        share.mockResolvedValue({
+          outcome: 'shared',
+          capability_id: 'cap-8',
+          name: 'counts.csv',
+          size: 3,
+        });
+        mocks.beginTransfer.mockImplementation(async () => {
+          mocks.listTransfers.mockResolvedValue([record('uploading')]);
+          return { id: 'transfer-8' };
+        });
+        render(<StatefulComposer overrides={named()} />);
+        const zone = screen.getByLabelText('Message #general').closest('[data-drop-zone="true"]');
+        const files = [counts(), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+        await act(async () => {
+          fireEvent.drop(zone as HTMLElement, {
+            dataTransfer: {
+              types: ['Files'],
+              files,
+              items: files.map(() => ({
+                kind: 'file',
+                webkitGetAsEntry: () => ({ isDirectory: false }),
+              })),
+              dropEffect: 'none',
+            },
+          });
+        });
+        const note = await screen.findByRole('alert');
+        expect(note).toHaveTextContent(composerCopy.oneFileAtATime('counts.csv'));
+
+        // The upload completes and its file lands in the draft, as a chip.
+        mocks.listTransfers.mockResolvedValue([record('completed')]);
+        await act(async () => {
+          vi.advanceTimersByTime(TRANSFER_POLL_MS);
+        });
+        expect(
+          await screen.findByRole('button', { name: composerCopy.removeFile('counts.csv') })
+        ).toBeInTheDocument();
+        expect(screen.getByRole('alert')).toHaveTextContent(
+          composerCopy.oneFileAtATime('counts.csv')
+        );
+
+        // It goes when the person closes it.
+        await act(async () => {
+          fireEvent.click(
+            within(screen.getByRole('alert')).getByRole('button', {
+              name: composerCopy.dismissUploadError,
+            })
+          );
+        });
+        expect(screen.queryByText(composerCopy.oneFileAtATime('counts.csv'))).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('lets the note about several files go when the person edits the draft', async () => {
+      share.mockResolvedValue({
+        outcome: 'shared',
+        capability_id: 'cap-9',
+        name: 'counts.csv',
+        size: 3,
+      });
+      mocks.beginTransfer.mockImplementation(async () => {
+        mocks.listTransfers.mockResolvedValue([
+          {
+            id: 'transfer-9',
+            request_id: 'request-9',
+            connection_id: 'connection-1',
+            channel_id: 'channel-1',
+            direction: 'upload',
+            name: 'counts.csv',
+            size: 3,
+            sha256: '',
+            offset: 0,
+            blob_id: null,
+            state: 'uploading',
+            error: null,
+          },
+        ]);
+        return { id: 'transfer-9' };
+      });
+      render(<StatefulComposer overrides={named()} />);
+      const box = screen.getByLabelText('Message #general');
+      const zone = box.closest('[data-drop-zone="true"]');
+      const files = [counts(), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+      await act(async () => {
+        fireEvent.drop(zone as HTMLElement, {
+          dataTransfer: {
+            types: ['Files'],
+            files,
+            items: files.map(() => ({
+              kind: 'file',
+              webkitGetAsEntry: () => ({ isDirectory: false }),
+            })),
+            dropEffect: 'none',
+          },
+        });
+      });
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        composerCopy.oneFileAtATime('counts.csv')
+      );
+      fireEvent.change(box, { target: { value: 'h' } });
+      expect(screen.queryByText(composerCopy.oneFileAtATime('counts.csv'))).toBeNull();
+    });
+
+    it('says nothing about several files when the person cancels', async () => {
+      share.mockResolvedValue({ outcome: 'cancelled' });
+      renderComposer(named());
+      const zone = screen.getByLabelText('Message #general').closest('[data-drop-zone="true"]');
+      const files = [counts(), new File(['z'], 'notes.txt', { type: 'text/plain' })];
+      await act(async () => {
+        fireEvent.drop(zone as HTMLElement, {
+          dataTransfer: {
+            types: ['Files'],
+            files,
+            items: files.map(() => ({
+              kind: 'file',
+              webkitGetAsEntry: () => ({ isDirectory: false }),
+            })),
+            dropEffect: 'none',
+          },
+        });
+      });
       expect(screen.queryByRole('alert')).toBeNull();
     });
 

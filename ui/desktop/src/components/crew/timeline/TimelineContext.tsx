@@ -39,6 +39,8 @@ export interface TimelineContextValue {
   dir: PeopleDirectory;
   /** The viewer's principal ID: their agent is "Your agent". A key, never rendered. */
   viewerId: string | null;
+  /** The viewer's username: a message that mentions `@{it}` is marked (QA M2). */
+  viewerUsername: string | null;
   /** Presentation only (the last verified view during re-verification): nothing acts. */
   readOnly: boolean;
   /** Attachments and server paths under a body; the files area renders them. */
@@ -55,6 +57,11 @@ export interface TimelineContextValue {
   arriving: ReadonlySet<string>;
   /** Task rows register their element so the timeline can scroll one into view. */
   registerTaskRow(runId: string, element: HTMLElement | null): void;
+  /**
+   * Message rows register their element under the message they draw (a trace row, its last),
+   * so the timeline can keep the reader's place and measure what has been read (QA M6, M7).
+   */
+  registerRow(messageId: string, element: HTMLElement | null): void;
   /** The run whose row carries the highlight wash right now. */
   highlightedRunId: string | null;
   onHighlightEnd(runId: string): void;

@@ -17,6 +17,12 @@ export const timelineCopy = {
   /** Pinned. The sentinel at the top of a full page of history. */
   older: 'Older messages',
   loadingOlder: 'Loading earlier messages…',
+  /**
+   * The control at the end of a window that no longer reaches the newest message (QA M6): the
+   * page after it, added below.
+   */
+  newer: 'Newer messages',
+  loadingNewer: 'Loading newer messages…',
   loadingMessages: 'Loading messages…',
 
   /** Pinned: `Welcome to #{name}`. */
@@ -95,6 +101,30 @@ export const timelineCopy = {
   /** A message image is never fetched; it is a link the person may choose to open. */
   image: 'Image',
   imageNamed: (alt: string) => `Image: ${alt}`,
+  /**
+   * Why a link is text, not a link (RENDERER-3): the desktop opens only public web addresses in
+   * the browser, so an email link or a private address would be a click that does nothing.
+   */
+  linkNotOpenedEmail: 'Biorouter doesn’t open email links. Copy the address into your email app.',
+  linkNotOpenedPrivate:
+    'Biorouter opens only public web addresses in your browser. Copy this one to open it yourself.',
+  /**
+   * A link whose words look like an address on another host (QA M4): the host it really opens,
+   * drawn after the words inside the link, so it is read as part of the link's name. `host` is
+   * the target's host name.
+   */
+  linkRealHost: (host: string) => `(${host})`,
+
+  /**
+   * A character that draws nothing, or reorders what follows it, shown as its escape (QA M3,
+   * SEC-9): the escape's tooltip. `codePoint` is `U+202E`.
+   */
+  hiddenCharacter: (codePoint: string) => `Hidden character ${codePoint}`,
+  /**
+   * A message that mentions the viewer (QA M2): read after its author and time as the row's name,
+   * so a list of messages says which ones are addressed to you.
+   */
+  mentionsYou: 'mentions you',
 
   /** Pinned. */
   viewingEarlier: 'Viewing earlier messages',
@@ -106,6 +136,11 @@ export const timelineCopy = {
   newMessages: (count: number) => `${count} new ${count === 1 ? 'message' : 'messages'}`,
   /** Read after the count, so the button still says what it does. */
   newMessagesAction: ', jump to latest',
+  /**
+   * The pill when more is unread than the window holds (QA M7): it loads back to the first unread
+   * message and puts the reader there.
+   */
+  jumpToFirstUnread: 'Jump to first unread',
 
   /**
    * The head of the viewer's own agent's post, when a chat of theirs posted it (Q3-22): "Your

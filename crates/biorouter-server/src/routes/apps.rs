@@ -2,17 +2,36 @@
 //!
 //! `biorouterd` serves each app's static bundle and exposes a per-app WebSocket
 //! that runs the *real* agent loop configured with that app's model, extensions,
-//! skills and knowledge base. Browser-facing GET routes are exempt from the
-//! secret-key middleware (see `auth::check_token`) since a browser tab can't send
-//! the header — the daemon binds to localhost only, like the MCP UI proxy.
+//! skills and knowledge base.
+//!
+//! # Who may open an app (W2-HRD-1)
+//!
+//! A browser tab cannot send the secret-key header, so the browser-facing GETs
+//! (`auth::is_app_browser_get`) take a credential a browser CAN carry: this
+//! app's access cookie, set by exchanging a launch token (`auth::app_access_granted`).
+//! Whoever holds the secret asks `POST /apps/{id}/launch` for the address, and
+//! opening it once sets the cookie. Holding the secret still opens everything.
+//!
+//! These routes used to be exempt outright, on the premise that "the daemon binds
+//! to localhost only". Localhost is not one account. Every daemon also listens
+//! on a loopback TCP port, and on a shared login node any local account could
+//! GET an app's page, read the socket token embedded in it, and drive that
+//! app's agent under the owner's account, model and key; a 404 `no such app`
+//! for a guessed title slug even said which apps existed. Now an unauthenticated
+//! request under `/apps/` is answered with the same 401 whether or not the app
+//! exists, and the agent socket needs the cookie (or the secret) as well as its
+//! token, because an `Origin` header proves nothing outside a browser.
 //!
 //! Routes:
-//!   GET    /apps                      → list app manifests (JSON)
-//!   GET    /apps/{id}                 → redirect to /apps/{id}/
-//!   GET    /apps/{id}/                → assembled index.html
-//!   GET    /apps/{id}/dist/{*path}    → built bundle files
-//!   GET    /apps/{id}/assets/{*path}  → static assets
-//!   GET    /apps/{id}/agent           → per-app agent WebSocket
+//!   GET    /apps                      → list app manifests (JSON, secret-key)
+//!   GET    /apps/{id}                 → redirect to /apps/{id}/ (access cookie)
+//!   GET    /apps/{id}/                → assembled index.html (access cookie),
+//!                                       or with `?t=` a page that sets it
+//!   GET    /apps/{id}/dist/{*path}    → built bundle files (access cookie)
+//!   GET    /apps/{id}/assets/{*path}  → static assets (access cookie)
+//!   GET    /apps/{id}/agent           → per-app agent WebSocket (access cookie
+//!                                       and socket token)
+//!   POST   /apps/{id}/launch          → the address that sets the cookie (secret-key)
 //!   POST   /apps/{id}/build           → (re)bundle the TypeScript (secret-key)
 //!   DELETE /apps/{id}                 → delete the app (secret-key)
 
@@ -146,8 +165,92 @@ async fn redirect_to_slash(Path(id): Path<String>) -> Response {
     Redirect::temporary(&format!("/apps/{id}/")).into_response()
 }
 
+/// POST /apps/{id}/launch — the address a browser opens this app at, once.
+///
+/// Requires the secret: this is how a caller that holds it hands a browser,
+/// which cannot send it, access to one app. The address carries a launch token
+/// that works once and for a few minutes (`auth::mint_app_launch`). Whoever
+/// opens it first gets the app, so a caller must never put it on a command line
+/// (see [`launch_bounce`]). The answer is a path, not a URL, because the daemon
+/// does not know which address the browser will use (a loopback port, a `serve`
+/// host, an exported app's proxy).
+async fn launch_app_route(Path(id): Path<String>) -> Response {
+    if validate_artifact_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
+    }
+    if !store().exists(&id) {
+        return (StatusCode::NOT_FOUND, "no such app").into_response();
+    }
+    let token = biorouter_server::auth::mint_app_launch(&id);
+    Json(json!({ "path": format!("/apps/{id}/?t={token}") })).into_response()
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    /// The launch token being exchanged for the access cookie.
+    t: Option<String>,
+}
+
+/// The answer to a launch link: a page of the app's own origin that sets the
+/// access cookie (when the token redeemed) and moves the browser on to
+/// `/apps/{id}/`, replacing the tokenised address in its history.
+///
+/// ⚠ A `200` page that navigates, not a `303`. The cookie is `SameSite=Strict`,
+/// and a navigation another site started stays cross-site through its
+/// redirects, so a `303` lands on the page without the cookie it just set. Every
+/// launcher opens the link from exactly such a page: `biorouter apps open`, the
+/// exported `run.sh` and `run.ps1`, and the desktop's Applications view never put
+/// the link on a command line, where other accounts on the machine can read it
+/// (`ps`, `/proc/<pid>/cmdline`) and redeem it first. They write it into a file
+/// only this account can read and open that file, and a `file:` page is another
+/// site. The navigation this page starts is same-site, so the cookie goes with
+/// it. A meta refresh rather than a script, because the page's policy allows no
+/// script at all.
+///
+/// The id is a validated app name, so it needs no escaping in the markup.
+fn launch_bounce(id: &str, cookie: Option<String>) -> Response {
+    let page = format!(
+        "<!doctype html><meta charset=utf-8>\
+         <meta http-equiv=\"refresh\" content=\"0;url=/apps/{id}/\">\
+         <title>Opening Biorouter app</title>\
+         <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
+         <p>Opening the app. If nothing happens, <a href=\"/apps/{id}/\">open it here</a>.</p>"
+    );
+    let mut bounce = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::REFERRER_POLICY, "no-referrer")
+        .header(
+            header::CONTENT_SECURITY_POLICY,
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
+             form-action 'none'; frame-ancestors 'none'",
+        );
+    if let Some(cookie) = cookie {
+        bounce = bounce.header(header::SET_COOKIE, cookie);
+    }
+    bounce
+        .body(axum::body::Body::from(page))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 /// GET /apps/{id}/ — the assembled, served index.html.
-async fn serve_index(Path(id): Path<String>) -> Response {
+///
+/// With `?t=<launch token>` it is the exchange instead: the single-use token is
+/// redeemed for this app's access cookie, and the answer is [`launch_bounce`], a
+/// page of this origin that sends the browser on to the page without the token,
+/// so the token does not linger in the address bar or the `Referer` of anything
+/// the page loads. `auth::check_token` has already admitted the request, by that
+/// token, the cookie, or the secret; a token that is spent, expired or for
+/// another app sets nothing.
+async fn serve_index(Path(id): Path<String>, Query(query): Query<PageQuery>) -> Response {
+    if let Some(token) = query.t.as_deref() {
+        if validate_artifact_id(&id).is_err() {
+            return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
+        }
+        let cookie = biorouter_server::auth::redeem_app_launch(&id, token);
+        return launch_bounce(&id, cookie);
+    }
     let st = store();
     let manifest = match st.load_manifest(&id) {
         Ok(m) => m,
@@ -263,10 +366,13 @@ async fn agent_ws(
 ) -> Response {
     // This socket runs full agent turns and carries its own tool-approval
     // frames, so whoever reaches it can prompt the agent and then approve the
-    // agent's own tool calls. It is exempt from the secret-key middleware (a
-    // browser-opened app cannot set request headers), so authority comes from
-    // two checks here: the same-origin check (CORS does not govern WS
-    // handshakes) AND the per-app socket token minted in `serve_index`.
+    // agent's own tool calls. A browser-opened app cannot set request headers,
+    // so `auth::check_token` admits the upgrade on this app's access cookie
+    // (W2-HRD-1) instead of the secret, and authority then comes from two more
+    // checks here: the same-origin check (CORS does not govern WS handshakes)
+    // AND the per-app socket token minted in `serve_index`. The token alone was
+    // enough until W2-HRD-1, and the page that carries it was served to any
+    // local account.
     //
     // Compat: an already-built bundle is rebuilt on sdk_hash drift before being
     // served (see `serve_index`), so every page THIS daemon serves gets the
@@ -534,8 +640,10 @@ fn ws_token_for(app_id: &str) -> String {
 ///    — otherwise a page on any other origin could drive the agent (CSWSH). This
 ///    is the Apps SDK v2 design's "exact-origin pinning", landed in QA-D F7; it
 ///    replaced "any loopback port", which admitted every local page. A
-///    non-browser client sends no `Origin`; it is allowed past this gate (the
-///    token still guards it).
+///    non-browser client sends no `Origin`; it is allowed past this gate, because
+///    an `Origin` is proof of nothing outside a browser: what admits such a
+///    client is the access cookie or the secret `auth::check_token` already
+///    required (W2-HRD-1), plus the token below.
 /// 2. **Per-app socket token.** `?token=…` must equal this daemon's token for the
 ///    app. This is what upgrades the socket from "same machine" to "served by
 ///    this daemon", now that the socket carries real authority.
@@ -6386,9 +6494,10 @@ async fn get_run_state(
         return (StatusCode::BAD_REQUEST, "session required").into_response();
     };
     match load_run_state(&state, session).await {
-        // Bind the snapshot to THIS app: the route is auth-exempt (GET under
-        // /apps) and session ids are enumerable, so without `rs.app_id == id`
-        // any local caller could read another app's pending tool name + args.
+        // Bind the snapshot to THIS app: a browser reaches this route on one
+        // app's access cookie (GET under /apps) and session ids are enumerable,
+        // so without `rs.app_id == id` a page holding one app's cookie could read
+        // another app's pending tool name + args.
         Some(rs) if rs.is_pending() && rs.app_id == id => Json(json!({
             "pending": true,
             "requestId": rs.run_id,
@@ -6421,6 +6530,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/apps/{id}/agent", get(agent_ws))
         .route("/apps/{id}/models", get(list_models))
         .route("/apps/{id}/runstate", get(get_run_state))
+        .route("/apps/{id}/launch", post(launch_app_route))
         .route("/apps/{id}/vault", post(put_vault_secret))
         .route("/apps/{id}/build", post(build_app_route))
         .route("/apps/{id}/export", get(export_app_route))
@@ -7068,6 +7178,125 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("/apps/safe-app_2/")
         );
+    }
+
+    /// W2-HRD-1: the address a browser opens an app at is minted by a caller
+    /// holding the secret, for an app that exists, and opening it once trades its
+    /// single-use token for an `HttpOnly`, `SameSite=Strict` cookie scoped to that
+    /// app, on a page that sends the browser on to the app without the token.
+    #[tokio::test]
+    async fn a_launch_link_is_redeemed_once_for_a_cookie_scoped_to_its_app() {
+        use axum::extract::{Path, Query};
+        use axum::http::{header, StatusCode};
+        use biorouter_mcp::agent_drafter::store::ArtifactKind;
+
+        let missing = super::launch_app_route(Path("hrd1-no-such-app".into())).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let invalid = super::launch_app_route(Path("bad\r\nid".into())).await;
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+
+        super::store()
+            .create_with_id(
+                "hrd1-launch",
+                "HRD-1 launch",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[(
+                    "index.html".to_string(),
+                    "<html><head></head><body>hello</body></html>".to_string(),
+                )],
+            )
+            .unwrap();
+        let launch = || async {
+            let launched = super::launch_app_route(Path("hrd1-launch".into())).await;
+            assert_eq!(launched.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(launched.into_body(), 4096)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let token = body["path"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("/apps/hrd1-launch/?t=")
+                .expect("a page path carrying the launch token")
+                .to_string();
+            assert_eq!(token.len(), 64);
+            assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+            token
+        };
+        let token = launch().await;
+        let second = launch().await;
+        assert_ne!(token, second, "every launch link is its own");
+
+        let exchange = |t: Option<String>| {
+            super::serve_index(
+                Path("hrd1-launch".to_string()),
+                Query(super::PageQuery { t }),
+            )
+        };
+        let set_cookie = |response: &axum::response::Response| {
+            response
+                .headers()
+                .get(header::SET_COOKIE)
+                .map(|value| value.to_str().unwrap().to_string())
+        };
+        let exchanged = exchange(Some(token.clone())).await;
+        // A page of the app's origin, not a redirect: a launcher opens the link
+        // from a private `file:` page, and a `SameSite=Strict` cookie set on a
+        // redirect that such a page started is not sent to the redirect's target.
+        assert_eq!(exchanged.status(), StatusCode::OK);
+        assert!(exchanged.headers().get(header::LOCATION).is_none());
+        for (name, value) in [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ] {
+            assert_eq!(exchanged.headers().get(&name).unwrap(), value, "{name}");
+        }
+        let policy = exchanged
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(policy.starts_with("default-src 'none';"), "{policy}");
+        assert!(!policy.contains("script-src"), "{policy}");
+        let cookie = set_cookie(&exchanged).expect("the first redemption sets the cookie");
+        let bounce = axum::body::to_bytes(exchanged.into_body(), 4096)
+            .await
+            .unwrap();
+        let bounce = String::from_utf8_lossy(&bounce);
+        assert!(
+            bounce.contains(r#"<meta http-equiv="refresh" content="0;url=/apps/hrd1-launch/">"#),
+            "the page moves on to the app, and the token leaves the address bar: {bounce}"
+        );
+        assert!(!bounce.contains(&token), "{bounce}");
+        assert!(cookie.starts_with("biorouter_app_"), "{cookie}");
+        assert!(
+            !cookie.contains(&token),
+            "the cookie is not the launch token"
+        );
+        for flag in ["Path=/apps/hrd1-launch;", "HttpOnly", "SameSite=Strict"] {
+            assert!(cookie.contains(flag), "{flag} missing from {cookie}");
+        }
+
+        // Spent, it sets nothing; nor does a token that was never minted.
+        let spent = exchange(Some(token)).await;
+        assert_eq!(spent.status(), StatusCode::OK);
+        assert_eq!(set_cookie(&spent), None);
+        assert_eq!(set_cookie(&exchange(Some("0".repeat(64))).await), None);
+        // Another link for the same app redeems for the same cookie.
+        assert_eq!(set_cookie(&exchange(Some(second)).await), Some(cookie));
+
+        // The page itself, once admitted, still carries this run's socket token.
+        let page = exchange(None).await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let html = axum::body::to_bytes(page.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&html).contains("wsToken"));
+        super::store().delete("hrd1-launch").unwrap();
     }
 
     #[test]

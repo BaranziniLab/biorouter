@@ -198,10 +198,13 @@ describe('file names win the row (Q4-03) and the Files tab sits on the panel ins
     expect(rule('.crew-attachment-meta, .crew-server-path-note').has('flex-shrink')).toBe(false);
     // …and the markup puts the two in that box (a sibling of the name would still take a share
     // of the shrink, and a share is an ellipsis).
+    // The name is drawn by `MiddleTruncatedName` (FILES2-N1), a span with the same class that
+    // measures this box for the width it may take.
     const card = read(join(FILES_DIR, 'AttachmentCard.tsx'));
     expect(card).toMatch(
-      /<span className="crew-attachment-label">\s*(<Tooltip>\s*<TooltipTrigger asChild>\s*)?<span className="crew-attachment-name">/
+      /<span className="crew-attachment-label">\s*(<Tooltip>\s*<TooltipTrigger asChild>\s*)?<MiddleTruncatedName name=\{name\} className="crew-attachment-name" \/>/
     );
+    expect(card).not.toMatch(/<span className="crew-attachment-name">/);
   });
 
   it('does the same for a Files row’s name and size, and lets a transfer row’s state give way', () => {

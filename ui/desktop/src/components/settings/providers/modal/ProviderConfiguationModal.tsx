@@ -9,7 +9,10 @@ import {
 } from '../../../ui/dialog';
 import DefaultProviderSetupForm, {
   ConfigInput,
+  isHostOwnedProviderField,
+  providerFieldName,
 } from './subcomponents/forms/DefaultProviderSetupForm';
+import { hostManagedDestinationRequired } from '../../../privacy/hostManagedModelCopy';
 import ProviderSetupActions from './subcomponents/ProviderSetupActions';
 import ProviderLogo from './subcomponents/ProviderLogo';
 import { SecureStorageNotice } from './subcomponents/SecureStorageNotice';
@@ -20,6 +23,7 @@ import { AlertTriangle } from '../../../icons/app-icons';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../../components/ui/button';
 import CodingAgentSetupRecovery from './CodingAgentSetupRecovery';
+import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
   CODING_AGENT_ORDER,
   fetchCodingAgentStatus,
@@ -41,6 +45,7 @@ export default function ProviderConfigurationModal({
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const { upsert, remove } = useConfig();
   const { getCurrentModelAndProvider } = useModelAndProvider();
+  const returnFocusToOpener = useReturnFocusToOpener();
   const [configValues, setConfigValues] = useState<Record<string, ConfigInput>>({});
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [isActiveProvider, setIsActiveProvider] = useState(false);
@@ -80,7 +85,11 @@ export default function ProviderConfigurationModal({
       : 'This will permanently delete the current provider configuration.'
     : codingAgentKind
       ? `Use your installed ${provider.metadata.display_name} command-line app and subscription sign-in. No API key is needed here.`
-      : `Add your API key(s) for this provider to integrate into Biorouter`;
+      : // Only a provider that declares a secret has a key to add. Llama Server
+        // and Ollama declare none, and were asked for "API key(s)" (W2-PRV-13).
+        provider.metadata.config_keys.some((key) => key.secret)
+        ? `Add your API key(s) for this provider to integrate into Biorouter`
+        : `${provider.metadata.display_name} needs no API key. Adjust how Biorouter reaches it.`;
 
   const handleSubmitForm = async (e?: React.SyntheticEvent) => {
     e?.preventDefault();
@@ -97,7 +106,12 @@ export default function ProviderConfigurationModal({
         !configValues[parameter.name]?.value &&
         !configValues[parameter.name]?.serverValue
       ) {
-        errors[parameter.name] = `${parameter.name} is required`;
+        const name = providerFieldName(provider.name, parameter.name);
+        // A browser cannot fill this one in (W2-PRV-2, round 4), so "is
+        // required" would ask for something the field does not allow.
+        errors[parameter.name] = isHostOwnedProviderField(parameter)
+          ? hostManagedDestinationRequired(name)
+          : `${name} is required`;
       }
     });
 
@@ -243,7 +257,13 @@ export default function ProviderConfigurationModal({
         </DialogContent>
       </Dialog>
       <Dialog open={!error} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+        <DialogContent
+          className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto"
+          // T3-SH-12: back to the Configure button when this closes for good.
+          // Not when it gives way to the error dialog above, which takes the
+          // focus itself.
+          onCloseAutoFocus={error ? undefined : returnFocusToOpener}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {getModalIcon()}

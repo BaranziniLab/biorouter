@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { Hash, Pencil } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import {
@@ -7,6 +7,7 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '../../ui/context-menu';
+import { settleChannelRowFocus, useChannelRowFocusRequested } from '../state/channelRowFocus';
 import { useCrew } from '../state/CrewControllerContext';
 import { crewDraftCopy } from '../state/copy';
 import { useChannelHasDraft } from '../state/draftStash';
@@ -47,6 +48,16 @@ export function ChannelRow({ row, rowKey, tabIndex, onRowFocus }: ChannelRowProp
   const unread = row.unread;
   const kept = useChannelHasDraft(crew.connectionId, row.id);
   const hasDraft = kept && !active;
+  // A channel just made takes the focus once its row is drawn and the dialog that made it has
+  // closed (UXN-7), rather than its opener, Add channel.
+  const button = useRef<HTMLButtonElement>(null);
+  const focusRequested = useChannelRowFocusRequested(row.id);
+  const dialogOpen = crew.ui.dialog !== null;
+  useEffect(() => {
+    if (!focusRequested || dialogOpen) return;
+    settleChannelRowFocus(row.id);
+    button.current?.focus();
+  }, [focusRequested, dialogOpen, row.id]);
 
   const select = () => {
     if (row.teamId !== crew.teamId) crew.selectTeam(row.teamId);
@@ -86,6 +97,7 @@ export function ChannelRow({ row, rowKey, tabIndex, onRowFocus }: ChannelRowProp
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <button
+            ref={button}
             type="button"
             className="crew-sidebar-row no-drag"
             data-crew-row={rowKey}

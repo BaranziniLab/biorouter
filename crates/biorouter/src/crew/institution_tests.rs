@@ -1,4 +1,4 @@
-use super::{institution, ClusterMode, Connection, RunPolicy};
+use super::{institution, ClusterMode, Connection, CrewRefusal, RunPolicy};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
@@ -189,10 +189,14 @@ fn origin_mismatch_is_rejected_even_for_local_context() {
 #[test]
 fn protected_sources_requires_known_channels_and_marks_hidden_sources() {
     let visible = snapshot(json!(null), ClusterMode::Public, 1, json!(["private"]));
-    assert!(institution::protected_sources(&visible, "private", &[]).unwrap());
-    assert!(!institution::protected_sources(&visible, "general", &["general".into()]).unwrap());
-    assert!(institution::protected_sources(&visible, "missing", &[]).is_err());
-    assert!(institution::protected_sources(&visible, "general", &["missing".into()]).is_err());
+    assert!(institution::protected_sources(&visible, "private", &[], "lab").unwrap());
+    assert!(
+        !institution::protected_sources(&visible, "general", &["general".into()], "lab").unwrap()
+    );
+    assert!(institution::protected_sources(&visible, "missing", &[], "lab").is_err());
+    assert!(
+        institution::protected_sources(&visible, "general", &["missing".into()], "lab").is_err()
+    );
 
     let mut channels = Vec::new();
     for index in 0..21 {
@@ -205,13 +209,46 @@ fn protected_sources_requires_known_channels_and_marks_hidden_sources() {
     let sources = (0..20)
         .map(|index| format!("channel-{index}"))
         .collect::<Vec<_>>();
-    assert!(institution::protected_sources(&too_many, "channel-20", &sources).is_err());
+    assert!(institution::protected_sources(&too_many, "channel-20", &sources, "lab").is_err());
     assert!(institution::protected_sources(
         &json!({"channels": [{"id": "general"}]}),
         "general",
-        &[]
+        &[],
+        "lab"
     )
     .is_err());
+}
+
+/// W2-DMN-9: a channel ID a complete snapshot lists nowhere (another workspace's, say) is not in
+/// this workspace, and says so with its own code. One missing from a partial list may be a real
+/// channel beyond it: still refused, since its protection cannot be read, but never called
+/// foreign.
+#[test]
+fn a_channel_the_workspace_does_not_list_is_named_as_not_in_it() {
+    let visible = snapshot(json!(null), ClusterMode::Public, 1, json!([]));
+    let foreign = institution::protected_sources(&visible, "general", &["elsewhere".into()], "lab")
+        .unwrap_err();
+    assert_eq!(foreign.to_string(), "That channel isn't in lab.");
+    assert_eq!(
+        CrewRefusal::find(&foreign).map(CrewRefusal::code),
+        Some("crew_channel_not_in_workspace")
+    );
+
+    let mut partial = visible.clone();
+    partial["totals"] = json!({"channels": 150});
+    let unconfirmed =
+        institution::protected_sources(&partial, "general", &["beyond".into()], "lab").unwrap_err();
+    assert!(CrewRefusal::find(&unconfirmed).is_none());
+    assert_eq!(
+        unconfirmed.to_string(),
+        "Biorouter couldn't confirm that channel in lab. Refresh Crew, then try again."
+    );
+    // A whole list, counted, is not partial.
+    let mut whole = visible;
+    whole["totals"] = json!({"channels": 2});
+    let foreign = institution::protected_sources(&whole, "general", &["elsewhere".into()], "lab")
+        .unwrap_err();
+    assert!(CrewRefusal::find(&foreign).is_some());
 }
 
 #[test]
@@ -285,5 +322,121 @@ fn admission_rejects_stale_epoch_and_connection_workspace_institution_mismatch()
         Ok(_) => panic!("institution mismatch admission unexpectedly succeeded"),
         Err(error) => error,
     };
-    assert!(mismatch.to_string().contains("different institutions"));
+    // W2-DMN-9: both institutions named, in the manual's words, with the code and details.
+    assert_eq!(
+        mismatch.to_string(),
+        "This connection is for ucsf, but institution fixture belongs to stanford."
+    );
+    let typed = CrewRefusal::find(&mismatch).expect("a typed refusal");
+    assert_eq!(typed.code(), "crew_institution_mismatch");
+    let details = typed
+        .fields()
+        .iter()
+        .find(|(key, _)| *key == "institution_refusal")
+        .map(|(_, value)| value.clone())
+        .expect("institution_refusal details");
+    assert_eq!(
+        details,
+        json!({
+            "model": "test-model",
+            "approved_for": null,
+            "workspace": "institution fixture",
+            "workspace_institution": "stanford",
+        })
+    );
+}
+
+/// W2-DMN-9: every public-model refusal in admission carries `crew_public_model_refused` and
+/// says what is private in the manual's terms, never "cluster".
+#[test]
+fn public_model_refusals_are_typed_and_plain() {
+    let public = FixtureProvider {
+        tier: ProviderTier::Public,
+        affiliation: None,
+    };
+    let private_workspace = match institution::admission(
+        connection(ClusterMode::Public, None, None),
+        &public,
+        &RunPolicy::default(),
+        &snapshot(json!(null), ClusterMode::Private, 3, json!([])),
+        false,
+    ) {
+        Ok(_) => panic!("a private workspace admitted a public model"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        private_workspace.to_string(),
+        "institution fixture is Private, so a public model can't read it. Choose a private model."
+    );
+    let restricted = match institution::admission(
+        connection(ClusterMode::Public, None, None),
+        &public,
+        &RunPolicy::default(),
+        &snapshot(json!(null), ClusterMode::Public, 3, json!([])),
+        true,
+    ) {
+        Ok(_) => panic!("restricted context admitted a public model"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        restricted.to_string(),
+        "Restricted channels in institution fixture can't be read by a public model. Choose a \
+         private model."
+    );
+    let owned =
+        institution::check_provider(ProviderTier::Public, None, &ids(&["stanford", "ucsf"]))
+            .unwrap_err();
+    assert_eq!(
+        owned.to_string(),
+        "This chat's Crew context belongs to stanford and ucsf, so a public model can't read \
+         it. Choose a private model."
+    );
+    for error in [&private_workspace, &restricted, &owned] {
+        assert_eq!(
+            CrewRefusal::find(error).map(CrewRefusal::code),
+            Some("crew_public_model_refused")
+        );
+        assert!(!error.to_string().contains("cluster"));
+    }
+}
+
+/// W2-DMN-9: the model-institution refusal keeps the words older clients match, and gains the
+/// code and, in admission, the names a person needs.
+#[test]
+fn the_model_institution_refusal_is_typed_with_its_details() {
+    let stanford = FixtureProvider {
+        tier: ProviderTier::Private,
+        affiliation: Some(ModelAffiliation::institution(InstitutionId::new(
+            "stanford",
+        ))),
+    };
+    let refused = match institution::admission(
+        connection(ClusterMode::Private, Some("ucsf"), None),
+        &stanford,
+        &RunPolicy::default(),
+        &snapshot(json!("ucsf"), ClusterMode::Private, 3, json!([])),
+        false,
+    ) {
+        Ok(_) => panic!("a stanford model admitted to ucsf context"),
+        Err(error) => error,
+    };
+    assert_eq!(refused.to_string(), institution::AFFILIATION_REFUSAL);
+    let typed = CrewRefusal::find(&refused).expect("typed");
+    assert_eq!(typed.code(), "crew_institution_mismatch");
+    let details = &typed
+        .fields()
+        .iter()
+        .find(|(key, _)| *key == "institution_refusal")
+        .expect("details")
+        .1;
+    assert_eq!(details["approved_for"], json!(["stanford"]));
+    assert_eq!(details["workspace_institution"], "ucsf");
+    assert_eq!(details["workspace"], "institution fixture");
+
+    let merged = institution::merge(["ucsf", "stanford"]).unwrap_err();
+    assert_eq!(
+        CrewRefusal::find(&merged).map(CrewRefusal::code),
+        Some("crew_institution_mismatch")
+    );
+    assert!(merged.to_string().contains("stanford and ucsf"), "{merged}");
 }

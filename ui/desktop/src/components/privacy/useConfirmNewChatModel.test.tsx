@@ -86,6 +86,11 @@ describe('useConfirmNewChatModel', () => {
         'New chats now start on claude-fable-5-1 (Claude Code, a public model), not ' +
         'gpt-5.5-2026-04-24, which this window was still showing. Your message is back in the ' +
         'composer, and the model shown below is the one it will use.',
+      // W2-PRV-11 / W2-PRV-16: readable in full, until dismissed, and gone when
+      // the person leaves this screen.
+      scope: 'screen',
+      clampMessage: false,
+      toastOptions: { autoClose: false },
     });
   });
 
@@ -164,18 +169,26 @@ describe('newChatModelChangedMessage', () => {
  */
 describe('both new-chat composers look before they create', () => {
   const source = (file: string) => readFileSync(resolve(__dirname, '..', file), 'utf8');
-  const CHECK = 'if (!(await confirmNewChatModel())) return false;';
-
   /**
    * Each composer's first side effect of a send, which the check must precede:
    * a refused send has to leave everything as it found it. Home clears the
    * pending extension overrides as it reads them; a chat marks itself as
    * creating, which blocks the composer.
+   *
+   * ⚠ A chat asks only when it holds no model of its own (W2-PRV-6): with one,
+   * the chip names THAT model, and `bindHeldChatModel` binds it before anything
+   * is sent (`BaseChat.pendingModel.test.ts` pins the order), so the app-wide
+   * selection this check compares is not what the chat runs on. Home has no
+   * such model and always asks.
    */
   it.each([
-    ['Hub.tsx', 'clearExtensionOverrides();'],
-    ['BaseChat.tsx', 'setIsCreatingSession(true);'],
-  ])('%s checks the model before createSession and before %s', (file, firstSideEffect) => {
+    ['Hub.tsx', 'clearExtensionOverrides();', 'if (!(await confirmNewChatModel())) return false;'],
+    [
+      'BaseChat.tsx',
+      'setIsCreatingSession(true);',
+      'if (!chosenModel && !(await confirmNewChatModel())) return false;',
+    ],
+  ])('%s checks the model before createSession and before %s', (file, firstSideEffect, CHECK) => {
     const text = source(file);
     const check = text.indexOf(CHECK);
     expect(check).toBeGreaterThan(-1);

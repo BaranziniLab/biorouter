@@ -128,12 +128,15 @@ export interface DaemonFixture {
   grant?: (sessionId: string, body: unknown) => unknown;
   /** `GET …/grants` failure, when set. */
   listFailure?: () => Error | null;
+  /** Fields of the saved connection the daemon lists, over `connection`'s. */
+  connection?: Record<string, unknown>;
 }
 
 /** Route the mocked Crew API like a daemon holding `fixture`. */
 export function installDaemon(mocks: CrewMocks, fixture: DaemonFixture): void {
   mocks.crewHttp.mockImplementation(async (path: string, method = 'GET', body?: unknown) => {
-    if (path === '/connections' && method === 'GET') return { connections: [connection] };
+    if (path === '/connections' && method === 'GET')
+      return { connections: [{ ...connection, ...fixture.connection }] };
     if (path === `/connections/${connection.id}/grants` && method === 'GET') {
       const failure = fixture.listFailure?.();
       if (failure) throw failure;

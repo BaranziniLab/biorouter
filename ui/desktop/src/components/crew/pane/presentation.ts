@@ -13,6 +13,7 @@ import {
   identityCopy,
   institutionLabel,
   isMachineIdShaped,
+  onlineSet,
   sanitizeDisplayText,
   usePeopleDirectory,
   type KnownInstitution,
@@ -20,6 +21,7 @@ import {
 } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
+import { agentCopy } from './copy';
 import { providerLabel, type ModelChoice } from './useConfiguredModels';
 
 /**
@@ -40,6 +42,11 @@ export interface PanePresentation {
   isOwner: boolean;
   /** The workspace as the switcher names it: its own name, else the saved connection's. */
   workspace: string;
+  /**
+   * Who is online now, from the verified view only (M18), or `null` when the broker says nothing
+   * or the view is not verified.
+   */
+  online: ReadonlySet<string> | null;
 }
 
 export function usePanePresentation(): PanePresentation {
@@ -64,6 +71,7 @@ export function usePanePresentation(): PanePresentation {
     team,
     dir,
     isOwner: Boolean(snapshot && channel && channel.owner_id === snapshot.actor.id),
+    online: verified ? onlineSet(crew.snapshot) : null,
     workspace:
       named && !isMachineIdShaped(named)
         ? named
@@ -460,12 +468,126 @@ export function modelMismatch(
   return covered ? null : { affiliation: affiliationPresentation(affiliation)?.label ?? null };
 }
 
-const AFFILIATION_REFUSAL = /resolved affiliation/i;
+/** A refusal as the controller records it: its words, and the daemon's code when it had one. */
+export interface RefusalLike {
+  message: string;
+  code?: string;
+}
+
+/** The daemon's code for a model outside the workspace's institution (W2-DMN-9). */
+export const INSTITUTION_MISMATCH_CODE = 'crew_institution_mismatch';
+/** The daemon's code for a public model asked to read protected Crew context (W2-DMN-9). */
+export const PUBLIC_MODEL_REFUSED_CODE = 'crew_public_model_refused';
 
 /**
- * The daemon's institution refusal ("Crew institution does not match the model's resolved
- * affiliation; …", `crew/institution.rs` `check_provider`), which the pane rewords.
+ * The institution refusal's words from a daemon that sends no code: `check_provider`'s "…the
+ * model's resolved affiliation…" and admission's "Crew aliases have different institutions…".
  */
-export function isAffiliationRefusal(message: string | null | undefined): boolean {
-  return typeof message === 'string' && AFFILIATION_REFUSAL.test(message);
+const AFFILIATION_REFUSAL = /resolved affiliation|have different institutions/i;
+
+/**
+ * The public-model refusals' words from a daemon that sends no code (`crew/mod.rs`
+ * `checked_run_admission`, `crew/institution.rs`): "Private cluster blocks public models",
+ * "Private workspace blocks public models", "Restricted Crew context cannot be sent to a public
+ * model", "Institution-owned Crew context cannot be sent to a public model" and "Private-origin
+ * local conversation cannot be admitted to a public Crew worker" (AG-F4).
+ */
+const PUBLIC_MODEL_REFUSAL =
+  /blocks public models|cannot be sent to a public model|admitted to a public Crew worker/i;
+
+/**
+ * The daemon's institution refusal, which the panes reword: by its code, else by its words (an
+ * older daemon). A bare message is read by its words alone.
+ */
+export function isAffiliationRefusal(error: RefusalLike | string | null | undefined): boolean {
+  if (!error) return false;
+  const refusal = typeof error === 'string' ? { message: error } : error;
+  return (
+    refusal.code === INSTITUTION_MISMATCH_CODE ||
+    (typeof refusal.message === 'string' && AFFILIATION_REFUSAL.test(refusal.message))
+  );
+}
+
+/** The daemon's refusal of a public model, by its code, else by its words (an older daemon). */
+export function isPublicModelRefusal(error: RefusalLike | null | undefined): boolean {
+  if (!error) return false;
+  return (
+    error.code === PUBLIC_MODEL_REFUSED_CODE ||
+    (typeof error.message === 'string' && PUBLIC_MODEL_REFUSAL.test(error.message))
+  );
+}
+
+/**
+ * Why a PUBLIC model cannot read what a task or a chat's access would read here, in one sentence,
+ * or `null` when the pane cannot be sure the daemon refuses it (AG-F4). A conservative mirror of
+ * the daemon's public-model refusals (`checked_run_admission`, `crew/institution.rs`): the
+ * workspace or this computer's connection is Private, or a channel it reads is Restricted. The
+ * daemon may refuse for reasons the pane does not see (a private chat's origin, a restricted
+ * message), so this can miss a refusal, never invent one, and it decides nothing.
+ */
+export function publicModelRefusal({
+  provider,
+  connection,
+  snapshot,
+  channel,
+  contextChannels,
+  workspace,
+  channelLabel,
+}: {
+  provider: ProviderDetails | undefined;
+  connection: CrewConnection | null;
+  snapshot: Snapshot | null;
+  channel: Channel | null;
+  contextChannels: readonly string[];
+  /** The workspace as a sentence names it. */
+  workspace: string;
+  /** A channel as a sentence names it (`#name`, or `Team / #name`). */
+  channelLabel(channel: Channel): string;
+}): string | null {
+  if (!provider || provider.resolved_tier !== 'public' || !snapshot || !channel) return null;
+  if (snapshot.workspace.mode === 'private') return agentCopy.publicWorkspace(workspace);
+  if (connection?.mode === 'private') return agentCopy.publicConnection(workspace);
+  const restricted = [channel.id, ...contextChannels]
+    .map((id) => snapshot.channels.find((item) => item.id === id))
+    .find((item): item is Channel => item?.classification === 'restricted');
+  return restricted ? agentCopy.publicRestricted(channelLabel(restricted)) : null;
+}
+
+/**
+ * A model refusal in the panes' words (AG-F4, SF-F4): the institution refusal as the sentence the
+ * pane already says before Start (`mismatch`), else the daemon's own sentence when a coded daemon
+ * wrote one for a person, else what the pane knows; a public-model refusal likewise (`publicText`).
+ * `null` for any other refusal, which is shown as the daemon words it.
+ */
+export function modelRefusalText({
+  error,
+  mismatch,
+  publicText,
+  model,
+  institution,
+}: {
+  error: RefusalLike | null | undefined;
+  mismatch: string | null;
+  publicText: string | null;
+  model: string;
+  institution: string | null;
+}): string | null {
+  if (!error) return null;
+  const coded = (code: string) =>
+    error.code === code &&
+    !AFFILIATION_REFUSAL.test(error.message) &&
+    !PUBLIC_MODEL_REFUSAL.test(error.message) &&
+    /[.!?]$/.test(error.message.trim());
+  if (isAffiliationRefusal(error))
+    return (
+      mismatch ??
+      (coded(INSTITUTION_MISMATCH_CODE)
+        ? error.message
+        : agentCopy.institutionRefused(model, institution))
+    );
+  if (isPublicModelRefusal(error))
+    return (
+      publicText ?? (coded(PUBLIC_MODEL_REFUSED_CODE) ? error.message : agentCopy.publicRefused)
+    );
+  return null;
 }

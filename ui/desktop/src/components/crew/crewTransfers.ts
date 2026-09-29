@@ -1,21 +1,32 @@
+import type * as Api from '../../api/types.gen';
 import { crewHttp } from './crewApi';
+import { withFileWindow } from './files/fileWindows';
+import { unwrapIpcError } from '../../utils/ipcError';
 
-export type TransferDirection = 'upload' | 'download';
-export interface CrewTransfer {
-  id: string;
-  request_id: string;
-  connection_id: string;
-  channel_id: string;
-  direction: TransferDirection;
-  name: string;
-  size: number;
-  sha256: string;
-  offset: number;
-  blob_id: string | null;
-  state: string;
-  error: string | null;
-  destination_identity?: string | null;
-}
+export type TransferDirection = Api.Direction;
+/**
+ * A transfer as the daemon records it (`Receipt`), without the daemon's own bookkeeping for
+ * resuming and cleaning up, of which only `destination_identity` is read here. `pause_reason` is
+ * `server_storage` for a transfer paused because the workspace server could not save it
+ * (T3-BE-14); optional, as a daemon from before it does not send it.
+ */
+export type CrewTransfer = Partial<Pick<Api.Receipt, 'pause_reason'>> &
+  Pick<
+    Api.Receipt,
+    | 'id'
+    | 'request_id'
+    | 'connection_id'
+    | 'channel_id'
+    | 'direction'
+    | 'name'
+    | 'size'
+    | 'sha256'
+    | 'offset'
+    | 'blob_id'
+    | 'state'
+    | 'error'
+    | 'destination_identity'
+  >;
 export interface FileSelectionRequest {
   expected_mode?: 'private' | 'public';
   purpose?: 'transfer' | 'cleanup';
@@ -31,6 +42,11 @@ export interface FileCapability {
   name: string;
   size?: number | null;
 }
+/**
+ * The secure picker in the main process. A refusal comes back as the main process's own sentence:
+ * Electron wraps an error thrown across `invoke` in "Error invoking remote method …", and that
+ * wrapper is taken off here, once, so every surface shows what the drop path shows (FILES-F6).
+ */
 export async function chooseTransferFile(
   request: FileSelectionRequest
 ): Promise<FileCapability | null> {
@@ -39,16 +55,23 @@ export async function chooseTransferFile(
     throw new Error(
       'This desktop build does not provide the secure Crew file picker. Update the desktop app before transferring local files.'
     );
-  return picker({
-    expectedMode: request.expected_mode,
-    purpose: request.purpose,
-    direction: request.direction,
-    connectionId: request.connection_id,
-    channelId: request.channel_id,
-    blobId: request.blob_id,
-    transferId: request.transfer_id,
-    suggestedName: request.suggestedName,
-  });
+  try {
+    // Counted open until it answers, so a card told to finish it first hears when it closed.
+    return await withFileWindow(() =>
+      picker({
+        expectedMode: request.expected_mode,
+        purpose: request.purpose,
+        direction: request.direction,
+        connectionId: request.connection_id,
+        channelId: request.channel_id,
+        blobId: request.blob_id,
+        transferId: request.transfer_id,
+        suggestedName: request.suggestedName,
+      })
+    );
+  } catch (error) {
+    throw unwrapIpcError(error, 'The file window could not open.');
+  }
 }
 export async function listTransfers(
   connectionId: string,
@@ -78,7 +101,7 @@ export async function beginTransfer(
     direction: request.direction,
     file_capability: file.capability_id,
     blob_id: request.blob_id,
-  });
+  } satisfies Api.StartRequest);
 }
 export async function resumeTransfer(transfer: CrewTransfer): Promise<CrewTransfer | null> {
   const file = await chooseTransferFile({
@@ -96,6 +119,55 @@ export async function resumeTransfer(transfer: CrewTransfer): Promise<CrewTransf
 }
 export function pauseTransfer(id: string): Promise<CrewTransfer> {
   return crewHttp(`/transfers/${encodeURIComponent(id)}/pause`, 'POST', {});
+}
+
+/** Receipt states in which the daemon is still running the transfer and will not forget it. */
+const RUNNING_STATES: readonly string[] = [
+  'starting',
+  'uploading',
+  'publishing',
+  'pause_requested',
+];
+
+/** How a cancel ended: the receipt is gone, or the upload finished before it could stop. */
+export type CancelUploadOutcome = 'cancelled' | 'finished';
+
+export interface CancelUploadOptions {
+  /** How long to wait between looks while the upload stops. */
+  intervalMs?: number;
+  /** How many looks before giving up. */
+  attempts?: number;
+  wait?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Cancel an upload (FILES-F7): pause it if it is moving, wait until the daemon has stopped it,
+ * then forget its receipt. What was already sent stays on the server as an unfinished part,
+ * which the workspace removes a day after its last piece and counts toward its file space until
+ * then; nothing can delete it sooner. An upload that finished before it could stop is left as it
+ * is (`finished`): it is a whole file now, and the draft's own × is the way to take it out.
+ */
+export async function cancelUpload(
+  id: string,
+  {
+    intervalMs = 250,
+    attempts = 40,
+    wait = (ms) => new Promise((r) => setTimeout(r, ms)),
+  }: CancelUploadOptions = {}
+): Promise<CancelUploadOutcome> {
+  const path = `/transfers/${encodeURIComponent(id)}` as const;
+  let receipt = await crewHttp<CrewTransfer>(path);
+  if (receipt.direction !== 'upload') throw new Error('Only an upload can be cancelled.');
+  if (RUNNING_STATES.includes(receipt.state)) await pauseTransfer(id);
+  for (let look = 0; RUNNING_STATES.includes(receipt.state); look += 1) {
+    if (look >= attempts)
+      throw new Error('Crew couldn’t stop that upload yet. Try again in a moment.');
+    await wait(intervalMs);
+    receipt = await crewHttp<CrewTransfer>(path);
+  }
+  if (receipt.state === 'completed') return 'finished';
+  await crewHttp(path, 'DELETE');
+  return 'cancelled';
 }
 export async function forgetTransfer(id: string): Promise<unknown> {
   const transfer = await crewHttp<CrewTransfer>(`/transfers/${encodeURIComponent(id)}`);

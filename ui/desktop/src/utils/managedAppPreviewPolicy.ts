@@ -1,6 +1,14 @@
+import { mintAppLaunchLink } from './appLaunchLink';
+
 export type ManagedAppPreviewBackend = {
   baseUrl: string;
   signal: AbortSignal;
+  /**
+   * The daemon secret, held in the main process only. It is sent once per
+   * preview, to ask the daemon for the app's launch link
+   * (`managedAppLaunchUrl`), and never to the page or on its requests.
+   */
+  secretKey?: string;
 };
 
 export type ManagedAppPreviewScope = {
@@ -87,6 +95,37 @@ export function isManagedAppRequest(
     tail === 'runstate' ||
     /^(?:dist|assets)\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(tail)
   );
+}
+
+/**
+ * The address the preview opens `scope`'s app at: a launch link the daemon
+ * mints for a caller holding its secret (W2-HRD-1).
+ *
+ * An app's page, bundle and agent socket are served only to a browser holding
+ * that app's access cookie (or the secret, which a page cannot send). Opening
+ * the link once redeems its single-use token for the cookie inside this
+ * preview's own session, and the daemon's answer moves on to the page without
+ * the token; reloads and the agent socket then carry the cookie, which is why
+ * "Clear site data" keeps it (`embeddedBrowser`). The link is loaded in-process
+ * and never handed to another program. The link replaces
+ * the address the preview was asked for, so a query or fragment on that
+ * address is not kept.
+ *
+ * The answer is checked before it is used: it must be this app's page, on this
+ * backend's origin, carrying a token and nothing else.
+ */
+export async function managedAppLaunchUrl(
+  scope: ManagedAppPreviewScope,
+  fetchImpl: typeof fetch = fetch
+): Promise<string> {
+  const { secretKey, signal } = scope.backend;
+  if (signal.aborted) throw new Error('The app backend stopped. Reopen the app after it restarts.');
+  if (!secretKey) throw new Error('This app cannot be opened here.');
+  const url = await mintAppLaunchLink(scope.origin, scope.appId, secretKey, fetchImpl, signal);
+  if (!isManagedAppNavigation(scope, url)) {
+    throw new Error('The app backend answered with an unexpected app address.');
+  }
+  return url;
 }
 
 // An additional policy intersects with (never replaces) the server's CSP.

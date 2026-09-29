@@ -174,6 +174,24 @@ struct Served {
     root: tempfile::TempDir,
 }
 
+/// `biorouter apps <args>` against the store, state and port of a test root,
+/// touching nothing of the developer's own configuration, sessions or keychain.
+fn apps_command(root: &std::path::Path, port: u16, args: &[&str]) -> Command {
+    let mut command = Command::new(biorouter());
+    command
+        .arg("apps")
+        .args(args)
+        .env("HOME", root.join("home"))
+        .env("BIOROUTER_PATH_ROOT", root.join("biorouter"))
+        .env("BIOROUTER_PORT", port.to_string())
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        // The key of the daemon under test must come from its record, which is
+        // what this file measures, never from the shell running the tests.
+        .env_remove("BIOROUTER_SERVER__SECRET_KEY")
+        .stdin(Stdio::null());
+    command
+}
+
 impl Served {
     fn start() -> Self {
         require_a_daemon_from_this_tree();
@@ -195,15 +213,7 @@ impl Served {
 
         let reserved = reserved_port::reserve();
         let port = reserved.port;
-        let serve = Command::new(biorouter())
-            .args(["apps", "serve", APP_ID])
-            // Nothing here may touch the developer's own configuration,
-            // sessions or keychain.
-            .env("HOME", &home)
-            .env("BIOROUTER_PATH_ROOT", &path_root)
-            .env("BIOROUTER_PORT", port.to_string())
-            .env("BIOROUTER_DISABLE_KEYRING", "true")
-            .stdin(Stdio::null())
+        let serve = apps_command(root.path(), port, &["serve", APP_ID])
             .stdout(log.try_clone().unwrap())
             .stderr(log)
             .spawn()
@@ -259,9 +269,24 @@ impl Served {
         std::fs::read_to_string(self.root.path().join("serve.log")).unwrap_or_default()
     }
 
+    /// The record through which a later `apps open` or `apps serve` reaches
+    /// this daemon's key.
+    fn daemon_record(&self) -> PathBuf {
+        self.root
+            .path()
+            .join("biorouter")
+            .join("state")
+            .join("apps-daemon")
+            .join(format!("{}.json", self.port))
+    }
+
     /// Stop the command with `name` and assert that it exits and takes the
     /// daemon with it.
-    fn stop_with(mut self, name: &str) -> ExitStatus {
+    ///
+    /// ⚠ Borrows, and must: dropping `self` deletes [`Self::root`], and with it
+    /// every file the command left behind, so a check on those files after a
+    /// stop that consumed `self` would pass whatever the command did.
+    fn stop_with(&mut self, name: &str) -> ExitStatus {
         signal(self.serve.id(), name);
         let mut status = None;
         let took = wait_for(STOP_BUDGET, || {
@@ -367,4 +392,221 @@ fn a_daemon_whose_apps_serve_was_killed_outright_stops_itself() {
         "port {} is still accepting connections after the orphaned daemon stopped",
         served.port
     );
+}
+
+/// The launch path in the first line of `output` that carries one.
+fn launch_path(output: &str) -> Option<String> {
+    let at = output.find(&format!("/apps/{APP_ID}/?t="))?;
+    let path: String = output
+        .get(at..)?
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || "/?=-_".contains(*c))
+        .collect();
+    let token = path.rsplit('=').next()?;
+    (token.len() == 64).then_some(path)
+}
+
+/// The status of `GET path` and whether the answer set a cookie.
+fn redeem(port: u16, path: &str) -> Option<(u16, bool)> {
+    let mut stream = TcpStream::connect_timeout(
+        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        Duration::from_millis(500),
+    )
+    .ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer).ok()?;
+    let answer = String::from_utf8_lossy(&answer);
+    let head = answer.split("\r\n\r\n").next()?;
+    let status = head.split_whitespace().nth(1)?.parse().ok()?;
+    let cookie = head.lines().any(|line| {
+        line.to_ascii_lowercase()
+            .starts_with("set-cookie: biorouter_app_")
+    });
+    Some((status, cookie))
+}
+
+/// W2-HRD-1, the dead end: `apps serve` printed one link that works once and
+/// for five minutes, and "run this again for another". Its daemon's key was
+/// kept to itself, so the second run found a daemon on the port it did not know
+/// and refused it, and so did `apps open`, which the daemon's own refusal page
+/// recommends. The only way on was to stop the first `apps serve`.
+///
+/// Fails the shipped command: the second run exits non-zero with "does not
+/// know", and no record exists for it to read.
+#[test]
+fn a_second_apps_serve_mints_another_link_on_the_running_daemon() {
+    let mut served = Served::start();
+    let first = wait_for(READY_BUDGET, || launch_path(&served.log()).is_some())
+        .and_then(|_| launch_path(&served.log()))
+        .unwrap_or_else(|| panic!("apps serve printed no launch link:\n{}", served.log()));
+    assert!(
+        served
+            .log()
+            .contains(&format!("biorouter apps open {APP_ID}`")),
+        "the advice under the link must name a command that works while this serves:\n{}",
+        served.log()
+    );
+    let record = served.daemon_record();
+    assert!(
+        record.is_file(),
+        "the daemon's key was not recorded at {}",
+        record.display()
+    );
+
+    let second = apps_command(served.root.path(), served.port, &["serve", APP_ID])
+        .output()
+        .expect("run a second apps serve");
+    let second_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(
+        second.status.success(),
+        "a second apps serve refused the running daemon ({}):\n{second_output}",
+        second.status
+    );
+    let again = launch_path(&second_output)
+        .unwrap_or_else(|| panic!("the second apps serve printed no link:\n{second_output}"));
+    assert_ne!(first, again, "each run gets a link of its own");
+    assert!(
+        second_output.contains("reusing the daemon already running"),
+        "{second_output}"
+    );
+
+    // Both links are this daemon's, and each works once.
+    for link in [&again, &first] {
+        assert_eq!(
+            redeem(served.port, link),
+            Some((200, true)),
+            "{link} did not open the app"
+        );
+        let spent = redeem(served.port, link).expect("the daemon answers");
+        assert!(
+            spent != (200, true),
+            "{link} opened the app twice: {spent:?}"
+        );
+    }
+    assert_eq!(
+        served.only_child(),
+        served.daemon,
+        "the second run must reuse the daemon, not start another"
+    );
+
+    // Stopping the command that started the daemon removes its record. The
+    // folder holding it is still there: `served`, which owns the temp root, is
+    // dropped only at the end of this function.
+    let status = served.stop_with("TERM");
+    assert!(
+        status.success(),
+        "a requested stop is a clean exit: {status}"
+    );
+    assert!(
+        record.parent().is_some_and(|folder| folder.is_dir()),
+        "the record's folder is gone, so the check below would measure nothing"
+    );
+    assert!(
+        !record.exists(),
+        "the record of a stopped daemon was left at {}",
+        record.display()
+    );
+}
+
+/// The other way `apps serve` stops a daemon it started: the daemon came up and
+/// was recorded, and then would not hand out a link. The command must stop that
+/// daemon and remove its record too, or the key of a daemon that is gone stays
+/// on disk, and a later `apps open` offers it to whatever daemon holds the port
+/// next.
+///
+/// The daemon is made to refuse with an app whose manifest is a symbolic link:
+/// the command's own check that the app exists follows the link, and the
+/// daemon's store refuses any link below its root, so it answers 404. If the
+/// command ever refuses such an app before starting a daemon, this test says so
+/// and needs another way to reach the refusal.
+#[test]
+fn an_apps_serve_whose_link_is_refused_stops_its_daemon_and_forgets_it() {
+    require_a_daemon_from_this_tree();
+
+    let root = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir_all(root.path().join("home")).unwrap();
+    let elsewhere = root.path().join("elsewhere.json");
+    std::fs::write(
+        &elsewhere,
+        format!(r#"{{"id":"{APP_ID}","title":"Lifecycle","kind":"static","updated_at":1}}"#),
+    )
+    .unwrap();
+    let app = root
+        .path()
+        .join("biorouter")
+        .join("config")
+        .join("agent_drafter")
+        .join(APP_ID);
+    std::fs::create_dir_all(&app).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, app.join("manifest.json")).unwrap();
+
+    let log_path = root.path().join("serve.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let reserved = reserved_port::reserve();
+    let port = reserved.port;
+    let mut serve = apps_command(root.path(), port, &["serve", APP_ID])
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .expect("spawn biorouter apps serve");
+
+    let mut status = None;
+    let exited = wait_for(READY_BUDGET + STOP_BUDGET, || {
+        status = serve.try_wait().ok().flatten();
+        status.is_some()
+    });
+    let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+    let Some(status) = exited.and(status) else {
+        let _ = serve.kill();
+        let _ = serve.wait();
+        panic!(
+            "apps serve was still running with a link it could not get:\n{}",
+            read_log()
+        );
+    };
+    let output = read_log();
+
+    // On the path under test: the daemon started, its key was recorded, and
+    // only then did it refuse the link.
+    assert!(
+        output.contains(&format!("would not open '{APP_ID}': it has no such app")),
+        "apps serve did not reach the daemon's refusal, so this test measured nothing:\n{output}"
+    );
+    assert!(
+        !output.contains("could not record"),
+        "the daemon's key was never recorded, so there was nothing to remove:\n{output}"
+    );
+    assert!(!status.success(), "a refused link is a failure: {status}");
+
+    // `stop_daemon` reaps the daemon before the command exits.
+    assert!(
+        !port_is_open(port),
+        "port {port} is still accepting connections after apps serve gave up:\n{output}"
+    );
+    let record = root
+        .path()
+        .join("biorouter")
+        .join("state")
+        .join("apps-daemon")
+        .join(format!("{port}.json"));
+    assert!(
+        record.parent().is_some_and(|folder| folder.is_dir()),
+        "the record's folder does not exist, so the check below would measure nothing"
+    );
+    assert!(
+        !record.exists(),
+        "the record of a daemon apps serve stopped was left at {}",
+        record.display()
+    );
+    drop(reserved);
 }

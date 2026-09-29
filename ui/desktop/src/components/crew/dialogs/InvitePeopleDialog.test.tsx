@@ -197,6 +197,13 @@ describe('InvitePeopleDialog', () => {
       undefined
     );
     expect(dialog).toHaveTextContent(LINE);
+    // F7: the manual tells hosts to send the server's fingerprint with the invitation, which carries
+    // no host key; the dialog says the same, visibly, under the invitation.
+    expect(
+      within(dialog).getByText(
+        'Also tell Bob the server’s SSH fingerprint, or where to get it from IT, so they can check it the first time they connect.'
+      )
+    ).toBeVisible();
     expect(
       within(dialog).getByRole('button', { name: inviteCopy.installed('Bob') })
     ).toBeInTheDocument();
@@ -337,8 +344,12 @@ describe('InvitePeopleDialog', () => {
     expect(
       await screen.findByText(inviteCopy.refusal.alreadyMember('bob', 'lab'))
     ).toBeInTheDocument();
+    // F3: the broker's "Choose Add device" is kept, and the switch it names is turned on.
+    expect(inviteCopy.refusal.alreadyMember('bob', 'lab')).toBe(
+      '@bob is already in lab. To add this computer of theirs, Add another device for @bob is now on: choose Invite again.'
+    );
     const addDevice = screen.getByRole('switch', { name: inviteCopy.addDevice('bob') });
-    fireEvent.click(addDevice);
+    await waitFor(() => expect(addDevice).toBeChecked());
     member.crew.request.mockClear();
     await invite('bob');
     expect(requestsFor(member.crew, 'enrollment.invite')).toEqual([

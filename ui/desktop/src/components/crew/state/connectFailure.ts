@@ -1,14 +1,26 @@
 import { CrewHttpError } from '../crewApi';
+import { connectionServer } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import type { LastConnectFailure } from './types';
 
 /** The daemon's SSH failure codes, without their prefix, plus `unknown`. */
 export type ConnectFailureKind =
   | 'auth_required'
+  /**
+   * The server refused this computer's key and offered nothing a person can answer
+   * (`Permission denied (publickey)`): no password prompt will ever appear, so Sign in does not
+   * help; the saved login or key is what to check (W2-DMN-5, F5).
+   */
+  | 'ssh_key_refused'
   | 'host_key_unknown'
   | 'host_key_changed'
   | 'unreachable'
   | 'bridge_missing'
+  /**
+   * SSH worked and the bridge ran, but no workspace server answers on its socket: it was stopped,
+   * killed, or the server rebooted (W2-DMN-5, R-7). Only its host can start it again.
+   */
+  | 'broker_not_running'
   | 'handoff_failed'
   | 'workspace_identity_mismatch'
   | 'ssh_failed'
@@ -17,10 +29,12 @@ export type ConnectFailureKind =
 /** Each typed code the connect and sign-in routes return, and the surface kind it maps to. */
 export const CONNECT_FAILURE_CODES: Readonly<Record<string, ConnectFailureKind>> = {
   crew_ssh_auth_required: 'auth_required',
+  crew_ssh_key_refused: 'ssh_key_refused',
   crew_ssh_host_key_unknown: 'host_key_unknown',
   crew_ssh_host_key_changed: 'host_key_changed',
   crew_ssh_unreachable: 'unreachable',
   crew_bridge_missing: 'bridge_missing',
+  crew_broker_not_running: 'broker_not_running',
   crew_handoff_failed: 'handoff_failed',
   crew_workspace_identity_mismatch: 'workspace_identity_mismatch',
   crew_ssh_failed: 'ssh_failed',
@@ -77,8 +91,8 @@ export interface ArrivalConnectInput {
  * "Connect in Crew" named (Q3-08). The click in the chat is the person's own action, so this is
  * the person's connect, one screen later — but only for a saved connection the daemon calls
  * `disconnected`, and never for an answer that is final: a server or workspace that could not be
- * verified, a server that wants a password or a code (Sign in is the person's), or a membership
- * the workspace ended (`MEMBERSHIP_ENDED_CODE`). A final answer decides even while a connect runs;
+ * verified, a server that wants a password or a code (Sign in is the person's), a server that
+ * refused this computer's key, or a membership the workspace ended (`MEMBERSHIP_ENDED_CODE`). A final answer decides even while a connect runs;
  * otherwise `wait` while one is running, and the caller decides once it settles.
  */
 export function arrivalConnectDecision(input: ArrivalConnectInput): ArrivalConnectDecision {
@@ -89,6 +103,8 @@ export function arrivalConnectDecision(input: ArrivalConnectInput): ArrivalConne
     isMembershipEnded(connection) ||
     isTrustFailure(failure) ||
     failure === 'auth_required' ||
+    // A refused key is refused again until the person changes the login or the key.
+    failure === 'ssh_key_refused' ||
     connection.status === 'authentication_required' ||
     signInPending
   )
@@ -132,10 +148,71 @@ export function classifyConnectFailure(failure: unknown): LastConnectFailure {
       : AUTH_REQUIRED_TEXT.test(message)
         ? 'auth_required'
         : 'unknown');
-  return {
+  const host = failure instanceof CrewHttpError ? failure.fields.host : undefined;
+  const classified: ClassifiedConnectFailure = {
     kind,
     message,
     ...(code !== undefined ? { code } : {}),
     ...(detail !== undefined ? { detail } : {}),
+    ...(host !== undefined ? { host } : {}),
   };
+  return classified;
+}
+
+/**
+ * A classified failure with the host OpenSSH named, when the daemon sent one (W2-DMN-5). It may be
+ * a jump host or the destination itself. Read through {@link connectFailureHost}, never directly.
+ */
+export interface ClassifiedConnectFailure extends LastConnectFailure {
+  host?: string;
+}
+
+/**
+ * A host name as OpenSSH prints it, reduced to what identifies the machine: lower case, without
+ * the `[addr]:port` wrapping it uses off port 22 (`[52.33.141.141]:2222`), and without brackets
+ * around an IPv6 address.
+ */
+function bareHost(value: string): string {
+  const lowered = value.trim().toLowerCase();
+  const bracketed = /^\[([^\]]*)\](?::\d+)?$/.exec(lowered);
+  return (bracketed ? bracketed[1] : lowered).replace(/\.$/, '');
+}
+
+/**
+ * The hop a failure concerns when it is NOT the saved server, such as a jump host whose key could
+ * not be verified (W2-DMN-5); `null` to name the server as the rest of Crew does, by
+ * `serverLabel` (D-ALIAS, DW-03).
+ *
+ * The daemon sends `host` for every failure OpenSSH names a host in, the destination's own
+ * included, and that name is the RESOLVED one: the `HostName` behind an alias, written
+ * `[addr]:port` off port 22. Passed on as it came, a person who calls `crew_alice@52.33.141.141`
+ * lab-server read "Can't verify [52.33.141.141]:2222" on the trust screen, in the bar and in the
+ * menu, while every other surface said lab-server. So the named host is compared with the saved
+ * login's server, the way OpenSSH writes it, and only a different one is named.
+ *
+ * ⚠ When the saved login is itself an SSH alias (`crew_alice@lab-server`), this side does not know
+ * the address it resolves to, so a failure naming that address still reads as a separate hop. Only
+ * the daemon, which resolves the alias, can tell the two apart.
+ */
+export function connectFailureHost(
+  failure: LastConnectFailure | null | undefined,
+  connection: { ssh_target?: string | null } | null | undefined
+): string | null {
+  const host = (failure as ClassifiedConnectFailure | null | undefined)?.host;
+  if (typeof host !== 'string' || !host) return null;
+  const destination = connectionServer({ id: '', ssh_target: connection?.ssh_target ?? '' });
+  return destination && bareHost(host) === bareHost(destination) ? null : host;
+}
+
+/**
+ * The kind of a saved connection's last failure, from its typed `last_error_code` (the daemon's
+ * keepalive keeps it with `last_error`), or `undefined` for a code this renderer does not know.
+ */
+export function savedFailureKind(
+  connection: { last_error_code?: string | null } | null | undefined
+): ConnectFailureKind | undefined {
+  const code = connection?.last_error_code;
+  return code && Object.prototype.hasOwnProperty.call(CONNECT_FAILURE_CODES, code)
+    ? CONNECT_FAILURE_CODES[code]
+    : undefined;
 }

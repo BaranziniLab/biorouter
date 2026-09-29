@@ -8,7 +8,14 @@ import type { ConnectFailureKind } from '../state/connectFailure';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { ChannelIntro } from '../timeline/ChannelIntro';
-import { checklistCopy, emptyCopy, INSTALL_COMMANDS, notSetUpCopy, welcomeCopy } from './copy';
+import {
+  checklistCopy,
+  emptyCopy,
+  INSTALL_COMMANDS,
+  nameSuggestionCopy,
+  notSetUpCopy,
+  welcomeCopy,
+} from './copy';
 import {
   ConnectingCard,
   focusComposerOnceMounted,
@@ -19,7 +26,7 @@ import {
   SignInNeededState,
   useFocusHold,
 } from './EmptyStates';
-import { attemptTime } from './joinText';
+import { attemptTime, brokerStartCommand } from './joinText';
 import { resetJoinContextForTests, updateJoinContext } from './joinContext';
 import { NotSetUpPane } from './NotSetUpPane';
 import { OnboardingScreen, ONBOARDING_SCREENS } from './OnboardingScreen';
@@ -98,6 +105,103 @@ describe('connection states', () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') }));
     expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
+  });
+
+  // R-7: a stopped workspace server read "okafor-lab is offline" to its own host, with nothing
+  // about starting it.
+  describe('a workspace server that is not running (R-7)', () => {
+    const stopped = () =>
+      fakeConnection({ status: 'disconnected', last_error_code: 'crew_broker_not_running' });
+
+    it('gives its host the line that starts it, with Copy, and Connect', () => {
+      updateJoinContext('conn-1', { hosts: true, workspaceName: 'okafor-lab' });
+      renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
+      expect(
+        screen.getByRole('heading', { name: emptyCopy.brokerStoppedTitle('hpc.ucsf.edu') })
+      ).toBeInTheDocument();
+      expect(screen.getByText(emptyCopy.brokerStoppedHost)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          '"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/okafor-lab"'
+        )
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: `Copy ${emptyCopy.brokerStartLabel}` })
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') })).toBeEnabled();
+      expect(document.body.textContent).not.toMatch(/is offline/);
+    });
+
+    it('tells a member whom to ask, with no command', () => {
+      updateJoinContext('conn-1', { hosts: false, hostDisplayName: 'Frank Okafor' });
+      renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
+      expect(screen.getByText(emptyCopy.brokerStoppedMember('Frank Okafor'))).toBeInTheDocument();
+      expect(document.body.textContent).not.toMatch(/biorouter-crew/);
+      // RES2-N4: for minutes after the host started it, "Ask Frank Okafor to start Crew" asked
+      // for what was already done. It says Crew connects by itself, and that Connect is there.
+      expect(emptyCopy.brokerStoppedMember('Frank Okafor')).toBe(
+        'The workspace server isn’t running. Once Frank Okafor starts Crew, this computer connects by itself within a few minutes, or you can connect now.'
+      );
+      expect(screen.getByRole('button', { name: emptyCopy.offlineAction('lab') })).toBeEnabled();
+    });
+
+    it('says both when this computer cannot tell whether its person hosts it', () => {
+      renderWithCrew(<OfflineState />, crewWith({ connection: stopped() }));
+      expect(screen.getByText(emptyCopy.brokerStoppedUnknown('lab'))).toBeInTheDocument();
+      expect(document.body.textContent).toMatch(/biorouter-crew\/<folder>/);
+    });
+
+    it('never puts a name that is not a workspace name into the line', () => {
+      expect(brokerStartCommand('lab; rm -rf ~')).toContain('biorouter-crew/<folder>"');
+      expect(brokerStartCommand('chen-lab')).toContain('biorouter-crew/chen-lab"');
+    });
+  });
+
+  /**
+   * RES2-N5: while the daemon waited 60 or 180 s to dial again, the bar said "Reconnecting to
+   * okafor-lab … try again in a moment" over a main area that said "okafor-lab is offline".
+   */
+  it('says the daemon is dialling again, since when, with Connect now, instead of offline', () => {
+    const since = new Date(2026, 8, 27, 21, 28).getTime();
+    const crew = crewWith({
+      connection: fakeConnection({ status: 'disconnected' }),
+      redialSince: since,
+    });
+    renderWithCrew(<OfflineState />, crew);
+    expect(screen.getByRole('heading', { name: emptyCopy.redialTitle('lab') })).toBeInTheDocument();
+    expect(screen.getByText(emptyCopy.redialBody(attemptTime(since)))).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/is offline/);
+    fireEvent.click(screen.getByRole('button', { name: emptyCopy.redialAction }));
+    expect(crew.connect).toHaveBeenCalledWith({ userInitiated: true });
+  });
+
+  // F5: a refused key is a login matter, not a password one. SC2-N9: titled for that, and naming
+  // the server, as the connection bar does, rather than "offline" over "It refused …".
+  it('says a refused key under a sign-in title naming the server, with Connection settings…', () => {
+    const crew = crewWith({
+      connection: fakeConnection({
+        status: 'disconnected',
+        ssh_target: 'crew_bob@lab-ubuntu',
+        last_error_code: 'crew_ssh_key_refused',
+      }),
+    });
+    renderWithCrew(<OfflineState />, crew);
+    expect(
+      screen.getByRole('heading', { name: emptyCopy.keyRefusedTitle('lab-ubuntu') })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(emptyCopy.keyRefusedBody('lab-ubuntu', 'crew_bob'))
+    ).toBeInTheDocument();
+    expect(emptyCopy.keyRefusedBody('lab-ubuntu', 'crew_bob')).toBe(
+      'lab-ubuntu refused this computer’s SSH key for crew_bob. Check Your server login in Connection settings.'
+    );
+    expect(document.body.textContent).not.toMatch(/is offline|It refused/);
+    fireEvent.click(screen.getByRole('button', { name: emptyCopy.connectionSettings }));
+    expect(crew.openDialog).toHaveBeenCalledWith({
+      kind: 'connection-settings',
+      connectionId: 'conn-1',
+    });
+    expect(document.body.textContent).not.toMatch(/password/);
   });
 
   it('names the server by the person’s own SSH alias when the daemon found one (D-ALIAS)', () => {
@@ -474,6 +578,84 @@ describe('NoTeamState', () => {
     expect(screen.getByText(emptyCopy.memberBody('Alice Chen (@alice)'))).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: emptyCopy.memberAction }));
     expect(crew.openDialog).toHaveBeenCalledWith({ kind: 'create-team' });
+  });
+
+  // DW-01: the offer appeared only above a channel's composer, so a new member first saw it after
+  // reaching a channel, although the design places it right after joining.
+  it('offers the server-account name on "You’re in {workspace}", once', async () => {
+    const verifiedCrew = (overrides: Partial<CrewController> = {}) =>
+      crewWith({
+        snapshot: fakeSnapshot(),
+        screen: 'no-team',
+        observedPrivacy: {
+          connectionId: 'conn-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+        request: vi.fn(async (method: string) =>
+          method === 'profile.suggest' ? { full_name: 'Bob Lee' } : {}
+        ) as CrewController['request'],
+        ...overrides,
+      });
+    const prompt = nameSuggestionCopy.prompt('Bob Lee', 'lab');
+    const view = renderWithCrew(<NoTeamState />, verifiedCrew());
+    expect(await screen.findByText(prompt)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: emptyCopy.memberTitle('lab') })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: nameSuggestionCopy.dismiss }));
+    expect(screen.queryByText(prompt)).toBeNull();
+    view.unmount();
+
+    // Answered once is answered on every screen: the team with no channel does not ask again.
+    renderWithCrew(
+      <NoChannelState />,
+      verifiedCrew({
+        snapshot: fakeSnapshot({
+          teams: [
+            {
+              id: 'team-1',
+              name: 'Analysis Lab',
+              created_by: 'p-alice',
+              members: ['p-alice', 'p-bob'],
+              general_channel_id: 'c-1',
+            },
+          ],
+        }),
+        teamId: 'team-1',
+      })
+    );
+    await act(async () => {});
+    expect(screen.queryByText(prompt)).toBeNull();
+  });
+
+  it('offers the server-account name on a team with no open channel', async () => {
+    renderWithCrew(
+      <NoChannelState />,
+      crewWith({
+        snapshot: fakeSnapshot({
+          teams: [
+            {
+              id: 'team-1',
+              name: 'Analysis Lab',
+              created_by: 'p-alice',
+              members: ['p-alice', 'p-bob'],
+              general_channel_id: 'c-1',
+            },
+          ],
+        }),
+        teamId: 'team-1',
+        observedPrivacy: {
+          connectionId: 'conn-1',
+          mode: 'private',
+          institutionId: 'ucsf',
+          policyEpoch: 1,
+        },
+        request: vi.fn(async (method: string) =>
+          method === 'profile.suggest' ? { full_name: 'Bob Lee' } : {}
+        ) as CrewController['request'],
+      })
+    );
+    expect(await screen.findByText(nameSuggestionCopy.prompt('Bob Lee', 'lab'))).toBeVisible();
   });
 
   it('offers to join the team a person is invited to', () => {

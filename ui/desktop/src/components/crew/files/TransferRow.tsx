@@ -6,6 +6,7 @@ import { Download, Pause, Play, Trash2, Upload } from '../../icons/app-icons';
 import type { CrewTransfer } from '../crewTransfers';
 import { transferStatePresentation } from '../state/crewStatus';
 import { filesCopy } from './copy';
+import { visibleFileText } from './fileName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import './files.css';
@@ -16,10 +17,12 @@ export interface TransferActions {
   onRemove(transfer: CrewTransfer): void;
 }
 
-/** A stopped transfer can be picked up again; a finished or unconfirmed one cannot. */
+/**
+ * A paused transfer can be picked up again. A finished or unconfirmed one cannot, and neither can
+ * a failed one: the workspace refused it, and reselecting the file cannot change that (F-1).
+ */
 export function canResumeTransfer(transfer: CrewTransfer): boolean {
-  const { key } = transferStatePresentation(transfer);
-  return key === 'paused' || key === 'failed';
+  return transferStatePresentation(transfer).key === 'paused';
 }
 
 /**
@@ -55,7 +58,9 @@ export function TransferMenuItems({
         <span className="flex min-w-0 flex-col">
           <span>{filesCopy.removeFromList}</span>
           <span id={helpId} className="crew-menu-help">
-            {filesCopy.removeFromListHelp}
+            {transfer.direction === 'upload' && transfer.state !== 'completed'
+              ? filesCopy.removeUnfinishedUploadHelp
+              : filesCopy.removeFromListHelp}
           </span>
         </span>
       </DropdownMenuItem>
@@ -79,16 +84,23 @@ function notYetMoving(transfer: CrewTransfer): boolean {
 /**
  * One transfer in the Files tab: direction glyph, name, the state in words ("Uploading 42%",
  * "Paused", "Not confirmed"), a thin bar while it has a position, Pause while it moves and a
- * `⋯` for the rest. Until it has moved 1% it says only "Uploading…" (Q4-16). The daemon's own
- * reason for a failure is shown as written.
+ * `⋯` for the rest. Until it has moved 1% it says only "Uploading…" (Q4-16). A paused transfer
+ * says why in a few words ("You paused it", "The connection dropped") with the daemon's whole
+ * sentence on hover; the daemon's reason for a failure is shown as written.
  */
 export function TransferRow({
   transfer,
   onPause,
   onResume,
   onRemove,
+  serverStorageNote,
 }: TransferActions & {
   transfer: CrewTransfer;
+  /**
+   * What the viewer does about a transfer the workspace server could not save: the host's own
+   * next step, or whom a member waits for (`filesCopy.serverStorage*`, RES2-N3).
+   */
+  serverStorageNote?: string;
 }) {
   const presentation = transferStatePresentation(transfer);
   const Glyph = transfer.direction === 'upload' ? Upload : Download;
@@ -100,6 +112,8 @@ export function TransferRow({
     : presentation.word;
   const showBar = presentation.percent !== undefined && presentation.key !== 'failed' && !starting;
   const canPause = presentation.active && presentation.key !== 'pausing' && !starting;
+  // A download's name began as another member's (RENDERER-1): hidden characters made visible.
+  const name = visibleFileText(transfer.name);
   return (
     <li
       className="crew-file-row"
@@ -108,7 +122,7 @@ export function TransferRow({
     >
       <div className="crew-file-row-main">
         <Glyph className="crew-file-row-icon" aria-hidden />
-        <span className="crew-file-row-name">{transfer.name}</span>
+        <span className="crew-file-row-name">{name}</span>
         <span className="crew-file-row-meta">
           {word}
           {presentation.key === 'failed' || presentation.key === 'not-confirmed'
@@ -121,7 +135,7 @@ export function TransferRow({
             variant="ghost"
             size="sm"
             onClick={() => onPause(transfer)}
-            aria-label={filesCopy.pauseNamed(transfer.name)}
+            aria-label={filesCopy.pauseNamed(name)}
           >
             <Pause aria-hidden />
             {filesCopy.pause}
@@ -129,7 +143,7 @@ export function TransferRow({
         ) : null}
         {presentation.active ? null : (
           <DropdownMenu>
-            <MoreActionsTrigger name={transfer.name} />
+            <MoreActionsTrigger name={name} />
             <DropdownMenuContent align="end" className="crew-menu">
               <TransferMenuItems transfer={transfer} onResume={onResume} onRemove={onRemove} />
             </DropdownMenuContent>
@@ -139,11 +153,20 @@ export function TransferRow({
       {showBar ? (
         <Progress
           value={presentation.percent}
-          label={`${transfer.name}: ${presentation.word}`}
+          label={`${name}: ${presentation.word}`}
           className="crew-file-row-progress"
         />
       ) : null}
-      {transfer.error ? <p className="crew-file-row-error">{transfer.error}</p> : null}
+      {presentation.key === 'paused' ? (
+        presentation.reason ? (
+          <p className="crew-file-row-reason" title={transfer.error ?? undefined}>
+            {presentation.reason}
+            {presentation.serverStorage && serverStorageNote ? `. ${serverStorageNote}` : null}
+          </p>
+        ) : null
+      ) : transfer.error ? (
+        <p className="crew-file-row-error">{transfer.error}</p>
+      ) : null}
     </li>
   );
 }

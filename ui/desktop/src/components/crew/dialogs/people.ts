@@ -4,7 +4,9 @@ import {
   channelName,
   cleanName,
   nameKey,
+  personLabel,
   personLayout,
+  withJoinerNames,
   type CrewPerson,
   type PeopleDirectory,
 } from '../identity';
@@ -112,8 +114,10 @@ function invitedTo(
       .filter((invitation) => invitation.kind === kind && invitation.target_id === targetId)
       .map((invitation) => invitation.principal_id)
   );
-  return dir.people.filter(
-    (person) => person.id && ids.has(person.id) && !person.isYou && !person.isFormer
+  return peopleInOrder(
+    dir.people.filter(
+      (person) => person.id && ids.has(person.id) && !person.isYou && !person.isFormer
+    )
   );
 }
 
@@ -131,7 +135,10 @@ export function addPeopleCandidates(
   target: PickerTarget,
   options: { directAdd?: boolean } = {}
 ): PickerCandidates {
-  const everyone = dir.people.filter((person) => !person.isYou && !person.isFormer && person.id);
+  // In the one order every people list uses (M17): the directory's is that of random IDs.
+  const everyone = peopleInOrder(
+    dir.people.filter((person) => !person.isYou && !person.isFormer && person.id)
+  );
   if (!snapshot) return { candidates: [], others: everyone, pending: [], pendingTeam: [] };
   if (target.kind === 'team') {
     const team = snapshot.teams.find((item) => item.id === target.teamId);
@@ -171,9 +178,14 @@ export function addPeopleCandidates(
   };
 }
 
-/** `@a`, `@a and @b`, `@a, @b and @c`: people named by username, as the copy deck lists them. */
-export function usernameList(people: readonly CrewPerson[]): string {
-  return listOf(people.map((person) => `@${person.username}`));
+/**
+ * `Bob Lee (@bob)`, `Bob Lee (@bob) and @carol`, …: people named by the one rule for inline text,
+ * `personLabel(person, 'inline')` — the display name with `@username`, or `@username` alone when
+ * they are the same — as the joined toast and the Joined row name them (M11). The people are named
+ * as given: pass them already current (from the directory, or `withJoinerNames`).
+ */
+export function peopleList(people: readonly CrewPerson[]): string {
+  return listOf(people.map((person) => personLabel(person, 'inline')));
 }
 
 /** `a`, `a and b`, `a, b and c`. */
@@ -252,7 +264,7 @@ export function directAddResultFrom(value: unknown): DirectAddResult {
 
 /**
  * The channels a person can see after a direct TEAM addition, as `#a and #b`: the team's #general
- * (which comes with the team) and every channel the broker says it added, in that order, once each.
+ * (which comes with the team), then every channel the broker says it added, by name, once each.
  */
 export function channelsSeenAfterTeamAdd(
   snapshot: Snapshot | null | undefined,
@@ -261,12 +273,22 @@ export function channelsSeenAfterTeamAdd(
 ): string {
   const team = snapshot?.teams.find((item) => item.id === teamId);
   const ids = [...(team ? [team.general_channel_id] : []), ...added];
-  const labels: string[] = [];
+  const labels: { id: string; name: string }[] = [];
   for (const id of new Set(ids)) {
     const channel = snapshot?.channels.find((item) => item.id === id);
-    labels.push(channel ? channelName(channel) : id === team?.general_channel_id ? '#general' : '');
+    const name = channel ? channelName(channel) : id === team?.general_channel_id ? '#general' : '';
+    if (name) labels.push({ id, name });
   }
-  return listOf(labels.filter(Boolean));
+  // #general, then by name: the broker's order is that of random IDs (M17).
+  return listOf(
+    labels
+      .sort(
+        (a, b) =>
+          Number(b.id === team?.general_channel_id) - Number(a.id === team?.general_channel_id) ||
+          a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+      )
+      .map((label) => label.name)
+  );
 }
 
 /** The channel's other active members, who could accept its ownership. */
@@ -278,20 +300,25 @@ export function ownershipCandidates(
   const channel = snapshot?.channels.find((item) => item.id === channelId);
   if (!channel) return [];
   const members = new Set(channel.members);
-  return dir.people.filter(
-    (person) => person.id && !person.isYou && !person.isFormer && members.has(person.id)
+  return peopleInOrder(
+    dir.people.filter(
+      (person) => person.id && !person.isYou && !person.isFormer && members.has(person.id)
+    )
   );
 }
 
 /**
- * Whether a person matches a picker query: by display name or username, ignoring case, spacing
- * and a leading `@`. Display-name matching is safe here because every row shows `@username`
- * before it can be chosen (naming design, "Selectors and the resolver", rule 3).
+ * Whether a person matches a picker query: by display name, username or the name on their server
+ * account (which a joiner's row shows until they choose a name, F8), ignoring case, spacing and a
+ * leading `@`. Name matching is safe here because every row shows `@username` before it can be
+ * chosen (naming design, "Selectors and the resolver", rule 3).
  */
 export function personMatches(person: CrewPerson, query: string): boolean {
   const wanted = nameKey(query.trim().replace(/^@/, ''));
   if (!wanted) return true;
-  return nameKey(person.displayName).includes(wanted) || nameKey(person.username).includes(wanted);
+  return [person.displayName, person.username, person.serverName].some(
+    (name) => typeof name === 'string' && nameKey(name).includes(wanted)
+  );
 }
 
 /**
@@ -336,13 +363,16 @@ export function peopleInOrder(
  * Q4-32): what an Add people with no one left to add shows instead of an empty picker, and what
  * "Members of {team}" lists. A team's owner is its creator; with no owner known, the host leads.
  * `extra` are principal IDs the caller knows were just added, before the next state frame lists
- * them.
+ * them. With `workspaceId`, each person who joined without choosing a name carries the name on
+ * their server account (`withJoinerNames`), and is sorted by it: named after the sort, Gina Rossi
+ * was placed by `crew_gina` and landed last (SC2-N3).
  */
 export function targetMembers(
   snapshot: Snapshot | null | undefined,
   dir: PeopleDirectory,
   target: PickerTarget,
-  extra: Iterable<string> = []
+  extra: Iterable<string> = [],
+  workspaceId?: string | null
 ): CrewPerson[] {
   const team =
     target.kind === 'team' ? snapshot?.teams.find((item) => item.id === target.teamId) : undefined;
@@ -357,7 +387,8 @@ export function targetMembers(
     const person = dir.byId(id);
     if (person && !person.isFormer) people.push(person);
   }
-  return peopleInOrder(people, (team ? team.created_by : channel?.owner_id) || null);
+  const named = workspaceId === undefined ? people : withJoinerNames(people, workspaceId);
+  return peopleInOrder(named, (team ? team.created_by : channel?.owner_id) || null);
 }
 
 /**

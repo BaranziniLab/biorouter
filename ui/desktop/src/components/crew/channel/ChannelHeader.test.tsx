@@ -44,6 +44,22 @@ function Header(props: Parameters<typeof ChannelHeader>[0]) {
   return HeaderLayout;
 }
 
+/**
+ * The runs of text an accessible name is built from: each text node not under `aria-hidden`,
+ * trimmed. Chrome puts a space between runs in separate boxes (a visually hidden span is one), so
+ * a name meant to read as one sentence must be one run.
+ */
+function spokenRuns(element: HTMLElement): string[] {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  const runs: string[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement?.closest('[aria-hidden="true"]')) continue;
+    const text = node.textContent?.trim();
+    if (text) runs.push(text);
+  }
+  return runs;
+}
+
 async function channelShown() {
   return screen.findByRole('button', { name: channelHeaderCopy.menuName('general') });
 }
@@ -68,13 +84,20 @@ describe('ChannelHeader', () => {
     // The channel section is named "#general" through the hidden label, not the menu's name.
     expect(document.getElementById('channel-title')).toHaveTextContent('#general');
     expect(document.getElementById('channel-title')).not.toBeVisible();
+    // UXN-15: the name is one run. Chrome put a space around each hidden run it joined to the
+    // drawn slug, and read "# general , channel menu".
+    expect(spokenRuns(trigger)).toEqual(['#general, channel menu']);
   });
 
   it('shows the classification as a neutral badge with its consequence, and Archived only when archived', async () => {
     renderCrew(Header({}));
     await channelShown();
     expect(screen.getByText(channelCopy.restricted)).toBeInTheDocument();
-    expect(screen.getByText(channelHeaderCopy.restrictedNameSuffix)).toHaveClass('sr-only');
+    // One hidden run holds the whole name (UXN-15: two read "Restricted : only…" in Chrome).
+    const badge = screen.getByRole('button', { name: /^Restricted: only private models/ });
+    expect(spokenRuns(badge)).toEqual([
+      `${channelCopy.restricted}${channelHeaderCopy.restrictedNameSuffix}`,
+    ]);
     expect(screen.queryByText(channelCopy.archived)).toBeNull();
     // The padlock means privacy tier only; classification never draws one.
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
@@ -193,6 +216,16 @@ describe('ChannelHeader', () => {
       'spark1',
       'spark2',
     ]);
+  });
+
+  // M18: the stack says who of the channel is online where the broker says, and nothing otherwise.
+  it('says how many members are online, and marks their avatars', async () => {
+    installObserver({ snapshot: makeSnapshot({ online_principal_ids: [bob.id] }) });
+    renderCrew(Header({}));
+    await channelShown();
+    const stack = await screen.findByRole('button', { name: '2 members, 1 online' });
+    expect(channelCopy.membersOnline(2, 1)).toBe('2 members, 1 online');
+    expect(stack.querySelectorAll('[data-crew-online]')).toHaveLength(1);
   });
 
   it('counts the channel’s members, not the team’s people, and opens the Members tab', async () => {

@@ -254,22 +254,49 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
     );
   }
 
+  // Stopped on this device, and the workspace has not confirmed it yet (AG-F11): one note, not
+  // "stopped on this device" above "access was removed". Starting a new chat always works;
+  // granting access again waits for the connection, which it needs.
+  if (lapsed && unconfirmed) {
+    return (
+      <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
+        <RevokeResultNote
+          outcome={
+            outcome?.kind === 'unconfirmed'
+              ? outcome
+              : { kind: 'unconfirmed', message: accessCopy.unconfirmed }
+          }
+          chat={chat}
+          retrying={revoking}
+          confirmation={access.connectionUp ? 'confirming' : 'offline'}
+          workspace={access.workspace ?? null}
+          connectAction={
+            <Button type="button" variant="secondary" size="sm" onClick={connectInCrew}>
+              {accessCopy.connect}
+            </Button>
+          }
+          onRetry={() => void revoke()}
+          actions={
+            <>
+              <Button type="button" variant="secondary" size="sm" onClick={startNewChat}>
+                {accessCopy.chatNewChat}
+              </Button>
+              {access.connectionUp ? (
+                <Button type="button" variant="secondary" size="sm" onClick={openAccess}>
+                  {accessCopy.chatGrantAgain}
+                </Button>
+              ) : null}
+            </>
+          }
+        />
+      </div>
+    );
+  }
+
   if (lapsed) {
     return (
       <div className={cn('flex flex-col gap-2', className)} data-testid="crew-chat-access-bar">
-        {unconfirmed ? (
-          <RevokeResultNote
-            outcome={
-              outcome?.kind === 'unconfirmed'
-                ? outcome
-                : { kind: 'unconfirmed', message: accessCopy.unconfirmed }
-            }
-            chat={chat}
-            retrying={revoking}
-            confirmation={access.connectionUp ? 'confirming' : 'offline'}
-            onRetry={() => void revoke()}
-          />
-        ) : confirmedAfterWait.shown ? (
+        {confirmedAfterWait.shown ? (
           <RevocationConfirmedNote onDismiss={confirmedAfterWait.dismiss} />
         ) : null}
         <Note

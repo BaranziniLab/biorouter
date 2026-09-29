@@ -14,7 +14,14 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { cn } from '../../../utils';
-import { channelName, PersonName, personLabel, personLayout, type CrewPerson } from '../identity';
+import {
+  channelName,
+  OnlineMark,
+  PersonName,
+  personLabel,
+  personLayout,
+  type CrewPerson,
+} from '../identity';
 import type { Channel } from '../crewApi';
 import type { CrewController } from '../state/types';
 import { membersCopy } from './copy';
@@ -248,7 +255,7 @@ function MemberActions({
  * The broker decides every one of these actions.
  */
 export function MembersTab({ className }: MembersTabProps) {
-  const { crew, snapshot, channel, dir, isOwner } = usePanePresentation();
+  const { crew, snapshot, channel, dir, isOwner, online } = usePanePresentation();
   const [announcement, setAnnouncement] = useState('');
   const announceTimer = useRef<number | null>(null);
   useEffect(
@@ -339,6 +346,7 @@ export function MembersTab({ className }: MembersTabProps) {
                     context="authority"
                     you={id === actorId}
                   />
+                  <OnlineMark online={online?.has(id) ?? false} />
                 </span>
                 {rowIsOwner && <Badge tone="neutral">{membersCopy.owner}</Badge>}
               </span>

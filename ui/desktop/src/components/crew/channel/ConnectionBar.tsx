@@ -3,9 +3,14 @@ import { AlertTriangle, KeyRound, LoaderCircle, X } from '../../icons/app-icons'
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
-import { parseRefusal, refusalText } from '../dialogs/refusals';
-import { connectionServer } from '../identity';
+import { parseRefusal, refusalText, type RefusalViewer } from '../dialogs/refusals';
+import { CREW_RECONNECTING } from '../api/errors';
+import { buildPeopleDirectory, personLabel } from '../identity';
+import { useJoinContext } from '../onboarding/joinContext';
+import { sshUsername } from '../onboarding/joinText';
+import { serverLabel } from '../sidebar/sidebarView';
 import {
+  connectFailureHost,
   isMembershipEnded,
   isNotSetUpFailure,
   isTrustFailure,
@@ -13,6 +18,7 @@ import {
 } from '../state/connectFailure';
 import { crewObservationCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
+import { reconnectDaemon, useDaemonConnection } from '../state/daemonConnection';
 import { DIALOG_FOCUS_FALLBACKS, restoreFocusSoon } from '../state/focusReturn';
 import { CHANNEL_LOST_ERROR_CODE } from '../state/useCrewObservation';
 import { connectionBarCopy } from './copy';
@@ -40,8 +46,13 @@ function useHeldFor(active: boolean, delayMs: number): boolean {
  * and never a bare `code: ` prefix (a `name_taken: …` reached this bar verbatim once the dialog that
  * caused it had closed, T-08).
  */
-export function actionErrorText(message: string): string {
-  const words = refusalText(message);
+export function actionErrorText(message: string, host = '', viewer: RefusalViewer = {}): string {
+  // The transport's own record of a dropped link never reaches a person (R-4): it says the outcome
+  // is unknown, so the sentence says so too.
+  if (MACHINE_TEXT.test(message) && /Crew SSH failure|child_before_cleanup/.test(message))
+    return connectionBarCopy.linkLost(host);
+  // The host reads what the host can do, not "ask the host" (MSG2-N6).
+  const words = refusalText(message, viewer);
   const refusal = parseRefusal(words);
   if (!refusal.code) return words;
   const sentence = refusal.sentence.trim();
@@ -62,15 +73,37 @@ const MACHINE_TEXT =
  * any machine-shaped text. Only a failure the daemon answered in a person's words (a missing
  * approval, an outdated background service) keeps them. Never the raw text.
  */
+export interface ConnectErrorContext {
+  /** The hop OpenSSH named, when it is not the server itself (a jump host's key, W2-DMN-5). */
+  failureHost?: string | null;
+  /** The account the saved login signs in as, for a refused key. */
+  user?: string | null;
+  /** Whether this person hosts the workspace; `null` when this computer cannot tell. */
+  hosts?: boolean | null;
+  /** The workspace's host, as a sentence names them, for a member told whom to ask. */
+  hostName?: string | null;
+}
+
 export function connectErrorText(
   kind: ConnectFailureKind | undefined,
   message: string,
-  host: string
+  host: string,
+  context: ConnectErrorContext = {}
 ): string {
   if (kind === 'unreachable') return connectionBarCopy.unreachable(host);
   if (kind === 'auth_required') return connectionBarCopy.signInNeeded(host);
-  if (isTrustFailure(kind)) return connectionBarCopy.cantVerify(host);
+  // A publickey-only refusal is not a password matter (F5): the login or its key is.
+  if (kind === 'ssh_key_refused') return connectionBarCopy.keyRefused(host, context.user ?? null);
+  // The hop whose key could not be verified, which may be a jump host (W2-DMN-5).
+  if (isTrustFailure(kind)) return connectionBarCopy.cantVerify(context.failureHost || host);
   if (isNotSetUpFailure(kind)) return connectionBarCopy.notRunning(host);
+  // A stopped workspace server (R-7): its host starts it; a member asks the host.
+  if (kind === 'broker_not_running')
+    return context.hosts === true
+      ? connectionBarCopy.brokerStoppedHost(host)
+      : context.hosts === false
+        ? connectionBarCopy.brokerStoppedMember(context.hostName ?? null)
+        : connectionBarCopy.brokerStopped(host);
   if ((kind === undefined || kind === 'unknown') && message.trim() && !MACHINE_TEXT.test(message))
     return actionErrorText(message);
   return connectionBarCopy.cantConnect(host);
@@ -165,16 +198,43 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   const barError = error && (errorSlotFor('global') || errorSlotFor('observer')) ? error : null;
   const connectError = barError?.source === 'connect' ? barError : null;
   const actionError = barError && barError.source !== 'connect' ? barError : null;
-  const host = connectionServer(connection) || connection?.name || '';
+  // The server by the person's own name for it, as the main area and the menu name it (DW-03).
+  const host = serverLabel(connection) || connection?.name || '';
+  const joinContext = useJoinContext(connectionId);
+  const errorContext: ConnectErrorContext = {
+    failureHost: connectFailureHost(failure, connection),
+    user: sshUsername(connection?.ssh_target) ?? joinContext.username ?? null,
+    hosts: crew.isHost ? true : (joinContext.hosts ?? null),
+    hostName: joinContext.hostDisplayName ?? joinContext.hostUsername ?? null,
+  };
   const unreachable = failure?.kind === 'unreachable';
   const workspace = workspaceLabel(crew, crew.snapshot ?? crew.lastVerified?.snapshot ?? null);
+  // The app is not attached to its background service (RES2-N7): nothing here can reach a
+  // workspace until it is, so the bar says that, with Reconnect, and offers no Retry that could
+  // only fail again.
+  const daemon = useDaemonConnection();
+  const daemonAway = daemon !== 'attached';
+  // The server has stopped saving changes (T3-BE-13): said while the daemon holds it connected,
+  // so "Connected" is never all a person reads while every change is refused (RES2-N2).
+  const serverStorage =
+    !daemonAway && connection?.status === 'connected' ? (connection.server_storage ?? null) : null;
+  // Whom a member asks: the workspace's host as the send failure names them, else the name the
+  // invitation gave.
+  const storageDir = buildPeopleDirectory(
+    serverStorage ? (crew.snapshot ?? crew.lastVerified?.snapshot ?? null) : null
+  );
+  const storageHost =
+    storageDir.host && !storageDir.host.isFormer
+      ? personLabel(storageDir.host, 'authority', storageDir)
+      : (errorContext.hostName ?? null);
   const notMember = crew.status === 'not-joined' || crew.screen === 'join';
   // The workspace ended this computer's or this person's membership: said once, here, with no
   // Retry — on the join screen its card says it instead.
   const membershipEnded = isMembershipEnded(connection) && !notMember;
   const showObservationError =
-    membershipEnded ||
-    (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected'));
+    !daemonAway &&
+    (membershipEnded ||
+      (Boolean(refreshError) && !notMember && (!connection || connection.status === 'connected')));
   const observationText = membershipEnded
     ? crewObservationCopy.noLongerMember(workspace)
     : refreshError;
@@ -183,6 +243,10 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
   // A closed channel's note describes the workspace view it was closed in: on a connection
   // problem screen, or while reconnecting, it is stale and not shown (Q2-19). The selection that
   // moves on dismisses it.
+  // The daemon's "Reconnecting to …; try again in a moment" answer, while the offline screen under
+  // the bar says the same with its time and Connect (RES2-N5): one state, not two that disagree.
+  const redialShownBelow =
+    offlineCardShown && actionError?.code === CREW_RECONNECTING && crew.redialSince != null;
   const staleChannelLoss =
     actionError?.source === 'observer' &&
     actionError.code === CHANNEL_LOST_ERROR_CODE &&
@@ -227,6 +291,39 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
 
   return (
     <div className={cn('crew-connection-bar', className)} data-testid="crew-connection-bar">
+      {daemonAway && (
+        <Note
+          tone="warning"
+          role="status"
+          icon={AlertTriangle}
+          testId="crew-daemon-away"
+          action={
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={daemon === 'reconnecting'}
+              onClick={reconnectDaemon}
+            >
+              {daemon === 'reconnecting'
+                ? connectionBarCopy.daemonReconnecting
+                : connectionBarCopy.daemonReconnect}
+            </Button>
+          }
+        >
+          <p>{connectionBarCopy.daemonAway}</p>
+        </Note>
+      )}
+      {serverStorage && (
+        <Note tone="warning" role="status" icon={AlertTriangle} testId="crew-server-storage">
+          <p>
+            {connectionBarCopy.serverStorage}{' '}
+            {errorContext.hosts === true
+              ? connectionBarCopy.serverStorageHost(serverStorage.code)
+              : connectionBarCopy.serverStorageMember(serverStorage.code, storageHost)}
+          </p>
+        </Note>
+      )}
       {showObservationError && (
         <Note
           tone="warning"
@@ -258,7 +355,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
         </Note>
       )}
 
-      {actionError && !staleChannelLoss && (
+      {actionError && !staleChannelLoss && !redialShownBelow && (
         <Note
           tone="danger"
           role="alert"
@@ -277,7 +374,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             </Button>
           }
         >
-          <p>{actionErrorText(actionError.message)}</p>
+          <p>{actionErrorText(actionError.message, host, { isHost: crew.isHost })}</p>
         </Note>
       )}
 
@@ -286,7 +383,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           unreachableNote('alert')
         ) : (
           <Note tone="danger" role="alert" icon={AlertTriangle} action={connectAction}>
-            <p>{connectErrorText(failure?.kind, connectError.message, host)}</p>
+            <p>{connectErrorText(failure?.kind, connectError.message, host, errorContext)}</p>
             {offlineCardShown && settingsLink}
           </Note>
         ))}

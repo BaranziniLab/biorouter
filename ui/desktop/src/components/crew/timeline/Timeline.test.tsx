@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage } from '../crewApi';
 import { identityCopy } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
+import { notePostOutcomeForTests, type PostOutcome } from '../state/crewSend';
 import { timelineCopy } from './copy';
 import { HISTORY_PAGE_SIZE } from './groupMessages';
 import { PENDING_POST_TIMEOUT_MS, Timeline } from './Timeline';
@@ -347,8 +348,8 @@ describe('the log', () => {
     expect(articles[0]).toHaveAccessibleName(/Bob Lee.*10:02 AM/);
     expect(within(articles[0]).getByText('Counts are in.')).toBeInTheDocument();
     expect(within(articles[0]).getByText('Plot next?')).toBeInTheDocument();
-    const time = within(articles[0]).getAllByText('10:02 AM')[0];
-    expect(time.tagName).toBe('TIME');
+    const time = within(articles[0]).getAllByText('10:02 AM')[0].closest('time') as HTMLElement;
+    expect(time).not.toBeNull();
     await userEvent.hover(time);
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'Tuesday, September 22, 2026 at 10:02 AM'
@@ -404,9 +405,10 @@ describe('the log', () => {
     ];
     const { unmount } = renderWithController(<Timeline />, makeController({ messages }));
     expect(screen.getAllByText(timelineCopy.restricted)).toHaveLength(1);
-    expect(screen.getByText(timelineCopy.restricted)).toHaveTextContent(
-      timelineCopy.restrictedTooltip
-    );
+    // One hidden run holds the whole name (UXN-15: two read "Restricted : only…" in Chrome).
+    expect(
+      screen.getByText(`${timelineCopy.restricted}: ${timelineCopy.restrictedTooltip}`)
+    ).toHaveClass('sr-only');
     unmount();
 
     renderWithController(
@@ -645,6 +647,254 @@ describe('the log', () => {
   });
 });
 
+/**
+ * QA M2: a message that mentions you read like any other. QA M3: an agent's tool updates and a
+ * message's Copy are the two places a body's text reaches the screen or the clipboard without the
+ * markdown step.
+ */
+describe('mentions and hidden characters in rows', () => {
+  it('names a row that mentions the viewer, and no other row', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 'to-you', body: 'Hey @Alice, the plate is ready.' }),
+          message({ id: 'other', actor_id: ID.carol, body: 'Thanks @bob.' }),
+          message({ id: 'yours', actor_id: ID.alice, body: 'Noting this for @alice.' }),
+          message({ id: 'in-code', body: 'Try `@alice`.', at: new Date(2026, 8, 22, 10, 30) }),
+        ],
+      })
+    );
+    const named = screen
+      .getAllByRole('group')
+      .filter((row) => row.hasAttribute('data-crew-row'))
+      .map((row) => /mentions you$/.test(row.getAttribute('aria-labelledby') ? nameOf(row) : ''));
+    expect(named).toEqual([true, false, false, false]);
+    expect(screen.getAllByText('@Alice')[0]).toHaveClass('crew-md-mention');
+  });
+
+  /**
+   * CLIDOCS-F2: an agent's result ends with the daemon's line naming whose file it read, and that
+   * person was marked as mentioned in every result that read their file.
+   */
+  it('never names a row by the daemon’s Source line, which still shows the name', () => {
+    const source = 'Source: `plate.csv`, shared by Alice Chen (@alice) at 2:20 AM UTC-7.';
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 't', actor_id: ID.bob, run_id: ID.runB, body: 'Task: Sum the plate' }),
+          message({
+            id: 'result',
+            actor_id: ID.bob,
+            run_id: ID.runB,
+            body: `The totals are 1.80.\n\n${source}`,
+          }),
+          message({
+            id: 'asked',
+            actor_id: ID.bob,
+            run_id: ID.runB,
+            body: `@alice, the totals are 1.80.\n\n${source}`,
+            at: new Date(2026, 8, 22, 10, 40),
+          }),
+        ],
+      })
+    );
+    const named = screen
+      .getAllByRole('group')
+      .filter((row) => row.hasAttribute('data-crew-row'))
+      .map((row) => /mentions you$/.test(row.getAttribute('aria-labelledby') ? nameOf(row) : ''));
+    expect(named).toEqual([false, false, true]);
+    // The line is drawn as it is, the name in it plain.
+    expect(screen.getAllByText(/shared by Alice Chen \(@alice\)/)).toHaveLength(2);
+    expect(document.querySelectorAll('.crew-md-mention')).toHaveLength(1);
+  });
+
+  it('shows the hidden characters of an agent’s tool update', async () => {
+    const { container } = renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 't', actor_id: ID.alice, run_id: ID.run, body: 'Task: List the files' }),
+          message({
+            id: 'trace',
+            actor_id: ID.alice,
+            run_id: ID.run,
+            body: 'Requested remote.execute: ls \u{202E}txt.exe',
+          }),
+          message({ actor_id: ID.alice, run_id: ID.run, body: 'Listed.' }),
+        ],
+      })
+    );
+    await userEvent
+      .setup(pointerAnywhere)
+      .click(screen.getByRole('button', { name: timelineCopy.showDetails }));
+    const line = container.querySelector('.crew-trace-line') as HTMLElement;
+    expect(line).toHaveAttribute('dir', 'auto');
+    expect(line.textContent).toBe('Requested remote.execute: ls \\u{202e}txt.exe');
+  });
+
+  it('copies the bytes that were sent, not what is drawn', async () => {
+    const body = 'invoice_\u{202E}gnp.exe for @cre\u{200B}w_alice';
+    renderWithController(<Timeline />, makeController({ messages: [message({ body })] }));
+    const user = userEvent.setup(pointerAnywhere);
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText');
+    await user.click(screen.getByRole('button', { name: /^Copy text of Bob Lee’s message/ }));
+    expect(writeText).toHaveBeenCalledWith(body);
+  });
+});
+
+/**
+ * UXN-15: every row named itself by a "mentions you" id that only a row mentioning the viewer
+ * carries, and a continuation's time was named by a <time> holding its drawn "2:15" as well as
+ * its spoken "2:15 PM, Monday…".
+ */
+/**
+ * UXN-12: opening the details pane narrowed the log, its rows reflowed taller, and the newest
+ * message sat under the composer at an older place for about a second. The scroll area's anchor
+ * follows only a change of its height.
+ */
+describe('a change of the log’s width', () => {
+  function recordResizeObservers() {
+    const observers: { callback: () => void; targets: Element[] }[] = [];
+    class Recording {
+      private readonly entry: { callback: () => void; targets: Element[] };
+      constructor(callback: () => void) {
+        this.entry = { callback, targets: [] };
+        observers.push(this.entry);
+      }
+      observe(target: Element) {
+        this.entry.targets.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        this.entry.targets = [];
+      }
+    }
+    vi.stubGlobal('ResizeObserver', Recording);
+    return (target: Element) => {
+      for (const entry of observers)
+        if (entry.targets.includes(target)) act(() => entry.callback());
+    };
+  }
+  function viewportOf(): HTMLElement {
+    const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if (!viewport) throw new Error('no viewport');
+    return viewport;
+  }
+  afterEach(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+  });
+
+  it('keeps a reader at the bottom there when the log narrows', () => {
+    const resize = recordResizeObservers();
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ id: 'a' }), message({ id: 'b', body: 'Newest.' })] })
+    );
+    const viewport = viewportOf();
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2_400 });
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 520 });
+    resize(viewport);
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 2_400 }));
+    // The same width again is no reflow: nothing moves.
+    scrollTo.mockClear();
+    resize(viewport);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('leaves a reader who scrolled up where they are', () => {
+    const resize = recordResizeObservers();
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ id: 'a' }), message({ id: 'b', body: 'Newest.' })] })
+    );
+    const viewport = viewportOf();
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 20_000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+    // The scroll area sees its height first, as a laid-out page has it, then the reader scrolls up.
+    resize(viewport);
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 520 });
+    resize(viewport);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+});
+
+describe('what every row is named by', () => {
+  it('names every group and row only by ids that are in the document', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2) }),
+          message({ id: 'b', body: 'Hey @alice, plot next?', at: new Date(2026, 8, 22, 10, 3) }),
+          message({ id: 'c', body: 'Done.', at: new Date(2026, 8, 22, 10, 3, 30) }),
+          message({ id: 't', actor_id: ID.carol, run_id: ID.run, body: 'Task: List the files' }),
+          message({ actor_id: ID.carol, run_id: ID.run, body: 'Requested remote.execute: ls' }),
+          message({ actor_id: ID.carol, run_id: ID.run, body: 'Listed.' }),
+        ],
+      })
+    );
+    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'));
+    expect(labelled.length).toBeGreaterThan(4);
+    for (const element of labelled) {
+      for (const id of (element.getAttribute('aria-labelledby') ?? '').split(/\s+/)) {
+        expect(
+          document.getElementById(id),
+          `${element.outerHTML.slice(0, 80)} → ${id}`
+        ).not.toBeNull();
+      }
+    }
+    const rows = screen.getAllByRole('group').filter((row) => row.hasAttribute('data-crew-row'));
+    expect(rows.map((row) => /mentions you$/.test(nameOf(row)))).toEqual(
+      rows.map((row) => row.textContent?.includes('@alice') === true)
+    );
+  });
+
+  it('names a row by its spoken time alone, never the drawn one beside it', () => {
+    const messages = [
+      message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2) }),
+      message({ id: 'b', body: 'Plot next?', at: new Date(2026, 8, 22, 10, 3) }),
+    ];
+    renderWithController(<Timeline />, makeController({ messages }));
+    const [head, continuation] = screen
+      .getAllByRole('group')
+      .filter((node) => node.hasAttribute('data-crew-row'));
+    expect(nameOf(head)).toBe('Bob Lee @bob 10:02 AM, Tuesday, September 22, 2026');
+    expect(nameOf(continuation)).toBe('Bob Lee @bob 10:03 AM, Tuesday, September 22, 2026');
+    for (const row of [head, continuation]) {
+      const timeId = (row.getAttribute('aria-labelledby') ?? '').split(/\s+/)[1];
+      const spoken = document.getElementById(timeId) as HTMLElement;
+      expect(spoken.tagName).toBe('SPAN');
+      expect(spoken).toHaveClass('sr-only');
+      expect(spoken.querySelector('[aria-hidden="true"]')).toBeNull();
+    }
+  });
+});
+
+/** The accessible name of an element labelled by `aria-labelledby`, as the tree computes it. */
+function nameOf(element: HTMLElement): string {
+  return (element.getAttribute('aria-labelledby') ?? '')
+    .split(/\s+/)
+    .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
+    .filter(Boolean)
+    .join(' ');
+}
+
 describe('copying', () => {
   it('hands its consumers one copy action for its whole life', () => {
     // A new action on every render re-rendered every row's actions on every
@@ -822,10 +1072,12 @@ describe('older history', () => {
     }
   });
 
-  it('loads older pages in the controller’s order without a single row rising in or a jump to the bottom', () => {
-    // useCrewController.loadOlder only moves the boundary to the first message on
-    // screen; useCrewObservation clears the list a render later and then puts the
-    // page in. For that first render the previous page is still drawn.
+  /**
+   * QA M6: an older page replaced the view, so the reader lost their place and had only "Jump to
+   * latest" to get back. Pages are added above now, with the reader's place kept, and a window
+   * that no longer reaches the newest message offers "Newer messages".
+   */
+  it('adds older pages above without a single row rising in or a jump to the bottom (QA M6)', () => {
     const pageOf = (label: string) =>
       Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
         message({
@@ -834,7 +1086,6 @@ describe('older history', () => {
           at: new Date(2026, 8, 22, 9, index % 60),
         })
       );
-    const oldest = pageOf('oldest');
     const older = pageOf('older');
     const live = pageOf('live');
     const arrivingRows = () => document.querySelectorAll('[data-arriving="true"]').length;
@@ -845,49 +1096,42 @@ describe('older history', () => {
     if (!viewport) throw new Error('no viewport');
     const scrollTo = vi.fn();
     viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
-    const log = screen.getByRole('log');
+    // The reader has scrolled up to the top, where the page is asked for (jsdom lays nothing
+    // out: the viewport is given a height and content to be scrolled up in).
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 20_000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
 
-    // 1. The boundary moves; the live tail is still the list.
-    rerenderWith({ ...controller, messages: live, historyBefore: live[0].sequence });
-    expect(scrollTo).not.toHaveBeenCalled();
-    expect(log).toHaveAttribute('aria-busy', 'true');
+    // 1. The page is on its way: the sentinel says so; the list is untouched.
+    rerenderWith({ ...controller, messages: live, historyLoading: 'older' });
     expect(screen.getByRole('button', { name: timelineCopy.loadingOlder })).toBeDisabled();
-    // 2. The list is cleared while the page is fetched.
-    rerenderWith({
-      ...controller,
-      messages: [],
-      messagesLoaded: false,
-      historyBefore: live[0].sequence,
-    });
+    expect(screen.getByText('live 199')).toBeInTheDocument();
+    // 2. It lands above: both pages are drawn, nothing jumps or rises in, and nothing is "new".
+    rerenderWith({ ...controller, messages: [...older, ...live], historyLoading: null });
+    expect(screen.getByText('older 0')).toBeInTheDocument();
+    expect(screen.getByText('live 199')).toBeInTheDocument();
     expect(scrollTo).not.toHaveBeenCalled();
-    // 3. The page lands: opened at its newest message, and nothing on it is an arrival.
-    rerenderWith({ ...controller, messages: older, historyBefore: live[0].sequence });
-    expect(screen.getByText('older 199')).toBeInTheDocument();
-    expect(scrollTo).toHaveBeenCalledTimes(1);
-    expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ behavior: 'auto' }));
     expect(arrivingRows()).toBe(0);
-    expect(log).not.toHaveAttribute('aria-busy');
+    expect(screen.queryByText(/new messages?$/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Older messages' })).toBeEnabled();
 
-    // The next page, with the previous list handed over as a copy this time.
-    rerenderWith({ ...controller, messages: [...older], historyBefore: older[0].sequence });
-    expect(scrollTo).toHaveBeenCalledTimes(1);
+    // 3. The window is full and its newest end gives way: still no jump, and "Newer messages" and
+    // the history pill show.
+    const window = [...pageOf('oldest'), ...older, ...live.slice(0, 100)];
+    rerenderWith({ ...controller, messages: window, historyBefore: live[100].sequence });
+    expect(scrollTo).not.toHaveBeenCalled();
     expect(arrivingRows()).toBe(0);
-    rerenderWith({
-      ...controller,
-      messages: [],
-      messagesLoaded: false,
-      historyBefore: older[0].sequence,
-    });
-    rerenderWith({ ...controller, messages: oldest, historyBefore: older[0].sequence });
-    expect(screen.getByText('oldest 199')).toBeInTheDocument();
-    expect(scrollTo).toHaveBeenCalledTimes(2);
-    expect(arrivingRows()).toBe(0);
+    expect(screen.getByText(timelineCopy.viewingEarlier)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: timelineCopy.newer }));
+    expect(controller.loadNewer).toHaveBeenCalledTimes(1);
 
-    // Jump to latest clears the page and refreshes: the live tail opens, not arrives…
+    // Jump to latest clears the window and refreshes: the live tail opens, not arrives…
     rerenderWith({ ...controller, messages: [], messagesLoaded: false, historyBefore: null });
     rerenderWith({ ...controller, messages: live, historyBefore: null });
-    expect(scrollTo).toHaveBeenCalledTimes(3);
+    expect(scrollTo).toHaveBeenCalledTimes(1);
     expect(arrivingRows()).toBe(0);
+    expect(screen.queryByRole('button', { name: timelineCopy.newer })).toBeNull();
     // …and a post after it is a live arrival again.
     rerenderWith({
       ...controller,
@@ -899,6 +1143,74 @@ describe('older history', () => {
       'true'
     );
     expect(arrivingRows()).toBe(1);
+  });
+
+  /**
+   * MSG2-N2: the reader at the bottom of a window off the live tail pressed Newer messages, and
+   * was carried to the end of what it added (message 670) rather than left at 600 to read on.
+   */
+  it('leaves the reader where they were when a page is added below a window off the live tail (MSG2-N2)', async () => {
+    const detached = Array.from({ length: 10 }, (_, index) =>
+      message({ id: `w-${index}`, body: `window ${index}` })
+    );
+    const below = Array.from({ length: 10 }, (_, index) =>
+      message({ id: `n-${index}`, body: `newer ${index}` })
+    );
+    const controller = makeController({
+      messages: detached,
+      historyBefore: below[0].sequence,
+      reachesStart: false,
+    });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if (!viewport) throw new Error('no viewport');
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    // jsdom lays nothing out: every row is 100px, the viewport 600px, the reader at its bottom.
+    Object.defineProperty(viewport, 'scrollHeight', {
+      configurable: true,
+      get: () => document.querySelectorAll('[data-crew-row]').length * 100,
+    });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+    viewport.scrollTop = 400;
+    fireEvent.scroll(viewport);
+
+    // The page after it reaches the tail: added below, and the window is the live tail again.
+    rerenderWith({ ...controller, messages: [...detached, ...below], historyBefore: null });
+    expect(screen.getByText('newer 9')).toBeInTheDocument();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(400);
+    // Not at the bottom any more: a live arrival is counted below, never followed to.
+    rerenderWith({
+      ...controller,
+      messages: [...detached, ...below, postedNow({ id: 'live', body: 'just posted' })],
+      historyBefore: null,
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(400);
+  });
+
+  it('shows the channel’s start once an older page reaches it, however long the window', () => {
+    vi.useFakeTimers();
+    const long = page(HISTORY_PAGE_SIZE + 50);
+    renderWithController(<Timeline />, makeController({ messages: long, reachesStart: true }));
+    openFully();
+    expect(screen.getByRole('heading', { name: 'Welcome to #general' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Older messages' })).toBeNull();
+  });
+
+  it('keeps room under the last row for a pill, so it never covers it (QA M6)', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: page(5), historyBefore: 's100' })
+    );
+    expect(timelineRoot()).toHaveAttribute('data-pill', 'history');
   });
 
   it('measures a full page by the size the observer asks for', () => {
@@ -989,11 +1301,19 @@ describe('a post on its way (T-37)', () => {
   const draft = (body: string) => ({ body, attachments: [], references: [] });
   const before = message({ id: 'm-before', body: 'Morning.' });
 
-  /** The controller as the composer drives it: the draft, then the post in flight, then its answer. */
+  /** What the send says became of the post, as `createSend` records it before its flight ends. */
+  const answered = (outcome: PostOutcome) => notePostOutcomeForTests('conn-1', ID.general, outcome);
+
+  /**
+   * The controller as the composer drives it: the draft, then the post in flight, then its answer.
+   * The send records the broker's answer as it ends (`lastPostOutcome`); taken, unless a test says
+   * otherwise.
+   */
   function stages() {
     const idle = makeController({ messages: [before], draft: draft(sent) });
     const posting = { ...idle, isPending: vi.fn((key: string) => key === 'send') };
     const accepted = { ...idle, draft: draft(''), isPending: vi.fn(() => false) };
+    answered({ kind: 'accepted', messageId: null });
     return { idle, posting, accepted };
   }
   const sending = () => screen.queryByText(timelineCopy.sending);
@@ -1039,6 +1359,7 @@ describe('a post on its way (T-37)', () => {
   it('continues the viewer’s own group without a second head, as the message will', () => {
     const mine = message({ id: 'm-mine', actor_id: ID.alice, body: 'First.', at: new Date() });
     const idle = makeController({ messages: [mine], draft: draft(sent) });
+    answered({ kind: 'accepted', messageId: null });
     const view = renderWithController(<Timeline />, idle);
     view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
     view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
@@ -1047,8 +1368,38 @@ describe('a post on its way (T-37)', () => {
     expect(row).not.toHaveTextContent('Alice Chen');
   });
 
+  it('never draws another channel’s post as “Sending…” here (RENDERER-4)', () => {
+    // Sent in this channel, then the person opened another while it was on its way: the
+    // controller then says nothing is sending (the post is not this channel's), and the other
+    // channel's composer is empty. That is not this post being accepted.
+    const { idle, posting } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith({
+      ...idle,
+      channelId: 'channel-elsewhere',
+      messages: [],
+      draft: draft(''),
+      isPending: vi.fn(() => false),
+    });
+    expect(sending()).toBeNull();
+  });
+
+  it('keeps an accepted post’s “Sending…” in its own channel when another opens (RENDERER-4)', () => {
+    const { idle, posting, accepted } = stages();
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith(posting);
+    view.rerenderWith(accepted);
+    expect(sending()).toBeInTheDocument();
+    view.rerenderWith({ ...accepted, channelId: 'channel-elsewhere', messages: [] });
+    expect(sending()).toBeNull();
+    view.rerenderWith(accepted);
+    expect(sending()).toBeInTheDocument();
+  });
+
   it('shows nothing for a post the broker refused: the composer keeps the words and says why', () => {
     const { idle, posting } = stages();
+    answered({ kind: 'refused' });
     const view = renderWithController(<Timeline />, idle);
     view.rerenderWith(posting);
     view.rerenderWith({
@@ -1075,12 +1426,27 @@ describe('a post on its way (T-37)', () => {
       return <Timeline view={crew.snapshot ? null : lastView} readOnly={!crew.snapshot} />;
     }
     const { idle, posting, accepted } = stages();
+    // Taken after the view that sent it was dropped: the words stay where they were, as told.
+    answered({ kind: 'kept' });
     const view = renderWithController(<Stage />, idle);
     view.rerenderWith(posting);
     view.rerenderWith({ ...accepted, snapshot: null });
     view.rerenderWith(accepted);
     expect(screen.getByText('Morning.')).toBeInTheDocument();
     expect(sending()).toBeNull();
+  });
+
+  it('draws no ghost for a resend the broker answers with the message already on screen (QA R-4)', () => {
+    // The first try was committed and delivered while its answer was lost; the resend under the
+    // same key is answered with that message. It is on screen already: nothing stands in for it.
+    const delivered = message({ id: 'm-delivered', actor_id: ID.alice, body: sent });
+    const idle = makeController({ messages: [before, delivered], draft: draft(sent) });
+    answered({ kind: 'accepted', messageId: 'm-delivered' });
+    const view = renderWithController(<Timeline />, idle);
+    view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
+    view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
+    expect(sending()).toBeNull();
+    expect(screen.getAllByText(sent)).toHaveLength(1);
   });
 
   it('is not fooled by someone else posting the same words', () => {
@@ -1150,6 +1516,7 @@ describe('a post on its way (T-37)', () => {
     it('draws no second band when today already has one', () => {
       const earlier = message({ id: 'm-today', body: 'Morning.', at: new Date() });
       const idle = makeController({ messages: [earlier], draft: draft(sent) });
+      answered({ kind: 'accepted', messageId: null });
       const view = renderWithController(<Timeline />, idle);
       view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
       view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
@@ -1180,6 +1547,7 @@ describe('a post on its way (T-37)', () => {
         references: [],
       };
       const idle = makeController({ messages: [before], draft: withFile });
+      answered({ kind: 'accepted', messageId: null });
       const view = renderWithController(<Timeline renderAttachments={renderAttachments} />, idle);
       view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
       view.rerenderWith({ ...idle, draft: draft(''), isPending: vi.fn(() => false) });
@@ -1210,6 +1578,7 @@ describe('a post on its way (T-37)', () => {
         unread: { [ID.general]: 1 },
       }),
     });
+    answered({ kind: 'accepted', messageId: null });
     const view = renderWithController(<Timeline />, idle);
     expect(screen.getByRole('separator', { name: timelineCopy.newLineLabel })).toBeInTheDocument();
     view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
@@ -1239,6 +1608,7 @@ describe('a post on its way (T-37)', () => {
         unread: { [ID.general]: 1 },
       }),
     });
+    answered({ kind: 'refused' });
     const view = renderWithController(<Timeline />, idle);
     view.rerenderWith({ ...idle, isPending: vi.fn((key: string) => key === 'send') });
     view.rerenderWith({
@@ -1616,8 +1986,13 @@ describe('following a full live tail', () => {
     });
     expect(controller.markRead).toHaveBeenCalledTimes(1);
 
-    // The newest message comes into view: it is marked read after the next look.
+    // The newest message comes into view: it is marked read once it has been on screen for a
+    // whole dwell, two looks a dwell apart (QA M7).
     place(MAX_TOP);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledTimes(1);
     act(() => {
       vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
     });
@@ -1755,7 +2130,14 @@ describe('automatic mark-read', () => {
       }),
     });
     renderWithController(<Timeline />, read);
-    const history = unread({ historyBefore: 's9' });
+    // A window off the live tail that does not hold where the read position stands.
+    const history = unread({
+      historyBefore: 's9',
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: 's0' },
+        unread: { [ID.general]: 5 },
+      }),
+    });
     renderWithController(<Timeline />, history);
     const readOnly = unread();
     renderWithController(<Timeline readOnly />, readOnly);
@@ -1784,6 +2166,37 @@ describe('automatic mark-read', () => {
     expect(unfocused.markRead).toHaveBeenCalledWith(ID.general, 's2');
   });
 
+  /**
+   * MSG2-N2: marking read was off for every window off the live tail, so a reader who read two
+   * hundred messages there still had them all unread, and Jump to first unread took them back.
+   */
+  it('marks read what the reader has had on screen off the live tail, from the read position on (MSG2-N2)', () => {
+    const controller = unread({ historyBefore: 's9' });
+    renderWithController(<Timeline />, controller);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(controller.markRead).toHaveBeenCalledWith(ID.general, 's2');
+
+    // A channel never read: only a window that reaches its start.
+    const neverRead = {
+      snapshot: snapshotFor({
+        read_positions: { [ID.general]: null },
+        unread: { [ID.general]: 2 },
+      }),
+      historyBefore: 's9',
+    };
+    const fromStart = unread({ ...neverRead, reachesStart: true });
+    renderWithController(<Timeline />, fromStart);
+    const midway = unread({ ...neverRead, reachesStart: false });
+    renderWithController(<Timeline />, midway);
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS);
+    });
+    expect(fromStart.markRead).toHaveBeenCalledWith(ID.general, 's2');
+    expect(midway.markRead).not.toHaveBeenCalled();
+  });
+
   it('stays silent when the write fails', async () => {
     const controller = unread({
       markRead: vi.fn(async () => Promise.reject(new Error('offline'))),
@@ -1795,6 +2208,225 @@ describe('automatic mark-read', () => {
     });
     expect(controller.markRead).toHaveBeenCalledTimes(1);
     expect(controller.reportError).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * QA M7: a busy channel opened at its newest message and marked every unread message read a
+ * second later, those never loaded included, and the broker keeps one watermark, so the signal
+ * could not be had back.
+ */
+describe('opening where the unread messages start (QA M7)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** Forty messages, the first ten read. */
+  const channelOf = (count = 40) =>
+    Array.from({ length: count }, (_, index) =>
+      message({ id: `u-${index}`, sequence: `u${index}`, body: `unread ${index}` })
+    );
+
+  it('opens at the New line when it is in the window', () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: channelOf(),
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 'u9' },
+          unread: { [ID.general]: 30 },
+        }),
+      })
+    );
+    openFully();
+    const line = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+    expect(scrollIntoView.mock.instances[0]).toBe(line);
+  });
+
+  /**
+   * UXN-2: opening Crew from the app's Crew item draws the view remembered from when the person
+   * left, then the fresh one in the same timeline. The New line was fixed from the remembered copy,
+   * which had nothing unread, so the fresh view never drew one.
+   */
+  it('draws the New line from the fresh view, never the remembered one drawn while it verifies', () => {
+    const read = message({ id: 'read', sequence: 'r1', body: 'read before leaving' });
+    const arrived = message({
+      id: 'arrived',
+      sequence: 'r2',
+      actor_id: ID.carol,
+      body: 'posted while away',
+    });
+    const remembered = {
+      snapshot: snapshotFor({ read_positions: { [ID.general]: 'r1' }, unread: {} }),
+      channel,
+      messages: [read],
+      messagesLoaded: true,
+      runs: [],
+      labels: null,
+      historyBefore: null,
+    };
+    function Stage() {
+      const crew = useCrew();
+      const verifying = !crew.snapshot;
+      return <Timeline view={verifying ? remembered : null} readOnly={verifying} />;
+    }
+    const { rerenderWith } = renderWithController(<Stage />, makeController({ snapshot: null }));
+    openFully();
+    expect(screen.getByText('read before leaving')).toBeInTheDocument();
+    rerenderWith(
+      makeController({
+        messages: [read, arrived],
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 'r1' },
+          unread: { [ID.general]: 1 },
+        }),
+      })
+    );
+    openFully();
+    const line = screen.getByRole('separator', { name: timelineCopy.newLineLabel });
+    expect(
+      line.compareDocumentPosition(screen.getByText('posted while away')) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  it('opens at the newest message when nothing is unread', () => {
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: channelOf(),
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: 'u39' },
+          unread: { [ID.general]: 0 },
+        }),
+      })
+    );
+    openFully();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it('marks nothing read, and offers Jump to first unread, when more is unread than is loaded', async () => {
+    const full = page(HISTORY_PAGE_SIZE);
+    const controller = makeController({
+      messages: full,
+      snapshot: snapshotFor({
+        // Never read, and 321 unread: 121 of them are not loaded.
+        read_positions: { [ID.general]: null },
+        unread: { [ID.general]: 321 },
+      }),
+    });
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_MIN_INTERVAL_MS * 3);
+    });
+    expect(controller.markRead).not.toHaveBeenCalled();
+
+    const pill = screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread });
+    act(() => {
+      fireEvent.click(pill);
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    // An older page lands: 400 others are loaded now, more than the 321 unread.
+    const older = Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+      message({
+        id: `older-${index}`,
+        body: `older ${index}`,
+        at: new Date(2026, 8, 21, 9, index % 60),
+      })
+    );
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    rerenderWith({ ...controller, messages: [...older, ...full] });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: timelineCopy.jumpToFirstUnread })).toBeNull();
+    // The reader is put at the New line, now before the first unread message.
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+    // …and marking read may begin again.
+    act(() => {
+      vi.advanceTimersByTime(AUTO_READ_DWELL_MS * 2);
+    });
+    expect(controller.markRead).toHaveBeenCalled();
+  });
+
+  /** Never read, with more unread than the loaded page holds. */
+  const unreadBeyondThePage = (unread: number) => {
+    const full = page(HISTORY_PAGE_SIZE);
+    return {
+      full,
+      controller: makeController({
+        messages: full,
+        snapshot: snapshotFor({
+          read_positions: { [ID.general]: null },
+          unread: { [ID.general]: unread },
+        }),
+      }),
+    };
+  };
+  const olderPage = (label: string) =>
+    Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
+      message({
+        id: `${label}-${index}`,
+        body: `${label} ${index}`,
+        at: new Date(2026, 8, 21, 9, index % 60),
+      })
+    );
+
+  it('asks for the next page while each one adds messages and the unread start is still not loaded', () => {
+    const { full, controller } = unreadBeyondThePage(700);
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread }));
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    rerenderWith({ ...controller, historyLoading: 'older' });
+    // One page lands: 400 others are loaded, fewer than the 700 unread.
+    const first = [...olderPage('older1'), ...full];
+    rerenderWith({ ...controller, messages: first, historyLoading: null });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(2);
+    rerenderWith({ ...controller, messages: first, historyLoading: 'older' });
+    rerenderWith({
+      ...controller,
+      messages: [...olderPage('older2'), ...first],
+      historyLoading: null,
+    });
+    // 600 loaded, still fewer than 700: the search goes on.
+    expect(controller.loadOlder).toHaveBeenCalledTimes(3);
+  });
+
+  /**
+   * W2-UIC-8: a page that failed for a reason that leaves the view standing (a 503 while Crew
+   * reconnects, a rate limit) left the window as it was, and the search asked for it again the
+   * moment it came back, for as long as the failure lasted, with a new error each time.
+   */
+  it('stops when a page adds nothing, instead of asking again for as long as it fails', () => {
+    const { controller } = unreadBeyondThePage(321);
+    const { rerenderWith } = renderWithController(<Timeline />, controller);
+    openFully();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread }));
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      rerenderWith({ ...controller, historyLoading: 'older' });
+      rerenderWith({ ...controller, historyLoading: null });
+    }
+    expect(controller.loadOlder).toHaveBeenCalledTimes(1);
+    // The pill stays, and pressing it again asks once more.
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: timelineCopy.jumpToFirstUnread }));
+    });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(2);
+    rerenderWith({ ...controller, historyLoading: 'older' });
+    rerenderWith({ ...controller, historyLoading: null });
+    expect(controller.loadOlder).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -2083,6 +2715,20 @@ describe('the stylesheet (what jsdom cannot lay out)', () => {
     expect(css.replace(/\s+/g, ' ')).toContain(
       ".crew-md-table-scroll[data-overflow='true'] { border-right: 1px solid var(--border-subtle); mask-image: linear-gradient( to right, black calc(100% - 41px), transparent calc(100% - 1px), black calc(100% - 1px) ); }"
     );
+  });
+
+  it('keeps room under the last row while a pill shows, and anchors the view itself (QA M6)', () => {
+    // The pill stands 12px above the log's end and is 32px tall: the last row used to sit 19px
+    // under it for as long as an older page was shown.
+    const pill = css.match(/\.crew-timeline-pill-slot \{[^}]*bottom: (\d+)px;/);
+    expect(pill?.[1]).toBe('12');
+    const reserve = css.match(/--crew-pill-reserve: (\d+)px;/);
+    expect(Number(reserve?.[1])).toBeGreaterThanOrEqual(12 + 32 + 8);
+    expect(css).toMatch(
+      /\.crew-timeline\[data-pill\] \.crew-timeline-log \{\s*padding-block-end: var\(--crew-pill-reserve\);/
+    );
+    // The timeline keeps the reader's place when rows are added above: the browser must not too.
+    expect(css).toMatch(/\[data-radix-scroll-area-viewport\] \{\s*overflow-anchor: none;/);
   });
 
   it('sets every message body on the 14/21 reading line (T-62, Q2-58)', () => {

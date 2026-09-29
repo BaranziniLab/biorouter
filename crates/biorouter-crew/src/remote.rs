@@ -355,10 +355,27 @@ fn job_status(method: &str, params: &Value, scope: &Value) -> Result<Value> {
     snapshot(id, &job)
 }
 
+/// What a work-folder command's status adds when it failed and printed no error of its own
+/// (T3-BE-9). The sandbox (`confine`) refuses sockets, starting another program and reading
+/// `/etc`, and a command it stops that way (`sbatch`, `squeue`, anything that looks up the user)
+/// usually just exits non-zero in silence: an agent spent about 22 calls working that out. The
+/// limits are named so it stops at once and tells the person.
+pub const CONFINED_FAILURE_NOTE: &str = "The command failed without printing an error. \
+Commands in the work folder run with no network, cannot start other programs, and cannot read \
+/etc or look up users, so cluster tools such as sbatch, squeue, sinfo and scontrol will not run \
+here. Tell the person rather than retrying.";
+
 fn snapshot(id: &str, job: &Job) -> Result<Value> {
-    Ok(
-        json!({"job_id":id,"status":job.status,"exit_code":job.exit_code,"stdout":String::from_utf8_lossy(&job.stdout.lock().map_err(|_|anyhow!("output unavailable"))?),"stderr":String::from_utf8_lossy(&job.stderr.lock().map_err(|_|anyhow!("output unavailable"))?)}),
-    )
+    let stderr = job
+        .stderr
+        .lock()
+        .map_err(|_| anyhow!("output unavailable"))?
+        .clone();
+    let mut answer = json!({"job_id":id,"status":job.status,"exit_code":job.exit_code,"stdout":String::from_utf8_lossy(&job.stdout.lock().map_err(|_|anyhow!("output unavailable"))?),"stderr":String::from_utf8_lossy(&stderr)});
+    if job.status == "failed" && stderr.iter().all(u8::is_ascii_whitespace) {
+        answer["message"] = json!(CONFINED_FAILURE_NOTE);
+    }
+    Ok(answer)
 }
 fn persist_job(job: &mut Job) {
     for reader in job.readers.drain(..) {
@@ -896,6 +913,40 @@ mod tests {
     use super::*;
 
     const HOME: &str = "/home/bob";
+
+    fn finished(status: &str, exit_code: Option<i32>, stderr: &[u8]) -> Job {
+        Job {
+            child: None,
+            stdout: Arc::new(Mutex::new(Vec::new())),
+            stderr: Arc::new(Mutex::new(stderr.to_vec())),
+            status: status.into(),
+            exit_code,
+            run_id: "run".into(),
+            digest: String::new(),
+            record: PathBuf::new(),
+            readers: Vec::new(),
+        }
+    }
+
+    /// T3-BE-9: a confined command that failed in silence names the sandbox's limits, so the
+    /// agent stops and tells the person; one that said why, or succeeded, is left as it is.
+    #[test]
+    fn a_silent_failure_names_the_sandboxs_limits() {
+        let silent = snapshot("job", &finished("failed", Some(1), b"")).unwrap();
+        assert_eq!(silent["message"], CONFINED_FAILURE_NOTE);
+        let blank = snapshot("job", &finished("failed", Some(1), b" \n")).unwrap();
+        assert_eq!(blank["message"], CONFINED_FAILURE_NOTE);
+        for (status, code, stderr) in [
+            ("failed", Some(2), &b"python3: can't open file"[..]),
+            ("completed", Some(0), &b""[..]),
+            ("running", None, &b""[..]),
+        ] {
+            let answer = snapshot("job", &finished(status, code, stderr)).unwrap();
+            assert!(answer.get("message").is_none(), "{status}: {answer}");
+        }
+        assert!(CONFINED_FAILURE_NOTE.contains("sbatch"));
+        assert!(CONFINED_FAILURE_NOTE.contains("no network"));
+    }
     const BRIDGE: &str = "/home/bob/.local/bin/biorouter-crew";
 
     fn check(root: &str, bridge: &str) -> Result<()> {

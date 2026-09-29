@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, ensure, Context, Result};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
@@ -343,6 +343,10 @@ struct Enrollment {
 struct Cached {
     digest: String,
     result: Value,
+    /// When the result was cached (seconds since the Unix epoch). A result is kept for
+    /// [`Quotas::dedupe_ttl_secs`]; one cached before this field existed is pruned first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    at: Option<u64>,
 }
 struct RunPolicyConsent {
     public_provider: bool,
@@ -506,6 +510,9 @@ fn apply_patch(state: &mut Value, patch: Patch) -> Result<()> {
 #[derive(Default)]
 pub struct Connection {
     challenges: BTreeMap<String, (String, u64)>,
+    /// The person whose signed device last spoke on this connection, for presence. A member's
+    /// bridge holds one connection for as long as their computer is connected.
+    principal: Option<String>,
 }
 impl Connection {
     pub fn new() -> Self {
@@ -518,7 +525,12 @@ pub struct Broker {
     journal: File,
     _lock: File,
     checksum: String,
-    poisoned: bool,
+    /// Set once a journal write or sync failed: the broker then saves nothing more until it is
+    /// restarted (fail-stop), and says so in `hello`, `status` and every refused change.
+    storage_fault: Option<StorageFault>,
+    /// A test's injected journal failure (feature `test-seams`).
+    #[cfg(feature = "test-seams")]
+    injected_journal_fault: Option<(JournalCall, i32)>,
     /// The account database every UID-to-name check goes through.
     directory: Box<dyn Directory + Send>,
     /// Where sibling runtime directories (`crew-<uid>-<hex>/broker.sock`) live: `/tmp`.
@@ -526,10 +538,160 @@ pub struct Broker {
     /// Per-actor times of recent name-collision refusals (in memory only), for the rate limit
     /// that bounds the name-existence oracle (D5).
     name_refusals: BTreeMap<String, VecDeque<u64>>,
+    /// The limits this broker enforces.
+    quotas: Quotas,
+    /// Journal bytes each actor's records take, tallied at replay and kept up to date by
+    /// [`Broker::commit_with`], for [`Quotas::member_journal_bytes`].
+    journal_actor_bytes: BTreeMap<String, u64>,
+    /// The runs retention removed, so `run.revoke` can still answer their owners.
+    removed_runs: RemovedRuns,
+    /// Who is connected, per principal ([`Presence`]). In memory only: never journaled, never
+    /// counted in the state or any quota, and consulted by no authorization.
+    presence: BTreeMap<String, Presence>,
+    /// How long after a person's last signed request they still count as online without a
+    /// connection open.
+    presence_window: Duration,
+    /// The serialized size of the committed state, kept by every commit for the host's
+    /// `usage`.
+    state_bytes: usize,
     #[cfg(feature = "join-by-name")]
     join_runtime: join::Runtime,
 }
+/// One person's presence: when their device last made a signed request, and how many
+/// connections it made them on are still open.
+#[derive(Default)]
+struct Presence {
+    last_request: Option<Instant>,
+    open_connections: usize,
+}
+/// A person counts as online while a connection they signed on is open, and for this long
+/// after their last signed request. The member's daemon heartbeats an idle connection every
+/// 120 s, so this outlasts one missed beat.
+const PRESENCE_WINDOW: Duration = Duration::from_secs(180);
 
+/// Which journal call a test makes fail ([`Broker::inject_journal_fault`]).
+#[cfg(feature = "test-seams")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JournalCall {
+    /// The record's `write`: nothing of it is saved.
+    Write,
+    /// The `fsync` after it: whether the record was saved is unknown.
+    Sync,
+}
+/// Why the broker stopped saving changes. Kept in memory only: a restart repairs the journal
+/// (a torn tail is set aside) and starts clean.
+#[derive(Clone, Debug)]
+struct StorageFault {
+    /// The disk or the account's quota is full (`ENOSPC`, `EDQUOT`), rather than another
+    /// storage error.
+    full: bool,
+    /// When it happened, in seconds since the Unix epoch.
+    at: u64,
+    /// The operating system's error, for the host's log only. Never sent to a member.
+    detail: String,
+    /// The journal's length before the record that failed.
+    committed: u64,
+    /// Whether the line for it is in `broker.log` yet. A full disk refuses that write too, so
+    /// it is tried again on later requests until space is freed.
+    logged: bool,
+}
+impl StorageFault {
+    fn code(&self) -> &'static str {
+        if self.full {
+            "storage_full"
+        } else {
+            "storage_failed"
+        }
+    }
+    /// The sentence every change is refused with once the broker has stopped saving, and what
+    /// `hello` reports, without its code.
+    fn stopped_sentence(&self) -> &'static str {
+        if self.full {
+            STORAGE_FULL_STOPPED
+        } else {
+            STORAGE_FAILED_STOPPED
+        }
+    }
+    fn refusal(&self) -> anyhow::Error {
+        anyhow!("{}: {}", self.code(), self.stopped_sentence())
+    }
+    /// What the host is told to do, naming the state directory.
+    fn host_instruction(&self, root: &Path) -> String {
+        let first = if self.full {
+            "Free space on this server"
+        } else {
+            "Check this server's storage"
+        };
+        format!(
+            "{first}, then restart Crew: biorouter-crew stop --state-dir {root}, then \
+             biorouter-crew start --state-dir {root}.",
+            root = root.display()
+        )
+    }
+}
+const STORAGE_FULL_STOPPED: &str = "The workspace server ran out of disk space and has stopped saving changes. Reading still works. Ask the host to free space on the server and restart Crew.";
+const STORAGE_FAILED_STOPPED: &str = "The workspace server could not save a change to disk and has stopped saving changes. Reading still works. Ask the host to check the server's storage and restart Crew.";
+const STORAGE_FULL_NOT_SAVED: &str = "storage_full: The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+const STORAGE_FULL_UNCERTAIN: &str = "storage_full: The workspace server ran out of disk space while saving this change, so it may not have been saved. Reading still works. Ask the host to free space on the server and restart Crew.";
+const STORAGE_FAILED_NOT_SAVED: &str = "storage_failed: The workspace server could not write this change to disk, so it was not saved. Reading still works. Ask the host to check the server's storage and restart Crew.";
+const STORAGE_FAILED_UNCERTAIN: &str = "storage_failed: The workspace server could not confirm this change was saved to disk, so it may not have been saved. Reading still works. Ask the host to check the server's storage and restart Crew.";
+/// A storage error outside the journal (an attachment's file): nothing was recorded, so the
+/// broker keeps saving, and the same request can be sent again once there is space.
+const STORAGE_FULL_RETRY: &str = "storage_full: The workspace server is out of disk space, so this could not be saved. Ask the host to free space on the server, then try again.";
+const STORAGE_FAILED_RETRY: &str = "storage_failed: The workspace server could not read or write its storage. Ask the host to check the server's storage, then try again.";
+/// Whether `error` means the disk, or the account's disk quota, is full.
+fn is_space_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(code) if code == libc::ENOSPC || code == libc::EDQUOT)
+}
+/// `at` (seconds since the Unix epoch) as UTC, `2026-09-27T21:03:04Z`.
+fn utc_timestamp(at: u64) -> String {
+    let days = at / 86_400;
+    let seconds = at % 86_400;
+    // Howard Hinnant's civil_from_days.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        seconds / 3_600,
+        seconds % 3_600 / 60,
+        seconds % 60
+    )
+}
+/// A refusal as the wire carries it: the code is the message's `code:` prefix, else
+/// `request_denied`. A raw operating-system error (an attachment's file could not be written)
+/// is a storage fault, said in words, never `request_denied` with the OS's own text.
+fn protocol_error(error: &anyhow::Error) -> ProtocolError {
+    let code_of = |message: &str| {
+        message
+            .split(':')
+            .next()
+            .filter(|s| s.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .map(str::to_owned)
+    };
+    let mut message = error.to_string();
+    if code_of(&message).is_none() {
+        if let Some(io) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        {
+            message = if is_space_error(io) {
+                STORAGE_FULL_RETRY
+            } else {
+                STORAGE_FAILED_RETRY
+            }
+            .to_owned();
+        }
+    }
+    let code = code_of(&message).unwrap_or_else(|| "request_denied".to_owned());
+    ProtocolError { code, message }
+}
 /// Collision refusals allowed per actor within [`NAME_REFUSAL_WINDOW_SECS`] before every
 /// name-bearing create or rename is answered with the generic [`NAME_RATE_LIMITED`].
 const NAME_REFUSAL_LIMIT: usize = 10;
@@ -568,6 +730,143 @@ const SIBLING_PROBE_LIMIT: usize = 32;
 /// How long one sibling broker may take to answer `hello` during the probe.
 const SIBLING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
+const MIB: u64 = 1024 * 1024;
+const DAY_SECS: u64 = 24 * 60 * 60;
+
+/// The workspace's resource limits. Every broker enforces [`Quotas::STANDARD`]; test builds may
+/// scale them down (`Broker::set_quotas`, feature `test-seams`).
+///
+/// Three rules keep one member from exhausting what everyone shares:
+///
+/// - **Shares.** No member other than the host may hold more than a set part of any
+///   workspace-wide budget: a quarter of the state, the journal, the attachment bytes and
+///   counts and the references, a tenth of the teams and channels, and a bounded number of
+///   live invitations. The host, who owns the workspace, has no share.
+/// - **Headroom.** Ordinary changes stop short of the state and journal limits, so the host can
+///   always remove a member, change policy and let people in once they are reached.
+/// - **Retention.** Idempotency results, unfinished uploads, long-expired invitations and runs
+///   age out, so none of them becomes a permanent cap. Messages and completed attachments are
+///   history and are never removed.
+#[derive(Clone, Copy, Debug)]
+pub struct Quotas {
+    /// The serialized logical state.
+    pub state_bytes: usize,
+    /// The part of `state_bytes` only the host's administrative operations and enrollment
+    /// may use.
+    pub state_admin_headroom: usize,
+    /// The retained journal.
+    pub journal_bytes: u64,
+    /// The part of `journal_bytes` only the host's administrative operations, enrollment and
+    /// the broker's own records may use.
+    pub journal_admin_headroom: u64,
+    /// The state one member (not the host) may hold in records they created: their messages,
+    /// runs, attachments, references, invitations, teams and channels.
+    pub member_state_bytes: usize,
+    /// The journal one member (not the host) may write.
+    pub member_journal_bytes: u64,
+    /// Teams one member (not the host) may create.
+    pub member_teams: usize,
+    /// Channels one member (not the host) may create, including their teams' `#general`.
+    pub member_channels: usize,
+    /// Attachments one member (not the host) may hold, finished or in progress.
+    pub member_blobs: usize,
+    /// Declared attachment bytes one member (not the host) may hold.
+    pub member_blob_bytes: u64,
+    /// Remote references one member (not the host) may create.
+    pub member_references: usize,
+    /// Unexpired invitations one member (not the host) may have outstanding.
+    pub member_live_invitations: usize,
+    /// How long an idempotency result is kept.
+    pub dedupe_ttl_secs: u64,
+    /// At most this many idempotency results are kept per principal (newest first) ...
+    pub dedupe_actor_entries: usize,
+    /// ... in at most this many serialized bytes.
+    pub dedupe_actor_bytes: usize,
+    /// At most this many idempotency results are kept in all (newest first).
+    pub dedupe_entries: usize,
+}
+
+impl Quotas {
+    pub const STANDARD: Quotas = Quotas {
+        state_bytes: 16 * MIB as usize,
+        state_admin_headroom: MIB as usize,
+        journal_bytes: 1024 * MIB,
+        journal_admin_headroom: 16 * MIB,
+        member_state_bytes: 4 * MIB as usize,
+        member_journal_bytes: 256 * MIB,
+        member_teams: 10,
+        member_channels: 100,
+        member_blobs: 2_500,
+        member_blob_bytes: 10 * 1024 * MIB / 4,
+        member_references: 2_500,
+        member_live_invitations: 100,
+        dedupe_ttl_secs: DAY_SECS,
+        dedupe_actor_entries: 512,
+        dedupe_actor_bytes: 128 * 1024,
+        dedupe_entries: 100_000,
+    };
+}
+
+/// An upload that has not begun or received a chunk for this long is removed.
+const BLOB_UPLOAD_TTL_SECS: u64 = DAY_SECS;
+/// An invitation is removed this long after it expired (its inviter sees it marked expired
+/// until then).
+const INVITATION_RETENTION_SECS: u64 = 7 * DAY_SECS;
+/// A run (and its grant) is removed this long after it expired.
+const RUN_RETENTION_SECS: u64 = DAY_SECS;
+/// At most this many records of each kind are pruned by one mutation, so one journal record
+/// stays small however much has aged out at once.
+const PRUNE_BATCH: usize = 1024;
+/// The largest single attachment, and every attachment together.
+const BLOB_MAX_BYTES: u64 = 1024 * MIB;
+const WORKSPACE_BLOB_BYTES: u64 = 10 * 1024 * MIB;
+const WORKSPACE_BLOBS: usize = 10_000;
+/// The host's own operations that may use the administrative headroom.
+const ADMIN_METHODS: [&str; 6] = [
+    "enrollment.invite",
+    "enrollment.approve",
+    "enrollment.cancel",
+    "enrollment.revoke",
+    "policy.set",
+    "workspace.rename",
+];
+/// Operations that only take access away. Anyone may use the administrative headroom for them,
+/// so a full workspace never keeps a person in a channel or an agent running: each adds at
+/// most a bounded idempotency result, and one member's results are capped.
+const ACCESS_REMOVAL_METHODS: [&str; 3] = ["run.revoke", "membership.revoke", "channel.archive"];
+/// Methods that add records to the actor's share of the state: a member past
+/// [`Quotas::member_state_bytes`] is refused them. Everything else changes records in place,
+/// removes them, or adds a bounded amount (a read position, a membership).
+const SHARE_METHODS: [&str; 8] = [
+    "message.post",
+    "run.project",
+    "run.create",
+    "blob.begin",
+    "reference.create",
+    "invitation.create",
+    "team.create",
+    "channel.create",
+];
+const MEMBER_STATE_QUOTA: &str = "quota_exceeded: You have used your share of this workspace's storage. Reading still works; ask the workspace host about starting a new workspace.";
+const MEMBER_JOURNAL_QUOTA: &str = "quota_exceeded: You have made as many changes as one member's share of this workspace's audit journal allows. Reading still works; ask the workspace host about starting a new workspace.";
+/// A snapshot's invitations, runs and references are each capped at this many serialized
+/// bytes, and its teams and channels take what the rest leaves under the frame limit less
+/// [`SNAPSHOT_FRAME_MARGIN`], so what other members do can never push a snapshot past the frame
+/// limit. The full counts are in `totals`.
+const SNAPSHOT_SECTION_BYTES: usize = 64 * 1024;
+/// What a snapshot leaves unused of the frame: the response around it (`{"id":…,"result":…}`
+/// and its newline) and room to spare.
+const SNAPSHOT_FRAME_MARGIN: usize = 1024;
+/// A worker's `context.manifest` carries at most this many serialized bytes of messages.
+const CONTEXT_MANIFEST_BYTES: usize = 640 * 1024;
+/// A worker's `messages.history` or `messages.search` page carries at most this many
+/// serialized bytes of messages, and always at least one: a single message stays under the
+/// frame limit even at the workspace's attachment and reference limits.
+const WORKER_HISTORY_BYTES: usize = CONTEXT_MANIFEST_BYTES;
+/// A message body's JSON form: twice its 65,536-byte limit, what quotes and backslashes can
+/// double it to. Only control characters escape to more.
+const MESSAGE_ESCAPED_BYTES: usize = 2 * 65_536;
+
 #[cfg(feature = "join-by-name")]
 mod join;
 #[derive(Clone)]
@@ -585,13 +884,69 @@ struct JournalReplay {
     sequence: u64,
     committed: usize,
     torn_tail: Option<Vec<u8>>,
+    /// Journal bytes of each actor's complete records.
+    actor_bytes: BTreeMap<String, u64>,
+    /// The runs the journal's records removed from the state.
+    removed_runs: RemovedRuns,
 }
+/// The runs retention removed from the state ([`prune_retained`]), each as a short digest of
+/// its ID with a short digest of its owner's principal ID. Kept in memory only, and rebuilt at
+/// every open from the journal, which keeps the record of every removal for as long as the
+/// workspace exists: it costs the logical state nothing and never forgets a run. The journal
+/// also bounds it: each removed run was created by a record of several hundred bytes, so even a
+/// full 1 GiB journal names at most a couple of million, at about 40 bytes each here.
+///
+/// ⚠ **Grant and revocation state; needs human review.** `run.revoke` asks it. A daemon that
+/// stopped a grant while the workspace was out of reach asks to revoke the run whenever it
+/// reconnects, however long after the run expired, and a daemon that replaced or re-granted a
+/// chat's grant asks about the earlier run for a week past its end. Once retention removed the
+/// run that request was refused as a run the owner does not hold, so the stop could never be
+/// confirmed and was asked about again at every reconnect. A removed run is honored by nothing
+/// (it expired, and its grant went with it), so its owner is now told it is revoked; anyone
+/// else is answered as for a run that never existed.
+#[derive(Default)]
+struct RemovedRuns(HashMap<[u8; 16], [u8; 16]>);
+impl RemovedRuns {
+    fn key(text: &str) -> [u8; 16] {
+        let digest = Sha256::digest(text.as_bytes());
+        let mut key = [0; 16];
+        key.copy_from_slice(&digest[..16]);
+        key
+    }
+    fn insert(&mut self, run_id: &str, owner_id: &str) {
+        self.0.insert(Self::key(run_id), Self::key(owner_id));
+    }
+    /// Whether `run_id` was removed while `owner_id` owned it.
+    fn owned_by(&self, run_id: &str, owner_id: &str) -> bool {
+        self.0.get(&Self::key(run_id)) == Some(&Self::key(owner_id))
+    }
+    /// Note a run `patch` removes from `state`, before it is applied.
+    fn note(&mut self, state: &Value, patch: &Patch) {
+        if let Patch::Remove { path } = patch {
+            if let [map, run_id] = path.as_slice() {
+                if map == "runs" {
+                    if let Some(owner) = state
+                        .get("runs")
+                        .and_then(|runs| runs.get(run_id))
+                        .and_then(|run| run.get("owner_id"))
+                        .and_then(Value::as_str)
+                    {
+                        self.insert(run_id, owner);
+                    }
+                }
+            }
+        }
+    }
+}
+/// Replay one complete journal record onto `state_value`, noting the runs it removes in
+/// `removed_runs`; returns the record's actor.
 fn replay_record(
     line: &[u8],
     state_value: &mut Value,
     checksum: &mut String,
     sequence: &mut u64,
-) -> Result<()> {
+    removed_runs: &mut RemovedRuns,
+) -> Result<String> {
     let envelope: Value =
         serde_json::from_slice(line).context("journal_corrupt: complete record is invalid")?;
     match envelope.get("version").and_then(Value::as_u64) {
@@ -630,6 +985,7 @@ fn replay_record(
                 .get("state")
                 .cloned()
                 .ok_or_else(|| anyhow!("journal_corrupt: state missing"))?;
+            Ok(record.actor)
         }
         Some(2) => {
             let record: DeltaRecord =
@@ -652,14 +1008,15 @@ fn replay_record(
                 "journal_corrupt: checksum mismatch"
             );
             for patch in record.patches {
+                removed_runs.note(state_value, &patch);
                 apply_patch(state_value, patch)?;
             }
             *checksum = actual;
             *sequence = record.sequence;
+            Ok(record.actor)
         }
         _ => bail!("journal_corrupt: unsupported journal version"),
     }
-    Ok(())
 }
 fn replay_journal(journal: &File) -> Result<JournalReplay> {
     let mut replay = BufReader::new(journal.try_clone()?);
@@ -668,6 +1025,8 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
     let mut checksum = String::new();
     let mut sequence = 0;
     let mut committed = 0;
+    let mut actor_bytes: BTreeMap<String, u64> = BTreeMap::new();
+    let mut removed_runs = RemovedRuns::default();
     loop {
         let mut line = Vec::new();
         let count = std::io::Read::by_ref(&mut replay)
@@ -684,7 +1043,14 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
             torn_tail = Some(line);
             break;
         }
-        replay_record(&line, &mut state_value, &mut checksum, &mut sequence)?;
+        let actor = replay_record(
+            &line,
+            &mut state_value,
+            &mut checksum,
+            &mut sequence,
+            &mut removed_runs,
+        )?;
+        *actor_bytes.entry(actor).or_default() += line.len() as u64;
         ensure!(
             state_value.get("sequence").and_then(Value::as_u64) == Some(sequence),
             "journal_corrupt: state sequence mismatch"
@@ -701,6 +1067,8 @@ fn replay_journal(journal: &File) -> Result<JournalReplay> {
         sequence,
         committed,
         torn_tail,
+        actor_bytes,
+        removed_runs,
     })
 }
 fn recovered_state(
@@ -770,6 +1138,44 @@ fn recovered_state(
     };
     Ok(state)
 }
+/// Which limits a commit answers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Allowance {
+    /// May use the state's administrative headroom, up to the full state limit: the broker's
+    /// own records, enrollment, the host's administrative operations and anyone's removal of
+    /// access. Everything else stops short of the limit by the headroom.
+    state_headroom: bool,
+    /// May use the journal's administrative headroom, up to the full journal limit: the
+    /// broker's own records, enrollment and the host's administrative operations only. A
+    /// member's removals of access do not get it, since repeating one writes a record each
+    /// time and would let one member use it up.
+    journal_headroom: bool,
+    /// Answers to the actor's own journal share: everyone but the host.
+    member: bool,
+}
+impl Allowance {
+    const FULL: Allowance = Allowance {
+        state_headroom: true,
+        journal_headroom: true,
+        member: false,
+    };
+}
+/// Counts the bytes written to it.
+struct ByteCount(usize);
+impl Write for ByteCount {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len();
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+/// The length of `value`'s JSON serialization, without building it.
+fn json_len<T: Serialize + ?Sized>(value: &T) -> usize {
+    let mut count = ByteCount(0);
+    serde_json::to_writer(&mut count, value).map_or(usize::MAX, |()| count.0)
+}
 impl Broker {
     pub fn open(root: &Path, bootstrap_key: &str) -> Result<Self> {
         Self::open_inner(root, bootstrap_key, Box::new(SystemDirectory), None)
@@ -784,11 +1190,42 @@ impl Broker {
     ) -> Result<Self> {
         Self::open_inner(root, bootstrap_key, directory, None)
     }
-    /// Point the sibling-workspace probe of `workspace.rename` at another directory than
-    /// `/tmp`. Test builds only.
+    /// Point the sibling-workspace probe of `workspace.rename`, and the runtime directory
+    /// [`Broker::prepare_runtime`] binds, at another directory than `/tmp`. Test builds only.
     #[cfg(feature = "test-seams")]
     pub fn set_runtime_root(&mut self, runtime_root: &Path) {
         self.runtime_root = runtime_root.to_path_buf();
+    }
+    /// What `serve` does before it binds its socket: read the recorded runtime, choose (and
+    /// journal) the runtime directory under the runtime root, and return the socket path.
+    /// `node_id` stands in for the node identity `runtime.json` must name. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn prepare_runtime(&mut self, node_id: &str) -> Result<PathBuf> {
+        persisted_runtime(self, node_id)
+    }
+    /// Enforce `quotas` instead of [`Quotas::STANDARD`], so a test can reach a limit without
+    /// writing a gigabyte. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn set_quotas(&mut self, quotas: Quotas) {
+        self.quotas = quotas;
+    }
+    /// Count a person as online for `window` after their last signed request instead of
+    /// [`PRESENCE_WINDOW`], so a test need not wait three minutes. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn set_presence_window(&mut self, window: Duration) {
+        self.presence_window = window;
+    }
+    /// Make the next journal `call` fail with `errno` (`ENOSPC`, `EIO`, ...), as a full or
+    /// failing disk would. Test builds only.
+    #[cfg(feature = "test-seams")]
+    pub fn inject_journal_fault(&mut self, call: JournalCall, errno: i32) {
+        self.injected_journal_fault = Some((call, errno));
+    }
+    /// The authoritative state as JSON, for tests that check what is retained. Test builds
+    /// only.
+    #[cfg(feature = "test-seams")]
+    pub fn state_json(&self) -> Value {
+        serde_json::to_value(&self.state).expect("state serializes")
     }
     /// Open (or initialize) a workspace. `initial_name` names a workspace this call creates; an
     /// existing workspace keeps its stored name.
@@ -839,6 +1276,8 @@ impl Broker {
             sequence,
             committed,
             torn_tail,
+            actor_bytes,
+            removed_runs,
         } = replay_journal(&journal)?;
         let state = recovered_state(state_value, sequence, bootstrap_key, initial_name)?;
         if let Some(torn_bytes) = torn_tail {
@@ -857,31 +1296,59 @@ impl Broker {
             journal,
             _lock: lock,
             checksum,
-            poisoned: false,
+            storage_fault: None,
+            #[cfg(feature = "test-seams")]
+            injected_journal_fault: None,
             directory,
             runtime_root: PathBuf::from("/tmp"),
             name_refusals: BTreeMap::new(),
+            quotas: Quotas::STANDARD,
+            journal_actor_bytes: actor_bytes,
+            removed_runs,
+            presence: BTreeMap::new(),
+            presence_window: PRESENCE_WINDOW,
+            state_bytes: 0,
             #[cfg(feature = "join-by-name")]
             join_runtime: join::Runtime::default(),
         };
+        broker.state_bytes = json_len(&broker.state);
         if sequence == 0 {
             broker.commit(broker.state.clone(), "system", "workspace.initialize")?;
         }
         Ok(broker)
     }
-    fn commit(&mut self, mut state: State, actor: &str, operation: &str) -> Result<()> {
-        ensure!(
-            !self.poisoned,
-            "storage_failed: restart and recover before further mutations"
-        );
+    /// Commit with the full limits: the broker's own records, enrollment and the host's
+    /// administrative operations.
+    fn commit(&mut self, state: State, actor: &str, operation: &str) -> Result<()> {
+        self.commit_with(state, actor, operation, Allowance::FULL)
+    }
+    fn commit_with(
+        &mut self,
+        mut state: State,
+        actor: &str,
+        operation: &str,
+        allowance: Allowance,
+    ) -> Result<()> {
+        if let Some(fault) = &self.storage_fault {
+            return Err(fault.refusal());
+        }
+        let quotas = self.quotas;
         state.sequence = self.state.sequence + 1;
         let after = serde_json::to_value(&state)?;
-        ensure!(serde_json::to_vec(&after)?.len()<=16*1024*1024,"quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported");
         let before = if self.state.sequence == 0 {
             Value::Null
         } else {
             serde_json::to_value(&self.state)?
         };
+        let size = json_len(&after);
+        // A commit that does not grow the state (removing what aged out) is never refused
+        // for size: it can only help a workspace at its limit.
+        let shrinks = size <= json_len(&before);
+        if allowance.state_headroom {
+            ensure!(shrinks || size <= quotas.state_bytes, "quota_exceeded: workspace logical state exceeds 16 MiB; reads remain available but further mutations require a new workspace or a supported retention upgrade; in-place pruning is not supported");
+        } else {
+            ensure!(shrinks || size <= quotas.state_bytes - quotas.state_admin_headroom, "quota_exceeded: workspace logical state is full; reads remain available and the host can still remove members and change policy, but further changes require a new workspace; in-place pruning of history is not supported");
+        }
         let mut patches = Vec::new();
         delta(&before, &after, &mut Vec::new(), &mut patches);
         let mut record = DeltaRecord {
@@ -905,22 +1372,174 @@ impl Broker {
         ))?);
         let mut bytes = serde_json::to_vec(&record)?;
         bytes.push(b'\n');
+        let length = bytes.len() as u64;
+        let committed = self.journal.metadata()?.len();
+        let journal = committed + length;
         ensure!(
-            bytes.len() <= 16 * 1024 * 1024
-                && self.journal.metadata()?.len() + bytes.len() as u64 <= 1024 * 1024 * 1024,
+            bytes.len() <= 16 * 1024 * 1024 && journal <= quotas.journal_bytes,
             "quota_exceeded: retained audit journal exceeds 1 GiB; preserve the complete store and use a new workspace; in-place audit deletion is not supported"
         );
-        self.poisoned = true;
-        self.journal.write_all(&bytes)?;
-        self.journal.sync_all()?;
-        sync_dir(&self.root)?;
+        ensure!(
+            allowance.journal_headroom
+                || journal <= quotas.journal_bytes - quotas.journal_admin_headroom,
+            "quota_exceeded: retained audit journal is nearly full; reads remain available and the host can still remove members and change policy; preserve the complete store and use a new workspace"
+        );
+        let written = self.journal_actor_bytes.get(actor).copied().unwrap_or(0);
+        ensure!(
+            !allowance.member || written.saturating_add(length) <= quotas.member_journal_bytes,
+            MEMBER_JOURNAL_QUOTA
+        );
+        if let Err((written, error)) = self.append_record(&bytes) {
+            return Err(self.stop_saving(written, &error, committed));
+        }
         self.state = state;
+        self.state_bytes = size;
         self.checksum = record.checksum;
-        self.poisoned = false;
+        *self
+            .journal_actor_bytes
+            .entry(actor.to_owned())
+            .or_default() += length;
         Ok(())
+    }
+    /// Write `bytes` to the journal and make them durable. On failure, whether any of the
+    /// record may have reached the file (`true` once the write itself succeeded) and why.
+    fn append_record(&mut self, bytes: &[u8]) -> std::result::Result<(), (bool, std::io::Error)> {
+        #[cfg(feature = "test-seams")]
+        let injected = self.injected_journal_fault.take();
+        #[cfg(feature = "test-seams")]
+        if let Some((JournalCall::Write, errno)) = injected {
+            return Err((false, std::io::Error::from_raw_os_error(errno)));
+        }
+        self.journal
+            .write_all(bytes)
+            .map_err(|error| (false, error))?;
+        #[cfg(feature = "test-seams")]
+        if let Some((JournalCall::Sync, errno)) = injected {
+            return Err((true, std::io::Error::from_raw_os_error(errno)));
+        }
+        self.journal.sync_all().map_err(|error| (true, error))?;
+        File::open(&self.root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| (true, error))
+    }
+    /// Stop saving (fail-stop) after the journal write or sync failed with `error`, tell the
+    /// host in `broker.log`, and return the refusal for the request that hit it. `written`:
+    /// the record's write succeeded, so whether it was saved is unknown. The broker cannot
+    /// know what reached the disk, so nothing is saved again until a restart repairs the
+    /// journal (a torn tail is set aside) and replays what was really written.
+    fn stop_saving(
+        &mut self,
+        written: bool,
+        error: &std::io::Error,
+        committed: u64,
+    ) -> anyhow::Error {
+        let full = is_space_error(error);
+        self.storage_fault = Some(StorageFault {
+            full,
+            at: now(),
+            detail: error.to_string(),
+            committed,
+            logged: false,
+        });
+        self.log_storage_fault();
+        anyhow!(match (full, written) {
+            (true, false) => STORAGE_FULL_NOT_SAVED,
+            (true, true) => STORAGE_FULL_UNCERTAIN,
+            (false, false) => STORAGE_FAILED_NOT_SAVED,
+            (false, true) => STORAGE_FAILED_UNCERTAIN,
+        })
+    }
+    /// Append the line for the storage fault to `broker.log` in the state directory, once.
+    /// Best effort: on a full disk this fails too, and a later request tries again.
+    fn log_storage_fault(&mut self) {
+        let root = &self.root;
+        let Some(fault) = self.storage_fault.as_mut().filter(|fault| !fault.logged) else {
+            return;
+        };
+        let line = format!(
+            "{} {}: Crew stopped saving changes: {}. journal.jsonl held {} bytes before the change that failed. Reading still works. {}\n",
+            utc_timestamp(fault.at),
+            fault.code(),
+            fault.detail,
+            fault.committed,
+            fault.host_instruction(root)
+        );
+        fault.logged = private_file(&root.join("broker.log"), true)
+            .and_then(|mut log| {
+                log.write_all(line.as_bytes())?;
+                log.sync_all()?;
+                Ok(())
+            })
+            .is_ok();
     }
     pub fn workspace(&self) -> &Workspace {
         &self.state.workspace
+    }
+    /// `principal`'s device made a signed request on `conn`.
+    fn note_presence(&mut self, conn: &mut Connection, principal: &str) {
+        let now = Instant::now();
+        if conn.principal.as_deref() == Some(principal) {
+            // The connection is already counted: only the time moves.
+            if let Some(presence) = self.presence.get_mut(principal) {
+                presence.last_request = Some(now);
+                return;
+            }
+        }
+        if let Some(previous) = conn.principal.take() {
+            self.release_presence(&previous);
+        }
+        let presence = self.presence.entry(principal.to_owned()).or_default();
+        presence.open_connections += 1;
+        presence.last_request = Some(now);
+        conn.principal = Some(principal.to_owned());
+    }
+    fn release_presence(&mut self, principal: &str) {
+        if let Some(presence) = self.presence.get_mut(principal) {
+            presence.open_connections = presence.open_connections.saturating_sub(1);
+        }
+    }
+    /// `connection` has closed: the person it was signed on for stops counting as connected
+    /// through it. They stay online until [`PRESENCE_WINDOW`] after their last request.
+    pub fn connection_closed(&mut self, connection: &mut Connection) {
+        if let Some(principal) = connection.principal.take() {
+            self.release_presence(&principal);
+        }
+    }
+    /// The active people who are online: a connection they signed on is open, or they made a
+    /// signed request within the presence window.
+    fn online_principal_ids<'s>(&self, s: &'s State) -> Vec<&'s str> {
+        let now = Instant::now();
+        s.principals
+            .values()
+            .filter(|p| p.active)
+            .filter(|p| {
+                self.presence.get(&p.id).is_some_and(|presence| {
+                    presence.open_connections > 0
+                        || presence
+                            .last_request
+                            .is_some_and(|at| now.duration_since(at) <= self.presence_window)
+                })
+            })
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+    /// How full the workspace's non-renewable budgets are, for its host: the logical state,
+    /// the audit journal and the attachment space. Only the host can act on them (a new
+    /// workspace, removals), so only the host's snapshot carries this.
+    fn usage(&self, s: &State) -> Value {
+        let quotas = &self.quotas;
+        json!({
+            "state_bytes": self.state_bytes,
+            "state_limit": quotas.state_bytes,
+            "state_admin_headroom": quotas.state_admin_headroom,
+            "journal_bytes": self.journal.metadata().map(|m| m.len()).unwrap_or_default(),
+            "journal_limit": quotas.journal_bytes,
+            "journal_admin_headroom": quotas.journal_admin_headroom,
+            "attachment_bytes": s.blobs.values().map(|b| b.size).sum::<u64>(),
+            "attachment_limit": WORKSPACE_BLOB_BYTES,
+            "attachments": s.blobs.len(),
+            "attachments_limit": WORKSPACE_BLOBS,
+        })
     }
     pub fn handle(&mut self, uid: u32, connection: &mut Connection, request: Request) -> Response {
         let result = self.process(uid, connection, &request);
@@ -930,20 +1549,11 @@ impl Broker {
                 result: Some(value),
                 error: None,
             },
-            Err(error) => {
-                let message = error.to_string();
-                let code = message
-                    .split(':')
-                    .next()
-                    .filter(|s| s.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
-                    .unwrap_or("request_denied")
-                    .to_owned();
-                Response {
-                    id: request.id,
-                    result: None,
-                    error: Some(ProtocolError { code, message }),
-                }
-            }
+            Err(error) => Response {
+                id: request.id,
+                result: None,
+                error: Some(protocol_error(&error)),
+            },
         }
     }
     fn process(&mut self, uid: u32, conn: &mut Connection, req: &Request) -> Result<Value> {
@@ -951,6 +1561,7 @@ impl Broker {
             req.version == 1 && !req.id.is_empty() && req.id.len() <= 128,
             "invalid_request: version/id"
         );
+        self.log_storage_fault();
         if req.method == "hello" {
             return self.hello(req);
         }
@@ -970,6 +1581,10 @@ impl Broker {
             Admission::Actor(actor) => *actor,
             Admission::Replay(result) => return Ok(result),
         };
+        // A person's signed device, not an agent's grant: presence is about people.
+        if actor.run.is_none() {
+            self.note_presence(conn, &actor.id);
+        }
         if matches!(
             req.method.as_str(),
             "workspace.snapshot"
@@ -1108,37 +1723,16 @@ impl Broker {
             canonical(&req.params)
         ]))?);
         if let Some(saved) = self.state.dedupe.get(&key) {
-            if let Some(channel) = req.params.get("channel_id").and_then(Value::as_str) {
-                // The host may add people to a channel it is not in (direct add), so its
-                // retry of that add is re-authorized as the host, not as a member.
-                let host_add = req.method == "channel.add_member"
-                    && self.manager(&self.state, &actor.id).is_ok();
-                if !host_add {
-                    self.channel(&self.state, &actor.id, channel, false)?;
-                }
-            }
-            if let Some(blob_id) = req.params.get("blob_id").and_then(Value::as_str) {
-                let blob = self
-                    .state
-                    .blobs
-                    .get(blob_id)
-                    .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
-                self.blob_authorized(&self.state, actor, blob)?;
-            }
+            self.recheck_replay(actor, req)?;
             ensure!(
                 saved.digest == fingerprint,
                 "conflict: idempotency key reused with different request"
             );
             return Ok(saved.result.clone());
         }
-        ensure!(
-            !self.poisoned,
-            "storage_failed: restart and recover before further mutations"
-        );
-        ensure!(
-            self.state.dedupe.len() < 100_000,
-            "quota_exceeded: workspace operation quota requires maintenance"
-        );
+        if let Some(fault) = &self.storage_fault {
+            return Err(fault.refusal());
+        }
         let naming = NAME_METHODS.contains(&req.method.as_str());
         if naming {
             // Checked before anything about the name is evaluated, so the answer to a
@@ -1148,34 +1742,116 @@ impl Broker {
                 NAME_RATE_LIMITED
             );
         }
+        let now = now();
         let mut state = self.state.clone();
         #[cfg(feature = "join-by-name")]
-        join::prune_expired(&mut state, now());
+        join::prune_expired(&mut state, now);
+        let Pruned {
+            uploads: expired_uploads,
+            runs: removed_runs,
+        } = prune_retained(&mut state, now, &self.quotas);
+        // Noted now, before the commit and before `run.revoke` might ask about one of them: a
+        // run removed here expired more than a day ago, so nothing honors it whether or not
+        // this commit lands, and the index is asked only about a run the state does not hold.
+        for (run_id, owner_id) in &removed_runs {
+            self.removed_runs.insert(run_id, owner_id);
+        }
         let result = match self.mutate(&mut state, actor, req) {
             Ok(result) => result,
             Err(error) => {
                 if naming && error.to_string().starts_with("name_taken:") {
-                    self.record_name_refusal(&actor.id, now());
+                    self.record_name_refusal(&actor.id, now);
                 }
                 return Err(error);
             }
         };
-        state.dedupe.insert(
-            key,
-            Cached {
-                digest: fingerprint,
-                result: result.clone(),
-            },
-        );
-        if let Err(error) = self.commit(state, &actor.id, &req.method) {
-            if req.method == "blob.begin" && !self.poisoned {
+        let host = self.manager(&self.state, &actor.id).is_ok();
+        let method = req.method.as_str();
+        let administrative = host && actor.run.is_none() && ADMIN_METHODS.contains(&method);
+        let allowance = Allowance {
+            state_headroom: administrative || ACCESS_REMOVAL_METHODS.contains(&method),
+            journal_headroom: administrative,
+            member: !host,
+        };
+        let committed = (|| -> Result<()> {
+            let share = self.quotas.member_state_bytes;
+            // A terminal projection ends its run, and with it the grant, so a member still
+            // within their share before it may post it even when it takes them past: an agent
+            // task finishes with its result rather than failing for the last few bytes. Only
+            // from within the share, so a member is never more than one message past it,
+            // however many runs they created while under it. Past it, a terminal projection is
+            // refused like any other addition, and the run's owner still ends the run with
+            // `run.revoke`, which is never refused for space.
+            let terminal = method == "run.project"
+                && result["status"]
+                    .as_str()
+                    .is_some_and(|status| status != "progress");
+            ensure!(
+                host || !SHARE_METHODS.contains(&method)
+                    || member_state_bytes(&state, &actor.id) <= share
+                    || (terminal && member_state_bytes(&self.state, &actor.id) <= share),
+                MEMBER_STATE_QUOTA
+            );
+            // A message is re-projected from the stored message on replay, so its cached
+            // result needs only what finds it (and the status a terminal replay checks).
+            let cached = match req.method.as_str() {
+                "message.post" | "run.project" => {
+                    json!({"id": result["id"], "status": result["status"]})
+                }
+                _ => result.clone(),
+            };
+            remember(
+                &mut state,
+                &self.quotas,
+                &actor.id,
+                key,
+                Cached {
+                    digest: fingerprint,
+                    result: cached,
+                    at: Some(now),
+                },
+            );
+            self.commit_with(state, &actor.id, &req.method, allowance)
+        })();
+        if let Err(error) = committed {
+            if req.method == "blob.begin" && self.storage_fault.is_none() {
                 if let Some(blob_id) = result.get("id").and_then(Value::as_str) {
                     let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
                 }
             }
             return Err(error);
         }
+        // Only once the removal is journaled: a failed commit keeps both.
+        for blob_id in expired_uploads {
+            let _ = fs::remove_file(self.root.join("blobs").join(blob_id));
+        }
         Ok(result)
+    }
+    /// A retried mutation's cached result is returned only while the actor may still reach
+    /// what it names: the channel (as a member) and the attachment.
+    fn recheck_replay(&self, actor: &Actor, req: &Request) -> Result<()> {
+        if let Some(channel) = req.params.get("channel_id").and_then(Value::as_str) {
+            // The host may add people to a channel it is not in (direct add), so its retry of
+            // that add is re-authorized as the host, not as a member. Likewise a member's retry
+            // of leaving a channel (they are no longer in it, and the result is the one they
+            // were given), and the host's of acting on a channel whose owner left the workspace.
+            let host_add =
+                req.method == "channel.add_member" && self.manager(&self.state, &actor.id).is_ok();
+            let outside = Self::is_leave(req, &actor.id)
+                || self.stewards_orphaned_channel(&self.state, actor, req);
+            if !host_add && !outside {
+                self.channel(&self.state, &actor.id, channel, false)?;
+            }
+        }
+        if let Some(blob_id) = req.params.get("blob_id").and_then(Value::as_str) {
+            let blob = self
+                .state
+                .blobs
+                .get(blob_id)
+                .ok_or_else(|| anyhow!("forbidden: attachment unavailable"))?;
+            self.blob_authorized(&self.state, actor, blob)?;
+        }
+        Ok(())
     }
     fn hello(&self, req: &Request) -> Result<Value> {
         let secret: [u8; 32] = hex::decode(&self.state.workspace_signing_key)?
@@ -1232,9 +1908,21 @@ impl Broker {
             )
             .to_bytes(),
         );
-        Ok(
-            json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]}),
-        )
+        let mut hello = json!({"protocol":1,"workspace_id":workspace.id,"host_uid":workspace.host_uid,"mode":workspace.mode,"institution_id":workspace.institution_id,"policy_epoch":workspace.policy_epoch,"name":workspace.name,"workspace_public_key":public_key,"node_id":node_id,"workspace_key_fingerprint":digest(&key.verifying_key().to_bytes()),"challenge_nonce":nonce,"signature":signature,"signature_v2":signature_v2,"capabilities":capabilities,"unsupported":["arbitrary_shell","remote_filesystem","network_filesystem","cross_workspace_release"]});
+        // Unsigned, for display only: whether this broker is still saving changes. An older
+        // broker sends no `state`, which a client reads as unknown.
+        match &self.storage_fault {
+            None => hello["state"] = json!("running"),
+            Some(fault) => {
+                hello["state"] = json!("storage_failed");
+                hello["storage"] = json!({
+                    "code": fault.code(),
+                    "message": fault.stopped_sentence(),
+                    "since": fault.at,
+                });
+            }
+        }
+        Ok(hello)
     }
     /// What `hello` advertises, in the order it advertises it (the v2 signature covers the
     /// order).
@@ -1248,6 +1936,7 @@ impl Broker {
             "human_names_v1",
             "unique_names_v1",
             "direct_add_v1",
+            "presence_v1",
         ];
         #[cfg(feature = "join-by-name")]
         capabilities.push("join_by_name_v1");
@@ -1752,13 +2441,8 @@ impl Broker {
             _ => Ok(result),
         }
     }
-    fn read_workspace_snapshot(&self, actor: &Actor, _req: &Request) -> Result<Value> {
+    fn read_workspace_snapshot(&self, actor: &Actor, req: &Request) -> Result<Value> {
         let s = &self.state;
-        let protected_channel_ids: Vec<&str> = Self::protected_channel_ids(s)
-            .into_iter()
-            .filter(|channel| self.channel(s, &actor.id, channel, false).is_ok())
-            .collect();
-        let (positions, unread) = self.read_state(s, actor);
         let host = self.manager(s, &actor.id).is_ok();
         let now = now();
         let index = PeopleIndex::new(s);
@@ -1772,44 +2456,43 @@ impl Broker {
             .values()
             .filter(|c| c.members.contains(&actor.id))
             .collect();
-        // An invitee no longer sees an invitation once it has expired (it can never be
-        // accepted); its inviter still does, marked `expired`.
-        let invitations: Vec<&Invitation> = s
-            .invitations
-            .values()
-            .filter(|i| {
-                i.inviter_id == actor.id || (i.principal_id == actor.id && i.expires_at >= now)
-            })
-            .collect();
+        let (invitations, invitations_wire, invitations_total) =
+            Self::snapshot_invitations(s, &index, &actor.id, now);
         let mut workspace = json!(s.workspace);
         workspace["host_principal_id"] = json!(host_principal_id(s));
-        let stale = if host {
-            self.stale_principals(s)
-        } else {
-            BTreeSet::new()
-        };
-        let principals: Vec<Value> = s
-            .principals
+        let principals = self.snapshot_principals(s, &index, host);
+        let actor_wire = Self::actor_wire(s, &index, &actor.id);
+        // The actor's live runs only (a revoked, expired or superseded run grants nothing),
+        // newest first.
+        let mut runs: Vec<&Run> = s
+            .runs
             .values()
-            .filter(|p| p.active)
-            .map(|p| {
-                let mut wire = index.principal_wire(p);
-                if stale.contains(p.id.as_str()) {
-                    wire["account_stale"] = json!(true);
-                }
-                wire
+            .filter(|r| {
+                r.owner_id == actor.id
+                    && !r.revoked
+                    && r.expires_at >= now
+                    && r.policy_epoch == s.workspace.policy_epoch
             })
             .collect();
-        let former_principals = Self::former_principals(s, &index, &teams, &channels, &invitations);
-        let actor_wire = Self::actor_wire(s, &index, &actor.id);
-        let teams_wire = Self::teams_wire(&teams);
-        let channels_wire = Self::channels_wire(&channels);
-        let invitations_wire: Vec<Value> = invitations
-            .iter()
-            .map(|invitation| Self::invitation_wire(s, &index, invitation, now))
-            .collect();
-        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":protected_channel_ids,"actor":actor_wire,"principals":principals,"former_principals":former_principals,"teams":teams_wire,"channels":channels_wire,"invitations":invitations_wire,"runs":s.runs.values().filter(|r|r.owner_id==actor.id).collect::<Vec<_>>(),"read_positions":positions,"unread":unread,"references":s.references.values().filter(|r|self.reference_authorized(s,actor,r).is_ok()).collect::<Vec<_>>()});
+        runs.sort_by_key(|r| std::cmp::Reverse(r.expires_at));
+        let runs_total = runs.len();
+        let runs = within_budget(runs);
+        // Other members add references to shared channels: the actor's own come first, then
+        // each other owner's in turn.
+        let (mut references, others): (Vec<&RemoteReference>, Vec<&RemoteReference>) = s
+            .references
+            .values()
+            .filter(|r| self.reference_authorized(s, actor, r).is_ok())
+            .partition(|r| r.owner_id == actor.id);
+        references.extend(in_turns(others, |r| r.owner_id.as_str()));
+        let references_total = references.len();
+        let references = within_budget(references);
+        let totals = json!({"invitations": invitations_total, "runs": runs_total, "references": references_total, "teams": teams.len(), "channels": channels.len()});
+        let mut snapshot = json!({"workspace":workspace,"protected_channel_ids":[],"actor":actor_wire,"principals":principals,"former_principals":[],"teams":[],"channels":[],"invitations":invitations_wire,"runs":runs,"read_positions":{},"unread":{},"references":references,"totals":totals});
+        // Presence is display only: it is in memory, never journaled, and grants nothing.
+        snapshot["online_principal_ids"] = json!(self.online_principal_ids(s));
         if host {
+            snapshot["usage"] = self.usage(s);
             let refusals: BTreeMap<&str, usize> = self
                 .name_refusals
                 .keys()
@@ -1822,22 +2505,269 @@ impl Broker {
                 snapshot["pending_joins"] = join::project_for_manager(self, s);
             }
         }
+        self.fill_places(
+            &mut snapshot,
+            actor,
+            req,
+            &index,
+            &teams,
+            &channels,
+            &invitations,
+        );
         Ok(snapshot)
     }
-    /// Per visible channel, the actor's read watermark (as an opaque message token) and the
+    /// Every invitation the actor sees, the wires of those a snapshot lists, and how many there
+    /// are in all. An invitee no longer sees an invitation once it has expired (it can never be
+    /// accepted); its inviter still does, marked `expired`, until it is pruned. What the invitee
+    /// can act on comes first, taking each inviter's newest in turn so no one inviter can crowd
+    /// out the rest, then the actor's own live and expired invitations, newest first, all within
+    /// one section budget. The full list is returned, not only what is listed, because the
+    /// former members it names are all listed ([`Self::fill_places`]).
+    fn snapshot_invitations<'s>(
+        s: &'s State,
+        index: &PeopleIndex<'_>,
+        actor_id: &str,
+        now: u64,
+    ) -> (Vec<&'s Invitation>, Vec<Value>, usize) {
+        let mut invitations: Vec<&Invitation> = s
+            .invitations
+            .values()
+            .filter(|i| {
+                i.inviter_id == actor_id || (i.principal_id == actor_id && i.expires_at >= now)
+            })
+            .collect();
+        invitations.sort_by_key(|i| {
+            (
+                i.principal_id != actor_id,
+                i.expires_at < now,
+                std::cmp::Reverse(i.expires_at),
+            )
+        });
+        let received = invitations
+            .iter()
+            .take_while(|i| i.principal_id == actor_id)
+            .count();
+        let sent = invitations.split_off(received);
+        let mut invitations = in_turns(invitations, |i| i.inviter_id.as_str());
+        invitations.extend(sent);
+        let total = invitations.len();
+        let wire = within_budget(
+            invitations
+                .iter()
+                .map(|invitation| Self::invitation_wire(s, index, invitation, now))
+                .collect(),
+        );
+        (invitations, wire, total)
+    }
+    /// The workspace's active members as a snapshot lists them; the host's also marks those
+    /// whose account no longer matches ([`Self::stale_principals`]).
+    fn snapshot_principals(&self, s: &State, index: &PeopleIndex<'_>, host: bool) -> Vec<Value> {
+        let stale = if host {
+            self.stale_principals(s)
+        } else {
+            BTreeSet::new()
+        };
+        s.principals
+            .values()
+            .filter(|p| p.active)
+            .map(|p| {
+                let mut wire = index.principal_wire(p);
+                if stale.contains(p.id.as_str()) {
+                    wire["account_stale"] = json!(true);
+                }
+                wire
+            })
+            .collect()
+    }
+    /// Fill `snapshot`'s teams and channels, with what hangs off them (`protected_channel_ids`,
+    /// `read_positions`, `unread`), and the former members the actor's teams, channels and
+    /// invitations name, once everything else is in it.
+    ///
+    /// Teams and channels take the room everything else leaves under the frame limit. Their
+    /// size is not the actor's to choose: any team owner may add any member to their teams and
+    /// channels without asking, and each lists every member, so one member with a full share of
+    /// teams and channels could otherwise push everyone else's snapshot past the limit. What
+    /// does not fit is left out, whole, and counted in `totals`; nothing listed is ever cut
+    /// short.
+    ///
+    /// `former_principals` does not shrink with them: it names every former member any of the
+    /// actor's teams, channels or invitations names, listed or not. A resolver matches a former
+    /// member's username against that list, and former members may share a username (only
+    /// active ones may not), so a list short of one would resolve `@name` to the other.
+    #[allow(clippy::too_many_arguments)]
+    fn fill_places(
+        &self,
+        snapshot: &mut Value,
+        actor: &Actor,
+        req: &Request,
+        index: &PeopleIndex<'_>,
+        teams: &[&Team],
+        channels: &[&Channel],
+        invitations: &[&Invitation],
+    ) {
+        let s = &self.state;
+        let former_principals = json!(Self::former_principals(
+            s,
+            index,
+            teams,
+            channels,
+            invitations,
+        ));
+        let reserved = json_len(&*snapshot)
+            .saturating_add(json_len(&req.id))
+            .saturating_add(SNAPSHOT_FRAME_MARGIN)
+            .saturating_add(json_len(&former_principals));
+        let places = Self::places_within(
+            s,
+            &actor.id,
+            teams,
+            channels,
+            MAX_FRAME.saturating_sub(reserved),
+        );
+        let protected = Self::protected_channel_ids(s);
+        let protected_channel_ids: Vec<&str> = places
+            .channels
+            .iter()
+            .map(|channel| channel.id.as_str())
+            .filter(|channel| protected.contains(channel))
+            .collect();
+        let (positions, unread) = self.read_state(s, actor, &places.channels);
+        snapshot["protected_channel_ids"] = json!(protected_channel_ids);
+        snapshot["former_principals"] = former_principals;
+        snapshot["teams"] = Value::Array(places.teams_wire);
+        snapshot["channels"] = Value::Array(places.channels_wire);
+        snapshot["read_positions"] = json!(positions);
+        snapshot["unread"] = json!(unread);
+    }
+    /// Of the teams and channels the actor is in, those that fit in `room` serialized bytes,
+    /// with their wires, each in state order. Nothing is cut short: a team or channel is listed
+    /// whole or left out.
+    ///
+    /// Who gets the room first: what the actor created (their teams) or owns (their channels),
+    /// then the host's, then every other owner's, taking turns so that no one owner can crowd
+    /// the rest out; within a turn a team comes before a channel. A channel comes with its team
+    /// when the actor is in that team, so it can be shown where it belongs. Something that does
+    /// not fit is skipped and what follows is still tried, so one large team or channel never
+    /// stops the smaller ones after it.
+    fn places_within<'s>(
+        s: &'s State,
+        actor_id: &str,
+        teams: &[&'s Team],
+        channels: &[&'s Channel],
+        room: usize,
+    ) -> Places<'s> {
+        #[derive(Clone, Copy)]
+        enum Place {
+            Team(usize),
+            Channel(usize),
+        }
+        // Every team and channel the actor is in, before any is left out, so that each listed
+        // one's `name_conflict` still counts those that are not: a resolver holding only the
+        // listed ones reads it to tell whether a name it found is the only one of its kind.
+        let teams_wire = Self::teams_wire(teams);
+        let channels_wire = Self::channels_wire(channels);
+        let team_cost: Vec<usize> = teams_wire.iter().map(|wire| json_len(wire) + 1).collect();
+        // A channel also has its `read_positions` entry (an opaque message token, or null), its
+        // `unread` count and perhaps its `protected_channel_ids` entry, each keyed by its ID.
+        let channel_cost: Vec<usize> = channels
+            .iter()
+            .zip(&channels_wire)
+            .map(|(channel, wire)| json_len(wire) + 1 + 3 * (json_len(&channel.id) + 2) + 96)
+            .collect();
+        let team_of: BTreeMap<&str, usize> = teams
+            .iter()
+            .enumerate()
+            .map(|(position, team)| (team.id.as_str(), position))
+            .collect();
+        let host = host_principal_id(s);
+        let owner = |place: &Place| -> &'s str {
+            match *place {
+                Place::Team(position) => teams[position].created_by.as_str(),
+                Place::Channel(position) => channels[position].owner_id.as_str(),
+            }
+        };
+        let rank = |place: &Place| {
+            let owner = owner(place);
+            if owner == actor_id {
+                0
+            } else if Some(owner) == host {
+                1
+            } else {
+                2
+            }
+        };
+        // Teams first, so the stable sort keeps a team ahead of a channel of the same rank,
+        // and each owner's own turns do too.
+        let mut order: Vec<Place> = (0..teams.len())
+            .map(Place::Team)
+            .chain((0..channels.len()).map(Place::Channel))
+            .collect();
+        order.sort_by_key(rank);
+        let others = order.split_off(
+            order
+                .iter()
+                .position(|place| rank(place) == 2)
+                .unwrap_or(order.len()),
+        );
+        order.extend(in_turns(others, owner));
+        let mut room = room;
+        let mut kept_teams = vec![false; teams.len()];
+        let mut kept_channels = vec![false; channels.len()];
+        for place in order {
+            match place {
+                Place::Team(position) => {
+                    if !kept_teams[position] && team_cost[position] <= room {
+                        room -= team_cost[position];
+                        kept_teams[position] = true;
+                    }
+                }
+                Place::Channel(position) => {
+                    let team = team_of
+                        .get(channels[position].team_id.as_str())
+                        .copied()
+                        .filter(|team| !kept_teams[*team]);
+                    let cost = channel_cost[position] + team.map_or(0, |team| team_cost[team]);
+                    if cost <= room {
+                        room -= cost;
+                        kept_channels[position] = true;
+                        if let Some(team) = team {
+                            kept_teams[team] = true;
+                        }
+                    }
+                }
+            }
+        }
+        let mut places = Places {
+            teams: Vec::new(),
+            teams_wire: Vec::new(),
+            channels: Vec::new(),
+            channels_wire: Vec::new(),
+        };
+        for ((team, wire), kept) in teams.iter().zip(teams_wire).zip(kept_teams) {
+            if kept {
+                places.teams.push(*team);
+                places.teams_wire.push(wire);
+            }
+        }
+        for ((channel, wire), kept) in channels.iter().zip(channels_wire).zip(kept_channels) {
+            if kept {
+                places.channels.push(*channel);
+                places.channels_wire.push(wire);
+            }
+        }
+        places
+    }
+    /// Per listed channel, the actor's read watermark (as an opaque message token) and the
     /// number of unread messages from others.
     fn read_state(
         &self,
         s: &State,
         actor: &Actor,
+        channels: &[&Channel],
     ) -> (BTreeMap<String, Value>, BTreeMap<String, usize>) {
         let mut positions = BTreeMap::new();
         let mut unread = BTreeMap::new();
-        for channel in s
-            .channels
-            .values()
-            .filter(|c| c.members.contains(&actor.id))
-        {
+        for channel in channels {
             let sequence = *s
                 .read_positions
                 .get(&format!("{}:{}", actor.id, channel.id))
@@ -1883,8 +2813,9 @@ impl Broker {
         })
     }
     /// Inactive principals referenced by the actor's visible objects: the members, creator,
-    /// owner and pending owner of visible teams and channels, and the invitee and inviter of
-    /// visible invitations. Display only; bounded by team and channel sizes.
+    /// owner and pending owner of the teams and channels the actor is in, and the invitee and
+    /// inviter of the invitations the actor sees, whether or not the snapshot lists them.
+    /// Bounded by the number of former members.
     fn former_principals(
         s: &State,
         index: &PeopleIndex,
@@ -1923,9 +2854,9 @@ impl Broker {
             .collect()
     }
     /// Visible teams with their computed, never stored, name fields: the sanitized
-    /// `display_name`, the `handle` a resolver matches against, `name_conflict` (another team
-    /// **the viewer can see** has the same name) and `name_invalid` (a legacy name the current
-    /// rules refuse).
+    /// `display_name`, the `handle` a resolver matches against, `name_conflict` (another of
+    /// `teams`, every team **the viewer is in**, has the same name, listed or not) and
+    /// `name_invalid` (a legacy name the current rules refuse).
     fn teams_wire(teams: &[&Team]) -> Vec<Value> {
         let keys: Vec<(String, String)> = teams
             .iter()
@@ -1948,8 +2879,9 @@ impl Broker {
             .collect()
     }
     /// Visible channels with the same computed fields as [`Self::teams_wire`]; a conflict is
-    /// another visible channel **in the same team**. A stored name that is not a canonical
-    /// slug (a legacy `Data Analysis`) is `name_invalid`.
+    /// another of `channels`, every channel the viewer is in, **in the same team**, listed or
+    /// not. A stored name that is not a canonical slug (a legacy `Data Analysis`) is
+    /// `name_invalid`.
     fn channels_wire(channels: &[&Channel]) -> Vec<Value> {
         let keys: Vec<(String, String)> = channels
             .iter()
@@ -2067,22 +2999,42 @@ impl Broker {
                 && self.visible(s, actor, m)
                 && m.body.to_lowercase().contains(&query)
         });
-        let messages: Vec<_> = if p.get("latest").and_then(Value::as_bool) == Some(true) {
-            let mut latest: Vec<_> = matching.rev().take(limit).collect();
-            latest.reverse();
-            latest
+        let latest = p.get("latest").and_then(Value::as_bool) == Some(true);
+        // Nearest the page's anchor first: the newest for a latest window, the oldest after a
+        // cursor.
+        let mut messages: Vec<_> = if latest {
+            matching.rev().take(limit).collect()
         } else {
             matching.take(limit).collect()
         };
+        // An agent's page is bounded in bytes as well: every agent task starts by reading its
+        // destination's newest 50, and what other members post there must never push that
+        // past the frame limit, or no one's agent could start in the channel. The messages
+        // nearest the anchor that fit are kept and `truncated` says the rest were left out: a
+        // latest window continues `before` its first message, any other page after `cursor`.
+        // A person's page is not cut short, since a client offers an older page only when the
+        // one it has is full: past the frame limit the request is refused `response_too_large`,
+        // and the client asks for fewer.
+        let mut truncated = false;
+        if actor.run.is_some() {
+            let asked = messages.len();
+            messages = within(messages, WORKER_HISTORY_BYTES);
+            truncated = messages.len() < asked;
+        }
+        if latest {
+            messages.reverse();
+        }
         let cursor = messages
             .last()
             .map(|message| message.id.clone())
             .or_else(|| p.get("after").and_then(Value::as_str).map(str::to_owned));
         let (people, channel_names) = self.message_names(s, actor, messages.iter().copied());
         let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
-        Ok(
-            json!({"messages":messages,"cursor":cursor,"people":people,"channel_names":channel_names}),
-        )
+        let mut page = json!({"messages":messages,"cursor":cursor,"people":people,"channel_names":channel_names});
+        if truncated {
+            page["truncated"] = json!(true);
+        }
+        Ok(page)
     }
     fn read_run_remote_scope(&self, actor: &Actor, _req: &Request) -> Result<Value> {
         let run = actor
@@ -2114,7 +3066,11 @@ impl Broker {
             .rev()
             .take(200)
             .collect();
+        // Decided over all 200, before the byte budget drops any.
         let restricted = messages.iter().any(|message| message.restricted);
+        // Every agent turn asks for this manifest, so what other members post in a source
+        // channel must never push it past the frame limit: the newest messages that fit.
+        let messages = within(messages, CONTEXT_MANIFEST_BYTES);
         let (people, channel_names) = self.message_names(s, actor, messages.iter().copied());
         let messages: Vec<_> = messages.into_iter().map(Self::message_wire).collect();
         Ok(
@@ -2386,6 +3342,8 @@ impl Broker {
             actor.run.is_none(),
             "forbidden: human host policy decision required"
         );
+        let requested_mode = mode(p, "mode")?;
+        let mut institution = s.workspace.institution_id.clone();
         if let Some(value) = p.get("institution_id") {
             let requested: Option<String> =
                 serde_json::from_value(value.clone()).map_err(|_| {
@@ -2395,9 +3353,16 @@ impl Broker {
                 ensure!(is_canonical_institution_id(institution), "invalid_params: institution_id must be 1..64 lowercase ASCII letters, digits, underscores or hyphens, starting with a letter or digit");
             }
             ensure!(s.workspace.institution_id.is_none() || s.workspace.institution_id == requested, "privacy_denied: workspace institution cannot be cleared or changed; use a new workspace");
-            s.workspace.institution_id = requested;
+            institution = requested;
         }
-        s.workspace.mode = mode(p, "mode")?;
+        // Re-sending the policy the workspace already has changes nothing: the epoch moves,
+        // and every grant ends, only when the mode or the institution really changes. A host
+        // who re-runs a setup step must not silently end every member's agent access.
+        if requested_mode == s.workspace.mode && institution == s.workspace.institution_id {
+            return Ok(json!(s.workspace));
+        }
+        s.workspace.institution_id = institution;
+        s.workspace.mode = requested_mode;
         s.workspace.policy_epoch += 1;
         for run in s.runs.values_mut() {
             run.revoked = true;
@@ -2407,7 +3372,22 @@ impl Broker {
     fn mutate_team_create(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
-        ensure!(s.teams.len() < 100, "quota_exceeded: maximum teams");
+        ensure!(
+            s.teams.len() < 100 && s.channels.len() < 1000,
+            "quota_exceeded: maximum teams"
+        );
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.teams.values().filter(|t| t.created_by == *who).count()
+                    < self.quotas.member_teams,
+            "quota_exceeded: You have created as many teams as one member may in this workspace."
+        );
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.channels.values().filter(|c| c.created_by == *who).count()
+                    < self.quotas.member_channels,
+            "quota_exceeded: You have created as many channels as one member may in this workspace."
+        );
         let name = Self::team_name_for(s, p, None)?;
         let team_id = id();
         let channel_id = id();
@@ -2449,6 +3429,12 @@ impl Broker {
             "forbidden: team unavailable"
         );
         ensure!(s.channels.len() < 1000, "quota_exceeded: maximum channels");
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.channels.values().filter(|c| c.created_by == *who).count()
+                    < self.quotas.member_channels,
+            "quota_exceeded: You have created as many channels as one member may in this workspace."
+        );
         let name = Self::channel_name_for(s, p, team_id, None)?;
         let classification = match p.get("classification") {
             Some(v) => serde_json::from_value(v.clone())?,
@@ -2611,6 +3597,26 @@ impl Broker {
             _ => bail!("invalid_params: invitation kind"),
         }
         check_expected_username(s, p, principal)?;
+        // One invitation per inviter, invitee and target: inviting again renews it (same ID,
+        // a fresh day) rather than adding another to the invitee's snapshot.
+        if let Some(existing) = s.invitations.values_mut().find(|i| {
+            i.inviter_id == *who
+                && i.principal_id == principal
+                && i.kind == kind
+                && i.target_id == target
+        }) {
+            existing.expires_at = now() + 86400;
+            return Ok(json!(existing));
+        }
+        ensure!(
+            self.manager(s, who).is_ok()
+                || s.invitations
+                    .values()
+                    .filter(|i| i.inviter_id == *who && i.expires_at >= now())
+                    .count()
+                    < self.quotas.member_live_invitations,
+            "quota_exceeded: You have as many invitations waiting as one member may. Wait for some to be accepted or to expire."
+        );
         let invitation = Invitation {
             id: id(),
             kind: kind.into(),
@@ -2845,13 +3851,40 @@ impl Broker {
         );
         Ok(target.id.clone())
     }
+    /// `channel.archive`, `channel.transfer` and `membership.revoke`: the channel's current
+    /// owner archives it, offers it to another member, or removes a member.
+    ///
+    /// Two others may remove. A member leaves a channel they do not own by removing themselves
+    /// ([`Self::is_leave`]), archived or not: a team owner may add any member to their channels
+    /// without asking, and leaving is how that member undoes it. And a channel whose owner is no
+    /// longer an active member of the workspace has nobody left to manage it, so the host
+    /// archives it or removes its members, from outside it too
+    /// ([`Self::stewards_orphaned_channel`]). Nobody removes a channel's owner, the host never
+    /// overrides an owner who is still a member, and only the owner transfers.
     fn mutate_channel_archive(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
+        let method = req.method.as_str();
         let channel = text(p, "channel_id")?;
-        let c = self.channel(s, who, channel, true)?;
-        ensure!(c.owner_id == *who, "forbidden: current owner required");
-        match req.method.as_str() {
+        let stewarding = self.stewards_orphaned_channel(s, actor, req);
+        let c = if stewarding {
+            s.channels
+                .get(channel)
+                .ok_or_else(|| anyhow!("forbidden: channel unavailable"))?
+        } else {
+            self.channel(s, who, channel, false)?
+        };
+        let owner = c.owner_id == *who;
+        let leaving = !owner && Self::is_leave(req, who);
+        ensure!(
+            leaving || !c.archived,
+            "channel_archived: channel is read-only"
+        );
+        ensure!(
+            owner || leaving || stewarding,
+            "forbidden: current owner required"
+        );
+        match method {
             "channel.transfer" => {
                 let successor = text(p, "successor_id")?;
                 // The successor must still be an active principal: an offboarded member's ID
@@ -2866,13 +3899,16 @@ impl Broker {
             }
             "membership.revoke" => {
                 let target = text(p, "principal_id")?;
-                ensure!(target != who, "forbidden: transfer before owner removal");
+                ensure!(
+                    target != c.owner_id,
+                    "forbidden: transfer before owner removal"
+                );
                 check_expected_username(s, p, target)?;
             }
             _ => {}
         }
         let c = s.channels.get_mut(channel).expect("authorized channel");
-        match req.method.as_str() {
+        match method {
             "channel.archive" => c.archived = true,
             "channel.transfer" => {
                 c.pending_owner = Some(text(p, "successor_id")?.into());
@@ -2885,9 +3921,45 @@ impl Broker {
                 }
             }
         }
-        s.invitations.retain(|_, i| i.target_id != channel);
+        let result = json!(c);
+        if method == "membership.revoke" && !owner {
+            // Someone who leaves, or whom the host removes, loses only their own invitations
+            // to the channel: nobody else's pending invitation is theirs to cancel.
+            let target = text(p, "principal_id")?;
+            s.invitations
+                .retain(|_, i| i.target_id != channel || i.principal_id != target);
+        } else {
+            s.invitations.retain(|_, i| i.target_id != channel);
+        }
         s.workspace.policy_epoch += 1;
-        Ok(json!(c))
+        Ok(result)
+    }
+    /// Whether `req` removes the actor from a channel: `membership.revoke` naming the actor's
+    /// own principal. For anyone but the channel's owner that is leaving it.
+    fn is_leave(req: &Request, actor_id: &str) -> bool {
+        req.method == "membership.revoke"
+            && req.params.get("principal_id").and_then(Value::as_str) == Some(actor_id)
+    }
+    /// Whether `actor` is the host, as a person, archiving (`channel.archive`) or removing a
+    /// member from (`membership.revoke`) a channel whose owner is no longer an active member of
+    /// the workspace, and so can act on it without being in it. An offboarded owner's channels
+    /// would otherwise stay as they are for good, with every member someone added to them.
+    fn stewards_orphaned_channel(&self, s: &State, actor: &Actor, req: &Request) -> bool {
+        matches!(req.method.as_str(), "channel.archive" | "membership.revoke")
+            && actor.run.is_none()
+            && self.manager(s, &actor.id).is_ok()
+            && req
+                .params
+                .get("channel_id")
+                .and_then(Value::as_str)
+                .and_then(|channel| s.channels.get(channel))
+                .is_some_and(|channel| {
+                    channel.owner_id != actor.id
+                        && !s
+                            .principals
+                            .get(&channel.owner_id)
+                            .is_some_and(|owner| owner.active)
+                })
     }
     fn mutate_transfer_accept(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
@@ -2943,7 +4015,10 @@ impl Broker {
             .get("body")
             .and_then(Value::as_str)
             .ok_or_else(|| anyhow!("invalid_params: body must be a string"))?;
-        ensure!(body.len() <= 65536, "invalid_params: message too long");
+        ensure!(
+            body.len() <= 65536 && json_len(body) - 2 <= MESSAGE_ESCAPED_BYTES,
+            "invalid_params: message too long"
+        );
         let channel = if let Some(run) = &actor.run {
             run.channel_id.as_str()
         } else {
@@ -3104,10 +4179,10 @@ impl Broker {
             (1..=3600).contains(&expires),
             "invalid_params: expiry must be 1..3600 seconds"
         );
-        let remote_root = p
-            .get("remote_root")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let remote_root = match p.get("remote_root") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(display_text(p, "remote_root", 4096)?.to_owned()),
+        };
         let remote_execution = p
             .get("remote_execution")
             .and_then(Value::as_bool)
@@ -3154,7 +4229,7 @@ impl Broker {
             owner_id: who.clone(),
             channel_id: channel.into(),
             source_channels: sources,
-            provider_policy_id: text(p, "provider_policy_id")?.into(),
+            provider_policy_id: display_text(p, "provider_policy_id", 1024)?.into(),
             public_provider: consent.public_provider,
             personal_mode: consent.personal_mode,
             policy_epoch: s.workspace.policy_epoch,
@@ -3170,13 +4245,20 @@ impl Broker {
     fn mutate_run_revoke(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
         let p = &req.params;
         let who = &actor.id;
-        let run = s
-            .runs
-            .get_mut(text(p, "run_id")?)
-            .filter(|r| r.owner_id == *who)
-            .ok_or_else(|| anyhow!("forbidden: owned run unavailable"))?;
-        run.revoked = true;
-        Ok(json!(run))
+        let run_id = text(p, "run_id")?;
+        match s.runs.get_mut(run_id) {
+            Some(run) if run.owner_id == *who => {
+                run.revoked = true;
+                Ok(json!(run))
+            }
+            // Retention removed it, a day after it expired ([`RemovedRuns`]). Nothing honors
+            // it, so it is revoked, and its owner is told so however long after it ended they
+            // ask. Anyone else is answered as for a run that never existed.
+            None if self.removed_runs.owned_by(run_id, who) => {
+                Ok(json!({"id": run_id, "owner_id": who, "revoked": true, "removed": true}))
+            }
+            _ => bail!("forbidden: owned run unavailable"),
+        }
     }
     fn mutate_reference_create(
         &self,
@@ -3188,10 +4270,11 @@ impl Broker {
         let who = &actor.id;
         let channel = text(p, "channel_id")?;
         self.channel(s, who, channel, true)?;
-        let path = text(p, "path")?;
+        let path = display_text(p, "path", 4096).map_err(|_| {
+            anyhow!("invalid_params: absolute remote path without parent traversal required; at most 4096 bytes, without control or invisible formatting characters")
+        })?;
         ensure!(
-            path.len() <= 4096
-                && Path::new(path).is_absolute()
+            Path::new(path).is_absolute()
                 && !Path::new(path)
                     .components()
                     .any(|c| matches!(c, std::path::Component::ParentDir)),
@@ -3215,11 +4298,13 @@ impl Broker {
             s.references.len() < 10000,
             "quota_exceeded: remote reference limit"
         );
-        let label = text(p, "label")?;
         ensure!(
-            label.len() <= 255 && !label.chars().any(char::is_control),
-            "invalid_params: reference label"
+            self.manager(s, who).is_ok()
+                || s.references.values().filter(|r| r.owner_id == *who).count()
+                    < self.quotas.member_references,
+            "quota_exceeded: You have created as many remote references as one member may."
         );
+        let label = shared_name(p, "label", SharedName::Label)?;
         let reference = RemoteReference {
             id: id(),
             channel_id: channel.into(),
@@ -3250,31 +4335,49 @@ impl Broker {
         let c = self.channel(s, who, channel, true)?;
         let size = number(p, "size")?;
         ensure!(
-            size <= 1024 * 1024 * 1024,
+            size <= BLOB_MAX_BYTES,
             "quota_exceeded: maximum attachment is 1 GiB"
         );
+        // Declared sizes count, finished or not: an unfinished upload is a reservation, and it
+        // lapses a day after its last chunk (`prune_retained`).
         ensure!(
-            s.blobs.len() < 10000
-                && s.blobs.values().map(|b| b.size).sum::<u64>() + size <= 10 * 1024 * 1024 * 1024,
+            s.blobs.len() < WORKSPACE_BLOBS
+                && s.blobs.values().map(|b| b.size).sum::<u64>() + size <= WORKSPACE_BLOB_BYTES,
             "quota_exceeded: workspace attachment quota"
         );
+        if self.manager(s, who).is_err() {
+            let (count, bytes) = s
+                .blobs
+                .values()
+                .filter(|b| b.owner_id == *who)
+                .fold((0usize, 0u64), |(count, bytes), b| {
+                    (count + 1, bytes + b.size)
+                });
+            ensure!(
+                count < self.quotas.member_blobs
+                    && bytes + size <= self.quotas.member_blob_bytes,
+                "quota_exceeded: You have used your share of this workspace's attachment space. Unfinished uploads free their space a day after their last progress."
+            );
+        }
         let sha = text(p, "sha256")?;
         ensure!(
             sha.len() == 64 && hex::decode(sha)?.len() == 32,
             "invalid_params: sha256"
         );
-        let name = text(p, "name")?;
+        let name = shared_name(p, "name", SharedName::File)?;
+        let media_type = text(p, "media_type")?;
         ensure!(
-            name.len() <= 255 && !name.chars().any(char::is_control),
-            "invalid_params: attachment display name"
+            media_type.len() <= 255 && media_type.bytes().all(|b| (0x20..0x7f).contains(&b)),
+            "invalid_params: media_type must be 1 to 255 printable ASCII characters"
         );
         let blob = Blob {
+            touched_at: Some(now()),
             run_id: actor.run.as_ref().map(|r| r.id.clone()),
             id: id(),
             owner_id: who.clone(),
             channel_id: channel.into(),
             name: name.into(),
-            media_type: text(p, "media_type")?.into(),
+            media_type: media_type.into(),
             size,
             sha256: sha.to_lowercase(),
             offset: 0,
@@ -3341,6 +4444,7 @@ impl Broker {
         file.sync_all()?;
         let blob = s.blobs.get_mut(blob_id).expect("authorized blob");
         blob.offset += bytes.len() as u64;
+        blob.touched_at = Some(now());
         Ok(json!(blob))
     }
     fn mutate_blob_finish(&self, s: &mut State, actor: &Actor, req: &Request) -> Result<Value> {
@@ -3411,6 +4515,231 @@ impl Broker {
     }
 }
 
+/// `items` reordered so each group (by `group`) takes a turn: every group's first item, then
+/// every group's second, and so on, groups in order of first appearance and each group in its
+/// own order. A budget applied afterwards then shares its room among the groups.
+fn in_turns<T, K: Ord>(items: Vec<T>, group: impl Fn(&T) -> K) -> Vec<T> {
+    let mut seen: BTreeMap<K, usize> = BTreeMap::new();
+    let mut ranked: Vec<(usize, usize, T)> = items
+        .into_iter()
+        .enumerate()
+        .map(|(position, item)| {
+            let turn = seen.entry(group(&item)).or_default();
+            *turn += 1;
+            (*turn, position, item)
+        })
+        .collect();
+    ranked.sort_by_key(|(turn, position, _)| (*turn, *position));
+    ranked.into_iter().map(|(_, _, item)| item).collect()
+}
+/// The leading `items` whose JSON fits in [`SNAPSHOT_SECTION_BYTES`] (at least the first one),
+/// so a snapshot section other members can grow never pushes the snapshot past the frame
+/// limit. The snapshot's `totals` says how many there were.
+fn within_budget<T: Serialize>(items: Vec<T>) -> Vec<T> {
+    within(items, SNAPSHOT_SECTION_BYTES)
+}
+/// The leading `items` whose JSON fits in `budget` bytes (at least the first one).
+fn within<T: Serialize>(items: Vec<T>, budget: usize) -> Vec<T> {
+    let mut used: usize = 0;
+    items
+        .into_iter()
+        .enumerate()
+        .take_while(|(index, item)| {
+            used = used.saturating_add(json_len(item)).saturating_add(1);
+            *index == 0 || used <= budget
+        })
+        .map(|(_, item)| item)
+        .collect()
+}
+
+/// Remove, from the state a mutation is about to commit, what no longer serves anyone:
+/// idempotency results older than [`Quotas::dedupe_ttl_secs`] (and any cached before results
+/// carried a time), unfinished uploads untouched for [`BLOB_UPLOAD_TTL_SECS`], invitations
+/// expired more than [`INVITATION_RETENTION_SECS`] ago, and runs, with their grants, expired
+/// more than [`RUN_RETENTION_SECS`] ago. At most [`PRUNE_BATCH`] of each per call, so one
+/// journal record stays small however much aged out at once.
+fn prune_retained(s: &mut State, now: u64, quotas: &Quotas) -> Pruned {
+    fn aged(at: Option<u64>, now: u64, ttl: u64) -> bool {
+        at.is_none_or(|at| now.saturating_sub(at) >= ttl)
+    }
+    let dedupe_ttl = quotas.dedupe_ttl_secs;
+    let stale: Vec<String> = s
+        .dedupe
+        .iter()
+        .filter(|(_, cached)| aged(cached.at, now, dedupe_ttl))
+        .map(|(key, _)| key.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    for key in stale {
+        s.dedupe.remove(&key);
+    }
+    let uploads: Vec<String> = s
+        .blobs
+        .values()
+        .filter(|blob| !blob.complete && aged(blob.touched_at, now, BLOB_UPLOAD_TTL_SECS))
+        .map(|blob| blob.id.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    for id in &uploads {
+        s.blobs.remove(id);
+    }
+    let invitations: Vec<String> = s
+        .invitations
+        .values()
+        .filter(|i| i.expires_at.saturating_add(INVITATION_RETENTION_SECS) <= now)
+        .map(|i| i.id.clone())
+        .take(PRUNE_BATCH)
+        .collect();
+    for id in invitations {
+        s.invitations.remove(&id);
+    }
+    let runs: BTreeMap<String, String> = s
+        .runs
+        .values()
+        .filter(|run| run.expires_at.saturating_add(RUN_RETENTION_SECS) <= now)
+        .map(|run| (run.id.clone(), run.owner_id.clone()))
+        .take(PRUNE_BATCH)
+        .collect();
+    if !runs.is_empty() {
+        s.runs.retain(|id, _| !runs.contains_key(id));
+        s.grants.retain(|_, run| !runs.contains_key(run));
+    }
+    Pruned { uploads, runs }
+}
+/// What [`prune_retained`] removed that outlives the state.
+struct Pruned {
+    /// Unfinished uploads, whose files are deleted once the commit lands.
+    uploads: Vec<String>,
+    /// Runs, by ID, with their owners (see [`RemovedRuns`]).
+    runs: BTreeMap<String, String>,
+}
+
+/// Cache `cached` under `key` for `actor`, first dropping the actor's oldest results so it
+/// keeps at most [`Quotas::dedupe_actor_entries`] in [`Quotas::dedupe_actor_bytes`] (the new
+/// result always stays), then the workspace's oldest beyond [`Quotas::dedupe_entries`]. A
+/// retry comes within seconds or minutes, long before hundreds of newer results; bounding
+/// the cache is what keeps it from ever becoming a cap on the workspace. The actor's agents'
+/// results go before the person's own, so a burst of agent projections never evicts the
+/// message the person may be about to retry.
+fn remember(s: &mut State, quotas: &Quotas, actor: &str, key: String, cached: Cached) {
+    let size = |key: &str, cached: &Cached| json_len(key) + json_len(cached);
+    let prefix = format!("{actor}:");
+    let human = format!("{actor}:human:");
+    let mut own: Vec<(bool, Option<u64>, String, usize)> = s
+        .dedupe
+        .range(prefix.clone()..)
+        .take_while(|(k, _)| k.starts_with(&prefix))
+        .map(|(k, c)| (k.starts_with(&human), c.at, k.clone(), size(k, c)))
+        .collect();
+    own.sort();
+    let mut count = own.len();
+    let mut bytes = own
+        .iter()
+        .fold(0usize, |total, (_, _, _, size)| total.saturating_add(*size));
+    let incoming = size(&key, &cached);
+    for (_, _, old, size) in own {
+        if count < quotas.dedupe_actor_entries
+            && bytes.saturating_add(incoming) <= quotas.dedupe_actor_bytes
+        {
+            break;
+        }
+        s.dedupe.remove(&old);
+        count -= 1;
+        bytes = bytes.saturating_sub(size);
+    }
+    if s.dedupe.len() >= quotas.dedupe_entries {
+        let mut all: Vec<(Option<u64>, String)> =
+            s.dedupe.iter().map(|(k, c)| (c.at, k.clone())).collect();
+        all.sort();
+        // Down to 99% of the limit at once, so the sort runs once per hundredth of the
+        // limit rather than on every mutation.
+        let target = quotas.dedupe_entries.max(1) - quotas.dedupe_entries / 100 - 1;
+        let excess = s.dedupe.len().saturating_sub(target);
+        for (_, old) in all.into_iter().take(excess) {
+            s.dedupe.remove(&old);
+        }
+    }
+    s.dedupe.insert(key, cached);
+}
+
+/// The serialized bytes of the records `principal` created and holds against
+/// [`Quotas::member_state_bytes`]: their messages (their agents' included), runs with their
+/// grants, attachments, references, invitations sent, and the teams and channels they
+/// created. Idempotency results and read positions are bounded separately.
+fn member_state_bytes(s: &State, principal: &str) -> usize {
+    fn total<T: Serialize>(items: impl Iterator<Item = T>) -> usize {
+        items.fold(0, |sum, item| sum.saturating_add(json_len(&item)))
+    }
+    let runs = s.runs.values().filter(|r| r.owner_id == principal);
+    // Each run also holds one grant: a 64-hex digest naming its ID.
+    let grants = runs.clone().count().saturating_mul(110);
+    [
+        total(s.messages.iter().filter(|m| m.actor_id == principal)),
+        total(runs),
+        grants,
+        total(s.blobs.values().filter(|b| b.owner_id == principal)),
+        total(s.references.values().filter(|r| r.owner_id == principal)),
+        total(s.invitations.values().filter(|i| i.inviter_id == principal)),
+        total(s.teams.values().filter(|t| t.created_by == principal)),
+        total(s.channels.values().filter(|c| c.created_by == principal)),
+    ]
+    .into_iter()
+    .fold(0, usize::saturating_add)
+}
+
+/// `p[key]` as display text of 1 to `max_bytes` bytes with no control, format, line or
+/// paragraph separator characters: nothing that hides, reorders or spoofs the text around it,
+/// and nothing JSON escapes to more than two bytes, so its stored size is bounded too.
+fn display_text<'a>(p: &'a Value, key: &str, max_bytes: usize) -> Result<&'a str> {
+    use unicode_properties::{GeneralCategory, UnicodeGeneralCategory};
+    let value = text(p, key)?;
+    ensure!(
+        value.len() <= max_bytes
+            && !value.chars().any(|c| matches!(
+                c.general_category(),
+                GeneralCategory::Control
+                    | GeneralCategory::Format
+                    | GeneralCategory::LineSeparator
+                    | GeneralCategory::ParagraphSeparator
+            )),
+        "invalid_params: {key} must be 1 to {max_bytes} bytes without control or invisible formatting characters"
+    );
+    Ok(value)
+}
+
+/// What a [`shared_name`] names, for its refusal.
+#[derive(Clone, Copy)]
+enum SharedName {
+    /// A new attachment's name.
+    File,
+    /// A reference's label.
+    Label,
+}
+
+/// `p[key]`, the name a new attachment is shown by or a reference's label: 1 to 255 bytes, and
+/// every character shown as itself (`hidden_in_shared_name`: no control, format or separator
+/// character, nothing default-ignorable, no Hangul filler or braille blank), so no name can hide
+/// its real extension or pass for another (T3-BE-11). Each refusal is a sentence a person can
+/// act on (T3-BE-10); it used to be `invalid_params: attachment display name`, which clients
+/// printed as "Attachment display name.". Names already stored are not judged again.
+fn shared_name<'a>(p: &'a Value, key: &str, what: SharedName) -> Result<&'a str> {
+    const MAX_BYTES: usize = 255;
+    let value = text(p, key)?;
+    let (subject, fix) = match what {
+        SharedName::File => ("This file's name", "Rename the file, then share it again."),
+        SharedName::Label => ("This reference's label", "Choose another label."),
+    };
+    ensure!(
+        value.len() <= MAX_BYTES,
+        "invalid_params: {subject} is longer than {MAX_BYTES} bytes. {fix}"
+    );
+    ensure!(
+        shared_name_shows_every_character(value),
+        "invalid_params: {subject} has an invisible or formatting character. {fix}"
+    );
+    Ok(value)
+}
+
 /// The host's active principal, injected into the snapshot's `workspace` at projection time
 /// and never stored (it would be journaled otherwise).
 fn host_principal_id(s: &State) -> Option<&str> {
@@ -3437,6 +4766,14 @@ fn check_expected_username(s: &State, params: &Value, principal_id: &str) -> Res
         TARGET_MISMATCH
     );
     Ok(())
+}
+
+/// The teams and channels a snapshot lists ([`Broker::places_within`]), with their wires.
+struct Places<'s> {
+    teams: Vec<&'s Team>,
+    teams_wire: Vec<Value>,
+    channels: Vec<&'s Channel>,
+    channels_wire: Vec<Value>,
 }
 
 /// Display names for one projection. The username keys of every principal (active or
@@ -3540,16 +4877,30 @@ fn read_frame(reader: &mut impl BufRead) -> Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 fn validate_socket(path: &Path, owner: u32) -> Result<()> {
+    runtime_root_of(path)?;
+    check_runtime_socket(path, owner)
+}
+/// The node-local temporary directory (`/tmp`) a runtime socket path's directory sits
+/// directly in, or `unsafe_socket` when the path is not shaped like one.
+fn runtime_root_of(path: &Path) -> Result<&Path> {
     ensure!(
         path.is_absolute(),
         "unsafe_socket: absolute socket path required"
     );
-    let parent = path.parent().ok_or_else(|| anyhow!("unsafe_socket"))?;
+    let root = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow!("unsafe_socket"))?;
     ensure!(
-        parent.parent() == Some(Path::new("/tmp"))
-            || parent.parent() == Some(Path::new("/private/tmp")),
+        root == Path::new("/tmp") || root == Path::new("/private/tmp"),
         "unsafe_socket: runtime must be dedicated node-local temporary directory"
     );
+    Ok(root)
+}
+/// `path` is a socket `owner` owns, in a directory (not a symbolic link) `owner` owns that no
+/// other account can write into. Only `owner` and root can make either.
+fn check_runtime_socket(path: &Path, owner: u32) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| anyhow!("unsafe_socket"))?;
     let dir = fs::symlink_metadata(parent)?;
     let socket = fs::symlink_metadata(path)?;
     use std::os::unix::fs::FileTypeExt;
@@ -3563,6 +4914,18 @@ fn validate_socket(path: &Path, owner: u32) -> Result<()> {
     );
     Ok(())
 }
+/// Whether `name` is shaped like a runtime directory of `uid`: `crew-<uid>-` and 32 lowercase
+/// hex digits. Any account can create an entry with such a name in `/tmp`; the shape says
+/// nothing about who did.
+fn runtime_basename_of(name: &str, uid: u32) -> bool {
+    name.strip_prefix(&format!("crew-{uid}-"))
+        .is_some_and(|suffix| {
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+}
 /// The workspace names running sibling brokers of `uid` answer `hello` with: every
 /// `crew-<uid>-<32 hex>/broker.sock` under `runtime_root` (at most [`SIBLING_PROBE_LIMIT`])
 /// whose directory and socket `uid` owns and whose listener runs as `uid`, except `own_basename`
@@ -3570,26 +4933,23 @@ fn validate_socket(path: &Path, owner: u32) -> Result<()> {
 /// socket is skipped, each probe is bounded by [`SIBLING_PROBE_TIMEOUT`], and nothing is
 /// trusted beyond the name used to refuse a duplicate. Names are what any node user can
 /// already learn from `hello`.
+///
+/// Ownership is checked **before** the probe limit is applied: any account can create entries
+/// named `crew-<uid>-…` in `/tmp`, and decoys that sort first must never take the probe slots
+/// of the account's real runtime directories.
 fn sibling_workspace_names(
     runtime_root: &Path,
     uid: u32,
     own_basename: Option<&str>,
     own_workspace_id: &str,
 ) -> Vec<String> {
-    let prefix = format!("crew-{uid}-");
     let Ok(entries) = fs::read_dir(runtime_root) else {
         return Vec::new();
     };
     let mut candidates: Vec<String> = entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| {
-            name.strip_prefix(&prefix).is_some_and(|suffix| {
-                suffix.len() == 32
-                    && suffix
-                        .bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            }) && Some(name.as_str()) != own_basename
-        })
+        .filter(|name| runtime_basename_of(name, uid) && Some(name.as_str()) != own_basename)
+        .filter(|name| owned_runtime_socket(&runtime_root.join(name), uid))
         .collect();
     candidates.sort();
     candidates.truncate(SIBLING_PROBE_LIMIT);
@@ -3602,6 +4962,18 @@ fn sibling_workspace_names(
             (hello_workspace != own_workspace_id).then_some(name?)
         })
         .collect()
+}
+/// Whether `directory` is a directory `uid` owns (not a symlink) holding a `broker.sock` socket
+/// `uid` owns. Metadata only: nothing is opened or connected.
+fn owned_runtime_socket(directory: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    let (Ok(dir), Ok(socket)) = (
+        fs::symlink_metadata(directory),
+        fs::symlink_metadata(directory.join("broker.sock")),
+    ) else {
+        return false;
+    };
+    dir.is_dir() && dir.uid() == uid && socket.file_type().is_socket() && socket.uid() == uid
 }
 /// `hello` on one sibling socket: `(workspace_id, name)`.
 fn probe_hello(directory: &Path, socket: &Path, uid: u32) -> Result<(String, Option<String>)> {
@@ -3651,6 +5023,11 @@ fn recorded_runtime(broker: &Broker, node_id: &str) -> Result<Option<String>> {
                     && metadata.len() <= MAX_FRAME as u64,
                 "unsafe_runtime: invalid private runtime descriptor"
             );
+            // An empty descriptor records nothing: older `status` and `stop` created one when
+            // runtime.json was missing, and the first start must not read it as corrupt.
+            if metadata.len() == 0 {
+                return Ok(None);
+            }
             let value: Value = serde_json::from_reader(file)
                 .context("unsafe_runtime: runtime descriptor is corrupt")?;
             ensure!(
@@ -3668,7 +5045,7 @@ fn recorded_runtime(broker: &Broker, node_id: &str) -> Result<Option<String>> {
                 .parent()
                 .ok_or_else(|| anyhow!("unsafe_runtime: runtime directory missing"))?;
             ensure!(
-                directory.parent() == Some(Path::new("/tmp")),
+                directory.parent() == Some(broker.runtime_root.as_path()),
                 "unsafe_runtime: runtime directory must be directly under /tmp"
             );
             Some(
@@ -3715,37 +5092,144 @@ fn persisted_runtime(broker: &mut Broker, node_id: &str) -> Result<PathBuf> {
         state.runtime_basename = Some(basename.clone());
         broker.commit(state, "system", "workspace.bind_runtime")?;
     }
-    reclaim_runtime_socket(uid, &basename)
+    match reclaim_runtime_socket(&broker.runtime_root, uid, &basename)? {
+        RuntimeDirectory::Ready(socket) => Ok(socket),
+        RuntimeDirectory::Unusable(reason) => relocate_runtime(broker, uid, &basename, reason),
+    }
 }
-fn reclaim_runtime_socket(uid: u32, basename: &str) -> Result<PathBuf> {
-    let directory = PathBuf::from("/tmp").join(basename);
-    match fs::symlink_metadata(&directory) {
-        Ok(metadata) => ensure!(
+/// What [`reclaim_runtime_socket`] found at the recorded runtime path.
+#[derive(Debug)]
+enum RuntimeDirectory {
+    /// The socket path, in a directory this account owns with mode 0711, free to bind.
+    Ready(PathBuf),
+    /// The path cannot be used as it stands: another account's entry, a symbolic link or other
+    /// non-directory, a directory other accounts can write into, or an unexpected entry. After
+    /// `/tmp` is cleaned any account can create an entry at the recorded name, and a sticky
+    /// `/tmp` lets only that account and root remove it, so none of these is repaired in place.
+    /// The reason is logged. (This account's own directory with another owner-only mode is
+    /// repaired in place: nobody else can have written into it.)
+    Unusable(&'static str),
+}
+/// Move the workspace to a fresh runtime directory when its recorded one cannot be used
+/// ([`RuntimeDirectory::Unusable`]). The new name is random and created exclusively, so nobody
+/// can have claimed it first, and it is journaled before the broker binds. Members' saved
+/// connections, and the old invitation line, still name the old path: a bridge of this version
+/// or later finds the new directory itself ([`moved_workspace`]), and a member with an older
+/// `biorouter-crew` updates it.
+fn relocate_runtime(
+    broker: &mut Broker,
+    uid: u32,
+    previous: &str,
+    reason: &str,
+) -> Result<PathBuf> {
+    // A descriptor naming the old path must not outlive the move, or a broker stopped between
+    // the journal record and its new descriptor would find the two disagreeing at next start.
+    match fs::remove_file(broker.root.join("runtime.json")) {
+        Ok(()) => sync_dir(&broker.root)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).context("unsafe_runtime: cannot retire runtime descriptor")
+        }
+    }
+    for _ in 0..8 {
+        let basename = format!("crew-{uid}-{}", Uuid::new_v4().simple());
+        let directory = broker.runtime_root.join(&basename);
+        match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o711))?;
+        let metadata = fs::symlink_metadata(&directory)?;
+        ensure!(
             metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o7777 == 0o711,
-            "unsafe_runtime: persisted directory ownership, type or permissions changed"
-        ),
+            "unsafe_runtime: new runtime directory ownership, type or permissions invalid"
+        );
+        let mut state = broker.state.clone();
+        state.runtime_basename = Some(basename);
+        broker.commit(state, "system", "workspace.move_runtime")?;
+        let socket = directory.join("broker.sock");
+        eprintln!(
+            "runtime_moved: the recorded runtime directory {previous} can't be used ({reason}); this workspace now listens at {}. Members keep their connections: a biorouter-crew of this version or later in their account finds the new directory, and anyone whose Crew then can't connect updates ~/.local/bin/biorouter-crew. A saved connection is never re-pinned by pasting a new invitation line, so members don't need one.",
+            socket.display()
+        );
+        return Ok(socket);
+    }
+    bail!("unsafe_runtime: could not create a new runtime directory")
+}
+/// Check (and prepare) the recorded runtime directory `runtime_root/basename`: create it when
+/// it is missing, and remove a stale socket this account left behind. A live listener is an
+/// error (`runtime_in_use`); anything that makes the path unusable is
+/// [`RuntimeDirectory::Unusable`].
+fn reclaim_runtime_socket(
+    runtime_root: &Path,
+    uid: u32,
+    basename: &str,
+) -> Result<RuntimeDirectory> {
+    use RuntimeDirectory::Unusable;
+    let directory = runtime_root.join(basename);
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if !metadata.is_dir() => {
+            return Ok(Unusable("it is not a directory"));
+        }
+        Ok(metadata) if metadata.uid() != uid => {
+            return Ok(Unusable("another account owns it"));
+        }
+        Ok(metadata) if metadata.mode() & 0o022 != 0 => {
+            return Ok(Unusable("other accounts can write into it"));
+        }
+        Ok(metadata) if metadata.mode() & 0o7777 != 0o711 => {
+            // This account's own directory, which no other account could ever write into (only
+            // its owner and root can change its mode): nothing in it can be another account's,
+            // so its mode is put back rather than the workspace moved, and members keep the
+            // path they were given.
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o711))?;
+            let repaired = fs::symlink_metadata(&directory)?;
+            ensure!(
+                repaired.is_dir()
+                    && repaired.uid() == uid
+                    && repaired.mode() & 0o7777 == 0o711
+                    && repaired.dev() == metadata.dev()
+                    && repaired.ino() == metadata.ino(),
+                "unsafe_runtime: runtime directory changed while its permissions were repaired"
+            );
+            eprintln!(
+                "runtime_repaired: {} had mode {:o}; set it back to 711",
+                directory.display(),
+                metadata.mode() & 0o7777
+            );
+        }
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::DirBuilder::new().mode(0o700).create(&directory)?;
+            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {}
+                // Created by someone else between the two calls.
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Ok(Unusable("another account created it"));
+                }
+                Err(error) => return Err(error.into()),
+            }
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o711))?;
         }
         Err(error) => return Err(error.into()),
     }
     for entry in fs::read_dir(&directory)? {
-        ensure!(
-            entry?.file_name() == "broker.sock",
-            "unsafe_runtime: unexpected entry occupies the persisted runtime directory"
-        );
+        if entry?.file_name() != "broker.sock" {
+            return Ok(Unusable("an unexpected entry occupies it"));
+        }
     }
     let socket = directory.join("broker.sock");
     match fs::symlink_metadata(&socket) {
         Ok(metadata) => {
             use std::os::unix::fs::FileTypeExt;
-            ensure!(
-                metadata.file_type().is_socket()
-                    && metadata.uid() == uid
-                    && metadata.mode() & 0o7777 == 0o666,
-                "unsafe_runtime: socket ownership, type or permissions changed"
-            );
+            if !(metadata.file_type().is_socket()
+                && metadata.uid() == uid
+                && metadata.mode() & 0o7777 == 0o666)
+            {
+                return Ok(Unusable(
+                    "its socket's ownership, type or permissions changed",
+                ));
+            }
             match UnixStream::connect(&socket) {
                 Ok(_) => bail!(
                     "runtime_in_use: persisted socket has a live listener; it will not be replaced"
@@ -3771,7 +5255,7 @@ fn reclaim_runtime_socket(uid: u32, basename: &str) -> Result<PathBuf> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
-    Ok(socket)
+    Ok(RuntimeDirectory::Ready(socket))
 }
 fn write_runtime(root: &Path, info: &Value) -> Result<()> {
     let path = root.join(format!(".runtime-{}.tmp", Uuid::new_v4()));
@@ -3837,6 +5321,8 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
     let socket = persisted_runtime(&mut broker, &node_id)?;
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o666))?;
+    let bound = path_identity(&socket)
+        .ok_or_else(|| anyhow!("unsafe_runtime: the bound socket disappeared"))?;
     let secret: [u8; 32] = hex::decode(&broker.state.workspace_signing_key)?
         .try_into()
         .map_err(|_| anyhow!("storage_corrupt: workspace identity"))?;
@@ -3847,6 +5333,7 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
     write_runtime(root, &info)?;
     println!("{}", info);
     let shared = Arc::new(Mutex::new(broker));
+    watch_runtime(socket.clone(), bound, Arc::clone(&shared));
     let active = Arc::new(Mutex::new(BTreeMap::<u32, usize>::new()));
     for stream in listener.incoming() {
         let stream = stream?;
@@ -3873,17 +5360,62 @@ pub fn serve(root: &Path, bootstrap_key: &str, name: Option<&str>) -> Result<()>
     }
     Ok(())
 }
-fn serve_client(mut stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
+/// How often a running broker checks that its socket path still leads to the socket it bound.
+const RUNTIME_WATCH_INTERVAL: Duration = Duration::from_secs(30);
+/// The `(device, inode)` of the entry at `path`, without following a final symbolic link, or
+/// `None` when it cannot be read.
+fn path_identity(path: &Path) -> Option<(u64, u64)> {
+    fs::symlink_metadata(path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+/// Whether `socket` still leads to the socket the broker bound, identified by `bound`.
+fn runtime_intact(socket: &Path, bound: (u64, u64)) -> bool {
+    path_identity(socket) == Some(bound)
+}
+/// Stop the broker once its socket path no longer leads to the socket it bound: the runtime
+/// directory was removed (by root or a `/tmp` cleaner) and perhaps re-created by another
+/// account. Nobody can connect any more and `stop` can no longer verify the process, while it
+/// still holds the writer lock, so it exits and lets the next `start` restore the path or move
+/// the workspace to a new one. It waits for the request in progress, so no commit is cut short.
+fn watch_runtime(socket: PathBuf, bound: (u64, u64), broker: Arc<Mutex<Broker>>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(RUNTIME_WATCH_INTERVAL);
+        if !runtime_intact(&socket, bound) {
+            let _held = broker.lock();
+            eprintln!(
+                "runtime_lost: {} no longer leads to this broker; stopping so the next start can restore or move it",
+                socket.display()
+            );
+            std::process::exit(75);
+        }
+    });
+}
+fn serve_client(stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) -> Result<()> {
+    let mut connection = Connection::new();
+    let served = serve_requests(stream, uid, &broker, &mut connection);
+    // However the connection ended, the person it was signed on for is no longer connected
+    // through it.
+    if let Ok(mut broker) = broker.lock() {
+        broker.connection_closed(&mut connection);
+    }
+    served
+}
+fn serve_requests(
+    mut stream: UnixStream,
+    uid: u32,
+    broker: &Mutex<Broker>,
+    connection: &mut Connection,
+) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(300)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut connection = Connection::new();
     while let Some(bytes) = read_frame(&mut reader)? {
         let request: Request = serde_json::from_slice(&bytes)?;
         let response = broker
             .lock()
             .map_err(|_| anyhow!("broker unavailable"))?
-            .handle(uid, &mut connection, request);
+            .handle(uid, connection, request);
         let mut bytes = serde_json::to_vec(&response)?;
         if bytes.len() >= MAX_FRAME {
             bytes = serde_json::to_vec(&Response {
@@ -3901,34 +5433,141 @@ fn serve_client(mut stream: UnixStream, uid: u32, broker: Arc<Mutex<Broker>>) ->
     }
     Ok(())
 }
-pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
-    ensure!(
-        cfg!(target_os = "linux"),
-        "unsupported: bridge requires Linux"
-    );
-    validate_socket(socket, owner)?;
+/// A connection to `workspace`'s broker, which `owner` runs, with the `hello` it answered: at
+/// `socket`, the path the member's saved connection names, or, when that path no longer leads
+/// to the workspace, wherever in `root` the broker has moved to ([`moved_workspace`]).
+fn open_workspace(
+    root: &Path,
+    socket: &Path,
+    owner: u32,
+    workspace: &str,
+) -> Result<(UnixStream, BufReader<UnixStream>, Value)> {
+    match connect_workspace(socket, owner, workspace, None) {
+        Ok(found) => Ok(found),
+        Err(error) => {
+            let pinned = socket.parent().and_then(Path::file_name);
+            moved_workspace(root, owner, workspace, pinned).ok_or(error)
+        }
+    }
+}
+/// Connect to the broker at `socket` and check it is `workspace`'s, run by `owner`: the socket
+/// and its directory are `owner`'s ([`check_runtime_socket`]), the listener runs as `owner`,
+/// and it answers `hello` for `workspace`. `timeout` bounds the `hello`; the connection is
+/// returned without one.
+fn connect_workspace(
+    socket: &Path,
+    owner: u32,
+    workspace: &str,
+    timeout: Option<Duration>,
+) -> Result<(UnixStream, BufReader<UnixStream>, Value)> {
+    check_runtime_socket(socket, owner)?;
     let mut stream = UnixStream::connect(socket)?;
     ensure!(peer_uid(&stream)? == owner, "identity_mismatch: broker UID");
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
     let mut reader = BufReader::new(stream.try_clone()?);
     stream
         .write_all(b"{\"version\":1,\"id\":\"bridge-pin\",\"method\":\"hello\",\"params\":{}}\n")?;
     let hello: Response = serde_json::from_slice(
         &read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?,
     )?;
+    let hello = hello.result.unwrap_or(Value::Null);
     ensure!(
-        hello
-            .result
-            .as_ref()
-            .and_then(|v| v.get("workspace_id"))
-            .and_then(Value::as_str)
-            == Some(workspace),
+        hello.get("workspace_id").and_then(Value::as_str) == Some(workspace),
         "identity_mismatch: pinned workspace"
     );
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
+    stream.set_read_timeout(None)?;
+    stream.set_write_timeout(None)?;
+    Ok((stream, reader, hello))
+}
+/// `workspace`'s broker in another runtime directory of `owner` in `root`, after it moved away
+/// from the one a member's connection was saved with (`pinned`, skipped here).
+///
+/// A broker moves when its recorded directory cannot be used ([`relocate_runtime`]), typically
+/// because another account created an entry at that name after `/tmp` was cleaned, and every
+/// saved connection still names the old path. Without this, each member would have to remove
+/// their connection and enroll again, since a pasted invitation never re-pins a workspace
+/// someone already saved. Only a runtime directory of `owner`'s that nobody else can write
+/// into, holding a socket `owner` owns, whose listener runs as `owner` and answers `hello` for
+/// `workspace`, is ever used, and no other account can make any of those. The daemon then
+/// checks the workspace key's signature on its own `hello`, exactly as for the saved path.
+/// As when a start checks its siblings, ownership is checked before at most
+/// [`SIBLING_PROBE_LIMIT`] directories are tried, each bounded by [`SIBLING_PROBE_TIMEOUT`], so
+/// entries another account creates can neither take those slots nor stall the search.
+fn moved_workspace(
+    root: &Path,
+    owner: u32,
+    workspace: &str,
+    pinned: Option<&std::ffi::OsStr>,
+) -> Option<(UnixStream, BufReader<UnixStream>, Value)> {
+    let mut candidates: Vec<PathBuf> = fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| {
+            runtime_basename_of(name, owner) && Some(std::ffi::OsStr::new(name)) != pinned
+        })
+        .map(|name| root.join(name).join("broker.sock"))
+        .filter(|socket| check_runtime_socket(socket, owner).is_ok())
+        .collect();
+    candidates.sort();
+    candidates.truncate(SIBLING_PROBE_LIMIT);
+    candidates.into_iter().find_map(|socket| {
+        connect_workspace(&socket, owner, workspace, Some(SIBLING_PROBE_TIMEOUT)).ok()
+    })
+}
+pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
+    ensure!(
+        cfg!(target_os = "linux"),
+        "unsupported: bridge requires Linux"
+    );
+    let root = runtime_root_of(socket)?;
+    let (stream, reader, _) = open_workspace(root, socket, owner, workspace)?;
+    // Standard input is read through a buffer the relay can see into: it waits on the input
+    // descriptor only when that buffer is empty.
+    use std::os::fd::AsFd;
+    let mut input = BufReader::new(File::from(std::io::stdin().as_fd().try_clone_to_owned()?));
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
-    while let Some(frame) = read_frame(&mut input)? {
+    relay(&mut input, &mut output, stream, reader)
+}
+/// What a bridge answers a request it could not hand to the broker: nothing of it reached the
+/// workspace, so nothing changed and it is safe to send again once reconnected. The member's
+/// daemon can then say "not sent" instead of "the outcome may be unknown".
+const NOT_DELIVERED: &str = "not_delivered: The workspace server was not reachable, so this request was not sent and nothing changed. Reconnect and try again.";
+/// Why a bridge exits when its broker has gone: the member's `ssh` ends with it, which is how
+/// the member's daemon learns, within seconds, that the connection dropped.
+const BROKER_GONE: &str =
+    "broker_unavailable: the workspace server closed the connection; reconnect to continue";
+/// Relay frames between the member's daemon (`input`, `output`) and the broker, until the
+/// daemon closes its end (`Ok`) or the broker goes away (`Err`).
+///
+/// It waits on the daemon **and** the broker together. The broker only ever answers, so while
+/// no request is in flight anything it signals is a hang-up; the bridge then exits at once
+/// (R-5). Waiting on the daemon alone, it noticed a broker that died only when the next
+/// request failed, and the member read "Connected" for up to two and a half minutes. A request
+/// that could not be written to the broker is answered [`NOT_DELIVERED`] before it exits.
+fn relay(
+    input: &mut BufReader<File>,
+    output: &mut impl Write,
+    mut stream: UnixStream,
+    mut reader: BufReader<UnixStream>,
+) -> Result<()> {
+    loop {
+        if input.buffer().is_empty() {
+            let (input_ready, broker_gone) = wait_for_input(input.get_ref(), &stream)?;
+            if broker_gone {
+                // A request already waiting was never sent; say so rather than leave it lost.
+                if input_ready {
+                    if let Some(frame) = read_frame(input)? {
+                        write_not_delivered(output, &frame)?;
+                    }
+                }
+                bail!(BROKER_GONE);
+            }
+        }
+        let Some(frame) = read_frame(input)? else {
+            return Ok(());
+        };
         let request: Request = serde_json::from_slice(&frame)?;
         if request.method.starts_with("remote.") {
             let result = (|| -> Result<Value> {
@@ -3990,14 +5629,71 @@ pub fn bridge(socket: &Path, owner: u32, workspace: &str) -> Result<()> {
             output.write_all(&bytes)?;
             output.flush()?;
         } else {
-            stream.write_all(&frame)?;
-            stream.flush()?;
+            if stream
+                .write_all(&frame)
+                .and_then(|()| stream.flush())
+                .is_err()
+            {
+                // The frame did not reach the broker whole, and a partial frame is never
+                // processed: nothing was sent.
+                write_not_delivered(output, &frame)?;
+                bail!(BROKER_GONE);
+            }
             let response =
                 read_frame(&mut reader)?.ok_or_else(|| anyhow!("broker disconnected"))?;
             output.write_all(&response)?;
             output.flush()?;
         }
     }
+}
+/// Wait until the daemon's `input` has something to read or the broker's `stream` signals
+/// anything at all: `(input_ready, broker_gone)`. Readable, hung up or failed, a broker that
+/// was asked nothing has gone.
+fn wait_for_input(input: &File, stream: &UnixStream) -> Result<(bool, bool)> {
+    loop {
+        let mut fds = [
+            libc::pollfd {
+                fd: input.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: stream.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        let input_ready = fds[0].revents != 0;
+        let broker_gone = fds[1].revents != 0;
+        if input_ready || broker_gone {
+            return Ok((input_ready, broker_gone));
+        }
+    }
+}
+/// Answer the request in `frame` with [`NOT_DELIVERED`], under its own ID.
+fn write_not_delivered(output: &mut impl Write, frame: &[u8]) -> Result<()> {
+    let id = serde_json::from_slice::<Value>(frame)
+        .ok()
+        .and_then(|request| request.get("id").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default();
+    let mut bytes = serde_json::to_vec(&Response {
+        id,
+        result: None,
+        error: Some(ProtocolError {
+            code: "not_delivered".into(),
+            message: NOT_DELIVERED.into(),
+        }),
+    })?;
+    bytes.push(b'\n');
+    output.write_all(&bytes)?;
+    output.flush()?;
     Ok(())
 }
 /// `start`, `status` or `stop` a broker for the state directory `root`. `name` (`start` only)
@@ -4006,14 +5702,10 @@ pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> R
     match command {
         "start" => start(root, key, name),
         "status" => {
-            let mut file = private_file(&root.join("runtime.json"), false)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-            let info: Value = serde_json::from_slice(&bytes)?;
+            let info = existing_runtime_descriptor(root)?.ok_or_else(|| anyhow!(NOT_RUNNING))?;
             let socket = PathBuf::from(text(&info, "socket")?);
             let uid = number(&info, "host_uid")? as u32;
-            validate_socket(&socket, uid)?;
-            let mut stream = UnixStream::connect(socket)?;
+            let mut stream = connect_recorded(&info, &socket, uid)?;
             ensure!(peer_uid(&stream)? == uid, "identity_mismatch");
             stream.set_read_timeout(Some(Duration::from_secs(3)))?;
             stream.write_all(
@@ -4027,11 +5719,43 @@ pub fn lifecycle(command: &str, root: &Path, key: &str, name: Option<&str>) -> R
                     == info.get("workspace_id"),
                 "identity_mismatch"
             );
-            Ok(info)
+            let hello = response.result.unwrap_or_default();
+            status_answer(root, info, &hello)
         }
         "stop" => stop(root),
         _ => bail!("invalid_command"),
     }
+}
+
+/// What `status` prints for the broker `info` describes, which answered `hello`: the runtime
+/// descriptor with `"state":"running"` and the workspace's name, or, when the broker has
+/// stopped saving changes, a refusal telling the host what to do.
+fn status_answer(root: &Path, mut info: Value, hello: &Value) -> Result<Value> {
+    if hello.get("state").and_then(Value::as_str) == Some("storage_failed") {
+        let full = hello["storage"]["code"].as_str() == Some("storage_full");
+        let fault = StorageFault {
+            full,
+            at: hello["storage"]["since"].as_u64().unwrap_or_default(),
+            detail: String::new(),
+            committed: 0,
+            logged: true,
+        };
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        bail!(
+            "{}: Crew on this server stopped saving changes at {} because {}. Reading still works. {} broker.log in the state directory has the error.",
+            fault.code(),
+            utc_timestamp(fault.at),
+            if full {
+                "the disk is full"
+            } else {
+                "it could not write to its storage"
+            },
+            fault.host_instruction(&root)
+        );
+    }
+    info["state"] = json!("running");
+    info["name"] = hello.get("name").cloned().unwrap_or(Value::Null);
+    Ok(info)
 }
 
 /// How long `start` waits for the broker it launched to answer `hello`.
@@ -4069,6 +5793,11 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
             WORKSPACE_NAME_TAKEN
         );
     }
+    // The socket members were given last time, to tell the host when the broker had to move.
+    let previous_socket = read_runtime_descriptor(root)
+        .ok()
+        .flatten()
+        .and_then(|info| info.get("socket").cloned());
     let log = private_file(&root.join("broker.log"), true)?;
     use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
@@ -4113,6 +5842,15 @@ fn start(root: &Path, key: &str, name: Option<&str>) -> Result<Value> {
                         "workspace_id": hello["workspace_id"],
                         "name": hello["name"],
                     });
+                    if previous_socket
+                        .as_ref()
+                        .is_some_and(|previous| Some(previous) != info.get("socket"))
+                    {
+                        // The recorded runtime directory could not be used (see broker.log),
+                        // and the workspace moved. A bridge of this version or later follows
+                        // it from the old path; an older one needs updating.
+                        result["socket_changed"] = json!(true);
+                    }
                     match start_invitation(&info, &hello) {
                         Ok(line) => result["invitation"] = json!(line),
                         Err(error) => {
@@ -4194,6 +5932,94 @@ fn read_runtime_descriptor(root: &Path) -> Result<Option<Value>> {
     );
     Ok(serde_json::from_reader(file).ok())
 }
+/// `status` and `stop` for a state directory that has no runtime descriptor.
+const NOT_RUNNING: &str = "not_running: no broker is running from this state directory; start it with biorouter-crew start";
+/// The broker the runtime descriptor `info` records, connected at its `socket` after the
+/// socket's ownership is checked; [`NOT_RUNNING`] when no broker is there any more (T3-BE-2).
+/// A broker stopped with `stop` or SIGTERM, one that was killed, and one whose server rebooted
+/// all leave `runtime.json` behind, and often the socket file too: the process it names is gone,
+/// the socket file is missing, or connecting to it is refused. Each of those used to reach the
+/// host as the raw error ("Connection refused (os error 111)"), for `status` and for a second
+/// `stop` alike. Nothing is removed here: the next `start` reclaims the same runtime path.
+fn connect_recorded(info: &Value, socket: &Path, owner: u32) -> Result<UnixStream> {
+    if recorded_process_gone(info) {
+        bail!(NOT_RUNNING);
+    }
+    let gone = |error: &std::io::Error| {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        )
+    };
+    if let Err(error) = validate_socket(socket, owner) {
+        if error.downcast_ref::<std::io::Error>().is_some_and(&gone) {
+            bail!(NOT_RUNNING);
+        }
+        return Err(error);
+    }
+    match UnixStream::connect(socket) {
+        Ok(stream) => Ok(stream),
+        Err(error) if gone(&error) => bail!(NOT_RUNNING),
+        Err(error) => Err(error.into()),
+    }
+}
+/// Whether the process the runtime descriptor `info` names has exited. Only a definite answer
+/// counts (`ESRCH`); a process another account owns, or a descriptor with no `pid`, is not known
+/// to be gone, and the socket is asked instead.
+fn recorded_process_gone(info: &Value) -> bool {
+    let Some(pid) = info
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| libc::pid_t::try_from(pid).ok())
+        .filter(|pid| *pid > 0)
+    else {
+        return false;
+    };
+    let answered = unsafe { libc::kill(pid, 0) };
+    answered == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+/// `runtime.json` for `status` and `stop`, read without creating anything: `None` when the
+/// state directory or the descriptor is missing, or the descriptor is empty (older `status` and
+/// `stop` created an empty one). The state directory must be private, and the descriptor a
+/// private regular file with one link.
+fn existing_runtime_descriptor(root: &Path) -> Result<Option<Value>> {
+    match fs::symlink_metadata(root) {
+        Ok(metadata) => ensure!(
+            metadata.is_dir()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o077 == 0,
+            "unsafe_storage: state directory must be owner-only and not a symlink"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root.join("runtime.json"))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("unsafe_runtime: cannot read runtime descriptor"),
+    };
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o077 == 0
+            && metadata.nlink() == 1
+            && metadata.len() <= MAX_FRAME as u64,
+        "unsafe_runtime: invalid private runtime descriptor"
+    );
+    if metadata.len() == 0 {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .context("unsafe_runtime: runtime descriptor is corrupt")
+}
 /// `hello` from the broker `info` describes, checked as `status` checks it: the socket and its
 /// listener belong to the host account, and the broker answers for the recorded workspace and
 /// key.
@@ -4267,19 +6093,14 @@ fn last_log_line(root: &Path) -> String {
 #[cfg(target_os = "linux")]
 fn stop(root: &Path) -> Result<Value> {
     use std::os::fd::FromRawFd;
-    private_dir(root)?;
-    let mut file = private_file(&root.join("runtime.json"), false)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    let info: Value = serde_json::from_slice(&bytes)?;
+    let info = existing_runtime_descriptor(root)?.ok_or_else(|| anyhow!(NOT_RUNNING))?;
     let owner = number(&info, "host_uid")? as u32;
     ensure!(
         owner == unsafe { libc::geteuid() },
         "forbidden: only host account can stop broker"
     );
     let socket = PathBuf::from(text(&info, "socket")?);
-    validate_socket(&socket, owner)?;
-    let mut stream = UnixStream::connect(&socket)?;
+    let mut stream = connect_recorded(&info, &socket, owner)?;
     let mut cred = std::mem::MaybeUninit::<libc::ucred>::uninit();
     let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     ensure!(
@@ -4409,5 +6230,455 @@ mod system_account_tests {
         // A node whose login.defs starts people at 500.
         assert!(!is_system_account(&account(600, Some("/bin/bash")), 500));
         assert!(is_system_account(&account(0, Some("/bin/bash")), 0));
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    fn short_root() -> PathBuf {
+        let suffix: String = Uuid::new_v4()
+            .simple()
+            .to_string()
+            .chars()
+            .take(12)
+            .collect();
+        let path = Path::new("/tmp").join(format!("crt-u-{suffix}"));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn another_accounts_runtime_directory_is_unusable_not_an_error() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let basename = format!("crew-{uid}-{}", Uuid::new_v4().simple());
+        // This account's own directory, as it looks to a host of another UID: exactly what a
+        // host sees when another account created the recorded name after /tmp was cleaned.
+        let directory = root.join(&basename);
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o711)).unwrap();
+        let foreign = reclaim_runtime_socket(&root, uid.wrapping_add(1), &basename).unwrap();
+        assert!(
+            matches!(
+                foreign,
+                RuntimeDirectory::Unusable("another account owns it")
+            ),
+            "{foreign:?}"
+        );
+        // Its own host reclaims it.
+        let own = reclaim_runtime_socket(&root, uid, &basename).unwrap();
+        assert!(
+            matches!(&own, RuntimeDirectory::Ready(socket) if *socket == directory.join("broker.sock")),
+            "{own:?}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_watchdog_notices_a_removed_or_replaced_socket() {
+        let root = short_root();
+        let socket = root.join("broker.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let bound = path_identity(&socket).unwrap();
+        assert!(runtime_intact(&socket, bound));
+        fs::remove_file(&socket).unwrap();
+        assert!(!runtime_intact(&socket, bound), "removed");
+        let _other = UnixListener::bind(&socket).unwrap();
+        assert!(
+            !runtime_intact(&socket, bound),
+            "replaced by another socket"
+        );
+        drop(listener);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A broker stand-in at `root/basename/broker.sock`, in a directory with `mode`, answering
+    /// every `hello` for `workspace_id` with `name`.
+    #[cfg(target_os = "linux")]
+    fn fake_broker(root: &Path, basename: &str, mode: u32, workspace_id: &str, name: &str) {
+        let directory = root.join(basename);
+        fs::create_dir(&directory).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        let listener = UnixListener::bind(directory.join("broker.sock")).unwrap();
+        let answer =
+            json!({"id": "bridge-pin", "result": {"workspace_id": workspace_id, "name": name}});
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut line = String::new();
+                if BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut line)
+                    .is_ok()
+                {
+                    let _ = stream.write_all(format!("{answer}\n").as_bytes());
+                }
+                // Held open, as a broker holds a bridge's connection.
+                std::mem::forget(stream);
+            }
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bridge_follows_its_workspace_to_the_directory_it_moved_to() {
+        let root = short_root();
+        let uid = unsafe { libc::geteuid() };
+        let workspace = Uuid::new_v4().to_string();
+        let basename = |fill: char| format!("crew-{uid}-{}", fill.to_string().repeat(32));
+        // The saved connection names `a…`, which the broker had to leave (another account took
+        // it once /tmp was cleaned); it moved to `f…`. Everything that sorts between the two is
+        // something the bridge must never take for the workspace: a directory other accounts
+        // can write into, whose listener claims the workspace, and one of this account's
+        // other workspaces.
+        let pinned = root.join(basename('a')).join("broker.sock");
+        fake_broker(&root, &basename('b'), 0o777, &workspace, "writable");
+        fake_broker(
+            &root,
+            &basename('c'),
+            0o711,
+            &Uuid::new_v4().to_string(),
+            "sibling",
+        );
+        std::os::unix::fs::symlink(root.join(basename('f')), root.join(basename('d'))).unwrap();
+        fake_broker(&root, &basename('f'), 0o711, &workspace, "moved");
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "moved");
+
+        // What stands at the saved path, when it is unusable, changes nothing.
+        std::os::unix::fs::symlink(root.join(basename('f')), root.join(basename('a'))).unwrap();
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "moved");
+        fs::remove_file(root.join(basename('a'))).unwrap();
+        fake_broker(&root, &basename('a'), 0o777, &workspace, "squatted");
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "moved");
+        let _ = fs::remove_dir_all(&root);
+
+        // The saved path, while it still leads to the workspace, is used first.
+        let root = short_root();
+        let pinned = root.join(basename('e')).join("broker.sock");
+        fake_broker(&root, &basename('e'), 0o711, &workspace, "saved");
+        fake_broker(&root, &basename('a'), 0o711, &workspace, "elsewhere");
+        let (_, _, hello) = open_workspace(&root, &pinned, uid, &workspace).unwrap();
+        assert_eq!(hello["name"], "saved");
+        let _ = fs::remove_dir_all(&root);
+
+        // With nowhere to go, the saved path's own refusal is what the member sees.
+        let root = short_root();
+        let pinned = root.join(basename('a')).join("broker.sock");
+        fake_broker(&root, &basename('b'), 0o777, &workspace, "writable");
+        let error = open_workspace(&root, &pinned, uid, &workspace)
+            .expect_err("no directory of this account's answers for the workspace");
+        assert!(
+            error.downcast_ref::<std::io::Error>().is_some(),
+            "{error:#}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    fn info() -> Value {
+        json!({"pid": 42, "socket": "/tmp/crew-1000-x/broker.sock", "workspace_id": "w", "host_uid": 1000})
+    }
+
+    /// SF-F7: the restart instructions tell the host to look for `"state":"running"`, so
+    /// `status` says it, with the workspace's name, beside the runtime descriptor.
+    #[test]
+    fn status_says_running_and_names_the_workspace() {
+        let root = std::env::temp_dir();
+        let answer =
+            status_answer(&root, info(), &json!({"state": "running", "name": "lab"})).unwrap();
+        assert_eq!(answer["state"], "running");
+        assert_eq!(answer["name"], "lab");
+        assert_eq!(answer["pid"], 42);
+        assert_eq!(answer["socket"], "/tmp/crew-1000-x/broker.sock");
+        // A workspace with no name yet says so rather than leaving the key out.
+        let unnamed = status_answer(&root, info(), &json!({"state": "running"})).unwrap();
+        assert_eq!(unnamed["state"], "running");
+        assert!(unnamed["name"].is_null());
+    }
+
+    /// R-2: a broker that stopped saving is not reported as healthy. `status` fails, naming the
+    /// cause and the two commands that bring the workspace back.
+    #[test]
+    fn status_of_a_broker_that_stopped_saving_fails_and_says_what_to_run() {
+        let root = std::env::temp_dir();
+        let canonical = fs::canonicalize(&root).unwrap();
+        for (code, cause, first) in [
+            (
+                "storage_full",
+                "the disk is full",
+                "Free space on this server",
+            ),
+            (
+                "storage_failed",
+                "it could not write to its storage",
+                "Check this server's storage",
+            ),
+        ] {
+            let hello = json!({
+                "state": "storage_failed",
+                "storage": {"code": code, "message": "…", "since": 1_790_000_000u64},
+            });
+            let error = status_answer(&root, info(), &hello)
+                .expect_err("a broker that stopped saving is not running")
+                .to_string();
+            assert!(error.starts_with(&format!("{code}: ")), "{error}");
+            for expected in [
+                cause.to_owned(),
+                first.to_owned(),
+                "2026-09-21T14:13:20Z".to_owned(),
+                format!("biorouter-crew stop --state-dir {}", canonical.display()),
+                format!("biorouter-crew start --state-dir {}", canonical.display()),
+            ] {
+                assert!(
+                    error.contains(&expected),
+                    "{expected:?} missing from {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn utc_timestamps_are_civil_dates() {
+        assert_eq!(utc_timestamp(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_timestamp(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(utc_timestamp(1_790_000_000), "2026-09-21T14:13:20Z");
+        assert_eq!(utc_timestamp(4_107_542_399), "2100-02-28T23:59:59Z");
+    }
+
+    /// A raw operating-system error is a storage fault in words; a coded refusal keeps its
+    /// code, even when an I/O error is its cause.
+    #[test]
+    fn a_raw_os_error_is_worded_as_a_storage_fault() {
+        let full = protocol_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+            libc::ENOSPC,
+        )));
+        assert_eq!(full.code, "storage_full");
+        assert_eq!(full.message, STORAGE_FULL_RETRY);
+        let quota = protocol_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+            libc::EDQUOT,
+        )));
+        assert_eq!(quota.code, "storage_full");
+        let failed = protocol_error(&anyhow::Error::from(std::io::Error::from_raw_os_error(
+            libc::EIO,
+        )));
+        assert_eq!(failed.code, "storage_failed");
+        assert_eq!(failed.message, STORAGE_FAILED_RETRY);
+        let coded = protocol_error(
+            &anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES))
+                .context("unsafe_storage: cannot read the journal"),
+        );
+        assert_eq!(coded.code, "unsafe_storage");
+        let plain = protocol_error(&anyhow!("forbidden: not yours"));
+        assert_eq!(plain.code, "forbidden");
+        let uncoded = protocol_error(&anyhow!("Something else"));
+        assert_eq!(uncoded.code, "request_denied");
+    }
+
+    /// `status` against a real broker on a real socket: running with its name, then, once it
+    /// stopped saving, a refusal saying so.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn status_of_a_live_broker_follows_its_state() {
+        let short = |label: &str| {
+            let suffix: String = Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .take(12)
+                .collect();
+            let path = Path::new("/tmp").join(format!("crt-{label}-{suffix}"));
+            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+            path
+        };
+        let state = short("s");
+        let runtime = short("r");
+        let key = hex::encode(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes());
+        let broker =
+            Broker::open_inner(&state, &key, Box::new(SystemDirectory), Some("lab")).unwrap();
+        let socket = runtime.join("broker.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let info = json!({
+            "pid": std::process::id(),
+            "socket": socket,
+            "workspace_id": broker.workspace().id,
+            "host_uid": unsafe { libc::geteuid() },
+            "protocol": 1,
+        });
+        write_runtime(&state, &info).unwrap();
+        let shared = Arc::new(Mutex::new(broker));
+        let serving = Arc::clone(&shared);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let uid = peer_uid(&stream).unwrap();
+                let broker = Arc::clone(&serving);
+                std::thread::spawn(move || serve_client(stream, uid, broker));
+            }
+        });
+
+        let running = lifecycle("status", &state, "", None).unwrap();
+        assert_eq!(running["state"], "running");
+        assert_eq!(running["name"], "lab");
+        assert_eq!(running["workspace_id"], info["workspace_id"]);
+
+        shared.lock().unwrap().storage_fault = Some(StorageFault {
+            full: true,
+            at: now(),
+            detail: "No space left on device (os error 28)".into(),
+            committed: 0,
+            logged: true,
+        });
+        let error = lifecycle("status", &state, "", None)
+            .expect_err("a broker that stopped saving is not running")
+            .to_string();
+        assert!(error.starts_with("storage_full: "), "{error}");
+        assert!(
+            error.contains(&format!(
+                "biorouter-crew start --state-dir {}",
+                fs::canonicalize(&state).unwrap().display()
+            )),
+            "{error}"
+        );
+        assert!(!error.contains("os error"), "{error}");
+        let _ = fs::remove_dir_all(&state);
+        let _ = fs::remove_dir_all(&runtime);
+    }
+}
+
+#[cfg(test)]
+mod bridge_tests {
+    use super::*;
+    use std::os::fd::FromRawFd;
+    use std::sync::mpsc;
+
+    /// A pipe standing in for the member's `ssh` stdin: the relay's end, and the writer.
+    fn stdin_pipe() -> (BufReader<File>, File) {
+        let mut fds = [0; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let (read, write) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+        (BufReader::new(read), write)
+    }
+
+    /// Run the relay against `bridge_side` of a socket pair on its own thread; its result and
+    /// everything it wrote to the daemon arrive on the channel.
+    fn spawn_relay(
+        mut input: BufReader<File>,
+        bridge_side: UnixStream,
+    ) -> mpsc::Receiver<(Result<()>, Vec<u8>)> {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(bridge_side.try_clone().unwrap());
+            let mut output = Vec::new();
+            let result = relay(&mut input, &mut output, bridge_side, reader);
+            let _ = sender.send((result, output));
+        });
+        receiver
+    }
+
+    fn frame(id: &str) -> Vec<u8> {
+        format!("{{\"version\":1,\"id\":\"{id}\",\"method\":\"message.post\",\"params\":{{}}}}\n")
+            .into_bytes()
+    }
+
+    fn not_delivered(output: &[u8], id: &str) {
+        let response: Value = serde_json::from_slice(output).unwrap();
+        assert_eq!(response["id"], id);
+        assert_eq!(response["error"]["code"], "not_delivered");
+        assert_eq!(response["error"]["message"], NOT_DELIVERED);
+    }
+
+    /// R-5: nothing in flight, the broker dies, and the bridge exits within seconds, so the
+    /// member's `ssh` ends and the daemon re-dials instead of reading "Connected".
+    #[test]
+    fn an_idle_bridge_exits_as_soon_as_its_broker_hangs_up() {
+        let (input, _daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        let finished = spawn_relay(input, bridge_side);
+        assert!(
+            finished.recv_timeout(Duration::from_millis(300)).is_err(),
+            "an idle bridge with a live broker keeps running"
+        );
+        drop(broker_side);
+        let (result, output) = finished
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the bridge exits within 2 s of its broker hanging up");
+        assert_eq!(result.unwrap_err().to_string(), BROKER_GONE);
+        assert!(
+            output.is_empty(),
+            "nothing was asked, so nothing is answered"
+        );
+    }
+
+    /// A request already waiting when the broker hung up never reached it: it is answered
+    /// `not_delivered`, not left to read as lost.
+    #[test]
+    fn a_request_waiting_when_the_broker_hangs_up_is_answered_not_delivered() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        drop(broker_side);
+        daemon.write_all(&frame("post-1")).unwrap();
+        let (result, output) = spawn_relay(input, bridge_side)
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(result.unwrap_err().to_string(), BROKER_GONE);
+        not_delivered(&output, "post-1");
+    }
+
+    /// A request whose frame the broker can no longer take is answered `not_delivered`, and
+    /// the bridge exits rather than leaving the daemon to guess the outcome.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_request_the_broker_can_no_longer_take_is_answered_not_delivered() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        // The broker stops reading without hanging up: the bridge sees nothing until it
+        // writes, and the write fails.
+        broker_side.shutdown(std::net::Shutdown::Read).unwrap();
+        let finished = spawn_relay(input, bridge_side);
+        daemon.write_all(&frame("post-2")).unwrap();
+        let (result, output) = finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(result.unwrap_err().to_string(), BROKER_GONE);
+        not_delivered(&output, "post-2");
+        drop(broker_side);
+    }
+
+    /// The ordinary relay is unchanged: each request is forwarded and answered in turn, and
+    /// the bridge ends cleanly when the daemon closes its end.
+    #[test]
+    fn requests_are_relayed_until_the_daemon_closes_its_end() {
+        let (input, mut daemon) = stdin_pipe();
+        let (bridge_side, broker_side) = UnixStream::pair().unwrap();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(broker_side.try_clone().unwrap());
+            let mut writer = broker_side;
+            while let Ok(Some(request)) = read_frame(&mut reader) {
+                let request: Value = serde_json::from_slice(&request).unwrap();
+                let answer = json!({"id": request["id"], "result": {"ok": true}});
+                writer.write_all(format!("{answer}\n").as_bytes()).unwrap();
+            }
+        });
+        let finished = spawn_relay(input, bridge_side);
+        daemon.write_all(&frame("one")).unwrap();
+        daemon.write_all(&frame("two")).unwrap();
+        drop(daemon);
+        let (result, output) = finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        result.unwrap();
+        let ids: Vec<Value> = output
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap()["id"].clone())
+            .collect();
+        assert_eq!(ids, vec![json!("one"), json!("two")]);
     }
 }

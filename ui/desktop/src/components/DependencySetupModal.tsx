@@ -387,6 +387,11 @@ export default function DependencySetupModal() {
 
   const allDone =
     deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
+  // `required: false` marks a tool only some features use (the Rust toolchain,
+  // today). The header used to call every listed tool required and say "Install
+  // them to continue" when only optional ones were missing, while `biorouter
+  // doctor` called the same tool optional.
+  const anyRequired = deps.some((d) => d.info.required !== false);
   const handleDismiss = () => {
     if (isBusy) return;
     sessionStorage.setItem('cli-install-dismissed', '1');
@@ -416,7 +421,9 @@ export default function DependencySetupModal() {
           ? cli?.brokenOnPath
             ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
             : 'Your terminal `biorouter` is older than this app. Update it to match.'
-          : 'The following tools are required for Biorouter features. Install them to continue.'
+          : anyRequired
+            ? 'The following tools are required for Biorouter features. Install them to continue.'
+            : 'These optional tools add Biorouter features. Install them now, or dismiss this and install them later.'
       }
       footer={
         <div className="flex w-full min-w-0 items-center justify-between gap-3">
@@ -534,6 +541,9 @@ export default function DependencySetupModal() {
                       <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
                     )}
                     {info.displayName}
+                    {info.required === false && (
+                      <span className="text-[11px] font-normal text-text-muted">(optional)</span>
+                    )}
                   </p>
                   {installed && info.version && (
                     <p className="text-[11px] text-text-muted mt-0.5">{info.version}</p>

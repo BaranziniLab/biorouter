@@ -35,11 +35,18 @@ use rmcp::model::Tool;
 pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
 // Verified against Anthropic's models overview and deprecations pages
-// (2026-09-25): every entry below is Active. The list is ordered newest →
-// oldest; the UI auto-selects the first entry when a user switches providers
-// (SwitchModelModal), so the newest Opus sits at the top even while
-// ANTHROPIC_DEFAULT_MODEL is older.
+// (2026-09-25): every entry below is Active. The default comes FIRST, and the
+// rest run newest → oldest. ⚠ The desktop picker preselects the first entry
+// when a user switches to this provider (SwitchModelModal
+// `findFirstAvailableModel`), not ANTHROPIC_DEFAULT_MODEL, so the first entry
+// IS the default for a desktop user: listing Opus 5.5 first (as this list did
+// until 2026-09-27) promoted it past the smoke test the comment above holds it
+// back for. Promote a model by changing ANTHROPIC_DEFAULT_MODEL; its position
+// follows. (Key auto-detect asks for the default by name; see
+// `auto_detect::preferred_served_model`.)
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
+    // Claude Opus 4.8: the default, see above.
+    ANTHROPIC_DEFAULT_MODEL,
     // Claude Opus 5.5 (GA 2026-09-22 — 1M context, 128K output, $4/$20 per
     // MTok, cheaper than Opus 5). Thinking cannot be disabled and forced
     // tool_choice is a 400; BioRouter sends neither. Its thinking blocks are
@@ -52,8 +59,6 @@ const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
     // Claude Opus 5 (1M context, $5/$25 per MTok).
     "claude-opus-5",
     "claude-sonnet-5",
-    // Claude 4.8
-    "claude-opus-4-8",
     // Claude Fable 5 (Legacy on Anthropic's overview — still served,
     // superseded by Fable 5.1 at the same price).
     "claude-fable-5",
@@ -425,11 +430,44 @@ mod tests {
         assert!(matches!(error, ProviderError::ContextLengthExceeded(_)));
     }
 
+    /// The default is held on Opus 4.8 until a smoke test clears Opus 5.5 (see
+    /// ANTHROPIC_DEFAULT_MODEL). The desktop picker preselects the FIRST listed
+    /// model, not the default, so the hold only reaches a desktop user while
+    /// the default is listed first. Until 2026-09-27 Opus 5.5 was, and every
+    /// desktop user switching to Anthropic started on it.
+    #[test]
+    fn the_desktop_picker_preselects_the_shipped_default() {
+        let metadata = AnthropicProvider::metadata();
+        assert_eq!(metadata.default_model, ANTHROPIC_DEFAULT_MODEL);
+        assert_eq!(
+            metadata
+                .known_models
+                .first()
+                .map(|model| model.name.as_str()),
+            Some(ANTHROPIC_DEFAULT_MODEL),
+            "the picker would start a desktop user on a model other than the default"
+        );
+        assert_eq!(
+            metadata
+                .known_models
+                .iter()
+                .filter(|model| model.name == ANTHROPIC_DEFAULT_MODEL)
+                .count(),
+            1,
+            "the default is listed exactly once"
+        );
+        // Still offered, one pick away, for a user who wants it now.
+        assert!(metadata
+            .known_models
+            .iter()
+            .any(|model| model.name == "claude-opus-5-5"));
+    }
+
     // Opus 5.5 and Fable 5.1 bind each thinking block to the prefix it was
     // produced under, and BioRouter's prefix moves on every request (hourly
     // system-prompt timestamp, MOIM). Without `drop_block` a new account's
-    // second request 400s. The newest model is also the one the UI selects
-    // first, so this is the request a new user sends.
+    // second request 400s. Opus 5.5 sits one pick below the default in the
+    // desktop list, so this is the request a user who picks it sends.
     #[test]
     fn preserved_thinking_models_opt_into_drop_block_with_the_beta() {
         for model in ["claude-opus-5-5", "claude-fable-5-1"] {

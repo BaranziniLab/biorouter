@@ -6,20 +6,15 @@ import {
   connectionServer,
   isMachineIdShaped,
   institutionLabel,
-  joinerPerson,
   personFromProjection,
   personLabel,
-  personLayout,
-  resolvePerson,
   sanitizeDisplayText,
-  sanitizeUsername,
   teamName,
   usePeopleDirectory,
   type CrewPerson,
   type DaemonPersonLabels,
   type KnownInstitution,
   type PeopleDirectory,
-  type PersonRef,
 } from '../identity';
 import { liveInvitations } from '../dialogs/people';
 import { useJoinContext } from '../onboarding/joinContext';
@@ -258,6 +253,10 @@ export interface VerifiedPrivacy {
    * has one. Already worded for display (the ID, or a name the model registry publishes for it).
    */
   institution: string | null;
+  /** Whose `institution` is: the workspace's own label, or this connection's alone (SF-F10). */
+  institutionSource: 'workspace' | 'connection' | null;
+  /** This connection's own institution, worded as `institution` is, or `null`. */
+  connectionInstitution: string | null;
   why: PrivacyWhy;
 }
 
@@ -283,13 +282,19 @@ export function verifiedPrivacy(
         : connectionMode === 'private'
           ? 'connection'
           : 'workspace';
+  const workspaceInstitution = institutionLabel(snapshot.workspace.institution_id, known);
+  const connectionInstitution = institutionLabel(observedPrivacy.institutionId, known);
   return {
     effective: effectivePrivacy,
     connectionMode,
     workspaceMode,
-    institution:
-      institutionLabel(snapshot.workspace.institution_id, known) ??
-      institutionLabel(observedPrivacy.institutionId, known),
+    institution: workspaceInstitution ?? connectionInstitution,
+    institutionSource: workspaceInstitution
+      ? 'workspace'
+      : connectionInstitution
+        ? 'connection'
+        : null,
+    connectionInstitution,
     why,
   };
 }
@@ -353,7 +358,18 @@ export interface WaitingRow {
   otherDeviceTried: boolean;
 }
 
-/** People the host invited who have not joined yet (S3a, host snapshot only). */
+/** How many Waiting to join rows show before the rest wait behind "Show all" (SC2-N4). */
+export const WAITING_ROWS_SHOWN = 5;
+
+const byJoinerName = (a: string, b: string) =>
+  a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+/**
+ * People the host invited who have not joined yet (S3a, host snapshot only), in name order: by the
+ * `@username` each row leads with, case aside, then by the name on their server account. The
+ * broker lists them by UID, which read "bob, carol, gina, henry, jack, mallory, paula, kenji" with
+ * nothing to go by (SC2-N4).
+ */
 export function waitingToJoin(snapshot: Pick<Snapshot, 'pending_joins'> | null): WaitingRow[] {
   const pending = snapshot?.pending_joins;
   if (!Array.isArray(pending)) return [];
@@ -372,7 +388,13 @@ export function waitingToJoin(snapshot: Pick<Snapshot, 'pending_joins'> | null):
       expired: join.expired === true,
       otherDeviceTried:
         typeof join.mismatched_attempts === 'number' && join.mismatched_attempts > 0,
-    }));
+    }))
+    .sort(
+      (a, b) =>
+        byJoinerName(a.username, b.username) ||
+        byJoinerName(a.serverName ?? '', b.serverName ?? '') ||
+        a.username.localeCompare(b.username)
+    );
 }
 
 /** "Sat 1:41 AM": the day and the time an invitation runs out, in the viewer's own locale. */
@@ -402,85 +424,17 @@ export function expiryText(
 }
 
 // ---------------------------------------------------------------------------------------------
-// The name on a joiner's server account, kept past the join (Q4-42)
+// The name on a joiner's server account, kept past the join (Q4-42): `identity/joinerNames.ts`,
+// re-exported here for the sidebar's own callers.
 // ---------------------------------------------------------------------------------------------
 
-/**
- * The name on each joiner's server account, by workspace and username, as the host's verified
- * snapshots listed it while they waited. The `pending_joins` row is the only place that name comes
- * from, and it is gone in the very snapshot that shows them joined — so without this, the Let in
- * dialog said "Jack joined wong-lab" while the toast and the "Joined, not in your teams" row said
- * "@crew_jack" about the same event (Q4-42).
- *
- * Display only, and for this app session only: nothing is saved, nothing is sent, and it never
- * becomes the person's display name (naming design D2) — it stands in only where the person has
- * not chosen one. Keyed by workspace as well as username, because the same username on another
- * server is another person.
- */
-const joinerServerNames = new Map<string, string>();
-const joinerKey = (workspaceId: string, username: string) => `${workspaceId}\u0000${username}`;
-
-/** Remembers the server-account name of everyone a verified host snapshot lists as waiting. */
-export function rememberJoinerNames(
-  snapshot: Pick<Snapshot, 'workspace' | 'pending_joins'> | null | undefined
-): void {
-  const workspaceId = snapshot?.workspace?.id;
-  const pending = snapshot?.pending_joins;
-  if (typeof workspaceId !== 'string' || !workspaceId || !Array.isArray(pending)) return;
-  for (const join of pending) {
-    if (!join || typeof join.username !== 'string') continue;
-    const person = joinerPerson(join.username, join.full_name);
-    if (person.username && person.serverName) {
-      joinerServerNames.set(joinerKey(workspaceId, person.username), person.serverName);
-    }
-  }
-}
-
-/** The remembered server-account name of `username` in this workspace, or `null`. */
-export function joinerServerName(
-  workspaceId: string | null | undefined,
-  username: string | null | undefined
-): string | null {
-  const handle = sanitizeUsername(username);
-  if (!workspaceId || !handle) return null;
-  return joinerServerNames.get(joinerKey(workspaceId, handle)) ?? null;
-}
-
-/** Tests only: start from an app session that has seen nobody wait. */
-export function forgetJoinerNames(): void {
-  joinerServerNames.clear();
-}
-
-/**
- * A member who just joined, named once for the event (Q4-42): `person` with the name on their
- * server account standing in for the display name they have not chosen yet, so
- * `PersonName`/`personLabel` read "Jack Moreno (@crew_jack)", as the Let in dialog does. `null`
- * when nothing changes — they chose a name (theirs wins), or their server-account name was never
- * seen. Render the result WITHOUT the directory: looking the person up again would put the
- * directory's copy, and its bare `@crew_jack`, back.
- */
-export function joinedAsNamed(
-  person: PersonRef,
-  dir: PeopleDirectory | null | undefined,
-  workspaceId: string | null | undefined
-): CrewPerson | null {
-  const resolved = resolvePerson(person, dir);
-  if (!resolved || resolved.isFormer) return null;
-  const layout = personLayout(resolved, 'inline');
-  if (layout.kind !== 'person' || layout.lead !== 'handle') return null;
-  const serverName = joinerServerName(workspaceId, resolved.username);
-  return serverName ? { ...resolved, displayName: serverName } : null;
-}
-
-/** `personLabel(person, 'inline')`, with the joiner's server-account name when it stands in. */
-export function joinedLabel(
-  person: PersonRef,
-  dir: PeopleDirectory | null | undefined,
-  workspaceId: string | null | undefined
-): string {
-  const named = joinedAsNamed(person, dir, workspaceId);
-  return named ? personLabel(named, 'inline') : personLabel(person, 'inline', dir);
-}
+export {
+  forgetJoinerNames,
+  joinedAsNamed,
+  joinedLabel,
+  joinerServerName,
+  rememberJoinerNames,
+} from '../identity';
 
 // ---------------------------------------------------------------------------------------------
 // People who joined and are in none of the host's teams (Q3-52)
@@ -558,7 +512,10 @@ export interface TeamSectionView {
   archived: ChannelRowView[];
 }
 
-/** Teams in snapshot order, each with its open channels and its archived ones. */
+/**
+ * Teams by name, each with its open channels and its archived ones, #general first and then by
+ * name ({@link channelOrder}); never in the snapshot's order, which is that of random IDs (M17).
+ */
 export function teamSections(
   snapshot: Pick<Snapshot, 'teams' | 'channels' | 'unread'> | null
 ): TeamSectionView[] {
@@ -575,14 +532,50 @@ export function teamSections(
           name: channelSlug(channel),
           unread: unreadCount(snapshot.unread?.[channel.id]),
           archived: channel.archived === true,
-        }));
+        }))
+        .sort(channelOrder(team.general_channel_id));
       return {
         id: team.id,
         name: teamName(team),
         channels: rows.filter((row) => !row.archived),
         archived: rows.filter((row) => row.archived),
       };
-    });
+    })
+    .sort((a, b) => byName(a.name, b.name) || a.id.localeCompare(b.id));
+}
+
+const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
+
+/**
+ * How many of the teams and channels the viewer is in the snapshot leaves out (BROKER-2): a very
+ * large workspace's broker lists only those that fit in one frame, whole, and says in `totals` how
+ * many there are. Zero for both from an older broker, which sends no totals and lists everything.
+ */
+export function unlistedPlaces(snapshot: Pick<Snapshot, 'teams' | 'channels' | 'totals'> | null): {
+  teams: number;
+  channels: number;
+} {
+  const listed = (items: unknown) => (Array.isArray(items) ? items.length : 0);
+  const left = (total: number | undefined, items: unknown) =>
+    total === undefined ? 0 : Math.max(0, total - listed(items));
+  return {
+    teams: left(snapshot?.totals?.teams, snapshot?.teams),
+    channels: left(snapshot?.totals?.channels, snapshot?.channels),
+  };
+}
+
+/**
+ * A team's channels in the one order every list uses (M17, F6): its #general first, then by name,
+ * case aside. The broker sends them keyed by random IDs, so the order it sends means nothing:
+ * #general was drawn fourth, and a new channel landed wherever its ID fell.
+ */
+export function channelOrder(
+  generalChannelId: string | null | undefined
+): (a: { id: string; name: string }, b: { id: string; name: string }) => number {
+  return (a, b) =>
+    Number(b.id === generalChannelId) - Number(a.id === generalChannelId) ||
+    byName(a.name, b.name) ||
+    a.id.localeCompare(b.id);
 }
 
 function unreadCount(value: unknown): number {

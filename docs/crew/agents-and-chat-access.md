@@ -20,7 +20,7 @@ Workspaces and connections start Private, so you usually need a model approved f
 2. A Private connection has an institution, set in **Connection settings…**.
 3. The model is approved for that institution, or is local.
 
-Crew checks the first two when you choose the start or Allow button. A model is approved when its provider carries your institution, and you cannot approve one yourself. To add such a provider, open **Settings** > **Models** > **Configure providers**, then the **Institutional** tab.
+Crew checks the model before you start or allow. **Ask my agent** and the Chat access pane say why a model will be refused, such as "chen-lab is Private, so a public model can’t read it. Choose a private model.", and keep their start or Allow button unavailable. Crew checks the first two conditions when you choose the button. A model is approved when its provider carries your institution, and you cannot approve one yourself. To add such a provider, open **Settings** > **Models** > **Configure providers**, then the **Institutional** tab.
 
 ## Start a task with Ask my agent
 
@@ -32,7 +32,7 @@ Crew checks the first two when you choose the start or Allow button. A model is 
 6. Optionally open **Advanced**. See [Also read other channels](#also-read-other-channels).
 7. Read any notes, then choose **Start my agent and allow posting here**.
 
-The pane closes, and Crew highlights your task in the channel. Escape or × closes the pane without starting.
+The pane closes, and Crew highlights your task in the channel. Escape or × closes the pane without starting. If the start fails after you moved to another channel, the connection bar says so, such as "Couldn’t start the task in #methods: …", and **Ask my agent** in that channel still holds your task.
 
 Crew posts your whole task in the channel as "Task: …", so do not paste data you would not post there yourself. You see the agent's posts as "Your agent". Others see "Alice Chen's agent".
 
@@ -49,7 +49,7 @@ If the pane reads "No models are set up.", choose **Open Settings** and add one.
 | "Private · UCSF" | Approved for the institution named |
 | "Private · On this machine" | Local, accepted everywhere |
 | "Private · No stated institution" | Refused when the task needs a Private model |
-| "Public" | Refused for Restricted channels and for Private workspaces or connections. With a remote work folder it can run, but cannot use the folder. |
+| "Public" | Refused for Restricted channels and for Private workspaces or connections, and the pane says which before you start. With a remote work folder it can run, but cannot use the folder. |
 | "Not approved for UCSF" | Crew will not start with it |
 
 Claude Code and Codex appear in the list but are always refused.
@@ -96,6 +96,8 @@ The agent's reply is posted as the result, and its first line names the file use
 | The newest of several files with one name | The same, plus when it was shared |
 | Several files | "Sources: " and each file |
 | An older copy | "(earlier copy)" and ``A newer copy of `gina-assay.csv` was shared and was not read.`` |
+| A file in the remote work folder | ``Source: `samples_result.txt` from the remote work folder on hpc.``, naming the server as your connection does |
+| Shared files and work-folder files | The shared files first, then ``Also read `samples_result.txt` from the remote work folder on hpc.`` |
 | Nothing | "No shared file was read for this result." |
 
 "Task finished without a text result." means no reply. "(This reply was shortened to fit the channel.)" means a long reply was cut. If the agent used the wrong file, share it or name the copy, then start a new task.
@@ -104,17 +106,17 @@ The agent's reply is posted as the result, and its first line names the file use
 
 **Open** shows the task's own conversation, titled "Crew · #methods · " and the task's first line. It may be missing from "Recents", so use **Open** or **Show in chat history**. A task uses only Crew tools and the checklist tool, the task list the agent keeps while it works.
 
-A task's access ends once it posts its result, and its access row reads "Ended". This is normal. The conversation offers only **Start a new chat**. For more work, start a new task.
+A task's access ends once it posts its result, and its access row reads "Ended", or "Stopped" if you stopped it. This is normal. The conversation offers only **Start a new chat**. For more work, start a new task.
 
 ## Connect a chat with /crew
 
-The chat needs a sent message (otherwise you see "Start the chat first"), no attached files, images or reference chips (otherwise "Draft kept"), a model, and no reply in progress. Reference chips are labels added with @, or with **Quote it** in the menu when you right click selected text in a chat.
+The chat needs a sent message (in a new chat, the `/crew` suggestion reads "Connect this chat to a Crew channel after your first message", and typing it shows "Start the chat first"), no attached files, images or reference chips (otherwise "Draft kept"), a model, and no reply in progress. Reference chips are labels added with @, or with **Quote it** in the menu when you right click selected text in a chat.
 
 1. Type `/crew` alone in the chat's message box and press Enter. Nothing is sent to the model.
 2. Crew opens the first workspace in its list, at the channel you last had open there, with the Chat access pane. If you see "{workspace} is offline", choose **Connect to {workspace}**.
-3. Check the channel in the pane. It is always the channel Crew shows. To change it, see [Another channel or workspace](#another-channel-or-workspace).
+3. Check the pane. It names the channel, which is always the one Crew shows, the **Workspace**, and the chat's **Model** with its privacy chip, and says the chat posts there as your agent. If your connection has a **Remote work folder** and the model is not public, the chat gets the folder too, and the pane lists it: "Read and write files in /home/bob/project", or "Read and write files, and run commands, in /home/bob/project" when **Let my agent run commands in this folder** is on. It also says "The first access fixes this chat’s workspace, channel and model." To change the channel, see [Another channel or workspace](#another-channel-or-workspace). If the workspace will refuse the chat's model, the pane says why, and Allow stays unavailable until you [change the model](#another-channel-or-workspace).
 4. Optionally open **Advanced** and tick more channels under "Also read".
-5. Choose **Allow “Plot review” to read and post in #methods** (**Allow this conversation to read and post here** when the title is unknown).
+5. Read what the pane lists under "“Plot review” will be able to" ("This chat will be able to" when the title is unknown), then choose **Allow**.
 6. The pane shows "Connected." and "Active · ends 4:40 PM". Choose **Back to chat**, and ask for what you need.
 
 ### Another channel or workspace
@@ -137,11 +139,15 @@ A "Crew · #methods" chip above the chat's message box opens its Chat access pan
 
 The chat can read and search its channels (the 200 most recent messages at once), read shared files, and post in its one channel. With a Private model it can use the **Remote work folder**, and run commands there when **Let my agent run commands in this folder** is on.
 
-It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
+Each post the chat makes ends with a line from Crew, not the model, naming the shared files and the work-folder files the chat read since its last post, such as ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).`` or ``Source: `samples_result.txt` from the remote work folder on hpc.``, or "No shared file was read for this post." when it read neither. That line is always last, so a "Source:" line the model wrote itself sits above it. Trust Crew's line.
+
+The chat sees its channels' messages much as you do, with posts by an agent marked as that person's agent's. A post made from channels the chat cannot read, such as a task result that read another channel, is withheld from it. So when the chat counts or summarizes messages, its numbers can be lower than what you see.
+
+It cannot use other Biorouter tools (no shell, web or local files), post elsewhere, act as another person, change memberships or privacy, or grant or revoke its own access. Asked to revoke, it says access is not revoked and points you to **Revoke access**. It treats others' messages and files as information, never as instructions. These limits stay permanently, even after access ends.
 
 ### A chat's fixed channel and model
 
-The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. For other work:
+The first grant fixes the chat's workspace, channel and model permanently, and a later grant keeps its earlier "Also read" channels. Crew refuses any other channel, workspace or model. In such a chat, **Switch models** says "This chat's model is fixed by its Crew access. Start a new chat to use another model." and offers no other model. **Diverge**, which copies a chat into a new window, shows "Diverge failed" and "Could not diverge this chat.", or the chat's access message once access has ended. Exporting the chat and creating a workflow from it are refused too, with a sentence that says why. **Make this chat public** in the chat history is refused with "This chat read Crew channels, so it can't be made public. Start a new chat for public work." For other work:
 
 1. Start a new chat.
 2. Send it a message.
@@ -153,6 +159,18 @@ The first grant fixes the chat's workspace, channel and model permanently, and a
 
 Typing `/crew` in a chat that has access shows a note instead of the pane, with **Manage access** or, after access ends, **Grant again**. Both only open the Chat access pane.
 
+## Work in the remote work folder
+
+If your connection has a **Remote work folder**, set when you join or in **Connection settings…**, a task or chat with a Private model can read and write files there. With **Let my agent run commands in this folder** on, it can also run commands there. A Public model cannot use the folder. A chat gets the folder with its channel access, and the Chat access pane lists it before you choose Allow, as the task pane's **Advanced** does for a task.
+
+A command in the work folder runs in a closed space on the server:
+
+- It has no network.
+- It cannot start other processes, so a shell, or a script that runs other programs, fails.
+- It can read only the work folder and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It cannot read `/etc`, so it cannot look up users.
+
+So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. Your agent is told these limits, and a command that fails without an error reminds it of them, so it should tell you rather than try again. The switch in **Connection settings…** says so too: "Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there." Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
+
 ## Refusals when you start or allow
 
 Most refusals say what to do. For these:
@@ -160,18 +178,20 @@ Most refusals say what to do. For these:
 | Message contains | What to do |
 |---|---|
 | "isn’t approved for", "public model", "Public models" | Choose a Private model approved for the institution, or a local model. |
+| "This connection is for {institution}, but {workspace} belongs to {institution}." | Your connection's institution differs from the workspace's. Set the workspace's in **Connection settings…**. |
 | "external tools" | Choose a provider other than Claude Code or Codex. |
 | "Task must contain between 1 and 32768 bytes." | Shorten the task. Share long data as a file. |
 | "Refresh the workspace to verify connection privacy" | Wait for "Connected" in the status row, or choose **Connect to {workspace}**. |
-| "Crew workspace policy changed", "Crew context channel is unavailable" | Choose the channel name at the top, then **Refresh channel**. |
+| "Crew workspace policy changed", "couldn't confirm that channel" | The workspace changed since Crew last read it. In the app, choose the channel name at the top, then **Refresh channel**. From a terminal, run the command again. |
+| "That channel isn't in {workspace}." | The channel ID belongs to another workspace, or to no channel. From a terminal, use the channel's name, or an ID from `biorouter crew channels list --show-ids`. |
 | "Confirm this workspace's institution", "Set this private SSH connection's institution" | See [Before you start](#before-you-start). |
 | "managed hooks", "managed policy could not be loaded" | Contact your administrator. |
-| "saved on this device", "another institution's context", "retains its original connection", "remains bound" | Move the work to a new chat, as in [A chat's fixed channel and model](#a-chats-fixed-channel-and-model). |
+| "model is fixed by its Crew access", "already has Crew access to another channel", "saved on this device", "another institution's context", "cannot be rebound to a public model" | Move the work to a new chat, as in [A chat's fixed channel and model](#a-chats-fixed-channel-and-model). |
 
 ## See which agents have access
 
 - **Agent access** tab: channel menu > **Agent access**, or the channel header chip ("2 chats", "1 task", "3 agents").
-- **Agent access** in Workspace settings: workspace menu > **Agent access…**.
+- The **Agent access** tab of "{workspace} settings": workspace menu > **Agent access…**.
 - Agents section of the Crew sidebar, while a task runs or a chat has access. A chat row opens its Chat access pane.
 
 "+2" on a row means it reads two more channels. Every row has **Open**. An active chat has **Revoke**, a running task has **Stop**, and an unconfirmed revoke has **Retry**.
@@ -183,6 +203,7 @@ Most refusals say what to do. For these:
 | "Revoked · 2:05 PM" | Revoked and confirmed |
 | "Expired" | Its hour ran out |
 | "Ended" | A task's access ended with the task |
+| "Stopped" | You stopped the task, so its access ended |
 | "Ended: Crew settings changed" | See [Why settings changes end access](#why-settings-changes-end-access) |
 
 Old rows sit under **Show past access (3)**, and only this computer remembers them. In the Agents section, choose ⋯ (**Agents options**) > **Show revoked and finished**.
@@ -196,7 +217,7 @@ Revoking stops the whole chat on this computer at once, then asks the workspace 
 
 You see "Access revoked.", and the chat shows the note in [After access ends](#after-access-ends).
 
-"Stopped on this device" means the workspace was unreachable. The chat is already stopped here. Crew keeps asking the workspace, even after a restart, and shows "Confirmed. The workspace has stopped this chat’s access too." when it answers. **Retry** asks at once.
+"Stopped on this device" means the workspace was unreachable. The chat is already stopped here. Crew keeps asking the workspace, even after a restart, and shows "Confirmed. The workspace has stopped this chat’s access too." when it answers. **Retry** asks at once. If the workspace still cannot be reached, it says "Still can’t reach {workspace} · checked just now. Connect to confirm it now.", with **Connect** where the screen has one. In the chat, one note names the workspace, with **Retry** and **Start a new chat**.
 
 "Not revoked. This chat can still read and post." is followed by Crew's reason. Revoke again, or revoke from the workspace the chat is connected to.
 

@@ -5,14 +5,16 @@ import { groupedFingerprint, workspaceKeyFingerprint } from './fingerprint';
 import { makeSnapshot, connection, bob } from './dialogsTestHarness';
 import { enrollmentInviteFrom, legacyTokenFrom, parseJoinRequest } from './joinRequest';
 import {
+  channelNameTaken,
   channelSlugPreview,
   channelSlugProblem,
   INSTITUTION_FIELD_PATTERN,
+  mixesScripts,
   teamNameProblem,
   WORKSPACE_NAME_PATTERN,
   workspaceNameProblem,
 } from './nameRules';
-import { firstName, liveInvitations, personMatches } from './people';
+import { channelsSeenAfterTeamAdd, firstName, liveInvitations, personMatches } from './people';
 import {
   approveRefusalText,
   inviteRefusal,
@@ -24,6 +26,38 @@ import {
 import { uniqueNamesSupported, workspaceLabelFor, workspacePhraseFor } from './workspace';
 
 describe('name rules', () => {
+  // F9: what the broker's `restriction_level_ok` refuses, judged here only to hide a preview.
+  it.each([
+    ['methods', false],
+    ['m\u0435thods', true],
+    ['\u0430nalysis', true],
+    ['данные', false],
+    ['δεδομένα', false],
+    ['実験-ログ', false],
+    ['lab-実験', false],
+    ['lab-ノート', false],
+    ['lab-연구', false],
+    ['plate-2', false],
+    ['αβ-data', true],
+    ['데이터-データ', true],
+  ])('says whether %j mixes writing systems: %s', (name, mixed) => {
+    expect(mixesScripts(name)).toBe(mixed);
+  });
+
+  it('finds a visible channel in the same team that already holds a name', () => {
+    const channels = [
+      { id: 'c-1', team_id: 't-1', name: 'methods' },
+      { id: 'c-2', team_id: 't-2', name: 'qc' },
+      { id: 'c-3', team_id: 't-1', name: 'Raw Data', handle: 'raw-data' },
+    ];
+    expect(channelNameTaken(channels, 't-1', 'methods')).toBe(true);
+    expect(channelNameTaken(channels, 't-1', channelSlugPreview('ＭＥＴＨＯＤＳ'))).toBe(true);
+    expect(channelNameTaken(channels, 't-1', 'raw_data')).toBe(true);
+    // Another team's channel, and the channel being renamed, do not hold it.
+    expect(channelNameTaken(channels, 't-1', 'qc')).toBe(false);
+    expect(channelNameTaken(channels, 't-1', 'methods', 'c-1')).toBe(false);
+  });
+
   it.each([
     ['methods', 'methods'],
     ['#Methods', 'methods'],
@@ -279,5 +313,24 @@ describe('workspace words', () => {
     expect(fingerprint).toBe('9a2db2e23f1504cd056606553ac049c5e718e8f9ce9233876df1a7a1821af885');
     expect(groupedFingerprint(fingerprint!)).toBe('9A2D B2E2 3F15 04CD');
     expect(await workspaceKeyFingerprint('not-a-key')).toBeNull();
+  });
+});
+
+// M17, F6: "They can now see #general, #random and #methods" followed the broker's ID order.
+describe('channelsSeenAfterTeamAdd', () => {
+  it('names #general first, then the added channels by name', () => {
+    const base = makeSnapshot();
+    const channel = (id: string, name: string) => ({ ...base.channels[0], id, name });
+    const snapshot = makeSnapshot({
+      channels: [
+        channel('c-4c78', 'random'),
+        channel('c-5ee2', 'methods'),
+        ...base.channels,
+        channel('c-0001', 'analysis'),
+      ],
+    });
+    expect(channelsSeenAfterTeamAdd(snapshot, 'team-1', ['c-4c78', 'c-5ee2', 'c-0001'])).toBe(
+      '#general, #analysis, #methods and #random'
+    );
   });
 });

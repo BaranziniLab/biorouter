@@ -11,7 +11,56 @@ import {
   type CodingAgentAvailability,
   type CodingAgentAuth,
   type CodingAgentKind,
+  type CodingAgentStatusResponse,
 } from './codingAgentStatus';
+
+/**
+ * The last coding-agent status this renderer probed, shared by every surface.
+ *
+ * ⚠ Each probe spawns both vendor CLIs, so nothing may poll it. The catalog and
+ * onboarding probe on mount and on an explicit re-check (`useCodingAgents`), and
+ * record what they learned here; the model picker reads it through
+ * {@link codingAgentStatusOnce}, which probes only if nothing has yet, so opening
+ * Switch models never re-spawns what the catalog already asked (W2-PRV-5).
+ */
+let lastCodingAgentStatus: Promise<CodingAgentStatusResponse> | null = null;
+
+/** The shared status, probing once if no surface has probed yet. A failed probe is not kept. */
+export function codingAgentStatusOnce(): Promise<CodingAgentStatusResponse> {
+  if (!lastCodingAgentStatus) {
+    lastCodingAgentStatus = fetchCodingAgentStatus().catch((error: unknown) => {
+      lastCodingAgentStatus = null;
+      throw error;
+    });
+  }
+  return lastCodingAgentStatus;
+}
+
+/** Test-only: forget the shared status. */
+export function __resetCodingAgentStatusForTests(): void {
+  lastCodingAgentStatus = null;
+}
+
+/**
+ * Whether `providerId` names a coding agent (`claude_code`, `codex`): the keys of
+ * {@link AGENT_COMMAND_CONFIG}, the one definition of the set.
+ */
+export function isCodingAgentProviderId(providerId: string): providerId is CodingAgentKind {
+  return Object.prototype.hasOwnProperty.call(AGENT_COMMAND_CONFIG, providerId);
+}
+
+/**
+ * Save the defaulted command key that marks a coding agent set up, the one
+ * write "Use <agent>" makes. Shared with the model picker, which makes the same
+ * write when a signed-in agent is chosen there (W2-PRV-5).
+ */
+export async function saveCodingAgentCommand(
+  upsert: (key: string, value: unknown, isSecret: boolean) => Promise<void>,
+  kind: CodingAgentKind
+): Promise<void> {
+  const { key, value } = AGENT_COMMAND_CONFIG[kind];
+  await upsert(key, value, false);
+}
 
 /**
  * The coding-agent status probe, the per-state guidance, and the "use this
@@ -203,6 +252,7 @@ export function useCodingAgents(
     }
     try {
       const status = await fetchCodingAgentStatus();
+      lastCodingAgentStatus = Promise.resolve(status);
       if (!mountedRef.current) return;
       setAgents(status.agents);
       setLoadError(null);
@@ -229,7 +279,7 @@ export function useCodingAgents(
     async (agent: CodingAgentAvailability) => {
       if (connectingProviderId) return;
       setConnectingProviderId(agent.providerId);
-      const { key, value } = AGENT_COMMAND_CONFIG[agent.kind];
+      const { key } = AGENT_COMMAND_CONFIG[agent.kind];
       try {
         // Explicitly saving the (defaulted) command key is what marks the provider
         // configured — `check_provider_configured` reports a required key as
@@ -237,9 +287,14 @@ export function useCodingAgents(
         // line the surface would say "Ready" and the provider would still be listed
         // as needing setup. Re-check ownership after EVERY await so a dead surface
         // stops writing config mid-sequence.
-        await upsert(key, value, false);
-        if (!mountedRef.current) return;
-        await upsert('BIOROUTER_PROVIDER', agent.providerId, false);
+        //
+        // ⚠ And nothing else. This used to write `BIOROUTER_PROVIDER` too, before
+        // any model was chosen: the model every new chat starts on, in every
+        // window, moved on this click, and a Cancel in the model dialog that
+        // follows left it paired with the previous provider's model (W2-PRV-5).
+        // The model dialog `onSuccess` opens writes the provider and the model
+        // together, to the scope the person picks there.
+        await saveCodingAgentCommand(upsert, agent.kind);
         if (!mountedRef.current) return;
         toastService.success({
           title: `${agent.displayName} ready`,

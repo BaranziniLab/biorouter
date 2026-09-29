@@ -3,8 +3,11 @@ import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   BACKEND_DISCONNECTED_TITLE,
+  DAEMON_RESTARTED_CODE,
+  DAEMON_RESTARTED_TITLE,
   START_CHAT_FAILED_TITLE,
   appendSentence,
+  isDaemonRestarted,
   isStartRefusedForWantOfProof,
   startChatFailureNotice,
 } from './startChatFailure';
@@ -198,5 +201,37 @@ describe('appendSentence', () => {
     ['', 'Your message was kept.'],
   ])('%j', (daemon, toast) => {
     expect(appendSentence(daemon, KEPT)).toBe(toast);
+  });
+});
+
+describe('a chat started while the shared daemon was restarting (R-1)', () => {
+  // What the desktop's local proxy answers once the instance it verified is gone or replaced,
+  // parsed by the generated client and thrown as the body.
+  const restarted = {
+    code: 'daemon_restarted',
+    error:
+      "Biorouter's background service restarted. Reconnect when Biorouter asks, or quit and reopen Biorouter.",
+    message:
+      "Biorouter's background service restarted. Reconnect when Biorouter asks, or quit and reopen Biorouter.",
+  };
+
+  it('names the restart and the two ways on, never "reconnect explicitly"', () => {
+    const notice = startChatFailureNotice(restarted, { kept: true });
+    expect(notice.title).toBe(DAEMON_RESTARTED_TITLE);
+    expect(notice.msg).toBe(
+      "Biorouter's background service restarted. Choose Reconnect in the sidebar, or quit and reopen Biorouter. Your message was kept."
+    );
+    expect(notice.msg).not.toMatch(/explicitly|identity/i);
+    expect(notice.traceback).toBe(restarted.message);
+    expect(startChatFailureNotice(restarted, { kept: false }).msg).not.toContain('kept');
+  });
+
+  it('is the code the proxy answers with, and only that', async () => {
+    const { DAEMON_RESTARTED_CODE: proxyCode } = await import('../daemonRuntime');
+    expect(DAEMON_RESTARTED_CODE).toBe(proxyCode);
+    expect(isDaemonRestarted(restarted)).toBe(true);
+    expect(isDaemonRestarted({ code: 'daemon_unavailable', message: 'x' })).toBe(false);
+    expect(isDaemonRestarted(new Error('daemon_restarted'))).toBe(false);
+    expect(isDaemonRestarted('daemon_restarted')).toBe(false);
   });
 });

@@ -17,6 +17,7 @@ pub mod claude_code;
 pub mod codex;
 pub mod coding_agent;
 pub mod databricks;
+pub mod destination_keys;
 pub mod embedding;
 pub mod errors;
 mod factory;
@@ -57,6 +58,7 @@ pub mod xai;
 pub mod xiaomi_mimo;
 pub mod zai;
 
+pub use destination_keys::is_destination_key;
 #[cfg(test)]
 pub(crate) use factory::builtin_provider_metadata;
 pub(crate) use factory::create_from_persisted;
@@ -155,6 +157,31 @@ pub const CREDENTIAL_NEVER_SET: &str = "is not configured";
 /// [`CREDENTIAL_NEVER_SET`] for why this is a wording check and not a type one.
 pub fn says_credential_never_set(text: &str) -> bool {
     text.contains(CREDENTIAL_NEVER_SET)
+}
+
+/// Whether a gateway's refusal names the CREDENTIAL, as opposed to anything
+/// else a 403 can mean (no access to one model, a network rule, a policy).
+///
+/// T3-SH-3. `/config/check_provider` refuses to save a key its provider
+/// rejects, and a refusal read too widely would roll a working key back: a
+/// valid Versa pair that is not entitled to the model the check happens to use
+/// answers 403 as well. So a Versa check refuses a 403 only in these words:
+/// the UCSF gateway's own (`Invalid client id or secret`, `Invalid Client Id`,
+/// the MuleSoft signature sentence) and AWS's two for a key that does not exist
+/// or does not sign. A 401 is always the credential and needs no wording.
+pub(crate) fn names_a_rejected_credential(message: &str) -> bool {
+    let lowered = message.to_ascii_lowercase();
+    [
+        "invalid client id",
+        "client id or secret",
+        "invalid client secret",
+        "mule client id",
+        "signature we calculated does not match",
+        "security token included in the request is invalid",
+        "invalid subscription key",
+    ]
+    .iter()
+    .any(|phrase| lowered.contains(phrase))
 }
 
 /// The tier of a provider that reaches the UCSF gateway and nothing else.

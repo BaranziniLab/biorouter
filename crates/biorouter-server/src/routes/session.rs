@@ -15,13 +15,14 @@ use axum::{
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
 use biorouter::privacy::declassify::{
-    authenticate_declassification, declassify, is_store_busy, DeclassifyOutcome, UserConfirmation,
-    DECLASSIFY_STORE_BUSY,
+    authenticate_declassification, declassify, is_crew_restricted, is_store_busy,
+    DeclassifyOutcome, UserConfirmation, DECLASSIFY_CREW_RESTRICTED, DECLASSIFY_STORE_BUSY,
 };
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
-    ActivityWindow, ModelUsageRow, SessionInsights, SidebarCursor, TruncateOutcome,
+    ActivityWindow, CrewContextRefusal, ModelUsageRow, SessionInsights, SidebarCursor,
+    TruncateOutcome,
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
@@ -990,7 +991,9 @@ async fn delete_session(
     responses(
         (status = 200, description = "Session exported successfully", body = String),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
-        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof"),
+        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof. \
+                                      Or, to a request that carried that proof, refused because a Crew grant restricts \
+                                      the chat: nothing was exported, and the body is the plain sentence saying why"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -1019,11 +1022,24 @@ async fn export_session(
     {
         return refusal.into_response();
     }
-    let Ok(exported) = state.session_manager().export_session(&session_id).await else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    Json(exported).into_response()
+    match state.session_manager().export_session(&session_id).await {
+        Ok(exported) => Json(exported).into_response(),
+        // A Crew chat is refused by the store read itself, with the sentence the
+        // terminal's `biorouter session export` prints for the same chat. It is a
+        // refusal, not a missing chat: this answered it as a bare 404, which the
+        // desktop could only report as "not found". After the reach gate, which
+        // keeps a Crew chat's standing from a caller without the person's proof.
+        Err(error) => match error.downcast_ref::<CrewContextRefusal>() {
+            Some(refusal) => {
+                tracing::info!(
+                    session_id,
+                    "Refused to export a chat a Crew grant restricts; nothing was read"
+                );
+                (StatusCode::FORBIDDEN, refusal.to_string()).into_response()
+            }
+            None => StatusCode::NOT_FOUND.into_response(),
+        },
+    }
 }
 
 #[utoipa::path(
@@ -1724,6 +1740,9 @@ pub struct DeclassifySessionResponse {
                                       request carried no proof it came from them (body = plain \
                                       text)"),
         (status = 404, description = "Session not found"),
+        (status = 409, description = "The chat read Crew channels, whose permissions marking it \
+                                      public cannot remove. Nothing was changed (body = plain \
+                                      text, a sentence to show as it is)"),
         (status = 500, description = "Internal server error. Nothing was changed (body = plain \
                                       text)"),
         (status = 503, description = "The session store stayed busy with other writes for longer \
@@ -1834,6 +1853,15 @@ async fn declassify_session(
         // Either way nothing was written: `declassify` changes nothing on an
         // `Err` (its transaction rolls back on drop), and a probe that answered
         // before it never writes. So neither body claims more than that.
+        // A chat that read Crew channels: a refusal, not a fault (T3-BE-18). Nothing was
+        // written; the Crew check came before the row was read.
+        Err(e) if is_crew_restricted(&e) => {
+            tracing::info!(
+                "Declassifying session {} refused: it read Crew channels",
+                session_id
+            );
+            Err((StatusCode::CONFLICT, DECLASSIFY_CREW_RESTRICTED).into_response())
+        }
         Err(e) if is_store_busy(&e) => {
             // WARN, not ERROR: nothing is broken, other work held the lock.
             tracing::warn!(
@@ -4074,6 +4102,7 @@ mod declassify_tests {
             // that sends the renderer's toast somewhere that cannot help.
             DECLASSIFY_STORE_BUSY,
             DECLASSIFY_FAILED,
+            DECLASSIFY_CREW_RESTRICTED,
         ];
         for (i, one) in all.iter().enumerate() {
             for other in &all[i + 1..] {

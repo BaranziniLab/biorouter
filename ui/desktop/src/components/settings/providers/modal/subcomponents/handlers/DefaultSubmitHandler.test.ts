@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Mock } from 'vitest';
 
 vi.mock('../../../../../../api', () => ({
@@ -6,6 +6,7 @@ vi.mock('../../../../../../api', () => ({
 }));
 
 import { providerConfigSubmitHandler } from './DefaultSubmitHandler';
+import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
 
 /**
  * What the daemon must end up writing into `config.yaml`.
@@ -173,5 +174,188 @@ describe('providerConfigSubmitHandler value types', () => {
     // Untouched by the user, so its declared default is what gets written — and
     // a string default stays a string.
     expect(values.GCP_LOCATION).toBe('us-central1');
+  });
+});
+
+/**
+ * W2-PRV-2. A key was saved over the working one and only then "checked" by
+ * building the provider, which makes no network call, so a typo saved as
+ * Configured. The values are now checked live, as candidates, BEFORE anything
+ * is written, and a rejection writes nothing.
+ */
+describe('providerConfigSubmitHandler checks a credential before saving it', () => {
+  const anthropic = {
+    name: 'anthropic',
+    metadata: {
+      config_keys: [
+        { name: 'ANTHROPIC_API_KEY', required: true, secret: true },
+        {
+          name: 'ANTHROPIC_HOST',
+          required: true,
+          secret: false,
+          default: 'https://api.anthropic.com',
+        },
+      ],
+    },
+  } as Parameters<typeof providerConfigSubmitHandler>[1];
+
+  let upsert: Mock<(key: string, value: unknown, isSecret: boolean) => Promise<void>>;
+  let check: Mock;
+
+  beforeEach(async () => {
+    upsert = vi.fn(async () => undefined);
+    check = (await import('../../../../../../api')).checkProvider as unknown as Mock;
+    check.mockReset();
+    check.mockResolvedValue({ data: {} });
+  });
+
+  it('checks the exact values live, as candidates, before the first write', async () => {
+    await providerConfigSubmitHandler(upsert, anthropic, { ANTHROPIC_API_KEY: 'sk-ant-new' });
+
+    expect(check.mock.calls[0][0]).toMatchObject({
+      body: {
+        provider: 'anthropic',
+        live: true,
+        candidate: { ANTHROPIC_API_KEY: 'sk-ant-new', ANTHROPIC_HOST: 'https://api.anthropic.com' },
+      },
+      throwOnError: true,
+    });
+    expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
+    expect(upsert).toHaveBeenCalledWith('ANTHROPIC_API_KEY', 'sk-ant-new', true);
+  });
+
+  it('writes nothing when the provider rejects the key', async () => {
+    check.mockRejectedValueOnce('Anthropic rejected these credentials: invalid x-api-key');
+    await expect(
+      providerConfigSubmitHandler(upsert, anthropic, { ANTHROPIC_API_KEY: 'sk-ant-typo' })
+    ).rejects.toBe('Anthropic rejected these credentials: invalid x-api-key');
+    expect(upsert).not.toHaveBeenCalled();
+  });
+
+  it('does not check live a save that carries no credential', async () => {
+    await providerConfigSubmitHandler(
+      upsert,
+      {
+        name: 'databricks',
+        metadata: { config_keys: [{ name: 'DATABRICKS_HOST', required: true, secret: false }] },
+      },
+      { DATABRICKS_HOST: 'https://x.cloud.databricks.com' }
+    );
+    expect(check).toHaveBeenCalledTimes(1);
+    expect(check.mock.calls[0][0].body).toEqual({ provider: 'databricks' });
+  });
+
+  it('writes every setting before any credential', async () => {
+    await providerConfigSubmitHandler(upsert, anthropic, {
+      ANTHROPIC_API_KEY: 'sk-ant-new',
+      ANTHROPIC_HOST: 'https://gateway.example',
+    });
+    const order = (key: string) =>
+      upsert.mock.invocationCallOrder[upsert.mock.calls.findIndex((call) => call[0] === key)];
+    expect(order('ANTHROPIC_HOST')).toBeLessThan(order('ANTHROPIC_API_KEY'));
+  });
+
+  it('saves no key when the daemon refuses the host beside it', async () => {
+    // What a daemon that cannot prove a person answers for a moved host.
+    const refusal = "'ANTHROPIC_HOST' decides where a provider sends its requests";
+    upsert.mockImplementation(async (key) => {
+      if (key === 'ANTHROPIC_HOST') throw refusal;
+    });
+    await expect(
+      providerConfigSubmitHandler(upsert, anthropic, {
+        ANTHROPIC_API_KEY: 'sk-ant-new',
+        ANTHROPIC_HOST: 'https://gateway.example',
+      })
+    ).rejects.toBe(refusal);
+    expect(upsert).not.toHaveBeenCalledWith('ANTHROPIC_API_KEY', 'sk-ant-new', true);
+  });
+
+  it('checks a new host against the saved key before saving it', async () => {
+    await providerConfigSubmitHandler(upsert, anthropic, {
+      ANTHROPIC_HOST: 'https://gateway.example',
+    });
+    expect(check.mock.calls[0][0].body).toEqual({
+      provider: 'anthropic',
+      live: true,
+      candidate: { ANTHROPIC_HOST: 'https://gateway.example' },
+    });
+    expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
+  });
+});
+
+/**
+ * W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
+ * decides where a provider sends its requests and key is the host computer's:
+ * the daemon refuses to change one without a proof of a person, which a
+ * browser can never send. The form does not let the field be edited, and the
+ * save leaves it out rather than re-saving it or meeting that refusal.
+ */
+describe('providerConfigSubmitHandler in a browser', () => {
+  const openai = {
+    name: 'openai',
+    metadata: {
+      config_keys: [
+        { name: 'OPENAI_API_KEY', required: true, secret: true },
+        { name: 'OPENAI_HOST', required: true, secret: false, default: 'https://api.openai.com' },
+        {
+          name: 'OPENAI_BASE_PATH',
+          required: true,
+          secret: false,
+          default: 'v1/chat/completions',
+        },
+        { name: 'OPENAI_TIMEOUT', required: false, secret: false, default: '600' },
+      ],
+    },
+  } as Parameters<typeof providerConfigSubmitHandler>[1];
+
+  let upsert: Mock<(key: string, value: unknown, isSecret: boolean) => Promise<void>>;
+  let check: Mock;
+
+  beforeEach(async () => {
+    upsert = vi.fn(async () => undefined);
+    check = (await import('../../../../../../api')).checkProvider as unknown as Mock;
+    check.mockReset();
+    check.mockResolvedValue({ data: {} });
+  });
+
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  const values = {
+    OPENAI_API_KEY: 'sk-new',
+    OPENAI_HOST: 'https://api.openai.com',
+    OPENAI_BASE_PATH: 'v1/chat/completions',
+    OPENAI_TIMEOUT: '900',
+  };
+
+  it('saves the key and the other settings, and leaves the host and path to the host computer', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    await providerConfigSubmitHandler(upsert, openai, values);
+
+    const keys = upsert.mock.calls.map((call) => call[0]);
+    expect(keys).toContain('OPENAI_API_KEY');
+    expect(keys).toContain('OPENAI_TIMEOUT');
+    expect(keys).not.toContain('OPENAI_HOST');
+    expect(keys).not.toContain('OPENAI_BASE_PATH');
+    // Nor does the pre-save check name them: the daemon would check them
+    // against nothing the browser may change.
+    expect(check.mock.calls[0][0].body.candidate).toEqual({
+      OPENAI_API_KEY: 'sk-new',
+      OPENAI_TIMEOUT: '900',
+    });
+  });
+
+  it('still saves every setting in the desktop app, which proves a person asked', async () => {
+    await providerConfigSubmitHandler(upsert, openai, values);
+    const keys = upsert.mock.calls.map((call) => call[0]);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        'OPENAI_API_KEY',
+        'OPENAI_HOST',
+        'OPENAI_BASE_PATH',
+        'OPENAI_TIMEOUT',
+      ])
+    );
   });
 });

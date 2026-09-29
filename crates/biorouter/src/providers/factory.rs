@@ -140,16 +140,34 @@ pub async fn providers() -> Vec<(ProviderMetadata, ProviderType)> {
 }
 
 pub async fn refresh_custom_providers() -> Result<()> {
+    // The files are read and parsed before the live registry is touched, and
+    // the old entries are replaced under ONE write lock. This used to take the
+    // lock twice, once to remove the custom providers and once to load them
+    // again, so a new chat started between the two found its custom provider
+    // missing ("Unknown provider"). `/config/upsert` re-reads on an unknown
+    // provider name, which makes that window reachable from any settings write.
+    // A failed read still leaves the registry as it always has: the custom
+    // entries removed and nothing half-loaded in their place.
+    let loaded = {
+        let mut fresh = ProviderRegistry::new();
+        load_custom_providers_into_registry(&mut fresh).map(|()| fresh)
+    };
     let registry = get_registry().await;
-    registry.write().unwrap().remove_custom_providers();
-
-    if let Err(e) = load_custom_providers_into_registry(&mut registry.write().unwrap()) {
-        tracing::warn!("Failed to refresh custom providers: {}", e);
-        return Err(e);
+    let mut live = registry.write().unwrap();
+    live.remove_custom_providers();
+    match loaded {
+        Ok(fresh) => {
+            live.entries.extend(fresh.entries);
+            drop(live);
+            tracing::info!("Custom providers refreshed");
+            Ok(())
+        }
+        Err(e) => {
+            drop(live);
+            tracing::warn!("Failed to refresh custom providers: {}", e);
+            Err(e)
+        }
     }
-
-    tracing::info!("Custom providers refreshed");
-    Ok(())
 }
 
 async fn get_from_registry(name: &str) -> Result<ProviderEntry> {
@@ -659,9 +677,9 @@ pub(crate) mod tests {
             ("anthropic", "public: general commercial endpoint"),
             (
                 "azure_openai",
-                "public: a large cloud. ⚠ azure.rs ships the UCSF gateway as \
-                 AZURE_OPENAI_ENDPOINT's default, so this one *looks* institutional \
-                 and is not; only versa_azure carries the agreement",
+                "public: a large cloud, at an endpoint the user types. ⚠ It stays \
+                 Public even when that endpoint is the UCSF gateway (its shipped \
+                 default until 2026-09-27); only versa_azure carries the agreement",
             ),
             (
                 "claude_code",
@@ -1445,6 +1463,161 @@ pub(crate) mod tests {
         );
     }
 
+    /// No built-in provider offers UCSF's gateway as a setup default.
+    ///
+    /// The gateway's agreement covers the two Versa providers only, and they
+    /// declare no endpoint key at all: their endpoint is compiled in and they
+    /// are Private only while it stays there. Every other card is Public and
+    /// takes the user's own credential, and both setup surfaces persist a
+    /// default the user leaves alone, so a default on the gateway sends a user
+    /// who never chose UCSF, with that credential, to it. `azure_openai`
+    /// shipped exactly that until 2026-09-27.
+    #[test]
+    fn no_provider_offers_the_ucsf_gateway_as_a_setup_default() {
+        use crate::providers::UCSF_GATEWAY_HOST;
+
+        let mut defaults_read = 0;
+        let mut offered = Vec::new();
+        for metadata in builtin_provider_metadata() {
+            for key in &metadata.config_keys {
+                let Some(default) = key.default.as_deref() else {
+                    continue;
+                };
+                defaults_read += 1;
+                // A substring, not a parsed host: a scheme-less or oddly
+                // spelled default is still the gateway to the user who saves it.
+                if default.to_ascii_lowercase().contains(UCSF_GATEWAY_HOST) {
+                    offered.push(format!("{}.{} = {default}", metadata.name, key.name));
+                }
+            }
+        }
+        assert!(
+            defaults_read > 0,
+            "no provider declares a default, so this scan read nothing"
+        );
+        assert!(
+            offered.is_empty(),
+            "a provider offers UCSF's gateway as a default a user could save without \
+             choosing it; reach the gateway through versa_azure / versa_bedrock: {offered:?}"
+        );
+    }
+
+    /// Providers whose curated list leads with a model other than their shipped
+    /// default, each with the reason its own file gives.
+    ///
+    /// The desktop picker preselects `known_models[0]` when a user switches
+    /// provider (`findFirstAvailableModel` in SwitchModelModal), not
+    /// `default_model`, so for a provider listed here a desktop user starts on
+    /// a different model than `biorouter configure` does. ⚠ A row records a
+    /// decision; it does not make one. A provider that holds its default back
+    /// on purpose (untested, or lower effort) must NOT be listed here, because
+    /// listing a newer model first undoes the hold for every desktop user.
+    /// That is how `anthropic` shipped until 2026-09-27: its default stayed on
+    /// Opus 4.8 pending a smoke test while Opus 5.5, listed first, was what the
+    /// picker chose.
+    fn providers_that_lead_with_a_model_other_than_their_default(
+    ) -> Vec<(&'static str, &'static str)> {
+        #[allow(unused_mut)]
+        let mut rows = vec![
+            (
+                "google",
+                "Gemini 3.x listed newest first; the default is the only Gemini 3.x Pro \
+                 (google.rs, above GOOGLE_DEFAULT_MODEL)",
+            ),
+            (
+                "llamacpp",
+                "the default is chosen from the machine's memory at runtime \
+                 (default_model_name), so no fixed position in the catalog can hold it",
+            ),
+            (
+                "openrouter",
+                "curated slugs listed newest first per vendor; the default is Sonnet 5 \
+                 on price (openrouter.rs, above OPENROUTER_DEFAULT_MODEL)",
+            ),
+            (
+                "tetrate",
+                "the list leads with the newest Claude; the default is the Haiku the \
+                 Tetrate sign-up flow configures (signup_tetrate::TETRATE_DEFAULT_MODEL)",
+            ),
+            (
+                "venice",
+                "its list is FALLBACK_MODELS, the offline fallback, which leads with the \
+                 small llama-3.2-3b",
+            ),
+        ];
+        // Registered only under `aws-providers`, like the AWS rows in the tier
+        // tables above; the last loop asserts every row names a registered
+        // provider, so an unconditional row fails `--no-default-features`.
+        #[cfg(feature = "aws-providers")]
+        rows.push((
+            "aws_bedrock",
+            "newest first on purpose; BEDROCK_DEFAULT_MODEL is a separate choice \
+             (bedrock.rs, above BEDROCK_KNOWN_MODELS)",
+        ));
+        rows
+    }
+
+    #[test]
+    fn every_provider_lists_its_default_first_unless_it_records_why_not() {
+        let recorded = providers_that_lead_with_a_model_other_than_their_default();
+        let recorded_names: std::collections::HashSet<&str> =
+            recorded.iter().map(|(name, _)| *name).collect();
+        assert_eq!(recorded_names.len(), recorded.len(), "a row is duplicated");
+        for (name, why) in &recorded {
+            assert!(
+                !why.is_empty(),
+                "{name} leads with another model for no stated reason"
+            );
+        }
+
+        let metadata = builtin_provider_metadata();
+        let mut checked = 0;
+        let mut undeclared = Vec::new();
+        let mut stale = Vec::new();
+        for provider in &metadata {
+            let Some(first) = provider.known_models.first() else {
+                // No curated list: the picker falls back to the live catalog.
+                continue;
+            };
+            if !provider
+                .known_models
+                .iter()
+                .any(|model| model.name == provider.default_model)
+            {
+                continue;
+            }
+            checked += 1;
+            let leads_with_default = first.name == provider.default_model;
+            match (
+                leads_with_default,
+                recorded_names.contains(provider.name.as_str()),
+            ) {
+                (false, false) => undeclared.push(format!(
+                    "{}: picker preselects {} but the default is {}",
+                    provider.name, first.name, provider.default_model
+                )),
+                (true, true) if provider.name != "llamacpp" => stale.push(provider.name.clone()),
+                _ => {}
+            }
+        }
+        assert!(checked > 10, "only {checked} providers were checked");
+        assert!(
+            undeclared.is_empty(),
+            "the desktop picker would start these providers on a model other than their \
+             default; list the default first, or record why not: {undeclared:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "these providers now list their default first; drop their rows: {stale:?}"
+        );
+        for name in recorded_names {
+            assert!(
+                metadata.iter().any(|provider| provider.name == name),
+                "{name} is recorded but not registered"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_openai_compatible_providers_config_keys() {
         let providers_list = providers().await;
@@ -1480,5 +1653,33 @@ pub(crate) mod tests {
                 continue;
             }
         }
+    }
+
+    /// A new chat started while the custom providers are re-read must never find
+    /// its provider missing. The refresh used to take the registry's write lock
+    /// twice, removing the custom entries under the first and loading them again
+    /// under the second, and a reader between the two got "Unknown provider".
+    #[test]
+    fn a_refresh_swaps_the_custom_providers_under_one_write_lock() {
+        let source = include_str!("factory.rs");
+        let (_, body) = source
+            .split_once("pub async fn refresh_custom_providers(")
+            .expect("refresh_custom_providers");
+        let (body, _) = body.split_once("\n}\n").expect("the function's end");
+        let code = body
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(code.matches(".write()").count(), 1, "{code}");
+        // The files are read before the lock is taken, not while it is held.
+        let loaded_at = code
+            .find("load_custom_providers_into_registry(")
+            .expect("the refresh loads the files");
+        let locked_at = code.find(".write()").expect("the refresh takes the lock");
+        let removed_at = code
+            .find("remove_custom_providers()")
+            .expect("the refresh removes the old entries");
+        assert!(loaded_at < locked_at && locked_at < removed_at, "{code}");
     }
 }

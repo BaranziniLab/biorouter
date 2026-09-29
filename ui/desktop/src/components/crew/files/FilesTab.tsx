@@ -4,22 +4,25 @@ import { DropdownMenu, DropdownMenuContent } from '../../ui/dropdown-menu';
 import { File, Paperclip } from '../../icons/app-icons';
 import type { CrewMessage } from '../crewApi';
 import { forgetTransfer, pauseTransfer, resumeTransfer, type CrewTransfer } from '../crewTransfers';
-import { PersonName, usePeopleDirectory, type PeopleDirectory } from '../identity';
+import { PersonName, personLabel, usePeopleDirectory, type PeopleDirectory } from '../identity';
 import { useCrew } from '../state/CrewControllerContext';
 import { usePendingPostOf } from '../timeline/pendingPost';
 import { isoTime, messageTime } from '../timeline/timelineTime';
-import { AttachmentCard, type CrewBlob } from './AttachmentCard';
+import { AttachmentCard } from './AttachmentCard';
 import { postedLabel } from './attachmentIndex';
+import { checkedUpload } from './checkedUpload';
 import { filesCopy } from './copy';
+import { visibleFileText } from './fileName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { ServerPathRow } from './ServerPathRow';
 import { TransferMenuItems, TransferRow } from './TransferRow';
 import { useCrewTransfers } from './useCrewTransfers';
+import { failureSentence } from '../../../utils/ipcError';
 import './files.css';
 
-const failureText = (failure: unknown, fallback: string) =>
-  failure instanceof Error && failure.message ? failure.message : fallback;
+/** A failure's own sentence, without Electron's IPC wrapper (FILES-F6), else `fallback`. */
+const failureText = failureSentence;
 
 type SharedItem =
   | { kind: 'attachment'; id: string; message: CrewMessage }
@@ -60,7 +63,21 @@ export function FilesTab() {
   const dir = usePeopleDirectory(snapshot, labels, people ?? null);
   const pendingPost = usePendingPostOf(connectionId, channelId);
   const viewerId = typeof snapshot?.actor?.id === 'string' ? snapshot.actor.id : null;
-  const { transfers, error: listError, refresh } = useCrewTransfers(connectionId);
+  // Watched while this tab is open: a record the command line changed (a resume, a forget) shows
+  // here without an action in this window, whatever state it was in (RES2-N3).
+  const {
+    transfers,
+    error: listError,
+    refresh,
+  } = useCrewTransfers(connectionId, {
+    watch: true,
+  });
+  // What the viewer does about a transfer the workspace server could not save (RES2-N3).
+  const serverStorageNote = dir.viewerIsHost
+    ? filesCopy.serverStorageHost
+    : filesCopy.serverStorageMember(
+        dir.host && !dir.host.isFormer ? personLabel(dir.host, 'authority', dir) : null
+      );
   const [error, setError] = useState('');
   const [attaching, setAttaching] = useState<string | null>(null);
   const headingId = useId();
@@ -145,15 +162,8 @@ export function FilesTab() {
     setAttaching(transfer.id);
     setError('');
     try {
-      const blob = await request<CrewBlob>('blob.status', { blob_id: transfer.blob_id });
-      if (
-        !blob.complete ||
-        blob.channel_id !== channelId ||
-        blob.sha256 !== transfer.sha256 ||
-        blob.size !== transfer.size
-      )
-        throw new Error(filesCopy.attachMismatch);
-      if (started === scope.current) addAttachment({ id: blob.id, name: blob.name });
+      const file = await checkedUpload(request, transfer, channelId);
+      if (started === scope.current) addAttachment(file);
     } catch (failure) {
       if (started === scope.current) setError(failureText(failure, filesCopy.transferFailed));
     } finally {
@@ -182,7 +192,12 @@ export function FilesTab() {
           </h3>
           <ul className="crew-file-list">
             {inProgress.map((transfer) => (
-              <TransferRow key={transfer.id} transfer={transfer} {...actions} />
+              <TransferRow
+                key={transfer.id}
+                transfer={transfer}
+                serverStorageNote={serverStorageNote}
+                {...actions}
+              />
             ))}
           </ul>
         </section>
@@ -202,7 +217,7 @@ export function FilesTab() {
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
                   <span className="crew-file-row-label">
-                    <span className="crew-file-row-name">{file.name}</span>
+                    <span className="crew-file-row-name">{visibleFileText(file.name)}</span>
                     {onItsWay ? (
                       <span className="crew-file-row-meta">{filesCopy.sending}</span>
                     ) : upload ? (
@@ -226,14 +241,14 @@ export function FilesTab() {
                 <div className="crew-file-row-main">
                   <File className="crew-file-row-icon" aria-hidden />
                   <span className="crew-file-row-label">
-                    <span className="crew-file-row-name">{transfer.name}</span>
+                    <span className="crew-file-row-name">{visibleFileText(transfer.name)}</span>
                     <span className="crew-file-row-meta">{formatBytes(transfer.size)}</span>
                   </span>
                   <Button
                     type="button"
                     variant="secondary"
                     size="sm"
-                    aria-label={filesCopy.attachNamed(transfer.name)}
+                    aria-label={filesCopy.attachNamed(visibleFileText(transfer.name))}
                     disabled={attaching === transfer.id}
                     onClick={() => void attach(transfer)}
                   >
@@ -241,7 +256,7 @@ export function FilesTab() {
                     {filesCopy.attach}
                   </Button>
                   <DropdownMenu>
-                    <MoreActionsTrigger name={transfer.name} />
+                    <MoreActionsTrigger name={visibleFileText(transfer.name)} />
                     <DropdownMenuContent align="end" className="crew-menu">
                       <TransferMenuItems
                         transfer={transfer}

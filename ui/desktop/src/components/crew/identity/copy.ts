@@ -32,4 +32,9 @@ export const identityCopy = {
   unnamedWorkspace: 'Unnamed workspace',
   /** A legacy workspace with no name, labelled by its host. */
   hostsWorkspace: (host: string) => `${host}'s workspace`,
+  /**
+   * A person the broker says is online now (M18, `online_principal_ids`): beside the dot, for a
+   * screen reader and on hover. Nothing is said for anyone else, or where the broker does not say.
+   */
+  online: 'Online',
 } as const;

@@ -62,7 +62,7 @@ export function privacyTiersOffCopy(record: PrivacyTiersRecord | null): PrivacyT
         tone: 'warning',
         headline: OFF,
         how:
-          `They were turned off in Settings → Privacy${on(when)}` +
+          `They were turned off in Settings → App → Privacy${on(when)}` +
           `${change?.systemAuthenticated ? ', and your operating system confirmed it' : ''}.`,
         path: record.path,
       };
@@ -80,7 +80,7 @@ export function privacyTiersOffCopy(record: PrivacyTiersRecord | null): PrivacyT
         how: change?.setTo
           ? `The last change recorded in the app turned them on${on(when)}, so their record ` +
             'has been edited since.'
-          : 'No change in Settings → Privacy is recorded for them: their record was edited ' +
+          : 'No change in Settings → App → Privacy is recorded for them: their record was edited ' +
             'directly — by hand, by a script or by an agent with a shell — or written by an ' +
             'older version of Biorouter.',
         path: record.path,

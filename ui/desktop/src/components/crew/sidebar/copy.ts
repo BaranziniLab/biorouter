@@ -89,6 +89,28 @@ export const sidebarCopy = {
      * a team the host is not in would otherwise be told falsely they are in none.
      */
     joined: 'Joined, not in your teams',
+    /** The host's warning that the workspace is filling up (W2-UIW-20). */
+    storage: 'Storage',
+  },
+
+  /**
+   * How full the workspace is, for its host only (M1, W2-UIW-20): from 80% of the space ordinary
+   * changes may use, with what happens at the end. `workspace` is the workspace as named.
+   * "Removing people and privacy changes" is what the broker keeps its headroom for, and matches
+   * the refusal members then see (`refusalCopy.fullButHostCanAdminister`).
+   */
+  storage: {
+    filling: (workspace: string, percent: number) => `${workspace} is ${percent}% full.`,
+    full: (workspace: string) => `${workspace} is full.`,
+    whenFull:
+      'When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.',
+    nowFull:
+      'Only removing people and privacy changes work now; start a new workspace to keep posting.',
+    /** Spoken once, when the workspace crosses 80%, 95% or its limit while Crew is open. */
+    announce: (workspace: string, percent: number, full: boolean) =>
+      full
+        ? `${workspace} is full. Only removing people and privacy changes work now.`
+        : `${workspace} is ${percent}% full.`,
   },
 
   invitation: {
@@ -126,6 +148,12 @@ export const sidebarCopy = {
     nextStep: (who: string) => `Let in… when ${who} sends a code`,
     letIn: 'Let in…',
     letInLabel: (username: string) => `Let @${username} in`,
+    /**
+     * Under the first rows of a long list (SC2-N4): nine rows pushed the team's channels below the
+     * fold. `hidden` is how many more there are.
+     */
+    showAll: (hidden: number) => `Show ${hidden} more`,
+    showFewer: 'Show fewer',
     /**
      * The host entered a code (T-13). Not "Approved": the broker compares the code only when the
      * joiner's computer checks in, so a code entered here may still turn out not to match.
@@ -170,6 +198,20 @@ export const sidebarCopy = {
     addToTeamNamedLabel: (person: string, team: string) => `Add ${person} to ${team}`,
     /** Spoken once, when someone new appears in the section. */
     announce: (person: string) => `${person} isn’t in any of your teams yet.`,
+  },
+
+  /**
+   * Under the teams, when the broker listed fewer teams or channels than the viewer is in
+   * (BROKER-2): only in a workspace too large for one listing.
+   */
+  unlisted: (teams: number, channels: number) => {
+    const parts = [
+      teams > 0 ? `${teams} more ${teams === 1 ? 'team' : 'teams'}` : null,
+      channels > 0 ? `${channels} more ${channels === 1 ? 'channel' : 'channels'}` : null,
+    ].filter((part): part is string => part !== null);
+    return `${parts.join(' and ')} you’re in ${
+      teams + channels === 1 ? 'isn’t' : 'aren’t'
+    } listed here, because this workspace is too large to list at once.`;
   },
 
   team: {
@@ -339,6 +381,14 @@ export const sidebarCopy = {
       workspacePrivate: 'Private for everyone',
       workspacePublic: 'Allows Public',
       notSet: 'Not set',
+      /**
+       * Where the institution in force comes from, after it (SF-F10): the workspace's own label,
+       * else this connection's alone. The popover and Settings → Privacy say it the same way.
+       */
+      institutionFrom: {
+        workspace: 'the workspace’s',
+        connection: 'your connection’s only',
+      },
     },
     /**
      * Why the mode is what it is, first in the popover's one note (Q2-44). `workspace` is the

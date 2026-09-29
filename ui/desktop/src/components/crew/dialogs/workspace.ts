@@ -20,7 +20,9 @@ import type { CrewController } from '../state/types';
  * The snapshot is the verified one, else the last verified view of the SAME connection. That view
  * is presentation only (a refresh blanks the live snapshot for a moment, and a dialog that stays
  * open across it must not lose its labels); nothing a dialog sends is decided by it — every
- * request goes to the daemon and broker, which decide.
+ * request goes to the daemon and broker, which decide. An observation end that says `clear: true`
+ * drops the last verified view too, so a dialog open through one (Workspace settings, SF2-N7)
+ * sees `null` until the view verifies again and must not draw what the snapshot decides.
  */
 
 /**

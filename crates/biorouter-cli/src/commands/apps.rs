@@ -10,7 +10,8 @@
 //!   coupling to the store's internal `Manifest` shape) and print a table, or
 //!   `--json` for machine output.
 //! * `open`  — ensure a daemon is up and open `http://<host>:<port>/apps/<id>/`
-//!   in the default browser.
+//!   in the default browser, through a one-time link that never goes on a
+//!   command line (see [`write_launch_page`]).
 //! * `serve` — ensure a daemon is up, print the URL, and stay in the foreground
 //!   until it is stopped (when it started the daemon) or return immediately with
 //!   a note (when it reused a running one).
@@ -39,8 +40,25 @@
 //! `GET /status`, reuse a daemon if one answers, and otherwise best-effort spawn
 //! the sibling `biorouterd agent`. If no `biorouterd` binary can be located the
 //! command fails with the exact command to run — an honest v1 over a fragile
-//! spawn. The `/apps/<id>/` GET routes are auth-exempt, so the browser loads the
-//! app without needing the daemon's secret key.
+//! spawn.
+//!
+//! **Opening an app takes the daemon's secret (W2-HRD-1).** A daemon serves an
+//! app's page only to a browser holding that app's access cookie, set by a
+//! one-time link the daemon hands out on `POST /apps/<id>/launch`, which needs
+//! the secret. The `/apps/<id>/` routes used to be auth-exempt, and any local
+//! account could then read an app's socket token off its page. So a daemon these
+//! commands start gets a secret they generate, and a daemon they did not start is
+//! used only when `BIOROUTER_SERVER__SECRET_KEY` names its secret.
+//!
+//! Both commands remember the secret of a daemon they start, in a record only
+//! this account can read, for as long as that daemon runs. A launch link works
+//! once and for five minutes, so the next link has to come from somewhere: for a
+//! daemon `open` left running it is the next `open`, and for one `serve` holds in
+//! the foreground it is an `open` (or a second `serve`) in another terminal.
+//! `serve` used to keep its daemon's secret to itself, so the advice it printed,
+//! to run it again, reached a daemon nothing could use: a second `serve` or
+//! `open` refused it as unknown, and the only way on was to stop the first. The
+//! record of a `serve` daemon is removed when `serve` stops it.
 //!
 //! In-terminal rendering of an app is explicitly OUT of scope (design §7); the
 //! app always opens in a real browser.
@@ -288,7 +306,318 @@ enum Daemon {
     /// A daemon was already listening; we did not start it.
     Reused,
     /// We spawned `biorouterd agent`; hold the child so `serve` can supervise it.
-    Started(tokio::process::Child),
+    Started {
+        child: tokio::process::Child,
+        /// Whether its secret was recorded, so that a later `apps open` or
+        /// `apps serve` can mint another launch link on it while it runs.
+        remembered: bool,
+    },
+}
+
+/// One request to the daemon on `port`, carrying its secret. The status and the
+/// body, or `None` when nothing answered in time. A raw socket like
+/// [`daemon_ok`]; the body of a refusal or a launch link is small, so it is read
+/// whole (bounded) until the daemon closes the connection.
+///
+/// ⚠ HTTP/1.0 on purpose. The daemon's compression layer makes every body's
+/// length unknown up front, so an HTTP/1.1 answer comes chunked, and this reader
+/// would hand the chunk sizes to the JSON parser (measured: the launch link was
+/// refused while the daemon answered 200). A 1.0 answer is the plain body, ended
+/// by the close.
+async fn with_secret(port: u16, method: &str, path: &str, secret: &str) -> Option<(u16, String)> {
+    let addr = format!("{DAEMON_HOST}:{port}");
+    let connect = biorouter::net::connect_non_inheritable(&addr);
+    let mut stream = tokio::time::timeout(Duration::from_secs(2), connect)
+        .await
+        .ok()?
+        .ok()?;
+    let request = format!(
+        "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nX-Secret-Key: {secret}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.ok()?;
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        (&mut stream).take(1 << 20).read_to_end(&mut response),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let text = String::from_utf8_lossy(&response);
+    let (head, body) = text.split_once("\r\n\r\n")?;
+    let status = head.split_whitespace().nth(1)?.parse().ok()?;
+    Some((status, body.to_string()))
+}
+
+/// Whether `secret` is the secret of the daemon on `port`.
+async fn secret_works(port: u16, secret: &str) -> bool {
+    matches!(
+        with_secret(port, "GET", "/apps", secret).await,
+        Some((200, _))
+    )
+}
+
+/// A secret for a daemon this command starts: 32 bytes from the system generator.
+fn new_daemon_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Where `apps open` and `apps serve` remember the secret of the daemon they
+/// started on `port`: a record readable by this account alone, in Biorouter's
+/// state folder.
+fn remembered_daemon_path(port: u16) -> PathBuf {
+    biorouter::config::paths::Paths::state_dir()
+        .join("apps-daemon")
+        .join(format!("{port}.json"))
+}
+
+#[derive(serde::Deserialize, Serialize)]
+struct RememberedDaemon {
+    port: u16,
+    secret: String,
+}
+
+/// Record `secret` as the secret of the daemon this command started on `port`,
+/// and answer whether the record was written. Without it a later `apps open` or
+/// `apps serve` cannot mint a launch link on this daemon while it runs.
+fn remember_daemon(port: u16, secret: &str) -> bool {
+    let path = remembered_daemon_path(port);
+    let written = path
+        .parent()
+        .ok_or_else(|| anyhow!("no folder for {}", path.display()))
+        .and_then(biorouter::daemon_runtime::private_directory)
+        .and_then(|()| {
+            biorouter::daemon_runtime::write_private(
+                &path,
+                &RememberedDaemon {
+                    port,
+                    secret: secret.to_string(),
+                },
+            )
+        });
+    match written {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!(
+                "    {} could not record this daemon's key ({error}), so a later \
+                 `biorouter apps open` cannot use this daemon",
+                style("!").yellow()
+            );
+            false
+        }
+    }
+}
+
+fn remembered_secret(port: u16) -> Option<String> {
+    let record: RememberedDaemon =
+        biorouter::daemon_runtime::read_private(&remembered_daemon_path(port)).ok()?;
+    (record.port == port).then_some(record.secret)
+}
+
+/// Remove the record of the daemon on `port` once `serve` has stopped it, if the
+/// record still names `secret`. A record naming another secret describes a
+/// daemon started on the port since, and is left alone.
+fn forget_daemon(port: u16, secret: &str) {
+    if remembered_secret(port).is_some_and(|recorded| recorded == secret) {
+        let _ = std::fs::remove_file(remembered_daemon_path(port));
+    }
+}
+
+/// How long the daemon keeps a launch link open, in the words the person reads.
+/// The daemon's own figure is `APP_LAUNCH_TTL` in `biorouter-server`'s `auth`,
+/// which this crate cannot import; a test pins the two together.
+const LAUNCH_LINK_LIFETIME: &str = "five minutes";
+
+/// The one-time address a browser opens app `id` at (W2-HRD-1): the daemon's
+/// launch link, minted with its secret. Opening it sets the app's access cookie
+/// and lands on the app; it works once, for [`LAUNCH_LINK_LIFETIME`].
+async fn launch_url(port: u16, id: &str, secret: &str) -> Result<String> {
+    // The id goes into a request line, so it must be an app name and nothing else.
+    biorouter_mcp::agent_drafter::store::validate_artifact_id(id)
+        .map_err(|_| anyhow!("'{id}' is not an app name"))?;
+    let answer = with_secret(port, "POST", &format!("/apps/{id}/launch"), secret).await;
+    let path = match &answer {
+        Some((200, body)) => serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value.get("path")?.as_str().map(str::to_string)),
+        _ => None,
+    };
+    match path {
+        Some(path) if is_launch_path(&path, id) => Ok(format!("http://{DAEMON_HOST}:{port}{path}")),
+        _ => bail!(
+            "the daemon on port {port} would not open '{id}'{}",
+            match answer {
+                Some((404, _)) => ": it has no such app".to_string(),
+                Some((status, _)) => format!(" (HTTP {status})"),
+                None => ": it did not answer".to_string(),
+            }
+        ),
+    }
+}
+
+/// Whether `path` is exactly app `id`'s page with a launch token and nothing else.
+fn is_launch_path(path: &str, id: &str) -> bool {
+    path.strip_prefix(&format!("/apps/{id}/?t="))
+        .is_some_and(|token| {
+            token.len() == 64
+                && token
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+}
+
+/// How long a launch page is kept. Its link expired minutes before, so a page
+/// this old opens nothing; it is removed the next time a page is written.
+const LAUNCH_PAGE_STALE: Duration = Duration::from_secs(10 * 60);
+
+/// Where `apps open` and `biorouter serve --open` write the pages that hand a
+/// link carrying a credential to the browser.
+pub(crate) fn launch_pages_dir() -> PathBuf {
+    biorouter::config::paths::Paths::state_dir().join("app-launch")
+}
+
+/// Write `launch` into a page only this account can read, which sends the
+/// browser on to it, and answer that page's path: the only thing an opener is
+/// handed (W2-HRD-1).
+///
+/// ⚠ Never hand the link itself to `open`, `xdg-open` or a browser. Their
+/// arguments are readable by every account on the machine (`ps` on macOS,
+/// `/proc/<pid>/cmdline` on Linux, for as long as a browser started that way
+/// runs). An app's launch link opens the app for whoever redeems it FIRST: a
+/// co-tenant polling for `?t=` beats a browser that is still starting, keeps the
+/// app's cookie for the daemon's run, and the owner sees only a refusal. The
+/// browser token `biorouter serve` prints is worse, because it works until the
+/// daemon stops and its cookie is handed the daemon's secret with the
+/// interface. Jupyter hands its token over the same way. The page is mode 0600
+/// in a 0700 folder this account owns, and names the link twice: a meta
+/// refresh, and a link to click if the refresh does not run. The daemon answers
+/// either link with a page of its own that sets the cookie, because a `file:`
+/// page starting the navigation would keep a redirect from carrying it
+/// (`routes::apps::launch_bounce`, `routes::web_ui::exchange_bounce`).
+pub(crate) fn write_launch_page(directory: &Path, launch: &str) -> Result<PathBuf> {
+    use std::io::Write;
+
+    tighten_own_folder(directory);
+    biorouter::daemon_runtime::private_directory(directory)?;
+    remove_stale_launch_pages(directory, std::time::SystemTime::now());
+    let target = html_attribute(launch);
+    let mut page = tempfile::Builder::new()
+        .prefix("launch-")
+        .suffix(".html")
+        .rand_bytes(16)
+        .tempfile_in(directory)?;
+    writeln!(
+        page,
+        "<!doctype html><meta charset=utf-8>\
+         <meta name=referrer content=no-referrer>\
+         <meta http-equiv=\"refresh\" content=\"0;url={target}\">\
+         <title>Opening Biorouter</title>\
+         <p>Opening Biorouter. If nothing happens, <a href=\"{target}\">open it here</a>.</p>"
+    )?;
+    page.as_file().sync_all()?;
+    Ok(page.into_temp_path().keep()?)
+}
+
+/// Make `directory` 0700 when it is a real folder this account owns and others
+/// can enter, so one loosened folder does not keep every later `apps open` from
+/// opening a browser. A link, or another account's folder, is left for
+/// `private_directory` to refuse.
+fn tighten_own_folder(directory: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let Ok(folder) = std::fs::symlink_metadata(directory) else {
+            return;
+        };
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let own = folder.uid() == unsafe { libc::geteuid() };
+        if folder.is_dir() && own && folder.permissions().mode() & 0o077 != 0 {
+            let _ = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = directory;
+}
+
+/// Remove the launch pages in `directory` older than [`LAUNCH_PAGE_STALE`].
+/// Best effort: a page left behind holds an expired link.
+fn remove_stale_launch_pages(directory: &Path, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("launch-") && name.ends_with(".html")) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= LAUNCH_PAGE_STALE);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `value` escaped for a double-quoted HTML attribute.
+fn html_attribute(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
+/// Open `launch`, a link that carries a credential, in the default browser
+/// through a launch page in `directory`, calling `opener` with the page and
+/// never with the link. Answers the page, for a caller that removes it later, or
+/// what went wrong, for the caller to print the link instead.
+pub(crate) fn open_launch_link(
+    launch: &str,
+    directory: &Path,
+    opener: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<PathBuf> {
+    let page = write_launch_page(directory, launch)
+        .map_err(|error| anyhow!("could not write the page that opens the browser: {error}"))?;
+    match opener(&page) {
+        Ok(()) => Ok(page),
+        Err(error) => {
+            let _ = std::fs::remove_file(&page);
+            Err(anyhow!("could not open a browser: {error}"))
+        }
+    }
+}
+
+/// Open the launch page `page` in the default browser. Only a launch page is
+/// ever handed to this: see [`write_launch_page`] for why the link itself never
+/// reaches an opener.
+///
+/// A browser, and not whatever opens `.html` files, which on a developer's
+/// machine is often an editor: `webbrowser` asks the platform for the handler of
+/// `https:` and opens the page in it. The page goes over as its `file:` address.
+/// On macOS that is a LaunchServices call, which starts no process whose
+/// arguments could be read; elsewhere it is the browser's argument, which names
+/// the page and not the link.
+pub(crate) fn open_page_in_browser(page: &Path) -> std::io::Result<()> {
+    let page_url = url::Url::from_file_path(page).map_err(|()| {
+        std::io::Error::other(format!("{} is not an absolute path", page.display()))
+    })?;
+    webbrowser::open(page_url.as_str())
 }
 
 /// Whether a daemon this command starts is tied to this process's lifetime.
@@ -303,12 +632,30 @@ pub(crate) enum Supervision {
     TiedToThisProcess,
 }
 
-/// Ensure a daemon is reachable on the configured port, spawning one if needed.
-async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
+/// Ensure a daemon whose secret this command knows is reachable on the configured
+/// port, spawning one if needed. Answers the daemon and its secret.
+async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<(Daemon, String)> {
     if daemon_ok(DAEMON_HOST, port).await {
-        return Ok(Daemon::Reused);
+        let known = std::env::var("BIOROUTER_SERVER__SECRET_KEY")
+            .ok()
+            .filter(|secret| !secret.is_empty())
+            .into_iter()
+            .chain(remembered_secret(port));
+        for secret in known {
+            if secret_works(port, &secret).await {
+                return Ok((Daemon::Reused, secret));
+            }
+        }
+        bail!(
+            "a Biorouter daemon is already running on port {port}, and opening an app on it takes \
+             that daemon's secret key, which this command does not know. It knows the key of a \
+             daemon `biorouter apps open` or `biorouter apps serve` started; for any other, set \
+             BIOROUTER_SERVER__SECRET_KEY to its key, or set BIOROUTER_PORT to a free port so \
+             this command starts a daemon of its own."
+        );
     }
 
+    let secret = new_daemon_secret();
     let bin = biorouterd_path();
     let mut command = tokio::process::Command::new(&bin);
     command.arg("agent");
@@ -322,6 +669,9 @@ async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
     }
     let mut child = command
         .env("BIOROUTER_PORT", port.to_string())
+        // The secret rides the environment, which only this account can read,
+        // and never the command line.
+        .env("BIOROUTER_SERVER__SECRET_KEY", &secret)
         // Issue #56 DR-16: `biorouterd agent` now reads one line off stdin at
         // startup (the launcher's user-action digest). `Command` INHERITS fd 0,
         // so without this the spawned daemon would consume a line of the CLI's
@@ -359,8 +709,12 @@ async fn ensure_daemon(port: u16, supervision: Supervision) -> Result<Daemon> {
                  Is port {port} already in use? Try a different BIOROUTER_PORT."
             );
         }
-        if daemon_ok(DAEMON_HOST, port).await {
-            return Ok(Daemon::Started(child));
+        if secret_works(port, &secret).await {
+            // Both supervisions: the next launch link for this daemon comes from
+            // a later `apps open` or `apps serve`, which can mint it only with
+            // this secret. `serve` removes the record when it stops the daemon.
+            let remembered = remember_daemon(port, &secret);
+            return Ok((Daemon::Started { child, remembered }, secret));
         }
         if tokio::time::Instant::now() >= deadline {
             let _ = child.start_kill();
@@ -386,6 +740,32 @@ fn app_url(port: u16, id: &str) -> String {
     format!("http://{DAEMON_HOST}:{port}/apps/{id}/")
 }
 
+/// The command that mints another launch link for app `id` on the daemon on
+/// `port`, spelled so it reaches that port.
+fn open_again_command(port: u16, id: &str) -> String {
+    if port == 3000 {
+        format!("biorouter apps open {id}")
+    } else {
+        format!("BIOROUTER_PORT={port} biorouter apps open {id}")
+    }
+}
+
+/// What `apps serve` tells the person about the link it printed, and where the
+/// next one comes from. Each answer is true of the daemon it describes: one it
+/// started and recorded, one it started and could not record, or one it reused
+/// with a key it already knew.
+fn serve_link_advice(port: u16, id: &str, started: Option<bool>) -> String {
+    let once = format!("the address below opens the app once, within {LAUNCH_LINK_LIFETIME}");
+    match started {
+        Some(true) => format!(
+            "{once}. For another, run `{}` in another terminal while this one keeps serving.",
+            open_again_command(port, id)
+        ),
+        Some(false) => format!("{once}. For another, stop this with Ctrl-C and run it again."),
+        None => format!("{once}. Run this again for another."),
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // open
 // ──────────────────────────────────────────────────────────────────────────────
@@ -393,8 +773,9 @@ fn app_url(port: u16, id: &str) -> String {
 pub async fn handle_apps_open(id: String) -> Result<()> {
     require_app(&id)?;
     let port = configured_port();
-    let daemon = ensure_daemon(port, Supervision::Detached).await?;
+    let (daemon, secret) = ensure_daemon(port, Supervision::Detached).await?;
     let url = app_url(port, &id);
+    let launch = launch_url(port, &id, &secret).await?;
 
     match daemon {
         Daemon::Reused => {
@@ -403,15 +784,33 @@ pub async fn handle_apps_open(id: String) -> Result<()> {
                 style("·").dim()
             );
         }
-        Daemon::Started(_child) => {
+        Daemon::Started { .. } => {
             // Leave the child running (detached) so the app stays served after
             // this command returns — the tokio child is not killed on drop.
             println!("  {} started biorouterd on port {port}", style("✓").green());
         }
     }
 
-    if let Err(e) = open::that(&url) {
-        eprintln!("    {} could not open a browser: {e}", style("!").yellow());
+    // The link itself never reaches an opener's command line: see
+    // `write_launch_page`. The terminal is this account's alone, so the link is
+    // printed there when no browser could be opened.
+    //
+    // It is printed when the page did open, too: a browser that cannot read the
+    // page (a snap-packaged browser cannot read hidden folders such as the state
+    // dir) shows an error, and `open` still reports success.
+    let once = format!("it works once, within {LAUNCH_LINK_LIFETIME}");
+    match open_launch_link(&launch, &launch_pages_dir(), open_page_in_browser) {
+        Ok(_) => println!(
+            "  {} if the app does not appear, open this address instead ({once}): {launch}",
+            style("·").dim()
+        ),
+        Err(e) => {
+            eprintln!("    {} {e}", style("!").yellow());
+            println!(
+                "  {} open this address instead ({once}): {launch}",
+                style("·").dim()
+            );
+        }
     }
     println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
     Ok(())
@@ -430,14 +829,32 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
     // and leave the daemon behind — so from here on a signal waits to be read,
     // including one that lands during the readiness wait inside `ensure_daemon`.
     let mut stop = StopSignals::install()?;
-    let daemon = ensure_daemon(port, Supervision::TiedToThisProcess).await?;
-    let url = app_url(port, &id);
+    let (daemon, secret) = ensure_daemon(port, Supervision::TiedToThisProcess).await?;
+    let url = match launch_url(port, &id, &secret).await {
+        Ok(url) => url,
+        Err(error) => {
+            if let Daemon::Started { mut child, .. } = daemon {
+                stop_daemon(&mut child, &mut stop).await;
+                forget_daemon(port, &secret);
+            }
+            return Err(error);
+        }
+    };
+    let started = match &daemon {
+        Daemon::Reused => None,
+        Daemon::Started { remembered, .. } => Some(*remembered),
+    };
+    println!(
+        "  {} {}",
+        style("·").dim(),
+        serve_link_advice(port, &id, started)
+    );
 
     match daemon {
         Daemon::Reused => {
             // Reusing an external daemon: print the URL and a note, then exit 0.
             // We do not own its lifecycle, so there is nothing to keep in the
-            // foreground — and nothing of ours to stop.
+            // foreground — and nothing of ours to stop, or to forget.
             println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
             println!(
                 "  {} reusing the daemon already running on port {port}; it keeps running after this command.",
@@ -445,7 +862,7 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
             );
             Ok(())
         }
-        Daemon::Started(mut child) => {
+        Daemon::Started { mut child, .. } => {
             println!("  {} {}", style("→").fg(ACCENT), style(&url).bold());
             println!(
                 "  {} serving on port {port}. Press Ctrl-C to stop.",
@@ -467,6 +884,10 @@ pub async fn handle_apps_serve(id: String) -> Result<()> {
             // Asks, waits out the grace, then kills and reaps. A daemon that has
             // already exited is only reaped, so this is safe on both arms.
             stop_daemon(&mut child, &mut stop).await;
+            // After the stop, not before: until the daemon is gone an `apps open`
+            // may still use it. A daemon started on the port since has a record
+            // of its own, which this leaves alone.
+            forget_daemon(port, &secret);
             Ok(())
         }
     }
@@ -611,5 +1032,340 @@ mod tests {
     #[test]
     fn app_url_is_well_formed() {
         assert_eq!(app_url(3000, "beta"), "http://127.0.0.1:3000/apps/beta/");
+    }
+
+    /// W2-HRD-1: only exactly the app's page with a launch token is opened.
+    #[test]
+    fn only_the_apps_own_launch_link_is_opened() {
+        let token = "ab".repeat(32);
+        assert!(is_launch_path(&format!("/apps/beta/?t={token}"), "beta"));
+        for path in [
+            format!("/apps/other/?t={token}"),
+            format!("/apps/beta/?t={token}&next=/sessions"),
+            format!("/apps/beta/?t={}", token.to_uppercase()),
+            format!("/apps/beta/?t={}", "ab".repeat(31)),
+            format!("/apps/beta/agent?t={token}"),
+            format!("//evil.test/apps/beta/?t={token}"),
+            "/apps/beta/".to_string(),
+        ] {
+            assert!(!is_launch_path(&path, "beta"), "{path}");
+        }
+    }
+
+    fn a_launch_link() -> String {
+        format!("http://127.0.0.1:3000/apps/beta/?t={}", "ab".repeat(32))
+    }
+
+    /// W2-HRD-1: the opener is handed a page only this account can read, and
+    /// never the link. The link opens the app for whoever redeems it first, and
+    /// an opener's arguments are readable by every account on the machine.
+    #[test]
+    fn the_opener_is_handed_a_private_page_and_never_the_link() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let launch = a_launch_link();
+        let mut handed = Vec::new();
+        let written = open_launch_link(&launch, &dir, |page| {
+            handed.push(page.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(handed.len(), 1);
+        let page = &handed[0];
+        assert_eq!(
+            &written, page,
+            "the caller is told which page to remove later"
+        );
+        let argument = page.to_string_lossy();
+        assert!(!argument.contains("?t="), "{argument}");
+        assert!(!argument.contains(&"ab".repeat(32)), "{argument}");
+        assert_eq!(page.parent(), Some(dir.as_path()));
+        let html = fs::read_to_string(page).unwrap();
+        assert!(
+            html.contains(&format!("content=\"0;url={launch}\"")),
+            "{html}"
+        );
+        assert!(html.contains(&format!("href=\"{launch}\"")), "{html}");
+        assert!(html.contains("<meta name=referrer content=no-referrer>"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(page), 0o600, "the page is this account's alone");
+            assert_eq!(mode(&dir), 0o700, "and so is its folder");
+        }
+    }
+
+    /// With no browser to open, the caller learns it and prints the link to the
+    /// terminal instead; the page is still this account's alone.
+    #[test]
+    fn a_failed_opener_is_reported_so_the_link_is_printed_instead() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let error = open_launch_link(&a_launch_link(), &dir, |_| {
+            Err(std::io::Error::other("no display"))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("no display"), "{error}");
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            0,
+            "a page no browser will read is not left holding the link"
+        );
+    }
+
+    /// A folder of ours that others can enter is closed to them before a page
+    /// goes in it, rather than left to stop every later `apps open`.
+    #[cfg(unix)]
+    #[test]
+    fn a_loose_folder_of_ours_is_tightened_before_a_page_goes_in() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let page = write_launch_page(&dir, &a_launch_link()).unwrap();
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&page).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    /// A folder that is a link is not used for a page, and nothing is opened:
+    /// the caller prints the link instead.
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_that_is_a_link_is_refused() {
+        let tmp = TempDir::new().unwrap();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let dir = tmp.path().join("app-launch");
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        let mut opened = false;
+        let result = open_launch_link(&a_launch_link(), &dir, |_| {
+            opened = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!opened);
+        assert_eq!(
+            fs::read_dir(&elsewhere).unwrap().count(),
+            0,
+            "no page was written"
+        );
+    }
+
+    /// Pages whose link has long expired are removed when the next is written;
+    /// other files in the folder, and recent pages, are left alone.
+    #[test]
+    fn expired_launch_pages_are_swept() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let first = write_launch_page(&dir, &a_launch_link()).unwrap();
+        let recent = write_launch_page(&dir, &a_launch_link()).unwrap();
+        let other = dir.join("notes.txt");
+        fs::write(&other, "keep").unwrap();
+        let long_ago = std::time::SystemTime::now() - LAUNCH_PAGE_STALE - Duration::from_secs(1);
+        fs::File::options()
+            .write(true)
+            .open(&first)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        let next = write_launch_page(&dir, &a_launch_link()).unwrap();
+        assert!(!first.exists(), "an expired page is removed");
+        assert!(recent.exists() && next.exists() && other.exists());
+    }
+
+    #[test]
+    fn a_launch_page_escapes_what_it_quotes() {
+        assert_eq!(
+            html_attribute(r#"a&b"c'd<e>f"#),
+            "a&amp;b&quot;c&#39;d&lt;e&gt;f"
+        );
+    }
+
+    /// A source guard for the property above: this file opens a browser in one
+    /// place, `open_page_in_browser`, which is handed the page and never the
+    /// link, and no other opener appears at all.
+    #[test]
+    fn nothing_but_a_launch_page_reaches_an_opener() {
+        let source = include_str!("apps.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
+        let calls: Vec<&str> = source.split("webbrowser::").skip(1).collect();
+        assert_eq!(calls.len(), 1, "one browser opener, and only one");
+        assert!(
+            calls[0].starts_with("open(page_url.as_str())"),
+            "webbrowser::{:.40}",
+            calls[0]
+        );
+        for opener in [
+            "open::that",
+            "open::with",
+            "open::commands",
+            "Command::new(\"open\")",
+            "Command::new(\"xdg-open\")",
+        ] {
+            assert!(!source.contains(opener), "{opener}");
+        }
+        assert!(source.contains("fn open_page_in_browser(page: &Path)"));
+    }
+
+    /// A page goes to the browser as a `file:` address, which needs an absolute
+    /// path; a relative one is refused before any browser is asked.
+    #[test]
+    fn a_relative_page_is_not_opened() {
+        let error = open_page_in_browser(Path::new("launch-relative.html")).unwrap_err();
+        assert!(
+            error.to_string().contains("not an absolute path"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_daemon_secret_is_64_hex_and_fresh() {
+        let one = new_daemon_secret();
+        assert_eq!(one.len(), 64);
+        assert!(one.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(one, new_daemon_secret());
+    }
+
+    /// A stand-in for `biorouterd` on a free loopback port. `/status` answers
+    /// anyone; `/apps` and `POST /apps/{app}/launch` answer only `secret`, and
+    /// the launch route mints a fresh link each time, as the daemon's does.
+    async fn a_daemon_with(secret: &'static str, app: &'static str) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => request.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&request);
+                    let mut line = text.lines().next().unwrap_or_default().split_whitespace();
+                    let keyed = text
+                        .lines()
+                        .any(|header| header == format!("X-Secret-Key: {secret}"));
+                    let (status, body) = match (line.next(), line.next()) {
+                        (Some("GET"), Some("/status")) => ("200 OK", "ok".to_string()),
+                        (Some("GET"), Some("/apps")) if keyed => ("200 OK", "[]".to_string()),
+                        (Some("POST"), Some(path))
+                            if keyed && path == format!("/apps/{app}/launch") =>
+                        {
+                            (
+                                "200 OK",
+                                serde_json::json!({
+                                    "path": format!("/apps/{app}/?t={}", new_daemon_secret())
+                                })
+                                .to_string(),
+                            )
+                        }
+                        _ => ("401 Unauthorized", String::new()),
+                    };
+                    let answer = format!(
+                        "HTTP/1.0 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(answer.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    /// W2-HRD-1, the dead end `apps serve` left: its daemon's key was kept to
+    /// itself, so once the one link it printed was spent or five minutes old, a
+    /// second `apps serve` or `apps open` on the port refused the daemon as
+    /// unknown and the only way on was to stop the first. Every started daemon
+    /// is now recorded, and a second command mints another link on it.
+    ///
+    /// The first `ensure_daemon` below is the shipped behaviour for a `serve`
+    /// daemon (nothing recorded); `tests/apps_serve_lifecycle.rs` covers the
+    /// same with the real binaries, which is where the record is written.
+    #[tokio::test]
+    async fn a_daemon_apps_serve_started_gives_a_second_command_another_link() {
+        const SECRET: &str = "5ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2";
+        let port = a_daemon_with(SECRET, "beta").await;
+
+        let unknown = match ensure_daemon(port, Supervision::TiedToThisProcess).await {
+            Ok(_) => panic!("a daemon whose key was never recorded must be refused"),
+            Err(refused) => refused.to_string(),
+        };
+        assert!(unknown.contains("does not know"), "{unknown}");
+
+        assert!(remember_daemon(port, SECRET));
+        let (daemon, secret) = ensure_daemon(port, Supervision::TiedToThisProcess)
+            .await
+            .expect("a recorded daemon is reused");
+        assert!(matches!(daemon, Daemon::Reused));
+        assert_eq!(secret, SECRET);
+
+        let first = launch_url(port, "beta", &secret).await.unwrap();
+        let second = launch_url(port, "beta", &secret).await.unwrap();
+        for link in [&first, &second] {
+            let path = link
+                .strip_prefix(&format!("http://127.0.0.1:{port}"))
+                .unwrap();
+            assert!(is_launch_path(path, "beta"), "{link}");
+        }
+        assert_ne!(first, second, "each command gets a link of its own");
+
+        // A stop forgets only the record that names the daemon it stopped.
+        forget_daemon(port, "a-daemon-started-on-the-port-since");
+        assert_eq!(remembered_secret(port).as_deref(), Some(SECRET));
+        forget_daemon(port, SECRET);
+        assert_eq!(remembered_secret(port), None);
+        assert!(!remembered_daemon_path(port).exists());
+    }
+
+    /// The line `apps serve` prints under its link is true of the daemon it
+    /// describes. It said "run this again for another" of a daemon a second run
+    /// could not use.
+    #[test]
+    fn the_advice_under_a_served_link_names_a_way_that_works() {
+        let recorded = serve_link_advice(3000, "beta", Some(true));
+        assert!(
+            recorded.contains("`biorouter apps open beta`"),
+            "{recorded}"
+        );
+        assert!(
+            recorded.contains("while this one keeps serving"),
+            "{recorded}"
+        );
+        assert!(!recorded.contains("run this again"), "{recorded}");
+        assert!(serve_link_advice(4100, "beta", Some(true))
+            .contains("`BIOROUTER_PORT=4100 biorouter apps open beta`"));
+        let unrecorded = serve_link_advice(3000, "beta", Some(false));
+        assert!(unrecorded.contains("stop this with Ctrl-C"), "{unrecorded}");
+        assert!(!unrecorded.contains("apps open"), "{unrecorded}");
+        for advice in [recorded, unrecorded, serve_link_advice(3000, "beta", None)] {
+            assert!(advice.contains("once, within five minutes"), "{advice}");
+        }
+    }
+
+    /// What the person is told about a link's lifetime is the daemon's figure,
+    /// which lives in a crate this one cannot import.
+    #[test]
+    fn the_lifetime_the_person_is_told_is_the_daemons() {
+        let auth = include_str!("../../../biorouter-server/src/auth.rs");
+        assert!(
+            auth.contains("const APP_LAUNCH_TTL: Duration = Duration::from_secs(5 * 60);"),
+            "the daemon's launch-link lifetime changed; update LAUNCH_LINK_LIFETIME"
+        );
+        assert_eq!(LAUNCH_LINK_LIFETIME, "five minutes");
     }
 }

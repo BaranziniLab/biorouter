@@ -133,8 +133,11 @@ describe('WorkspaceSwitcher', () => {
     const { menu } = await openMenu();
     const line = menu.querySelector('[data-crew-signed-in]') as HTMLElement;
     expect(line).toHaveTextContent('Signed in as @alice on lab-server');
+    // SF-F6: in the 288px menu the line is cut, so its full words are its title.
+    expect(line).toHaveAttribute('title', 'Signed in as @alice on lab-server');
     // The raw address belongs to Connection settings' details, not this header.
     expect(menu).not.toHaveTextContent('52.33.141.141');
+    expect(line.getAttribute('title')).not.toContain('52.33.141.141');
   });
 
   it('shows the workspace key’s fingerprint after "identity verified" (Q2-04)', async () => {
@@ -152,6 +155,19 @@ describe('WorkspaceSwitcher', () => {
     expect(line.closest('[data-crew-menu-fingerprint]')).toHaveTextContent(
       `${copy.fingerprint} ${expected}`
     );
+    // SF-F6: all sixteen digits, never cut: the line wraps instead of truncating.
+    const text = line.closest('.crew-sidebar-menu-fingerprint-text');
+    expect(text).not.toBeNull();
+    expect(text).not.toHaveClass('crew-sidebar-truncate');
+    // UXN-12: and it wraps after "Fingerprint", never inside the digits. jsdom lays nothing out,
+    // so the rule is read at the source.
+    expect(line).toHaveClass('crew-sidebar-menu-fingerprint-value');
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync(`${__dirname}/crew-sidebar.css`, 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      ''
+    );
+    expect(css).toMatch(/\.crew-sidebar-menu-fingerprint-value \{\s*white-space: nowrap;\s*\}/);
     // After the verified status line, in the header the menu is described by.
     const verified = within(header).getByText(crewStatusCopy.verified);
     expect(verified.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -344,6 +360,50 @@ describe('WorkspaceSwitcher', () => {
     expect(menu).not.toHaveTextContent(/ssh_eof|child_before_cleanup/);
   });
 
+  // W2-UIW-3, DW-03: the daemon names the destination's own host on a host-key failure too, as
+  // OpenSSH writes it. The menu names that server by the person's alias, and only a separate hop
+  // (a jump host) by the name OpenSSH gave it.
+  it('names the server by its alias on a host-key failure, and a jump host by its own name', async () => {
+    const labelled = {
+      ...connection,
+      ssh_target: 'crew_alice@52.33.141.141',
+      port: 2222,
+      server_label: 'lab-server',
+      status: 'disconnected' as const,
+    };
+    const failure = (host: string) => ({
+      kind: 'host_key_unknown' as const,
+      message: 'Host key verification failed.',
+      code: 'crew_ssh_host_key_unknown',
+      host,
+    });
+    const { unmount } = renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        status: 'cant-connect',
+        connection: labelled,
+        lastConnectFailure: failure('[52.33.141.141]:2222'),
+      })
+    );
+    let { menu } = await openMenu();
+    expect(within(menu).getByText(connectionBarCopy.cantVerify('lab-server'))).toBeInTheDocument();
+    expect(menu).not.toHaveTextContent('52.33.141.141');
+    unmount();
+
+    renderWithCrew(
+      <WorkspaceSwitcher />,
+      makeController({
+        status: 'cant-connect',
+        connection: labelled,
+        lastConnectFailure: failure('gate.example.edu'),
+      })
+    );
+    ({ menu } = await openMenu());
+    expect(
+      within(menu).getByText(connectionBarCopy.cantVerify('gate.example.edu'))
+    ).toBeInTheDocument();
+  });
+
   it('lists the workspace items, the connection tools, and Add a workspace', async () => {
     renderWithCrew(<WorkspaceSwitcher />);
     const { menu } = await openMenu();
@@ -505,6 +565,18 @@ describe('WorkspaceSwitcher', () => {
     );
     await user.click(radios[1]);
     expect(controller.selectConnection).toHaveBeenCalledWith(secondConnection.id);
+  });
+
+  /** MSG2-N9: the menu listed what the list held when Crew opened, whatever a terminal did since. */
+  it('reads the saved workspaces again each time it opens', async () => {
+    const reloadConnections = vi.fn();
+    renderWithCrew(<WorkspaceSwitcher />, makeController({ reloadConnections }));
+    expect(reloadConnections).not.toHaveBeenCalled();
+    const { user } = await openMenu();
+    expect(reloadConnections).toHaveBeenCalledTimes(1);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(reloadConnections).toHaveBeenCalledTimes(1);
   });
 
   it('opens Join and Host from the Add a workspace submenu', async () => {

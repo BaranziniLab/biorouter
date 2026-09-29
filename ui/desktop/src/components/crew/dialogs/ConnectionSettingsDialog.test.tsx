@@ -8,6 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
+import { CrewHttpError } from '../crewApi';
 import { connectionUpdateBody } from '../state/useCrewConnections';
 import { ConnectionSettingsDialog } from './ConnectionSettingsDialog';
 import { confirmCopy, connectionSettingsCopy } from './copy';
@@ -32,7 +33,19 @@ function save() {
   fireEvent.click(screen.getByRole('button', { name: connectionSettingsCopy.save }));
 }
 
-afterEach(() => vi.restoreAllMocks());
+/** The OS the preload reports, which the dialog judges a local path by (W2-UIW-13). */
+function onPlatform(platform: 'win32' | 'darwin' | 'linux') {
+  Object.defineProperty(window, 'electron', {
+    value: { platform },
+    configurable: true,
+    writable: true,
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  Reflect.deleteProperty(window, 'electron');
+});
 
 describe('ConnectionSettingsDialog', () => {
   it('is titled as an edit, saves with Save connection, and focuses its first field', async () => {
@@ -247,6 +260,177 @@ describe('ConnectionSettingsDialog', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('ssh_target is not valid');
   });
 
+  // DW-04: "Identity file must be an absolute path" rendered only as the dialog's one note, at the
+  // end of the scroll body, 140px below the view; the field was not marked, and nothing moved.
+  it('says a relative or ~ identity file under its field before sending, and marks it invalid', async () => {
+    onPlatform('linux');
+    const { crew } = renderSettings({ identity_file: '/home/alice/.ssh/id_ed25519' });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    fireEvent.change(field, { target: { value: '~/.ssh/id_ed25519' } });
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.identityFileAbsolute('posix'));
+    expect(field).toBeInvalid();
+    save();
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+    fireEvent.change(field, { target: { value: '/home/alice/.ssh/id_rsa' } });
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toBeValid();
+  });
+
+  // W2-UIW-13: the Identity file is a path on THIS computer, and the daemon judges it by this
+  // computer's OS (`Path::is_absolute`). A check by a leading / alone refused every Windows path,
+  // and a Windows person with one saved saw the error on opening and could save nothing at all.
+  it('takes a saved Windows identity file on Windows: no error, and other settings save', async () => {
+    onPlatform('win32');
+    const saved = 'C:\\Users\\alice\\.ssh\\id_ed25519';
+    const { crew } = renderSettings({ identity_file: saved });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).toHaveValue(saved);
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toBeValid();
+    expect(field).not.toHaveAccessibleDescription();
+    fireEvent.change(screen.getByLabelText('Connection name'), {
+      target: { value: 'Imaging core' },
+    });
+    save();
+    await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+    expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({
+      name: 'Imaging core',
+      identity_file: saved,
+    });
+  });
+
+  it('takes a typed Windows path on Windows, drive or share, and says a Windows shape otherwise', async () => {
+    onPlatform('win32');
+    const { crew } = renderSettings({ identity_file: 'C:\\Users\\alice\\.ssh\\id_ed25519' });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).toHaveAttribute(
+      'placeholder',
+      connectionSettingsCopy.identityFilePlaceholder('windows')
+    );
+    for (const accepted of ['C:/Users/alice/.ssh/id_rsa', '\\\\fileserver\\home\\alice\\id']) {
+      fireEvent.change(field, { target: { value: accepted } });
+      expect(field).not.toHaveAttribute('aria-invalid');
+      expect(field).toBeValid();
+    }
+    // Not absolute on Windows, so the daemon there would refuse them.
+    for (const refused of ['/home/alice/.ssh/id_rsa', '~\\.ssh\\id_rsa', 'id_rsa']) {
+      fireEvent.change(field, { target: { value: refused } });
+      expect(field).toHaveAttribute('aria-invalid', 'true');
+      expect(field).toHaveAccessibleDescription(
+        connectionSettingsCopy.identityFileAbsolute('windows')
+      );
+      expect(field).toBeInvalid();
+    }
+    expect(connectionSettingsCopy.identityFileAbsolute('windows')).not.toMatch(/starting with \//);
+    save();
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+  });
+
+  it('asks a Mac for a path starting with /, and never suggests a ~ path', async () => {
+    onPlatform('darwin');
+    renderSettings({ identity_file: '/Users/alice/.ssh/id_ed25519' });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).toHaveAttribute('placeholder', '/Users/you/.ssh/id_ed25519');
+    fireEvent.change(field, { target: { value: 'C:\\Users\\alice\\.ssh\\id_rsa' } });
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.identityFileAbsolute('mac'));
+    for (const platform of ['windows', 'mac', 'posix', 'unknown'] as const) {
+      expect(connectionSettingsCopy.identityFilePlaceholder(platform)).not.toMatch(/^~/);
+    }
+  });
+
+  // What the daemon accepted when it was saved is never refused on opening: a rule this side gets
+  // wrong must not lock a person out of every other setting.
+  it('never refuses the saved identity file itself, only what is typed since', async () => {
+    onPlatform('darwin');
+    const saved = 'D:\\keys\\lab';
+    const { crew } = renderSettings({ identity_file: saved });
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    expect(field).not.toHaveAttribute('aria-invalid');
+    expect(field).toBeValid();
+    fireEvent.change(field, { target: { value: 'D:\\keys\\other' } });
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    fireEvent.change(field, { target: { value: ` ${saved} ` } });
+    expect(field).not.toHaveAttribute('aria-invalid');
+    save();
+    await waitFor(() => expect(crew.updateConnection).toHaveBeenCalledTimes(1));
+    expect(crew.updateConnection.mock.calls[0][1]).toMatchObject({ identity_file: saved });
+  });
+
+  it('opens Advanced and focuses a hidden identity file the save would send wrong', async () => {
+    const { crew } = renderSettings({ identity_file: '/home/alice/.ssh/id_ed25519' });
+    fireEvent.change(await screen.findByLabelText(connectionSettingsCopy.identityFile), {
+      target: { value: 'id_ed25519' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText(connectionSettingsCopy.identityFile)).toBeNull()
+    );
+    save();
+    const field = await screen.findByLabelText(connectionSettingsCopy.identityFile);
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(crew.updateConnection).not.toHaveBeenCalled();
+  });
+
+  it('puts the daemon’s field refusal under its field, focused, instead of a note at the end', async () => {
+    const { crew } = renderSettings();
+    crew.updateConnection.mockRejectedValueOnce(
+      new Error('Daemon returned 400: Invalid ProxyJump route')
+    );
+    save();
+    const field = await screen.findByLabelText(connectionSettingsCopy.jumpHosts);
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(connectionSettingsCopy.jumpHostsInvalid);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/ProxyJump/)).toBeNull();
+    // Advanced stays closed once the person closes it, refusal or not.
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText(connectionSettingsCopy.jumpHosts)).toBeNull()
+    );
+    await act(async () => {});
+    expect(screen.queryByLabelText(connectionSettingsCopy.jumpHosts)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+    // Editing the value takes the refusal away.
+    const again = await screen.findByLabelText(connectionSettingsCopy.jumpHosts);
+    fireEvent.change(again, { target: { value: 'gateway' } });
+    await waitFor(() => expect(again).not.toHaveAttribute('aria-invalid'));
+  });
+
+  // SF-F4 (a): "Crew aliases have different institutions; use a separately verified cluster
+  // connection" for a person with one connection.
+  it('says an institution refusal under Institution, naming both institutions', async () => {
+    const { crew } = renderSettings();
+    crew.updateConnection.mockRejectedValueOnce(
+      new Error(
+        'Daemon returned 400: Crew aliases have different institutions; use a separately verified cluster connection'
+      )
+    );
+    fireEvent.change(await screen.findByLabelText('Institution'), {
+      target: { value: 'stanford' },
+    });
+    save();
+    const text = connectionSettingsCopy.institutionMismatch('stanford', 'lab', 'ucsf');
+    expect(text).toBe('This connection is for stanford, but lab belongs to ucsf. Use ucsf here.');
+    const field = screen.getByLabelText('Institution');
+    await waitFor(() => expect(field).toHaveAccessibleDescription(text));
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.queryByText(/aliases|cluster/)).toBeNull();
+  });
+
+  it('keeps a coded institution refusal’s own sentence', async () => {
+    const { crew } = renderSettings();
+    const sentence = 'This connection is for stanford, but lab belongs to ucsf.';
+    crew.updateConnection.mockRejectedValueOnce(
+      new CrewHttpError(sentence, 400, 'crew_institution_mismatch')
+    );
+    save();
+    await waitFor(() =>
+      expect(screen.getByLabelText('Institution')).toHaveAccessibleDescription(sentence)
+    );
+  });
+
   it('opens Advanced by itself only when the record uses something inside it', async () => {
     renderSettings();
     await screen.findByLabelText('Connection name');
@@ -282,6 +466,10 @@ describe('ConnectionSettingsDialog', () => {
       target: { value: '/home/alice/project' },
     });
     expect(execution).toBeEnabled();
+    // HPC-N1: what a command there cannot do, said before the person turns it on.
+    expect(execution).toHaveAccessibleDescription(connectionSettingsCopy.remoteExecutionHelp);
+    expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/no network/);
+    expect(connectionSettingsCopy.remoteExecutionHelp).toMatch(/sbatch/);
   });
 
   it('keeps Workspace details closed, even when Advanced opens by itself', async () => {
@@ -356,6 +544,8 @@ describe('ConnectionSettingsDialog', () => {
   });
 
   it('confirms before removing the saved connection', async () => {
+    // The harness's person hosts lab from this, the only computer of theirs it lists: removing it
+    // ends the host controls, so the workspace's name is typed first (CLI-1).
     const { crew } = renderSettings();
     fireEvent.click(
       await screen.findByRole('button', { name: connectionSettingsCopy.remove('lab') })
@@ -364,8 +554,13 @@ describe('ConnectionSettingsDialog', () => {
       name: confirmCopy.removeConnection.title('lab'),
     });
     expect(crew.removeConnection).not.toHaveBeenCalled();
+    const remove = within(confirm).getByRole('button', {
+      name: confirmCopy.removeConnection.onlyHostConfirm,
+    });
+    expect(remove).toBeDisabled();
+    fireEvent.change(within(confirm).getByRole('textbox'), { target: { value: 'lab' } });
     await act(async () => {
-      fireEvent.click(within(confirm).getByRole('button', { name: 'Remove' }));
+      fireEvent.click(remove);
     });
     await waitFor(() => expect(crew.removeConnection).toHaveBeenCalledWith('conn-1'));
   });

@@ -36,7 +36,7 @@
     "id": "autovisualiser",
     "name": "autovisualiser",
     "display_name": "Auto Visualiser",
-    "description": "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
+    "description": "Interactive charts, diagrams, networks, maps and scientific plots, shown in the side panel.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],

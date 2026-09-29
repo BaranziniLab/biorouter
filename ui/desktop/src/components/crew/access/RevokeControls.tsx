@@ -190,6 +190,9 @@ export function RevokeResultNote({
   retrying = false,
   successActions,
   confirmation = 'offline',
+  workspace = null,
+  connectAction,
+  actions,
   className,
 }: {
   outcome: RevokeOutcome;
@@ -205,8 +208,31 @@ export function RevokeResultNote({
    * stays either way: it asks now.
    */
   confirmation?: 'confirming' | 'offline';
+  /** The workspace, for a note that is the only word on a stopped revoke (AG-F11), or `null`. */
+  workspace?: string | null;
+  /**
+   * A control that connects the grant's connection (a button, whose own click is the person's
+   * connect), offered once a Retry found the workspace still out of reach.
+   */
+  connectAction?: ReactNode;
+  /** More ways on, beside Retry, for a note that stands alone (AG-F11). */
+  actions?: ReactNode;
   className?: string;
 }) {
+  // AG-F12: a Retry that answered "stopped on this device" again changed nothing on screen, and the
+  // alert, its words unchanged, was not announced again. Each such answer is counted, so the note
+  // says the workspace was checked just now, and is mounted afresh to be announced.
+  const [checkedAgain, setCheckedAgain] = useState(0);
+  const wasRetrying = useRef(false);
+  useEffect(() => {
+    if (retrying) {
+      wasRetrying.current = true;
+      return;
+    }
+    if (!wasRetrying.current) return;
+    wasRetrying.current = false;
+    if (outcome.kind === 'unconfirmed') setCheckedAgain((count) => count + 1);
+  }, [retrying, outcome.kind]);
   if (outcome.kind === 'revoked') {
     return (
       <Note
@@ -227,17 +253,31 @@ export function RevokeResultNote({
     </Button>
   );
   if (outcome.kind === 'unconfirmed') {
+    const stillOut = confirmation === 'offline' && checkedAgain > 0;
     return (
       <Note
+        key={stillOut ? `checked-${checkedAgain}` : 'first'}
         tone="warning"
         icon={AlertTriangle}
         role="alert"
-        action={retry}
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            {retry}
+            {stillOut ? connectAction : null}
+            {actions}
+          </div>
+        }
         className={className}
         testId="crew-access-unconfirmed"
       >
         <span data-confirmation={confirmation}>
-          {confirmation === 'confirming' ? accessCopy.confirming : accessCopy.unconfirmed}
+          {confirmation === 'confirming'
+            ? accessCopy.confirming
+            : stillOut
+              ? `${accessCopy.stillUnreachable(workspace)} ${accessCopy.connectToConfirm}`
+              : workspace
+                ? accessCopy.unconfirmedIn(workspace)
+                : accessCopy.unconfirmed}
         </span>
       </Note>
     );

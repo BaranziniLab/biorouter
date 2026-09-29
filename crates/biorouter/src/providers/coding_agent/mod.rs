@@ -478,6 +478,188 @@ mod tests {
         }
     }
 
+    /// The pages under `docs/providers/coding-agents/` that describe the running
+    /// system. They promised a 30-minute turn ceiling for a month after the code
+    /// dropped it (PROVIDERS-6, 2026-09-27), so an operator relying on the page
+    /// to reap a wedged `claude` or `codex` child got a turn that never ended.
+    /// `streaming-and-tool-call-parity.md` is a design record whose analysis
+    /// describes the tree before streaming landed, so only its "What shipped"
+    /// section is held to the running behaviour.
+    fn current_coding_agent_docs() -> Vec<(&'static str, &'static str)> {
+        let parity = include_str!(
+            "../../../../../docs/providers/coding-agents/streaming-and-tool-call-parity.md"
+        );
+        let (_, from_shipped) = parity
+            .split_once("## What shipped")
+            .expect("the parity record keeps its What shipped section");
+        let (shipped, _) = from_shipped
+            .split_once("\n## Summary")
+            .expect("What shipped is followed by the Summary");
+        vec![
+            (
+                "how-it-works.md",
+                include_str!("../../../../../docs/providers/coding-agents/how-it-works.md"),
+            ),
+            (
+                "performance-and-limits.md",
+                include_str!(
+                    "../../../../../docs/providers/coding-agents/performance-and-limits.md"
+                ),
+            ),
+            (
+                "child-agent-isolation.md",
+                include_str!(
+                    "../../../../../docs/providers/coding-agents/child-agent-isolation.md"
+                ),
+            ),
+            (
+                "tool-bridge.md",
+                include_str!("../../../../../docs/providers/coding-agents/tool-bridge.md"),
+            ),
+            ("streaming-and-tool-call-parity.md (What shipped)", shipped),
+        ]
+    }
+
+    #[test]
+    fn the_coding_agent_docs_describe_the_default_unbounded_turn() {
+        for (page, text) in current_coding_agent_docs() {
+            // A fixed ceiling, in the words the stale pages used for it.
+            for (number, line) in text.lines().enumerate() {
+                let lower = line.to_ascii_lowercase();
+                assert!(
+                    !lower.contains("30-minute") && !lower.contains("30 minutes"),
+                    "{page}:{}: promises a fixed turn ceiling, but turns are unbounded unless \
+                     {TURN_TIMEOUT_CONFIG_KEY} is set: {line}",
+                    number + 1
+                );
+            }
+            // The key that does set one, named wherever the limit is explained
+            // so an operator can find it.
+            assert!(
+                text.contains(TURN_TIMEOUT_CONFIG_KEY),
+                "{page} explains the turn limit without naming {TURN_TIMEOUT_CONFIG_KEY}"
+            );
+        }
+
+        // The bridge's per-call deadline is a separate, configurable transport
+        // safeguard, and its page used to name a constant that is gone.
+        let (_, bridge) = current_coding_agent_docs()
+            .into_iter()
+            .find(|(name, _)| *name == "tool-bridge.md")
+            .expect("the bridge page is scanned");
+        assert!(bridge.contains(super::bridge::CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY));
+        assert!(
+            !bridge.contains("bridge::CHILD_TOOL_CALL_TIMEOUT`"),
+            "tool-bridge.md names a constant that no longer exists"
+        );
+    }
+
+    /// True when `name` occurs in `line` as a whole identifier, so
+    /// `TURN_TIMEOUT` does not match inside `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`
+    /// and `CHILD_TOOL_CALL_TIMEOUT` does not match inside
+    /// `DEFAULT_CHILD_TOOL_CALL_TIMEOUT` or `CHILD_TOOL_CALL_TIMEOUT_CONFIG_KEY`.
+    fn names_identifier(line: &str, name: &str) -> bool {
+        let is_ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        line.match_indices(name).any(|(at, _)| {
+            let before = line.get(..at).and_then(|head| head.chars().next_back());
+            let after = line
+                .get(at + name.len()..)
+                .and_then(|tail| tail.chars().next());
+            !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+        })
+    }
+
+    #[test]
+    fn names_identifier_matches_whole_identifiers_only() {
+        assert!(names_identifier(
+            "bounded by `TURN_TIMEOUT` in",
+            "TURN_TIMEOUT"
+        ));
+        assert!(names_identifier(
+            "(`bridge::CHILD_TOOL_CALL_TIMEOUT`,",
+            "CHILD_TOOL_CALL_TIMEOUT"
+        ));
+        assert!(!names_identifier(
+            "set `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`",
+            "TURN_TIMEOUT"
+        ));
+        assert!(!names_identifier(
+            "`bridge::DEFAULT_CHILD_TOOL_CALL_TIMEOUT`",
+            "CHILD_TOOL_CALL_TIMEOUT"
+        ));
+    }
+
+    /// Every living page under `docs/`, not only the coding-agent ones, is
+    /// checked for the two constants that turned the turn ceiling into an
+    /// opt-in setting when they were removed (`eb594ded3`). The first sweep of
+    /// PROVIDERS-6 fixed the four pages the list above names and missed two
+    /// more that said the same thing, in `desktop-ui/` and `agent-loop/`: a
+    /// hand-kept list only covers the pages someone already thought of.
+    /// `docs/history/` is exempt (records of finished work describe the tree
+    /// as it was), and so is the parity record outside its "What shipped"
+    /// section, for the reason given on `current_coding_agent_docs`.
+    #[test]
+    fn no_living_doc_names_a_removed_coding_agent_timeout_constant() {
+        const REMOVED: [(&str, &str); 2] = [
+            (
+                "TURN_TIMEOUT",
+                "turns are unbounded unless BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS is set \
+                 (coding_agent::turn_timeout)",
+            ),
+            (
+                "CHILD_TOOL_CALL_TIMEOUT",
+                "the per-call deadline is bridge::child_tool_call_timeout(), set with \
+                 BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS",
+            ),
+        ];
+        let docs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs");
+        let history = docs.join("history");
+        let parity = docs.join("providers/coding-agents/streaming-and-tool-call-parity.md");
+        let parity_shipped = current_coding_agent_docs()
+            .into_iter()
+            .find(|(name, _)| name.starts_with("streaming-and-tool-call-parity.md"))
+            .map(|(_, text)| text)
+            .expect("the parity record's What shipped section is scanned");
+
+        let mut pending = vec![docs.clone()];
+        let mut scanned = 0;
+        let mut stale = Vec::new();
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read a docs directory") {
+                let path = entry.expect("read a docs entry").path();
+                if path.is_dir() {
+                    if path != history {
+                        pending.push(path);
+                    }
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                    continue;
+                }
+                let whole = std::fs::read_to_string(&path).expect("read a docs page");
+                let text = if path == parity {
+                    parity_shipped.to_string()
+                } else {
+                    whole
+                };
+                scanned += 1;
+                for (number, line) in text.lines().enumerate() {
+                    for (name, instead) in REMOVED {
+                        if names_identifier(line, name) {
+                            stale.push(format!(
+                                "{}:{}: names the removed `{name}`; {instead}",
+                                path.strip_prefix(&docs).unwrap_or(&path).display(),
+                                number + 1
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(scanned > 100, "only {scanned} docs pages were scanned");
+        assert!(stale.is_empty(), "{}", stale.join("\n"));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_default_turn_has_no_hidden_wall_clock_deadline() {
         let turn = tokio::spawn(await_turn(std::future::pending::<()>(), None));

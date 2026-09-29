@@ -6,10 +6,22 @@ import { Input } from '../../ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { ChevronDown } from '../../icons/app-icons';
 import { cn } from '../../../utils';
-import { PersonName, type CrewPerson, type PeopleDirectory } from '../identity';
+import { carriesJoinerName, PersonName, type CrewPerson, type PeopleDirectory } from '../identity';
 import { addPeopleCopy } from './copy';
-import { personMatches } from './people';
+import { peopleInOrder, personMatches } from './people';
 import './dialogs.css';
+
+/**
+ * The directory a row refreshes its person from — none for a person carrying the name on their
+ * server account in place of one they have not chosen (`withJoinerNames`, F8), whom the directory's
+ * copy would name as a bare `@username` again.
+ */
+function rowDir(
+  person: CrewPerson,
+  dir: PeopleDirectory | null | undefined
+): PeopleDirectory | null | undefined {
+  return carriesJoinerName(person) ? null : dir;
+}
 
 export interface PersonPickerProps {
   /** Who may be chosen. The caller has already removed members and pending invitees. */
@@ -62,7 +74,8 @@ export function PersonPicker({
   const [query, setQuery] = React.useState('');
   const valueId = React.useId();
   const chosen = candidates.find((person) => person.id === value) ?? null;
-  const visible = candidates.filter((person) => personMatches(person, query));
+  // The one order every people list uses (M17), whatever order the caller built.
+  const visible = peopleInOrder(candidates.filter((person) => personMatches(person, query)));
 
   const choose = (person: CrewPerson) => {
     onChange(person.id);
@@ -100,7 +113,7 @@ export function PersonPicker({
                 username={chosen.username}
               />
               <span id={valueId} className="min-w-0 flex-1 truncate">
-                <PersonName person={chosen} context="authority" dir={dir} />
+                <PersonName person={chosen} context="authority" dir={rowDir(chosen, dir)} />
               </span>
             </>
           ) : (
@@ -136,7 +149,7 @@ export function PersonPicker({
                 <PersonName
                   person={person}
                   context="authority"
-                  dir={dir}
+                  dir={rowDir(person, dir)}
                   className="min-w-0 flex-1 truncate"
                 />
               </CommandItem>
@@ -169,6 +182,12 @@ export interface PersonChecklistProps {
   disabled?: boolean;
   /** The search box, for a caller that puts focus back there. */
   searchRef?: React.Ref<HTMLInputElement>;
+  /**
+   * A value that changes when the search should start over: Add people changes it after people
+   * were added, whom the search found and who are gone from the list now (UXN-12). The search kept
+   * "bob" after Bob was added, and said "No one matches “bob”.".
+   */
+  searchResetKey?: unknown;
 }
 
 /**
@@ -191,11 +210,20 @@ export function PersonChecklist({
   dir,
   disabled,
   searchRef,
+  searchResetKey,
 }: PersonChecklistProps) {
   const [query, setQuery] = React.useState('');
+  const [resetKey, setResetKey] = React.useState(searchResetKey);
+  if (resetKey !== searchResetKey) {
+    setResetKey(searchResetKey);
+    setQuery('');
+  }
   const listId = React.useId();
   const chosen = new Set(selected);
-  const visible = candidates.filter((person) => person.id && personMatches(person, query));
+  // The one order every people list uses (M17), whatever order the caller built.
+  const visible = peopleInOrder(
+    candidates.filter((person) => person.id && personMatches(person, query))
+  );
   const visibleIds = visible.map((person) => person.id as string);
   const allShown = visibleIds.length > 0 && visibleIds.every((id) => chosen.has(id));
   const someShown = visibleIds.some((id) => chosen.has(id));
@@ -262,7 +290,7 @@ export function PersonChecklist({
               <PersonName
                 person={person}
                 context="authority"
-                dir={dir}
+                dir={rowDir(person, dir)}
                 className="min-w-0 flex-1 truncate"
               />
             </label>

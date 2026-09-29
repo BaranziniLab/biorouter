@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewMessage, Invitation } from '../crewApi';
 import { buildPeopleDirectory } from '../identity';
+import { focusChannelRowWhenShown } from '../state/channelRowFocus';
 import { MARK_READ_KEY } from './ChannelRow';
 import { sidebarCopy } from './copy';
 import { SidebarAnnouncer } from './SidebarAnnouncer';
@@ -168,6 +169,25 @@ describe('team sections', () => {
     }
   });
 
+  /**
+   * UXN-7: after Create channel, focus went back to Add channel, its opener, a step away from the
+   * channel the person had just made.
+   */
+  it('gives the focus to a channel just made once its row is drawn and no dialog is open', () => {
+    const { update } = renderTeams({
+      ui: { dialog: { kind: 'create-channel', teamId: TEAM_LAB }, pane: null },
+    });
+    act(() => focusChannelRowWhenShown('chan-methods'));
+    // The dialog is still open: focus stays in it.
+    expect(channelRow('methods')).not.toHaveFocus();
+    update(makeController({ ui: { dialog: null, pane: null } }));
+    expect(channelRow('methods')).toHaveFocus();
+    // Once only: a later render leaves focus wherever the person put it.
+    act(() => channelRow('general').focus());
+    update(makeController({ ui: { dialog: null, pane: null } }));
+    expect(channelRow('general')).toHaveFocus();
+  });
+
   it('selects a channel in the current team without switching teams', () => {
     const view = renderTeams();
     fireEvent.click(channelRow('general'));
@@ -183,6 +203,27 @@ describe('team sections', () => {
     const teamOrder = vi.mocked(view.controller.selectTeam).mock.invocationCallOrder[0];
     const channelOrder = vi.mocked(view.controller.selectChannel).mock.invocationCallOrder[0];
     expect(teamOrder).toBeLessThan(channelOrder);
+  });
+
+  it('says how many teams and channels a very large workspace left out of the list (BROKER-2)', () => {
+    // The fixture lists 2 teams and 5 channels (one archived).
+    const view = renderTeams({ snapshot: makeSnapshot({ totals: { teams: 4, channels: 6 } }) });
+    expect(document.querySelector('[data-crew-sidebar-unlisted]')).toHaveTextContent(
+      '2 more teams and 1 more channel you’re in aren’t listed here, because this workspace is too large to list at once.'
+    );
+    view.unmount();
+
+    const one = renderTeams({ snapshot: makeSnapshot({ totals: { channels: 6 } }) });
+    expect(document.querySelector('[data-crew-sidebar-unlisted]')).toHaveTextContent(
+      '1 more channel you’re in isn’t listed here, because this workspace is too large to list at once.'
+    );
+    one.unmount();
+    // Everything listed, or an older broker that sends no totals: nothing is said.
+    for (const snapshot of [makeSnapshot({ totals: { teams: 2, channels: 5 } }), makeSnapshot()]) {
+      const quiet = renderTeams({ snapshot });
+      expect(document.querySelector('[data-crew-sidebar-unlisted]')).toBeNull();
+      quiet.unmount();
+    }
   });
 
   it('keeps archived channels under a collapsed "Archived (n)" row', () => {

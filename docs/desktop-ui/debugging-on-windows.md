@@ -48,8 +48,10 @@ Two ingredients, both present here:
   Alias, or to nothing at all.
 - **The await has no deadline.** `AppServer::request`
   (`crates/biorouter/src/providers/coding_agent/appserver.rs`) documents that it has no
-  timeout of its own — a real turn is bounded by `TURN_TIMEOUT` in the *provider*, not
-  by the transport. A test that calls `request()` directly therefore waits forever.
+  timeout of its own, and a real turn has none by default either: it ends when the child
+  finishes or the user cancels, and the provider applies a wall clock only when an
+  operator sets `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`. A test that calls
+  `request()` directly therefore waits forever.
 
 So a missing interpreter does not fail the job. It hangs it to the runner's ceiling.
 Tests that depend on a POSIX-shaped fake process are marked `#[cfg(unix)]` for this

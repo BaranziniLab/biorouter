@@ -8,10 +8,59 @@ import { Save, RotateCcw, FileText, Loader2, Settings } from '../../icons/app-ic
 import { toastSuccess, toastError } from '../../../toasts';
 import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
 import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
-import { HOST_MANAGED_MODEL_REASON } from '../../privacy/hostManagedModelCopy';
-import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
+import {
+  HOST_MANAGED_DESTINATION_REASON,
+  HOST_MANAGED_MODEL_REASON,
+} from '../../privacy/hostManagedModelCopy';
+import { HostManagedModelNote, type HostManagedTopic } from '../../privacy/HostManagedModelNote';
+import { isDestinationConfigKey } from '../destinationConfigKeys';
 import { MODAL_SIZE } from '../../ModalShell';
 import type { ConfigData, ConfigValue } from '../../../types/config';
+import {
+  PRIVACY_TIERS_KEY,
+  PRIVACY_TIERS_RECORD_KEY,
+  privacyTiersEnabledFromConfig,
+  privacyTiersRecordFromConfig,
+  type PrivacyTiersOrigin,
+} from '../privacy/privacyTiers';
+import { MIXING_POLICY_KEY } from '../../../utils/crossAffiliation';
+
+/**
+ * W2-PRV-8 — the keys this free-text editor must not offer.
+ *
+ * The master switch needs its typed confirmation and the mixing policy its
+ * operating-system confirmation, so a Save here could only ever be refused;
+ * and the record is a report the daemon composes on every read, which it shows
+ * as an object: this editor rendered it as `[object Object]` with a Save that
+ * wrote a line nothing reads. All three are shown read-only instead, with the
+ * way to their real control.
+ */
+export const PRIVACY_CONFIG_KEYS: readonly string[] = [
+  PRIVACY_TIERS_KEY,
+  PRIVACY_TIERS_RECORD_KEY,
+  MIXING_POLICY_KEY,
+];
+
+/** Where the privacy switch lives, as every surface names it. */
+export const PRIVACY_SETTINGS_PATH = 'Settings > App > Privacy';
+
+const ORIGIN_WORDS: Record<PrivacyTiersOrigin, string> = {
+  settings: PRIVACY_SETTINGS_PATH,
+  migration: 'An older configuration file',
+  unrecorded: 'Outside the app',
+  default: 'Never changed',
+};
+
+/** The daemon's refusal sentence, when a failed write carried one. */
+function refusalText(error: unknown): string | null {
+  const text = error instanceof Error ? error.message : typeof error === 'string' ? error : null;
+  return text && text.trim() ? text.trim() : null;
+}
+
+/** A value this editor can show and save as text: a string, number or boolean. */
+function isEditableValue(value: ConfigValue | undefined): boolean {
+  return value === undefined || value === null || typeof value !== 'object';
+}
 import {
   Dialog,
   DialogContent,
@@ -73,13 +122,22 @@ export default function ConfigSettings() {
    * SD-1, key by key.
    *
    * ⚠ **Not a blanket disable.** This editor renders every non-secret config
-   * key, and a browser-served daemon refuses exactly five of them — the ones
-   * `is_capability_key` names. Greying out the whole page would be wrong about
-   * the great majority of it, so the question is asked per row. See
-   * `utils/surface.ts` for the mirrored list and the drift risk it carries.
+   * key, and a browser-served daemon refuses two kinds of them: the capability
+   * keys `is_capability_key` names (the model), and the keys that decide where
+   * a provider sends its requests and key (W2-PRV-2, round 4:
+   * `destinationConfigKeys.ts`, pinned to the daemon's list by a Rust test).
+   * Greying out the whole page would be wrong about the great majority of it,
+   * so the question is asked per row. See `utils/surface.ts` for the first
+   * list and the drift risk it carries.
    */
   const hostManaged = isBrowserSurface();
-  const isFixedByHost = (key: string) => hostManaged && isHostManagedConfigKey(key);
+  const hostTopic = (key: string): HostManagedTopic | null => {
+    if (!hostManaged) return null;
+    if (isHostManagedConfigKey(key)) return 'model';
+    if (isDestinationConfigKey(key)) return 'destination';
+    return null;
+  };
+  const isFixedByHost = (key: string) => hostTopic(key) !== null;
 
   const handleSave = async (key: string) => {
     if (isFixedByHost(key)) return;
@@ -99,9 +157,14 @@ export default function ConfigSettings() {
       });
     } catch (error) {
       console.error('Failed to save config:', error);
+      // W2-PRV-8: the daemon's sentence is the answer, so it is the toast's
+      // body. It used to sit only behind "Copy error".
+      const reason = refusalText(error);
       toastError({
         title: 'Save failed',
-        msg: `Failed to save "${getUiNames(key)}"`,
+        msg: reason
+          ? `"${getUiNames(key)}" was not saved. ${reason}`
+          : `Failed to save "${getUiNames(key)}"`,
         traceback: error instanceof Error ? error.message : String(error),
       });
     } finally {
@@ -174,6 +237,10 @@ export default function ConfigSettings() {
         ) {
           return false;
         }
+        // Shown read-only above the list (W2-PRV-8).
+        if (PRIVACY_CONFIG_KEYS.includes(key)) {
+          return false;
+        }
 
         // Only show provider-specific entries for the current provider
         const providerSpecific = allProviderPrefixes.some((prefix: string) =>
@@ -222,12 +289,22 @@ export default function ConfigSettings() {
             </DialogHeader>
 
             <div className="flex-1 max-h-[60vh] overflow-auto pr-4">
+              <PrivacyConfigSummary
+                config={typedConfig}
+                onOpen={() => {
+                  setIsModalOpen(false);
+                  document
+                    .querySelector('[data-privacy-panel]')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+              />
               <div className="space-y-4">
                 {configEntries.length === 0 ? (
                   <p className="text-text-muted">No configuration settings found.</p>
                 ) : (
                   configEntries.map(([key, _value]) => {
-                    const fixedByHost = isFixedByHost(key);
+                    const topic = hostTopic(key);
+                    const fixedByHost = topic !== null;
                     return (
                       <div
                         key={key}
@@ -237,32 +314,45 @@ export default function ConfigSettings() {
                           {getUiNames(key)}
                         </label>
                         <div className="min-w-0">
-                          <Input
-                            value={String(configValues[key] || '')}
-                            onChange={(e) => handleChange(key, e.target.value)}
-                            disabled={fixedByHost}
-                            // ⚠ Only the modified-key marker survives. The three
-                            // deleted overrides each fought the primitive:
-                            // `border-border-subtle` replaced the input's own
-                            // `--border-emphasized` with the divider hairline,
-                            // `hover:border-border-subtle` pinned hover to the
-                            // resting colour while the primitive's inset ring
-                            // still fired, and `transition-colors` REPLACED the
-                            // input's transition list, dropping `box-shadow`
-                            // from it.
-                            className={cn(modifiedKeys.has(key) && 'border-border-info')}
-                            placeholder={`Enter ${getUiNames(key)}`}
-                          />
-                          {/* The `fixedByHost &&` guard is load-bearing and stays:
-                              it carries the per-key `isHostManagedConfigKey`
-                              half, which the note itself cannot know. What went
-                              is the hand-copied paragraph inside it — a seventh
-                              implementation of the one sentence
-                              `hostManagedModelCopy.ts` exists to keep in one
-                              place. */}
-                          {fixedByHost && (
+                          {/* A structured value is a report, not a setting this
+                              field can round-trip: `String()` of it read
+                              `[object Object]` (W2-PRV-8). */}
+                          {!isEditableValue(configValues[key]) ? (
+                            <code
+                              data-testid={`config-readonly-${key}`}
+                              className="block whitespace-pre-wrap break-all rounded-element bg-background-muted px-2 py-1.5 text-xs text-text-muted"
+                            >
+                              {JSON.stringify(configValues[key], null, 2)}
+                            </code>
+                          ) : (
+                            <Input
+                              value={String(configValues[key] || '')}
+                              onChange={(e) => handleChange(key, e.target.value)}
+                              disabled={fixedByHost}
+                              // ⚠ Only the modified-key marker survives. The three
+                              // deleted overrides each fought the primitive:
+                              // `border-border-subtle` replaced the input's own
+                              // `--border-emphasized` with the divider hairline,
+                              // `hover:border-border-subtle` pinned hover to the
+                              // resting colour while the primitive's inset ring
+                              // still fired, and `transition-colors` REPLACED the
+                              // input's transition list, dropping `box-shadow`
+                              // from it.
+                              className={cn(modifiedKeys.has(key) && 'border-border-info')}
+                              placeholder={`Enter ${getUiNames(key)}`}
+                            />
+                          )}
+                          {/* The `topic &&` guard is load-bearing and stays: it
+                              carries the per-key half (`isHostManagedConfigKey`
+                              or `isDestinationConfigKey`), which the note itself
+                              cannot know. What went is the hand-copied paragraph
+                              inside it — a seventh implementation of the one
+                              sentence `hostManagedModelCopy.ts` exists to keep
+                              in one place. */}
+                          {topic && (
                             <HostManagedModelNote
                               short
+                              topic={topic}
                               testId={`host-managed-config-${key}`}
                               className="mt-1"
                             />
@@ -273,8 +363,19 @@ export default function ConfigSettings() {
                             box sized to hold a word it only sometimes shows. */}
                         <Button
                           onClick={() => handleSave(key)}
-                          disabled={fixedByHost || !modifiedKeys.has(key) || saving === key}
-                          title={fixedByHost ? HOST_MANAGED_MODEL_REASON : undefined}
+                          disabled={
+                            fixedByHost ||
+                            !isEditableValue(configValues[key]) ||
+                            !modifiedKeys.has(key) ||
+                            saving === key
+                          }
+                          title={
+                            topic === 'model'
+                              ? HOST_MANAGED_MODEL_REASON
+                              : topic === 'destination'
+                                ? HOST_MANAGED_DESTINATION_REASON
+                                : undefined
+                          }
                           variant="ghost"
                           shape="round"
                           aria-label={`Save ${getUiNames(key)}`}
@@ -306,6 +407,57 @@ export default function ConfigSettings() {
           </DialogContent>
         </Dialog>
       </div>
+    </div>
+  );
+}
+
+/**
+ * W2-PRV-8 — the privacy settings this editor used to show as free text, as
+ * what they are: the switch's state and its record, read-only, and the mixing
+ * policy, with the one place each is changed.
+ */
+function PrivacyConfigSummary({ config, onOpen }: { config: ConfigData; onOpen: () => void }) {
+  const hasAny = PRIVACY_CONFIG_KEYS.some((key) => config[key] !== undefined);
+  if (!hasAny) return null;
+  const enabled = privacyTiersEnabledFromConfig(config[PRIVACY_TIERS_KEY]);
+  const record = privacyTiersRecordFromConfig(config[PRIVACY_TIERS_RECORD_KEY]);
+  const mixing = config[MIXING_POLICY_KEY];
+  const rows: [string, string][] = [
+    ['Privacy tiers', enabled ? 'On' : 'Off'],
+    ...(record
+      ? ([
+          ['Recorded as', record.enabled ? 'On' : 'Off'],
+          ['Last changed', record.lastChange?.at || 'No change recorded'],
+          ['Changed in', ORIGIN_WORDS[record.origin]],
+        ] as [string, string][])
+      : []),
+    ...(typeof mixing === 'string' && mixing
+      ? ([['Cross-institution mixing', mixing]] as [string, string][])
+      : []),
+  ];
+  return (
+    <div
+      data-testid="config-privacy-summary"
+      className="mb-4 rounded-container border border-border-subtle px-3 py-2.5"
+    >
+      <dl className="grid grid-cols-[minmax(0,200px)_1fr] gap-x-3 gap-y-1 text-sm">
+        {rows.map(([label, value]) => (
+          <div key={label} className="contents">
+            <dt className="text-text-muted">{label}</dt>
+            <dd className="min-w-0 text-text-default [overflow-wrap:anywhere]">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-2 text-supporting text-text-muted">
+        These are changed in {PRIVACY_SETTINGS_PATH}, which asks you to confirm.{' '}
+        <button
+          type="button"
+          onClick={onOpen}
+          className="text-text-default underline underline-offset-2"
+        >
+          Go to Privacy
+        </button>
+      </p>
     </div>
   );
 }

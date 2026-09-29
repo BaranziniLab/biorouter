@@ -98,12 +98,19 @@ async fn build_completer(
         ));
     }
     let config = Config::global();
+    let configured = config.get_biorouter_provider().ok();
     let provider = provider
-        .or_else(|| config.get_biorouter_provider().ok())
+        .or_else(|| configured.clone())
         .ok_or_else(|| anyhow!("No provider configured. Run `biorouter configure` first."))?;
-    let model = model
-        .or_else(|| config.get_biorouter_model().ok())
-        .ok_or_else(|| anyhow!("No model configured. Run `biorouter configure` first."))?;
+    // PROV-F10: the configured model belongs to the configured provider, so `--provider X`
+    // without `--model` runs X's own default model, as `biorouter run` does.
+    let model = crate::session::model_for_run(
+        Some(&provider),
+        model,
+        &[(configured.as_deref(), config.get_biorouter_model().ok())],
+    )
+    .await
+    .ok_or_else(|| anyhow!("No model configured. Run `biorouter configure` first."))?;
 
     let model_config = ModelConfig::new(&model)?;
     let provider = biorouter::providers::create(&provider, model_config).await?;

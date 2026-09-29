@@ -4,6 +4,10 @@ import { SecretInput } from '../../../../../ui/secret-input';
 import { useConfig } from '../../../../../ConfigContext';
 import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../../../../ui/collapsible';
+import { configLabels } from '../../../../../../utils/configUtils';
+import { isBrowserSurface } from '../../../../../../utils/surface';
+import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
+import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 
 type ValidationErrors = Record<string, string>;
 
@@ -28,15 +32,39 @@ interface DefaultProviderSetupFormProps {
 // both readers below look a default up per declared parameter, so one for any
 // other key is never read. `versa_azure` and `versa_bedrock` declare only their
 // credentials, which is why neither has an entry.
+//
+// ⚠ A default here is a VALUE, not a hint: `loadConfigValues` fills the field
+// with it and the submit handler saves it if the user leaves the field alone.
+// So only a value that is right for every user belongs here. Anything that
+// names one user's resource goes in PROVIDER_KEY_PLACEHOLDERS instead. The
+// Azure endpoint used to default to UCSF's Versa gateway, which sent a
+// non-UCSF user's Azure key and transcript to UCSF.
 const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
   azure_openai: {
-    AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
     AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
   aws_bedrock: {
     AWS_REGION: 'us-west-2',
   },
 };
+
+// Placeholder text for a key the user must fill in with their own value. Shown
+// in the empty field and never saved.
+const PROVIDER_KEY_PLACEHOLDERS: Record<string, Record<string, string>> = {
+  azure_openai: {
+    AZURE_OPENAI_ENDPOINT: 'https://<your-resource>.openai.azure.com',
+  },
+  // A llama-server Biorouter does not manage, which stays private only on this
+  // machine: `llamacpp`'s tier demotes a non-loopback host to Public. The
+  // generic `https://api.example.com` suggested exactly the host that does it
+  // (W2-PRV-13).
+  llamacpp: {
+    LLAMACPP_EXTERNAL_HOST: 'http://127.0.0.1:8080',
+  },
+};
+
+/** The note every host-owned field points its `aria-describedby` at. */
+const HOST_OWNED_NOTE_ID = 'provider-config-host-owned-note';
 
 const envToPrettyName = (envVar: string) => {
   const wordReplacements: { [w: string]: string } = {
@@ -53,6 +81,39 @@ const envToPrettyName = (envVar: string) => {
     .join(' ')
     .trim();
 };
+
+/**
+ * A config key's name in words, for its label, its placeholder and its
+ * "is required" error: the curated label in `configUtils` when there is one
+ * ("Llama Server External Host"), else the key's role, else the key itself
+ * without the provider's prefix. The modal's required error used to print the
+ * raw env var ("VERSA_BEDROCK_ACCESS_KEY_ID is required") and the placeholder
+ * fallback was the env var with spaces (W2-PRV-13).
+ */
+export function providerFieldName(providerName: string, parameterName: string): string {
+  if (configLabels[parameterName]) return configLabels[parameterName];
+  const name = parameterName.toLowerCase();
+  if (name.includes('api_key')) return 'API Key';
+  if (name.includes('api_url') || name.includes('host')) return 'API Host';
+  if (name.includes('models')) return 'Models';
+
+  let parameter_name = parameterName.toUpperCase();
+  if (parameter_name.startsWith(providerName.toUpperCase().replace('-', '_'))) {
+    parameter_name = parameter_name.slice(providerName.length + 1);
+  }
+  return envToPrettyName(parameter_name);
+}
+
+/**
+ * W2-PRV-2, round 4. Is this field the host computer's in this renderer? In a
+ * browser served by `biorouter serve`, a setting that decides where the
+ * provider sends its requests and key cannot be changed: the daemon asks for a
+ * proof of a person that a browser can never give. The field shows its value
+ * and is not editable, and the submit handler leaves it out.
+ */
+export function isHostOwnedProviderField(parameter: { name: string; secret?: boolean }): boolean {
+  return !parameter.secret && isBrowserSurface() && isDestinationConfigKey(parameter.name);
+}
 
 export default function DefaultProviderSetupForm({
   configValues,
@@ -111,6 +172,11 @@ export default function DefaultProviderSetupForm({
       }
     }
 
+    const hint = (PROVIDER_KEY_PLACEHOLDERS[provider.name] ?? {})[parameter.name];
+    if (hint) {
+      return hint;
+    }
+
     const defaultValue =
       parameter.default ?? (PROVIDER_KEY_DEFAULTS[provider.name] ?? {})[parameter.name] ?? null;
     if (defaultValue !== null) {
@@ -122,34 +188,16 @@ export default function DefaultProviderSetupForm({
     if (name.includes('api_url') || name.includes('host')) return 'https://api.example.com';
     if (name.includes('models')) return 'model-a, model-b';
 
-    return parameter.name
-      .replace(/_/g, ' ')
-      .replace(/^./, (str) => str.toUpperCase())
-      .trim();
+    return getFieldName(parameter);
   };
 
   /** The field's name in words — the label's text, and what a reveal toggle is called. */
-  const getFieldName = (parameter: ConfigKey): string => {
-    const name = parameter.name.toLowerCase();
-    if (name.includes('api_key')) return 'API Key';
-    if (name.includes('api_url') || name.includes('host')) return 'API Host';
-    if (name.includes('models')) return 'Models';
+  const getFieldName = (parameter: ConfigKey): string =>
+    providerFieldName(provider.name, parameter.name);
 
-    let parameter_name = parameter.name.toUpperCase();
-    if (parameter_name.startsWith(provider.name.toUpperCase().replace('-', '_'))) {
-      parameter_name = parameter_name.slice(provider.name.length + 1);
-    }
-    return envToPrettyName(parameter_name);
-  };
-
+  // Every field names the config key it writes, the same way: some did and
+  // some did not (a Versa Azure key had no chip, its Bedrock sibling did).
   const getFieldLabel = (parameter: ConfigKey) => {
-    const name = parameter.name.toLowerCase();
-    // The recognised roles are labelled by the role alone; everything else also
-    // names the config key it writes.
-    if (['api_key', 'api_url', 'host', 'models'].some((role) => name.includes(role))) {
-      return getFieldName(parameter);
-    }
-
     return (
       <span>
         <span>{getFieldName(parameter)}</span>
@@ -174,6 +222,7 @@ export default function DefaultProviderSetupForm({
   const renderParametersList = (parameters: ConfigKey[]) => {
     return parameters.map((parameter) => {
       const fieldId = `provider-config-${parameter.name}`;
+      const hostOwned = isHostOwnedProviderField(parameter);
       const fieldProps = {
         id: fieldId,
         value: getRenderValue(parameter),
@@ -193,6 +242,8 @@ export default function DefaultProviderSetupForm({
             : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
         } bg-background-default placeholder:text-text-muted text-text-default`,
         required: parameter.required,
+        disabled: hostOwned,
+        'aria-describedby': hostOwned ? HOST_OWNED_NOTE_ID : undefined,
       };
 
       return (
@@ -217,6 +268,8 @@ export default function DefaultProviderSetupForm({
     });
   };
 
+  const hasHostOwnedField = parameters.some(isHostOwnedProviderField);
+
   let aboveFoldParameters = parameters.filter((p) => p.required);
   let belowFoldParameters = parameters.filter((p) => !p.required);
   if (aboveFoldParameters.length === 0) {
@@ -224,10 +277,17 @@ export default function DefaultProviderSetupForm({
     belowFoldParameters = [];
   }
 
-  const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} options `;
+  const expandCtaText = `${optionalExpanded ? 'Hide' : 'Show'} ${belowFoldParameters.length} ${
+    belowFoldParameters.length === 1 ? 'option' : 'options'
+  } `;
 
   return (
     <div className="mt-4 space-y-4">
+      {hasHostOwnedField && (
+        <div id={HOST_OWNED_NOTE_ID}>
+          <HostManagedModelNote topic="destination" testId="host-managed-destination-note" />
+        </div>
+      )}
       {aboveFoldParameters.length === 0 && belowFoldParameters.length === 0 ? (
         <div className="text-center text-sm text-text-muted py-2">
           No configuration parameters for this provider.

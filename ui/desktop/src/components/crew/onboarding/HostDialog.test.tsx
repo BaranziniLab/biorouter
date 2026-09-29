@@ -686,10 +686,12 @@ describe('HostDialog', () => {
     expect(
       await screen.findByRole('dialog', { name: 'Mark lab-data as a UCSF workspace?' })
     ).toBeInTheDocument();
-    // Step 1 already asked: say what that set, and what this sets that it did not.
+    // The Host dialog already asked: say what that set, and what this sets that it did not. That
+    // dialog has closed, so this never names its steps ("Step 1 set UCSF…", F9).
     expect(screen.getByTestId('crew-host-label-why')).toHaveTextContent(
-      'Step 1 set UCSF for your connection on this computer. This sets it for lab-data itself, for everyone who works there.'
+      'You set UCSF as this computer’s institution when you created lab-data. Marking lab-data sets it for the workspace itself, for everyone who works there.'
     );
+    expect(screen.getByTestId('crew-host-label-why')).not.toHaveTextContent(/\bStep\b/);
     expect(
       screen.getByText(
         'Agents working in lab-data can then use only models approved for UCSF. This can’t be undone.'

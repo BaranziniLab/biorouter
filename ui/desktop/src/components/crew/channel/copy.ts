@@ -29,6 +29,9 @@ export const channelCopy = {
   accessChipName: (visible: string) => `${visible} can post here`,
   /** The member stack's accessible name (and the Members tab count). */
   members: (count: number) => plural(count, 'member', 'members'),
+  /** The member stack's name where the broker says who is online (M18). */
+  membersOnline: (count: number, online: number) =>
+    `${plural(count, 'member', 'members')}, ${online} online`,
   /** The details toggle. */
   details: 'Channel details',
   menu: {
@@ -69,6 +72,54 @@ export const connectionBarCopy = {
     host ? `Crew couldn’t verify ${host}.` : 'Crew couldn’t verify the server.',
   notRunning: (host: string) =>
     host ? `Crew isn’t running for you on ${host}.` : 'Crew isn’t running for you on the server.',
+  /**
+   * The server refused this computer's SSH key and offered nothing to type (F5, W2-DMN-5): not
+   * "asked you to sign in", which opened a password window that could never help. `user` is the
+   * login's account, or null.
+   */
+  /**
+   * The app lost its background service (it restarted), so no Crew request can reach it until
+   * Biorouter reconnects (RES2-N7): said in place of "Live updates stopped" and its Retry, which
+   * led only to "Crew couldn't load your saved workspaces". Reconnect is the sidebar notice's.
+   */
+  /**
+   * The workspace server has stopped saving changes (its `hello` says so, T3-BE-13, RES2-N2):
+   * reading works, and every change is refused until its host frees space and restarts Crew. Said
+   * before anyone tries to write, rather than "Connected" until someone did. `code` is the server's
+   * reason: `storage_full` (its disk or quota) or `storage_failed` (another storage error).
+   */
+  serverStorage: 'The workspace server has stopped saving changes. Reading still works.',
+  serverStorageHost: (code: string) =>
+    code === 'storage_full'
+      ? 'Free space on the server, then restart Crew there.'
+      : 'Check the server’s storage, then restart Crew there.',
+  serverStorageMember: (code: string, hostName: string | null) =>
+    code === 'storage_full'
+      ? `Ask ${hostName ?? 'your host'} to free space on the server and restart Crew.`
+      : `Ask ${hostName ?? 'your host'} to check the server’s storage and restart Crew.`,
+  daemonAway:
+    'Biorouter’s background service restarted, so Crew can’t reach your workspaces until Biorouter reconnects.',
+  daemonReconnect: 'Reconnect',
+  daemonReconnecting: 'Reconnecting…',
+  keyRefused: (host: string, user: string | null) =>
+    `${host || 'The server'} refused this computer’s SSH key${user ? ` for ${user}` : ''}. Check Your server login in Connection settings.`,
+  /**
+   * The workspace server is not running: stopped, killed, or the server restarted (R-7). Its host
+   * starts it; a member asks the host. `hostName` names the host, or is null.
+   */
+  brokerStoppedHost: (host: string) =>
+    `Crew isn’t running on ${host || 'the server'}. Start it on the server, then connect.`,
+  brokerStoppedMember: (hostName: string | null) =>
+    `The workspace server isn’t running. Once ${hostName ?? 'your host'} starts Crew, this computer connects by itself within a few minutes, or you can connect now.`,
+  /** The same when this computer cannot tell whether its person hosts the workspace. */
+  brokerStopped: (host: string) =>
+    `Crew isn’t running on ${host || 'the server'}. Its host starts it again on the server.`,
+  /**
+   * An action whose link dropped mid-request (the transport's own record reached the bar, R-4):
+   * whether it reached the workspace is not known.
+   */
+  linkLost: (host: string) =>
+    `The connection to ${host || 'the server'} dropped, so Crew can’t tell whether that went through. Check before you try again.`,
   tryAgain: 'Try again',
   connectionSettings: 'Connection settings…',
   vaultLocked: 'Your Crew vault is locked.',

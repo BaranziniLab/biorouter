@@ -26,6 +26,22 @@ export const joinCopy = {
   editInvitation: 'Edit',
   editInvitationLabel: 'Edit the invitation',
   invalid: 'This doesn’t look like a Crew invitation. Ask your host to copy it again.',
+  /**
+   * `invitation_malformed`: a Crew invitation cut short or changed in the copy (F1). Not wrapping:
+   * an invitation wrapped across lines is read whole since W2-BRK-1, so blaming it sent people to
+   * fix what was not broken (SC2-N8).
+   */
+  malformed:
+    'This invitation is incomplete or was changed. Paste the whole message again, or ask your host to send it again.',
+  /** `invitation_unsupported_version`: written by a newer Crew than this Biorouter reads. */
+  newerInvitation:
+    'This invitation needs a newer Biorouter. Update Biorouter, then paste it again.',
+  /**
+   * The invitation is for another account than this computer signs in to the server as (F2): the
+   * login would never work, and the right invitation is the person's own.
+   */
+  loginMismatch: (invitee: string, server: string, configUser: string) =>
+    `This invitation is for @${invitee}, but this computer signs in to ${server} as ${configUser}. Ask your host for your own invitation.`,
   hostedBy: 'Hosted by',
   on: 'on',
   fingerprint: 'Fingerprint',
@@ -142,7 +158,8 @@ export const joinCopy = {
   portInvalid: 'Use a port from 1 to 65535.',
   identityFile: 'Identity file',
   identityFileHelper: 'Leave empty to use your SSH config.',
-  jumpHost: 'Jump host',
+  /** The same comma-separated field the Host dialog and Connection settings call Jump hosts (DW-18). */
+  jumpHost: 'Jump hosts',
   connectionName: 'Connection name',
   remoteFolder: 'Remote work folder',
   /** Plain words for an absolute path (Q3-49): what it looks like, then what it allows. */
@@ -166,7 +183,18 @@ export const joinCopy = {
     'This feature needs a newer Biorouter background service. Quit and reopen Biorouter, or enter the workspace details manually under Advanced.',
   /** The invitation names a workspace this computer already has a connection for. */
   existing: (workspace: string) => `You already have ${workspace} on this computer.`,
+  /** After `existing`: where its login is changed, since pasting again changes nothing (F1). */
+  existingLogin:
+    'To sign in with another account, change Your server login in Connection settings.',
+  connectionSettings: 'Connection settings…',
   openExisting: (connection: string) => `Open ${connection}`,
+  /**
+   * A saved connection to the workspace that never joined (someone else's invitation saved by
+   * mistake, F1): joining replaces it.
+   */
+  replaceable: (workspace: string) =>
+    `This computer has a saved connection to ${workspace} that never joined. Joining replaces it.`,
+  replaceSaved: 'Replace the saved connection',
   /** A legacy paste names no server: the login has to come from Advanced. */
   serverMissing: 'This invitation doesn’t name its server. Type your server login here.',
 } as const;
@@ -206,8 +234,15 @@ export const joinStateCopy = {
     username
       ? `Ask ${person} to invite @${username}. This page updates by itself.`
       : `Ask ${person} to invite you. This page updates by itself.`,
+  /**
+   * A member whose computer was removed reads as not invited too: the workspace answers a new key
+   * the same way either way (F3). So the card names the invitation that works for them, and the
+   * host's plain invitation, which the workspace refuses for a member, is not the only ask.
+   */
+  notInvitedBefore: (workspace: string, person: string, username: string | null) =>
+    `If you were in ${workspace} before, ask ${person} to use Add another device for ${username ? `@${username}` : 'you'}.`,
   notInvitedMessage: (first: string | null, username: string | null, workspace: string) =>
-    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew.`,
+    `${first ? `Hi ${first}, please` : 'Please'} invite ${username ? `@${username}` : 'me'} to ${workspace} in Crew. If I’m already a member there, please use Add another device for ${username ? `@${username}` : 'me'} instead.`,
   notInvitedMessageLabel: 'message to your host',
   /**
    * A member the workspace no longer admits (Q3-50): this computer was a member this session, or
@@ -406,12 +441,13 @@ export const hostCopy = {
   // still the canonical ID.
   labelTitle: (workspace: string, id: string) => `Mark ${workspace} as a ${id} workspace?`,
   /**
-   * Why it asks again (Q4-47). Step 1's Institution is saved on this computer's connection
+   * Why it asks again (Q4-47). The Host dialog's Institution is saved on this computer's connection
    * (`institution_id` on the saved connection: which models this computer's agent may use there);
    * this writes the workspace's own label with `policy.set`, which every member's agent is held to.
+   * It opens after the Host dialog has closed, so it never names that dialog's steps (F9).
    */
   labelWhy: (workspace: string, institution: string) =>
-    `Step 1 set ${institution} for your connection on this computer. This sets it for ${workspace} itself, for everyone who works there.`,
+    `You set ${institution} as this computer’s institution when you created ${workspace}. Marking ${workspace} sets it for the workspace itself, for everyone who works there.`,
   /** Workspace-free, for the composer's note, whose title names the workspace. */
   labelBody:
     'Agents working here can then use only models approved for that institution. This can’t be undone.',
@@ -487,8 +523,15 @@ export const trustCopy = {
   copied: 'Copied',
   copyFailed: 'Copy failed',
   detailsFallbackLabel: 'details',
-  /** The first lines of "Copy details for IT"; OpenSSH's own words follow. */
-  detailsHeader: (host: string, problem: string) => [`Server: ${host}`, `Problem: ${problem}`],
+  /**
+   * The first lines of "Copy details for IT"; OpenSSH's own words follow. `address` is the saved
+   * login's server when `host` is the person's own alias for it, which IT would not know.
+   */
+  detailsHeader: (host: string, problem: string, address: string | null = null) => [
+    `Server: ${host}`,
+    ...(address ? [`Address: ${address}`] : []),
+    `Problem: ${problem}`,
+  ],
   changedProblem: 'The server’s host key changed since Crew last connected.',
   workspaceProblem: 'The server answered with a different workspace key than the one saved.',
 } as const;
@@ -531,6 +574,10 @@ export const emptyCopy = {
       case 'bridge_missing':
       case 'handoff_failed':
         return `Crew isn’t running for you on ${server}`;
+      case 'ssh_key_refused':
+        return `${server} refused this computer’s SSH key`;
+      case 'broker_not_running':
+        return `Crew isn’t running on ${server}`;
       default:
         return 'It didn’t connect';
     }
@@ -541,6 +588,43 @@ export const emptyCopy = {
    * which nothing retries by itself.
    */
   keepsTrying: 'Crew keeps trying by itself while the network is down.',
+  /**
+   * The workspace server is not running (R-7): stopped, killed, or the server restarted. The host
+   * gets the line that starts it, from the manual's "After the server restarts"; a member is told
+   * whom to ask. `host` names the workspace's host, or is null.
+   */
+  brokerStoppedTitle: (server: string) => `Crew isn’t running on ${server}`,
+  brokerStoppedHost: 'Start it on the server with this line, then connect:',
+  brokerStoppedMember: (host: string | null) =>
+    `The workspace server isn’t running. Once ${host ?? 'your host'} starts Crew, this computer connects by itself within a few minutes, or you can connect now.`,
+  /**
+   * The daemon is dialling the connection again by itself (a request was answered
+   * `crew_reconnecting`, RES2-N5): one state for the whole wait, instead of "offline" under a bar
+   * that said "Reconnecting". `time` is when Crew first said so; its re-dials grow from 20 s to
+   * 3 min apart, so "a moment" was not true.
+   */
+  redialTitle: (workspace: string) => `Reconnecting to ${workspace}`,
+  redialBody: (time: string) =>
+    `The connection dropped, and Crew has been dialling it again by itself since ${time}. That can take a few minutes, and nothing reaches the workspace until then. You can connect now instead.`,
+  redialAction: 'Connect now',
+  /** When this computer cannot tell whether its person hosts the workspace. */
+  brokerStoppedUnknown: (workspace: string) =>
+    `If you host ${workspace}, start it on the server with this line, then connect. Otherwise, ask your host to start Crew.`,
+  brokerStartLabel: 'start command',
+  /**
+   * Under the line: its last part is the workspace's folder, named by the workspace's first name,
+   * which a rename does not change.
+   */
+  brokerStartFolder: 'The last part is the workspace’s folder in ~/.local/share/biorouter-crew.',
+  /**
+   * The server refused this computer's key (F5): not a password matter, a login one. Titled for
+   * that and naming the server, as the connection bar does (SC2-N9): under "chen-lab is offline",
+   * "It refused this computer's SSH key" said neither what failed nor what "it" was.
+   */
+  keyRefusedTitle: (server: string) => `Can’t sign in to ${server}`,
+  keyRefusedBody: (server: string, user: string | null) =>
+    `${server} refused this computer’s SSH key${user ? ` for ${user}` : ''}. Check Your server login in Connection settings.`,
+  connectionSettings: 'Connection settings…',
   signInTitle: (host: string) => `Sign in to ${host}`,
   signInBody: 'The server needs your password or a verification code.',
   signInAction: 'Sign in',

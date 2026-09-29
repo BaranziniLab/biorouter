@@ -80,6 +80,9 @@ impl WireFailure {
 pub enum SshFailureKind {
     /// The server wants a password, MFA or a key the agent does not hold.
     AuthRequired,
+    /// The server refused this computer's key and offered no method a person could answer
+    /// (`Permission denied (publickey)`): a password prompt would never appear (W2-DMN-5).
+    KeyRefused,
     /// Strict host-key checking refused a host absent from known_hosts.
     HostKeyUnknown,
     /// The server offered a key that differs from the pinned one (or a revoked one).
@@ -88,6 +91,9 @@ pub enum SshFailureKind {
     Unreachable,
     /// SSH worked but `~/.local/bin/biorouter-crew` could not be run.
     BridgeMissing,
+    /// SSH worked and the bridge ran, but no workspace server answers on its socket: it was
+    /// stopped, killed or the server rebooted (W2-DMN-5).
+    BrokerNotRunning,
     /// Anything else, including a failure while ssh was still running.
     Other,
 }
@@ -97,19 +103,22 @@ impl SshFailureKind {
     pub fn api_code(self) -> &'static str {
         match self {
             Self::AuthRequired => "crew_ssh_auth_required",
+            Self::KeyRefused => "crew_ssh_key_refused",
             Self::HostKeyUnknown => "crew_ssh_host_key_unknown",
             Self::HostKeyChanged => "crew_ssh_host_key_changed",
             Self::Unreachable => "crew_ssh_unreachable",
             Self::BridgeMissing => "crew_bridge_missing",
+            Self::BrokerNotRunning => "crew_broker_not_running",
             Self::Other => "crew_ssh_failed",
         }
     }
 }
 
 /// A fatal SSH transport failure. `Display` is the stable, stderr-free message
-/// (it is persisted as `last_error` and matched by older renderers); `detail`
-/// carries OpenSSH's own bounded, control-stripped words for "Copy details"
-/// only and is deliberately absent from both `Display` and `Debug`.
+/// (it is persisted as `last_error` and matched by older renderers by its
+/// `Crew SSH failure [` prefix); `detail` carries OpenSSH's own bounded,
+/// control-stripped words for "Copy details" only and is deliberately absent
+/// from both `Display` and `Debug`.
 #[derive(Clone)]
 pub struct SshFailure {
     pub kind: SshFailureKind,
@@ -121,6 +130,16 @@ pub struct SshFailure {
     /// At most [`SSH_FAILURE_DETAIL_LIMIT`] bytes of sanitized stderr, with any
     /// host-key fingerprints summarised first. `None` when ssh said nothing.
     pub detail: Option<String>,
+    /// The host OpenSSH named in the line that decided the kind, when it named one: the hop
+    /// whose host key is unknown or changed (a jump host's included), or the one that refused
+    /// the key. `None` when no line names a host (W2-DMN-5).
+    pub host: Option<String>,
+    /// A request that could have changed something at the workspace was written to the bridge
+    /// and its answer was lost, so whether the workspace applied it is not known. Only then does
+    /// `Display` add the advice to inspect history before retrying (T3-BE-1): a failed dial, a
+    /// heartbeat or a read lost nothing, and every idle member's saved error used to claim an
+    /// operation may have been submitted after the workspace server merely stopped.
+    pub outcome_unknown: bool,
 }
 
 impl SshFailure {
@@ -136,9 +155,15 @@ impl fmt::Display for SshFailure {
         }
         write!(
             f,
-            "Crew SSH failure [{}; child_before_cleanup={}]: {}; reconnect. Submitted operation outcome may be unknown; inspect history before retrying",
+            "Crew SSH failure [{}; child_before_cleanup={}]: {}",
             self.code, self.status, self.description
-        )
+        )?;
+        if self.outcome_unknown {
+            f.write_str(
+                "; reconnect. Submitted operation outcome may be unknown; inspect history before retrying",
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -151,6 +176,9 @@ impl fmt::Debug for SshFailure {
             .field("status", &self.status)
             .field("description", &self.description)
             .field("detail_bytes", &self.detail.as_ref().map_or(0, String::len))
+            // Read from stderr like `detail`, so only whether there is one reaches a log.
+            .field("names_host", &self.host.is_some())
+            .field("outcome_unknown", &self.outcome_unknown)
             .finish()
     }
 }
@@ -272,6 +300,44 @@ impl SignInTarget {
                 server: login.to_owned(),
                 user: None,
             },
+        }
+    }
+    /// Whether the login signs in to this machine over loopback (a member on the workspace's
+    /// own server, W2-DMN-2).
+    fn is_loopback(&self) -> bool {
+        let server = self.server.trim_start_matches('[').trim_end_matches(']');
+        server.eq_ignore_ascii_case("localhost")
+            || server
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
+    /// A loopback sign-in this machine's SSH server refused: the member's own key is not in
+    /// their own `authorized_keys`.
+    fn loopback_key_refused(&self) -> String {
+        format!(
+            "Couldn't sign in as {} on this machine: add your public SSH key to your own ~/.ssh/authorized_keys, then connect again.",
+            self.user.as_deref().unwrap_or("yourself")
+        )
+    }
+    /// A loopback sign-in refused because `localhost`'s host key is not in `known_hosts`.
+    fn loopback_host_key_unknown(&self) -> String {
+        format!(
+            "{}'s host key isn't in your ~/.ssh/known_hosts yet. Add this server's own key (from /etc/ssh/ssh_host_ed25519_key.pub) to it, then connect again.",
+            self.server
+        )
+    }
+    /// A sign-in the server answered with a password or verification-code prompt, which an
+    /// unattended bridge cannot answer. Nothing was submitted.
+    fn needs_person(&self) -> String {
+        match &self.user {
+            Some(user) => format!(
+                "Couldn't sign in to {} as {user}: the server asks for a password or a verification code. Sign in to continue.",
+                self.server
+            ),
+            None => format!(
+                "Couldn't sign in to {}: the server asks for a password or a verification code. Sign in to continue.",
+                self.server
+            ),
         }
     }
     /// T-53: the sentence for a sign-in the server refused before any request reached the
@@ -450,6 +516,9 @@ impl Transport {
         let result =
             tokio::time::timeout(Duration::from_secs(45), self.exchange(&bytes, &id)).await;
         self.last_activity = std::time::SystemTime::now();
+        // From here a failure may have lost the answer to a request already written: only one
+        // that could have changed something leaves its outcome unknown (T3-BE-1).
+        let carried_a_change = !super::is_read_only(method);
         match result {
             Ok(Ok(v)) => {
                 self.unusable = false;
@@ -461,9 +530,12 @@ impl Transport {
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("Crew response has no result"))
             }
-            Ok(Err(failure)) => Err(self.fatal_failure(failure).await),
+            Ok(Err(failure)) => Err(self.fatal_failure(failure, carried_a_change).await),
             Err(_) => Err(self
-                .fatal_failure(WireFailure::new("ssh_timeout", "Crew request timed out"))
+                .fatal_failure(
+                    WireFailure::new("ssh_timeout", "Crew request timed out"),
+                    carried_a_change,
+                )
                 .await),
         }
     }
@@ -530,7 +602,11 @@ impl Transport {
         }
         Ok(response)
     }
-    async fn fatal_failure(&mut self, failure: WireFailure) -> anyhow::Error {
+    async fn fatal_failure(
+        &mut self,
+        failure: WireFailure,
+        carried_a_change: bool,
+    ) -> anyhow::Error {
         // Capture exit status before our own cleanup: a cleanup signal must not
         // be misreported as the cause. A closed pipe means ssh is on its way
         // out, so give its own status a bounded moment to land first.
@@ -548,12 +624,33 @@ impl Transport {
         self.stderr.settle(STDERR_GRACE).await;
         let stderr = self.stderr.snapshot();
         let mut classified = classify_failure(failure.code, failure.description, state, &stderr);
-        if classified.kind == SshFailureKind::AuthRequired && !self.answered {
+        classified.outcome_unknown = carried_a_change;
+        if matches!(
+            classified.kind,
+            SshFailureKind::AuthRequired | SshFailureKind::KeyRefused
+        ) && !self.answered
+        {
             // SSH refuses a key before it runs the remote command, so this bridge never
             // carried a request: say who could not sign in where, not "outcome may be unknown".
+            // A refused key is said as one; only a server that offered a password or a code
+            // is said to need one (W2-DMN-5).
             if let Some(target) = &self.sign_in {
                 classified.code = SIGN_IN_REFUSED.into();
-                classified.description = target.refused();
+                classified.description = if target.is_loopback() {
+                    target.loopback_key_refused()
+                } else if classified.kind == SshFailureKind::KeyRefused {
+                    target.refused()
+                } else {
+                    target.needs_person()
+                };
+            }
+        }
+        // W2-DMN-2: signing in to this machine over loopback needs two things a member on the
+        // server may not have yet; the failure names the one that is missing.
+        if classified.kind == SshFailureKind::HostKeyUnknown && !self.answered {
+            if let Some(target) = self.sign_in.as_ref().filter(|target| target.is_loopback()) {
+                classified.code = SIGN_IN_REFUSED.into();
+                classified.description = target.loopback_host_key_unknown();
             }
         }
         anyhow::Error::new(classified)
@@ -594,7 +691,64 @@ fn classify_failure(
         status: state.label(),
         description: description.into(),
         detail: failure_detail(kind, &text),
+        host: named_host(kind, &text),
+        outcome_unknown: false,
     }
+}
+
+/// The host the deciding line of `stderr` names for `kind`: `No ED25519 host key is known for
+/// H and…`, `Host key for H has changed…`, `user@H: Permission denied (…)`. A jump host's line
+/// names the jump host, which is the point: its failure is not the destination's.
+pub(super) fn named_host(kind: SshFailureKind, stderr: &str) -> Option<String> {
+    // The first word after `needle`, found case-insensitively. ASCII lowercasing keeps every
+    // byte where it was, so an index into the lowered line is one into the line.
+    let after = |line: &str, needle: &str| -> Option<String> {
+        let at = line.to_ascii_lowercase().find(needle)? + needle.len();
+        Some(line.get(at..)?.split_whitespace().next()?.to_owned())
+    };
+    let found = stderr.lines().rev().find_map(|line| match kind {
+        SshFailureKind::HostKeyUnknown => after(line, " host key is known for "),
+        SshFailureKind::HostKeyChanged if line.to_ascii_lowercase().contains(" has changed") => {
+            after(line, "host key for ")
+        }
+        SshFailureKind::KeyRefused | SshFailureKind::AuthRequired => {
+            let at = line.to_ascii_lowercase().find(": permission denied (")?;
+            let login = line.get(..at)?.split_whitespace().last()?;
+            Some(
+                login
+                    .rsplit_once('@')
+                    .map_or(login, |(_, host)| host)
+                    .to_owned(),
+            )
+        }
+        _ => None,
+    })?;
+    // Only a host name: letters, digits and `.-_:[]` (a bracketed address and port).
+    let host = found.trim_end_matches(['.', ',', ';']);
+    (!host.is_empty()
+        && host.len() <= 255
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-:[]".contains(&b)))
+    .then(|| host.to_owned())
+}
+
+/// Whether OpenSSH's last `Permission denied (…)` names only methods no person can answer:
+/// the server refused this computer's key and offered no password or code prompt.
+pub(super) fn key_refused(stderr: &str) -> bool {
+    let Some(methods) = stderr.lines().rev().find_map(|line| {
+        let line = line.to_lowercase();
+        let (_, offered) = line.split_once("permission denied (")?;
+        let (methods, _) = offered.split_once(')')?;
+        Some(methods.to_owned())
+    }) else {
+        return false;
+    };
+    let methods: Vec<&str> = methods.split(',').map(str::trim).collect();
+    methods.contains(&"publickey")
+        && !methods
+            .iter()
+            .any(|method| matches!(*method, "password" | "keyboard-interactive"))
 }
 
 /// The status OpenSSH exits with for every failure of its own, a jump host's
@@ -633,6 +787,11 @@ fn classify(state: ChildState, stderr: &str) -> SshFailureKind {
     // death is not ssh reporting a failure either, so it gets the same treatment.
     if code == Some(SSH_OWN_FAILURE_STATUS) {
         if let Some(kind) = ssh_level_kind(&lines) {
+            // A refusal whose last `Permission denied (…)` offered no prompt is a refused
+            // key, not a request for a password (W2-DMN-5).
+            if kind == SshFailureKind::AuthRequired && key_refused(stderr) {
+                return SshFailureKind::KeyRefused;
+            }
             return kind;
         }
     }
@@ -649,7 +808,28 @@ fn classify(state: ChildState, stderr: &str) -> SshFailureKind {
     }) {
         return SshFailureKind::BridgeMissing;
     }
+    // SSH connected and the bridge ran, but found no workspace server: its socket is gone (a
+    // graceful stop or a reboot), refuses (killed, stale socket), or the server closed the
+    // bridge's connection. The bridge reports each as `Error: <cause>` and exits 1, so the
+    // host's own app said only "Can't connect" (W2-DMN-5, R-7).
+    if code != Some(SSH_OWN_FAILURE_STATUS) && broker_not_running(&lines) {
+        return SshFailureKind::BrokerNotRunning;
+    }
     SshFailureKind::Other
+}
+
+/// Whether the bridge said its workspace server is not there: the socket is missing (`os error
+/// 2`), refuses connections (Linux 111, macOS 61), or the server went away under it.
+fn broker_not_running(lines: &[String]) -> bool {
+    any_line(lines, |line| {
+        let line = line.trim_start();
+        line.starts_with("error: ")
+            && (line.contains("no such file or directory (os error 2)")
+                || line.contains("connection refused (os error 111)")
+                || line.contains("connection refused (os error 61)")
+                || line.contains("broker_unavailable:")
+                || line.contains("broker disconnected"))
+    })
 }
 
 /// The kinds only OpenSSH itself can report, in the order they must be tested.

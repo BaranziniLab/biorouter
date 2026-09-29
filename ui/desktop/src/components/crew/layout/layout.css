@@ -179,3 +179,12 @@
   flex-direction: column;
   min-height: 0;
 }
+
+/* A lost channel's unsent draft, on the screen that says there is no channel left to show (QA
+   M10): the same note the composer would carry, in the chat column's measure. */
+.crew-frame-lost-draft {
+  width: 100%;
+  max-width: var(--measure-chat);
+  margin-inline: auto;
+  padding: 12px 16px 0;
+}

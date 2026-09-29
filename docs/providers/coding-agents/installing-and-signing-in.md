@@ -51,9 +51,15 @@ vendor's CLI, where only that CLI reads it:
 
 ## Step 3 — pick the provider in BioRouter
 
-Choose **Claude Code** or **Codex** in the model picker or in provider settings, exactly as you
-would any other provider. There is no key to enter. The only setting either provider has is the
-name or path of its executable, which defaults to `claude` and `codex` respectively.
+Choose **Claude Code** or **Codex** in the model picker (**Switch models**, from the model chip under
+a chat's message box), exactly as you would any other provider. A signed-in agent is listed there
+even if you have never used it in BioRouter, and choosing it saves its one setting first. The
+switch applies to that chat, and to new chats only if you tick **Also use for new chats**.
+
+You can also set it up in **Settings** > **Models** > **Configure providers**: on the **Public** tab,
+the agent's row under "AI agents · your subscription" offers **Use Claude Code** or **Use Codex**,
+then asks for a model. There is no key to enter. The only setting either provider has is the name or
+path of its executable, which defaults to `claude` and `codex` respectively.
 
 > **Note — which models you can pick depends on your CLI version.** The newest models in each
 > catalogue have a vendor-set version floor, and both defaults are among them:

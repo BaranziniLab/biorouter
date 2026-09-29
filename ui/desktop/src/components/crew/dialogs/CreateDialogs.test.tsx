@@ -1,9 +1,10 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, renderHook, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CrewHttpError } from '../crewApi';
+import { useChannelRowFocusRequested } from '../state/channelRowFocus';
 import { CrewControllerProvider, useCrew } from '../state/CrewControllerContext';
-import { addPeopleCopy, createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
+import { createChannelCopy, createTeamCopy, nameRuleCopy } from './copy';
 import { CreateChannelDialog, examplePlaceholder, withoutLeadingHash } from './CreateChannelDialog';
 import { CreateTeamDialog, teamExamplePlaceholder } from './CreateTeamDialog';
 import { CrewDialogs } from './CrewDialogs';
@@ -47,6 +48,33 @@ describe('CreateChannelDialog', () => {
     expect(screen.getByText('Will be created as #data-analysis-v2')).toBeInTheDocument();
   });
 
+  // F9: the preview promised names the broker refuses. It shows the folded form of a full-width
+  // name, and nothing for a name that mixes writing systems or that a visible channel holds.
+  it('previews only a name the broker will accept, folded as the broker folds it', async () => {
+    const { crew } = renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
+    const name = await screen.findByLabelText('Name');
+
+    fireEvent.change(name, { target: { value: 'ｍｅｔｈｏｄｓ' } });
+    expect(screen.getByText('Will be created as #methods')).toBeInTheDocument();
+
+    // A Cyrillic `е` (U+0435) among Latin letters.
+    fireEvent.change(name, { target: { value: 'm\u0435thods' } });
+    expect(screen.queryByText(/^Will be created as/)).toBeNull();
+    expect(name).toHaveAccessibleDescription(nameRuleCopy.consequence);
+
+    // The team's own #general, in another case and in full-width letters: taken, said at once.
+    for (const typed of ['General', 'ｇｅｎｅｒａｌ']) {
+      fireEvent.change(name, { target: { value: typed } });
+      expect(screen.queryByText(/^Will be created as/)).toBeNull();
+      expect(screen.getByText(nameRuleCopy.channelTaken)).toBeInTheDocument();
+      expect(name).toHaveAttribute('aria-invalid', 'true');
+    }
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
+    });
+    expect(requestsFor(crew, 'channel.create')).toEqual([]);
+  });
+
   // QA Q2-31: "e.g. methods" sat beside an existing #methods, reading as a nudge to duplicate it.
   it('gives an example name that is never one the team already has', async () => {
     renderWithCrew(<CreateChannelDialog teamId="team-1" onClose={vi.fn()} />);
@@ -86,6 +114,8 @@ describe('CreateChannelDialog', () => {
     );
     expect(crew.selectChannel).toHaveBeenCalledWith('channel-new');
     expect(onClose).toHaveBeenCalled();
+    // UXN-7: the new channel's row takes the focus, not Add channel, the dialog's opener.
+    expect(renderHook(() => useChannelRowFocusRequested('channel-new')).result.current).toBe(true);
   });
 
   it('refuses a name the broker would refuse before sending it', async () => {
@@ -149,7 +179,8 @@ describe('CreateChannelDialog', () => {
         throw new CrewHttpError(CHANNEL_TAKEN, 400, 'crew_request_refused');
       },
     });
-    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'general' } });
+    // A name held by a channel the viewer cannot see: only the broker knows it is taken.
+    fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'methods' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create channel' }));
     });
@@ -329,7 +360,11 @@ describe('CreateTeamDialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Create team' });
     expect(dialog).toHaveTextContent(createTeamCopy.helper('lab'));
     const name = screen.getByLabelText('Name');
-    expect(name).toHaveAccessibleDescription(createTeamCopy.helper('lab'));
+    // F9: under a team name too, what a taken name tells people, and it describes the field.
+    expect(dialog).toHaveTextContent(nameRuleCopy.teamConsequence);
+    expect(name).toHaveAccessibleDescription(
+      `${createTeamCopy.helper('lab')} ${nameRuleCopy.teamConsequence}`
+    );
     await waitFor(() => expect(name).toHaveFocus());
     fireEvent.change(name, { target: { value: 'Imaging Core' } });
     await act(async () => {
@@ -397,8 +432,9 @@ describe('CreateTeamDialog', () => {
       ])
     );
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
+    // M11: the team as well as its #general (every team has one), as Add people says it.
     expect(toasts.toastSuccess).toHaveBeenCalledWith({
-      msg: addPeopleCopy.added('Bob Lee (@bob)', '#general'),
+      msg: 'Added Bob Lee (@bob) to Imaging Core. They can now see #general.',
     });
     expect(crew.selectTeam).toHaveBeenCalledWith('team-new');
     expect(onClose).toHaveBeenCalled();
@@ -480,8 +516,13 @@ describe('RenameDialog', () => {
     expect(await screen.findByRole('dialog', { name: 'Rename channel' })).toBeInTheDocument();
     const name = screen.getByLabelText('Name');
     expect(name).toHaveValue('general');
+    // M12: nothing is previewed until the name changes, and never "Will be created as".
+    expect(screen.queryByText(/^Will be/)).toBeNull();
+    fireEvent.change(name, { target: { value: 'General' } });
+    expect(screen.queryByText(/^Will be/)).toBeNull();
     fireEvent.change(name, { target: { value: 'Lab Notes' } });
-    expect(screen.getByText('Will be created as #lab-notes')).toBeInTheDocument();
+    expect(screen.getByText('Will be renamed to #lab-notes')).toBeInTheDocument();
+    expect(screen.queryByText(/Will be created/)).toBeNull();
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
     });
@@ -495,7 +536,12 @@ describe('RenameDialog', () => {
     const team = renderWithCrew(<RenameDialog target="team" targetId="team-1" onClose={vi.fn()} />);
     const teamName = await screen.findByLabelText('Name');
     expect(teamName).toHaveValue('Analysis Lab');
+    expect(screen.queryByText(/^CLI name/)).toBeNull();
+    fireEvent.change(teamName, { target: { value: 'analysis-lab' } });
+    expect(screen.queryByText(/^CLI name/)).toBeNull();
     fireEvent.change(teamName, { target: { value: 'Analysis Group' } });
+    // M12: the old handle stops working in the CLI, so the new one is shown.
+    expect(screen.getByText('CLI name: analysis-group')).toBeInTheDocument();
     await act(async () => {
       fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Rename' }));
     });

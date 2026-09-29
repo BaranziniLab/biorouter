@@ -455,6 +455,45 @@ pub struct SessionEnrichment {
     pub author: Option<crate::workflow::Author>,
 }
 
+/// What a person is told when a workflow would be made from a Crew chat.
+///
+/// One constant for every surface that makes one (the desktop's "create
+/// workflow from this chat", the CLI's `/workflow`, and the model's workflow
+/// tool), so they cannot answer the same chat differently.
+pub const CREW_WORKFLOW_REFUSAL: &str = "Crew context cannot be turned into a workflow, because \
+     a saved workflow can be shared and run outside the channel's permissions. Write the \
+     workflow yourself instead.";
+
+/// Refuse to make a workflow from `session_id` while a Crew grant restricts it.
+///
+/// A workflow generated from a chat is that chat's transcript again, rewritten
+/// by a model: its instructions and prompt summarise whatever the chat held,
+/// including the hidden `<crew_context>` and every Crew request's result. And
+/// unlike the chat it outlives the grant: it is saved to the library, shared as
+/// a deeplink and run or scheduled in new chats that carry no Crew scope, on
+/// whatever model they bind. So it is refused for the reason an export, a copy
+/// and a diverge of the same chat are refused
+/// ([`crate::session::session_manager::CREW_EXPORT_REFUSAL`]).
+///
+/// ⚠ **Ask it FIRST**, before the transcript is loaded or a model is asked to
+/// summarise it. The HTTP create route and the CLI's `/workflow` both do, and
+/// [`session_enrichment`] asks it again, so a surface that forgot the early
+/// check still gets no document back from the one enrichment every surface
+/// passes through.
+///
+/// The error is a [`CrewContextRefusal`] holding [`CREW_WORKFLOW_REFUSAL`], so a
+/// door can answer it as a refusal. Fails closed: a Crew registry that cannot
+/// be opened is an error, never "no grant".
+///
+/// [`CrewContextRefusal`]: crate::session::session_manager::CrewContextRefusal
+pub async fn refuse_crew_source(session_id: &str) -> Result<()> {
+    use crate::session::session_manager::{crew_restricts, CrewContextRefusal};
+    if crew_restricts(session_id).await? {
+        return Err(CrewContextRefusal(CREW_WORKFLOW_REFUSAL).into());
+    }
+    Ok(())
+}
+
 /// Gather everything a live session contributes to a workflow generated from it.
 ///
 /// ⚠ The ONE place these three facts are collected. Both the HTTP create route
@@ -463,12 +502,15 @@ pub struct SessionEnrichment {
 /// the same conversation produced a different document depending on which
 /// surface asked. `create_from_session_produces_the_same_document_on_every_surface`
 /// is the assertion that keeps them together.
+///
+/// Refuses a Crew chat ([`refuse_crew_source`]) before it gathers anything.
 pub async fn session_enrichment(
     agent: &crate::agents::Agent,
     knowledge: &biorouter_mcp::knowledge::service::KnowledgeService,
     session_id: &str,
     author: Option<crate::workflow::Author>,
 ) -> Result<SessionEnrichment> {
+    refuse_crew_source(session_id).await?;
     let extensions = agent
         .get_extension_configs()
         .await
@@ -1037,6 +1079,83 @@ mod knowledge_capture_tests {
             vec!["alpha".to_string(), "beta".to_string()]
         );
         assert_eq!(captured.default.as_deref(), Some("beta"));
+    }
+}
+
+/// A workflow is never made from a chat a Crew grant restricts.
+///
+/// In a process of their own: the Crew registry is process-global, and a grant
+/// installed here would restrict the id in every other test of this binary.
+///
+/// ⚠ Above `one_core_guards`, which must stay the LAST test module in this file:
+/// its `production()` cuts at the last `#[cfg(test)]`.
+#[cfg(test)]
+mod crew_source_tests {
+    use super::{refuse_crew_source, session_enrichment, CREW_WORKFLOW_REFUSAL};
+    use crate::agents::{Agent, AgentConfig};
+    use crate::config::permission::PermissionManager;
+    use crate::conversation::message::Message;
+    use crate::session::session_manager::{CrewContextRefusal, SessionManager, SessionType};
+    use std::sync::Arc;
+
+    /// The workflow core refuses a Crew chat with the sentence every surface
+    /// shows, and the one enrichment every surface passes refuses it too, so a
+    /// door that forgot to ask first still gets no document back. A chat the
+    /// grant no longer restricts is let through, so the refusal is Crew's and
+    /// not a blanket one.
+    #[tokio::test]
+    async fn a_workflow_is_never_made_from_a_crew_chat() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sessions
+            .create_session(
+                temp.path().to_path_buf(),
+                "a Crew task".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sessions
+            .add_message(
+                &session.id,
+                &Message::user()
+                    .with_text("<crew_context>the channel's cohort notes</crew_context>"),
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions.clone(),
+            Arc::new(PermissionManager::new(temp.path().to_path_buf())),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        let knowledge =
+            biorouter_mcp::knowledge::service::KnowledgeService::new(temp.path().join("knowledge"));
+        let grant = crate::crew::install_test_scope(&session.id, None).await;
+
+        let refusal = CrewContextRefusal(CREW_WORKFLOW_REFUSAL);
+        let error = refuse_crew_source(&session.id)
+            .await
+            .expect_err("a Crew chat must not become a workflow");
+        assert_eq!(error.downcast_ref::<CrewContextRefusal>(), Some(&refusal));
+        assert_eq!(error.to_string(), CREW_WORKFLOW_REFUSAL);
+
+        let error = session_enrichment(&agent, &knowledge, &session.id, None)
+            .await
+            .err()
+            .expect("the one enrichment must refuse a Crew chat as well");
+        assert_eq!(error.downcast_ref::<CrewContextRefusal>(), Some(&refusal));
+
+        crate::crew::remove_test_scope(&grant, &session.id).await;
+        refuse_crew_source(&session.id)
+            .await
+            .expect("a chat no grant restricts may become a workflow");
+        assert!(session_enrichment(&agent, &knowledge, &session.id, None)
+            .await
+            .is_ok());
     }
 }
 

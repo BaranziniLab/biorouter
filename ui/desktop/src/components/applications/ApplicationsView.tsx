@@ -23,7 +23,6 @@ import { toastSuccess, toastError } from '../../toasts';
 import { PageHeader } from '../Layout/PageHeader';
 import { ReadableContent } from '../Layout/ReadableContent';
 import {
-  appUrl,
   buildExportUrl,
   configuredBaseUrl,
   deleteAgentDrafterApp,
@@ -92,19 +91,26 @@ export default function ApplicationsView() {
   // Launch opens the app's own served URL in the real browser — archetype-
   // agnostic by construction (nothing here assumes a chat-shaped app), so the
   // v2 non-chat starters need no special affordance (plan Phase 5 item 5).
+  // The main process mints the app's one-time launch link and hands it to the
+  // browser without putting it on a command line (W2-HRD-1), so this names the
+  // app and nothing else.
   const launch = async (app: AppManifest) => {
     if (launchingAppId === app.id) return;
-    const baseUrl = configuredBaseUrl();
-    if (!baseUrl) {
-      setError('Backend URL unavailable. Is biorouterd running?');
-      return;
-    }
     setLaunchingAppId(app.id);
     try {
-      await window.electron.openExternal(appUrl(app.id, baseUrl));
+      await window.electron.openAppInBrowser(app.id);
     } catch (err) {
       console.error('Failed to open app:', err);
-      toastError({ title: app.title, msg: 'Could not open the app in your browser.' });
+      // The main process says why (the app is gone, the daemon is down, no
+      // browser opened); Electron wraps its sentence in an IPC preamble.
+      const reason =
+        err instanceof Error
+          ? err.message.replace(/^Error invoking remote method '[^']*': (?:\w*Error: )?/, '')
+          : '';
+      toastError({
+        title: app.title,
+        msg: reason || 'Could not open the app in your browser.',
+      });
     } finally {
       setLaunchingAppId((current) => (current === app.id ? null : current));
     }

@@ -42,6 +42,90 @@ beforeEach(() => {
 });
 
 describe('TrustPane', () => {
+  // DW-03, W2-DMN-5: "Can't verify <destination>" whichever hop failed; a jump host's key is the
+  // jump host's.
+  it('names the hop whose key could not be verified when the daemon says which', () => {
+    const failure = {
+      kind: 'host_key_unknown',
+      message: 'Host key verification failed.',
+      code: 'crew_ssh_host_key_unknown',
+      host: 'jump.example.edu',
+    } as LastConnectFailure;
+    renderPane(failure);
+    expect(
+      screen.getByRole('heading', { name: trustCopy.unknownTitle('jump.example.edu') })
+    ).toBeInTheDocument();
+  });
+
+  it('names the server by the person’s own alias for it otherwise (D-ALIAS)', () => {
+    const crew = makeCrew({
+      connectionId: 'conn-1',
+      connection: { ...fakeConnection({ status: 'disconnected' }), server_label: 'lab-server' },
+      lastConnectFailure: {
+        kind: 'host_key_changed',
+        message: 'Host key verification failed.',
+        code: 'crew_ssh_host_key_changed',
+      },
+      screen: 'trust',
+    });
+    renderWithCrew(<TrustPane />, crew);
+    expect(
+      screen.getByRole('heading', { name: trustCopy.changedTitle('lab-server') })
+    ).toBeInTheDocument();
+  });
+
+  // W2-UIW-3, DW-03: the daemon sends `host` for the destination's own key too, as OpenSSH names
+  // it: the resolved address, `[addr]:port` off port 22. That is still the person's lab-server.
+  it('names the server by its alias when the host the daemon names is the saved server', async () => {
+    const connection = {
+      ...fakeConnection({ status: 'disconnected', ssh_target: 'crew_alice@52.33.141.141' }),
+      port: 2222,
+      server_label: 'lab-server',
+    };
+    const unknown = makeCrew({
+      connectionId: 'conn-1',
+      connection,
+      lastConnectFailure: {
+        kind: 'host_key_unknown',
+        message: 'Host key verification failed.',
+        code: 'crew_ssh_host_key_unknown',
+        host: '[52.33.141.141]:2222',
+      } as LastConnectFailure,
+      screen: 'trust',
+    });
+    const { unmount } = renderWithCrew(<TrustPane />, unknown);
+    expect(
+      screen.getByRole('heading', { name: trustCopy.unknownTitle('lab-server') })
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: trustCopy.howToVerify }));
+    expect(screen.getByText(trustCopy.steps('lab-server')[0])).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('52.33.141.141');
+    unmount();
+
+    renderWithCrew(
+      <TrustPane />,
+      makeCrew({
+        connectionId: 'conn-1',
+        connection,
+        lastConnectFailure: {
+          kind: 'host_key_changed',
+          message: 'Host key verification failed.',
+          code: 'crew_ssh_host_key_changed',
+          host: '52.33.141.141',
+        } as LastConnectFailure,
+        screen: 'trust',
+      })
+    );
+    expect(
+      screen.getByRole('heading', { name: trustCopy.changedTitle('lab-server') })
+    ).toBeInTheDocument();
+    // IT knows the address, not the person's alias for it, so the copied details carry both.
+    fireEvent.click(screen.getByRole('button', { name: trustCopy.copyForIt }));
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
+    const copied = vi.mocked(navigator.clipboard.writeText).mock.calls.slice(-1)[0]?.[0] ?? '';
+    expect(copied).toContain('Server: lab-server\nAddress: 52.33.141.141\nProblem: ');
+  });
+
   it('shows an unknown host key with the fingerprint it offered and Try again', async () => {
     const crew = renderPane({
       kind: 'host_key_unknown',

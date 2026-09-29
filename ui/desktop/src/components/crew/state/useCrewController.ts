@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import type * as Api from '../../../api/types.gen';
+import { useSameRouteReset } from '../../../hooks/useSameRouteReset';
+import { CREW_RECONNECTING } from '../api/errors';
 import { crewHttp, crewRequest, type CrewConnection, type Snapshot } from '../crewApi';
+import { connectionNames } from '../identity/objectNames';
 import { crewActionCopy } from './copy';
 import { useCrewActions } from './crewActions';
-import { createSend, useCrewDraft } from './crewSend';
+import {
+  createSend,
+  useCrewDraft,
+  useOpenSendScreen,
+  usePostCheck,
+  usePostInFlight,
+} from './crewSend';
 import { useCrewRunStart } from './crewRunStart';
 import { arrivalConnectDecision, isMembershipEnded } from './connectFailure';
 import { deriveConnectionStatus, deriveCrewScreen } from './crewStatus';
@@ -31,7 +41,14 @@ import {
   type ObservationEnd,
 } from './useCrewObservation';
 import { forgetRememberedView, rememberPaneIntent } from './viewMemory';
-import type { CrewController, CrewControllerOptions, CrewJoinStatus, PaneIntent } from './types';
+import type {
+  ActionKey,
+  CrewController,
+  CrewControllerOptions,
+  CrewJoinStatus,
+  PaneIntent,
+  SaveConnectionInput,
+} from './types';
 
 export type * from './types';
 
@@ -46,19 +63,26 @@ export function isWorkspaceHost(snapshot: Snapshot | null): boolean {
 
 /**
  * The channel to show for `teamId`: `current` while the team still has it, else `preferred` (the
- * channel the person last chose, Q2-21) while the team has it open, else the team's first channel
- * that is not archived, else none.
+ * channel the person last chose, Q2-21) while the team has it open, else the team's #general
+ * while it is open, else the team's first channel that is not archived, else none.
+ *
+ * #general comes before any other (setup F6): the snapshot lists channels by their random IDs, so
+ * "the first channel" was whichever ID sorted lowest, and new members landed on #random instead
+ * of where the host's welcome is.
  */
 export function channelForTeam(
-  snapshot: Pick<Snapshot, 'channels'>,
+  snapshot: Pick<Snapshot, 'channels'> & Partial<Pick<Snapshot, 'teams'>>,
   teamId: string,
   current: string,
   preferred: string | null = null
 ): string {
   const channels = snapshot.channels.filter((item) => item.team_id === teamId);
   if (channels.some((item) => item.id === current)) return current;
-  if (preferred && channels.some((item) => item.id === preferred && !item.archived))
-    return preferred;
+  const open = (id: string | null | undefined) =>
+    Boolean(id) && channels.some((item) => item.id === id && !item.archived);
+  if (open(preferred)) return preferred as string;
+  const general = snapshot.teams?.find((item) => item.id === teamId)?.general_channel_id;
+  if (open(general)) return general as string;
   return channels.find((item) => !item.archived)?.id ?? '';
 }
 
@@ -79,14 +103,35 @@ function isNotJoined(status: CrewJoinStatus | null): boolean {
  */
 export function useCrewController(options: CrewControllerOptions = {}): CrewController {
   const { autoOpenSignIn = false, keepLastVerifiedView = false } = options;
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const grantSessionId = searchParams.get('sessionId');
   // A chat's "Connect in Crew" (Q3-08): the connection it asks to connect, and its intent id.
   const location = useLocation();
   const arrival = arrivalConnectIntent(location.state);
 
   const actions = useCrewActions();
-  const { act, reportError, dismissError, dismissErrorFrom, isPending } = actions;
+  const {
+    act,
+    reportError,
+    dismissError,
+    dismissErrorFrom,
+    dismissErrorIfShown,
+    dismissTransportError,
+    isPending,
+  } = actions;
+  // The error on show, for what reads it outside a render: the composer's note put aside with its
+  // draft (QA M5).
+  const errorNow = useRef(actions.error);
+  errorNow.current = actions.error;
+  const composerNoteFor = useCallback((destination: string) => {
+    const shown = errorNow.current;
+    if (!shown || shown.source !== 'composer' || shown.destination !== destination) return null;
+    return {
+      message: shown.message,
+      ...(shown.code !== undefined ? { code: shown.code } : {}),
+      ...(shown.transport ? { transport: true } : {}),
+    };
+  }, []);
   const generation = useRef(0);
   const {
     connections,
@@ -97,10 +142,24 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     markConnectionsFailed,
     loadConnections,
     saveConnection,
-    updateConnection,
+    updateConnection: patchConnection,
     removeConnection,
     prepareHostingDevice,
   } = useCrewConnections(generation);
+  /**
+   * This window's saves of each connection that are on their way, by connection (T3-UI-15), and
+   * whether any of them began while the saved record said connected. The daemon disconnects, saves
+   * and connects again inside a save of a connected connection (`CrewManager::update`), so an
+   * observation that ends meanwhile is that save's doing, and the observer leaves it to the save.
+   * A save of a connection that was not connected reconnects nothing, and leaves nothing.
+   */
+  const savesInFlight = useRef(new Map<string, { saves: number; reconnects: boolean }>());
+  const connectionSaving = useCallback(
+    (id: string) => savesInFlight.current.get(id)?.reconnects === true,
+    []
+  );
+  const connectionsNow = useRef(connections);
+  connectionsNow.current = connections;
   const [teamId, setTeamId] = useState('');
   const [channelId, setChannelId] = useState('');
   const draft = useCrewDraft();
@@ -112,6 +171,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   // what the loss is has taken longer than `RECONNECTING_AFTER_MS` (Q4-07): its saved record is
   // being read again, or it is being observed again quietly. Never connected by the renderer.
   const [reconnecting, setReconnecting] = useState<string | null>(null);
+  // A re-dial the daemon said it owes the selected connection (RES2-N5), with when: see below.
+  const [redial, setRedial] = useState<{ connectionId: string; since: number } | null>(null);
   // The connection whose loss is being decided, before "Reconnecting…" may show (Q4-07).
   const [lossPending, setLossPending] = useState<string | null>(null);
   const reconnectingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -142,6 +203,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const onVerifiedFrame = useCallback(
     (id: string) => {
       forgetConnectFailure(id);
+      setRedial((current) => (current?.connectionId === id ? null : current));
       stopReconnectingTimer();
       setReconnecting((current) => (current === id ? null : current));
       setLossPending((current) => (current === id ? null : current));
@@ -170,6 +232,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     draft,
     reportError,
     dismissError,
+    composerNoteFor,
     closeSignIn,
     setJoinStatus,
     resetSurfaces,
@@ -177,6 +240,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     keepLastVerifiedView,
     joinStatus,
     onConnectionLost,
+    connectionSaving,
     reopenPane: openSurfacePane,
   });
   const {
@@ -198,6 +262,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     refreshError,
     refreshErrorCode,
     reverifying,
+    awaitingSave,
+    verifiedViews,
     lastVerified,
     setSnapshot,
     refresh,
@@ -207,7 +273,68 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     stashDraft,
     restoreDraft,
     restoring,
+    lostDrafts,
+    dismissLostDraft,
+    leaveEndToSave,
+    saveSettled,
   } = observation;
+
+  /**
+   * The full-body PATCH (L18), counted while it is on its way so an observation end it causes is
+   * not decided as a lost connection (T3-UI-15). When the last save of the connection is back,
+   * whether it succeeded or failed, an end left to it is observed again (`saveSettled`), after the
+   * list is read again; a caller's own `refresh()` right after replaces that.
+   */
+  const updateConnection = useCallback(
+    async (id: string, input: SaveConnectionInput) => {
+      const saves = savesInFlight.current;
+      const before = saves.get(id);
+      const connected = connectionsNow.current.some(
+        (item) => item.id === id && item.status === 'connected'
+      );
+      saves.set(id, {
+        saves: (before?.saves ?? 0) + 1,
+        reconnects: before?.reconnects === true || connected,
+      });
+      try {
+        return await patchConnection(id, input);
+      } finally {
+        const entry = saves.get(id);
+        if (entry && entry.saves > 1) saves.set(id, { ...entry, saves: entry.saves - 1 });
+        else {
+          saves.delete(id);
+          saveSettled(id);
+        }
+      }
+    },
+    [patchConnection, saveSettled]
+  );
+
+  // The daemon is dialling the selected connection again by itself (RES2-N5): a request was
+  // answered `crew_reconnecting`, the one way it says so. Kept, with when it was first said, until
+  // the connection verifies, the daemon calls it connected, the person connects, or another
+  // connection is selected; the offline screen then shows one state, with that time and Connect.
+  const redialError = actions.error?.code === CREW_RECONNECTING ? actions.error : null;
+  useEffect(() => {
+    if (!redialError || !connectionId) return;
+    setRedial((current) =>
+      current?.connectionId === connectionId ? current : { connectionId, since: Date.now() }
+    );
+  }, [redialError, connectionId]);
+  const redialConnectionStatus = connections.find((item) => item.id === connectionId)?.status;
+  useEffect(() => {
+    if (redialConnectionStatus === 'connected') setRedial(null);
+  }, [redialConnectionStatus]);
+
+  // A workspace chosen after it was removed from this computer (MSG2-N9): said once the selection
+  // the fresh list made instead has settled. Declared after the observation, whose change of
+  // connection dismisses what the bar showed, so it is not dismissed with it.
+  const [removedNotice, setRemovedNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (removedNotice === null) return;
+    setRemovedNotice(null);
+    reportError(crewActionCopy.workspaceRemoved(removedNotice), 'global');
+  }, [removedNotice, reportError]);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -227,6 +354,17 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setReconnecting(null);
     setLossPending(null);
   }, [refreshError, stopReconnectingTimer]);
+
+  // The connection verified again after it was not: a failure of the link from before (a send the
+  // bridge lost, the daemon's gateway timeout) no longer describes anything, and stayed in red
+  // under a green "Connected" (QA R-4). An answer from the workspace stays.
+  const verifiedAgain = Boolean(snapshot && observedPrivacy?.connectionId === connectionId);
+  const wasVerified = useRef(verifiedAgain);
+  useEffect(() => {
+    const was = wasVerified.current;
+    wasVerified.current = verifiedAgain;
+    if (verifiedAgain && !was) dismissTransportError();
+  }, [verifiedAgain, dismissTransportError]);
 
   const savedConnection = connections.find((item) => item.id === connectionId);
   const connection =
@@ -295,15 +433,28 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setMessagesLoaded(false);
     setConnectionId(id);
     if (id === connectionId) restartObservation();
+    // The menu lists what the last read of the daemon's list held, and a workspace removed since
+    // (from a terminal, or another window) went from the menu without a word once it was chosen
+    // (MSG2-N9). Read the list now; if the chosen one is gone, the read opens another, and Crew says
+    // why once that selection has settled (`removedNotice`).
+    const name = connectionNames(connections).get(id) ?? '';
+    void loadConnections()
+      .then((fresh) => {
+        if (fresh && !fresh.some((item) => item.id === id)) setRemovedNotice(name);
+      })
+      .catch(() => undefined);
   };
   //
   // A deliberate selection also puts the unsent body aside for the channel it was written in
   // (Q2-07), remembers the chosen channel for next time (Q2-21), and dismisses a "channel was
-  // closed" note that no longer describes what is on screen (Q2-19).
+  // closed" note that no longer describes what is on screen (Q2-19). The composer's note about the
+  // body (a send failure) goes aside with it and leaves the screen (QA M5): it answered that
+  // channel's draft, and comes back with it.
   const leaveChannel = () => {
     stashDraft();
-    if (actions.error?.source === 'observer' && actions.error.code === CHANNEL_LOST_ERROR_CODE)
-      dismissError();
+    const shown = actions.error;
+    if (shown?.source === 'observer' && shown.code === CHANNEL_LOST_ERROR_CODE) dismissError();
+    if (shown?.source === 'composer') dismissErrorIfShown(shown);
   };
   // A channel the person selects opens with its kept draft already in the composer (Q4-05), in the
   // same render as the selection — not when its first frame arrives, which left the composer empty
@@ -362,6 +513,21 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     closeSurfacePane();
     rememberPaneIntent(connectionId, null);
   }, [closeSurfacePane, connectionId]);
+
+  /**
+   * Crew chosen in the app's sidebar while Crew is already open (SF-F5): plain Crew. On a chat's
+   * access link (`/crew?sessionId=…`) the sidebar sees the same path and only announces a reset,
+   * which nothing here heard, so the chat's connect note and its Chat access pane stayed until the
+   * person went Home and back. The link's chat and its one-hop intent (route state) are dropped by
+   * replacing the location, and a Chat access pane it opened closes. A navigation within Crew,
+   * never one to it: the person is already here.
+   */
+  const paneMode = surfaces.ui.pane?.mode;
+  useSameRouteReset('/crew', () => {
+    if (!grantSessionId && location.state == null) return;
+    if (paneMode === 'chat-access') closePane();
+    setSearchParams(new URLSearchParams(), { replace: true });
+  });
 
   // Moves on every connection change, unmount, Disconnect, and connect or Retry the person made:
   // a loss handled before it is over. Also ends the reads that follow the daemon's re-dial, and a
@@ -502,9 +668,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   const connect = async (opts?: { userInitiated?: boolean }) => {
     const target = connectionId;
     if (opts?.userInitiated) {
-      // The person's own connect replaces whatever a loss was waiting for.
+      // The person's own connect replaces whatever a loss was waiting for, and the daemon's re-dial.
       settleLoss();
       setReconnecting(null);
+      setRedial(null);
     }
     const token = lossToken.current;
     const accepted = await lifecycle.connect(opts);
@@ -573,6 +740,14 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         decided();
         return;
       }
+      // This window's own save of the connection is on its way (T3-UI-15): the record read inside
+      // it says `disconnected` while the daemon connects again, which is the save's doing. As with
+      // a generation move, nothing is decided here; the save's own list read and refresh settle it.
+      if (connectionSaving(lostId)) {
+        decided();
+        leaveEndToSave(lostId);
+        return;
+      }
       // A membership the workspace ended is final: nothing is observed again or followed for it.
       const ended = isMembershipEnded(record);
       if (record?.status === 'connected' && !ended && takeQuietReobserve(lostId, Date.now())) {
@@ -603,7 +778,9 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
    * runs, for a membership the workspace ended, or for a connection the person disconnected in this
    * window (`wasDisconnectedHere`): the daemon never re-dials a Disconnect, so there is nothing to
    * follow. A record this window sees connected forgets that Disconnect, so a later drop is
-   * followed again.
+   * followed again. Nor while the view's end is left to this window's own save (T3-UI-15): the
+   * record reads disconnected inside the save because the daemon is connecting it again there; a
+   * save that leaves it disconnected is followed once it is back.
    */
   const savedStatus = savedConnection?.status;
   const savedMembershipEnded = isMembershipEnded(savedConnection);
@@ -616,9 +793,16 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     if (connectionsState !== 'loaded' || !connectionId) return;
     if (savedStatus !== 'disconnected' || savedMembershipEnded) return;
     if (lossPending === connectionId || offlineFollow.current) return;
-    if (wasDisconnectedHere(connectionId)) return;
+    if (awaitingSave || wasDisconnectedHere(connectionId)) return;
     followLatest.current(connectionId);
-  }, [connectionsState, connectionId, savedStatus, savedMembershipEnded, lossPending]);
+  }, [
+    connectionsState,
+    connectionId,
+    savedStatus,
+    savedMembershipEnded,
+    lossPending,
+    awaitingSave,
+  ]);
 
   /**
    * The connection bar's Retry (Q2-01), which the person presses: read the saved record first,
@@ -651,7 +835,13 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
   };
   const cancelRun = async (runId: string) => {
     await act('global', 'run.cancel', async () => {
-      await crewHttp(`/connections/${connectionId}/runs/${runId}/cancel`, 'POST', {});
+      // Both segments encoded: the run ID came from the broker, and a raw `../` in it would send
+      // this POST, with the person's proof, to another daemon route (RENDERER-2).
+      await crewHttp(
+        `/connections/${encodeURIComponent(connectionId)}/runs/${encodeURIComponent(runId)}/cancel`,
+        'POST',
+        {}
+      );
       await refresh();
     });
   };
@@ -666,7 +856,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     if (!snapshot || observedPrivacy?.connectionId !== connectionId)
       throw new Error(crewActionCopy.grantPrivacyUnverified);
     await crewHttp(
-      `/connections/${connectionId}/sessions/${encodeURIComponent(sessionId)}/grant`,
+      `/connections/${encodeURIComponent(connectionId)}/sessions/${encodeURIComponent(sessionId)}/grant`,
       'POST',
       {
         expected_mode: observedPrivacy.mode,
@@ -674,7 +864,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
         expected_workspace_policy_epoch: snapshot.workspace.policy_epoch,
         channel_id: channelId,
         context_channels: [channelId, ...contextChannels],
-      }
+      } satisfies Api.GrantSessionRequest
     );
   };
 
@@ -682,8 +872,6 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connectionId,
     teamId,
     channelId,
-    connection,
-    team,
     channel,
     snapshot,
     observedPrivacy,
@@ -693,16 +881,43 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     restartObservation,
     resetSurfaces,
     act,
+    reportError,
+  });
+  // The selection a post's answer is compared with: a post refused after the person moved on is
+  // reported where they are, naming its channel (RENDERER-4). Written as the render runs, like
+  // `arrivalActions` below, so an answer never reads a selection older than the one on screen.
+  // While mounted, this is also the screen told of a refusal of a post an earlier screen sent.
+  const selection = useRef({ connectionId, channelId });
+  selection.current = { connectionId, channelId };
+  useOpenSendScreen(selection, reportError);
+  // What a post whose outcome turns out unknown is looked for among (QA R-4).
+  const messagesNow = useRef(messages);
+  messagesNow.current = messages;
+  const viewsNow = useRef(verifiedViews);
+  viewsNow.current = verifiedViews;
+  const viewerId = snapshot?.actor?.id ?? null;
+  usePostCheck({
+    connectionId,
+    channelId,
+    messages,
+    liveTailLoaded:
+      verifiedAgain && messagesLoaded && historyBefore === null && backlogComplete !== false,
+    verifiedViews,
+    viewerId,
+    draft,
+    markRead,
+    reportError,
   });
   const send = createSend({
     draft,
-    busy: actions.busy,
+    busy: actions.busyExcept('send'),
     connectionId,
     channelId,
     channel,
     snapshot,
     observedPrivacy,
     generation,
+    selection,
     historyPage,
     setHistoryBefore,
     restartObservation,
@@ -710,7 +925,18 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     markRead,
     act,
     reportError,
+    messageIdsNow: () => new Set(messagesNow.current.map((message) => message.id)),
+    verifiedViews: () => viewsNow.current,
   });
+
+  // `send` is pending only in the channel whose post is on its way (RENDERER-4): a post left
+  // behind in #methods neither makes #analysis' composer read-only nor draws a "Sending…" there.
+  // A post an earlier Crew screen sent counts too: it holds this channel's Send until it answers.
+  const postingHere = usePostInFlight(connectionId, channelId);
+  const isPendingHere = useCallback(
+    (key: ActionKey) => (key === 'send' ? postingHere : isPending(key)),
+    [postingHere, isPending]
+  );
 
   const notJoined = isNotJoined(joinStatus);
   const isReconnecting = reconnecting !== null && reconnecting === connectionId;
@@ -783,6 +1009,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connection,
     connectionsState,
     selectConnection,
+    reloadConnections: () => void loadConnections().catch(() => undefined),
     saveConnection,
     updateConnection,
     removeConnection,
@@ -790,6 +1017,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     connect,
     disconnect,
     reconnecting: isReconnecting,
+    redialSince: redial?.connectionId === connectionId ? redial.since : null,
     lastConnectFailure: connectFailure,
     reportConnectFailure: (failure: unknown) => {
       connectFailures.record(connectionId, failure);
@@ -814,10 +1042,10 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     reverifying,
     refresh,
     retryUpdates,
-    loadOlder: () => {
-      historyPage.current = messages[0]?.sequence ?? null;
-      setHistoryBefore(historyPage.current);
-    },
+    loadOlder: observation.loadOlder,
+    loadNewer: observation.loadNewer,
+    reachesStart: observation.reachesStart,
+    historyLoading: observation.historyLoading,
     jumpToLatest: () => {
       historyPage.current = null;
       setHistoryBefore(null);
@@ -837,7 +1065,8 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     registerErrorSlot: actions.registerErrorSlot,
     reportError,
     dismissError,
-    isPending,
+    dismissErrorIfShown,
+    isPending: isPendingHere,
     busy: actions.busy,
     request,
     mutate,
@@ -853,9 +1082,11 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
     setContextChannels: draft.setContextChannels,
     send,
     clearBodyIfEquals: draft.clearBodyIfEquals,
+    lostDrafts: lostDrafts.filter((item) => item.connectionId === connectionId),
+    dismissLostDraft,
 
     startOwnedRun: runStart.startOwnedRun,
-    unknownRunDestination: runStart.unknownRunDestination || null,
+    unknownRunDestination: runStart.unknownRunDestination,
     inspectedPriorRun: runStart.inspectedPriorRun,
     setInspectedPriorRun: runStart.setInspectedPriorRun,
     cancelRun,
@@ -888,6 +1119,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       // A loss still being decided reads "Checking connection" (Q4-07), not "Updating…".
       reverifying: reverifying && lossPending !== connectionId,
       reconnecting: isReconnecting,
+      awaitingSave,
     }),
     screen: deriveCrewScreen({
       connectionsState,
@@ -901,6 +1133,7 @@ export function useCrewController(options: CrewControllerOptions = {}): CrewCont
       observationError: Boolean(refreshError),
       notJoined,
       reconnecting: isReconnecting,
+      awaitingSave,
     }),
     effectivePrivacy:
       shownVerified && snapshot && observedPrivacy

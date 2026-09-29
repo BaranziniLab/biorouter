@@ -390,9 +390,10 @@ had ready.
 
 Two things changed, and both are load-bearing:
 
-- **Biorouter configures the child's deadline** (`bridge::CHILD_TOOL_CALL_TIMEOUT`,
-  written as `timeout` in Claude Code's MCP config and `tool_timeout_sec` in
-  Codex's), so a long watch fits.
+- **Biorouter configures the child's deadline** (`bridge::child_tool_call_timeout()`,
+  31 minutes unless `BIOROUTER_CODING_AGENT_TOOL_TIMEOUT_SECS` changes it, written as
+  `timeout` in Claude Code's MCP config and `tool_timeout_sec` in Codex's), so a long
+  watch fits.
 - **The handler clamps anyway**, to `bridge::bridged_call_budget()` minus the room
   an answer needs. That is what keeps the guarantee when the configuration is not
   honoured — an older CLI, a renamed field, a user's own `MCP_TOOL_TIMEOUT`.

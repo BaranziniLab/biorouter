@@ -71,13 +71,13 @@ function HiddenParen({ paren }: { paren: '(' | ')' }) {
  *   tree, drawn at zero size (see `HiddenParen`), so a checkbox or row named
  *   by its contents, a screen reader and a copied selection all read the
  *   canonical form.
- * - An agent at an authority point names its owner in full BEFORE "'s agent"
- *   (spec rule 5): its text is "Alice Chen (@alice)'s agent", as
- *   `agentLabel(…, 'authority')` gives, drawn "Alice Chen @alice's agent" with
- *   the same muted handle and zero-size parentheses. That is the one place an
- *   authority point is not drawn as a header, whose agent is "Alice Chen's
- *   agent @alice": the header's order would make the text read "Alice Chen's
- *   agent (@alice)", which is not the authority form.
+ * - An agent at an authority point reads as a header's agent does: its text is
+ *   "Alice Chen's agent (@alice)", as `agentLabel(…, 'authority')` gives, drawn
+ *   "Alice Chen's agent @alice" with the same muted handle and zero-size
+ *   parentheses (UXN-10). It used to name the owner in full before "'s agent",
+ *   "Alice Chen (@alice)'s agent", drawn "Alice Chen @alice's agent": the
+ *   possessive fell on the username, and the consent, the granted view and the
+ *   timeline named one agent three ways.
  */
 export function PersonName({
   person,
@@ -122,9 +122,12 @@ export function PersonName({
     );
   }
 
-  // An authority point's `Name (@user)` is drawn as the header's muted handle,
-  // its parentheses kept in the text at zero size (see the rule above).
-  const drawnParen = context === 'authority' && layout.handlePlacement === 'paren';
+  // An authority point's `Name (@user)` (or `Name's agent (@user)`) is drawn as
+  // the header's muted handle, its parentheses kept in the text at zero size
+  // (see the rule above).
+  const drawnParen =
+    context === 'authority' &&
+    (layout.handlePlacement === 'paren' || layout.handlePlacement === 'secondary');
   const placement = drawnParen ? 'secondary' : layout.handlePlacement;
 
   const handle = (secondary: boolean) => (
@@ -150,7 +153,7 @@ export function PersonName({
     <span className={context === 'header' ? 'text-label' : undefined} data-person-part="name">
       {lead}
       {placement === 'paren' && <> ({handle(false)})</>}
-      {layout.agentOf && !drawnParen && identityCopy.agentSuffix}
+      {layout.agentOf && identityCopy.agentSuffix}
     </span>
   );
 
@@ -167,8 +170,6 @@ export function PersonName({
           <HiddenParen paren="(" />
           {handle(true)}
           <HiddenParen paren=")" />
-          {/* Spec rule 5: the owner's handle comes before "'s agent" here. */}
-          {layout.agentOf && identityCopy.agentSuffix}
         </>
       ) : (
         placement === 'secondary' && <> {handle(true)}</>

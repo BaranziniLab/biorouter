@@ -43,8 +43,12 @@ use std::io::Read;
 use std::path::PathBuf;
 use tracing::warn;
 
+/// `biorouter --version` prints `biorouter 1.91.2`, as `biorouterd` and `biorouter-crew` print
+/// theirs (SF-F8). It printed ` 1.91.2`, with a leading space and no name, while an empty
+/// `display_name` stood in for the name. A desktop reader pulls the number out with a pattern,
+/// so the name costs it nothing.
 #[derive(Parser)]
-#[command(author, version, display_name = "", about, long_about = None)]
+#[command(name = "biorouter", author, version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -298,7 +302,7 @@ pub struct ModelOptions {
         long = "provider",
         value_name = "PROVIDER",
         help = "Specify the LLM provider to use (e.g., 'openai', 'anthropic')",
-        long_help = "Override the BIOROUTER_PROVIDER environment variable for this run. Available providers include openai, anthropic, google, ollama, llamacpp, databricks, and others."
+        long_help = "Override the BIOROUTER_PROVIDER environment variable for this run. Available providers include openai, anthropic, google, ollama, llamacpp, databricks, and others. Without --model, a provider other than the configured one runs its own default model."
     )]
     pub provider: Option<String>,
 
@@ -371,16 +375,37 @@ pub struct RunBehavior {
 ///
 /// `Config::get_param` consults the environment before the file, so
 /// `BIOROUTER_PROVIDER=… biorouter` resolves through this same call.
-fn resolution_for_a_new_row(
+async fn resolution_for_a_new_row(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> (Option<String>, Option<String>) {
     let config = Config::global();
+    let default_provider = config.get_biorouter_provider().ok();
+    let default_model = config.get_biorouter_model().ok();
+    // PROV-F10: the chosen provider's own default, asked for only when no model is named for
+    // it, as `build_session` resolves it.
+    let chosen = provider
+        .map(str::to_owned)
+        .or_else(|| default_provider.clone());
+    let own_default = match chosen.as_deref() {
+        Some(chosen)
+            if crate::session::owned_model(
+                Some(chosen),
+                model.map(str::to_owned),
+                &[(default_provider.as_deref(), default_model.clone())],
+            )
+            .is_none() =>
+        {
+            crate::session::model_for_run(Some(chosen), None, &[]).await
+        }
+        _ => None,
+    };
     resolution_with_global_default(
         provider,
         model,
-        config.get_biorouter_provider().ok(),
-        config.get_biorouter_model().ok(),
+        default_provider,
+        default_model,
+        own_default,
     )
 }
 
@@ -389,16 +414,27 @@ fn resolution_for_a_new_row(
 /// Separated from [`resolution_for_a_new_row`] only so the tests can drive
 /// every combination of "typed now / configured / neither" without a config
 /// file and without racing the process-global `Config`.
+///
+/// `own_default` is the chosen provider's own default model. The configured model belongs to
+/// the configured provider, so it is used only for that provider (PROV-F10); another provider
+/// runs its own default, and one the registry does not know falls back to the configured model,
+/// so the guard never claims "no model" for a run `build_session` would give one.
 fn resolution_with_global_default(
     provider: Option<&str>,
     model: Option<&str>,
     default_provider: Option<String>,
     default_model: Option<String>,
+    own_default: Option<String>,
 ) -> (Option<String>, Option<String>) {
-    (
-        provider.map(str::to_string).or(default_provider),
-        model.map(str::to_string).or(default_model),
+    let provider = provider.map(str::to_string).or(default_provider.clone());
+    let model = crate::session::owned_model(
+        provider.as_deref(),
+        model.map(str::to_string),
+        &[(default_provider.as_deref(), default_model.clone())],
     )
+    .or(own_default)
+    .or(default_model);
+    (provider, model)
 }
 
 /// The refusal text for a run that cannot name a provider or a model, or `None`
@@ -406,8 +442,8 @@ fn resolution_with_global_default(
 ///
 /// The exit is in the caller so that this half — which is all of the logic —
 /// can be unit-tested rather than only observed by killing a process.
-fn refusal_for_a_new_row(provider: Option<&str>, model: Option<&str>) -> Option<String> {
-    let (provider, model) = resolution_for_a_new_row(provider, model);
+async fn refusal_for_a_new_row(provider: Option<&str>, model: Option<&str>) -> Option<String> {
+    let (provider, model) = resolution_for_a_new_row(provider, model).await;
     crate::session::unconfigured_precondition(provider.as_deref(), model.as_deref())
 }
 
@@ -424,11 +460,11 @@ fn refusal_for_a_new_row(provider: Option<&str>, model: Option<&str>) -> Option<
 /// created, so that slot is empty by construction. The paths here that return
 /// an EXISTING id do not call this, because such a row can legitimately carry
 /// the only provider a resumed chat has.
-pub(crate) fn refuse_unconfigured_before_creating_a_row(
+pub(crate) async fn refuse_unconfigured_before_creating_a_row(
     provider: Option<&str>,
     model: Option<&str>,
 ) -> Result<()> {
-    if let Some(text) = refusal_for_a_new_row(provider, model) {
+    if let Some(text) = refusal_for_a_new_row(provider, model).await {
         crate::session::output::render_error(&text);
         std::process::exit(1);
     }
@@ -455,7 +491,7 @@ async fn get_or_create_session_id(
                 Ok(Some(latest.id.clone()))
             } else {
                 eprintln!("No previous chat to resume; starting a new chat.");
-                refuse_unconfigured_before_creating_a_row(provider, model)?;
+                refuse_unconfigured_before_creating_a_row(provider, model).await?;
                 let session = session_manager
                     .create_session(
                         std::env::current_dir()?,
@@ -466,7 +502,7 @@ async fn get_or_create_session_id(
                 Ok(Some(session.id))
             }
         } else {
-            refuse_unconfigured_before_creating_a_row(provider, model)?;
+            refuse_unconfigured_before_creating_a_row(provider, model).await?;
             let session = session_manager
                 .create_session(
                     std::env::current_dir()?,
@@ -499,7 +535,7 @@ async fn get_or_create_session_id(
             );
         }
 
-        refuse_unconfigured_before_creating_a_row(provider, model)?;
+        refuse_unconfigured_before_creating_a_row(provider, model).await?;
         let session = session_manager
             .create_session(std::env::current_dir()?, name.clone(), SessionType::User)
             .await?;
@@ -519,7 +555,7 @@ async fn get_or_create_session_id(
             .ok_or_else(|| anyhow::anyhow!("Could not extract session ID from path: {:?}", path))?;
         Ok(Some(session_id))
     } else {
-        refuse_unconfigured_before_creating_a_row(provider, model)?;
+        refuse_unconfigured_before_creating_a_row(provider, model).await?;
         let session = session_manager
             .create_session(
                 std::env::current_dir()?,
@@ -1511,14 +1547,17 @@ enum Command {
     },
 
     /// Start or resume interactive chat sessions
-    ///
-    /// ⚠ `sessions` is an alias, and it is not cosmetic. `session_watch.rs`'s
-    /// own error message told users to run `biorouter sessions watch <id>`, the
-    /// BR-71 plan wrote `biorouter sessions …` in roughly forty places, and
-    /// `docs/cli/command-reference.md` printed it — while the plural was never a
-    /// registered command, so every one of those instructions ended in
-    /// `unrecognized subcommand 'sessions'`. Registering it makes the
-    /// instructions true rather than making forty documents wrong.
+    //
+    // ⚠ `sessions` is an alias, and it is not cosmetic. `session_watch.rs`'s
+    // own error message told users to run `biorouter sessions watch <id>`, the
+    // BR-71 plan wrote `biorouter sessions …` in roughly forty places, and
+    // `docs/cli/command-reference.md` printed it — while the plural was never a
+    // registered command, so every one of those instructions ended in
+    // `unrecognized subcommand 'sessions'`. Registering it makes the
+    // instructions true rather than making forty documents wrong.
+    //
+    // A `//` comment, not `///`: clap turns a doc comment into the command's long
+    // help, and this note printed on every `biorouter session --help` (AG-F8).
     #[command(
         about = "Start or resume interactive chat sessions",
         visible_aliases = ["s", "sessions"]
@@ -2945,8 +2984,19 @@ fn needs_tool_bridge(command: &Option<Command>) -> bool {
     )
 }
 
-pub async fn cli() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+/// The command line, read and checked.
+pub struct CommandLine(Cli);
+
+/// Read the command line. `--help`, `--version` and a usage mistake are answered here and the
+/// process exits, so call this before anything writes to disk: a version probe is the first
+/// thing an install script runs, and it used to create `config.yaml`, stamp the privacy
+/// master-switch record and open a log directory in a home nobody had set up (SF-F8).
+pub fn read_command_line() -> CommandLine {
+    CommandLine(Cli::parse())
+}
+
+pub async fn cli(command_line: CommandLine) -> anyhow::Result<()> {
+    let CommandLine(cli) = command_line;
 
     if !is_shared_conversation(&cli.command) {
         if let Err(e) = crate::project_tracker::update_project_tracker(None, None) {
@@ -3078,6 +3128,37 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    /// AG-F8: `--help` is for the people who run the command. A doc comment on a command
+    /// becomes its long help unless `long_about` is set, so a maintainer's note there (`⚠`, a
+    /// source file, a plan ID, a repository path) reached every `biorouter session --help`.
+    /// This walks every command's long help, so a note that leaks again anywhere is caught.
+    #[test]
+    fn no_command_help_prints_a_maintainers_note() {
+        fn walk(command: &mut clap::Command, path: &str, leaks: &mut Vec<String>) {
+            let internal =
+                regex::Regex::new(r"⚠|\b[\w-]+\.rs\b|\b(?:BR|SD|DR|QA)-\d|\bdocs/|\bcrates/")
+                    .expect("the marker pattern compiles");
+            let help = command.render_long_help().to_string();
+            if let Some(found) = internal.find(&help) {
+                leaks.push(format!("{path}: {}", found.as_str()));
+            }
+            let names: Vec<String> = command
+                .get_subcommands()
+                .map(|sub| sub.get_name().to_owned())
+                .collect();
+            for name in names {
+                if let Some(sub) = command.find_subcommand_mut(&name) {
+                    walk(sub, &format!("{path} {name}"), leaks);
+                }
+            }
+        }
+        let mut leaks = Vec::new();
+        let mut root = command_tree();
+        root.build();
+        walk(&mut root, "biorouter", &mut leaks);
+        assert!(leaks.is_empty(), "internal notes in --help: {leaks:#?}");
+    }
 
     #[test]
     fn shared_daemon_options_parse_on_session_and_run_without_starting_tool_bridge() {
@@ -3464,7 +3545,7 @@ mod cli_tests {
             .split_once("fn resolution_for_a_new_row(")
             .expect("the guard no longer resolves anything");
         let (resolution, _) = resolution
-            .split_once("\nfn refusal_for_a_new_row(")
+            .split_once("\nasync fn refusal_for_a_new_row(")
             .expect("could not find the end of resolution_for_a_new_row");
         for accessor in ["get_biorouter_provider", "get_biorouter_model"] {
             assert!(
@@ -3483,15 +3564,15 @@ mod cli_tests {
     /// precedence alone would have passed on the broken build too.
     /// `Config::get_param` reads the environment before the file, so this is
     /// deterministic wherever it runs.
-    #[test]
-    fn a_configured_default_satisfies_the_precondition_for_a_new_row() {
+    #[tokio::test]
+    async fn a_configured_default_satisfies_the_precondition_for_a_new_row() {
         let _env = env_lock::lock_env([
             ("BIOROUTER_PROVIDER", Some("claude_code".to_string())),
             ("BIOROUTER_MODEL", Some("claude-opus-5".to_string())),
         ]);
 
         assert_eq!(
-            resolution_for_a_new_row(None, None),
+            resolution_for_a_new_row(None, None).await,
             (
                 Some("claude_code".to_string()),
                 Some("claude-opus-5".to_string())
@@ -3499,21 +3580,21 @@ mod cli_tests {
             "a bare `biorouter` names no provider, so the configured one is the answer"
         );
         assert_eq!(
-            refusal_for_a_new_row(None, None),
+            refusal_for_a_new_row(None, None).await,
             None,
             "a configured install must get past the guard with no flags at all"
         );
     }
 
     /// What the user typed now still wins over what they configured earlier.
-    #[test]
-    fn an_explicit_flag_still_outranks_the_configured_default() {
+    #[tokio::test]
+    async fn an_explicit_flag_still_outranks_the_configured_default() {
         let _env = env_lock::lock_env([
             ("BIOROUTER_PROVIDER", Some("claude_code".to_string())),
             ("BIOROUTER_MODEL", Some("claude-opus-5".to_string())),
         ]);
         assert_eq!(
-            resolution_for_a_new_row(Some("anthropic"), Some("opus")),
+            resolution_for_a_new_row(Some("anthropic"), Some("opus")).await,
             (Some("anthropic".to_string()), Some("opus".to_string()))
         );
     }
@@ -3521,6 +3602,10 @@ mod cli_tests {
     /// The model has the same four slots as the provider, and shipped with the
     /// same gap: `biorouter run --provider claude_code` got past the provider
     /// half and was refused with "No model is configured".
+    ///
+    /// PROV-F10: naming another provider must not cost a model, and must not
+    /// borrow the configured provider's either: it runs its own default. Only a
+    /// provider the registry cannot describe falls back to the configured model.
     #[test]
     fn the_model_slot_falls_back_too() {
         assert_eq!(
@@ -3528,13 +3613,53 @@ mod cli_tests {
                 Some("claude_code"),
                 None,
                 Some("versa_azure".to_string()),
-                Some("claude-opus-5".to_string()),
+                Some("gpt-5.5".to_string()),
+                Some("claude-sonnet-5".to_string()),
             ),
             (
                 Some("claude_code".to_string()),
-                Some("claude-opus-5".to_string())
+                Some("claude-sonnet-5".to_string())
             ),
-            "naming a provider must not cost the configured model"
+            "another provider runs its own default model, not the configured provider's"
+        );
+        assert_eq!(
+            resolution_with_global_default(
+                Some("claude_code"),
+                None,
+                Some("versa_azure".to_string()),
+                Some("gpt-5.5".to_string()),
+                None,
+            ),
+            (Some("claude_code".to_string()), Some("gpt-5.5".to_string())),
+            "a provider with no known default still gets past the guard"
+        );
+        assert_eq!(
+            resolution_with_global_default(
+                Some("versa_azure"),
+                None,
+                Some("versa_azure".to_string()),
+                Some("gpt-5.5".to_string()),
+                Some("gpt-6-sol".to_string()),
+            ),
+            (Some("versa_azure".to_string()), Some("gpt-5.5".to_string())),
+            "naming the configured provider keeps the configured model"
+        );
+    }
+
+    /// PROV-F10, through the real `Config` and registry: `--provider codex` with a
+    /// Versa model configured resolves Codex's own default model.
+    #[tokio::test]
+    async fn naming_another_provider_resolves_its_own_default_model() {
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_PROVIDER", Some("versa_azure".to_string())),
+            ("BIOROUTER_MODEL", Some("gpt-5.5-2026-04-24".to_string())),
+        ]);
+        let (provider, model) = resolution_for_a_new_row(Some("codex"), None).await;
+        assert_eq!(provider.as_deref(), Some("codex"));
+        let model = model.expect("codex has a default model");
+        assert_ne!(
+            model, "gpt-5.5-2026-04-24",
+            "the configured Versa model was sent to Codex"
         );
     }
 
@@ -3544,7 +3669,7 @@ mod cli_tests {
     #[test]
     fn an_install_with_nothing_configured_is_still_refused() {
         assert_eq!(
-            resolution_with_global_default(None, None, None, None),
+            resolution_with_global_default(None, None, None, None, None),
             (None, None)
         );
         let text = crate::session::unconfigured_precondition(None, None)
@@ -3554,7 +3679,13 @@ mod cli_tests {
         // A workflow pin alone is enough — that is the whole reason `run`
         // resolves one before asking.
         assert_eq!(
-            resolution_with_global_default(Some("claude_code"), Some("claude-opus-5"), None, None),
+            resolution_with_global_default(
+                Some("claude_code"),
+                Some("claude-opus-5"),
+                None,
+                None,
+                None
+            ),
             (
                 Some("claude_code".to_string()),
                 Some("claude-opus-5".to_string())

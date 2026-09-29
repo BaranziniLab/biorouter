@@ -128,14 +128,55 @@ export interface AppModelSelection {
  * afterwards", and the mirror image makes every new chat public. The coupling is
  * now the explicit opt-in below, offered in the dialog where the choice is made.
  *
- * A switch with no chat (Home's composer, a chat not yet started, Settings →
- * Models, onboarding) has only one thing it can change — the model new chats
- * start on — so it always does, and its dialog says so.
+ * A switch with no chat (Home's composer, Settings → Models, onboarding) has
+ * only one thing it can change — the model new chats start on — so it always
+ * does, and its dialog says so. A chat not yet sent is a chat: its pick is held
+ * and applied to it when it starts (`settings/models/pendingChatModel.ts`,
+ * W2-PRV-6), so it no longer takes this path.
  */
 export interface ChangeModelOptions {
   /** Also make this the model every new chat starts on, in every window. */
   alsoForNewChats?: boolean;
+  /**
+   * Where a refusal the person cannot retry their way past is shown. Given, the
+   * caller shows the sentence in place (the Switch models dialog, which the
+   * person is looking at) and no toast is raised; omitted, it is a toast.
+   *
+   * Only a refusal whose sentence IS the answer comes here: today a Crew chat's
+   * fixed model (`crew_model_fixed`, W2-PRV-15). Every other failure keeps its
+   * toast, so "switch failed" never goes unreported.
+   */
+  onRefusal?: (sentence: string) => void;
+  /**
+   * No success toast. For a switch the person did not make at that moment: an
+   * unsent chat's held model, applied when its first message starts it
+   * (W2-PRV-6), where the chip already names the model.
+   */
+  quiet?: boolean;
 }
+
+/**
+ * A Crew chat keeps the model its access was granted on, and the daemon refuses
+ * any other with 409 `crew_model_fixed` and this sentence
+ * (`biorouter::crew::refusal::MODEL_FIXED_TEXT`, pinned to it by
+ * `SwitchModelModal.crew.test.tsx`). It is also what Switch models says up front
+ * for such a chat, so the refusal is rarely reached.
+ */
+export const CREW_MODEL_FIXED_TEXT =
+  "This chat's model is fixed by its Crew access. Start a new chat to use another model.";
+export const CREW_MODEL_FIXED_TOAST_TITLE = "This chat's model can't change";
+
+/**
+ * W2-PRV-15. The daemon's `crew_model_fixed` refusal, as its sentence, or `null`.
+ * The generated client throws the parsed `{code, error}` body under
+ * `throwOnError`, as it does for the privacy barrier.
+ */
+export const crewModelFixedRefusalOf = (error: unknown): string | null => {
+  if (!error || typeof error !== 'object') return null;
+  const body = error as { code?: unknown; error?: unknown };
+  if (body.code !== 'crew_model_fixed') return null;
+  return typeof body.error === 'string' && body.error.trim() ? body.error : CREW_MODEL_FIXED_TEXT;
+};
 
 interface ModelAndProviderContextType {
   currentModel: string | null;
@@ -424,6 +465,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         title: 'Llama Server warm-up failed',
         msg: errorMessage(error),
         traceback: errorMessage(error),
+        scope: 'screen',
       });
       dialog.resolve(false);
       setLlamaWarmupDialog(null);
@@ -527,13 +569,15 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           announceAppModelSelection();
         }
 
-        toastSuccess({
-          title: CHANGE_MODEL_TOAST_TITLE,
-          msg: switchedModelMessage(model.alias ?? modelName, model.subtext ?? providerName, {
-            chat: !!sessionId,
-            newChats: setsNewChatDefault,
-          }),
-        });
+        if (!options?.quiet) {
+          toastSuccess({
+            title: CHANGE_MODEL_TOAST_TITLE,
+            msg: switchedModelMessage(model.alias ?? modelName, model.subtext ?? providerName, {
+              chat: !!sessionId,
+              newChats: setsNewChatDefault,
+            }),
+          });
+        }
         // Issue #56 DR-26 at the BIND surface. Binding a model covered by one
         // institution's agreements into a chat holding another institution's
         // connectors is a mismatch the daemon has detected since Task 48 and only
@@ -551,6 +595,19 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         return true;
       } catch (error) {
         console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);
+        // W2-PRV-15. A Crew chat's model is fixed by its grant. The refusal is
+        // a sentence to show, not a failure to retry: it used to arrive as a
+        // 500 titled "<provider>/<model> failed", and the dialog then added
+        // "...then try again", which can never work.
+        const crewFixed = crewModelFixedRefusalOf(error);
+        if (crewFixed) {
+          if (options?.onRefusal) {
+            options.onRefusal(crewFixed);
+          } else {
+            toastError({ title: CREW_MODEL_FIXED_TOAST_TITLE, msg: crewFixed, scope: 'screen' });
+          }
+          return false;
+        }
         // A privacy refusal is not a failure to report — it is a boundary to
         // explain. Rendered as the Gate A card rather than as a stack trace.
         const barrier = privacyBarrierOf(error);
@@ -559,6 +616,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             title: `Can't switch this chat to ${model.alias ?? modelName}`,
             msg: privacyBarrierMessage(barrier),
             traceback: privacyBarrierMessage(barrier),
+            scope: 'screen',
           });
           return false;
         }
@@ -574,13 +632,18 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             title: NO_USER_PROOF_TOAST_TITLE,
             msg: NO_USER_PROOF_TOAST_MSG,
             traceback: errorMessage(error),
+            scope: 'screen',
           });
           return false;
         }
+        // A switch's failure is about the screen it was made on (W2-PRV-16):
+        // it goes when the person leaves, instead of lingering over another
+        // screen's controls.
         toastError({
           title: `${providerName}/${modelName} failed`,
           msg: `${error}`,
           traceback: error instanceof Error ? error.message : String(error),
+          scope: 'screen',
         });
         return false;
       }
@@ -1001,6 +1064,13 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     </>
   );
 };
+
+/**
+ * {@link useModelAndProvider} for a surface that can also render outside the
+ * provider (a settings panel mounted alone in a test or a harness): `undefined`
+ * there instead of a throw.
+ */
+export const useOptionalModelAndProvider = () => useContext(ModelAndProviderContext);
 
 export const useModelAndProvider = () => {
   const context = useContext(ModelAndProviderContext);

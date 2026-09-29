@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../api';
 import ProviderCatalog, { defaultCatalogTab, tabFromHint } from './ProviderCatalog';
 import { getOrderedProviderGroups } from './providerOrdering';
@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   fetchCodingAgentStatus: vi.fn(),
   upsert: vi.fn(),
   checkProvider: vi.fn(),
+  read: vi.fn(),
+  getCustomProvider: vi.fn(),
+  updateCustomProvider: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -21,6 +24,8 @@ vi.mock('../../../api', async (importOriginal) => ({
   ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
   // The configure form's submit handler validates the saved keys through it.
   checkProvider: mocks.checkProvider,
+  getCustomProvider: mocks.getCustomProvider,
+  updateCustomProvider: mocks.updateCustomProvider,
 }));
 // The configure modal asks which provider is bound before offering "Remove".
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -45,7 +50,7 @@ vi.mock('../../onboarding/codingAgentStatus', async (importOriginal) => ({
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({
     upsert: mocks.upsert,
-    read: vi.fn(async () => null),
+    read: mocks.read,
     getProviders: vi.fn(async () => []),
   }),
   usePrivacyTiersEnabled: () => true,
@@ -147,6 +152,7 @@ const openTab = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.read.mockResolvedValue(null);
   __resetDisclosureStoreForTests();
   mocks.fetchCodingAgentStatus.mockResolvedValue({ agents: [] });
   mocks.getPrivacyDisclosure.mockResolvedValue({
@@ -695,5 +701,142 @@ describe('ProviderCatalog — modes', () => {
       />
     );
     await waitFor(() => expect(openTab()).toBe('institutional'));
+  });
+});
+
+/**
+ * W2-PRV-1. Configs saved before the Azure OpenAI default was removed keep
+ * UCSF's gateway as their endpoint, and send a commercial key and every
+ * transcript there under a Public label. The row says so, and offers Configure;
+ * nothing is rewritten.
+ */
+describe('Azure OpenAI saved with the retired default endpoint', () => {
+  const renderCatalog = () =>
+    render(
+      <ProviderCatalog
+        providers={[provider('azure_openai', {}, 'Azure OpenAI')]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+
+  it('says what the endpoint is, with Configure', async () => {
+    mocks.read.mockImplementation(async (key: string) =>
+      key === 'AZURE_OPENAI_ENDPOINT' ? 'https://unified-api.ucsf.edu/general/' : null
+    );
+    renderCatalog();
+    const notice = await screen.findByTestId('azure-retired-endpoint-notice');
+    expect(notice).toHaveTextContent("This endpoint is UCSF's gateway");
+    expect(notice).toHaveTextContent('use Versa API Azure for UCSF');
+    expect(within(notice).getByRole('button', { name: 'Configure' })).toBeInTheDocument();
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it('says nothing for the person’s own Azure resource', async () => {
+    mocks.read.mockImplementation(async (key: string) =>
+      key === 'AZURE_OPENAI_ENDPOINT' ? 'https://my-company.openai.azure.com' : null
+    );
+    renderCatalog();
+    await waitFor(() => expect(mocks.read).toHaveBeenCalledWith('AZURE_OPENAI_ENDPOINT', false));
+    expect(screen.queryByTestId('azure-retired-endpoint-notice')).toBeNull();
+  });
+});
+
+/**
+ * W2-PRV-13. A built-in declarative provider opened as "Configure  Provider"
+ * with "Update Provider" and "Leave blank to keep existing key" whether or not
+ * a key was ever saved.
+ */
+describe('a declarative provider nobody has set up', () => {
+  it('opens as "Set up <name>", asking for the key', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: false,
+        config: {
+          engine: 'openai',
+          display_name: 'DeepSeek',
+          base_url: 'https://api.deepseek.com',
+          models: [{ name: 'deepseek-chat' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    const deepseek = {
+      ...provider('custom_deepseek', { is_configured: false }, 'DeepSeek'),
+      provider_type: 'Declarative',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[deepseek]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_deepseek'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Set up DeepSeek')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Provider$/)).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeInTheDocument();
+    expect(within(dialog).queryByPlaceholderText(/keep existing key/)).toBeNull();
+  });
+});
+
+/**
+ * Review of W2-PRV-2, round 3. The daemon refuses an update that moves a custom
+ * provider's URL while keeping its saved key unless the request proves a person
+ * made it, so the catalog's update carries that proof.
+ */
+describe('updating a custom provider', () => {
+  // The editable form's streaming switch measures itself, which jsdom cannot.
+  beforeAll(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+  });
+  afterAll(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the proof that the user made the change', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: true,
+        config: {
+          engine: 'openai',
+          display_name: 'Lab gateway',
+          base_url: 'https://lab.example/v1',
+          models: [{ name: 'lab-model' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    mocks.updateCustomProvider.mockResolvedValue({ data: 'ok' });
+    const lab = {
+      ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update Provider' }));
+    await waitFor(() => expect(mocks.updateCustomProvider).toHaveBeenCalledTimes(1));
+    expect(mocks.updateCustomProvider.mock.calls[0][0]).toMatchObject({
+      path: { id: 'custom_lab' },
+      headers: { 'X-User-Action': 'test-key' },
+    });
   });
 });

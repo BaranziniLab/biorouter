@@ -58,6 +58,13 @@ const CLIENT_INSERT_COMMANDS: Record<
 
 const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
 
+/**
+ * `/crew` in a chat with no session yet (UXN-8): Enter can only say to send a message first, so the
+ * row says so before it is picked, and stays where people look for Crew.
+ */
+export const CREW_COMMAND_BEFORE_FIRST_MESSAGE =
+  'Connect this chat to a Crew channel after your first message';
+
 // ── Crew in the palette (live QA round 2, Q2-71; round 3, Q3-31) ───────────────────────────────
 // "/cr" listed two rows that both read as "crew": the `/crew` command, which connects the chat, and
 // the Crew extension's reference, described as "Use saved Crew connections and human-approved
@@ -613,7 +620,8 @@ const MentionPopover = forwardRef<
             if (existingNames.has(name) || (name === 'diverge' && !sessionId)) continue;
             commandItems.push({
               name,
-              extra: def.description,
+              extra:
+                name === 'crew' && !sessionId ? CREW_COMMAND_BEFORE_FIRST_MESSAGE : def.description,
               itemType: 'Builtin',
               relativePath: name,
               builtIn: true,

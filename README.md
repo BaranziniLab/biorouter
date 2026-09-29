@@ -67,13 +67,16 @@ Work with papers, genes, diseases, drugs, cohorts, and experimental data in the 
 | **Analyze and visualize** | Write and run R or Python, fit machine-learning models, and create figures and interactive dashboards. |
 | **Work with desktop software** | Biorouter Copilot can inspect and operate applications on the backend computer, with your approval for each request. |
 | **Build and reuse tools** | Create small research apps with Agent Drafter, run parallel chats, and save or schedule recurring tasks as workflows. |
+| **Work with your lab** | In Crew, chat in channels, share files and give AI agents tasks the whole channel can see, in a workspace one lab member hosts on a shared Linux server. |
 
 Copilot keeps observations and approvals separate for each chat. The applications themselves share a desktop, so choose the model before opening sensitive records or research data. See [Copilot setup and limits](docs/extensions/built-in/computer-controller.md).
+
+Crew runs in the desktop app and in the `biorouter crew` commands, not in a `biorouter serve` browser. Each member connects with their own server account over SSH. Crew's Private and Public settings decide which AI models may read the workspace, and the stricter of your connection's and the workspace's setting applies. See the [Crew user manual](docs/crew/README.md).
 
 ## Get started
 
 1. **[Download Biorouter](https://biorouter.ucsf.edu/download)** for macOS, Windows, or Linux.
-2. **Choose a model.** UCSF users can select **Versa API Azure** or **Versa API Bedrock** under Institutional Models. For local inference, choose **Llama Server** and download a model. You can also connect a commercial provider.
+2. **Choose a model.** UCSF users can select **Versa API Azure** or **Versa API Bedrock** on the **Institutional** tab. For local inference, choose **Llama Server** and download a model. You can also connect a commercial provider.
 3. **Start a chat.** Add a paper or dataset, or install an agent from BAAM.
 
 For example, attach a few papers and ask:
@@ -96,6 +99,7 @@ Biorouter uses a shared Rust agent core, an Electron and React desktop app, and 
 - [Documentation](docs/README.md): guides and references by topic.
 - [Architecture](docs/architecture/system-overview.md): how the components fit together.
 - [Knowledge bases and BioOKF](docs/knowledge-base/README.md), [workflows](docs/workflows/README.md), and [Apps SDK](docs/apps-sdk/sdk-reference.md).
+- [Crew user manual](docs/crew/README.md): joining or hosting a lab workspace, channels, files, agent tasks and server setup.
 - [Contributing](CONTRIBUTING.md): build from source, test, and submit changes.
 - [Report an issue](https://github.com/BaranziniLab/biorouter/issues). Report security concerns privately using [SECURITY.md](SECURITY.md).
 

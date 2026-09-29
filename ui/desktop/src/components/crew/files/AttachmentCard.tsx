@@ -18,11 +18,15 @@ import { CopyForSupport, useMenuCopy } from '../timeline/TimelineCopy';
 import { postedLabel, useAttachmentWhich, useRegisterAttachment } from './attachmentIndex';
 import { cachedBlob, forgetBlob, rememberBlob } from './blobMetadataCache';
 import { filesCopy } from './copy';
+import { saveNameFor, visibleFileText } from './fileName';
+import { isFileWindowBusyNote, subscribeFileWindowsClosed } from './fileWindows';
+import { MiddleTruncatedName } from './MiddleTruncatedName';
 import { MoreActionsTrigger } from './GlyphButton';
 import { formatBytes } from './formatBytes';
 import { TransferMenuItems } from './TransferRow';
 import { useCopyAnnouncer } from './useCopyAnnouncer';
 import { useCrewTransfers } from './useCrewTransfers';
+import { failureSentence } from '../../../utils/ipcError';
 import './files.css';
 
 /** `blob.status`: what the workspace knows about one shared file. */
@@ -44,8 +48,15 @@ export const PREVIEWABLE_MEDIA_TYPES: readonly string[] = [
   'image/webp',
 ];
 
-const failureText = (failure: unknown, fallback: string) =>
-  failure instanceof Error && failure.message ? failure.message : fallback;
+/** A failure's own sentence, without Electron's IPC wrapper (FILES-F6), else `fallback`. */
+const failureText = failureSentence;
+
+/**
+ * How long a card waits for a native Save or Open window before it offers Save again. Generous,
+ * because a person may browse folders for a while; it exists for the window that never answers
+ * (on macOS a second sheet on one window is never shown and its promise never settles, FILES-F2).
+ */
+export const SAVE_PATIENCE_MS = 2 * 60 * 1000;
 
 /**
  * A shared file in a message: a 40px row with the file glyph, its name, its size in 1024 units,
@@ -108,6 +119,7 @@ export function AttachmentCard({
   const [preview, setPreview] = useState('');
   const previewUrl = useRef('');
   const generation = useRef(0);
+  const attempts = useRef(0);
   const { transfers, refresh } = useCrewTransfers(connectionId);
   const { copy, region } = useCopyAnnouncer();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -151,18 +163,38 @@ export function AttachmentCard({
     return records[records.length - 1] ?? null;
   }, [transfers, blobId, connectionId]);
 
+  // "Finish the open … first." describes a window: once no file window is open, it is not news
+  // any more (FILES2-N5).
+  const busyNote = isFileWindowBusyNote(error);
+  useEffect(() => {
+    if (!busyNote) return;
+    return subscribeFileWindowsClosed(() =>
+      setError((current) => (isFileWindowBusyNote(current) ? '' : current))
+    );
+  }, [busyNote]);
+
   const act = useCallback(
     async (operation: () => Promise<unknown>, fallback: string) => {
       const current = generation.current;
+      const attempt = ++attempts.current;
+      // Only the newest action of this mount may change the card: an older one that settles
+      // after its patience ran out, and after another began, says nothing.
+      const mine = () => current === generation.current && attempt === attempts.current;
       setWorking(true);
       setError('');
+      // A native window that never answers (FILES-F2) must not disable Save for good. The main
+      // process refuses a second window while one is open, so offering Save again is safe.
+      const patience = window.setTimeout(() => {
+        if (mine()) setWorking(false);
+      }, SAVE_PATIENCE_MS);
       try {
         await operation();
         await refresh();
       } catch (failure) {
-        if (current === generation.current) setError(failureText(failure, fallback));
+        if (mine()) setError(failureText(failure, fallback));
       } finally {
-        if (current === generation.current) setWorking(false);
+        window.clearTimeout(patience);
+        if (mine()) setWorking(false);
       }
     },
     [refresh]
@@ -177,7 +209,8 @@ export function AttachmentCard({
           channel_id: metadata.channel_id,
           direction: 'download',
           blob_id: blobId,
-          suggestedName: metadata.name,
+          // Another member chose this name: its hidden characters never reach the Save dialog.
+          suggestedName: saveNameFor(metadata.name),
         }),
       filesCopy.downloadFailed
     );
@@ -205,12 +238,14 @@ export function AttachmentCard({
     }
   };
 
-  const name = metadata?.name || fallbackName || filesCopy.attachment;
+  // Another member chose the name: shown, and named in every control, with its hidden
+  // characters made visible (RENDERER-1). The index compares names as they are shown.
+  const name = visibleFileText(metadata?.name || fallbackName) || filesCopy.attachment;
   useRegisterAttachment(
     blobId,
     metadata && !sending
       ? {
-          name: metadata.name,
+          name: visibleFileText(metadata.name),
           sha256: metadata.sha256,
           complete: metadata.complete,
           postedAt,
@@ -239,7 +274,7 @@ export function AttachmentCard({
         <div className="crew-attachment-row">
           <File className="crew-attachment-icon" aria-hidden />
           <span className="crew-attachment-label">
-            <span className="crew-attachment-name">{name}</span>
+            <MiddleTruncatedName name={name} className="crew-attachment-name" />
             {meta ? <span className="crew-attachment-meta">{meta}</span> : null}
           </span>
         </div>
@@ -256,7 +291,7 @@ export function AttachmentCard({
         <span className="crew-attachment-label">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="crew-attachment-name">{name}</span>
+              <MiddleTruncatedName name={name} className="crew-attachment-name" />
             </TooltipTrigger>
             <TooltipContent>{name}</TooltipContent>
           </Tooltip>

@@ -5,7 +5,8 @@ import {
   sessionGrantState,
   type CrewSessionGrant,
 } from '../api/grants';
-import { isRecord, optionalText } from '../api/parse';
+import type * as Api from '../../../api/types.gen';
+import { optionalText, wireOf } from '../api/parse';
 import { CrewHttpError, crewHttp } from '../crewApi';
 import { sanitizeDisplayText } from '../identity';
 import {
@@ -57,6 +58,11 @@ export interface ChatCrewAccess {
    * view last showed it, else "a channel in {workspace}", else "a Crew channel".
    */
   destination: string;
+  /**
+   * The grant's workspace as this computer can name it (the name recorded with the grant, else the
+   * saved connection's), or `null`. Optional for callers that build this by hand.
+   */
+  workspace?: string | null;
   /**
    * Why an `offline` chat's connection is down: `network` when the daemon's last answer (or the
    * computer itself) says the network failed — the daemon dials such a drop again by itself once
@@ -207,9 +213,11 @@ interface SavedConnection {
 }
 
 function savedConnections(result: unknown): SavedConnection[] {
-  const rows = isRecord(result) && Array.isArray(result.connections) ? result.connections : [];
-  return rows.flatMap((row): SavedConnection[] => {
-    if (!isRecord(row)) return [];
+  const listed = wireOf<Api.CrewConnectionList>(result)?.connections;
+  const rows: unknown[] = Array.isArray(listed) ? listed : [];
+  return rows.flatMap((wire): SavedConnection[] => {
+    const row = wireOf<Api.CrewConnectionView>(wire);
+    if (!row) return [];
     const id = optionalText(row.id);
     if (!id) return [];
     const connection: SavedConnection = { id, name: sanitizeDisplayText(row.name) };
@@ -620,6 +628,11 @@ export function useChatCrewAccess(
     () => chatDestination(grant, current?.connections ?? []),
     [grant, current]
   );
+  const workspace = grant
+    ? sanitizeDisplayText(grant.labels?.workspace) ||
+      current?.connections.find((item) => item.id === grant.connection_id)?.name ||
+      null
+    : null;
   const online = useOnline();
   const offlineCause =
     state === 'offline' && grant
@@ -634,6 +647,7 @@ export function useChatCrewAccess(
     state,
     grant,
     destination,
+    workspace,
     offlineCause,
     expiredBecause: state === 'expired' ? expiredBecause : null,
     unconfirmed,

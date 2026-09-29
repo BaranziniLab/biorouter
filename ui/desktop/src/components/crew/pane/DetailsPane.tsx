@@ -118,9 +118,10 @@ function PaneMode({ animate, children }: { animate: boolean; children: ReactNode
  * "← Back to #name", and the details mode's title becomes "Details" so the channel is not named
  * twice in one row (T-46).
  *
- * Leaving Ask my agent — closing the pane or switching its mode — dismisses an error that mode
- * reported (`pane:agent`), so it does not fall back to the connection bar for a drawer that is
- * gone (T-48). One reported after the pane left is news, and still reaches the bar.
+ * Leaving Ask my agent or Chat access — closing the pane or switching its mode — dismisses an error
+ * that mode reported (`pane:agent`, `pane:chat-access`), so it does not fall back to the connection
+ * bar for a drawer that is gone (T-48, SF-F5). One reported after the pane left is news, and still
+ * reaches the bar.
  */
 export function DetailsPane({ tabs = {}, agent, chatAccess, className }: DetailsPaneProps) {
   const { crew, channel } = usePanePresentation();
@@ -157,14 +158,16 @@ export function DetailsPane({ tabs = {}, agent, chatAccess, className }: Details
     }
   }, [intent]);
 
-  // T-48: leaving Ask my agent takes its error with it.
+  // T-48: leaving Ask my agent takes its error with it; so does leaving Chat access (SF-F5), whose
+  // refusal otherwise fell back to the connection bar over the channel.
   const { error, dismissError } = crew;
   const previousMode = useRef<PaneModeName | null>(null);
   useEffect(() => {
     const was = previousMode.current;
     const now = intent?.mode ?? null;
     previousMode.current = now;
-    if (was === 'agent' && now !== 'agent' && error?.source === 'pane:agent') dismissError();
+    if (was !== null && was !== 'details' && was !== now && error?.source === `pane:${was}`)
+      dismissError();
   }, [intent?.mode, error, dismissError]);
 
   useEffect(() => {

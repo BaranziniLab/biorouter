@@ -94,10 +94,6 @@ export async function resolveBaseUrl(): Promise<string> {
   return ((await window.electron.getBiorouterdHostPort()) || '').replace(/\/+$/, '');
 }
 
-export function appUrl(id: string, baseUrl = configuredBaseUrl()): string {
-  return `${baseUrl}/apps/${encodeURIComponent(id)}/`;
-}
-
 export async function secretHeader(): Promise<Record<string, string>> {
   try {
     const key = await window.electron.getSecretKey();

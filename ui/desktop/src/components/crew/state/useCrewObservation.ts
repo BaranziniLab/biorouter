@@ -26,10 +26,11 @@ import {
   identityCopy,
   isMachineIdShaped,
   sanitizeDisplayText,
+  teamName,
 } from '../identity';
 import { HISTORY_PAGE_SIZE } from '../timeline/groupMessages';
 import { crewObservationCopy } from './copy';
-import type { CrewDraftState } from './crewSend';
+import { postDestination, type CrewDraftState } from './crewSend';
 import { isMembershipEnded } from './connectFailure';
 import {
   forgetConnectionDrafts,
@@ -38,6 +39,7 @@ import {
   stashDraft,
   stashedDraft,
   takeStashedDraft,
+  type StashedNote,
 } from './draftStash';
 import {
   DRAFT_CLEARING_OBSERVATION_CODES,
@@ -64,7 +66,9 @@ import {
 import type {
   CrewFrameLabels,
   CrewJoinStatus,
+  ErrorDetails,
   ErrorSource,
+  LostDraft,
   ObservedPrivacy,
   PaneIntent,
   SurfaceResetReason,
@@ -137,7 +141,10 @@ export function isLocalHistoryFailure(failure: unknown): boolean {
  * The team to show for a verified view: the selected channel's team (a selection across teams is
  * never undone, Q2-10); else the team already shown while the view still has it; else, when
  * nothing is chosen yet, the team of the channel the person last chose (Q2-21) when the view
- * offers it open; else the view's first team.
+ * offers it open; else the view's first team by name.
+ *
+ * By name, not by the snapshot's order (setup F6): the snapshot lists teams by their random IDs,
+ * so "the first team" was whichever ID sorted lowest.
  */
 export function teamForView(
   snapshot: Pick<Snapshot, 'teams' | 'channels'>,
@@ -153,7 +160,12 @@ export function teamForView(
     ? snapshot.channels.find((item) => item.id === remembered && !item.archived)
     : undefined;
   if (last && hasTeam(last.team_id)) return last.team_id;
-  return snapshot.teams[0]?.id ?? '';
+  const [first] = [...snapshot.teams].sort(
+    (a, b) =>
+      teamName(a).localeCompare(teamName(b), undefined, { sensitivity: 'base' }) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  );
+  return first?.id ?? '';
 }
 
 function sameList(a: readonly string[] | null, b: readonly string[] | null): boolean {
@@ -235,6 +247,33 @@ function allInChannel(messages: readonly CrewMessage[], channelId: string): bool
   return messages.every((message) => message.channel_id === channelId);
 }
 
+/**
+ * The live tail's opening page follows on from the window: it holds a message the window holds,
+ * so nothing lies between them. The observer sends that page oldest first, so its first frame
+ * alone decides.
+ */
+export function joinsWindow(
+  window: readonly CrewMessage[],
+  opening: readonly CrewMessage[]
+): boolean {
+  if (window.length === 0 || opening.length === 0) return false;
+  const held = new Set(window.map((message) => message.id));
+  return opening.some((message) => held.has(message.id));
+}
+
+/** The most lost drafts offered at once; the oldest goes first. */
+export const LOST_DRAFT_MAX = 5;
+
+/**
+ * The most messages the channel's window holds (QA M6): older pages are added above the ones on
+ * screen until it holds this many, and then the far end (the newest) gives way, and the window no
+ * longer reaches the live tail.
+ */
+export const MESSAGE_WINDOW_MAX = 3 * HISTORY_PAGE_SIZE;
+
+/** A page of the window being loaded: before its first message, or after its last. */
+export type HistoryDirection = 'older' | 'newer';
+
 /** How an observation ended that may have been a dropped connection. */
 export interface ObservationEnd {
   /** The end's code (the broker's, when it named one). */
@@ -275,8 +314,13 @@ export interface CrewObservationContext {
   loadConnections(signal?: AbortSignal, current?: number): Promise<unknown>;
   setConnections: Dispatch<SetStateAction<CrewConnection[]>>;
   draft: CrewDraftState;
-  reportError(message: string, source?: ErrorSource, code?: string): void;
+  reportError(message: string, source?: ErrorSource, code?: string, details?: ErrorDetails): void;
   dismissError(): void;
+  /**
+   * The composer's note about the draft of `destination` (`postDestination`), when it shows one:
+   * put aside with the draft, so it comes back with it (QA M5). Absent: none is kept.
+   */
+  composerNoteFor?(destination: string): StashedNote | null;
   closeSignIn(): void;
   setJoinStatus: Dispatch<SetStateAction<CrewJoinStatus | null>>;
   resetSurfaces(reason: SurfaceResetReason): void;
@@ -298,6 +342,14 @@ export interface CrewObservationContext {
    * reported at once, as before.
    */
   onConnectionLost?(connectionId: string, end: ObservationEnd): void;
+  /**
+   * Whether this window's own save of `connectionId` (`updateConnection`) is on its way. The
+   * daemon disconnects, saves and connects again inside that one request (`CrewManager::update`),
+   * so while it runs the saved record reads `disconnected` and the observer ends with
+   * `policy_changed` or `observation_refused`: the save's doing, not a dropped connection. Such an
+   * end is left to the save (`saveSettled`) rather than decided (T3-UI-15). Absent: never saving.
+   */
+  connectionSaving?(connectionId: string): boolean;
   /**
    * Open the details pane the person left open on this connection, when Crew comes back to its
    * remembered view (Q4-04). Absent: the pane stays closed.
@@ -321,6 +373,17 @@ export interface CrewObservation {
   backlogComplete: boolean | undefined;
   /** The full-page size of what is shown: the live tail's, or the older page's. */
   pageSize: number;
+  /**
+   * The window reaches the channel's first message: an older page came back short. Undefined
+   * until one was asked for; the list's own length says it for the live tail alone.
+   */
+  reachesStart: boolean | undefined;
+  /** A page being added to the window, if one is on its way. */
+  historyLoading: HistoryDirection | null;
+  /** Add the page before the window's first message above it (QA M6). */
+  loadOlder(): void;
+  /** Add the page after the window's last message below it, while it does not reach the tail. */
+  loadNewer(): void;
   /** Authors the selected channel's message pages named. */
   people: CrewMessagePeople | null;
   /** The connected broker's capabilities, from the last `state` frame that carried any. */
@@ -330,6 +393,17 @@ export interface CrewObservation {
   refreshErrorCode: string | null;
   /** A verified view ended for a recoverable reason and is being observed again by itself. */
   reverifying: boolean;
+  /**
+   * The selected connection's view ended while this window's save of it is on its way, and the
+   * end is left to that save (T3-UI-15): the saved record's `disconnected` meanwhile is the save's
+   * doing, not news.
+   */
+  awaitingSave: boolean;
+  /**
+   * How many verified `state` frames this observer has shown: a count that only grows. A post in
+   * doubt waits for later ones before it says it could not be confirmed (QA R-4).
+   */
+  verifiedViews: number;
   lastVerified: VerifiedView | null;
   setSnapshot: Dispatch<SetStateAction<Snapshot | null>>;
   refresh(): Promise<void>;
@@ -340,8 +414,8 @@ export interface CrewObservation {
   observationFailure(message: string, code?: string): void;
   /**
    * Keep the composer's body as the selected channel's unsent draft (`draftStash`), written
-   * under its last verified view, before a selection clears it. Attachments, references and
-   * context channels are never kept.
+   * under its last verified view, before a selection clears it, with the message attempt that goes
+   * with it (RENDERER-4). Attachments, references and context channels are never kept.
    */
   stashDraft(): void;
   /**
@@ -357,6 +431,21 @@ export interface CrewObservation {
    * dimmed rather than a skeleton.
    */
   restoring: string | null;
+  /** Unsent words of channels the person lost, offered for copying until dismissed (QA M10). */
+  lostDrafts: readonly LostDraft[];
+  dismissLostDraft(id: number): void;
+  /**
+   * Leave the end of `connectionId`'s observation to this window's save of it, which is on its way
+   * (T3-UI-15): nothing is decided or reported for it, and `saveSettled` observes it again. The
+   * loss handler calls this when its decision lands while such a save runs.
+   */
+  leaveEndToSave(connectionId: string): void;
+  /**
+   * This window's saves of `connectionId` are all back. An end left to them is observed again now,
+   * unless something observed again or stopped observing since (the save's own `refresh()` does);
+   * that new observation decides it by the saved record as it now stands.
+   */
+  saveSettled(connectionId: string): void;
 }
 
 /**
@@ -389,6 +478,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     draft,
     reportError,
     dismissError,
+    composerNoteFor,
     closeSignIn,
     setJoinStatus,
     resetSurfaces,
@@ -396,6 +486,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     keepLastVerifiedView,
     joinStatus = null,
     onConnectionLost,
+    connectionSaving,
     reopenPane,
   } = context;
   const {
@@ -407,7 +498,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setReferences,
     contextChannels,
     setContextChannels,
-    pendingMessage,
+    attemptFor,
+    restoreBody,
     selectedSources,
     clearDraft,
   } = draft;
@@ -426,20 +518,98 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     livePageSizeRef.current = livePageSize;
   }, [livePageSize]);
   const [historyPageSize, setHistoryPageSize] = useState<number | null>(null);
+  // The window of the channel's messages (QA M6): how many the live tail may keep (older pages
+  // raise it), the channel's first message once an older page found it, and the page on its way.
+  const windowLimit = useRef(HISTORY_PAGE_SIZE);
+  /**
+   * The channel's first message, found when an older page came back short, or undefined while no
+   * page has found it. The window reaches the channel's start only while that message is still its
+   * first: a claim about the list rather than a flag beside it, so a live arrival or a newer page
+   * that pushes it out of a full window reopens "Older messages" by itself (MSG2-N1). As a flag, it
+   * stayed true after 370 arrivals had pushed the first 100 messages out, and the channel intro
+   * stood above message 101 with nothing to load the rest.
+   */
+  const [channelStart, setChannelStart] = useState<string | undefined>(undefined);
+  const reachesStart = channelStart === undefined ? undefined : messages[0]?.id === channelStart;
+  /**
+   * A newer page reached the live tail and the observer is starting again to follow it
+   * (MSG2-N2): its opening page is merged into the window rather than put in place of it, so the
+   * reader stays where they were and the messages they had loaded stay loaded.
+   */
+  const rejoiningTail = useRef(false);
+  const [historyLoading, setHistoryLoading] = useState<HistoryDirection | null>(null);
+  const [pageRequest, setPageRequest] = useState<{
+    id: number;
+    direction: HistoryDirection;
+  } | null>(null);
+  const messagesNow = useRef<CrewMessage[]>([]);
+  /**
+   * The last page request added to the window: a request is answered once. Request IDs come from
+   * `pageRequestIds`, which never goes back, because `answeredPage` does not either: while IDs were
+   * counted from the request before (and so from 1 again after `resetWindow` set it to null), the
+   * first Load older after a channel switch, or after a newer page reached the live tail, had an
+   * ID already answered and was dropped with nothing on screen, and "Jump to first unread" waited
+   * for it forever.
+   */
+  const answeredPage = useRef(0);
+  const pageRequestIds = useRef(0);
+  const resetWindow = useCallback(() => {
+    windowLimit.current = HISTORY_PAGE_SIZE;
+    rejoiningTail.current = false;
+    setChannelStart(undefined);
+    setHistoryLoading(null);
+    setPageRequest(null);
+  }, []);
   const [people, setPeople] = useState<CrewMessagePeople | null>(null);
   const [capabilities, setCapabilities] = useState<readonly string[] | null>(null);
   const [refreshError, setRefreshError] = useState('');
   const [refreshErrorCode, setRefreshErrorCode] = useState<string | null>(null);
   const [reverifying, setReverifying] = useState(false);
+  const [verifiedViews, setVerifiedViews] = useState(0);
   const [lastVerified, setLastVerified] = useState<VerifiedView | null>(null);
   // Q4-04: the channel whose remembered view is on screen until its fresh first page arrives.
   const [restoring, setRestoring] = useState<string | null>(null);
+  // QA M10: the words of channels the person lost, held only here until they dismiss the note.
+  const [lostDrafts, setLostDrafts] = useState<LostDraft[]>([]);
+  const lostDraftSequence = useRef(0);
+  const offerLostDraft = useCallback((connection: string, channel: string | null, text: string) => {
+    if (!text.trim()) return;
+    lostDraftSequence.current += 1;
+    const lost: LostDraft = {
+      id: lostDraftSequence.current,
+      connectionId: connection,
+      channel,
+      body: text,
+    };
+    // The same words for the same channel are offered once, whether they were in the composer
+    // or kept aside for it (a draft put back is both until its channel's first view).
+    setLostDrafts((list) =>
+      list.some(
+        (item) => item.connectionId === connection && item.channel === channel && item.body === text
+      )
+        ? list
+        : [...list, lost].slice(-LOST_DRAFT_MAX)
+    );
+  }, []);
+  const dismissLostDraft = useCallback(
+    (id: number) => setLostDrafts((list) => list.filter((item) => item.id !== id)),
+    []
+  );
+  /** A privacy or access change on `connection`: its lost channels' words go too, unoffered. */
+  const forgetLostDrafts = useCallback(
+    (connection: string) =>
+      setLostDrafts((list) => list.filter((item) => item.connectionId !== connection)),
+    []
+  );
   const observer = useRef<AbortController | null>(null);
   const [observationRevision, setObservationRevision] = useState(0);
   const historyPage = useRef<string | null>(null);
   useEffect(() => {
     historyPage.current = historyBefore;
   }, [historyBefore]);
+  useEffect(() => {
+    messagesNow.current = messages;
+  }, [messages]);
 
   // What async callbacks read: whether the composer holds anything, the saved connections, the
   // error on show, and the last verified snapshot (for names in the plain sentences only).
@@ -466,6 +636,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   useEffect(() => {
     onConnectionLostRef.current = onConnectionLost;
   }, [onConnectionLost]);
+  const connectionSavingRef = useRef(connectionSaving);
+  useEffect(() => {
+    connectionSavingRef.current = connectionSaving;
+  }, [connectionSaving]);
   /** This app session knew the connection's computer: a verified view, or a `joined` answer. */
   const verifiedHere = useCallback(
     (id: string) => connectionVerifiedThisSession(id) || joinStatusRef.current === 'joined',
@@ -504,6 +678,27 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   useEffect(() => {
     reopenPaneRef.current = reopenPane;
   }, [reopenPane]);
+  const composerNoteForRef = useRef(composerNoteFor);
+  useEffect(() => {
+    composerNoteForRef.current = composerNoteFor;
+  }, [composerNoteFor]);
+  /** The composer's note about the draft of `channel` on `connection`, to keep beside it. */
+  const noteFor = useCallback(
+    (connection: string, channel: string) =>
+      composerNoteForRef.current?.(postDestination(connection, channel)) ?? null,
+    []
+  );
+  /** Show a kept draft's note again as it comes back into the composer, in its own channel. */
+  const tellNote = useCallback(
+    (connection: string, channel: string, note: StashedNote | undefined) => {
+      if (!note) return;
+      reportError(note.message, 'composer', note.code, {
+        destination: postDestination(connection, channel),
+        transport: note.transport,
+      });
+    },
+    [reportError]
+  );
 
   /**
    * SECURITY-SENSITIVE (human review). Put `channel`'s kept draft back into the composer, which the
@@ -511,7 +706,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
    * only when that view offers the channel, and only when nothing the draft was written under
    * moved in it (`draftScopeChanged` against the kept scope). The body only. The kept entry stays
    * until the channel's first frame takes it, so leaving again before then loses nothing; that
-   * frame checks the scope once more (`restoredDraft`).
+   * frame checks the scope once more (`restoredDraft`). The attempt kept with it comes back with
+   * it, so sending it again goes under the key it was first sent with (RENDERER-4).
    */
   const putDraftBack = useCallback(
     (connection: string, channel: string): boolean => {
@@ -525,12 +721,13 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         draftScopeChanged(kept.scope, frame, channel, [])
       )
         return false;
-      setBody(kept.body);
+      restoreBody(connection, channel, kept.body, kept.attempt);
+      tellNote(connection, channel, kept.note);
       draftHasContent.current = true;
       restoredDraft.current = { connectionId: connection, channelId: channel, scope: kept.scope };
       return true;
     },
-    [setBody]
+    [restoreBody, tellNote]
   );
   const restoreDraft = useCallback(
     (channel: string): boolean => {
@@ -543,10 +740,38 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   );
 
   const verifiedScope = useRef<DraftScope | null>(null);
+  /**
+   * SECURITY-SENSITIVE (human review). The scope a draft of `channel` on `connection` was written
+   * under: the verified view on screen while it was written, when that view is this connection's
+   * and offers the channel, else the scope recorded from the last frame (which `stashDraft` takes
+   * only when it is this very channel's). `verifiedScope` is recorded for the channel observed when
+   * a frame arrives, so a draft written in a channel selected since, before that channel's own first
+   * frame, had no scope of its own and was dropped when the person moved on: a post sent in that
+   * second and then refused lost its words (MSG2-N3). The view on screen is what the words were
+   * written under, and the draft still comes back only when nothing in it moved.
+   */
+  const scopeFor = useCallback((connection: string, channel: string): DraftScope | null => {
+    const frame = currentScopeFrame.current;
+    if (
+      frame &&
+      channel &&
+      frame.connection_id === connection &&
+      frame.snapshot.channels.some((item) => item.id === channel)
+    )
+      return draftScope(frame, channel, []);
+    return verifiedScope.current;
+  }, []);
   const stashCurrentDraft = useCallback(() => {
     const current = selection.current;
-    stashDraft(current.connectionId, current.channelId, current.body, verifiedScope.current);
-  }, []);
+    stashDraft(
+      current.connectionId,
+      current.channelId,
+      current.body,
+      scopeFor(current.connectionId, current.channelId),
+      attemptFor(current.connectionId, current.channelId),
+      noteFor(current.connectionId, current.channelId)
+    );
+  }, [attemptFor, noteFor, scopeFor]);
   /**
    * SECURITY-SENSITIVE (human review). Every clearing of the protected view clears the view kept
    * across unmounts too (Q4-04), except a refresh's (and the moment a loss is being decided, which
@@ -571,10 +796,11 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       setHistoryBefore(null);
       setHistoryPageSize(null);
       historyPage.current = null;
+      resetWindow();
       setLastVerified(null);
       resetSurfaces(reason);
     },
-    [resetSurfaces]
+    [resetSurfaces, resetWindow]
   );
 
   const clearProtectedView = useCallback(() => clearProtectedState(), [clearProtectedState]);
@@ -624,6 +850,46 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     [cancelRecovery, loadConnections]
   );
 
+  /**
+   * An end left to this window's save of the connection (T3-UI-15), with the generation it left,
+   * until the save is back. Nothing observes again meanwhile: a re-observation inside the save
+   * reads the record `disconnected` and meets no transport, which is how a loss was decided there
+   * and Workspace settings closed while its own Make private reconnected.
+   */
+  const endLeftToSave = useRef<{ connectionId: string; generation: number } | null>(null);
+  /**
+   * The connection whose view ended into this window's save of it, for what is drawn meanwhile:
+   * the saved record reads `disconnected` inside the save, and that is the save's doing, so the
+   * status says "Updating…" rather than "Offline" beside a Connect for a reconnect the save is
+   * already making. Cleared once the save is back, a verified view arrives, a failure is shown, or
+   * the person stops observing or picks another connection.
+   */
+  const [awaitingSave, setAwaitingSave] = useState<string | null>(null);
+  const leaveEndToSave = useCallback(
+    (id: string) => {
+      cancelRecovery();
+      recoveringFrom.current = null;
+      endLeftToSave.current = { connectionId: id, generation: generation.current };
+      setAwaitingSave(id);
+    },
+    [cancelRecovery, generation]
+  );
+  const saveSettled = useCallback(
+    (id: string) => {
+      setAwaitingSave((current) => (current === id ? null : current));
+      const left = endLeftToSave.current;
+      if (!left || left.connectionId !== id) return;
+      endLeftToSave.current = null;
+      // A refresh, a selection or a Disconnect since moved the generation: that decides instead.
+      if (left.generation !== generation.current || selection.current.connectionId !== id) return;
+      // Queued, not started: the save's caller usually refreshes as soon as it is back, and a
+      // refresh cancels this (`cancelRecovery`), so the connection is observed once. A caller that
+      // does not (a rename) gets it here, after the list is read again.
+      scheduleReobservation(0);
+    },
+    [generation, scheduleReobservation]
+  );
+
   const observationFailure = useCallback(
     (message: string, code?: string) => {
       cancelRecovery();
@@ -633,16 +899,19 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         deferRecoverableToReverification: true,
       });
       if (outcome.clearDraft) {
+        // Access or privacy changed: no draft kept for this workspace may come back either, nor
+        // the words of a lost channel wait to be copied (QA M10 offers them only for a channel lost).
         clearDraft();
-        // Access or privacy changed: no draft kept for this workspace may come back either.
         forgetConnectionDrafts(selection.current.connectionId);
+        forgetLostDrafts(selection.current.connectionId);
       }
       recoveringFrom.current = null;
+      setAwaitingSave(null);
       setReverifying(false);
       setRefreshErrorCode(code ?? null);
       setRefreshError(outcome.text);
     },
-    [cancelRecovery, clearProtectedState, clearDraft]
+    [cancelRecovery, clearProtectedState, clearDraft, forgetLostDrafts]
   );
   const refresh = useCallback(async () => {
     cancelRecovery();
@@ -656,6 +925,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setRuns([]);
     setMessages([]);
     setMessagesLoaded(false);
+    resetWindow();
     setLabels(null);
     setPeople(null);
     setBacklog(undefined);
@@ -671,7 +941,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       if (!controller.signal.aborted && generation.current === current)
         observationFailure(crewObservationCopy.connectionsRefreshFailed, failureCode(failure));
     }
-  }, [cancelRecovery, generation, loadConnections, observationFailure, resetSurfaces]);
+  }, [cancelRecovery, generation, loadConnections, observationFailure, resetSurfaces, resetWindow]);
   const restartObservation = useCallback(
     () => setObservationRevision((revision) => revision + 1),
     []
@@ -679,6 +949,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
   const stopObserving = useCallback(() => {
     cancelRecovery();
     recoveringFrom.current = null;
+    endLeftToSave.current = null;
+    setAwaitingSave(null);
     observer.current?.abort();
     generation.current += 1;
     clearProtectedState();
@@ -704,10 +976,19 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     previousConnection.current = connectionId;
     // The state still holds the old connection's channel and body in this commit.
     if (previous && previous !== connectionId)
-      stashDraft(previous, channelId, body, verifiedScope.current);
+      stashDraft(
+        previous,
+        channelId,
+        body,
+        scopeFor(previous, channelId),
+        attemptFor(previous, channelId),
+        noteFor(previous, channelId)
+      );
     generation.current += 1;
     cancelRecovery();
     recoveringFrom.current = null;
+    endLeftToSave.current = null;
+    setAwaitingSave(null);
     recovery.current.budget = { attempts: [], all: [] };
     lastFrame.current = null;
     setSnapshot(null);
@@ -718,6 +999,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setBacklog(undefined);
     setCapabilities(null);
     setLivePageSize(HISTORY_PAGE_SIZE);
+    resetWindow();
     setChannelId('');
     setTeamId('');
     setBody('');
@@ -787,10 +1069,18 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       previous.connectionId === connectionId &&
       previous.channelId !== channelId
     )
-      stashDraft(connectionId, previous.channelId, body, verifiedScope.current);
+      stashDraft(
+        connectionId,
+        previous.channelId,
+        body,
+        scopeFor(connectionId, previous.channelId),
+        attemptFor(connectionId, previous.channelId),
+        noteFor(connectionId, previous.channelId)
+      );
     historyPage.current = null;
     setHistoryBefore(null);
     setHistoryPageSize(null);
+    resetWindow();
     setMessagesLoaded(false);
     setPeople(null);
     setBacklog(undefined);
@@ -854,13 +1144,18 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
      */
     const loseChannel = (named: string | null) => {
       const hadContent = draftHasContent.current;
+      // The words the person wrote for it are theirs: offered once, for copying, in a note of
+      // their own (QA M10). Never put back into a composer.
+      const words = selection.current.body.trim()
+        ? selection.current.body
+        : (stashedDraft(connectionId, channelId)?.body ?? '');
+      offerLostDraft(connectionId, named, words);
       // No draft kept for a channel the person can no longer see may ever come back into it,
       // and no view kept across leaving Crew may draw it again (Q4-04).
       forgetStashedDraft(connectionId, channelId);
       forgetRememberedView(connectionId);
       restoredDraft.current = null;
       historyPage.current = null;
-      pendingMessage.current = null;
       setMessages([]);
       setMessagesLoaded(false);
       setBody('');
@@ -868,6 +1163,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       setReferences([]);
       setContextChannels([]);
       setHistoryBefore(null);
+      resetWindow();
       setPeople(null);
       setBacklog(undefined);
       resetSurfaces('channel-revoked');
@@ -875,8 +1171,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       const lostText = named
         ? crewObservationCopy.channelAccessLostNamed(named)
         : crewObservationCopy.channelAccessLost;
+      // The words are in the note above the message box; anything else the draft held (files,
+      // server paths) is gone, as the bar says when there were no words to offer.
       reportError(
-        hadContent ? `${lostText} ${crewObservationCopy.draftDiscarded}` : lostText,
+        hadContent && !words.trim()
+          ? `${lostText} ${crewObservationCopy.draftDiscarded}`
+          : lostText,
         'observer',
         CHANNEL_LOST_ERROR_CODE
       );
@@ -903,6 +1203,25 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
       const believedConnected =
         verifiedHere(connectionId) &&
         (status === 'connected' || recoveringFrom.current === connectionId);
+      // SECURITY-SENSITIVE (human review). This window's own save of the connection is on its way
+      // (T3-UI-15): the daemon drops the bridge, saves and connects again inside it, so an end a
+      // reconnect explains is the save's, and the save's own list read and refresh settle it
+      // (`saveSettled`). Nothing verified stays on screen and nothing is decided: no loss, no
+      // error, no dialog closed. An answer about access or the person (`mayBeConnectionLoss`
+      // false) is not the save's, and is shown below.
+      if (
+        !ownFailure &&
+        verifiedHere(connectionId) &&
+        mayBeConnectionLoss(code) &&
+        connectionSavingRef.current?.(connectionId) === true
+      ) {
+        leaveEndToSave(connectionId);
+        clearProtectedState('refresh');
+        setRefreshError('');
+        setRefreshErrorCode(null);
+        setReverifying(true);
+        return;
+      }
       if (
         lost &&
         believedConnected &&
@@ -988,6 +1307,7 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                 const hadContent = draftHasContent.current;
                 clearDraft();
                 forgetConnectionDrafts(connectionId);
+                forgetLostDrafts(connectionId);
                 if (hadContent) reportError(crewObservationCopy.scopeChanged, 'observer');
               }
               // The view drawn from before leaving Crew (Q4-04) may stay only while nothing it
@@ -1024,7 +1344,14 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               // channel, only into an empty composer, and only when nothing it was written under
               // moved since (`draftScopeChanged` against the kept scope). The body only.
               const readable = new Set(frame.snapshot.channels.map((item) => item.id));
-              forgetConnectionDrafts(connectionId, (id) => readable.has(id));
+              // A channel that went while its words were kept aside: offer them, as a lost
+              // channel's are (QA M10), named from the view that still had it.
+              for (const lost of forgetConnectionDrafts(connectionId, (id) => readable.has(id)))
+                offerLostDraft(
+                  connectionId,
+                  namesFor(connectionId, lost.channelId).channel,
+                  lost.body
+                );
               const kept =
                 channelId && !revoked ? takeStashedDraft(connectionId, channelId) : undefined;
               if (
@@ -1033,7 +1360,8 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                 kept.scope.connectionId === frame.connection_id &&
                 !draftScopeChanged(kept.scope, frame, channelId, [])
               ) {
-                setBody(kept.body);
+                restoreBody(connectionId, channelId, kept.body, kept.attempt);
+                tellNote(connectionId, channelId, kept.note);
                 draftHasContent.current = true;
               }
               // Named from the last view that still had it: this one no longer does.
@@ -1041,7 +1369,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               lastFrame.current = { connectionId, snapshot: frame.snapshot };
               recovery.current.budget.attempts = [];
               recoveringFrom.current = null;
+              // A verified view answers an end left to a save (T3-UI-15): nothing is left to it.
+              if (endLeftToSave.current?.connectionId === connectionId)
+                endLeftToSave.current = null;
+              setAwaitingSave((current) => (current === connectionId ? null : current));
               noteConnectionVerified(connectionId);
+              setVerifiedViews((count) => count + 1);
               setReverifying(false);
               setObservedPrivacy({
                 connectionId,
@@ -1089,17 +1422,35 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
                   frame.reset ? pageSize : Math.min(previous, pageSize)
                 );
               if (historyPage.current !== null) return;
+              // A reset opens the live tail afresh: the window is its page again. Unless a newer
+              // page has just brought the window back to the tail (MSG2-N2): the opening page then
+              // joins the window, when it follows on from it. One that shares no message with the
+              // window left a gap between them, and replaces it as any reset does.
+              const rejoin =
+                frame.reset &&
+                rejoiningTail.current &&
+                joinsWindow(messagesNow.current, frame.messages);
+              if (frame.reset) rejoiningTail.current = false;
+              if (frame.reset && !rejoin) {
+                windowLimit.current = HISTORY_PAGE_SIZE;
+                setChannelStart(undefined);
+              }
+              const limit = Math.max(HISTORY_PAGE_SIZE, windowLimit.current);
               setMessages((previous) => {
-                const next = frame.reset ? [] : [...previous];
+                const next = frame.reset && !rejoin ? [] : [...previous];
                 for (const message of frame.messages) {
                   const index = next.findIndex((old) => old.id === message.id);
                   if (index < 0) next.push(message);
                   else next[index] = message;
                 }
-                return next.slice(-HISTORY_PAGE_SIZE);
+                // Older pages added above the tail stay while the window has room (QA M6). What
+                // gives way at the top takes the channel's start with it (`reachesStart`).
+                return next.length > limit ? next.slice(-limit) : next;
               });
               const framePeople = frame.people;
-              setPeople((previous) => mergePeople(frame.reset ? null : previous, framePeople));
+              setPeople((previous) =>
+                mergePeople(frame.reset && !rejoin ? null : previous, framePeople)
+              );
               // `remaining` counts down the page this frame came from; the page a reset opens is
               // the channel's backlog, so its last frame (`0`) is the end of the opening.
               const remaining = frame.remaining;
@@ -1153,13 +1504,18 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     observationFailure,
     cancelRecovery,
     scheduleReobservation,
+    leaveEndToSave,
     clearProtectedState,
     namesFor,
     verifiedHere,
     clearDraft,
+    restoreBody,
+    tellNote,
+    offerLostDraft,
+    forgetLostDrafts,
+    resetWindow,
     generation,
     selectedSources,
-    pendingMessage,
     reportError,
     resetSurfaces,
     onVerifiedFrame,
@@ -1172,18 +1528,25 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     setContextChannels,
   ]);
 
-  // An older page. It asks for the page size the observer settled on, halves it while the broker
-  // answers `response_too_large`, and records the size it was loaded with, so a full page of that
-  // size still offers the page before it. A failure that says nothing about access returns to the
-  // live tail with the error in the connection bar; any other clears the view.
+  // A page of the window (QA M6): the one before its first message, added above it, or the one
+  // after its last, added below it. It asks for the page size the observer settled on, and halves it
+  // while the broker answers `response_too_large`. The window keeps at most `MESSAGE_WINDOW_MAX`:
+  // past that the far end gives way, and a window whose newest end gave way no longer reaches the
+  // live tail (`historyBefore` names the first message after it, and live frames wait). A newer
+  // page that comes back short has reached the tail: the window goes back to it. A failure that
+  // says nothing about access leaves the window as it is, with the error in the connection bar;
+  // any other clears the view.
   useEffect(() => {
-    if (historyBefore === null || !connectionId || !channelId) return;
+    if (pageRequest === null || !connectionId || !channelId) return;
+    if (pageRequest.id <= answeredPage.current) return;
+    const { direction, id: requestId } = pageRequest;
+    const list = messagesNow.current;
+    const anchor = direction === 'older' ? list[0]?.sequence : list[list.length - 1]?.sequence;
+    if (!anchor) return;
     const controller = new AbortController();
     const current = generation.current;
     const fresh = () => !controller.signal.aborted && current === generation.current;
-    setMessages([]);
-    setMessagesLoaded(false);
-    setHistoryPageSize(null);
+    setHistoryLoading(direction);
     void (async () => {
       let limit = Math.max(1, Math.min(livePageSizeRef.current, HISTORY_PAGE_SIZE));
       for (;;) {
@@ -1195,16 +1558,65 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
           }>(
             connectionId,
             'messages.history',
-            { channel_id: channelId, limit, latest: true, before: historyBefore },
+            direction === 'older'
+              ? { channel_id: channelId, limit, latest: true, before: anchor }
+              : { channel_id: channelId, limit, after: anchor },
             false,
             controller.signal
           );
           if (!fresh()) return;
+          answeredPage.current = requestId;
           const pagePeople = validatedPeople(page.people);
-          setHistoryPageSize(limit);
-          setMessages(page.messages);
+          const onScreen = messagesNow.current;
+          const known = new Set(onScreen.map((message) => message.id));
+          const added = page.messages.filter((message) => !known.has(message.id));
           setPeople((previous) => mergePeople(previous, pagePeople));
-          setMessagesLoaded(true);
+          setHistoryLoading(null);
+          if (direction === 'older') {
+            const merged = [...added, ...onScreen];
+            if (page.messages.length < limit) setChannelStart(merged[0]?.id);
+            if (merged.length <= MESSAGE_WINDOW_MAX) {
+              // The live tail now grows under the pages added above it, up to the bound.
+              windowLimit.current = MESSAGE_WINDOW_MAX;
+              setMessages(merged);
+              return;
+            }
+            // Full: the newest end gives way, and the window no longer reaches the live tail.
+            const kept = merged.slice(0, MESSAGE_WINDOW_MAX);
+            const boundary = merged[MESSAGE_WINDOW_MAX].sequence;
+            historyPage.current = boundary;
+            setHistoryBefore(boundary);
+            setHistoryPageSize(limit);
+            setMessages(kept);
+            return;
+          }
+          // Newer: a short page has reached the live tail. It is added below like any other, so
+          // reading goes on at its first message, and the window follows the tail from here: the
+          // observer starts again and its opening page joins the window (`rejoiningTail`). Putting
+          // the newest page in place of the window instead skipped whatever lay between the two
+          // (MSG2-N2: the reader at message 600 landed on 670).
+          if (page.messages.length < limit) {
+            const merged = [...onScreen, ...added];
+            historyPage.current = null;
+            setHistoryBefore(null);
+            setHistoryPageSize(null);
+            windowLimit.current = MESSAGE_WINDOW_MAX;
+            setMessages(merged.slice(-MESSAGE_WINDOW_MAX));
+            rejoiningTail.current = true;
+            setPageRequest(null);
+            setObservationRevision((revision) => revision + 1);
+            return;
+          }
+          // A full page: its last message is where the next one starts, so it marks the window's
+          // end and is fetched again with it. What gives way at the top takes the channel's start
+          // with it (`reachesStart`).
+          const last = page.messages[page.messages.length - 1];
+          const next = added.filter((message) => message.id !== last.id);
+          const boundary = last.sequence;
+          const merged = [...onScreen, ...next];
+          historyPage.current = boundary;
+          setHistoryBefore(boundary);
+          setMessages(merged.slice(-MESSAGE_WINDOW_MAX));
           return;
         } catch (failure: unknown) {
           if (!fresh()) return;
@@ -1212,10 +1624,10 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
             limit = Math.max(1, Math.floor(limit / 2));
             continue;
           }
+          answeredPage.current = requestId;
+          setHistoryLoading(null);
           if (isLocalHistoryFailure(failure)) {
             const detail = failure instanceof Error ? failure.message : '';
-            historyPage.current = null;
-            setHistoryBefore(null);
             reportError(
               detail
                 ? `${crewObservationCopy.historyFailed} ${detail}`
@@ -1223,8 +1635,6 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
               'observer',
               failureCode(failure)
             );
-            // The live observer ignored the tail while the page was asked for: start it over.
-            setObservationRevision((revision) => revision + 1);
             return;
           }
           observer.current?.abort();
@@ -1234,16 +1644,27 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
         }
       }
     })();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      setHistoryLoading(null);
+    };
   }, [
-    historyBefore,
+    pageRequest,
     connectionId,
     channelId,
-    observationRevision,
     observationFailure,
     reportError,
+    resetWindow,
     generation,
   ]);
+  const loadOlder = useCallback(() => {
+    pageRequestIds.current += 1;
+    setPageRequest({ id: pageRequestIds.current, direction: 'older' });
+  }, []);
+  const loadNewer = useCallback(() => {
+    pageRequestIds.current += 1;
+    setPageRequest({ id: pageRequestIds.current, direction: 'newer' });
+  }, []);
 
   // Presentation only: remember the last verified view so a re-verification can keep drawing it,
   // and so can coming back to Crew (`viewMemory`, Q4-04). A list is taken for the channel's only
@@ -1267,7 +1688,12 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     };
     const liveTail =
       Boolean(channelId) && messagesLoaded && ours && historyBefore === null && backlog !== false;
-    rememberVerifiedView(view, liveTail ? { messages, people } : null);
+    // The live tail's last page only: older pages added above it (QA M6) are not kept across
+    // leaving Crew, so what is kept stays as bounded as it was.
+    rememberVerifiedView(
+      view,
+      liveTail ? { messages: messages.slice(-HISTORY_PAGE_SIZE), people } : null
+    );
     setLastVerified((previous) => {
       const current = (messagesLoaded || !channelId) && ours;
       const same = previous?.connectionId === connectionId && previous.channelId === channelId;
@@ -1322,11 +1748,17 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     labels,
     backlogComplete: backlog,
     pageSize: historyBefore !== null ? (historyPageSize ?? HISTORY_PAGE_SIZE) : livePageSize,
+    reachesStart,
+    historyLoading,
+    loadOlder,
+    loadNewer,
     people,
     capabilities,
     refreshError,
     refreshErrorCode,
     reverifying,
+    awaitingSave: awaitingSave !== null && awaitingSave === connectionId,
+    verifiedViews,
     lastVerified,
     setSnapshot,
     refresh,
@@ -1337,5 +1769,9 @@ export function useCrewObservation(context: CrewObservationContext): CrewObserva
     stashDraft: stashCurrentDraft,
     restoreDraft,
     restoring,
+    lostDrafts,
+    dismissLostDraft,
+    leaveEndToSave,
+    saveSettled,
   };
 }

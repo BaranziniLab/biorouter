@@ -49,7 +49,7 @@ export async function promptNativeSecret(
     });
     if (!helper)
       throw new Error(
-        'The Linux desktop needs Zenity for its secure password dialog. DEB and RPM packages declare this dependency. AppImage users must make their distribution’s zenity package available before starting or attaching to a shared daemon. BioRouter does not install it automatically.'
+        'The Linux desktop needs Zenity for its secure password dialog. DEB and RPM packages declare this dependency. AppImage users must make their distribution’s zenity package available before starting or attaching to a shared daemon. Biorouter does not install it automatically.'
       );
     program = helper;
     args = ['--password', `--title=${title}`, `--text=${message}`];

@@ -15,6 +15,7 @@ import {
   loginLabel,
   rememberJoinerNames,
   serverLabel,
+  teamSections,
   waitingToJoin,
 } from './sidebarView';
 
@@ -38,6 +39,25 @@ describe('waitingToJoin', () => {
       ['finn', false],
     ]);
     expect(rows[0]).toMatchObject({ approved: true, serverName: 'Bob Lee' });
+  });
+
+  /** SC2-N4: the broker's UID order read "… mallory, paula, kenji, maya" with nothing to go by. */
+  it('lists joiners by the @username their row leads with, case aside', () => {
+    const rows = waitingToJoin(
+      snapshot(
+        ['crew_bob', 'crew_mallory', 'crew_paula', 'Crew_Kenji', 'crew_maya', 'crew_carol'].map(
+          (username) => ({ username })
+        )
+      )
+    );
+    expect(rows.map((row) => row.username)).toEqual([
+      'crew_bob',
+      'crew_carol',
+      'Crew_Kenji',
+      'crew_mallory',
+      'crew_maya',
+      'crew_paula',
+    ]);
   });
 
   it('keeps only joins it can name, and nothing without the host’s list', () => {
@@ -231,5 +251,54 @@ describe('knownUsername', () => {
     expect(knownUsername(null, login, 'other')).toBe('crew_frank');
     expect(knownUsername(null, { ssh_target: 'lab-server' }, 'crew_frank')).toBe('crew_frank');
     expect(knownUsername(null, { ssh_target: 'lab-server' }, null)).toBeNull();
+  });
+});
+
+// M17, F6: the broker keys teams and channels by random IDs and sends them in that order, which
+// drew #general fourth and slotted a new channel wherever its ID fell.
+describe('teamSections order', () => {
+  const channel = (id: string, team_id: string, name: string, archived = false) => ({
+    id,
+    team_id,
+    name,
+    created_by: 'p',
+    owner_id: 'p',
+    members: ['p'],
+    archived,
+    classification: 'restricted' as const,
+  });
+  const team = (id: string, name: string, general: string) => ({
+    id,
+    name,
+    created_by: 'p',
+    members: ['p'],
+    general_channel_id: general,
+  });
+
+  it('draws teams by name and each team’s #general first, then its channels by name', () => {
+    const sections = teamSections({
+      teams: [team('t-2', 'chen lab', 'c-630e'), team('t-1', 'Bench Crew', 'c-daa0')],
+      channels: [
+        channel('c-0e6b', 't-2', 'msg-qa'),
+        channel('c-4c78', 't-2', 'random'),
+        channel('c-5ee2', 't-2', 'Methods'),
+        channel('c-619a', 't-1', 'scratch', true),
+        channel('c-630e', 't-2', 'general'),
+        channel('c-aba9', 't-2', 'plate-history'),
+        channel('c-daa0', 't-1', 'general'),
+        channel('c-0001', 't-1', 'zeta', true),
+      ],
+      unread: {},
+    });
+    expect(sections.map((section) => section.name)).toEqual(['Bench Crew', 'chen lab']);
+    expect(sections[1].channels.map((row) => row.name)).toEqual([
+      'general',
+      'Methods',
+      'msg-qa',
+      'plate-history',
+      'random',
+    ]);
+    expect(sections[0].channels.map((row) => row.name)).toEqual(['general']);
+    expect(sections[0].archived.map((row) => row.name)).toEqual(['scratch', 'zeta']);
   });
 });

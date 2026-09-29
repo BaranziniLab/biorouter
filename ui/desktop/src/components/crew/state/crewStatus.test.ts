@@ -8,6 +8,8 @@ import {
   deriveCrewScreen,
   runStatusPresentation,
   sentenceCaseStatus,
+  transferPauseReason,
+  SERVER_STORAGE_PAUSE_REASON,
   transferStatePresentation,
   type ConnectionStatusInput,
   type CrewScreenInput,
@@ -102,6 +104,25 @@ describe('deriveConnectionStatus, row by row', () => {
     );
     expect(status({ connection: disconnected, observationError: true })).toBe('offline');
     expect(status({ observationError: true })).toBe('updates-unavailable');
+  });
+
+  it('reads "Updating…", never "Offline", while the view’s end is left to this window’s own save (T3-UI-15)', () => {
+    // The daemon drops the bridge and connects again inside the save: its record says
+    // disconnected meanwhile, and that is the save's doing.
+    expect(status({ awaitingSave: true, reverifying: true, connection: disconnected })).toBe(
+      'updating'
+    );
+    expect(status({ awaitingSave: true, reverifying: true })).toBe('updating');
+    // Once the save is back the record decides, as ever.
+    expect(status({ reverifying: true, connection: disconnected })).toBe('offline');
+    // A failure shown, a trust failure and a verified view are what they always were.
+    expect(status({ awaitingSave: true, connection: disconnected, observationError: true })).toBe(
+      'offline'
+    );
+    expect(status({ awaitingSave: true, lastConnectFailure: failure('host_key_changed') })).toBe(
+      'cant-verify'
+    );
+    expect(status({ awaitingSave: true, verified: true })).toBe('connected');
   });
 
   it('reads "Sign-in needed" after a connect that failed with crew_ssh_auth_required', () => {
@@ -299,6 +320,19 @@ describe('deriveCrewScreen, row by row', () => {
     expect(screen({})).toBe('checking');
   });
 
+  it('is checking, never offline and its Connect, while the view’s end is left to this window’s own save (T3-UI-15)', () => {
+    expect(screen({ awaitingSave: true, connection: disconnected })).toBe('checking');
+    expect(screen({ connection: disconnected })).toBe('offline');
+    // A failure shown, a trust failure and a verified view are what they always were.
+    expect(screen({ awaitingSave: true, connection: disconnected, observationError: true })).toBe(
+      'offline'
+    );
+    expect(screen({ awaitingSave: true, lastConnectFailure: failure('host_key_unknown') })).toBe(
+      'trust'
+    );
+    expect(screen({ awaitingSave: true, view: workspace, channelId: 'channel-1' })).toBe('channel');
+  });
+
   it('is no-team for a verified workspace with no teams', () => {
     expect(screen({ view: { teams: [], channels: [] } })).toBe('no-team');
   });
@@ -385,8 +419,21 @@ describe('transfer state words', () => {
     [transfer('downloading', 'download'), 'downloading', 'Downloading 42%', true],
     [transfer('publishing'), 'finishing', 'Finishing…', true],
     [transfer('pause_requested'), 'pausing', 'Pausing…', true],
+    // The daemon's real pause: `needs_file_selection` WITH its recovery sentence (FILES-F4). This
+    // row used `error: null`, a shape the daemon writes only for a receipt reloaded after a
+    // restart, which is why the test passed while a pause read "Failed".
+    [
+      transfer(
+        'needs_file_selection',
+        'upload',
+        'Transfer paused. Reselect the original local file or destination to resume.'
+      ),
+      'paused',
+      'Paused',
+      false,
+    ],
     [transfer('needs_file_selection'), 'paused', 'Paused', false],
-    [transfer('needs_file_selection', 'upload', 'SSH bridge failed'), 'failed', 'Failed', false],
+    [transfer('needs_file_selection', 'upload', 'SSH bridge failed'), 'paused', 'Paused', false],
     [transfer('completed'), 'ready', 'Ready', false],
     [transfer('completed', 'download'), 'saved', 'Saved', false],
     [transfer('failed'), 'failed', 'Failed', false],
@@ -394,6 +441,76 @@ describe('transfer state words', () => {
     [transfer('queued_for_scan'), 'unknown', 'Queued for scan', false],
   ])('%o reads %s', (input, key, word, active) => {
     expect(transferStatePresentation(input)).toMatchObject({ key, word, active });
+  });
+
+  /**
+   * T3-BE-14, RES2-N3: a transfer the workspace server could not save is paused, to resume once its
+   * host has freed space, and its reason is never the workspace's sentence, which tells a host to
+   * ask the host.
+   */
+  it('reads a transfer the workspace server could not save as Paused, marked so', () => {
+    const paused = transferStatePresentation({
+      ...transfer('needs_file_selection', 'upload', 'Ask the host to free space on the server.'),
+      pause_reason: 'server_storage',
+    });
+    expect(paused).toMatchObject({
+      key: 'paused',
+      word: 'Paused',
+      active: false,
+      reason: SERVER_STORAGE_PAUSE_REASON,
+      serverStorage: true,
+    });
+  });
+
+  it.each([
+    [
+      'Transfer paused. Reselect the original local file or destination to resume.',
+      'You paused it',
+    ],
+    [
+      'Authenticate and reconnect the saved connection in Crew, then reselect the original local file or destination and resume.',
+      'The connection dropped',
+    ],
+    [
+      'Unlock the Crew credential vault for this daemon session, then reselect the original local file or destination and resume.',
+      'The credential vault is locked',
+    ],
+    [
+      'Two transfers are active; reselect and resume when one finishes',
+      'Two other transfers were running',
+    ],
+    [
+      'The Crew connection or privacy policy changed. Review the connection and inspect any remote effects before starting a new approved transfer.',
+      'The connection’s privacy changed',
+    ],
+    [
+      'Transfer stopped. Reselect the original local file or destination to resume. Inspect any unconfirmed publication before retrying.',
+      'It stopped',
+    ],
+    ['A reason this renderer has not seen', 'A reason this renderer has not seen'],
+  ])('a pause the daemon explains as %j reads "Paused", because: %j', (error, reason) => {
+    expect(
+      transferStatePresentation({
+        state: 'needs_file_selection',
+        direction: 'upload',
+        offset: 42,
+        size: 100,
+        error,
+      })
+    ).toEqual({ key: 'paused', word: 'Paused', active: false, percent: 42, reason });
+  });
+
+  it('gives a paused transfer with no stored reason no reason line', () => {
+    expect(
+      transferStatePresentation({
+        state: 'needs_file_selection',
+        direction: 'download',
+        offset: 0,
+        size: 10,
+        error: null,
+      })
+    ).toEqual({ key: 'paused', word: 'Paused', active: false, percent: 0 });
+    expect(transferPauseReason('   ')).toBeUndefined();
   });
 
   it('bounds the percentage and survives an empty file', () => {

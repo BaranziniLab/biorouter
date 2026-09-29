@@ -122,7 +122,7 @@ export type PersonLayout =
  * |---|---|---|
  * | `header` | **Bob Lee** `@bob`; **@bob** when the names are equal | **Bob Lee's agent** `@bob`; **Your agent** `@bob` |
  * | `inline` | Bob Lee (@bob); @bob when equal | Bob Lee's agent; Your agent |
- * | `authority` | always Bob Lee (@bob); @bob when equal | Bob Lee (@bob)'s agent, even for the viewer; @bob's agent when equal |
+ * | `authority` | always Bob Lee (@bob); @bob when equal | Bob Lee's agent (@bob), even for the viewer; @bob's agent when equal |
  * | `chip` | Bob Lee, `@bob` in a tooltip; @bob when equal | Bob Lee's agent |
  * | `joiner` | `@bob` · Bob Lee (name on the server account) | — |
  *
@@ -175,9 +175,11 @@ export function personLayout(
   const shape = { ...common, agentOf: agent, youSuffix };
   switch (context) {
     case 'authority':
-      return equal
-        ? { ...shape, lead: 'handle', handlePlacement: 'none' }
-        : { ...shape, lead: 'name', handlePlacement: 'paren' };
+      // An agent reads as the header's does, "Bob Lee's agent (@bob)" (UXN-10): the consent, the
+      // granted view and the timeline named one agent three ways, the possessive once falling on
+      // the username ("Bob Lee @bob's agent" as drawn).
+      if (equal) return { ...shape, lead: 'handle', handlePlacement: 'none' };
+      return { ...shape, lead: 'name', handlePlacement: agent ? 'secondary' : 'paren' };
     case 'header':
       return equal
         ? { ...shape, lead: 'handle', handlePlacement: 'none' }

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -8,11 +8,15 @@ import {
   general,
   installDaemon,
   installObserver,
+  makeSnapshot,
   message,
   methods,
+  oldNotes,
   renderCrew,
+  team,
 } from '../channel/crewTestHarness';
 import { CrewHttpError, type ObservedRun } from '../crewApi';
+import { identityCopy } from '../identity/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { AgentTaskPane } from './AgentTaskPane';
 import { agentCopy, paneCopy, unknownOutcomeCopy } from './copy';
@@ -169,6 +173,60 @@ describe('AgentTaskPane: the unknown-outcome gate', () => {
     await user.click(restart);
     await waitFor(() => expect(starts).toBe(2));
     expect(requestIds[1]).not.toBe(requestIds[0]);
+    await waitFor(() => expect(screen.queryByText(unknownOutcomeCopy.title)).toBeNull());
+  });
+
+  it('names the earlier destination by its shown names, from any channel, never by an ID (RENDERER-5)', async () => {
+    const user = userEvent.setup();
+    // A legacy team name that is only a UUID, and a channel name carrying a bidi override: the
+    // gate printed both as stored, and an ID where an object was missing.
+    const legacyTeam = { ...team, name: '3f2c9e0a-1b2c-4d3e-8f40-5a6b7c8d9e0f' };
+    const spoofed = { ...general, name: 'gen\u202Elare' };
+    installObserver({
+      snapshot: makeSnapshot({ teams: [legacyTeam], channels: [spoofed, methods, oldNotes] }),
+    });
+    let starts = 0;
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === `/connections/${connection.id}/runs` && method === 'POST') {
+        starts += 1;
+        if (starts === 1)
+          throw new CrewHttpError('outcome unknown', 502, 'crew_start_outcome_unknown');
+        return {};
+      }
+      return {};
+    });
+    renderCrew(Layout);
+    await waitFor(() => expect(currentCrew().status).toBe('connected'));
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(general.id));
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    const task = await screen.findByLabelText(agentCopy.task);
+    fireEvent.change(task, { target: { value: 'uncertain' } });
+    await chooseModel(user, 'fixture-model');
+    await user.click(startButton());
+    const shown = unknownOutcomeCopy.body(
+      unknownOutcomeCopy.destination('#genlare', identityCopy.untitledTeam)
+    );
+    expect(await screen.findByText(shown)).toBeInTheDocument();
+
+    // The lock holds in every channel, and names where the request went, not where the person is.
+    await user.click(screen.getByRole('button', { name: paneCopy.closeAgent }));
+    act(() => currentCrew().selectChannel(methods.id));
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(methods.id));
+    await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
+    expect(await screen.findByText(shown)).toBeInTheDocument();
+    const gate = screen.getByText(unknownOutcomeCopy.title).closest('section') as HTMLElement;
+    expect(gate.textContent).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-/i);
+    expect(gate.textContent).not.toContain('\u202E');
+    expect(gate.textContent).not.toContain(connection.name);
+
+    // Start over, which ends the lock for the tests after this one.
+    const again = screen.getByLabelText(agentCopy.task);
+    fireEvent.change(again, { target: { value: 'checked' } });
+    await chooseModel(user, 'fixture-model');
+    await user.click(screen.getByRole('checkbox', { name: unknownOutcomeCopy.checked }));
+    await user.click(screen.getByRole('button', { name: unknownOutcomeCopy.restart }));
+    await waitFor(() => expect(starts).toBe(2));
     await waitFor(() => expect(screen.queryByText(unknownOutcomeCopy.title)).toBeNull());
   });
 

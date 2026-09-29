@@ -5,9 +5,11 @@ import type { CrewMessage } from '../crewApi';
 import type { CrewTransfer } from '../crewTransfers';
 import type { CrewController } from '../state/types';
 import { AttachmentIndexProvider } from './attachmentIndex';
+import { SERVER_STORAGE_PAUSE_REASON } from '../state/crewStatus';
 import { filesCopy } from './copy';
-import { crewTestController, CrewTestProvider } from './crewTestController';
+import { crewTestController, CrewTestProvider, testSnapshot } from './crewTestController';
 import { FilesTab } from './FilesTab';
+import { TRANSFER_WATCH_POLL_MS } from './useCrewTransfers';
 
 const mocks = vi.hoisted(() => ({
   crewRequest: vi.fn(),
@@ -122,20 +124,114 @@ describe('FilesTab', () => {
     expect(within(section).queryByRole('progressbar')).toBeNull();
   });
 
-  it('shows a failure in the daemon’s words and offers Resume… from the row menu', async () => {
+  it('reads a stopped transfer as Paused with its reason, and offers Resume… from the row menu (FILES-F4)', async () => {
     mocks.listTransfers.mockResolvedValue([
-      transfer({ state: 'needs_file_selection', error: 'The source file changed.' }),
+      transfer({
+        state: 'needs_file_selection',
+        error: 'Transfer paused. Reselect the original local file or destination to resume.',
+      }),
     ]);
     mocks.resumeTransfer.mockResolvedValue(null);
     renderTab();
+    expect(await screen.findByText('You paused it')).toBeInTheDocument();
+    expect(screen.getByText(/^Paused/)).toBeInTheDocument();
+    expect(screen.queryByText('Failed')).toBeNull();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    // Removing an unfinished upload's record says what stays on the server (FILES-F7).
+    expect(
+      await screen.findByRole('menuitem', { name: /Remove from list/ })
+    ).toHaveAccessibleDescription(
+      'Removes the record on this computer. The unfinished part stays on the server for up to a day and counts toward the workspace’s file space until then.'
+    );
+    await user.click(await screen.findByRole('menuitem', { name: /Resume…/ }));
+    expect(mocks.resumeTransfer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'transfer-1' })
+    );
+  });
+
+  it('shows a stop it does not know in the daemon’s words, still as Paused', async () => {
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'needs_file_selection', error: 'The source file changed.' }),
+    ]);
+    renderTab();
     expect(await screen.findByText('The source file changed.')).toBeInTheDocument();
-    expect(screen.getByText('Failed')).toBeInTheDocument();
+    expect(screen.getByText(/^Paused/)).toBeInTheDocument();
+  });
+
+  /**
+   * RES2-N3: a disk-full upload read Failed with only Remove from list, and the workspace's own
+   * sentence told the host to ask the host. The daemon now pauses it (T3-BE-14).
+   */
+  it('offers Resume… for a transfer the workspace server could not save, in the host’s words', async () => {
+    const full = transfer({
+      state: 'needs_file_selection',
+      pause_reason: 'server_storage',
+      error:
+        'The workspace server is out of disk space, so this change was not saved. Reading still works. Ask the host to free space on the server and restart Crew.',
+    });
+    mocks.listTransfers.mockResolvedValue([full]);
+    mocks.resumeTransfer.mockResolvedValue(null);
+    renderTab();
+    const reason = await screen.findByText(
+      `${SERVER_STORAGE_PAUSE_REASON}. ${filesCopy.serverStorageHost}`
+    );
+    expect(reason).not.toHaveTextContent(/ask the host/i);
+    expect(screen.getByText(/^Paused/)).toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
     await user.click(await screen.findByRole('menuitem', { name: /Resume…/ }));
     expect(mocks.resumeTransfer).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'transfer-1' })
     );
+  });
+
+  it('tells a member whom a transfer the server could not save waits for', async () => {
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'needs_file_selection', pause_reason: 'server_storage', error: 'full' }),
+    ]);
+    const host = { id: 'person-host', uid: 1000, username: 'iris', nickname: 'Iris Wong' };
+    const me = { id: 'person-1', uid: 1001, username: 'alice', nickname: 'Alice' };
+    renderTab({
+      snapshot: { ...testSnapshot, actor: me, principals: [host, me] } as typeof testSnapshot,
+    });
+    expect(
+      await screen.findByText(
+        `${SERVER_STORAGE_PAUSE_REASON}. ${filesCopy.serverStorageMember('Iris Wong (@iris)')}`
+      )
+    ).toBeInTheDocument();
+  });
+
+  /** RES2-N3: the list stopped asking once nothing moved, while the command line uploaded. */
+  it('asks again while open, so a change the command line made shows', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.listTransfers.mockResolvedValue([
+        transfer({ state: 'failed', error: 'You are no longer a member of #methods.' }),
+      ]);
+      renderTab();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.listTransfers).toHaveBeenCalledTimes(1);
+      mocks.listTransfers.mockResolvedValue([transfer({ state: 'uploading', offset: 1536 })]);
+      await vi.advanceTimersByTimeAsync(TRANSFER_WATCH_POLL_MS);
+      expect(mocks.listTransfers).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('Uploading 75% · 2 KB')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a transfer the workspace refused as Failed, in the daemon’s words, with no Resume…', async () => {
+    mocks.listTransfers.mockResolvedValue([
+      transfer({ state: 'failed', error: 'You are no longer a member of #methods.' }),
+    ]);
+    renderTab();
+    expect(await screen.findByText('You are no longer a member of #methods.')).toBeInTheDocument();
+    expect(screen.getByText('Failed')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'More actions for counts.csv' }));
+    expect(await screen.findByRole('menuitem', { name: /Remove from list/ })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /Resume…/ })).toBeNull();
   });
 
   it('attaches a finished upload only after re-reading its shared file', async () => {

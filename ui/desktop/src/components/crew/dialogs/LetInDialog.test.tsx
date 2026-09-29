@@ -115,10 +115,10 @@ function renderDirectAdd(snapshot: Snapshot, onClose?: () => void) {
   });
 }
 
-async function approveWith(code: string, who = 'Eve') {
+async function approveWith(code: string, who = 'Eve', submit = `Let ${who} in`) {
   fireEvent.change(await screen.findByLabelText(letInCopy.code(who)), { target: { value: code } });
   await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: `Let ${who} in` }));
+    fireEvent.click(screen.getByRole('button', { name: submit }));
   });
 }
 
@@ -278,7 +278,38 @@ describe('LetInDialog', () => {
     const warning = await screen.findByRole('alert');
     expect(warning).toHaveTextContent(letInCopy.mismatch('eve'));
     fireEvent.click(within(warning).getByRole('button', { name: letInCopy.enterAgain }));
-    expect(await screen.findByLabelText(letInCopy.code('Eve'))).toHaveValue('');
+    const field = await screen.findByLabelText(letInCopy.code('Eve'));
+    expect(field).toHaveValue('');
+    // SC2-N10: the button that had focus is gone; the field it leads back to takes it.
+    await waitFor(() => expect(field).toHaveFocus());
+  });
+
+  /**
+   * SC2-N6: "joined" was inferred only for someone new, so letting in a member's new computer said
+   * "Code saved. Henry is in as soon as Henry's Crew checks in" long after it had, under a title
+   * that read like a first join.
+   */
+  it('lets in a member’s new computer under its own title, and says once it is in', async () => {
+    const member = makeSnapshot({
+      principals: [...makeSnapshot().principals, eve],
+      pending_joins: [{ username: 'eve', full_name: 'Eve Park', add_device: true }],
+    });
+    const { update } = renderLive(member);
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      within(dialog).getByRole('heading', { name: 'Let Eve Park’s new computer into lab' })
+    ).toBeInTheDocument();
+    await approveWith(CODE, 'Eve', letInCopy.deviceSubmit('Eve'));
+    expect(await screen.findByText(letInCopy.deviceApproved('Eve'))).toBeInTheDocument();
+
+    // A view that lists no waiting joins says nothing about this one.
+    update({ ...member, pending_joins: undefined });
+    expect(screen.getByText(letInCopy.deviceApproved('Eve'))).toBeInTheDocument();
+
+    // The computer checked in with the saved code: its waiting row is gone.
+    update({ ...member, pending_joins: [] });
+    expect(await screen.findByText(letInCopy.deviceJoined('Eve', 'lab'))).toBeInTheDocument();
+    expect(letInCopy.deviceJoined('Henry', 'chen-lab')).toBe('Henry’s new computer is in chen-lab');
   });
 
   it('reads an older daemon’s envelope the same way, and drops Replace once the code changes', async () => {
@@ -325,14 +356,15 @@ describe('LetInDialog', () => {
   });
 
   it('after approval, drops the code and offers one button per team the host created', async () => {
+    // Eve is a member already: this is her new computer (SC2-N6).
     const { crew } = renderLetIn({ username: 'eve', full_name: 'Eve Park' }, { joined: true });
     fireEvent.change(await screen.findByLabelText(letInCopy.code('Eve')), {
       target: { value: CODE },
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Let Eve in' }));
+      fireEvent.click(screen.getByRole('button', { name: letInCopy.deviceSubmit('Eve') }));
     });
-    expect(await screen.findByText(letInCopy.approved('Eve'))).toBeInTheDocument();
+    expect(await screen.findByText(letInCopy.deviceApproved('Eve'))).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('7QK2');
     await waitFor(() => expect(screen.getByRole('button', { name: 'Done' })).toHaveFocus());
 
@@ -351,9 +383,12 @@ describe('LetInDialog', () => {
         },
       ])
     );
-    expect(await screen.findByText(letInCopy.addedToTeam('Eve'))).toBeInTheDocument();
-    expect(letInCopy.addedToTeam('Eve')).toBe(
-      'Invited. Eve will see it in Crew and needs to accept.'
+    expect(
+      await screen.findByText(letInCopy.addedToTeam('Eve Park (@eve)', 'Eve'))
+    ).toBeInTheDocument();
+    // M11: the person in the one rule for inline text, then the dialog's one name for them.
+    expect(letInCopy.addedToTeam('Eve Park (@eve)', 'Eve')).toBe(
+      'Invited Eve Park (@eve). Eve will see it in Crew and needs to accept.'
     );
   });
 
@@ -372,10 +407,16 @@ describe('LetInDialog', () => {
     expect(general).toBeChecked();
     expect(general).toBeDisabled();
     expect(within(channels).getByRole('checkbox', { name: /#methods/ })).toBeChecked();
+    // M19: before the addition, what it shows them, in the dialog's one name for them.
+    expect(within(dialog).getByTestId('crew-let-in-history')).toHaveTextContent(
+      'Once added, Eve can read everything already posted in the channels Eve is added to, including files.'
+    );
 
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
     });
+    // Said only while an addition is still to do.
+    await waitFor(() => expect(within(dialog).queryByTestId('crew-let-in-history')).toBeNull());
     await waitFor(() =>
       expect(requestsFor(crew, 'team.add_member')).toEqual([
         {
@@ -389,7 +430,9 @@ describe('LetInDialog', () => {
     expect(requestsFor(crew, 'invitation.create')).toEqual([]);
     // The result names the team (QA Q2-23).
     expect(
-      await screen.findByText('Added Eve to Analysis Lab. Eve can now see #general and #methods.')
+      await screen.findByText(
+        'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.'
+      )
     ).toBeInTheDocument();
     // Nothing is left to add, so Done is the primary action, and takes the focus.
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
@@ -416,7 +459,7 @@ describe('LetInDialog', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
     });
-    const added = 'Added Eve to Analysis Lab. Eve can now see #general and #methods.';
+    const added = 'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.';
     expect(await screen.findByText(added)).toBeInTheDocument();
 
     // The broker put them in the team, and the next frame (at most 2 s later) says so. The
@@ -463,9 +506,9 @@ describe('LetInDialog', () => {
       target: { value: CODE },
     });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Let Bob in' }));
+      fireEvent.click(screen.getByRole('button', { name: letInCopy.deviceSubmit('Bob') }));
     });
-    await screen.findByText(letInCopy.approved('Bob'));
+    await screen.findByText(letInCopy.deviceApproved('Bob'));
     expect(screen.queryByRole('button', { name: /to Analysis Lab$/ })).toBeNull();
     expect(bob.id).toBe('person-bob');
   });
@@ -577,7 +620,7 @@ describe('LetInDialog, the team the joiner goes into (QA Q2-03)', () => {
     const { crew } = renderDirectAdd(
       withMethods({ principals: [...makeSnapshot().principals, eve] })
     );
-    await approveWith(CODE);
+    await approveWith(CODE, 'Eve', letInCopy.deviceSubmit('Eve'));
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Done' })).toHaveFocus());
     const channels = within(dialog).getByRole('group', {
@@ -701,7 +744,7 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     });
     expect(
       await within(dialog).findByText(
-        'Added Eve to Analysis Lab. Eve can now see #general and #methods.'
+        'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.'
       )
     ).toBeInTheDocument();
     // One name, and never "they" (QA Q3-36).
@@ -782,9 +825,9 @@ describe('LetInDialog, one shape and one name when the joiner arrives (QA Q3-35,
     );
     expect(letInCopy.addAfterJoin('Gina')).toBe('You can add Gina to a team once Gina joins.');
     expect(letInCopy.joined('Gina', 'ito-lab')).toBe('Gina joined ito-lab');
-    expect(letInCopy.directAdded('Gina', 'Ito Group', '#general and #data')).toBe(
-      'Added Gina to Ito Group. Gina can now see #general and #data.'
-    );
+    expect(
+      letInCopy.directAdded('Gina Ito (@gina)', 'Ito Group', '#general and #data', 'Gina')
+    ).toBe('Added Gina Ito (@gina) to Ito Group. Gina can now see #general and #data.');
   });
 });
 
@@ -821,7 +864,9 @@ describe('LetInDialog, round 4 (QA Q4-36, Q4-38)', () => {
         pending_joins: [{ username: 'eve', full_name: 'Eve Park-Lee', add_device: true }],
       })
     );
-    const dialog = await screen.findByRole('dialog', { name: 'Let Eve Park into lab' });
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Let Eve Park’s new computer into lab',
+    });
     expect(dialog).toHaveAccessibleDescription('@eve');
   });
 
@@ -945,7 +990,9 @@ describe('LetInDialog, round 4 (QA Q4-36, Q4-38)', () => {
       await act(async () => {
         fireEvent.click(within(dialog).getByRole('button', { name: 'Add to Analysis Lab' }));
       });
-      await screen.findByText('Added Eve to Analysis Lab. Eve can now see #general and #methods.');
+      await screen.findByText(
+        'Added Eve Park (@eve) to Analysis Lab. Eve can now see #general and #methods.'
+      );
       expect(
         (dialog.querySelector('[data-crew-let-in-saved]') as HTMLElement).style.minHeight
       ).toBe('');

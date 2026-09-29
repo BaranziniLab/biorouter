@@ -4,7 +4,7 @@ import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { cn } from '../../../utils';
-import { channelName, channelSlug } from '../identity';
+import { channelName, channelSlug, onlineSet } from '../identity';
 import type { CrewController } from '../state/types';
 import { AgentAccessChip } from './AgentAccessChip';
 import { ChannelMenu } from './ChannelMenu';
@@ -64,8 +64,9 @@ function ClassificationBadge({
             className="crew-channel-classification no-drag biorouter-focus-surface"
             onClick={onOpen}
           >
-            {label}
-            <span className="sr-only">{nameSuffix}</span>
+            {/* One hidden run for the whole name: two read "Restricted : only…" (UXN-15). */}
+            <span aria-hidden="true">{label}</span>
+            <span className="sr-only">{`${label}${nameSuffix}`}</span>
           </button>
         </Badge>
       </TooltipTrigger>
@@ -212,6 +213,11 @@ export function ChannelHeader({
   // here never blinks out of the header.
   const runs = crew.snapshot ? crew.runs : (crew.lastVerified?.runs ?? crew.runs);
   const tasks = agentAccess?.tasks ?? activeTasksIn(runs, channel.id);
+  // Who is online, from the verified view only: a kept view is not now (M18).
+  const onlineNow =
+    crew.snapshot && crew.observedPrivacy?.connectionId === crew.connectionId
+      ? onlineSet(crew.snapshot)
+      : null;
 
   return (
     <header
@@ -255,6 +261,7 @@ export function ChannelHeader({
           memberIds={channel.members}
           ownerId={channel.owner_id}
           dir={dir}
+          online={onlineNow}
           onOpen={() => crew.openPane({ mode: 'details', tab: 'members' })}
         />
         <Tooltip>

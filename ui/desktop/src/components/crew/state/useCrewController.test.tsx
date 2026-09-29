@@ -3,10 +3,12 @@ import { useState } from 'react';
 import { MemoryRouter, type InitialEntry } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatAccessRouteState } from '../access/ChatConnectNote';
+import { CREW_NOT_SENT } from '../api/errors';
+import { composerCopy } from '../composer/copy';
 import { CrewHttpError } from '../crewApi';
 import { useCrewTransfers } from '../files/useCrewTransfers';
 import { MEMBERSHIP_ENDED_CODE } from './connectFailure';
-import { crewObservationCopy } from './copy';
+import { crewActionCopy, crewObservationCopy } from './copy';
 import { rememberLastChannel, stashedDraft } from './draftStash';
 import {
   ARRIVAL_CONNECT_STORAGE_KEY,
@@ -706,6 +708,40 @@ describe('requests, intents and the composer seams', () => {
     expect(crew.ui).toEqual({ dialog: null, pane: null });
   });
 
+  /** SF2-N7: the reconnect a privacy change causes closed the dialog that made it. */
+  it('keeps Workspace settings open while the view is observed again, and closes it when it is gone', async () => {
+    const sessions = controllableObserver();
+    renderController({ keepLastVerifiedView: true });
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    await waitFor(() => expect(sessions[sessions.length - 1]!.channelId).toBe(channel.id));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    act(() => crew.openDialog({ kind: 'workspace-settings', tab: 'privacy' }));
+
+    // The connection's policy moved: the daemon ends the view, and it is observed again.
+    act(() =>
+      sessions[sessions.length - 1]!.receive({
+        type: 'error',
+        clear: true,
+        code: 'policy_changed',
+        error: 'Room observation ended.',
+      })
+    );
+    expect(crew.reverifying).toBe(true);
+    expect(crew.ui.dialog).toEqual({ kind: 'workspace-settings', tab: 'privacy' });
+    await act(async () => {
+      await crew.refresh();
+    });
+    expect(crew.ui.dialog).toEqual({ kind: 'workspace-settings', tab: 'privacy' });
+
+    // A view that is gone for good takes it with it.
+    await act(async () => {
+      await crew.disconnect();
+    });
+    await waitFor(() => expect(crew.ui.dialog).toBeNull());
+  });
+
   it('grants a chat read-and-post access pinned to the verified epochs, and nothing without a chat', async () => {
     renderController();
     await verifiedChannel();
@@ -727,6 +763,27 @@ describe('requests, intents and the composer seams', () => {
         context_channels: [channel.id, 'channel-9'],
       }
     );
+  });
+
+  it('stops a task at its own route however the broker spelled its run ID (RENDERER-2)', async () => {
+    renderController();
+    await verifiedChannel();
+    // The run ID is the broker's. Interpolated raw, its dot segments sent this POST, with the
+    // person's proof, to `/crew/credentials/lock`.
+    await act(async () => {
+      await crew.cancelRun('../../../credentials/lock?');
+    });
+    const cancel = mocks.crewHttp.mock.calls.find(([, method]) => method === 'POST');
+    expect(cancel).toEqual([
+      '/connections/conn-1/runs/..%2F..%2F..%2Fcredentials%2Flock%3F/cancel',
+      'POST',
+      {},
+    ]);
+    const url = new URL(`http://127.0.0.1/crew${cancel?.[0]}`);
+    expect(url.pathname).toBe(
+      '/crew/connections/conn-1/runs/..%2F..%2F..%2Fcredentials%2Flock%3F/cancel'
+    );
+    expect(url.search).toBe('');
   });
 
   it('clears the composer only when it still holds the seed', async () => {
@@ -766,9 +823,10 @@ describe('requests, intents and the composer seams', () => {
 });
 
 describe('keeping one live observer', () => {
+  // Named to sort after "Lab": with nothing chosen, Crew opens the first team by name (setup F6).
   const imaging = {
     id: 'team-2',
-    name: 'Imaging',
+    name: 'Microscopy Imaging',
     created_by: actor.id,
     members: [actor.id],
     general_channel_id: 'channel-2',
@@ -796,7 +854,7 @@ describe('keeping one live observer', () => {
         snapshot: { ...snapshot, teams: [imaging], channels: [imagingGeneral] },
       })
     );
-    await waitFor(() => expect(crew.team?.name).toBe('Imaging'));
+    await waitFor(() => expect(crew.team?.name).toBe(imaging.name));
     await waitFor(() => expect(crew.channelId).toBe(imagingGeneral.id));
   });
 
@@ -850,6 +908,69 @@ describe('keeping one live observer', () => {
     // Focus and visibility together are read once.
     expect(mocks.crewHttp.mock.calls.filter(([path]) => path === '/connections')).toHaveLength(2);
     expect(crew.connectionId).toBe(connection.id);
+  });
+
+  /**
+   * RES2-N5: the daemon's "Reconnecting to …" answer was the only word the renderer had that a
+   * re-dial was owed; kept, with when, until the connection is back or the person connects.
+   */
+  it('keeps when the daemon said it is dialling again, until the view verifies or the person connects', async () => {
+    const sessions = controllableObserver();
+    renderController();
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    expect(crew.redialSince).toBeNull();
+
+    const before = Date.now();
+    act(() =>
+      crew.reportError(
+        'Reconnecting to lab. Nothing was sent; try again in a moment.',
+        'global',
+        'crew_reconnecting'
+      )
+    );
+    await waitFor(() => expect(crew.redialSince).not.toBeNull());
+    const since = crew.redialSince!;
+    expect(since).toBeGreaterThanOrEqual(before);
+    // Said again later: the time it was first said stands.
+    act(() => crew.dismissError());
+    act(() => crew.reportError('Reconnecting again.', 'global', 'crew_reconnecting'));
+    expect(crew.redialSince).toBe(since);
+
+    // The connection verifies again: nothing is owed.
+    act(() => sessions[sessions.length - 1]!.receive(stateFrame));
+    await waitFor(() => expect(crew.redialSince).toBeNull());
+
+    // Or the person connects instead.
+    act(() => crew.reportError('Reconnecting.', 'global', 'crew_reconnecting'));
+    await waitFor(() => expect(crew.redialSince).not.toBeNull());
+    await act(async () => {
+      await crew.connect({ userInitiated: true });
+    });
+    expect(crew.redialSince).toBeNull();
+  });
+
+  it('says a workspace chosen after it was removed from this computer was removed (MSG2-N9)', async () => {
+    const gone = { ...connection, id: 'conn-2', name: 'bob-cap2' };
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection, gone] };
+      return {};
+    });
+    renderController();
+    await verifiedChannel();
+    await waitFor(() => expect(crew.connections).toHaveLength(2));
+    // Removed from a terminal; the menu still lists it.
+    mocks.crewHttp.mockImplementation(async (path: string) => {
+      if (path === '/connections') return { connections: [connection] };
+      return {};
+    });
+    act(() => crew.selectConnection(gone.id));
+    await waitFor(() =>
+      expect(crew.error?.message).toBe(crewActionCopy.workspaceRemoved('bob-cap2'))
+    );
+    expect(crew.connectionId).toBe(connection.id);
+    expect(crew.connections.map((item) => item.id)).toEqual([connection.id]);
   });
 
   it('reads "Updating…" while it observes again by itself, never "Updates unavailable"', async () => {
@@ -930,9 +1051,10 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
     name: 'methods',
     classification: 'public_safe' as const,
   };
+  // Named to sort after "Lab": with nothing chosen, Crew opens the first team by name (setup F6).
   const imaging = {
     id: 'team-2',
-    name: 'Imaging',
+    name: 'Microscopy Imaging',
     created_by: actor.id,
     members: [actor.id],
     general_channel_id: 'channel-2',
@@ -988,7 +1110,7 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
     act(() => crew.selectChannel(imagingGeneral.id));
     await opened(imagingGeneral.id);
     expect(crew.teamId).toBe(imaging.id);
-    expect(crew.team?.name).toBe('Imaging');
+    expect(crew.team?.name).toBe(imaging.name);
     // Frames that follow keep it there.
     await act(async () => {
       await crew.refresh();
@@ -1252,6 +1374,79 @@ describe('the channel Crew opens, and the draft each channel keeps (Q2-07, Q2-10
     });
   });
 
+  /**
+   * MSG2-N4: the stash kept nothing over 64 KB, the message limit itself, so the very draft the
+   * composer had just told the person to attach as a file went when they switched channel.
+   */
+  it('keeps a draft over the message limit, and its note, through a channel switch (MSG2-N4)', async () => {
+    renderController();
+    await opened(channel.id);
+    const long = 'x'.repeat(70_007);
+    act(() => crew.setBody(long));
+    await act(async () => {
+      await crew.send();
+    });
+    expect(crew.error?.message).toBe(composerCopy.tooLong);
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    expect(crew.draft.body).toBe('');
+    act(() => crew.selectChannel(channel.id));
+    await opened(channel.id);
+    await waitFor(() => expect(crew.draft.body).toBe(long));
+    expect(crew.error?.message).toBe(composerCopy.tooLong);
+    expect(crew.error?.source).toBe('composer');
+  });
+
+  /**
+   * MSG2-N3: a draft was kept only under the scope recorded from its own channel's first frame. The
+   * words of a post sent in the second after the channel was selected had none, and were dropped
+   * when the person moved on, so a post refused after that lost its text.
+   */
+  it('keeps the words of a post sent before its channel verified, when it fails after the person moved on (MSG2-N3)', async () => {
+    const sessions = controllableObserver();
+    const latest = () => sessions[sessions.length - 1]!;
+    const post = deferred<unknown>();
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) =>
+      method === 'message.post' ? post.promise : {}
+    );
+    renderController();
+    await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+    act(() => latest().receive({ ...stateFrame, snapshot: view }));
+    await waitFor(() => expect(latest().channelId).toBe(channel.id));
+    act(() => latest().receive({ ...stateFrame, snapshot: view }));
+
+    // #methods is selected, and the person writes and sends before its first frame arrives…
+    act(() => crew.selectChannel(methods.id));
+    await waitFor(() => expect(latest().channelId).toBe(methods.id));
+    act(() => crew.setBody('for #methods'));
+    let sending: Promise<void> = Promise.resolve();
+    act(() => {
+      sending = crew.send();
+    });
+    await waitFor(() =>
+      expect(mocks.crewRequest.mock.calls.some(([, method]) => method === 'message.post')).toBe(
+        true
+      )
+    );
+    // …then moves on while it is out: the words wait for #methods.
+    act(() => crew.selectChannel(channel.id));
+    expect(crew.draft.body).toBe('');
+    expect(stashedDraft(connection.id, methods.id)?.body).toBe('for #methods');
+
+    // The connection drops before the post is written.
+    await act(async () => {
+      post.reject(new CrewHttpError('Nothing was sent', 503, CREW_NOT_SENT));
+      await sending;
+    });
+    expect(crew.error?.message).toContain('#methods');
+
+    // Back in #methods: its draft, and what was said about it.
+    act(() => crew.selectChannel(methods.id));
+    expect(crew.draft.body).toBe('for #methods');
+    await waitFor(() => expect(crew.error?.source).toBe('composer'));
+    expect(crew.error?.message).toBe(composerCopy.notSent);
+  });
+
   it('never overwrites a newer draft the person typed before the channel verified again', async () => {
     const first = renderController();
     await opened(channel.id);
@@ -1299,6 +1494,42 @@ describe('the team and channel a verified view picks (pure)', () => {
     expect(channelForTeam(view, 'team-1', '', 'old')).toBe('general');
     expect(channelForTeam(view, 'team-1', '', 'imaging')).toBe('general');
     expect(channelForTeam(view, 'team-2', 'general', null)).toBe('imaging');
+  });
+
+  /**
+   * Setup F6: channels and teams arrive in the order of their random IDs, so a new member with
+   * nothing remembered landed on whichever sorted first: #random, for Bob, Henry and Mallory.
+   */
+  describe('with nothing chosen yet (setup F6)', () => {
+    const byId = {
+      teams: [
+        { id: '4c78-zeta', name: 'Zeta Core', general_channel_id: 'zeta-general' },
+        { id: '9f00-chen', name: 'chen-lab', general_channel_id: '630e-general' },
+      ],
+      channels: [
+        { id: '4c78-random', team_id: '9f00-chen', name: 'random', archived: false },
+        { id: '5ee2-methods', team_id: '9f00-chen', name: 'methods', archived: false },
+        { id: '630e-general', team_id: '9f00-chen', name: 'general', archived: false },
+        { id: 'zeta-general', team_id: '4c78-zeta', name: 'general', archived: false },
+      ],
+    } as unknown as Parameters<typeof teamForView>[0];
+
+    it('opens the team’s #general, not the channel whose ID sorts first', () => {
+      expect(channelForTeam(byId, '9f00-chen', '', null)).toBe('630e-general');
+      // A remembered channel still wins, and an archived #general gives way to the first open one.
+      expect(channelForTeam(byId, '9f00-chen', '', '5ee2-methods')).toBe('5ee2-methods');
+      const archived = {
+        ...byId,
+        channels: byId.channels.map((item) =>
+          item.id === '630e-general' ? { ...item, archived: true } : item
+        ),
+      };
+      expect(channelForTeam(archived, '9f00-chen', '', null)).toBe('4c78-random');
+    });
+
+    it('opens the first team by name, not the team whose ID sorts first', () => {
+      expect(teamForView(byId, '', '', null)).toBe('9f00-chen');
+    });
   });
 });
 
@@ -1703,5 +1934,508 @@ describe('a membership the workspace ended (Q3-12, Q3-50)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('a post still on its way when the person moves to another channel (RENDERER-4)', () => {
+  const methods = { ...channel, id: 'channel-3', name: 'methods' };
+  const analysis = { ...channel, id: 'channel-4', name: 'analysis' };
+  const workspace = { ...snapshot, channels: [channel, methods, analysis] };
+
+  beforeEach(() => {
+    forgetConnectionMemory(connection.id);
+    mocks.observeCrew.mockImplementation(
+      async (
+        _connectionId: string,
+        channelId: string | undefined,
+        _after: string | null,
+        signal: AbortSignal,
+        receive: (frame: unknown) => void
+      ) => {
+        if (signal.aborted) return 'terminal';
+        receive({ ...stateFrame, snapshot: workspace });
+        if (channelId)
+          receive({
+            type: 'messages',
+            channel_id: channelId,
+            messages: [],
+            cursor: null,
+            reset: true,
+          });
+        return 'terminal';
+      }
+    );
+  });
+
+  async function opened(channelId: string) {
+    await waitFor(() => expect(crew.channelId).toBe(channelId));
+    await waitFor(() => expect(crew.snapshot).not.toBeNull());
+    await waitFor(() => expect(crew.messagesLoaded).toBe(true));
+  }
+
+  /** Sends "for #methods" from #methods and moves to #analysis while the broker answers. */
+  async function sendThenMove() {
+    const post = deferred<unknown>();
+    let posts = 0;
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method !== 'message.post') return {};
+      posts += 1;
+      // Only the first post, #methods', waits for the test to answer it.
+      return posts === 1 ? post.promise : { sequence: `m-${posts}` };
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    act(() => crew.setBody('for #methods'));
+    let sent!: Promise<void>;
+    act(() => {
+      sent = crew.send();
+    });
+    await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    act(() => crew.selectChannel(analysis.id));
+    await opened(analysis.id);
+    return { post, sent };
+  }
+
+  it('leaves the new channel’s composer free while the old post is on its way', async () => {
+    const { post, sent } = await sendThenMove();
+    // The post is #methods', not #analysis': nothing here is sending.
+    expect(crew.isPending('send')).toBe(false);
+    act(() => crew.setBody('for #analysis'));
+    expect(crew.draft.body).toBe('for #analysis');
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    // The #methods post changed nothing in #analysis' composer.
+    expect(crew.draft.body).toBe('for #analysis');
+    expect(crew.error).toBeNull();
+  });
+
+  it('sends in the new channel without waiting for the old post', async () => {
+    const { post, sent } = await sendThenMove();
+    act(() => crew.setBody('for #analysis'));
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = mocks.crewRequest.mock.calls.filter(([, method]) => method === 'message.post');
+    expect(posts.map(([, , params]) => (params as { channel_id: string }).channel_id)).toEqual([
+      methods.id,
+      analysis.id,
+    ]);
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+  });
+
+  it('reports a refusal in the connection bar, naming its channel, not in the new composer', async () => {
+    const { post, sent } = await sendThenMove();
+    act(() => crew.setBody('for #analysis'));
+    await act(async () => {
+      post.reject(new CrewHttpError('Slow down', 429, 'crew_request_refused'));
+      await sent;
+    });
+    expect(crew.error?.source).toBe('global');
+    expect(crew.error?.message).toBe(crewActionCopy.sendFailedIn('#methods', 'Slow down'));
+    expect(crew.draft.body).toBe('for #analysis');
+    // The unsent text waits in #methods, where the person left it.
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+  });
+
+  /** Every `message.post` so far: where it went and the idempotency key it carried. */
+  function messagePosts() {
+    return mocks.crewRequest.mock.calls
+      .filter(([, method]) => method === 'message.post')
+      .map(
+        ([, , params]) => params as { channel_id: string; body: string; idempotency_key: string }
+      );
+  }
+
+  /** From `sendThenMove`: send in #analysis, then come back to #methods, whose post is still out. */
+  async function postHereThenReturn() {
+    const moved = await sendThenMove();
+    act(() => crew.setBody('for #analysis'));
+    await act(async () => {
+      await crew.send();
+    });
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    // The kept draft is back, and #methods' own post still holds its Send.
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+    expect(crew.isPending('send')).toBe(true);
+    return moved;
+  }
+
+  it('retries #methods’ post under its own key after a post in #analysis', async () => {
+    const { post, sent } = await postHereThenReturn();
+    // The outcome is unknown (the broker may have committed it): the retry must reuse its key.
+    await act(async () => {
+      post.reject(new CrewHttpError('The computer did not answer in time', 504));
+      await sent;
+    });
+    expect(crew.error?.source).toBe('composer');
+    expect(crew.draft.body).toBe('for #methods');
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    expect(posts[2].body).toBe('for #methods');
+    // The same message to the same channel: the broker's deduplication covers the retry.
+    expect(posts[2].idempotency_key).toBe(posts[0].idempotency_key);
+    expect(posts[1].idempotency_key).not.toBe(posts[0].idempotency_key);
+  });
+
+  it('keeps #methods’ key while #analysis’ post is still on its way', async () => {
+    const methodsPost = deferred<unknown>();
+    const analysisPost = deferred<unknown>();
+    let posts = 0;
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method !== 'message.post') return {};
+      posts += 1;
+      if (posts === 1) return methodsPost.promise;
+      if (posts === 2) return analysisPost.promise;
+      return { sequence: `m-${posts}` };
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    act(() => crew.setBody('for #methods'));
+    let methodsSent!: Promise<void>;
+    act(() => {
+      methodsSent = crew.send();
+    });
+    await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    act(() => crew.selectChannel(analysis.id));
+    await opened(analysis.id);
+    act(() => crew.setBody('for #analysis'));
+    let analysisSent!: Promise<void>;
+    act(() => {
+      analysisSent = crew.send();
+    });
+    await waitFor(() => expect(crew.isPending('send')).toBe(true));
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+    await act(async () => {
+      methodsPost.reject(new CrewHttpError('The computer did not answer in time', 504));
+      await methodsSent;
+    });
+    await act(async () => {
+      await crew.send();
+    });
+    const sentPosts = messagePosts();
+    expect(sentPosts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    expect(sentPosts[2].idempotency_key).toBe(sentPosts[0].idempotency_key);
+    await act(async () => {
+      analysisPost.resolve({ sequence: 'm-2' });
+      await analysisSent;
+    });
+  });
+
+  it('keeps #methods’ text and key when the answer comes after the person came back', async () => {
+    const { post, sent } = await postHereThenReturn();
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    // The answer came to a view that has moved on: the composer keeps the text it put back, so
+    // sending it again must be the same message to the broker, not a second one.
+    expect(crew.draft.body).toBe('for #methods');
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    expect(posts[2].idempotency_key).toBe(posts[0].idempotency_key);
+  });
+
+  it('forgets #methods’ attempt when its answer comes while the person is elsewhere', async () => {
+    const { post, sent } = await sendThenMove();
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    act(() => crew.selectChannel(methods.id));
+    await opened(methods.id);
+    // Sent while away: its kept draft is gone, and so is its attempt.
+    expect(crew.draft.body).toBe('');
+    // The same words written again are a new message, under a key the broker will not take for
+    // the first one.
+    act(() => crew.setBody('for #methods'));
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, methods.id]);
+    expect(posts[1].idempotency_key).not.toBe(posts[0].idempotency_key);
+  });
+
+  it('still reports a refusal in the composer when the person stayed', async () => {
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method === 'message.post') throw new CrewHttpError('Slow down', 429);
+      return {};
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('stay'));
+    await act(async () => {
+      await crew.send();
+    });
+    // It belongs to this channel's draft (QA M5): no other channel's composer shows it.
+    expect(crew.error).toEqual({
+      message: 'Slow down',
+      source: 'composer',
+      destination: `${connection.id}\n${channel.id}`,
+    });
+    expect(crew.draft.body).toBe('stay');
+  });
+
+  it('keeps a failed post’s key through an edit that is undone', async () => {
+    let posts = 0;
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+      if (method !== 'message.post') return {};
+      posts += 1;
+      if (posts === 1) throw new CrewHttpError('The computer did not answer in time', 504);
+      return { sequence: `m-${posts}` };
+    });
+    renderController();
+    await opened(channel.id);
+    act(() => crew.setBody('for #general'));
+    await act(async () => {
+      await crew.send();
+    });
+    act(() => crew.setBody('for #general, and more'));
+    act(() => crew.setBody('for #general'));
+    await act(async () => {
+      await crew.send();
+    });
+    const sent = messagePosts();
+    expect(sent).toHaveLength(2);
+    // The same payload to the same channel: the first may have been committed.
+    expect(sent[1].idempotency_key).toBe(sent[0].idempotency_key);
+  });
+
+  it('lets a taken post’s key go at the first edit, so the same words written anew are new', async () => {
+    const { post, sent } = await postHereThenReturn();
+    await act(async () => {
+      post.resolve({ sequence: 'm-1' });
+      await sent;
+    });
+    expect(crew.draft.body).toBe('for #methods');
+    act(() => crew.setBody('for #methods!'));
+    act(() => crew.setBody('for #methods'));
+    await act(async () => {
+      await crew.send();
+    });
+    const posts = messagePosts();
+    expect(posts.map((item) => item.channel_id)).toEqual([methods.id, analysis.id, methods.id]);
+    // Reused, the broker would answer with the first message and post nothing.
+    expect(posts[2].idempotency_key).not.toBe(posts[0].idempotency_key);
+  });
+
+  describe('when Crew is left and opened again (U1, U2)', () => {
+    /** In #methods, the post of "for #methods" is sent; `answer` decides each post's answer. */
+    async function sendInMethods(answer: (posts: number) => Promise<unknown>) {
+      let posts = 0;
+      mocks.crewRequest.mockImplementation(async (_connection: string, method: string) => {
+        if (method !== 'message.post') return {};
+        posts += 1;
+        return answer(posts);
+      });
+      const first = renderController();
+      await opened(channel.id);
+      act(() => crew.selectChannel(methods.id));
+      await opened(methods.id);
+      act(() => crew.setBody('for #methods'));
+      let sent!: Promise<void>;
+      act(() => {
+        sent = crew.send();
+      });
+      await waitFor(() => expect(crew.isPending('send')).toBe(true));
+      return { first, sent };
+    }
+
+    /** Crew opened again, on #methods (the channel it remembers). */
+    async function openedAgain() {
+      renderController();
+      await opened(methods.id);
+    }
+
+    it('sends a refused post again under its key (U2)', async () => {
+      const { first, sent } = await sendInMethods(async (posts) => {
+        if (posts === 1) throw new CrewHttpError('The computer did not answer in time', 504);
+        return { sequence: `m-${posts}` };
+      });
+      await act(async () => {
+        await sent;
+      });
+      expect(crew.error?.source).toBe('composer');
+      first.unmount();
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts.map((item) => item.channel_id)).toEqual([methods.id, methods.id]);
+      // The 504 may have come after the broker committed it: the same message, not a second.
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+    });
+
+    it('holds Send while the post is still on its way, then sends under its key (U1)', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      // The first post is on its way still: this screen holds Send, and a press posts nothing.
+      expect(crew.isPending('send')).toBe(true);
+      await act(async () => {
+        await crew.send();
+      });
+      expect(messagePosts()).toHaveLength(1);
+
+      await act(async () => {
+        post.reject(new CrewHttpError('The computer did not answer in time', 504));
+        await sent;
+      });
+      // Told to the screen open now, in its composer, since the words are its. A gateway timeout
+      // is the link's failure: stale once the connection verifies again (QA R-4).
+      expect(crew.error).toEqual({
+        message: 'The computer did not answer in time',
+        source: 'composer',
+        destination: `${connection.id}\n${methods.id}`,
+        transport: true,
+      });
+      expect(crew.isPending('send')).toBe(false);
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+    });
+
+    it('keeps the words and their key when the post is taken after Crew was opened again', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      await act(async () => {
+        post.resolve({ sequence: 'm-1' });
+        await sent;
+      });
+      expect(crew.error).toBeNull();
+      expect(crew.draft.body).toBe('for #methods');
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      // Sending the kept words again is the message already taken: the broker answers with it.
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+      expect(crew.draft.body).toBe('');
+    });
+
+    it('keeps the words and their key when the post is refused while Crew is closed', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+      await act(async () => {
+        post.reject(new CrewHttpError('The computer did not answer in time', 504));
+        await sent;
+      });
+
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      expect(crew.isPending('send')).toBe(false);
+      // What the refusal said comes back with the words: it was told nowhere while Crew was shut.
+      expect(crew.error).toMatchObject({
+        message: 'The computer did not answer in time',
+        source: 'composer',
+        destination: `${connection.id}\n${methods.id}`,
+      });
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      expect(posts[1].idempotency_key).toBe(posts[0].idempotency_key);
+    });
+
+    it('forgets the words and their key when the post is taken while Crew is closed', async () => {
+      const post = deferred<unknown>();
+      const { first, sent } = await sendInMethods((posts) =>
+        posts === 1 ? post.promise : Promise.resolve({ sequence: `m-${posts}` })
+      );
+      first.unmount();
+      await act(async () => {
+        post.resolve({ sequence: 'm-1' });
+        await sent;
+      });
+      expect(stashedDraft(connection.id, methods.id)).toBeUndefined();
+
+      await openedAgain();
+      expect(crew.draft.body).toBe('');
+      act(() => crew.setBody('for #methods'));
+      await act(async () => {
+        await crew.send();
+      });
+      const posts = messagePosts();
+      expect(posts).toHaveLength(2);
+      // The same words written again are a new message, under a key the broker has not seen.
+      expect(posts[1].idempotency_key).not.toBe(posts[0].idempotency_key);
+    });
+
+    it('keeps with the words a digest of the post and its key, never its files or references', async () => {
+      // Every post goes unanswered in time, so the words and their attempt stay.
+      const { first, sent } = await sendInMethods(async () => {
+        throw new CrewHttpError('The computer did not answer in time', 504);
+      });
+      await act(async () => {
+        await sent;
+      });
+      first.unmount();
+      mocks.crewRequest.mockClear();
+      await openedAgain();
+      await waitFor(() => expect(crew.draft.body).toBe('for #methods'));
+      act(() => {
+        crew.addAttachment({ id: 'blob-1', name: 'counts.csv' });
+        crew.addReference({ id: 'ref-1', label: '/data/run-1' });
+      });
+      await act(async () => {
+        await crew.send();
+      });
+      // Another payload (files and a reference now): another key.
+      const withFiles = messagePosts()[0];
+      act(() => crew.selectChannel(analysis.id));
+      await opened(analysis.id);
+
+      const kept = stashedDraft(connection.id, methods.id);
+      // The composer's note about the words goes aside with them (QA M5): words, never an ID.
+      expect(Object.keys(kept ?? {}).sort()).toEqual(['attempt', 'body', 'note', 'scope']);
+      expect(JSON.stringify(kept?.note)).not.toMatch(/blob-1|ref-1/);
+      const attempt = kept?.attempt?.current;
+      expect(Object.keys(attempt ?? {}).sort()).toEqual(['digest', 'key']);
+      expect(attempt?.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(attempt?.key).toBe(withFiles.idempotency_key);
+      expect(JSON.stringify(kept?.attempt)).not.toMatch(/blob-1|ref-1|for #methods/);
+    });
   });
 });

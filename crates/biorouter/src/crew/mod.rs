@@ -1,6 +1,10 @@
 //! Saved native SSH connections and owner-scoped Crew capabilities.
 pub mod authentication;
 mod credentials;
+mod freshness;
+#[cfg(test)]
+#[path = "freshness_tests.rs"]
+mod freshness_tests;
 mod host_start;
 #[cfg(test)]
 #[path = "host_start_tests.rs"]
@@ -14,6 +18,7 @@ pub use host_start::{
     HostStartRefused, HostStartRequest, HostStartState, HostStartStatus, StartOutput,
 };
 mod keepalive;
+mod local_host;
 mod revocation;
 mod server_label;
 pub use server_label::server_label;
@@ -22,12 +27,19 @@ pub use server_label::server_label;
 mod keepalive_tests;
 pub mod observation;
 #[cfg(test)]
+#[path = "provider_identity_tests.rs"]
+mod provider_identity_tests;
+#[cfg(test)]
 #[path = "registry_lock_tests.rs"]
 mod registry_lock_tests;
 #[cfg(test)]
 #[path = "scope_binding_tests.rs"]
 mod scope_binding_tests;
 pub use credentials::CredentialStatus;
+pub mod refusal;
+pub mod source_line;
+pub use institution::{refusal_details as institution_refusal_details, AFFILIATION_REFUSAL};
+pub use refusal::CrewRefusal;
 mod ssh_policy;
 mod transport;
 use crate::{
@@ -42,7 +54,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     cmp::Ordering,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock, Mutex as StdMutex},
 };
@@ -56,7 +68,8 @@ pub enum ClusterMode {
     #[default]
     Private,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A connection to save or edit (`POST /crew/connections`, `PATCH /crew/connections/{id}`).
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveConnection {
     #[serde(default)]
@@ -80,7 +93,8 @@ pub struct SaveConnection {
     #[serde(default)]
     pub institution_id: Option<String>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A connection saved on this computer, as the registry keeps it.
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct Connection {
     pub id: String,
     #[serde(default)]
@@ -96,19 +110,24 @@ pub struct Connection {
     pub workspace_public_key: String,
     #[serde(default)]
     pub remote_root: Option<String>,
+    /// Always sent; the default only reads a registry saved before it was kept.
     #[serde(default)]
+    #[schema(required = true)]
     pub remote_execution: bool,
     pub cluster_connection_id: String,
     pub mode: ClusterMode,
     #[serde(default)]
     pub institution_id: Option<String>,
     pub policy_epoch: u64,
+    /// `connected` or `disconnected`.
     pub status: String,
+    /// Why the connection last failed or dropped, for a person; `null` when it has not.
     pub last_error: Option<String>,
     pub device_id: String,
     pub public_key: String,
 }
-#[derive(Serialize)]
+/// How to sign in to a connection's server in a terminal (`POST /crew/connections/{id}/auth-plan`).
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct AuthenticationPlan {
     pub program: String,
     pub args: Vec<String>,
@@ -145,6 +164,15 @@ struct Scope {
     /// [`CrewManager::standing`]. `None` only for a grant recorded before this was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_incarnation: Option<i64>,
+    /// The session store the chat was saved in: the directory of the `sessions.db` whose row
+    /// held the session id at grant time (CROSSCUT-8). Processes that share this registry need
+    /// not share a store (a terminal whose shell sets its own `XDG_DATA_HOME` reads the same
+    /// Crew settings as the desktop and another `sessions.db`), and two stores mint the same
+    /// ids, so what one store holds, or lacks, says nothing about a chat saved in another. See
+    /// [`GrantStore`]. `None` for a grant recorded before this was kept, until a process whose
+    /// store holds the chat, or saw it deleted, records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_store: Option<String>,
     /// Where a stopped grant stands with the workspace (F3, D-1). `None` while the grant is
     /// live, and for one stopped before this was recorded or by removing its connection,
     /// whose standing with the workspace is not known.
@@ -153,9 +181,9 @@ struct Scope {
 }
 
 /// Where a grant that stopped on this device stands with the workspace.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
-enum Revocation {
+pub enum Revocation {
     /// Stopped here; the workspace has not yet confirmed `run.revoke`. The daemon asks it
     /// again by itself whenever the connection comes back, until it does (F3).
     Unconfirmed,
@@ -168,14 +196,6 @@ enum Revocation {
 }
 
 impl Revocation {
-    /// The grants list's words for it.
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Unconfirmed => "unconfirmed",
-            Self::Confirmed => "confirmed",
-            Self::EndedByWorkspace => "ended_by_workspace",
-        }
-    }
     /// How much the workspace is known to have said: a confirmation (or the workspace's own
     /// refusal of the run) is never forgotten for a later "not yet".
     fn rank(revocation: Option<Self>) -> u8 {
@@ -215,12 +235,20 @@ impl Scope {
             GRANT_REVOKED
         }
     }
+    /// [`Self::stopped_text`], typed `crew_grant_ended` with its reason (T3-BE-7).
+    fn stopped(&self) -> CrewRefusal {
+        if self.revocation == Some(Revocation::EndedByWorkspace) {
+            CrewRefusal::grant_ended(refusal::GRANT_ENDED_SETTINGS_CHANGED, GRANT_POLICY_CHANGED)
+        } else {
+            CrewRefusal::grant_ended(refusal::GRANT_ENDED_ENDED, GRANT_REVOKED)
+        }
+    }
 }
 
 /// The display names of a run's identifiers, captured under the person's action when the
 /// run is admitted (naming design D13 and D14). Never authority: every check still compares
 /// the IDs, and the labels are not refreshed afterwards.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct AdmissionLabels {
     /// The person the agent acts for: `Display name (@username)`, or `@username` when they
     /// never set a display name of their own (D13). `None` when the snapshot named no actor.
@@ -236,7 +264,7 @@ pub struct AdmissionLabels {
 }
 
 /// One channel's display name.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct ChannelLabel {
     pub channel_id: String,
     /// `#methods`.
@@ -265,6 +293,51 @@ pub struct BrokerHello {
     pub institution_id: Option<String>,
     /// The workspace's policy epoch. Signed only under v2.
     pub policy_epoch: Option<u64>,
+    /// Whether the workspace server has stopped saving changes, as this `hello` said (T3-BE-13).
+    /// Unsigned under either signature, so it is shown and never relied on; `None` when the
+    /// server is saving, or is an older one that does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage: Option<ServerStorage>,
+}
+
+/// A workspace server that has stopped saving changes (its disk or quota is full, or it could
+/// not write its storage), as its `hello` says since W2-BRK-3. Reading still works; every
+/// change is refused until the host frees space and restarts Crew (T3-BE-13). Served as a saved
+/// connection's `server_storage`, so a person is told before trying to write, not after.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct ServerStorage {
+    /// Always `storage_failed`: the server has stopped saving changes.
+    pub state: String,
+    /// Why: `storage_full` (the server's disk or the account's quota is full) or
+    /// `storage_failed` (another storage error).
+    pub code: String,
+    /// When the server stopped saving, in seconds since the Unix epoch, as it says; `null` when
+    /// it did not say.
+    pub since: Option<u64>,
+}
+
+/// [`ServerStorage::state`].
+const STORAGE_STOPPED: &str = "storage_failed";
+
+impl ServerStorage {
+    /// What `hello` says about the server's storage: `Some` only for a server that says it has
+    /// stopped saving (`"state": "storage_failed"`). Its own sentence is not kept: it is the
+    /// workspace's unauthenticated words, and each client says this in its own.
+    fn from_hello(hello: &Value) -> Option<Self> {
+        if hello.get("state").and_then(Value::as_str) != Some(STORAGE_STOPPED) {
+            return None;
+        }
+        let storage = hello.get("storage");
+        let code = match storage.and_then(|storage| storage["code"].as_str()) {
+            Some("storage_full") => "storage_full",
+            _ => "storage_failed",
+        };
+        Some(Self {
+            state: STORAGE_STOPPED.to_owned(),
+            code: code.to_owned(),
+            since: storage.and_then(|storage| storage["since"].as_u64()),
+        })
+    }
 }
 
 /// A `hello` whose signature verified, with the node identity to pin.
@@ -356,6 +429,12 @@ const GRANT_REVOKED: &str =
 /// workspace refuses the run as ended (`grant_expired`) because its own policy moved (D-1).
 const GRANT_POLICY_CHANGED: &str =
     "Crew settings changed since access was granted. Grant access again from Crew.";
+/// Shown when the workspace refuses a run whose own task ended it: its result was posted, or
+/// its owner stopped it (W2-DMN-14). Its access ended with it; nothing about the settings
+/// changed.
+const TASK_ENDED: &str = "This task has ended, so its access to the workspace has ended too.";
+/// How many ended runs [`CrewManager::ended_runs`] remembers before it starts again.
+const MAX_ENDED_RUNS: usize = 4096;
 /// Shown when the workspace refuses a run whose time ran out (`expires_at` has passed).
 const GRANT_TIMED_OUT: &str =
     "This chat's Crew access has ended. Grant access again from Crew to continue.";
@@ -378,17 +457,197 @@ const GRANT_UNCONFIRMED: &str =
     "Couldn't confirm this chat's Crew access on this device. Try again in a moment.";
 /// A grant asked for a chat that is not saved on this device (`--no-session`, or gone).
 const UNSAVED_CHAT: &str = "Crew can only grant access to a chat saved on this device. Start a saved chat, then grant it access from Crew.";
+/// A grant asked for a chat whose id a chat saved in another Biorouter data folder on this
+/// computer also has, and that chat holds Crew access (CROSSCUT-8). One grant is kept per id,
+/// so granting this chat would take that chat's grant away.
+const GRANT_ID_HELD_ELSEWHERE: &str = "A chat saved in another Biorouter data folder on this computer has the same ID as this chat and holds Crew access, so this chat can't be granted access. Start a new chat, then grant it access from Crew.";
 /// The grant changed between two reads of one check.
 const ACCESS_CHANGED: &str = "Crew access or settings changed while this was in progress. Check whether it already took effect before you grant access again.";
 /// A bridge that failed carrying a request: what was sent may or may not have reached the
 /// workspace.
 const BRIDGE_FAILED: &str = "SSH bridge failed. Reconnect; inspect any submitted operation before retrying because its outcome may be unknown.";
+/// The last error of a bridge that broke under a read: nothing can have changed (W2-DMN-6).
+const READ_DROPPED: &str = "The connection to this workspace dropped.";
+
+/// A wait for the next dial this long or shorter reads as "in a moment" (T3-BE-16).
+const RECONNECT_SOON: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a request refused with `crew_reconnecting` is told, when the daemon dials `workspace`
+/// again in `wait` (T3-BE-16). A short or unknown wait is "a moment", as it always was. A longer
+/// one (after two breaks in a row the schedule waits 60 s, then 180 s) says how long and that
+/// Connect tries at once: every send meanwhile used to say "try again in a moment" for up to
+/// three minutes.
+fn reconnecting_sentence(workspace: &str, wait: Option<std::time::Duration>) -> String {
+    match wait.filter(|wait| *wait > RECONNECT_SOON) {
+        None => format!("Reconnecting to {workspace}. Nothing was sent; try again in a moment."),
+        Some(wait) => {
+            let seconds = wait.as_secs() + u64::from(wait.subsec_nanos() > 0);
+            let when = if seconds < 120 {
+                format!("{seconds} seconds")
+            } else {
+                format!("{} minutes", seconds.div_ceil(60))
+            };
+            format!(
+                "Reconnecting to {workspace} in about {when}. Nothing was sent. Connect now to try at once."
+            )
+        }
+    }
+}
+
+/// Every method a scoped Crew worker (a chat's or task's grant) may send.
+const WORKER_METHODS: [&str; 16] = [
+    "messages.history",
+    "messages.search",
+    "context.manifest",
+    "run.project",
+    "blob.read",
+    "blob.status",
+    "blob.begin",
+    "blob.chunk",
+    "blob.finish",
+    "remote.list",
+    "remote.read",
+    "remote.write",
+    "remote.hash",
+    "remote.execute",
+    "remote.job_status",
+    "remote.cancel",
+];
+
+/// The last error of a bridge that broke carrying `method`, whose answer was `answer`
+/// (T3-BE-1). [`BRIDGE_FAILED`], which asks the person to inspect what was submitted, only when a
+/// change was written and its answer lost: `crew_outcome_unknown`, an SSH failure that says so,
+/// or an error of no known kind for a method that could have changed something. A read, a
+/// request lost before it was written (`crew_not_sent`: only its challenge was lost, or the
+/// bridge could not deliver it) and anything that was answered changed nothing:
+/// [`READ_DROPPED`]. It used to follow the method alone, so a post answered `crew_not_sent` left
+/// the alarm.
+fn bridge_loss_message<T>(method: &str, answer: &Result<T>) -> &'static str {
+    let Err(error) = answer else {
+        return READ_DROPPED;
+    };
+    let lost = match CrewRefusal::find(error) {
+        Some(refused) => refused.code() == refusal::OUTCOME_UNKNOWN,
+        None => match error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<SshFailure>())
+        {
+            Some(failure) => failure.outcome_unknown,
+            None => !is_read_only(method),
+        },
+    };
+    if lost {
+        BRIDGE_FAILED
+    } else {
+        READ_DROPPED
+    }
+}
+
+/// Whether `method` only reads: whatever became of it, nothing changed at the workspace. An
+/// explicit list, so a method not named here is treated as one that may have changed something.
+/// `channel.read` moves a read position, so it is not one.
+fn is_read_only(method: &str) -> bool {
+    matches!(
+        method,
+        "hello"
+            | "auth.challenge"
+            | "enrollment.pending"
+            | "workspace.snapshot"
+            | "messages.history"
+            | "messages.search"
+            | "context.manifest"
+            | "blob.read"
+            | "blob.status"
+            | "reference.get"
+            | "profile.suggest"
+            | "run.remote_scope"
+            | "remote.list"
+            | "remote.read"
+            | "remote.hash"
+            | "remote.job_status"
+    )
+}
+
+/// Where a request's bridge was lost (W2-DMN-7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lost {
+    /// Before the request was written: a dial, or the challenge ahead of it.
+    BeforeSending,
+    /// With the request written and no answer read.
+    WhileCarrying,
+}
+
+/// A request's failure, typed by what the person can know about it (W2-DMN-7). The transport's
+/// own error stays underneath, so a caller that classifies the SSH failure (connect, the
+/// keepalive's retries) still finds it; the routes answer the refusal on top:
+///
+/// - lost before anything was written, or the bridge said it could not deliver the request:
+///   `crew_not_sent`, nothing reached the workspace;
+/// - a read lost while it was carried: `crew_not_sent` too, since nothing can have changed;
+/// - anything else lost while it was carried: `crew_outcome_unknown` with the request's
+///   idempotency key as `request_id`, so a retry with it is applied at most once.
+///
+/// Both answer 503. Every other error (a refusal the workspace answered, a check here) is
+/// returned as it came. It used to reach the routes as `400 crew_request_refused`, so a post the
+/// workspace had applied read as refused, and a client dropped its "retry with the same request
+/// ID" advice.
+fn lost_request(
+    error: anyhow::Error,
+    lost: Lost,
+    method: &str,
+    request_key: Option<String>,
+    workspace: &str,
+) -> anyhow::Error {
+    if CrewRefusal::find(&error).is_some() {
+        return error;
+    }
+    if keepalive::broker_refusal(&error).is_some_and(|(code, _)| code == "not_delivered") {
+        let refusal = CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!("{workspace}'s server couldn't be reached, so nothing was sent. Try again once Crew reconnects."),
+        )
+        .status(503);
+        return error.context(refusal);
+    }
+    let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SshFailure>())
+    else {
+        return error;
+    };
+    let ssh_code = failure.api_code();
+    let refusal = match lost {
+        Lost::WhileCarrying if !is_read_only(method) => CrewRefusal::new(
+            refusal::OUTCOME_UNKNOWN,
+            format!(
+                "Crew couldn't confirm whether this reached {workspace}. Check the channel, then retry with the same request ID."
+            ),
+        )
+        .with("request_id", json!(request_key)),
+        Lost::WhileCarrying => CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!(
+                "The connection to {workspace} dropped before it answered. Nothing changed; try again."
+            ),
+        ),
+        Lost::BeforeSending if failure.code == "ssh_sign_in_refused" => CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!("{} Nothing was sent.", failure.description),
+        ),
+        Lost::BeforeSending => CrewRefusal::new(
+            refusal::NOT_SENT,
+            format!("Biorouter couldn't reach {workspace}, so nothing was sent."),
+        ),
+    };
+    error.context(refusal.status(503).with("ssh_code", json!(ssh_code)))
+}
 
 /// Whether a grant stored under a session id is the grant of the chat that holds that id now
 /// (SCOPE-BIND). See [`CrewManager::standing`].
 enum Standing {
-    /// No grant is this chat's: none was made, or the one stored under its id was made to an
-    /// earlier chat that has since been replaced under the same id (and has been pruned).
+    /// No grant is this chat's: none was made, the one stored under its id was made to an
+    /// earlier chat that has since been replaced under the same id (and has been pruned), or
+    /// it was made to a chat under the same id in another session store ([`GrantStore`]).
     None,
     /// The chat's own grant: bound to its incarnation, or recorded before grants were bound.
     Own(Scope),
@@ -396,6 +655,25 @@ enum Standing {
     /// to: that chat is gone from this device, or its identity could not be read. It keeps
     /// every restriction and authorizes nothing; the text says why.
     Unconfirmed(Scope, &'static str),
+    /// The saved registry cannot be read, and this chat is one it may restrict (DAEMON-6): it
+    /// restricts and authorizes nothing, as an unconfirmed grant does, but there is no grant
+    /// to show or revoke until the file can be read again. See `freshness.rs`.
+    Unreadable(&'static str),
+}
+
+/// Whether this process resolves chats in the session store a grant's chat was saved in
+/// ([`Scope::session_store`], CROSSCUT-8). Only that store can say the grant's chat is gone,
+/// or that a chat holding its id is a later one: in any other store the id is one both
+/// stores minted, and its absence or its holder says nothing about the grant's chat.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrantStore {
+    /// This process's own store.
+    Here,
+    /// Another store that shares this registry.
+    Elsewhere,
+    /// Not recorded: the grant predates recording it, so no process may forget or prune it
+    /// on the strength of what its own store lacks.
+    Unrecorded,
 }
 
 /// Which door a signed request came through. Only the daemon's own join sends `auth.join`,
@@ -419,6 +697,18 @@ struct Registry {
     pending_device: Option<PreparedDevice>,
     #[serde(default)]
     completed_preparations: HashMap<String, String>,
+}
+impl Registry {
+    /// Whether this profile holds no Crew identity at all: no connection, grant, stopped grant,
+    /// prepared device or finished preparation. Only such a profile may have an encrypted vault
+    /// set up, since keys already in the keyring are never silently replaced.
+    fn holds_no_identity(&self) -> bool {
+        self.connections.is_empty()
+            && self.scopes.is_empty()
+            && self.replaced.is_empty()
+            && self.pending_device.is_none()
+            && self.completed_preparations.is_empty()
+    }
 }
 /// How long a registry update waits for another Biorouter process to finish its own.
 const REGISTRY_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -453,8 +743,9 @@ fn registry_digest(bytes: &[u8]) -> [u8; 32] {
 /// - each connection's status and last error, which describe this process's own transports
 ///   (the file's copy is whatever process wrote last, and is reset on load for that reason);
 ///   a connection this process has not seen reads as a fresh load reads it, disconnected;
-/// - a grant's binding to its chat, when this process bound a grant recorded before grants
-///   were bound ([`CrewManager::adopt_binding`]) and the file still has it unbound;
+/// - a grant's binding to its chat and that chat's store, when this process bound a grant
+///   recorded before either was kept ([`CrewManager::adopt_binding`]) and the file still has
+///   it unbound;
 /// - a stop: a grant this process expired stays expired even if its save failed, because
 ///   nothing may bring a revoked run back to life;
 /// - what the workspace said about a stop ([`Revocation`]), so a confirmation heard here is
@@ -491,6 +782,9 @@ fn carry_process_state(here: &Registry, theirs: &mut Registry) {
         scope.expired |= mine.expired;
         if scope.session_incarnation.is_none() {
             scope.session_incarnation = mine.session_incarnation;
+        }
+        if scope.session_store.is_none() {
+            scope.session_store = mine.session_store.clone();
         }
         // What the workspace said about a stop, whichever process heard it: a confirmation
         // this process got (and failed to save) is not lost to the file's "not yet".
@@ -548,20 +842,68 @@ fn heard_here<'a>(here: &'a Registry, session: &str, run_id: &str) -> Option<&'a
                 .map(|kept| &kept.scope)
         })
 }
-/// One row of the grants list ([`CrewManager::session_grants`]): the grant stored under
-/// `session`. Where a stop stands with the workspace (F3): `remote_revocation_confirmed` is
-/// `false` only while the daemon is still asking the workspace to confirm it, `true` once it
-/// has, and `null` for a live grant or a stop whose standing is not a revocation this device
-/// sent (see `revocation`).
-fn grant_row(session: &str, scope: &Scope) -> Value {
+/// One row of the grants list ([`CrewManager::session_grant_rows`]): the grant stored under
+/// `session_id`. The HTTP grants list answers these rows, so this type is that wire shape.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
+pub struct GrantRow {
+    /// The chat or task the grant is stored under.
+    pub session_id: String,
+    pub run_id: String,
+    pub connection_id: String,
+    /// The channel the grant may post in.
+    pub channel_id: String,
+    /// Every channel the grant may read.
+    pub source_channels: Vec<String>,
+    /// The connection's policy epoch when the grant was made.
+    pub policy_epoch: u64,
+    /// Stopped on this device: revoked, ended, or its connection was removed.
+    pub expired: bool,
+    /// When the workspace ends the grant on its own, in Unix seconds; `null` for a grant
+    /// recorded before that was kept.
+    pub expires_at: Option<u64>,
+    /// The names the person saw when granting (D14); `null` when none were recorded.
+    pub labels: Option<AdmissionLabels>,
+    /// Where a stopped grant stands with the workspace (F3, D-1); `null` for a live grant and
+    /// for a stop whose standing is not known.
+    pub revocation: Option<Revocation>,
+    /// `false` only while the daemon is still asking the workspace to confirm a revocation,
+    /// `true` once it has, and `null` for a live grant or a stop whose standing is not a
+    /// revocation this device sent (see `revocation`).
+    pub remote_revocation_confirmed: Option<bool>,
+}
+
+/// A connection's grants ([`CrewManager::session_grant_rows`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionGrants {
+    /// The grant each chat or task holds.
+    pub grants: Vec<GrantRow>,
+    /// Earlier grants kept until the workspace confirms their revocation (F3).
+    pub replaced_grants: Vec<GrantRow>,
+}
+
+fn grant_row(session: &str, scope: &Scope) -> GrantRow {
     let confirmed = match scope.revocation {
         Some(Revocation::Unconfirmed) => Some(false),
         Some(Revocation::Confirmed) => Some(true),
         Some(Revocation::EndedByWorkspace) | None => None,
     };
-    json!({"session_id":session,"run_id":scope.run_id,"connection_id":scope.connection_id,"channel_id":scope.channel_id,"source_channels":scope.source_channels,"policy_epoch":scope.epoch,"expired":scope.expired,"expires_at":scope.expires_at,"labels":scope.labels,"revocation":scope.revocation.map(Revocation::as_str),"remote_revocation_confirmed":confirmed})
+    GrantRow {
+        session_id: session.to_owned(),
+        run_id: scope.run_id.clone(),
+        connection_id: scope.connection_id.clone(),
+        channel_id: scope.channel_id.clone(),
+        source_channels: scope.source_channels.clone(),
+        policy_epoch: scope.epoch,
+        expired: scope.expired,
+        expires_at: scope.expires_at,
+        labels: scope.labels.clone(),
+        revocation: scope.revocation,
+        remote_revocation_confirmed: confirmed,
+    }
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A device key prepared for a new connection (`POST /crew/devices/prepare`). Save the
+/// connection with its `preparation_id`.
+#[derive(Clone, Debug, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct PreparedDevice {
     pub preparation_id: String,
     pub public_key: String,
@@ -614,6 +956,13 @@ pub struct CrewManager {
     /// each with the token of the attempt that armed it. A person's Connect or Disconnect
     /// (any connect or disconnect) clears it, so a retry never undoes what someone chose.
     idle_redial: StdMutex<HashMap<String, u64>>,
+    /// When the daemon last dialled each connection by itself (a re-dial, never a person's
+    /// Connect), by the wall clock, so a bridge that breaks again right after it is not dialled
+    /// at once a second time (W2-DMN-6); see `keepalive.rs`.
+    own_dials: StdMutex<HashMap<String, std::time::SystemTime>>,
+    /// When the armed re-dial schedule of each connection (by its token) dials next, by the wall
+    /// clock, so a request refused meanwhile can say how long the wait is (T3-BE-16).
+    next_redial: StdMutex<HashMap<String, (u64, std::time::SystemTime)>>,
     /// Connections whose device the workspace accepted a person-signed request from in this
     /// process (Q3-12). Only these can have a membership that *ended*: a device the workspace
     /// never knew is one still joining, which keeps its bridge (see `keepalive.rs`).
@@ -627,6 +976,104 @@ pub struct CrewManager {
     /// Connections whose unconfirmed revocations the daemon is asking the workspace about
     /// again (F3), each with the token of the pass doing it; see `revocation.rs`.
     revocation_retries: StdMutex<HashMap<String, u64>>,
+    /// Each chat's last live admission by the workspace (CROSSCUT-7), which
+    /// [`CrewManager::check_provider_use`] may reuse for [`LIVE_ADMISSION_REUSE`]. Memory only.
+    live_admissions: StdMutex<HashMap<String, LiveAdmission>>,
+    /// The saved registry's file as this process last read it (CROSSCUT-1): `None` before it
+    /// looked, `Some(None)` for no file. See `freshness.rs`.
+    seen_file: StdMutex<Option<Option<freshness::FileStamp>>>,
+    /// What this process could not read of the saved registry, while it cannot (DAEMON-6).
+    unreadable: StdMutex<Option<freshness::Unreadable>>,
+    /// Runs whose own task ended them in this process: the workspace was sent the task's
+    /// terminal result, which ends the run there (W2-DMN-14). Memory only, and bounded.
+    ended_runs: StdMutex<HashSet<String>>,
+    /// Runs whose `run.revoke` is on its way to the workspace now, so the retry pass never
+    /// sends a second one beside it (W2-DMN-13). Memory only.
+    revoking: StdMutex<HashSet<String>>,
+}
+/// How long one live admission of a chat's grant by the workspace stands for the provider
+/// uses that are not the reply loop's own model requests ([`CrewManager::check_provider_use`]).
+const LIVE_ADMISSION_REUSE: std::time::Duration = std::time::Duration::from_secs(15);
+/// Whether a provider check must ask the workspace now, or may reuse a recent admission.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Fresh,
+    Recent,
+}
+/// One live admission of a chat's grant: the grant and provider it was for, and when.
+struct LiveAdmission {
+    /// The run, the chat it was made to, the policy epoch and the provider's identity: a
+    /// re-grant, a settings change or another model is never admitted by an earlier answer.
+    grant: (String, Option<i64>, u64, String),
+    at: std::time::Instant,
+}
+impl LiveAdmission {
+    fn of(scope: &Scope, provider: &dyn Provider) -> Self {
+        Self {
+            grant: (
+                scope.run_id.clone(),
+                scope.session_incarnation,
+                scope.epoch,
+                provider_binding(provider),
+            ),
+            at: std::time::Instant::now(),
+        }
+    }
+}
+/// A save refused because `other`, another connection on this computer to the same
+/// workspace, is under another institution than `given` (W2-DMN-9: typed, with both named).
+fn other_institution_refusal(other: &Connection, given: &str) -> anyhow::Error {
+    let theirs = other.institution_id.as_deref().unwrap_or_default();
+    CrewRefusal::new(
+        refusal::INSTITUTION_MISMATCH,
+        format!(
+            "{name} is also saved on this computer for the same workspace, under institution \
+             {theirs}. Connections to one workspace share one institution, so remove {name} \
+             before you use {given} here.",
+            name = other.name,
+        ),
+    )
+    .with("connection", json!(other.name))
+    .with("connection_institution", json!(theirs))
+    .with("institution", json!(given))
+    .into()
+}
+/// Whether saving `input` over `saved` keeps the route to the workspace: the same login,
+/// server, port, key, jump host, socket, owner and pinned workspace. What else may change (the
+/// name, the privacy mode, the institution, the remote folder) does not change where a bridge
+/// goes or what it verifies (W2-DMN-8).
+fn same_route(saved: &Connection, input: &SaveConnection) -> bool {
+    saved.ssh_target == input.ssh_target
+        && saved.port == input.port
+        && saved.identity_file == input.identity_file
+        && saved.proxy_jump == input.proxy_jump
+        && saved.socket_path == input.socket_path
+        && saved.owner_uid == input.owner_uid
+        && saved.workspace_id == input.workspace_id
+        && saved.workspace_public_key == input.workspace_public_key
+}
+/// The interactive sign-in's `ssh` arguments: a control master that keeps the session open
+/// for the bridge (`-M -N`, ControlPersist 600) over the same hardening every Crew `ssh`
+/// carries.
+///
+/// It is the one Crew `ssh` a person answers, so it passes `BatchMode=no` explicitly: a
+/// `BatchMode yes` in the person's own ssh configuration otherwise suppresses the password
+/// and verification-code prompts, and the Sign in window shows only "Permission denied"
+/// (W2-DMN-4). Every unattended `ssh` (the bridge, probes, host start) keeps `BatchMode=yes`.
+/// A `-o` option reaches only the destination, not a ProxyJump hop, so a jump host that
+/// needs a password stays unpromptable here.
+pub(super) fn sign_in_args(c: &Connection, control: &Path) -> Vec<String> {
+    let mut args = transport::ssh_args(c, control);
+    args.extend([
+        "-M".into(),
+        "-N".into(),
+        "-o".into(),
+        "ControlPersist=600".into(),
+        "-o".into(),
+        "BatchMode=no".into(),
+        c.ssh_target.clone(),
+    ]);
+    args
 }
 pub(super) fn connection_binding(connection: &Connection) -> Result<Value> {
     let mut value = serde_json::to_value(connection)?;
@@ -699,6 +1146,7 @@ pub(crate) async fn install_test_scope(
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         },
     );
@@ -741,15 +1189,52 @@ fn unhex(value: &str) -> Result<Vec<u8>> {
         .map(|pair| Ok(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?))
         .collect()
 }
+/// The model boundary a Crew grant is bound to: the provider's secret-free route and model
+/// identity (what [`Provider::restore_binding`] rebuilds it from), its tier and its affiliation.
+///
+/// ⚠ **Crew provider binding; a change here needs human review.** The identity leaves out
+/// what a provider carries per turn or learns at run time and is not a model boundary: the
+/// context window (Llama Server reads the loaded model's real window back after its first
+/// request, PROVIDERS-1), the sampling settings and the reasoning effort (Quick and Deep
+/// rebuild the provider with `reasoning_effort` and, for Quick, a temperature,
+/// PROVIDERS-2), and the output cap. Hashing them made a granted chat refuse every turn as
+/// "bound to another provider" once any of them moved, although every byte still went to the
+/// same endpoint and model. Everything that does decide where the chat's context goes stays
+/// in: the provider, its route (endpoint, deployment, region, command), the model name, the
+/// fast and toolshim models, provider request parameters, the tier and the affiliation.
 fn provider_binding(provider: &dyn Provider) -> String {
-    let resolved =
-        serde_json::to_vec(&provider.restore_binding()).expect("provider binding serializes");
+    let mut binding = provider.restore_binding();
+    let model = binding.model_mut();
+    model.context_limit = None;
+    model.temperature = None;
+    model.max_tokens = None;
+    model.reasoning_effort = None;
+    binding_digest(&binding, provider)
+}
+/// The binding a grant recorded before [`provider_binding`] left out per-turn state: the hash
+/// of the whole restore binding. Such a grant is still honored for the same provider as it
+/// stood (see [`binds`]); a new grant always records [`provider_binding`].
+fn legacy_provider_binding(provider: &dyn Provider) -> String {
+    binding_digest(&provider.restore_binding(), provider)
+}
+fn binding_digest(
+    binding: &crate::providers::provider_binding::ProviderRestoreBinding,
+    provider: &dyn Provider,
+) -> String {
+    let resolved = serde_json::to_vec(binding).expect("provider binding serializes");
     format!(
         "{}:{:?}:{:?}",
         hex(&Sha256::digest(resolved)),
         provider.tier(),
         provider.affiliation()
     )
+}
+/// Whether `provider` is the model boundary a grant recorded as `recorded`: its identity
+/// ([`provider_binding`]), or — for a grant recorded before that identity existed — the whole
+/// binding exactly as it was hashed then. Two different digests of SHA-256 never collide, so
+/// accepting either never admits another provider.
+fn binds(recorded: &str, provider: &dyn Provider) -> bool {
+    recorded == provider_binding(provider) || recorded == legacy_provider_binding(provider)
 }
 /// The fields `hello` v2 signs besides the pinned identity, read strictly: the signature covers
 /// their exact values, so a malformed field fails verification rather than being skipped.
@@ -819,6 +1304,7 @@ impl HelloV2Fields {
             }),
             institution_id: self.institution_id,
             policy_epoch: Some(self.policy_epoch),
+            storage: None,
         })
     }
 }
@@ -842,6 +1328,7 @@ impl BrokerHello {
             mode: None,
             institution_id: None,
             policy_epoch: None,
+            storage: None,
         }
     }
 }
@@ -971,10 +1458,256 @@ fn hello_nonce() -> String {
 }
 #[cfg(test)]
 pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(None);
+/// What a public model is told when the chat asking for Crew access has used a private one: its
+/// history carries private context a public model must not continue with (W2-DMN-9).
+const ORIGIN_RESTRICTED_PUBLIC: &str = "This chat has used a private model, so a public model can't continue it with Crew context. Choose a private model.";
+
+/// What `crew_credential_store_unavailable` says to a profile that holds no Crew identity yet,
+/// where an encrypted vault can still be set up (W2-DMN-1).
+pub const CREDENTIAL_STORE_UNAVAILABLE_TEXT: &str = "This computer has no keyring service Biorouter can use. Run `biorouter crew credentials init` to keep Crew keys in an encrypted vault, then try again.";
+/// What `crew_credential_store_unavailable` says to a profile whose Crew identities keep their
+/// keys in the keyring: a vault can't be set up over them (`credentials init` refuses), so the
+/// keyring has to answer again.
+pub const KEYRING_NOT_RUNNING_TEXT: &str = "This computer's keyring service isn't answering, and Biorouter keeps this profile's Crew keys there. Start it (for example, by signing in to this computer's desktop), then try again.";
+/// What `crew_credential_store_refused` says: the keyring is there and did not let Biorouter
+/// use a Crew key (denied at its prompt, locked, or no session to ask in).
+pub const CREDENTIAL_STORE_REFUSED_TEXT: &str = if cfg!(target_os = "macos") {
+    "macOS Keychain didn't let Biorouter use this computer's Crew keys. Allow access when Keychain asks, or unlock your login keychain, then try again."
+} else if cfg!(target_os = "windows") {
+    "Windows Credential Manager didn't let Biorouter use this computer's Crew keys. Allow access if Windows asks, then try again."
+} else {
+    "This computer's keyring is locked or didn't let Biorouter use its Crew keys. Unlock it, or allow access when it asks, then try again."
+};
+
+/// Whether this platform's credential store is always there: the macOS Keychain and the
+/// Windows Credential Manager are. Only a Secret Service (Linux and the other Unixes) can be
+/// missing, on a headless node or in an SSH-only session.
+const PLATFORM_STORE_ALWAYS_PRESENT: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+
+/// What a keyring failure says about the store behind it (W2-DMN-1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyringTrouble {
+    /// No keyring service answers on this computer.
+    Absent,
+    /// The keyring is there and refused: locked, a prompt denied or dismissed, no session to
+    /// ask in.
+    Refused,
+}
+
+impl KeyringTrouble {
+    /// The refusal a person can act on. An absent keyring never gets the vault's advice here:
+    /// only the first key of a profile that holds no identity may ([`first_key_failure`]),
+    /// because `credentials init` refuses any other.
+    fn refusal(self) -> CrewRefusal {
+        match self {
+            Self::Absent => CrewRefusal::new(
+                refusal::CREDENTIAL_STORE_UNAVAILABLE,
+                KEYRING_NOT_RUNNING_TEXT,
+            ),
+            Self::Refused => CrewRefusal::new(
+                refusal::CREDENTIAL_STORE_REFUSED,
+                CREDENTIAL_STORE_REFUSED_TEXT,
+            ),
+        }
+    }
+}
+
+/// What `error` says about the keyring, when it says anything. Where the store is always
+/// there (`store_always_present`), a failure is a refusal and never an absence: keyring maps
+/// the Keychain's errSecUserCanceled, errSecAuthFailed and errSecInteractionNotAllowed (Deny at
+/// its prompt, or no session to show one in) to `PlatformFailure`. A Secret Service that is
+/// locked or whose prompt was dismissed answers `NoStorageAccess`, a refusal too. A
+/// Secret Service `PlatformFailure` is an absence only when `service_absent` confirms it (a
+/// read of an entry Crew never writes fails the same way); otherwise it is not about the store
+/// being there, and keeps its own words, as any other keyring error does.
+fn keyring_trouble(
+    error: &keyring::Error,
+    store_always_present: bool,
+    service_absent: impl FnOnce() -> bool,
+) -> Option<KeyringTrouble> {
+    match error {
+        keyring::Error::NoStorageAccess(_) => Some(KeyringTrouble::Refused),
+        keyring::Error::PlatformFailure(_) if store_always_present => Some(KeyringTrouble::Refused),
+        keyring::Error::PlatformFailure(_) => service_absent().then_some(KeyringTrouble::Absent),
+        _ => None,
+    }
+}
+
+/// A keyring error as the refusal a person can act on (W2-DMN-1). A store that does not answer
+/// (no Secret Service on a headless Linux node: "The name is not activatable") fails every
+/// Crew key the same way, and "try again" never helps; a store that refused says so, and that
+/// allowing access or unlocking it will. Crew never falls back to plaintext for a device key.
+/// Any other keyring error keeps its own words.
+fn keyring_failure(error: keyring::Error) -> anyhow::Error {
+    let trouble = keyring_trouble(&error, PLATFORM_STORE_ALWAYS_PRESENT, || {
+        keyring_service_absent(keyring::Entry::new(CREDENTIAL_SERVICE, KEYRING_PROBE))
+    });
+    match trouble {
+        Some(trouble) => {
+            tracing::warn!(cause = %error, ?trouble, "Crew can't use this computer's keyring");
+            trouble.refusal().into()
+        }
+        None => error.into(),
+    }
+}
+
+/// What a refused keyring adds for a profile that holds no identity yet (W2-DMN-1).
+pub const VAULT_INSTEAD_TEXT: &str =
+    "Or run `biorouter crew credentials init` to keep Crew keys in an encrypted vault instead.";
+
+/// `error`, from saving the first Crew key of a profile: while `registry` holds no identity at
+/// all, the encrypted vault that `biorouter crew credentials init` can still set up here is
+/// offered, as the way out of a keyring with no service behind it and as the other way out of
+/// one that refused (W2-DMN-1). Once any identity exists that command refuses, so the vault is
+/// named nowhere else.
+fn first_key_failure(error: anyhow::Error, registry: &Registry) -> anyhow::Error {
+    if !registry.holds_no_identity() {
+        return error;
+    }
+    match CrewRefusal::find(&error).map(CrewRefusal::code) {
+        Some(refusal::CREDENTIAL_STORE_UNAVAILABLE) => CrewRefusal::new(
+            refusal::CREDENTIAL_STORE_UNAVAILABLE,
+            CREDENTIAL_STORE_UNAVAILABLE_TEXT,
+        )
+        .into(),
+        Some(refusal::CREDENTIAL_STORE_REFUSED) => CrewRefusal::new(
+            refusal::CREDENTIAL_STORE_REFUSED,
+            format!("{CREDENTIAL_STORE_REFUSED_TEXT} {VAULT_INSTEAD_TEXT}"),
+        )
+        .into(),
+        _ => error,
+    }
+}
+
+/// A keyring failure a test makes the manager rooted at each path meet on every key it saves,
+/// in place of the platform store's answer (W2-DMN-1).
+#[cfg(test)]
+static TEST_KEYRING_TROUBLE: StdMutex<Vec<(PathBuf, KeyringTrouble)>> = StdMutex::new(Vec::new());
+
+#[cfg(test)]
+impl CrewManager {
+    fn set_test_keyring_trouble(&self, trouble: Option<KeyringTrouble>) {
+        let mut all = TEST_KEYRING_TROUBLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.retain(|(root, _)| *root != self.root);
+        if let Some(trouble) = trouble {
+            all.push((self.root.clone(), trouble));
+        }
+    }
+
+    fn test_keyring_trouble(&self) -> Option<KeyringTrouble> {
+        TEST_KEYRING_TROUBLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(root, _)| *root == self.root)
+            .map(|(_, trouble)| *trouble)
+    }
+}
+
+/// The keyring service every Crew key is kept under.
+const CREDENTIAL_SERVICE: &str = "org.biorouter.crew";
+/// An entry Crew never writes, read to learn whether the keyring answers.
+const KEYRING_PROBE: &str = "keyring-probe";
+
+/// Whether the OS keyring answers, by reading an entry Crew never writes. A working keyring
+/// answers "no entry" (or, harmlessly, a value); one with no service behind it fails.
+///
+/// Only a Secret Service can be missing, so macOS and Windows are not asked: a read there can
+/// raise a Keychain prompt for nothing, and their stores are always present.
+fn keyring_answers(probe: Result<keyring::Entry>) -> bool {
+    if PLATFORM_STORE_ALWAYS_PRESENT {
+        return true;
+    }
+    let Ok(entry) = probe else {
+        return false;
+    };
+    !matches!(
+        entry.get_password(),
+        Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))
+    )
+}
+
+/// Whether no keyring service answers at all: a read of an entry Crew never writes fails as
+/// the platform failing, not as the entry being missing or the store being locked. A probe that
+/// cannot be built confirms nothing.
+fn keyring_service_absent(probe: keyring::Result<keyring::Entry>) -> bool {
+    probe.is_ok_and(|entry| {
+        matches!(
+            entry.get_password(),
+            Err(keyring::Error::PlatformFailure(_))
+        )
+    })
+}
 fn file_credentials_enabled() -> bool {
     std::env::var("BIOROUTER_DISABLE_KEYRING").as_deref() == Ok("true")
         && std::env::var_os("BIOROUTER_DEV_PROFILE_ROOT")
             .is_some_and(|p| PathBuf::from(p).is_absolute())
+}
+/// Whether `value` has the shape of a run ID: 1 to 128 ASCII letters, digits, `-` or `_`. The
+/// broker mints UUIDs. A run ID travels as a path segment (the renderer's Stop, `POST
+/// /crew/connections/{id}/runs/{run_id}/cancel`), so one the workspace answers with any other
+/// shape is refused where it arrives, in `run.create`, before anything here records or shows
+/// it: `../../credentials/lock?` would otherwise have sent the person's proof to another
+/// daemon route (RENDERER-2).
+pub fn is_run_id(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+/// The privacy in force for a connection in `own` mode to a workspace in `workspace` mode
+/// (T3-BE-5), the manual's definition and what every surface reports as the effective mode:
+/// Private when either is, since a workspace that is Private for everyone restricts every
+/// message whatever the connection's own mode (the broker's `message_restricted`); the
+/// connection's own when the workspace's mode is not known.
+fn effective_mode(own: ClusterMode, workspace: Option<ClusterMode>) -> ClusterMode {
+    if own == ClusterMode::Private || workspace == Some(ClusterMode::Private) {
+        ClusterMode::Private
+    } else {
+        own
+    }
+}
+/// Refuse a request that required the privacy mode `expected` (as the caller sent it) of a
+/// connection in `own` mode to a workspace in `workspace` mode. A GUI's verified mode and a
+/// terminal's `--expected-mode` both reach here, so the refusal names both modes rather than
+/// guessing that one changed (W2-DMN-9). The request may go ahead when `expected` is the privacy in force
+/// ([`effective_mode`], T3-BE-5: `--expected-mode private` from a personal Public connection in
+/// a workspace that is Private for everyone used to be refused, although every surface said
+/// Private), or the connection's own mode, which is what the desktop sends as the mode it last
+/// verified. The one refused is the mismatch that matters: a request that required Private on
+/// a connection that is Public in force, or the reverse; its refusal names the mode in force.
+/// `None` (no expectation) always may. Pass `None` for `workspace` to hold the connection's own
+/// mode alone.
+fn require_mode(
+    expected: Option<&Value>,
+    own: ClusterMode,
+    workspace: Option<ClusterMode>,
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let expected: ClusterMode = serde_json::from_value(expected.clone())
+        .map_err(|_| anyhow::anyhow!("A Crew privacy mode is either public or private"))?;
+    let in_force = effective_mode(own, workspace);
+    if expected == own || expected == in_force {
+        return Ok(());
+    }
+    Err(CrewRefusal::mode_mismatch(in_force, expected).into())
+}
+/// [`require_mode`] for a door outside this module that holds the expectation as a typed mode:
+/// a file selection (`POST /crew/files`) that required `expected`, on a connection in `own`
+/// mode to a workspace in `workspace` mode ([`CrewManager::signed_workspace_mode`]). The same
+/// rule every other door judges by (T3-BE-5), so `--expected-mode private` from a personal
+/// Public connection in a workspace that is Private for everyone is not refused on the file
+/// surface while status and privacy show say Private.
+pub fn require_expected_mode(
+    expected: Option<ClusterMode>,
+    own: ClusterMode,
+    workspace: Option<ClusterMode>,
+) -> Result<()> {
+    require_mode(expected.map(|mode| json!(mode)).as_ref(), own, workspace)
 }
 pub(super) fn safe_atom(value: &str) -> bool {
     !value.is_empty()
@@ -990,19 +1723,24 @@ impl CrewManager {
             .join(hex(&Sha256::digest(id.as_bytes())))
     }
     fn credential_entry(&self, id: &str) -> Result<keyring::Entry> {
-        Ok(keyring::Entry::new(
-            "org.biorouter.crew",
+        keyring::Entry::new(
+            CREDENTIAL_SERVICE,
             &format!(
                 "{}:{id}",
                 hex(&Sha256::digest(self.root.to_string_lossy().as_bytes()))
             ),
-        )?)
+        )
+        .map_err(keyring_failure)
     }
     fn write_credential(&self, id: &str, value: &str) -> Result<()> {
         self.credential_vault
             .write(id, value, || self.write_legacy_credential(id, value))
     }
     fn write_legacy_credential(&self, id: &str, value: &str) -> Result<()> {
+        #[cfg(test)]
+        if let Some(trouble) = self.test_keyring_trouble() {
+            return Err(trouble.refusal().into());
+        }
         if file_credentials_enabled() {
             let path = self.credential_path(id);
             let parent = path.parent().expect("credential parent");
@@ -1023,7 +1761,9 @@ impl CrewManager {
             file.persist(path)?;
             Ok(())
         } else {
-            self.credential_entry(id)?.set_password(value)?;
+            self.credential_entry(id)?
+                .set_password(value)
+                .map_err(keyring_failure)?;
             Ok(())
         }
     }
@@ -1042,7 +1782,7 @@ impl CrewManager {
         } else {
             match self.credential_entry(id)?.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(error) => Err(error.into()),
+                Err(error) => Err(keyring_failure(error)),
             }
         }
     }
@@ -1055,19 +1795,21 @@ impl CrewManager {
         if file_credentials_enabled() {
             Ok(std::fs::read_to_string(self.credential_path(id))?)
         } else {
-            Ok(self.credential_entry(id)?.get_password()?)
+            self.credential_entry(id)?
+                .get_password()
+                .map_err(keyring_failure)
         }
     }
+    /// Load the registry under `root`. One that cannot be read no longer fails the manager,
+    /// and with it every chat that asks it anything (DAEMON-6): it restricts the chats it may
+    /// name until it can be read again, and nothing is saved over it (see `freshness.rs`).
     pub fn new(root: PathBuf) -> Result<Self> {
-        let path = root.join("connections.json");
-        let (mut registry, saved_digest): (Registry, _) = match std::fs::read(&path) {
-            Ok(bytes) => (
-                serde_json::from_slice(&bytes)?,
-                Some(registry_digest(&bytes)),
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Registry::default(), None),
-            Err(e) => return Err(e.into()),
-        };
+        let freshness::Loaded {
+            mut registry,
+            saved_digest,
+            seen_file,
+            unreadable,
+        } = freshness::load(&root.join("connections.json"))?;
         for c in &mut registry.connections {
             c.status = "disconnected".into();
             c.last_error = None;
@@ -1085,10 +1827,17 @@ impl CrewManager {
             this: std::sync::OnceLock::new(),
             keepalive: StdMutex::new(keepalive::KeepaliveTiming::default()),
             idle_redial: StdMutex::new(HashMap::new()),
+            own_dials: StdMutex::new(HashMap::new()),
+            next_redial: StdMutex::new(HashMap::new()),
             members: StdMutex::new(std::collections::HashSet::new()),
             error_codes: StdMutex::new(HashMap::new()),
             run_reads: StdMutex::new(HashMap::new()),
             revocation_retries: StdMutex::new(HashMap::new()),
+            live_admissions: StdMutex::new(HashMap::new()),
+            seen_file: StdMutex::new(Some(seen_file)),
+            unreadable: StdMutex::new(unreadable),
+            ended_runs: StdMutex::new(HashSet::new()),
+            revoking: StdMutex::new(HashSet::new()),
         })
     }
     /// [`CrewManager::new`], shared, and able to keep its connections' bridges alive.
@@ -1113,6 +1862,54 @@ impl CrewManager {
             .get(id)
             .cloned()
     }
+    /// The workspace's own privacy mode, as its last `hello` signed it (v2); `None` when no
+    /// signed `hello` said (not connected, or an older broker). It can be stale: a request the
+    /// daemon sends on an expectation it met re-checks it where the workspace's mode counts.
+    pub fn signed_workspace_mode(&self, id: &str) -> Option<ClusterMode> {
+        self.broker_hello(id).and_then(|hello| hello.mode)
+    }
+    /// Whether `connection`'s workspace server has stopped saving changes, as its last verified
+    /// `hello` said (T3-BE-13). Only while it is connected: a `hello` from before a drop says
+    /// nothing about the server now, so a disconnected connection is unknown (`None`). Every
+    /// verified `hello` replaces the last (a connect, a heartbeat, a refresh after a change the
+    /// server refused for its storage), so a server that saves again clears it.
+    pub fn server_storage(&self, connection: &Connection) -> Option<ServerStorage> {
+        if connection.status != "connected" {
+            return None;
+        }
+        self.broker_hello(&connection.id)?.storage
+    }
+    /// A request the workspace refused because its server could not save it (`storage_full`,
+    /// `storage_failed`): ask `hello` again, in the background, so the connection says whether
+    /// the server has stopped saving (T3-BE-13). The broker also refuses one attachment with
+    /// the same codes when only that file could not be written and it keeps saving; its `hello`
+    /// tells the two apart, never the refusal's words. A manager built without
+    /// [`CrewManager::shared`] asks nothing.
+    fn heed_storage_refusal(&self, id: &str, answer: &Result<Value>) {
+        let Err(error) = answer else {
+            return;
+        };
+        if !keepalive::broker_refusal(error)
+            .is_some_and(|(code, _)| matches!(code.as_str(), "storage_full" | "storage_failed"))
+        {
+            return;
+        }
+        let Some(manager) = self.this.get().cloned() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let id = id.to_owned();
+        runtime.spawn(async move {
+            let Some(manager) = manager.upgrade() else {
+                return;
+            };
+            if let Err(error) = manager.refresh_broker_hello(&id).await {
+                tracing::debug!(connection = %id, error = %error, "Couldn't ask a Crew workspace whether it still saves changes");
+            }
+        });
+    }
     fn forget_broker(&self, id: &str) {
         self.brokers
             .lock()
@@ -1130,12 +1927,24 @@ impl CrewManager {
     }
     pub async fn credential_status(&self) -> Result<CredentialStatus> {
         let vault = self.credential_vault.clone();
-        tokio::task::spawn_blocking(move || vault.status()).await?
+        let probe = self.credential_entry(KEYRING_PROBE);
+        tokio::task::spawn_blocking(move || vault.status(|| keyring_answers(probe))).await?
     }
     pub async fn init_vault(&self, passphrase: zeroize::Zeroizing<String>) -> Result<()> {
+        // A registry that cannot be read is not an empty one: the identities it names may hold
+        // keyring credentials a new vault would shadow (DAEMON-6).
+        self.refresh_registry().await;
+        if self.unreadable_sessions().is_some() {
+            return Err(CrewRefusal::new(
+                refusal::REGISTRY_UNREADABLE,
+                freshness::UNREADABLE_VAULT,
+            )
+            .status(409)
+            .into());
+        }
         ensure!(!file_credentials_enabled(), "Encrypted vault initialization requires a production credential profile, not the development plaintext backend");
         let registry = self.registry.lock().await;
-        ensure!(registry.connections.is_empty() && registry.scopes.is_empty() && registry.replaced.is_empty() && registry.pending_device.is_none() && registry.completed_preparations.is_empty(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
+        ensure!(registry.holds_no_identity(), "Initialize an encrypted vault in a fresh Crew profile before creating identities; existing keyring credentials are never silently replaced");
         let vault = self.credential_vault.clone();
         let result = tokio::task::spawn_blocking(move || vault.init(passphrase)).await?;
         drop(registry);
@@ -1166,6 +1975,13 @@ impl CrewManager {
     /// of their own, after every chat's current grant, so a reader that looks a chat up by its
     /// id in `grants` never finds one of them.
     pub async fn session_grants(&self, connection_id: &str) -> Result<Value> {
+        Ok(json!(self.session_grant_rows(connection_id).await?))
+    }
+    /// The grants each chat and task holds on `connection_id`, and the earlier grants kept
+    /// for their revocation, as the HTTP grants list answers them.
+    pub async fn session_grant_rows(&self, connection_id: &str) -> Result<SessionGrants> {
+        // As another process saved them (CROSSCUT-1).
+        self.refresh_registry().await;
         self.connection(connection_id).await?;
         let sessions: Vec<String> = self
             .registry
@@ -1187,7 +2003,7 @@ impl CrewManager {
                 grants.push(grant_row(&session, &scope));
             }
         }
-        let replaced: Vec<Value> = self
+        let replaced_grants: Vec<GrantRow> = self
             .registry
             .lock()
             .await
@@ -1196,7 +2012,10 @@ impl CrewManager {
             .filter(|kept| kept.scope.connection_id == connection_id)
             .map(|kept| grant_row(&kept.session_id, &kept.scope))
             .collect();
-        Ok(json!({ "grants": grants, "replaced_grants": replaced }))
+        Ok(SessionGrants {
+            grants,
+            replaced_grants,
+        })
     }
     /// Write `registry` over the saved one as it stands, for a test that plays another
     /// process's save (or seeds one). Production writes go through
@@ -1310,13 +2129,15 @@ impl CrewManager {
         };
         let digest = bytes.as_deref().map(registry_digest);
         let saved: Value = match &bytes {
-            Some(bytes) => serde_json::from_slice(bytes)?,
+            Some(bytes) => serde_json::from_slice(bytes)
+                .map_err(|error| Self::unreadable_save_error(&error))?,
             None => serde_json::to_value(Registry::default())?,
         };
         let registry = if digest == self.saved_digest() {
             here.clone()
         } else {
-            let mut theirs: Registry = serde_json::from_value(saved.clone())?;
+            let mut theirs: Registry = serde_json::from_value(saved.clone())
+                .map_err(|error| Self::unreadable_save_error(&error))?;
             carry_process_state(here, &mut theirs);
             theirs
         };
@@ -1409,6 +2230,8 @@ impl CrewManager {
         }
         *registry = saved.registry;
         self.set_saved_digest(saved.digest);
+        // The file was just read back whole (or is the copy this process last read whole).
+        self.registry_readable_again();
         drop(lock);
         Ok(Ok(out))
     }
@@ -1484,6 +2307,8 @@ impl CrewManager {
         }
     }
     pub async fn list(&self) -> Vec<Connection> {
+        // As another process saved them (CROSSCUT-1).
+        self.refresh_registry().await;
         self.registry.lock().await.connections.clone()
     }
     pub async fn connection(&self, id: &str) -> Result<Connection> {
@@ -1505,7 +2330,8 @@ impl CrewManager {
             let preparation_id = uuid::Uuid::new_v4().to_string();
             let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
             let public = key.verifying_key().to_bytes();
-            self.write_credential(&format!("device:{preparation_id}"), &hex(&key.to_bytes()))?;
+            self.write_credential(&format!("device:{preparation_id}"), &hex(&key.to_bytes()))
+                .map_err(|error| first_key_failure(error, registry))?;
             let prepared = PreparedDevice {
                 preparation_id,
                 public_key: hex(&public),
@@ -1531,8 +2357,38 @@ impl CrewManager {
         }
         // P-1: a save that would be refused is refused while the bridge is still up.
         self.refusal_before_saving(id, &input).await?;
+        // W2-DMN-8: a person's save of a connected connection that keeps its route (the same
+        // login, server, socket and pinned workspace: a privacy, institution or name change)
+        // reconnects it at once. The save still drops the bridge and moves the policy epoch,
+        // which ends every grant; the new bridge is verified from scratch, and grants are not
+        // revived. Nothing reconnected it before, and the desktop must not connect by itself,
+        // so the workspace read "offline" until someone pressed Connect.
+        let reconnect = self.transports.lock().await.contains_key(id)
+            && self
+                .connection(id)
+                .await
+                .is_ok_and(|saved| same_route(&saved, &input));
         self.disconnect_locked(id).await?;
-        self.save_inner(Some(id), input).await
+        let saved = self.save_inner(Some(id), input).await?;
+        if !reconnect || authentication::ensure_connect_available(id).is_err() {
+            return Ok(saved);
+        }
+        match self.connect_locked(id).await {
+            Ok(connected) => Ok(connected),
+            Err(error) => {
+                let message = error.to_string();
+                tracing::info!(connection = id, %error, "Crew couldn't reconnect after saving a connection");
+                {
+                    let mut registry = self.registry.lock().await;
+                    if let Some(c) = registry.connections.iter_mut().find(|c| c.id == id) {
+                        c.status = "disconnected".into();
+                        c.last_error = Some(message.clone());
+                    }
+                }
+                self.note_error_code(id, &error, &message);
+                self.connection(id).await
+            }
+        }
     }
     /// The refusal saving `input` over `id` would meet, if any, asked before anything changes:
     /// the save's own checks — an institution that does not normalize, a private connection
@@ -1648,6 +2504,7 @@ impl CrewManager {
     }
     fn connection_device(
         &self,
+        r: &Registry,
         connection_id: &str,
         old: Option<&Connection>,
         prepared: Option<&PreparedDevice>,
@@ -1669,7 +2526,8 @@ impl CrewManager {
             let key = SigningKey::from_bytes(&rand::random::<[u8; 32]>());
             let public = key.verifying_key().to_bytes();
             let device = hex(&Sha256::digest(public));
-            self.write_credential(&format!("device:{connection_id}"), &hex(&key.to_bytes()))?;
+            self.write_credential(&format!("device:{connection_id}"), &hex(&key.to_bytes()))
+                .map_err(|error| first_key_failure(error, r))?;
             (device, hex(&public))
         })
     }
@@ -1701,7 +2559,7 @@ impl CrewManager {
             })
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let (device_id, public_key) =
-            self.connection_device(&connection_id, old.as_ref(), prepared)?;
+            self.connection_device(r, &connection_id, old.as_ref(), prepared)?;
         // Workspace aliases share the most restrictive existing cluster identity automatically.
         let canonical = r
             .connections
@@ -1730,12 +2588,12 @@ impl CrewManager {
         } else {
             input.mode
         };
-        let institution_id = institution::merge(
-            r.connections
-                .iter()
-                .filter(|c| c.cluster_connection_id == cluster)
-                .filter_map(|c| c.institution_id.as_deref())
-                .chain(input.institution_id.as_deref()),
+        let institution_id = self.saved_institution(
+            r,
+            id,
+            &cluster,
+            input.institution_id.as_deref(),
+            (&input.workspace_id, &input.workspace_public_key),
         )?;
         for c in r
             .connections
@@ -1769,6 +2627,83 @@ impl CrewManager {
             device_id,
             public_key,
         })
+    }
+    /// The institution a connection saved into `cluster` gets from a save that gives
+    /// `requested`, refused when another saved connection to the same workspace (DAEMON-3) or
+    /// the workspace itself (T3-BE-4, `workspace` is its pinned ID and key) says another one.
+    fn saved_institution(
+        &self,
+        r: &Registry,
+        id: Option<&str>,
+        cluster: &str,
+        requested: Option<&str>,
+        workspace: (&str, &str),
+    ) -> Result<Option<String>> {
+        // The connection being edited is judged by its new institution alone, as its mode is
+        // above: its saved one is what the edit replaces. Counting it made every change of
+        // institution a conflict with itself (DAEMON-3), refused as "aliases" there were none
+        // of. Another connection to the same workspace still has to agree, and is named
+        // when it does not.
+        if let Some(given) = requested {
+            if let Some(other) = r.connections.iter().find(|c| {
+                c.cluster_connection_id == *cluster
+                    && Some(c.id.as_str()) != id
+                    && c.institution_id
+                        .as_deref()
+                        .is_some_and(|theirs| theirs != given)
+            }) {
+                return Err(other_institution_refusal(other, given));
+            }
+        }
+        let institution_id = institution::merge(
+            r.connections
+                .iter()
+                .filter(|c| c.cluster_connection_id == *cluster && Some(c.id.as_str()) != id)
+                .filter_map(|c| c.institution_id.as_deref())
+                .chain(requested),
+        )?;
+        // The workspace's own institution is fixed by its host, and admission refuses a
+        // connection for another (T3-BE-4); a save that would set one is refused here instead,
+        // when a signed `hello` from this workspace says which it is. One not known yet is
+        // accepted as it always was.
+        if let Some(given) = institution_id.as_deref() {
+            if let Some((label, theirs)) =
+                self.workspace_institution(r, workspace.0, workspace.1, given)
+            {
+                return Err(institution::save_mismatch(given, &label, &theirs));
+            }
+        }
+        Ok(institution_id)
+    }
+    /// The workspace pinned as `workspace_id` and `workspace_public_key`, as a person calls it,
+    /// and its institution, when a signed (v2) `hello` from it says the institution is another
+    /// than `given`: the hello of any saved connection to that workspace this daemon has
+    /// verified since it connected. `None` when none says, or all agree.
+    fn workspace_institution(
+        &self,
+        r: &Registry,
+        workspace_id: &str,
+        workspace_public_key: &str,
+        given: &str,
+    ) -> Option<(String, String)> {
+        r.connections
+            .iter()
+            .filter(|c| {
+                c.workspace_id == workspace_id && c.workspace_public_key == workspace_public_key
+            })
+            .find_map(|c| {
+                let hello = self
+                    .broker_hello(&c.id)
+                    .filter(|hello| hello.signature_version >= 2)?;
+                let theirs = institution::normalize(hello.institution_id.as_deref()?).ok()?;
+                (theirs != given).then(|| {
+                    let label = hello
+                        .workspace_name
+                        .filter(|name| biorouter_crew::workspace_name_valid(name))
+                        .unwrap_or_else(|| plain_label(&c.name));
+                    (label, theirs)
+                })
+            })
     }
     async fn save_inner(&self, id: Option<&str>, mut input: SaveConnection) -> Result<Connection> {
         Self::validate_connection(&input)?;
@@ -1852,30 +2787,61 @@ impl CrewManager {
         }
         Ok(c)
     }
-    /// Remove a saved connection: disconnect it, drop it from the registry (its grants stay,
-    /// expired), then delete its device private key (T-50). The key goes last, so a registry
-    /// write that fails never leaves a saved connection without its key; a key that is already
-    /// gone is not an error.
+    /// Remove a saved connection: stop every grant on it and ask the workspace to revoke their
+    /// runs, disconnect it, drop it from the registry (its grants stay, stopped), delete its
+    /// grants' run credentials, then delete its device private key (T-50). The key goes last,
+    /// so a registry write that fails never leaves a saved connection without its key; a key
+    /// that is already gone is not an error.
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.** Removing used to mark the grants
+    /// expired here and delete the device key, the only key that can sign `run.revoke`, without
+    /// asking the workspace anything (DAEMON-7). Every live run stayed honored at the workspace
+    /// until it lapsed, remote jobs started under it included, its run credential stayed in the
+    /// keychain or vault, and nothing on this device could revoke it or even list it. Now the
+    /// runs are revoked first, over the bridge when it is up; removal never dials a connection
+    /// that is down, so a run it cannot reach still ends only when it expires (an hour at most).
     pub async fn remove(&self, id: &str) -> Result<()> {
+        // Before the lifecycle guard: a request whose bridge dropped dials again under that
+        // guard, and this one would then wait on itself.
+        self.revoke_before_removal(id).await;
         let _lifecycle = self.connection_guard(id).await?;
         self.disconnect_locked(id).await?;
-        let pending_preparation = self
+        let (pending_preparation, sessions) = self
             .update_registry_keeping(|r| {
                 r.connections.retain(|c| c.id != id);
-                for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
+                let mut sessions = Vec::new();
+                for (session, scope) in r.scopes.iter_mut().filter(|(_, s)| s.connection_id == id) {
+                    // One granted after the revocations above is stopped here all the same.
                     scope.expired = true;
+                    sessions.push(session.clone());
                 }
                 // Nothing can ask the workspace about them any more: the device key goes next.
                 r.replaced.retain(|kept| kept.scope.connection_id != id);
                 // A prepared device not yet saved keeps its key under the same kind of ID; that
                 // one belongs to the next save, not to this removal.
-                Ok(r.pending_device
-                    .as_ref()
-                    .is_some_and(|prepared| prepared.preparation_id == id))
+                Ok((
+                    r.pending_device
+                        .as_ref()
+                        .is_some_and(|prepared| prepared.preparation_id == id),
+                    sessions,
+                ))
             })
             .await??;
         if pending_preparation {
             return Ok(());
+        }
+        // No grant here names these credentials' runs any more.
+        for session in sessions {
+            self.forget_run_reads(&session);
+            self.forget_live_admission(&session);
+            if let Err(error) = self.delete_credential(&format!("run:{session}")) {
+                tracing::warn!(
+                    connection = id,
+                    session,
+                    %error,
+                    "couldn't delete the run credential of a removed Crew connection's grant"
+                );
+            }
         }
         self.delete_credential(&format!("device:{id}"))
             .map_err(|error| {
@@ -1884,16 +2850,42 @@ impl CrewManager {
                 )
             })
     }
+    /// [`Self::remove`]'s first step: stop every grant on `id` here (saved, or held in memory
+    /// when it cannot be), then, if its bridge is up, ask the workspace to revoke each run whose
+    /// revocation is not yet confirmed, earlier grants kept for their revocation included.
+    /// Best effort: removal goes on whatever the workspace answers.
+    async fn revoke_before_removal(&self, id: &str) {
+        let stopped = self
+            .update_registry_keeping(|r| {
+                for scope in r.scopes.values_mut().filter(|s| s.connection_id == id) {
+                    *scope = scope.clone().into_stopped();
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = stopped {
+            // It holds in this process all the same (`update_registry_keeping`).
+            tracing::warn!(connection = id, %error, "Couldn't save the stop of a removed Crew connection's grants");
+        }
+        if !self.transports.lock().await.contains_key(id) {
+            return;
+        }
+        for (session, run_id) in self.unconfirmed_revocations(id).await {
+            if let Err(error) = self.confirm_revocation(id, &session, &run_id).await {
+                tracing::warn!(
+                    connection = id,
+                    session,
+                    run_id,
+                    %error,
+                    "the workspace did not confirm revoking a removed Crew connection's run; it \
+                     ends when it expires"
+                );
+            }
+        }
+    }
     pub async fn authentication_plan(&self, id: &str) -> Result<AuthenticationPlan> {
         let c = self.connection(id).await?;
-        let mut args = transport::ssh_args(&c, &self.control_path(id)?);
-        args.extend([
-            "-M".into(),
-            "-N".into(),
-            "-o".into(),
-            "ControlPersist=600".into(),
-            c.ssh_target.clone(),
-        ]);
+        let args = sign_in_args(&c, &self.control_path(id)?);
         ssh_policy::preflight(&args, &c.ssh_target).await?;
         Ok(AuthenticationPlan {
             program: "ssh".into(),
@@ -1968,6 +2960,10 @@ impl CrewManager {
                 HelloV2Fields::read(hello)?.verify(c, challenge_nonce, node_id, &verifying, &v2)?
             }
             None => BrokerHello::unsigned(hello),
+        };
+        let broker = BrokerHello {
+            storage: ServerStorage::from_hello(hello),
+            ..broker
         };
         Ok(VerifiedHello {
             node_id: node_id.to_string(),
@@ -2078,7 +3074,8 @@ impl CrewManager {
         let transport = self.live_transport(id).await?;
         let (answer, usable) = self.hello_over(id, &c, &pinned, &transport).await;
         if !usable {
-            self.retire_broken_bridge(id, &transport, &answer).await?;
+            self.retire_broken_bridge(id, &transport, "hello", &answer)
+                .await?;
         }
         answer
     }
@@ -2187,7 +3184,7 @@ impl CrewManager {
             ClusterMode::Public
         };
         if let Some(refusal) = Self::mixed_institutions(registry, &groups, c) {
-            return Err(anyhow::anyhow!(refusal));
+            return Err(CrewRefusal::new(refusal::INSTITUTION_MISMATCH, refusal).into());
         }
         let institution_id = institution::merge(
             registry
@@ -2314,29 +3311,37 @@ impl CrewManager {
         }
         Ok(())
     }
-    async fn retire_failed_transport(
+    /// Retire `failed`, a bridge that broke carrying `method`, whose answer was `answer`, while
+    /// it is still `id`'s bridge, with [`bridge_loss_message`]. Dials nothing.
+    async fn retire_failed_transport<T>(
         &self,
         id: &str,
         failed: &Arc<Mutex<transport::Transport>>,
+        method: &str,
+        answer: &Result<T>,
     ) -> Result<()> {
         // Callers release the transport mutex before taking lifecycle ownership.
         // Connect/update/remove hold this same guard while replacing publication.
         let _lifecycle = self.connection_guard(id).await?;
-        self.retire_locked(id, failed, BRIDGE_FAILED).await;
+        self.retire_locked(id, failed, bridge_loss_message(method, answer))
+            .await;
         Ok(())
     }
-    /// [`Self::retire_failed_transport`] for a bridge that broke carrying a request whose
-    /// answer was `answer`. While it was still `id`'s bridge, a network failure also arms the
-    /// keepalive's retries of the connection, never of the request (Q4-01, see
-    /// [`Self::request_bridge_failed`]).
+    /// [`Self::retire_failed_transport`] for a bridge that broke carrying `method`, whose
+    /// answer was `answer`. While it was still `id`'s bridge, a network failure also dials the
+    /// connection again, at once, never the request (Q4-01, W2-DMN-6, see
+    /// [`Self::request_bridge_failed`]). Only a request whose outcome was lost leaves the
+    /// "inspect any submitted operation" alarm ([`bridge_loss_message`]).
     async fn retire_broken_bridge<T>(
         &self,
         id: &str,
         failed: &Arc<Mutex<transport::Transport>>,
+        method: &str,
         answer: &Result<T>,
     ) -> Result<()> {
         let _lifecycle = self.connection_guard(id).await?;
-        if self.retire_locked(id, failed, BRIDGE_FAILED).await {
+        let message = bridge_loss_message(method, answer);
+        if self.retire_locked(id, failed, message).await {
             if let Err(error) = answer {
                 self.request_bridge_failed(id, error);
             }
@@ -2376,14 +3381,25 @@ impl CrewManager {
         true
     }
     async fn transport(&self, id: &str) -> Result<Arc<Mutex<transport::Transport>>> {
-        self.transports
-            .lock()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!("Crew connection is disconnected; authenticate and connect in Crew")
-            })
+        if let Some(transport) = self.transports.lock().await.get(id).cloned() {
+            return Ok(transport);
+        }
+        // A bridge that broke is being dialled again by itself: nothing needs signing in, and
+        // the request can be sent again in a moment (W2-DMN-6).
+        if self.redial_pending(id) {
+            let workspace = self.workspace_label(id).await;
+            return Err(CrewRefusal::new(
+                refusal::RECONNECTING,
+                reconnecting_sentence(&workspace, self.next_redial_in(id)),
+            )
+            .status(503)
+            .with("workspace", json!(workspace))
+            .into());
+        }
+        // Nothing is dialling it: a person connects it. Typed, so each client can say so in its
+        // own words; the sentence stays the one older clients match (T3-BE-3).
+        let workspace = self.workspace_label(id).await;
+        Err(CrewRefusal::not_connected(&workspace).into())
     }
     pub async fn human_request(
         &self,
@@ -2462,11 +3478,10 @@ impl CrewManager {
         ensure!(params.is_object(), "Crew params must be an object");
         let c = self.connection(id).await?;
         if method == "run.create" {
+            // The daemon's own check that the connection's mode did not move since admission,
+            // which judged the person's expectation ([`Self::checked_run_admission`]).
             let expected = params.as_object_mut().unwrap().remove("expected_mode");
-            ensure!(
-                expected.as_ref().is_none_or(|mode| mode == &json!(c.mode)),
-                "Crew connection privacy changed; refresh the verified workspace before granting agent access"
-            );
+            require_mode(expected.as_ref(), c.mode, None)?;
             let expected_epoch = params
                 .as_object_mut()
                 .unwrap()
@@ -2490,14 +3505,20 @@ impl CrewManager {
             }
         }
         if matches!(method, "message.post" | "blob.begin") {
-            let mode = json!(c.mode);
-            ensure!(
-                params
-                    .get("personal_mode")
-                    .is_none_or(|expected| expected == &mode),
-                "Crew connection privacy changed; refresh the verified workspace before sending"
-            );
-            params["personal_mode"] = mode;
+            let expected = params.get("personal_mode").cloned();
+            require_mode(expected.as_ref(), c.mode, self.signed_workspace_mode(id))?;
+            // The workspace combines the connection's own mode with its own, and is told the
+            // connection's; a request that required Private is told Private (T3-BE-5), so it is
+            // restricted even when the workspace stopped being Private for everyone since its
+            // last `hello` said it was.
+            let required_private = expected
+                .and_then(|mode| serde_json::from_value::<ClusterMode>(mode).ok())
+                == Some(ClusterMode::Private);
+            params["personal_mode"] = json!(if required_private {
+                ClusterMode::Private
+            } else {
+                c.mode
+            });
         }
         if params.get("idempotency_key").is_none() {
             params["idempotency_key"] = json!(request_id
@@ -2521,7 +3542,19 @@ impl CrewManager {
         }
         // A bridge that ended, or sat idle long enough for the broker to drop it, is checked
         // (and dialled again without a prompt) before anything is written to it.
-        let transport = self.live_transport(id).await?;
+        let transport = match self.live_transport(id).await {
+            Ok(transport) => transport,
+            Err(error) => {
+                let workspace = self.workspace_label(id).await;
+                return Err(lost_request(
+                    error,
+                    Lost::BeforeSending,
+                    method,
+                    None,
+                    &workspace,
+                ));
+            }
+        };
         let mut locked = transport.lock().await;
         let result = self
             .signed_exchange(&mut locked, &c, method, params, request_id, &signer)
@@ -2529,11 +3562,13 @@ impl CrewManager {
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_broken_bridge(id, &transport, &result).await?;
+            self.retire_broken_bridge(id, &transport, method, &result)
+                .await?;
         }
         // Q3-12: whether the workspace still knows this device (see `keepalive.rs`).
         self.heed_membership(door == SignedDoor::Join, id, method, &result, &transport)
             .await;
+        self.heed_storage_refusal(id, &result);
         result
     }
     async fn signed_exchange(
@@ -2555,7 +3590,7 @@ impl CrewManager {
                 && fresh.workspace_public_key == c.workspace_public_key,
             "Crew connection policy changed while this action was queued; review and retry"
         );
-        let challenge = t
+        let challenge = match t
             .request(
                 "auth.challenge",
                 json!({"device_id":c.device_id}),
@@ -2563,7 +3598,21 @@ impl CrewManager {
                 None,
                 None,
             )
-            .await?;
+            .await
+        {
+            Ok(challenge) => challenge,
+            // Only the challenge was lost: the request itself was never written (W2-DMN-7).
+            Err(error) => {
+                let workspace = self.workspace_label(id).await;
+                return Err(lost_request(
+                    error,
+                    Lost::BeforeSending,
+                    method,
+                    None,
+                    &workspace,
+                ));
+            }
+        };
         ensure!(
             challenge["workspace_id"].as_str() == Some(&c.workspace_id),
             "Challenge workspace mismatch"
@@ -2586,14 +3635,29 @@ impl CrewManager {
             canonical(&params)
         ]))?;
         let signature = hex(&signer.sign(&bytes).to_bytes());
-        t.request(
-            method,
-            params,
-            Some(json!({"device_id":c.device_id,"nonce":nonce,"signature":signature})),
-            None,
-            request_id,
-        )
-        .await
+        let request_key = params["idempotency_key"].as_str().map(str::to_owned);
+        match t
+            .request(
+                method,
+                params,
+                Some(json!({"device_id":c.device_id,"nonce":nonce,"signature":signature})),
+                None,
+                request_id,
+            )
+            .await
+        {
+            Ok(answer) => Ok(answer),
+            Err(error) => {
+                let workspace = self.workspace_label(id).await;
+                Err(lost_request(
+                    error,
+                    Lost::WhileCarrying,
+                    method,
+                    request_key,
+                    &workspace,
+                ))
+            }
+        }
     }
 
     /// The run of the chat's grant, including one that is [`Standing::Unconfirmed`] — it is
@@ -2601,7 +3665,7 @@ impl CrewManager {
     /// the same id.
     pub async fn run_metadata(&self, session: &str) -> Option<RunMetadata> {
         match self.standing(session).await {
-            Standing::None => None,
+            Standing::None | Standing::Unreadable(_) => None,
             Standing::Own(scope) | Standing::Unconfirmed(scope, _) => Some(RunMetadata {
                 run_id: scope.run_id,
                 connection_id: scope.connection_id,
@@ -2611,8 +3675,20 @@ impl CrewManager {
     }
     /// Every chat a grant restricts: each id whose grant is its chat's own or cannot be
     /// confirmed, and none whose grant was made to an earlier chat under the same id.
+    ///
+    /// Read against the saved registry as it is now (CROSSCUT-1). While it cannot be read, the
+    /// chats it names are listed too, and every saved chat when it names none this build can
+    /// read (DAEMON-6).
     pub async fn scoped_session_ids(&self) -> std::collections::HashSet<String> {
-        let sessions: Vec<String> = self.registry.lock().await.scopes.keys().cloned().collect();
+        self.refresh_registry().await;
+        let mut sessions: Vec<String> = self.registry.lock().await.scopes.keys().cloned().collect();
+        match self.unreadable_sessions() {
+            None => {}
+            Some(Some(named)) => sessions.extend(named),
+            Some(None) => sessions.extend(self.every_chat().await),
+        }
+        sessions.sort();
+        sessions.dedup();
         let mut scoped = std::collections::HashSet::with_capacity(sessions.len());
         for session in sessions {
             if self.is_scoped(&session).await {
@@ -2635,7 +3711,7 @@ impl CrewManager {
         let c = self.connection(&s.connection_id).await?;
         self.validate_worker_scope(session, &s, &c).await?;
         Ok(
-            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"labels":s.labels,"naming":"labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.","context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
+            json!({"connections":[{"id":c.id,"name":c.name,"status":c.status,"mode":c.mode,"workspace_id":c.workspace_id,"destination_channel_id":s.channel_id,"source_channel_ids":s.source_channels,"labels":s.labels,"naming":NAMING_RULE,"context_discovery":"Use context.manifest with empty params for recent authorized selected-channel context. Search each relevant source_channel_id with messages.search using channel_id and query; history and search are per-channel.","remote_files_enabled":!s.public_provider && c.remote_root.is_some(),"remote_execution_enabled":!s.public_provider && c.remote_root.is_some() && c.remote_execution,"remote_path_base":"the granted SSH work directory, not the local task directory; supply relative paths"}]}),
         )
     }
     /// Whether a grant restricts this chat: its own, or one it cannot be confirmed not to
@@ -2648,7 +3724,9 @@ impl CrewManager {
     async fn scope(&self, session: &str) -> Result<Scope> {
         match self.standing(session).await {
             Standing::Own(scope) => Ok(scope),
-            Standing::Unconfirmed(_, reason) => Err(anyhow::anyhow!(reason)),
+            Standing::Unconfirmed(_, reason) | Standing::Unreadable(reason) => {
+                Err(anyhow::anyhow!(reason))
+            }
             Standing::None => Err(anyhow::anyhow!(NO_GRANT)),
         }
     }
@@ -2658,7 +3736,9 @@ impl CrewManager {
     async fn checked_scope(&self, session: &str) -> Result<Option<(Scope, Option<Connection>)>> {
         let own = match self.standing(session).await {
             Standing::None => return Ok(None),
-            Standing::Unconfirmed(_, reason) => anyhow::bail!(reason),
+            Standing::Unconfirmed(_, reason) | Standing::Unreadable(reason) => {
+                anyhow::bail!(reason)
+            }
             Standing::Own(scope) => scope,
         };
         let registry = self.registry.lock().await;
@@ -2692,11 +3772,14 @@ impl CrewManager {
             return Ok(());
         };
         let c = grant_stands(&s, c.as_ref())?;
-        ensure!(
-            tier != ProviderTier::Public
-                || (c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted),
-            "Private Crew context cannot be sent to a public model"
-        );
+        if tier == ProviderTier::Public
+            && !(c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted)
+        {
+            return Err(CrewRefusal::public_model(
+                "This chat's Crew context is private, so a public model can't read it.",
+            )
+            .into());
+        }
         institution::check_provider(tier, affiliation, &s.institution_ids)?;
         Ok(())
     }
@@ -2749,16 +3832,23 @@ impl CrewManager {
             !provider.uses_tool_bridge(),
             "Crew cannot bind a provider with unscoped external tools"
         );
-        ensure!(scope.provider_binding==provider_binding(provider),"Crew conversation remains bound to its original resolved provider; start a fresh conversation for another model boundary");
+        // Before the tier: a chat's model is fixed by its grant whatever tier the new one has,
+        // and that is the one sentence a person can act on (W2-DMN-10).
+        if !binds(&scope.provider_binding, provider) {
+            return Err(CrewRefusal::model_fixed().into());
+        }
         let connection =
             connection.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
-        ensure!(
-            provider.tier() != ProviderTier::Public
-                || (connection.mode == ClusterMode::Public
-                    && scope.public_provider
-                    && !scope.origin_restricted),
-            "Private Crew context cannot be bound to a public model"
-        );
+        if provider.tier() == ProviderTier::Public
+            && !(connection.mode == ClusterMode::Public
+                && scope.public_provider
+                && !scope.origin_restricted)
+        {
+            return Err(CrewRefusal::public_model(
+                "This chat's Crew context is private, so a public model can't read it.",
+            )
+            .into());
+        }
         institution::check_provider(
             provider.tier(),
             provider.affiliation(),
@@ -2766,8 +3856,10 @@ impl CrewManager {
         )?;
         Ok(())
     }
-    /// Every check a provider call on `session` must pass: the binding, the tier, and — for a
-    /// scoped chat — a live `context.manifest` through the worker path.
+    /// Every check a model request on `session` must pass: the binding, the tier, and — for a
+    /// scoped chat — a live `context.manifest` through the worker path, asked now whatever was
+    /// asked before. The reply loop calls this before every request it sends; everything else
+    /// calls [`Self::check_provider_use`].
     ///
     /// ⚠ The body runs **boxed**, and must stay that way. `Agent::provider` awaits this, and
     /// `Agent::reply` reaches `Agent::provider` through the tool-surface preparation, so an
@@ -2781,31 +3873,86 @@ impl CrewManager {
         session: &str,
         provider: &dyn Provider,
     ) -> Result<()> {
-        Box::pin(self.check_provider_dispatch_inner(session, provider)).await
+        Box::pin(self.check_provider_dispatch_inner(session, provider, Admission::Fresh)).await
+    }
+    /// [`Self::check_provider_dispatch`] for a use of the provider that is not the reply loop's
+    /// own model request: `Agent::provider`, which the loop and its helpers read many times a
+    /// turn (to name the model, count tokens, or run a title, a summary or a stall check).
+    ///
+    /// The binding and the tier are checked on every call, exactly as the fresh check does,
+    /// so a grant stopped, re-granted or re-bound on this device is refused at once. Only the
+    /// live `context.manifest` is shared: when this grant, with this provider, was admitted by
+    /// the workspace within [`LIVE_ADMISSION_REUSE`], that admission stands for this call too.
+    /// Each call used to send its own, several per model request and one per streamed chunk
+    /// (CROSSCUT-7, PROVIDERS-3): hundreds of SSH round trips for one answer, and a bridge
+    /// hiccup on any of them aborted a turn that was already answering.
+    ///
+    /// ⚠ **Crew admission; a change here needs human review.** What the reuse can miss is a
+    /// run the workspace ended in the last [`LIVE_ADMISSION_REUSE`] that this device has not
+    /// yet heard about, and only for a request outside the reply loop, sent to the model this
+    /// chat's context was already admitted to. The loop's next request asks the workspace
+    /// again, and a refusal it answers ends the grant here ([`Self::heed_worker_refusal`]).
+    pub async fn check_provider_use(&self, session: &str, provider: &dyn Provider) -> Result<()> {
+        Box::pin(self.check_provider_dispatch_inner(session, provider, Admission::Recent)).await
     }
     async fn check_provider_dispatch_inner(
         &self,
         session: &str,
         provider: &dyn Provider,
+        admission: Admission,
     ) -> Result<()> {
         self.check_provider_binding(session, provider).await?;
         self.check_tier(session, provider.tier(), provider.affiliation())
             .await?;
-        if self.is_scoped(session).await {
-            // A turn refused here is shown to the person as it stands ("Model request
-            // failed"), in the chat and in the terminal: a refusal the workspace answered is
-            // said as a sentence, never as the broker's envelope (D-1).
-            self.worker_request(session, "context.manifest", json!({}))
-                .await
-                .map_err(|error| {
-                    if refused_by_workspace(&error) {
-                        anyhow::anyhow!(agent_error_text(&error))
-                    } else {
-                        error
-                    }
-                })?;
+        let scope = match self.standing(session).await {
+            Standing::None => return Ok(()),
+            // The checks above refuse such a grant first; this keeps it refused if it
+            // changed in between.
+            Standing::Unconfirmed(_, reason) | Standing::Unreadable(reason) => {
+                anyhow::bail!(reason)
+            }
+            Standing::Own(scope) => scope,
+        };
+        let admitted = LiveAdmission::of(&scope, provider);
+        if admission == Admission::Recent && self.admitted_recently(session, &admitted) {
+            return Ok(());
         }
+        self.forget_live_admission(session);
+        // A turn refused here is shown to the person as it stands ("Model request
+        // failed"), in the chat and in the terminal: a refusal the workspace answered is
+        // said as a sentence, never as the broker's envelope (D-1).
+        self.worker_request(session, "context.manifest", json!({}))
+            .await
+            .map_err(|error| {
+                if refused_by_workspace(&error) {
+                    anyhow::anyhow!(agent_error_text(&error))
+                } else {
+                    error
+                }
+            })?;
+        self.live_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(session.to_owned(), admitted);
         Ok(())
+    }
+    /// Whether the workspace admitted `admitted` — this grant, with this provider — for
+    /// `session` within [`LIVE_ADMISSION_REUSE`].
+    fn admitted_recently(&self, session: &str, admitted: &LiveAdmission) -> bool {
+        self.live_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)
+            .is_some_and(|last| {
+                last.grant == admitted.grant && last.at.elapsed() < LIVE_ADMISSION_REUSE
+            })
+    }
+    /// Forget `session`'s last live admission, so its next provider use asks the workspace.
+    fn forget_live_admission(&self, session: &str) {
+        self.live_admissions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
     }
     pub async fn preflight_run(
         &self,
@@ -2834,12 +3981,11 @@ impl CrewManager {
     ) -> Result<(institution::Admission, AdmissionLabels)> {
         ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let connection = self.connection(id).await?;
-        ensure!(
-            policy
-                .expected_mode
-                .is_none_or(|mode| mode == connection.mode),
-            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
-        );
+        require_mode(
+            policy.expected_mode.map(|mode| json!(mode)).as_ref(),
+            connection.mode,
+            self.signed_workspace_mode(id),
+        )?;
         ensure!(
             policy
                 .expected_policy_epoch
@@ -2847,18 +3993,30 @@ impl CrewManager {
             "Crew connection policy changed; refresh before granting agent access"
         );
         let public = provider.tier() == ProviderTier::Public;
-        ensure!(
-            !public || connection.mode == ClusterMode::Public,
-            "Private cluster blocks public models"
-        );
-        ensure!(
-            !public || !policy.origin_restricted,
-            "Private-origin local conversation cannot be admitted to a public Crew worker"
-        );
+        let workspace = self.workspace_label(id).await;
+        if public && connection.mode != ClusterMode::Public {
+            return Err(CrewRefusal::public_model(format!(
+                "Your connection to {workspace} is Private, so a public model can't read it. \
+                 Choose a private model."
+            ))
+            .with("workspace", json!(workspace))
+            .into());
+        }
+        if public && policy.origin_restricted {
+            return Err(CrewRefusal::public_model(ORIGIN_RESTRICTED_PUBLIC).into());
+        }
         let snapshot = self
             .human_request(id, "workspace.snapshot", json!({}), None)
             .await?;
-        let protected = institution::protected_sources(&snapshot, channel, sources)?;
+        // Asked again of the workspace's mode as this snapshot has it, whose policy epoch the
+        // workspace checks when the run is created: an expectation the `hello` met a while ago
+        // is not met by a workspace that allows Public now (T3-BE-5).
+        require_mode(
+            policy.expected_mode.map(|mode| json!(mode)).as_ref(),
+            connection.mode,
+            serde_json::from_value(snapshot["workspace"]["mode"].clone()).ok(),
+        )?;
+        let protected = institution::protected_sources(&snapshot, channel, sources, &workspace)?;
         let mut listed = sources.to_vec();
         if !listed.iter().any(|source| source == channel) {
             listed.push(channel.into());
@@ -2905,14 +4063,15 @@ impl CrewManager {
             .await?;
         let c = admission.connection;
         let institution_ids = admission.institution_ids;
-        ensure!(
-            !public || !origin_restricted,
-            "Private-origin local conversation cannot be admitted to a public Crew worker"
-        );
+        if public && origin_restricted {
+            return Err(CrewRefusal::public_model(ORIGIN_RESTRICTED_PUBLIC).into());
+        }
         institution::check_origin(
             &institution_ids,
             admission.workspace_institution_id.as_deref(),
         )?;
+        // Admission asked this of the same institutions, with the names a person needs beside
+        // its refusal; this is the check again at the point of use.
         institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)?;
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
@@ -2930,6 +4089,10 @@ impl CrewManager {
             .to_string();
         let mut credential_written = false;
         let admitted: Result<RunAdmission> = async {
+            ensure!(
+                is_run_id(&run_id),
+                "Crew workspace answered with a run ID this computer does not accept; the run was revoked"
+            );
             ensure!(
                 result["run"]["protected_context"].as_bool() == Some(admission.protected_context),
                 "Crew broker returned a different protected-context policy; refresh before granting agent access"
@@ -2955,6 +4118,7 @@ impl CrewManager {
                 expires_at,
                 labels: Some(labels.clone()),
                 session_incarnation: Some(session_incarnation),
+                session_store: self.own_store(),
                 revocation: None,
             };
             // Recorded here even when the save fails, as it always was: the abandon below
@@ -2975,15 +4139,17 @@ impl CrewManager {
                 run_id: run_id.clone(),
                 institution_ids: institution_ids.clone(),
                 expires_at,
-                context: serde_json::to_string(&admission_context(AdmissionContext {
-                    connection_id: id,
-                    channel,
-                    sources: &sources,
-                    labels: &labels,
-                    remote_files_enabled: !public && c.remote_root.is_some(),
-                    shared_files,
-                    history: context,
-                }))?,
+                context: wrapper_safe_json(&serde_json::to_string(&admission_context(
+                    AdmissionContext {
+                        connection_id: id,
+                        channel,
+                        sources: &sources,
+                        labels: &labels,
+                        remote_files_enabled: !public && c.remote_root.is_some(),
+                        shared_files,
+                        history: context,
+                    },
+                ))?),
                 labels: labels.clone(),
             })
         }
@@ -3089,16 +4255,23 @@ impl CrewManager {
         provider: &dyn Provider,
         policy: &mut RunPolicy,
     ) -> Result<()> {
-        let (Standing::Own(previous) | Standing::Unconfirmed(previous, _)) =
-            self.standing(session).await
-        else {
-            return Ok(());
+        let previous = match self.standing(session).await {
+            Standing::None => return Ok(()),
+            // Restrictions that cannot be read cannot be carried, so nothing is granted.
+            Standing::Unreadable(reason) => anyhow::bail!(reason),
+            Standing::Own(previous) | Standing::Unconfirmed(previous, _) => previous,
         };
         policy.origin_restricted |= previous.origin_restricted;
         policy
             .origin_institution_ids
             .extend(previous.institution_ids);
-        ensure!(previous.connection_id == id && previous.channel_id == channel && previous.provider_binding == provider_binding(provider), "An existing Crew conversation retains its original connection, destination and model boundary; start a fresh conversation for another boundary");
+        ensure!(
+            previous.connection_id == id && previous.channel_id == channel,
+            "This chat already has Crew access to another channel. Start a new chat to give it access to this one."
+        );
+        if !binds(&previous.provider_binding, provider) {
+            return Err(CrewRefusal::model_fixed().into());
+        }
         ensure!(
             provider.tier() != ProviderTier::Public || previous.public_provider,
             "Private-origin Crew conversation cannot be rebound to a public model"
@@ -3141,25 +4314,7 @@ impl CrewManager {
         mut params: Value,
     ) -> Result<Value> {
         ensure!(
-            [
-                "messages.history",
-                "messages.search",
-                "context.manifest",
-                "run.project",
-                "blob.read",
-                "blob.status",
-                "blob.begin",
-                "blob.chunk",
-                "blob.finish",
-                "remote.list",
-                "remote.read",
-                "remote.write",
-                "remote.hash",
-                "remote.execute",
-                "remote.job_status",
-                "remote.cancel"
-            ]
-            .contains(&method),
+            WORKER_METHODS.contains(&method),
             "Operation unavailable to a scoped Crew worker"
         );
         let s = self.scope(session).await?;
@@ -3167,9 +4322,19 @@ impl CrewManager {
             !method.starts_with("remote.") || !s.public_provider,
             "Public models cannot access remote files/jobs"
         );
-        ensure!(!s.expired, s.stopped_text());
+        // Typed, so a client can word an ended grant itself; the sentence is the one the chat
+        // already reads (T3-BE-7).
+        if s.expired {
+            return Err(s.stopped().into());
+        }
         let c = self.connection(&s.connection_id).await?;
-        ensure!(s.epoch == c.policy_epoch, GRANT_POLICY_CHANGED);
+        if s.epoch != c.policy_epoch {
+            return Err(CrewRefusal::grant_ended(
+                refusal::GRANT_ENDED_SETTINGS_CHANGED,
+                GRANT_POLICY_CHANGED,
+            )
+            .into());
+        }
         ensure!(params.is_object(), "Crew params must be an object");
         if let Some(channel) = params.get("channel_id").and_then(Value::as_str) {
             ensure!(
@@ -3184,34 +4349,85 @@ impl CrewManager {
                 params["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
             }
         }
+        // The work-folder path a read names, for the provenance line (T3-BE-8).
+        let remote_path = (method == "remote.read")
+            .then(|| params["path"].as_str().map(str::to_owned))
+            .flatten();
         // As every request: a bridge that ended, or sat idle long enough for the broker to drop
         // it, is checked (and dialled again without a prompt) before anything is written.
-        let transport = self.live_transport(&s.connection_id).await?;
+        let transport = match self.live_transport(&s.connection_id).await {
+            Ok(transport) => transport,
+            Err(error) => {
+                let workspace = self.workspace_label(&s.connection_id).await;
+                return Err(lost_request(
+                    error,
+                    Lost::BeforeSending,
+                    method,
+                    None,
+                    &workspace,
+                ));
+            }
+        };
         let mut locked = transport.lock().await;
         self.validate_worker_scope(session, &s, &c).await?;
         let credential = self.read_credential(&format!("run:{session}"))?;
+        let request_key = params["idempotency_key"].as_str().map(str::to_owned);
+        // A task's result or failure, not a progress note: the workspace ends the run with it.
+        let terminal_post = method == "run.project"
+            && params["status"]
+                .as_str()
+                .is_some_and(|status| status != "progress");
         let result = locked
             .request(method, params, None, Some(&credential), None)
             .await;
         let usable = locked.is_usable();
         drop(locked);
         if !usable {
-            self.retire_broken_bridge(&s.connection_id, &transport, &result)
+            self.retire_broken_bridge(&s.connection_id, &transport, method, &result)
                 .await?;
         }
-        let result = match result {
+        self.heed_storage_refusal(&s.connection_id, &result);
+        let mut result = match result {
             Ok(result) => result,
-            Err(error) => return Err(self.heed_worker_refusal(session, &s, error).await),
+            Err(error) => {
+                let workspace = self.workspace_label(&s.connection_id).await;
+                let error =
+                    lost_request(error, Lost::WhileCarrying, method, request_key, &workspace);
+                return Err(self.heed_worker_refusal(session, &s, error).await);
+            }
         };
         self.validate_worker_scope(session, &s, &c).await?;
+        if terminal_post {
+            self.note_run_ended(&s.run_id);
+        }
+        self.note_worker_answer(session, method, remote_path, &c, &mut result)
+            .await;
+        Ok(result)
+    }
+    /// What a worker request's answer adds to the chat's reads, for its provenance line: the
+    /// names and times a message read showed, a file's name, a work-folder path read (T3-BE-8).
+    async fn note_worker_answer(
+        &self,
+        session: &str,
+        method: &str,
+        remote_path: Option<String>,
+        c: &Connection,
+        result: &mut Value,
+    ) {
         match method {
             "messages.history" | "messages.search" | "context.manifest" => {
-                self.note_run_context(session, method, &result)
+                self.note_run_context(session, method, result);
+                mark_agent_posts(result);
             }
-            "blob.status" => self.note_run_status(session, &result),
+            "blob.status" => self.note_run_status(session, result),
+            "remote.read" => {
+                if let Some(path) = remote_path {
+                    let server = server_label::server_label(&c.ssh_target, c.port).await;
+                    self.note_remote_read(session, &path, &server);
+                }
+            }
             _ => {}
         }
-        Ok(result)
     }
     async fn validate_worker_scope(
         &self,
@@ -3271,7 +4487,14 @@ impl CrewManager {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_secs());
         if scope.expires_at.is_some_and(|at| at <= now) {
-            return anyhow::anyhow!(GRANT_TIMED_OUT);
+            return CrewRefusal::grant_ended(refusal::GRANT_ENDED_ENDED, GRANT_TIMED_OUT).into();
+        }
+        // The run's own task ended it here (W2-DMN-14): a finished task's terminal post ends
+        // the run at the workspace, and a request just behind it (background compaction, a
+        // last tool call) meets `grant_expired`. That is not a policy change, and the grant's
+        // own stop is already on its way, so nothing is stamped here.
+        if self.run_ended_here(session, &scope.run_id).await {
+            return CrewRefusal::grant_ended(refusal::GRANT_ENDED_ENDED, TASK_ENDED).into();
         }
         let run_id = scope.run_id.clone();
         let stopped = self
@@ -3294,7 +4517,45 @@ impl CrewManager {
             tracing::warn!(session, %error, "Couldn't save a Crew grant the workspace ended");
         }
         self.forget_run_reads(session);
-        anyhow::anyhow!(GRANT_POLICY_CHANGED)
+        self.forget_live_admission(session);
+        CrewRefusal::grant_ended(refusal::GRANT_ENDED_SETTINGS_CHANGED, GRANT_POLICY_CHANGED).into()
+    }
+    /// Remember that `run_id`'s own task ended it (see [`Self::ended_runs`]).
+    fn note_run_ended(&self, run_id: &str) {
+        let mut ended = self
+            .ended_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if ended.len() >= MAX_ENDED_RUNS {
+            ended.clear();
+        }
+        ended.insert(run_id.to_owned());
+    }
+    /// Whether `session`'s run `run_id` was ended by its own task or stopped by this device:
+    /// its terminal result was posted here, or the chat's grant for that run is stopped here
+    /// (a person's Stop or Revoke marks it before the workspace is asked). A run the workspace
+    /// ended by itself is neither.
+    async fn run_ended_here(&self, session: &str, run_id: &str) -> bool {
+        if self
+            .ended_runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(run_id)
+        {
+            return true;
+        }
+        self.registry
+            .lock()
+            .await
+            .scopes
+            .get(session)
+            .is_some_and(|scope| {
+                scope.run_id == run_id
+                    && matches!(
+                        scope.revocation,
+                        Some(Revocation::Unconfirmed | Revocation::Confirmed)
+                    )
+            })
     }
     pub async fn publish_run(&self, session: &str, body: &str, status: &str) -> Result<Value> {
         self.worker_request(session, "run.project", json!({"body":body,"status":status}))
@@ -3346,7 +4607,7 @@ impl CrewManager {
         // flag still stands in memory, which stops this process, and the error says the stop
         // is not yet durable. The saved registry is edited as it is now (D8), so this never
         // writes back a grant another process changed, and no later write here revives it.
-        let (connection_id, run_id) = self
+        let (connection_id, run_id, confirmed) = self
             .update_registry_keeping(|r| {
                 let current = r
                     .scopes
@@ -3359,16 +4620,31 @@ impl CrewManager {
                 current.expired = true;
                 // Until the workspace confirms, the stop is recorded as not yet confirmed, so a
                 // restart still knows to ask again (F3). A confirmation heard earlier stands.
-                if current.revocation != Some(Revocation::Confirmed) {
+                let confirmed = current.revocation == Some(Revocation::Confirmed);
+                if !confirmed {
                     current.revocation = Some(Revocation::Unconfirmed);
                 }
-                Ok((current.connection_id.clone(), current.run_id.clone()))
+                Ok((
+                    current.connection_id.clone(),
+                    current.run_id.clone(),
+                    confirmed,
+                ))
             })
             .await
             .map_err(|error| {
                 error.context("Couldn't save the revocation on this device; retry to finish it")
             })??;
         self.forget_run_reads(session);
+        self.forget_live_admission(session);
+        // The workspace already confirmed this run's revocation: asking again would only be
+        // journalled there once more (W2-DMN-13), so the confirmation stands as the answer.
+        if confirmed {
+            return Ok(RevokeOutcome {
+                remote_confirmed: true,
+                run: Some(json!({"id": run_id, "revoked": true})),
+                remote_error: None,
+            });
+        }
         Ok(
             match self
                 .confirm_revocation(&connection_id, session, &run_id)
@@ -3413,9 +4689,11 @@ impl CrewManager {
         session: &str,
         run_id: &str,
     ) -> Result<Value> {
-        let run = self
-            .human_request(connection_id, "run.revoke", json!({"run_id":run_id}), None)
-            .await?;
+        let run = {
+            let _in_flight = RevokeInFlight::begin(&self.revoking, run_id);
+            self.human_request(connection_id, "run.revoke", json!({"run_id":run_id}), None)
+                .await?
+        };
         let recorded = self
             .update_registry_keeping(|registry| {
                 if let Some(current) = registry
@@ -3434,6 +4712,44 @@ impl CrewManager {
             tracing::warn!(session, run_id, %error, "Couldn't save a confirmed Crew revocation");
         }
         Ok(run)
+    }
+    /// Post a connected chat's own update to its destination (`run.project`, always
+    /// `progress`), ending with the daemon's line (W2-DMN-12): the files the chat read since its
+    /// last post, or that it read none. Every post a chat makes goes through here, its own
+    /// `run.project` and `remote.attach`'s alike, so none reaches the channel without the line,
+    /// and a "Source:" line the model wrote (in the body, or as a file's name) is never the last
+    /// thing in it. A post without a text body is refused here: it would carry no line.
+    ///
+    /// A request sent again under the same idempotency key carries the line it was first sent
+    /// with ([`SentPost`]), so a retry after an uncertain answer is the identical request the
+    /// workspace replays, not a different one it refuses.
+    async fn post_from_chat(&self, session: &str, params: Value) -> Result<Value> {
+        let mut params = params;
+        ensure!(params.is_object(), "Crew params must be an object");
+        ensure!(
+            params.get("status").and_then(Value::as_str).is_none_or(|status| status == "progress"),
+            "Agent updates must use progress; the task owner or runner controls completion and cancellation"
+        );
+        params["status"] = json!("progress");
+        if params.get("idempotency_key").is_none_or(Value::is_null) {
+            params["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
+        }
+        let body = params
+            .get("body")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("A Crew post needs its text in body"))?;
+        let request: [u8; 32] = Sha256::digest(serde_json::to_vec(&canonical(&params))?).into();
+        let key = params["idempotency_key"].as_str().map(str::to_owned);
+        let (line, mark) = self.chat_post_line(session, key.as_deref(), &request).await;
+        params["body"] = json!(source_line::with_source_line(
+            body,
+            line,
+            source_line::NO_FILE_READ_FOR_POST,
+        ));
+        let answer = self.worker_request(session, "run.project", params).await?;
+        self.mark_reads_posted(session, mark);
+        Ok(answer)
     }
     async fn attach_remote(&self, session: &str, params: Value) -> Result<Value> {
         let scope = self.scope(session).await?;
@@ -3467,7 +4783,19 @@ impl CrewManager {
             json!({"blob_id":blob_id,"idempotency_key":format!("{key}:finish")}),
         )
         .await?;
-        self.worker_request(session,"run.project",json!({"body":format!("Attached {name}"),"status":"progress","attachments":[blob_id],"idempotency_key":format!("{key}:post")})).await
+        // W2-DMN-12: the attachment's post is the chat's post like any other, so it ends with
+        // the daemon's line. The name is the model's choice (a remote path's last part), so it
+        // is written as a code span and can never pass for that line.
+        self.post_from_chat(
+            session,
+            json!({
+                "body": attached_body(name),
+                "status": "progress",
+                "attachments": [blob_id],
+                "idempotency_key": format!("{key}:post"),
+            }),
+        )
+        .await
     }
     pub async fn agent_request(
         &self,
@@ -3484,14 +4812,7 @@ impl CrewManager {
             "Connection is outside the approved run scope"
         );
         if method == "run.project" {
-            ensure!(
-                params.get("status").and_then(Value::as_str).is_none_or(|status| status == "progress"),
-                "Agent updates must use progress; the task owner or runner controls completion and cancellation"
-            );
-            let mut params = params;
-            ensure!(params.is_object(), "Crew params must be an object");
-            params["status"] = json!("progress");
-            return self.worker_request(session, method, params).await;
+            return self.post_from_chat(session, params).await;
         }
         if method == "remote.attach" {
             return self.attach_remote(session, params).await;
@@ -3521,13 +4842,25 @@ impl CrewManager {
 /// line is true whatever the model writes. Display only: it grants and checks nothing.
 ///
 /// Cleared when a run is admitted, so a reused chat ID never lists an earlier task's files.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct RunReads {
     /// Each file a `blob.read` returned, in the order first read, once each.
     files: Vec<ReadFile>,
-    /// Files read after [`MAX_READ_FILES`] were listed, so the line can say how many it leaves
-    /// out instead of dropping them silently.
+    /// Files first read after [`MAX_READ_FILES`] were listed, at most [`MAX_READ_ATTACHMENTS`],
+    /// so a task's line can say how many it leaves out instead of dropping them silently, and a
+    /// chat post's line can name them from [`Self::named`] ([`Self::since_last_post`]).
     unlisted: HashSet<String>,
+    /// The [`ReadMark`] of the latest read of each file in [`Self::files`] and
+    /// [`Self::unlisted`]: a file read again is read again since the chat's last post, though
+    /// it is listed once (W2-DMN-12).
+    read_at: HashMap<String, ReadMark>,
+    /// The mark of the latest read of a file past both bounds, which no entry above records.
+    /// Such a read is still a read: the line counts it as at least one more file, and never
+    /// says the chat read nothing (W2-DMN-12).
+    unrecorded_at: Option<ReadMark>,
+    /// The mark the chat's last post of its own was built at: its line named every read up to
+    /// it. A chat post's line names what the chat read after it; a task's result names all.
+    posted_through: ReadMark,
     /// A person label (D13) for each principal a message read named: the broker's `people`
     /// map beside `messages.history`, `messages.search` and `context.manifest`.
     people: HashMap<String, String>,
@@ -3549,6 +4882,63 @@ struct RunReads {
     /// and the look-ups made before a result is posted). A copy the run did not read counts
     /// here, which is how the line knows a newer one was left unread.
     named: HashMap<String, ReadFile>,
+    /// The lines the chat's own latest posts were first sent with, by idempotency key, oldest
+    /// first, at most [`MAX_SENT_POSTS`] ([`SentPost`]).
+    sent_posts: VecDeque<SentPost>,
+    /// Each path in the connection's remote work folder a successful `remote.read` returned
+    /// (`remote.attach` reads one too), in the order first read, once each, with the
+    /// [`ReadMark`] of its latest read, at most [`MAX_READ_ATTACHMENTS`] (T3-BE-8). A post whose
+    /// numbers came from such a file used to end "No shared file was read for this post.".
+    remote_files: Vec<(String, ReadMark)>,
+    /// The mark of the latest remote read past that bound, which no entry above records: still
+    /// a read, counted as at least one more file.
+    remote_unrecorded_at: Option<ReadMark>,
+    /// What to call the server the work folder is on (`server_label`), as it was when a file
+    /// was last read there.
+    remote_server: Option<String>,
+}
+
+/// The line a chat's post was first sent with under its idempotency key (W2-DMN-12). The
+/// workspace answers a key it has already seen only for the identical request, so a post sent
+/// again under the same key (a retry after an uncertain answer, or `remote.attach` asked again)
+/// must carry the same line. One built again could differ: the chat may have read more since,
+/// named a newer copy, or reached another day, and the retry would be refused as a different
+/// request while the first post stood.
+#[derive(Clone, Debug)]
+struct SentPost {
+    /// The post's idempotency key.
+    key: String,
+    /// The digest of the request as the chat made it, before the line was added. Another
+    /// request under the same key gets a line of its own; the workspace refuses it anyway when
+    /// the first one landed.
+    request: [u8; 32],
+    /// The line it was sent with; `None` when it said no file was read.
+    line: Option<String>,
+    /// The [`ReadMark`] that line was built at.
+    mark: ReadMark,
+}
+
+/// How many of a chat's latest posts keep the line they were first sent with. A retry comes
+/// right after the answer it retries; an older key sent again gets a line built anew.
+const MAX_SENT_POSTS: usize = 16;
+
+/// Where a `blob.read` falls among every read this process recorded: later reads have larger
+/// marks, whichever chat made them. One counter for all chats, so a mark taken before a chat's
+/// reads were forgotten (a new grant) never covers a read made after.
+type ReadMark = u64;
+
+/// The last [`ReadMark`] given out; the next read gets one more.
+static READ_MARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A mark for a read being recorded now.
+fn next_read_mark() -> ReadMark {
+    READ_MARKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+/// The mark of the latest read recorded so far. Taken under `run_reads`' lock, where every
+/// read is recorded, it covers exactly the reads that lock has seen.
+fn current_read_mark() -> ReadMark {
+    READ_MARKS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// One file a run read or the workspace named: the broker's own `blob` fields, never the
@@ -3587,7 +4977,7 @@ fn admission_context(context: AdmissionContext<'_>) -> Value {
         "destination_channel_id": context.channel,
         "source_channel_ids": context.sources,
         "labels": context.labels,
-        "naming": "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people.",
+        "naming": NAMING_RULE,
         "context_discovery": "The included history covers only the destination channel, not all selected context. Call context.manifest with empty params for recent authorized selected-channel context (up to 200 messages). For more targeted evidence, call messages.search with channel_id and query for each relevant source_channel_id. Do not assume this initial history contains the answer.",
         "history_channel_id": context.channel,
         "remote_files_enabled": context.remote_files_enabled,
@@ -3640,6 +5030,60 @@ fn oldest_first(page: &Value, order: PageOrder) -> (Vec<&Value>, bool) {
     (messages, agrees)
 }
 
+/// A `run.revoke` on its way to the workspace, from [`CrewManager::confirm_revocation`] until
+/// its answer (or failure): the retry pass leaves that run alone meanwhile (W2-DMN-13).
+struct RevokeInFlight<'a> {
+    revoking: &'a StdMutex<HashSet<String>>,
+    run_id: String,
+}
+
+impl<'a> RevokeInFlight<'a> {
+    fn begin(revoking: &'a StdMutex<HashSet<String>>, run_id: &str) -> Self {
+        revoking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id.to_owned());
+        Self {
+            revoking,
+            run_id: run_id.to_owned(),
+        }
+    }
+}
+
+impl Drop for RevokeInFlight<'_> {
+    fn drop(&mut self) {
+        self.revoking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.run_id);
+    }
+}
+
+/// Mark each message in a page that an agent wrote: `by_agent: true` beside a non-null `run_id`
+/// (W2-DMN-11). An agent's post carries its owner's `actor_id`, and `people` names only people,
+/// so the model read "Dave Patel: 3 messages" where people see two of them as "Dave Patel's
+/// agent". The page is otherwise unchanged; nothing here reaches the broker.
+fn mark_agent_posts(page: &mut Value) {
+    for message in page
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if message
+            .get("run_id")
+            .and_then(Value::as_str)
+            .is_some_and(|run| !run.is_empty())
+        {
+            message["by_agent"] = json!(true);
+        }
+    }
+}
+
+/// How the model is told to name authors: people as the person sees them, an agent's post as
+/// that person's agent, and never an ID (naming design B5, W2-DMN-11).
+const NAMING_RULE: &str = "labels gives the names of the IDs above as the person saw them when granting access. Refer to people as Display name (@username) and to channels as #name. Never quote IDs to people. A message with by_agent true was written by that person's agent: call it Display name's agent, never the person.";
+
 /// Bounds on what one chat's [`RunReads`] keeps; beyond them nothing more is recorded.
 const MAX_READ_FILES: usize = 32;
 const MAX_READ_PEOPLE: usize = 512;
@@ -3661,6 +5105,28 @@ fn shown_file_name(name: &str) -> String {
     } else {
         name
     }
+}
+
+/// The body of the post `remote.attach` makes for the file it attached (W2-DMN-12): its name
+/// is the model's choice, so it is a code span ([`markdown_file_name`]) and never reads as the
+/// daemon's line that follows it.
+fn attached_body(name: &str) -> String {
+    format!("Attached {}", markdown_file_name(name))
+}
+
+/// How many characters of a work-folder path the Source line shows.
+const MAX_SHOWN_PATH: usize = 120;
+
+/// `path` as the Source line shows it: whole, or, past [`MAX_SHOWN_PATH`] characters, its end
+/// after an ellipsis, where the file's own name is. A path may be 4096 bytes and a line names up
+/// to [`MAX_READ_FILES`] of them, which whole could outgrow the post (T3-BE-8).
+fn shown_remote_path(path: &str) -> String {
+    let count = path.chars().count();
+    if count <= MAX_SHOWN_PATH {
+        return path.to_owned();
+    }
+    let tail: String = path.chars().skip(count + 1 - MAX_SHOWN_PATH).collect();
+    format!("…{tail}")
 }
 
 /// A file's name in the line's Markdown: a code span ([`markdown_code`]), or "an untitled
@@ -3857,8 +5323,9 @@ impl RunReads {
     }
 
     /// Record a blob's name and sharer from the broker's `blob` fields. `always` records it
-    /// past [`MAX_NAMED_FILES`] (a file the run read, of which there are at most
-    /// [`MAX_READ_FILES`] more).
+    /// past [`MAX_NAMED_FILES`] (a file the run read and [`Self::files`] or
+    /// [`Self::unlisted`] records, of which there are at most [`MAX_READ_FILES`] and
+    /// [`MAX_READ_ATTACHMENTS`] more).
     fn note_blob(&mut self, blob: &Value, always: bool) -> Option<ReadFile> {
         let (Some(id), Some(name)) = (blob["id"].as_str(), blob["name"].as_str()) else {
             return None;
@@ -3874,21 +5341,101 @@ impl RunReads {
         Some(file)
     }
 
-    /// Record the file a successful `blob.read` returned, once.
+    /// Record the file a successful `blob.read` returned: listed once, and marked as read now
+    /// every time, so a read after the chat's last post is named by its next one even when an
+    /// earlier post named the same file (W2-DMN-12). A file past every bound is not recorded
+    /// by itself, but its read still is ([`Self::unrecorded_at`]).
     fn note_file(&mut self, read: &Value) {
-        let Some(file) = self.note_blob(&read["blob"], true) else {
+        let blob = &read["blob"];
+        let recorded = blob["id"].as_str().is_some_and(|id| self.was_read(id))
+            || self.files.len() < MAX_READ_FILES
+            || self.unlisted.len() < MAX_READ_ATTACHMENTS;
+        let Some(file) = self.note_blob(blob, recorded) else {
             return;
         };
-        if self.files.iter().any(|known| known.id == file.id) {
+        let mark = next_read_mark();
+        if !recorded {
+            self.unrecorded_at = Some(mark);
             return;
         }
-        if self.files.len() >= MAX_READ_FILES {
-            if self.unlisted.len() < MAX_READ_ATTACHMENTS {
-                self.unlisted.insert(file.id);
+        self.read_at.insert(file.id.clone(), mark);
+        if self.was_read(&file.id) {
+            return;
+        }
+        if self.files.len() < MAX_READ_FILES {
+            self.files.push(file);
+        } else {
+            self.unlisted.insert(file.id);
+        }
+    }
+
+    /// Whether these reads hold no read at all: then, and only then, a line says no file was
+    /// read.
+    fn read_nothing(&self) -> bool {
+        self.files.is_empty()
+            && self.unlisted.is_empty()
+            && self.unrecorded_at.is_none()
+            && self.remote_files.is_empty()
+            && self.remote_unrecorded_at.is_none()
+    }
+
+    /// Record a path in the work folder on `server` a successful `remote.read` returned: listed
+    /// once, and marked as read now every time, as a shared file is (T3-BE-8).
+    fn note_remote(&mut self, path: &str, server: &str) {
+        let mark = next_read_mark();
+        self.remote_server = Some(server.to_owned());
+        if let Some(entry) = self.remote_files.iter_mut().find(|(read, _)| read == path) {
+            entry.1 = mark;
+        } else if self.remote_files.len() < MAX_READ_ATTACHMENTS {
+            self.remote_files.push((path.to_owned(), mark));
+        } else {
+            self.remote_unrecorded_at = Some(mark);
+        }
+    }
+
+    /// The work-folder files the line names, as a phrase, with whether it names one file
+    /// alone: ``` `samples_result.txt` from the remote work folder on hpc```, ``` `a.txt` and
+    /// `b.txt` from …```, or ``` `a.txt`, `b.txt` and 3 more files from …``` past
+    /// [`MAX_READ_FILES`] (T3-BE-8). A path is the model's choice, so it is a code span
+    /// ([`markdown_file_name`]), as an attached file's name is. `None` when none was read.
+    fn remote_phrase(&self) -> Option<(String, bool)> {
+        let unrecorded = self.remote_unrecorded_at.is_some();
+        if self.remote_files.is_empty() && !unrecorded {
+            return None;
+        }
+        let mut names: Vec<String> = self
+            .remote_files
+            .iter()
+            .take(MAX_READ_FILES)
+            .map(|(path, _)| markdown_file_name(&shown_remote_path(path)))
+            .collect();
+        let more = self.remote_files.len().saturating_sub(MAX_READ_FILES) + usize::from(unrecorded);
+        if more > 0 {
+            let count = if unrecorded {
+                format!("at least {more}")
+            } else {
+                more.to_string()
+            };
+            let noun = if more == 1 { "file" } else { "files" };
+            names.push(if names.is_empty() {
+                format!("{count} {noun}")
+            } else {
+                format!("{count} more {noun}")
+            });
+        }
+        let alone = self.remote_files.len() == 1 && !unrecorded;
+        let listed = match names.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => return None,
+        };
+        let place = match self.remote_server.as_deref().map(plain_label) {
+            Some(server) if !server.is_empty() => {
+                format!("the remote work folder on {}", markdown_label(&server))
             }
-            return;
-        }
-        self.files.push(file);
+            _ => "the remote work folder".to_owned(),
+        };
+        Some((format!("{listed} from {place}"), alone))
     }
 
     /// Record the name a successful `blob.status` gave, for a complete file (the only kind a
@@ -3957,31 +5504,122 @@ impl RunReads {
         self.source_line_at(&chrono::Local::now())
     }
 
+    /// These reads as they stand for the chat's next post: only the files read since its last
+    /// one (W2-DMN-12), a file read again included. Everything that names them (people, times,
+    /// copies) is kept whole.
+    ///
+    /// The post gets its own [`MAX_READ_FILES`], not what is left of the chat's: the chat's
+    /// list holds the first files it ever read, so a file first read after them is listed
+    /// here by its name in [`Self::named`], after the listed ones, in the order last read.
+    /// Only past this post's own bound is a file counted instead of named. Otherwise a chat
+    /// that had read [`MAX_READ_FILES`] files named none of its later reads, and its next post
+    /// said it read no file.
+    fn since_last_post(&self) -> Self {
+        let posted = self.posted_through;
+        let read_since = |id: &str| self.read_at.get(id).is_some_and(|&mark| mark > posted);
+        let mut since = self.clone();
+        since.files.retain(|file| read_since(&file.id));
+        since.unlisted.clear();
+        let mut later: Vec<(ReadMark, &String)> = self
+            .unlisted
+            .iter()
+            .filter_map(|id| {
+                let mark = *self.read_at.get(id)?;
+                (mark > posted).then_some((mark, id))
+            })
+            .collect();
+        later.sort();
+        for (_, id) in later {
+            match self.named.get(id) {
+                Some(file) if since.files.len() < MAX_READ_FILES => since.files.push(file.clone()),
+                _ => {
+                    since.unlisted.insert(id.clone());
+                }
+            }
+        }
+        since.unrecorded_at = self.unrecorded_at.filter(|&mark| mark > posted);
+        since.remote_files.retain(|(_, mark)| *mark > posted);
+        since.remote_unrecorded_at = self.remote_unrecorded_at.filter(|&mark| mark > posted);
+        since
+    }
+
+    /// A post of the chat's own went out with a line built at `mark`: every read up to it has
+    /// been named. A read recorded after the line was built (another tool call of the same
+    /// batch, while the post was on its way) is left for the next post.
+    fn mark_posted(&mut self, mark: ReadMark) {
+        self.posted_through = self.posted_through.max(mark);
+    }
+
+    /// The line and mark the post sent under `key` as `request` was first sent with, if it was
+    /// ([`SentPost`]).
+    fn sent_post(&self, key: &str, request: &[u8; 32]) -> Option<(Option<String>, ReadMark)> {
+        self.sent_posts
+            .iter()
+            .find(|sent| sent.key == key && sent.request == *request)
+            .map(|sent| (sent.line.clone(), sent.mark))
+    }
+
+    /// Keep the line a post is sent with under its key, in place of another request's under
+    /// the same key. Past [`MAX_SENT_POSTS`] the oldest is dropped.
+    fn note_sent_post(&mut self, sent: SentPost) {
+        self.sent_posts.retain(|kept| kept.key != sent.key);
+        if self.sent_posts.len() >= MAX_SENT_POSTS {
+            self.sent_posts.pop_front();
+        }
+        self.sent_posts.push_back(sent);
+    }
+
     /// The line a task's posted result ends with, in Markdown, written at `now` (whose time
     /// zone is the one the line's times are given in). For one file:
     ///
     /// ``Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina) at 2:20 AM UTC-7.``
     ///
     /// and for several, ``Sources: `a.csv` (earlier copy, shared by …), `b.csv`.``, with
-    /// `and N more files` when more were read than it lists. A file name is a code span, and so
-    /// is a person label Markdown could read as anything ([`markdown_label`]), so neither can
-    /// become a link or pose as the line's own notes.
+    /// `and N more files` when more were read than it lists ([`Self::counted_files`]), or
+    /// ``Sources: N shared files, not listed.`` when it can name none of them. A file name is
+    /// a code span, and so is a person label Markdown could read as anything
+    /// ([`markdown_label`]), so neither can become a link or pose as the line's own notes.
     /// "shared by" is left out when the reads never named the person: never an ID. When another
     /// file with the same name is known, the line tells them apart: a copy known to be the
     /// newest is given the time it was shared ([`shared_when`]; Q4-27: "newest copy" was true
     /// only when it was written, so two results posted a day apart both said it of different
     /// files), and an earlier one says `earlier copy`. When the run read only earlier copies of
-    /// a name, a second sentence says a newer one was left unread. `None` when nothing was
-    /// read.
+    /// a name, a second sentence says a newer one was left unread. `None` only when nothing
+    /// was read ([`Self::read_nothing`]).
+    ///
+    /// Files read from the connection's remote work folder are named too (T3-BE-8): alone,
+    /// ``Source: `samples_result.txt` from the remote work folder on hpc.``; beside shared files,
+    /// as a second sentence, ``Also read `samples_result.txt` from the remote work folder on
+    /// hpc.`` ([`Self::remote_phrase`]).
     fn source_line_at<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<String> {
+        let shared = self.shared_line_at(now);
+        match (shared, self.remote_phrase()) {
+            (shared, None) => shared,
+            (None, Some((phrase, alone))) => {
+                let source = if alone { "Source" } else { "Sources" };
+                Some(format!("{source}: {phrase}."))
+            }
+            (Some(shared), Some((phrase, _))) => Some(format!("{shared} Also read {phrase}.")),
+        }
+    }
+
+    /// [`Self::source_line_at`] for the shared files alone; `None` when none was read.
+    fn shared_line_at<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> Option<String> {
         let entries: Vec<LineEntry> = self
             .files
             .iter()
             .map(|file| self.line_entry(file, now))
             .collect();
+        let counted = self.counted_files();
         let mut line = match entries.as_slice() {
-            [] => return None,
-            [entry] if self.unlisted.is_empty() => {
+            [] => {
+                // Files were read, and this line can name none of them: it counts them, and
+                // never reads as no file read.
+                let (count, noun) = counted?;
+                let source = if count == "1" { "Source" } else { "Sources" };
+                format!("{source}: {count} shared {noun}, not listed.")
+            }
+            [entry] if counted.is_none() => {
                 let mut line = format!("Source: {}", entry.name);
                 if let Some(copy) = &entry.copy {
                     line.push_str(&format!(" ({copy})"));
@@ -4009,16 +5647,21 @@ impl RunReads {
                         }
                     })
                     .collect();
-                match self.unlisted.len() {
-                    0 => {}
-                    1 => parts.push("and 1 more file".to_owned()),
-                    more => parts.push(format!("and {more} more files")),
+                if let Some((count, noun)) = &counted {
+                    parts.push(format!("and {count} more {noun}"));
                 }
                 format!("Sources: {}.", parts.join(", "))
             }
         };
         // A name with a copy known to be newer than every copy the run read: the numbers came
-        // from an older upload, and the line says so, whatever the reply claims.
+        // from an older upload, and the line says so, whatever the reply claims. Once a read
+        // went unrecorded, that read may have been the newer copy: the line still warns, and
+        // says only what the daemon saw, so reading past every bound never removes the warning.
+        let unread = if self.unrecorded_at.is_none() {
+            "was not read"
+        } else {
+            "may not have been read"
+        };
         let mut warned: Vec<String> = Vec::new();
         for file in &self.files {
             let shown = plain_label(&file.name);
@@ -4027,13 +5670,31 @@ impl RunReads {
             }
             if self.newer_copy_unread(file) {
                 line.push_str(&format!(
-                    " A newer copy of {} was shared and was not read.",
+                    " A newer copy of {} was shared and {unread}.",
                     markdown_file_name(&file.name)
                 ));
                 warned.push(shown);
             }
         }
         Some(line)
+    }
+
+    /// How many files the line counts rather than names, and the noun for them: those in
+    /// [`Self::unlisted`], and at least one more when a read went unrecorded
+    /// ([`Self::unrecorded_at`]), which cannot say how many distinct files it read. `None` when
+    /// the line names every file read.
+    fn counted_files(&self) -> Option<(String, &'static str)> {
+        let unrecorded = self.unrecorded_at.is_some();
+        let n = self.unlisted.len() + usize::from(unrecorded);
+        if n == 0 {
+            return None;
+        }
+        let count = if unrecorded {
+            format!("at least {n}")
+        } else {
+            n.to_string()
+        };
+        Some((count, if n == 1 { "file" } else { "files" }))
     }
 
     /// What the line says of one file it read: its name, which copy it is when that is
@@ -4193,6 +5854,29 @@ fn with_default_channel(method: &str, mut params: Value, scope: &Scope) -> Resul
     }
 }
 
+/// `json`, a JSON document, written so that nothing inside it can end the markup-like wrapper
+/// it is sent to a model in, such as `<crew_context>…</crew_context>` (DAEMON-4): every `<`,
+/// `>` and `&` becomes `\u003c`, `\u003e` and `\u0026`. JSON uses none of the three outside a
+/// string, and every JSON reader decodes the escapes to the same characters, so the document
+/// means exactly what it did. A channel message reading `</crew_context>` followed by text
+/// styled as the owner's instructions used to close the wrapper the task instructions call
+/// untrusted, and put a member's words outside it in the owner's own message. Escaping an
+/// already escaped document changes nothing.
+///
+/// ⚠ Only for JSON: in other text, the escapes would be literal characters.
+pub fn wrapper_safe_json(json: &str) -> String {
+    let mut safe = String::with_capacity(json.len());
+    for character in json.chars() {
+        match character {
+            '<' => safe.push_str("\\u003c"),
+            '>' => safe.push_str("\\u003e"),
+            '&' => safe.push_str("\\u0026"),
+            other => safe.push(other),
+        }
+    }
+    safe
+}
+
 /// A Crew error as the agent's tool result says it (Q4-11, naming design "Machine IDs stay
 /// internal"): a refusal the broker answered becomes a sentence, "Crew refused the request:
 /// {its message without the code}.", never the transport's `{"code":…,"message":…}` JSON. Any
@@ -4241,7 +5925,7 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
     ),
     (
         "channel unavailable",
-        "That channel isn't available to you. It may be archived, or you may not be in it.",
+        "You're not in that channel.",
     ),
     (
         "principal unavailable",
@@ -4256,6 +5940,17 @@ const REFUSAL_SENTENCES: &[(&str, &str)] = &[
         "That file isn't available to you. It may have been removed, or you may not be in its channel.",
     ),
 ];
+
+/// The code of a refusal the workspace answered, found anywhere in `error`'s chain
+/// (`storage_full`, `forbidden`, ...): `None` when the workspace did not answer with a refusal.
+pub fn workspace_refusal_code(error: &anyhow::Error) -> Option<String> {
+    error.chain().find_map(|link| {
+        let text = link.to_string();
+        let envelope: Value =
+            serde_json::from_str(text.strip_prefix("Crew broker refused request: ")?).ok()?;
+        Some(envelope.get("code")?.as_str()?.to_owned())
+    })
+}
 
 /// A refusal the workspace answered, found anywhere in `error`'s chain, as a sentence for a
 /// person (F-1): a known technical text in words, else the broker's own message without its
@@ -4371,6 +6066,12 @@ impl CrewManager {
         self.with_run_reads(session, |reads| reads.note_file(read));
     }
 
+    /// Keep a work-folder path a successful `remote.read` returned to this chat, on `server`
+    /// (T3-BE-8).
+    fn note_remote_read(&self, session: &str, path: &str, server: &str) {
+        self.with_run_reads(session, |reads| reads.note_remote(path, server));
+    }
+
     /// Keep the name a successful `blob.status` gave this chat.
     fn note_run_status(&self, session: &str, status: &Value) {
         self.with_run_reads(session, |reads| reads.note_status(status));
@@ -4436,13 +6137,91 @@ impl CrewManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let reads = reads.get(session)?;
-            if reads.files.is_empty() {
+            if reads.read_nothing() {
                 return None;
             }
             reads.unnamed_newest_first(MAX_POSTING_LOOKUPS)
         };
         self.name_attachments(session, &unnamed).await;
         self.run_source_line(session)
+    }
+
+    /// The line a connected chat's post ends with: the files it read since its last post, named
+    /// as [`Self::posted_source_line`] names a task's (W2-DMN-12), or `None` when it read none;
+    /// and the mark the line was built at, for [`Self::mark_reads_posted`] once the post went
+    /// out. The line and its mark are taken in one hold of the lock every read is recorded
+    /// under, so the mark covers exactly the reads the line names.
+    async fn chat_post_source_line(&self, session: &str) -> (Option<String>, ReadMark) {
+        let unnamed = {
+            let reads = self
+                .run_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mark = current_read_mark();
+            let Some(since) = reads.get(session).map(RunReads::since_last_post) else {
+                return (None, mark);
+            };
+            if since.read_nothing() {
+                return (None, mark);
+            }
+            since.unnamed_newest_first(MAX_POSTING_LOOKUPS)
+        };
+        self.name_attachments(session, &unnamed).await;
+        let reads = self
+            .run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let line = reads
+            .get(session)
+            .and_then(|reads| reads.since_last_post().source_line());
+        (line, current_read_mark())
+    }
+
+    /// The line a chat's post under `key` ends with, and the mark it was built at: the line the
+    /// same request was first sent with under that key, or else a new one
+    /// ([`Self::chat_post_source_line`]), kept for a retry ([`SentPost`]). A key that is not
+    /// text (the workspace refuses such a post) keeps nothing.
+    async fn chat_post_line(
+        &self,
+        session: &str,
+        key: Option<&str>,
+        request: &[u8; 32],
+    ) -> (Option<String>, ReadMark) {
+        let Some(key) = key else {
+            return self.chat_post_source_line(session).await;
+        };
+        let sent = self
+            .run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)
+            .and_then(|reads| reads.sent_post(key, request));
+        if let Some(sent) = sent {
+            return sent;
+        }
+        let (line, mark) = self.chat_post_source_line(session).await;
+        self.with_run_reads(session, |reads| {
+            reads.note_sent_post(SentPost {
+                key: key.to_owned(),
+                request: *request,
+                line: line.clone(),
+                mark,
+            })
+        });
+        (line, mark)
+    }
+
+    /// The chat's post went out with a line built at `mark`: it named every read up to there,
+    /// and none after.
+    fn mark_reads_posted(&self, session: &str, mark: ReadMark) {
+        if let Some(reads) = self
+            .run_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_mut(session)
+        {
+            reads.mark_posted(mark);
+        }
     }
 
     /// Drop what this chat's Crew requests read: its result was posted, or its grant ended.
@@ -4452,6 +6231,23 @@ impl CrewManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session);
     }
+}
+
+/// Whether a deleted chat's grant is settled, and can be forgotten: its run ended more than
+/// [`revocation::REPLACED_KEPT_PAST_END`] ago, so the workspace has not honored it for a week
+/// whatever it was told, and no turn of the deleted chat is still unwinding with its context. A
+/// grant whose end was never recorded is kept.
+fn gone_grant_settled(scope: &Scope, now: u64) -> bool {
+    scope
+        .expires_at
+        .is_some_and(|end| end.saturating_add(revocation::REPLACED_KEPT_PAST_END) <= now)
+}
+
+/// A session store's directory as [`Scope::session_store`] records it: a string, since a
+/// `PathBuf` that is not UTF-8 would fail to save the whole registry. Lossy only for such a
+/// path, where two stores that differ only in their non-UTF-8 bytes would read as one.
+fn store_name(dir: &Path) -> String {
+    dir.to_string_lossy().into_owned()
 }
 
 /// SCOPE-BIND: a grant belongs to one chat, not to a session id.
@@ -4478,8 +6274,29 @@ impl CrewManager {
 /// deleted task's cancel failed on every retry until the run lapsed — and it lifted the
 /// restriction from the chat's turn while that turn was still unwinding, since a delete only
 /// signals the cancel. A deleted chat's grant resolves to [`Standing::Unconfirmed`]: still
-/// restricting, still listed and revocable, never acting. It goes only when a later chat
-/// under the id shows it was an earlier chat's.
+/// restricting, still listed and revocable, never acting.
+///
+/// It goes once it is settled: a week past its run's own end, when the workspace has long
+/// stopped honoring the run and no turn of the deleted chat is still unwinding
+/// ([`CrewManager::forget_gone_grant`], CROSSCUT-8). Session ids are single use now, so no
+/// later chat ever holds a deleted chat's id to show its grant was an earlier chat's, and
+/// waiting for one kept every deleted chat's grant for good: listed, and read on every scope
+/// question, one database query each. A grant under an id another chat holds is still pruned
+/// at once, for stores that reissue ids (a restored backup).
+///
+/// ⚠ **Only the grant's own session store may forget or prune it** ([`GrantStore`]). The
+/// registry lives under the config folder and the chats under the data folder, which the
+/// environment sets apart (`XDG_CONFIG_HOME`, `XDG_DATA_HOME`), so a terminal and the desktop
+/// can share one registry over two `sessions.db`s, each minting `<date>_1` and onward. A
+/// process asking about another store's chat finds no chat under its id, or finds its own
+/// chat there, on every scope question it asks (and [`CrewManager::scoped_session_ids`] asks
+/// about every grant). When that was read as "deleted" or "an earlier chat's", the other
+/// store's live Crew chat lost its grant: once the saved registry dropped it, that chat, with
+/// the channel's messages in its history, answered [`Standing::None`] and every restriction
+/// was lifted, and a pruned live grant was also revoked at the workspace. So each grant
+/// records its store, and a grant from another store, or one whose store was never recorded,
+/// is never forgotten or pruned here: absent, it stays [`Standing::Unconfirmed`], and a chat
+/// of this store under its id simply does not hold it.
 impl CrewManager {
     /// Resolve chats against `store` in place of the shared one, for a test.
     #[cfg(test)]
@@ -4521,14 +6338,32 @@ impl CrewManager {
             .map(|root| root.join(crate::session::session_manager::SESSIONS_FOLDER))
     }
 
+    /// [`Self::own_store_dir`] as [`Scope::session_store`] records it.
+    fn own_store(&self) -> Option<String> {
+        self.own_store_dir().map(|dir| store_name(&dir))
+    }
+
+    /// Whether this process resolves chats in the store `scope`'s chat was saved in. A process
+    /// that has not opened its store can confirm none, so every recorded store is elsewhere.
+    fn grant_store(&self, scope: &Scope) -> GrantStore {
+        match &scope.session_store {
+            None => GrantStore::Unrecorded,
+            Some(recorded) if self.own_store().as_ref() == Some(recorded) => GrantStore::Here,
+            Some(_) => GrantStore::Elsewhere,
+        }
+    }
+
     /// Whether the grant stored under `session` is the grant of the chat holding that id
     /// now:
     ///
-    /// - bound to that chat's incarnation: its own;
-    /// - bound to another incarnation: made to an earlier chat under the id, so none — and
-    ///   pruned;
+    /// - bound to that chat's incarnation: its own, and when its store was never recorded,
+    ///   recorded in memory as this process's (the store holding the chat);
+    /// - bound to another incarnation: none. Made to an earlier chat under the id when this
+    ///   is the grant's own store, and pruned; otherwise another store's chat's grant under an
+    ///   id both stores minted, and left alone ([`GrantStore`]);
     /// - bound, with no chat under the id: [`Standing::Unconfirmed`], since the chat it was
-    ///   made to is gone (a turn still unwinding may yet hold its context);
+    ///   made to is gone from this store (a turn still unwinding may yet hold its context), or
+    ///   was never in it. Forgotten once settled, and only when this is the grant's own store;
     /// - the chat's identity unreadable: [`Standing::Unconfirmed`];
     /// - recorded before grants were bound: its own, as it always was, and bound in memory
     ///   to the chat holding the id when there is one.
@@ -4540,6 +6375,12 @@ impl CrewManager {
         Box::pin(self.standing_inner(session)).await
     }
     async fn standing_inner(&self, session: &str) -> Standing {
+        // Another process may have granted, revoked or re-granted since this one last read
+        // the saved registry (CROSSCUT-1).
+        self.refresh_registry().await;
+        if let Some(reason) = self.unreadable_restriction(session).await {
+            return Standing::Unreadable(reason);
+        }
         let Some(scope) = self.registry.lock().await.scopes.get(session).cloned() else {
             return Standing::None;
         };
@@ -4554,13 +6395,28 @@ impl CrewManager {
                 return Standing::Unconfirmed(scope, GRANT_UNCONFIRMED);
             }
         };
+        let store = self.grant_store(&scope);
         match (scope.session_incarnation, current) {
-            (Some(bound), Some(current)) if bound == current => Standing::Own(scope),
+            (Some(bound), Some(current)) if bound == current => {
+                if store == GrantStore::Unrecorded {
+                    Standing::Own(self.adopt_binding(session, scope, current).await)
+                } else {
+                    Standing::Own(scope)
+                }
+            }
             (Some(_), Some(_)) => {
-                self.prune_stale_grant(session, &scope).await;
+                if store == GrantStore::Here {
+                    self.prune_stale_grant(session, &scope).await;
+                }
                 Standing::None
             }
-            (Some(_), None) => Standing::Unconfirmed(scope, GRANT_GONE),
+            (Some(_), None) => {
+                if store == GrantStore::Here && gone_grant_settled(&scope, revocation::unix_now()) {
+                    self.forget_gone_grant(session, &scope).await;
+                    return Standing::None;
+                }
+                Standing::Unconfirmed(scope, GRANT_GONE)
+            }
             (None, Some(current)) => {
                 Standing::Own(self.adopt_binding(session, scope, current).await)
             }
@@ -4574,25 +6430,43 @@ impl CrewManager {
     /// same row. This process's next registry update carries it into the saved registry
     /// ([`carry_process_state`]), which — reading the file back first (D8) — can no longer
     /// overwrite a grant another process saved since this one loaded.
+    ///
+    /// The store is recorded the same way, for a grant bound to its chat before stores were
+    /// kept: the store holding that chat is its own (CROSSCUT-8), and only with it recorded may
+    /// the grant ever be forgotten or pruned.
     async fn adopt_binding(&self, session: &str, legacy: Scope, current: i64) -> Scope {
+        let store = self.own_store();
         let mut registry = self.registry.lock().await;
+        let adopt = |scope: &mut Scope| {
+            scope.session_incarnation.get_or_insert(current);
+            if scope.session_store.is_none() {
+                scope.session_store = store.clone();
+            }
+        };
         match registry.scopes.get_mut(session) {
             Some(scope) if scope.run_id == legacy.run_id => {
-                scope.session_incarnation.get_or_insert(current);
+                adopt(scope);
                 scope.clone()
             }
-            _ => Scope {
-                session_incarnation: Some(current),
-                ..legacy
-            },
+            _ => {
+                let mut scope = legacy;
+                adopt(&mut scope);
+                scope
+            }
         }
     }
 
     /// Drop a grant made to an earlier chat under `session`'s id, from memory and from the
     /// saved registry. Matched by its run, which the workspace mints once per grant, so a
     /// newer grant under the same id — made here or saved by another process — never goes
-    /// with it. A stop of it the workspace has not confirmed is kept for its revocation and
-    /// asked about again (F3, [`ReplacedGrant`]); nothing else of it is.
+    /// with it. It is stopped as it goes ([`Scope::into_stopped`]): kept for its revocation and
+    /// asked about again (F3, [`ReplacedGrant`]) unless the workspace already confirmed or
+    /// ended its run. A grant still live here was dropped with no `run.revoke` before
+    /// (DAEMON-1), and its run stayed live at the workspace, listed nowhere.
+    ///
+    /// ⚠ Only for a grant of this process's own store ([`GrantStore::Here`]): a chat of
+    /// another store under the same id is not a later chat, and pruning its grant revoked a
+    /// live run and lifted that chat's restriction (CROSSCUT-8).
     async fn prune_stale_grant(&self, session: &str, stale: &Scope) {
         let mut kept = false;
         let pruned = self
@@ -4603,7 +6477,7 @@ impl CrewManager {
                     .is_some_and(|scope| scope.run_id == stale.run_id)
                 {
                     if let Some(scope) = registry.scopes.remove(session) {
-                        kept = registry.keep_replaced(session, scope);
+                        kept = registry.keep_replaced(session, scope.into_stopped());
                     }
                 }
                 Ok(())
@@ -4627,14 +6501,81 @@ impl CrewManager {
         );
     }
 
+    /// Forget the grant of a deleted chat that is settled ([`gone_grant_settled`]), from
+    /// memory and the saved registry, with its run credential (CROSSCUT-8). Matched by its run,
+    /// the chat it was made to and that chat's store, so a newer grant under the id never goes
+    /// with it.
+    ///
+    /// ⚠ Only for a grant of this process's own store ([`GrantStore::Here`]), where no chat
+    /// under the id means the chat is gone. Every chat of another store is missing from this
+    /// one, so forgetting there took the grant of a live chat saved in that store, and with it
+    /// every restriction on that chat.
+    async fn forget_gone_grant(&self, session: &str, gone: &Scope) {
+        let mut forgotten = false;
+        let saved = self
+            .update_registry_keeping(|registry| {
+                if registry.scopes.get(session).is_some_and(|scope| {
+                    scope.run_id == gone.run_id
+                        && scope.session_incarnation == gone.session_incarnation
+                        && scope.session_store == gone.session_store
+                }) {
+                    registry.scopes.remove(session);
+                    forgotten = true;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = saved {
+            tracing::warn!(
+                session,
+                %error,
+                "could not remove a deleted chat's settled Crew grant from the saved registry"
+            );
+        }
+        if !forgotten {
+            return;
+        }
+        self.forget_run_reads(session);
+        self.forget_live_admission(session);
+        if let Err(error) = self.delete_credential(&format!("run:{session}")) {
+            tracing::warn!(session, %error, "couldn't delete a settled Crew grant's run credential");
+        }
+        tracing::info!(
+            session,
+            run_id = %gone.run_id,
+            "forgot the settled Crew grant of a deleted chat"
+        );
+    }
+
     /// The identity a new grant is bound to: the incarnation of the chat holding `session`
     /// in the store grants name. A chat that is not saved there cannot be granted.
+    ///
+    /// ⚠ Nor can a chat whose id holds the grant of a chat saved in another store (CROSSCUT-8):
+    /// one grant is kept per id, and the run credential is stored under the id, so granting
+    /// this chat would overwrite that chat's credential, stop and revoke its run
+    /// ([`Self::record_grant`]), and leave it, Crew context and all, with no restriction. Asked
+    /// before anything is created at the workspace. A grant whose store was never recorded is
+    /// replaced as it always was: which chat it is cannot be told, and refusing would block
+    /// the chat under its id for good.
     async fn grantable_chat(&self, session: &str) -> Result<i64> {
-        match self.chat_incarnation(session).await {
-            Ok(Some(incarnation)) => Ok(incarnation),
-            Ok(None) => Err(anyhow::anyhow!(UNSAVED_CHAT)),
-            Err(error) => Err(error.context(GRANT_UNCONFIRMED)),
-        }
+        let incarnation = match self.chat_incarnation(session).await {
+            Ok(Some(incarnation)) => incarnation,
+            Ok(None) => return Err(anyhow::anyhow!(UNSAVED_CHAT)),
+            Err(error) => return Err(error.context(GRANT_UNCONFIRMED)),
+        };
+        self.refresh_registry().await;
+        let held_elsewhere = self
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get(session)
+            .is_some_and(|scope| {
+                scope.session_incarnation != Some(incarnation)
+                    && self.grant_store(scope) == GrantStore::Elsewhere
+            });
+        ensure!(!held_elsewhere, GRANT_ID_HELD_ELSEWHERE);
+        Ok(incarnation)
     }
 
     /// Retire the grants of chats just deleted from the store at `store_dir`, each named
@@ -4642,42 +6583,54 @@ impl CrewManager {
     /// made to.
     ///
     /// ⚠ **Security-relevant; needs human review.** Keeping is the point. The workspace still
-    /// honors the run, so the grant must stay listed and revocable — a deleted task's cancel
-    /// revokes through it — and a delete only signals the chat's turn to stop, so the turn
+    /// honors the run, so the grant must stay listed and revocable (a deleted task's cancel
+    /// revokes through it), and a delete only signals the chat's turn to stop, so the turn
     /// may still be dispatching tool calls with Crew context in hand. With no chat under its
     /// id, a bound grant resolves to [`Standing::Unconfirmed`]: it restricts that turn and
-    /// authorizes nothing. It is pruned only once a later chat holds the id
-    /// ([`Self::standing`]), and `expired` is left alone: that flag says the grant was
-    /// stopped here, which is what the access list shows and what hides its Revoke control,
-    /// and deleting a chat stops nothing at the workspace.
+    /// authorizes nothing. `expired` is left alone: that flag says the grant was stopped
+    /// here, which is what the access list shows and what hides its Revoke control, and
+    /// deleting a chat stops nothing at the workspace.
     ///
-    /// So a grant already bound to its chat needs nothing. What this does is bind a grant
-    /// recorded before grants were bound, which would otherwise read as its chat's own with
-    /// no chat under the id — acting for the unwinding turn in any process that had not yet
-    /// bound it in memory, and handed to whichever chat next held the id. Such a grant is
-    /// the deleted chat's only when it sits under the id in the very store grants name; a
-    /// grant under one of these ids bound to another incarnation, or recorded against
-    /// another store, belongs to a chat elsewhere and is not touched. One update of the saved
-    /// registry as it is now ([`Self::update_registry_keeping`]), so a grant another process
-    /// saved since this one loaded is never written away, and is bound too when it is the
-    /// deleted chat's; memory takes the same edit even if the save fails.
+    /// It goes in one of two ways, both decided by [`Self::standing`] and both only in a
+    /// process whose own store is the grant's ([`GrantStore::Here`]): pruned at once if a later
+    /// chat of that store holds the id, or forgotten once settled, a week past its run's own
+    /// end ([`Self::forget_gone_grant`], [`gone_grant_settled`]). A process on another store
+    /// never removes it, whatever its own store holds under the id (CROSSCUT-8).
+    ///
+    /// So a grant already bound to its chat and store needs nothing. What this does is bind a
+    /// grant recorded before grants were bound, which would otherwise read as its chat's own
+    /// with no chat under the id: acting for the unwinding turn in any process that had not
+    /// yet bound it in memory, and handed to whichever chat next held the id. Such a grant is
+    /// the deleted chat's only when it sits under the id in the very store grants name. And it
+    /// records `store_dir` as the store of a grant made to a deleted chat before stores were
+    /// kept: the delete is that store seeing the chat go, the one proof its grant may later be
+    /// forgotten. A grant under one of these ids bound to another incarnation, or recorded
+    /// against another store, belongs to a chat elsewhere and is not touched. One update of
+    /// the saved registry as it is now ([`Self::update_registry_keeping`]), so a grant another
+    /// process saved since this one loaded is never written away, and is bound too when it is
+    /// the deleted chat's; memory takes the same edit even if the save fails.
     pub(crate) async fn retire_deleted_sessions(
         &self,
         deleted: &[(String, i64)],
         store_dir: &Path,
     ) -> Result<()> {
         let from_own_store = self.own_store_dir().is_some_and(|own| own == store_dir);
+        let deleting_store = store_name(store_dir);
         let deleted: HashMap<&str, i64> = deleted
             .iter()
             .map(|(session, incarnation)| (session.as_str(), *incarnation))
             .collect();
         // The deleted chat's incarnation, when the grant under `session` was made to it.
         let deleted_chat = |session: &str, scope: &Scope| {
+            let same_store = scope
+                .session_store
+                .as_ref()
+                .is_none_or(|recorded| *recorded == deleting_store);
             deleted
                 .get(session)
                 .copied()
                 .filter(|&incarnation| match scope.session_incarnation {
-                    Some(bound) => bound == incarnation,
+                    Some(bound) => same_store && bound == incarnation,
                     None => from_own_store,
                 })
         };
@@ -4707,6 +6660,9 @@ impl CrewManager {
             for (session, scope) in registry.scopes.iter_mut() {
                 if let Some(incarnation) = deleted_chat(session, scope) {
                     scope.session_incarnation = Some(incarnation);
+                    if scope.session_store.is_none() {
+                        scope.session_store = Some(deleting_store.clone());
+                    }
                 }
             }
             Ok(())
@@ -4738,6 +6694,22 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
+    /// Whether a request was stopped by one of the privacy guards (mode, public model,
+    /// institution). The fixtures below have no device credential, so a request the guards let
+    /// through fails at the credential store instead. That failure is typed too on a host with
+    /// no keyring service (a Linux CI runner answers `crew_credential_store_unavailable`), so
+    /// "no typed refusal at all" would fail there while the guard behaved correctly.
+    fn stopped_by_a_privacy_guard(error: &anyhow::Error) -> bool {
+        matches!(
+            CrewRefusal::find(error).map(CrewRefusal::code),
+            Some(
+                refusal::MODE_MISMATCH
+                    | refusal::PUBLIC_MODEL_REFUSED
+                    | refusal::INSTITUTION_MISMATCH
+            )
+        )
+    }
+
     /// A chat saved in this process's shared store: the only kind a grant can be made to
     /// (SCOPE-BIND). Call it only in a process of the test's own.
     async fn saved_chat(root: &Path) -> String {
@@ -4762,6 +6734,541 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// W2-DMN-12 (review): through the manager, a `blob.read` that lands after a chat post's
+    /// line was built and before the post is marked (another tool call of the same batch runs
+    /// meanwhile) is named by the next post; and a file read again after a post is named again.
+    #[tokio::test]
+    async fn a_read_while_a_chat_post_is_on_its_way_is_named_by_the_next_post() {
+        let root = fixture_root("chat-post-race");
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let read = |id: &str, name: &str| {
+            json!({"blob": {"id": id, "name": name, "owner_id": "p-gina"}, "offset": 0,
+                "data_hex": "", "next_offset": 0, "complete": true})
+        };
+        let (line, mark) = manager.chat_post_source_line("chat").await;
+        assert_eq!(line, None, "nothing read yet");
+        manager.mark_reads_posted("chat", mark);
+
+        manager.note_blob_read("chat", &read("b1", "assay.csv"));
+        let (line, mark) = manager.chat_post_source_line("chat").await;
+        assert_eq!(line.as_deref(), Some("Source: `assay.csv`."));
+        manager.note_blob_read("chat", &read("b2", "plate.csv"));
+        manager.mark_reads_posted("chat", mark);
+
+        let (line, mark) = manager.chat_post_source_line("chat").await;
+        assert_eq!(line.as_deref(), Some("Source: `plate.csv`."));
+        manager.mark_reads_posted("chat", mark);
+        assert_eq!(manager.chat_post_source_line("chat").await.0, None);
+
+        manager.note_blob_read("chat", &read("b1", "assay.csv"));
+        assert_eq!(
+            manager.chat_post_source_line("chat").await.0.as_deref(),
+            Some("Source: `assay.csv`.")
+        );
+
+        // A mark taken before the chat's reads were forgotten (a new grant) never covers a read
+        // made after.
+        let (_, stale) = manager.chat_post_source_line("chat").await;
+        manager.forget_run_reads("chat");
+        manager.note_blob_read("chat", &read("b3", "counts.tsv"));
+        manager.mark_reads_posted("chat", stale);
+        assert_eq!(
+            manager.chat_post_source_line("chat").await.0.as_deref(),
+            Some("Source: `counts.tsv`.")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-13: only a `hello` that says its server stopped saving is read as one, and its
+    /// own sentence is never kept.
+    #[test]
+    fn a_hello_says_whether_its_server_stopped_saving() {
+        assert_eq!(
+            ServerStorage::from_hello(&json!({"state": "running"})),
+            None
+        );
+        assert_eq!(
+            ServerStorage::from_hello(&json!({})),
+            None,
+            "an older broker"
+        );
+        assert_eq!(
+            ServerStorage::from_hello(&json!({"state": "storage_failed",
+                "storage": {"code": "storage_full", "message": "Ask the host.", "since": 7}})),
+            Some(ServerStorage {
+                state: "storage_failed".into(),
+                code: "storage_full".into(),
+                since: Some(7),
+            })
+        );
+        // A code it does not know reads as the general one; a missing time as unknown.
+        assert_eq!(
+            ServerStorage::from_hello(&json!({"state": "storage_failed",
+                "storage": {"code": "<b>made up</b>"}})),
+            Some(ServerStorage {
+                state: "storage_failed".into(),
+                code: "storage_failed".into(),
+                since: None,
+            })
+        );
+    }
+
+    /// W2-DMN-7: a request's lost bridge is typed by where it was lost, with the SSH failure
+    /// kept underneath; anything the workspace answered, or that is not a transport failure,
+    /// passes through untouched.
+    #[test]
+    fn a_lost_request_says_whether_anything_was_sent() {
+        let ssh = || {
+            anyhow::Error::new(SshFailure {
+                kind: SshFailureKind::Other,
+                code: "ssh_eof".into(),
+                status: "exit_0".into(),
+                description: "SSH connection closed".into(),
+                detail: None,
+                host: None,
+                outcome_unknown: false,
+            })
+        };
+        let unknown = lost_request(
+            ssh(),
+            Lost::WhileCarrying,
+            "message.post",
+            Some("key-1".into()),
+            "lab",
+        );
+        let typed = CrewRefusal::find(&unknown).unwrap();
+        assert_eq!(typed.code(), "crew_outcome_unknown");
+        assert_eq!(typed.http_status(), 503);
+        assert_eq!(
+            unknown.to_string(),
+            "Crew couldn't confirm whether this reached lab. Check the channel, then retry with the same request ID."
+        );
+        assert!(typed.fields().contains(&("request_id", json!("key-1"))));
+        assert!(unknown
+            .chain()
+            .any(|cause| cause.downcast_ref::<SshFailure>().is_some()));
+
+        let read = lost_request(ssh(), Lost::WhileCarrying, "messages.history", None, "lab");
+        assert_eq!(
+            CrewRefusal::find(&read).map(CrewRefusal::code),
+            Some("crew_not_sent")
+        );
+        assert!(read.to_string().contains("Nothing changed"), "{read}");
+
+        let before = lost_request(ssh(), Lost::BeforeSending, "message.post", None, "lab");
+        assert_eq!(
+            CrewRefusal::find(&before).map(CrewRefusal::code),
+            Some("crew_not_sent")
+        );
+        assert_eq!(
+            before.to_string(),
+            "Biorouter couldn't reach lab, so nothing was sent."
+        );
+
+        let not_delivered = lost_request(
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "not_delivered", "message": "not_delivered: not sent"})
+            ),
+            Lost::WhileCarrying,
+            "message.post",
+            None,
+            "lab",
+        );
+        assert_eq!(
+            CrewRefusal::find(&not_delivered).map(CrewRefusal::code),
+            Some("crew_not_sent")
+        );
+
+        let answered = lost_request(
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "forbidden", "message": "forbidden: channel unavailable"})
+            ),
+            Lost::WhileCarrying,
+            "message.post",
+            None,
+            "lab",
+        );
+        assert!(CrewRefusal::find(&answered).is_none());
+        let plain = lost_request(
+            anyhow::anyhow!("Crew params must be an object"),
+            Lost::BeforeSending,
+            "message.post",
+            None,
+            "lab",
+        );
+        assert_eq!(plain.to_string(), "Crew params must be an object");
+        // An unknown method is treated as one that may have changed something.
+        assert!(!is_read_only("channel.read") && !is_read_only("future.method"));
+    }
+
+    /// W2-DMN-13: a run whose `run.revoke` is on its way is that request's to confirm; the
+    /// retry pass never sends a second one beside it.
+    #[tokio::test]
+    async fn the_retry_pass_leaves_a_revoke_in_flight_alone() {
+        let root = fixture_root("revoke-in-flight");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let connection_id = "revoke-in-flight-connection";
+        let session = "revoke-in-flight-session";
+        let (_, mut scope) = worker_race_connection(connection_id, ClusterMode::Public, 1, true);
+        scope.expired = true;
+        scope.revocation = Some(Revocation::Unconfirmed);
+        let run_id = scope.run_id.clone();
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .insert(session.into(), scope);
+        assert_eq!(
+            manager.unconfirmed_revocations(connection_id).await,
+            vec![(session.to_owned(), run_id.clone())]
+        );
+        {
+            let _in_flight = RevokeInFlight::begin(&manager.revoking, &run_id);
+            assert!(manager
+                .unconfirmed_revocations(connection_id)
+                .await
+                .is_empty());
+        }
+        assert_eq!(
+            manager.unconfirmed_revocations(connection_id).await.len(),
+            1
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// W2-DMN-11: only a message with a run behind it is an agent's.
+    #[test]
+    fn only_a_message_with_a_run_is_marked_as_an_agents() {
+        let mut page = json!({"run_id": "reader-run", "messages": [
+            {"id": "a", "run_id": "writer-run"},
+            {"id": "b", "run_id": null},
+            {"id": "c"},
+            {"id": "d", "run_id": ""},
+        ]});
+        mark_agent_posts(&mut page);
+        let marked: Vec<bool> = page["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message.get("by_agent") == Some(&json!(true)))
+            .collect();
+        assert_eq!(marked, [true, false, false, false]);
+        assert!(
+            page.get("by_agent").is_none(),
+            "the page's own run is the reader's"
+        );
+        let mut none = json!({"results": []});
+        mark_agent_posts(&mut none);
+        assert_eq!(none, json!({"results": []}));
+    }
+
+    /// W2-DMN-1: a Secret Service that nothing provides (a headless node: "The name is not
+    /// activatable"), confirmed by a probe that fails the same way, is a keyring that is not
+    /// there. One that is locked or whose prompt was dismissed is there and refused. A platform
+    /// failure the probe does not confirm, and any other keyring error, keeps its own words.
+    #[test]
+    fn a_secret_service_is_absent_only_when_the_probe_agrees() {
+        let dbus = || {
+            keyring::Error::PlatformFailure(Box::new(std::io::Error::other(
+                "DBus error: The name is not activatable",
+            )))
+        };
+        assert_eq!(
+            keyring_trouble(&dbus(), false, || true),
+            Some(KeyringTrouble::Absent)
+        );
+        assert_eq!(keyring_trouble(&dbus(), false, || false), None);
+        let locked = keyring::Error::NoStorageAccess(Box::new(std::io::Error::other(
+            "Secret Service: object locked",
+        )));
+        for always_present in [false, true] {
+            assert_eq!(
+                keyring_trouble(&locked, always_present, || panic!(
+                    "a refusal needs no probe"
+                )),
+                Some(KeyringTrouble::Refused)
+            );
+            assert_eq!(
+                keyring_trouble(&keyring::Error::NoEntry, always_present, || {
+                    panic!("not about the store")
+                }),
+                None
+            );
+        }
+        let absent = KeyringTrouble::Absent.refusal();
+        assert_eq!(absent.code(), "crew_credential_store_unavailable");
+        assert_eq!(absent.message(), KEYRING_NOT_RUNNING_TEXT);
+        assert!(!absent.message().contains("DBus"));
+        let other = keyring_failure(keyring::Error::NoEntry);
+        assert!(CrewRefusal::find(&other).is_none());
+    }
+
+    /// W2-DMN-1 (review): keyring maps the macOS Keychain's errSecUserCanceled (Deny at its
+    /// prompt), errSecAuthFailed and errSecInteractionNotAllowed (no session to ask in) to
+    /// `PlatformFailure`. The Keychain is always there, so each is a refusal the person can
+    /// answer: never "no keyring service", never the vault's advice, and the Keychain is never
+    /// probed (a read could raise a prompt for nothing).
+    #[test]
+    fn a_keychain_that_refused_is_a_refusal_never_a_missing_service() {
+        for cause in [
+            "User canceled the operation.",
+            "The user name or passphrase you entered is not correct.",
+            "User interaction is not allowed.",
+        ] {
+            let error = keyring::Error::PlatformFailure(Box::new(std::io::Error::other(cause)));
+            let trouble = keyring_trouble(&error, true, || panic!("the Keychain is never probed"));
+            assert_eq!(trouble, Some(KeyringTrouble::Refused), "{cause}");
+            let refused = KeyringTrouble::Refused.refusal();
+            assert_eq!(refused.code(), "crew_credential_store_refused");
+            assert_eq!(refused.message(), CREDENTIAL_STORE_REFUSED_TEXT);
+            for words in ["no keyring service", "credentials init", "isn't answering"] {
+                assert!(!refused.message().contains(words), "{words}");
+            }
+            // Where this test runs on such a platform, the whole path says the same.
+            if PLATFORM_STORE_ALWAYS_PRESENT {
+                let error = keyring_failure(keyring::Error::PlatformFailure(Box::new(
+                    std::io::Error::other(cause),
+                )));
+                let found = CrewRefusal::find(&error).expect("typed");
+                assert_eq!(found.code(), "crew_credential_store_refused");
+                assert_eq!(error.to_string(), CREDENTIAL_STORE_REFUSED_TEXT);
+            }
+        }
+    }
+
+    /// W2-DMN-1 (review): `biorouter crew credentials init` refuses a profile that holds any
+    /// identity, so only a profile that holds none is pointed at it. A profile with a
+    /// connection, a grant, a prepared device or a finished preparation is told to bring its
+    /// keyring back, and a refusal stays a refusal.
+    #[test]
+    fn the_vault_is_offered_only_to_a_profile_that_holds_no_identity() {
+        let absent = || {
+            anyhow::Error::new(KeyringTrouble::Absent.refusal())
+                .context("Couldn't save this connection's device key")
+        };
+        let refused = || anyhow::Error::new(KeyringTrouble::Refused.refusal());
+        let message = |error: &anyhow::Error| {
+            let found = CrewRefusal::find(error).expect("typed");
+            (found.code(), found.message().to_owned())
+        };
+
+        let fresh = Registry::default();
+        assert!(fresh.holds_no_identity());
+        assert_eq!(
+            message(&first_key_failure(absent(), &fresh)),
+            (
+                "crew_credential_store_unavailable",
+                CREDENTIAL_STORE_UNAVAILABLE_TEXT.to_owned()
+            )
+        );
+        assert_eq!(
+            message(&first_key_failure(refused(), &fresh)),
+            (
+                "crew_credential_store_refused",
+                format!("{CREDENTIAL_STORE_REFUSED_TEXT} {VAULT_INSTEAD_TEXT}")
+            )
+        );
+        let other = first_key_failure(anyhow::anyhow!("disk full"), &fresh);
+        assert_eq!(other.to_string(), "disk full");
+
+        let (connection, scope) =
+            worker_race_connection("keyring-held", ClusterMode::Public, 1, true);
+        let prepared = PreparedDevice {
+            preparation_id: "prepared".into(),
+            public_key: "11".repeat(32),
+            device_id: "22".repeat(32),
+        };
+        let held = [
+            Registry {
+                connections: vec![connection],
+                ..Default::default()
+            },
+            Registry {
+                scopes: HashMap::from([("chat".to_owned(), scope)]),
+                ..Default::default()
+            },
+            Registry {
+                pending_device: Some(prepared),
+                ..Default::default()
+            },
+            Registry {
+                completed_preparations: HashMap::from([("done".to_owned(), "saved".to_owned())]),
+                ..Default::default()
+            },
+        ];
+        for registry in &held {
+            assert!(!registry.holds_no_identity());
+            let kept = first_key_failure(absent(), registry);
+            assert_eq!(
+                message(&kept),
+                (
+                    "crew_credential_store_unavailable",
+                    KEYRING_NOT_RUNNING_TEXT.to_owned()
+                )
+            );
+            assert!(
+                !format!("{kept:#}").contains("credentials init"),
+                "{kept:#}"
+            );
+            assert_eq!(
+                message(&first_key_failure(refused(), registry)),
+                (
+                    "crew_credential_store_refused",
+                    CREDENTIAL_STORE_REFUSED_TEXT.to_owned()
+                )
+            );
+        }
+    }
+
+    /// W2-DMN-1 (review): end to end, the first key a fresh profile saves (a prepared device, a
+    /// new connection) is refused with the vault's advice when no keyring answers; once the
+    /// profile holds a connection, the same failure says to bring the keyring back, since
+    /// `credentials init` would now refuse, and a keyring that refused says so.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_a_profile_with_no_identity_is_told_to_set_up_the_vault() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("keyring-first-key");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let input = |workspace: &str, target: &str| SaveConnection {
+            preparation_id: None,
+            name: format!("saved {target}"),
+            ssh_target: target.into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-keyring.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "44".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Public,
+            institution_id: None,
+        };
+        let said = |error: anyhow::Error| {
+            let found = CrewRefusal::find(&error).expect("typed");
+            (found.code(), found.message().to_owned())
+        };
+        let vault = (
+            "crew_credential_store_unavailable",
+            CREDENTIAL_STORE_UNAVAILABLE_TEXT.to_owned(),
+        );
+        manager.set_test_keyring_trouble(Some(KeyringTrouble::Absent));
+        assert_eq!(said(manager.prepare_device().await.unwrap_err()), vault);
+        assert_eq!(
+            said(
+                manager
+                    .save(input(
+                        "11111111-1111-4111-8111-111111111111",
+                        "bob@a.example.org"
+                    ))
+                    .await
+                    .unwrap_err()
+            ),
+            vault
+        );
+        assert!(manager.registry.lock().await.holds_no_identity());
+
+        manager.set_test_keyring_trouble(None);
+        manager
+            .save(input(
+                "22222222-2222-4222-8222-222222222222",
+                "bob@b.example.org",
+            ))
+            .await
+            .unwrap();
+        manager.set_test_keyring_trouble(Some(KeyringTrouble::Absent));
+        let restart = (
+            "crew_credential_store_unavailable",
+            KEYRING_NOT_RUNNING_TEXT.to_owned(),
+        );
+        assert_eq!(said(manager.prepare_device().await.unwrap_err()), restart);
+        assert_eq!(
+            said(
+                manager
+                    .save(input(
+                        "33333333-3333-4333-8333-333333333333",
+                        "bob@c.example.org"
+                    ))
+                    .await
+                    .unwrap_err()
+            ),
+            restart
+        );
+        manager.set_test_keyring_trouble(Some(KeyringTrouble::Refused));
+        assert_eq!(
+            said(manager.prepare_device().await.unwrap_err()),
+            (
+                "crew_credential_store_refused",
+                CREDENTIAL_STORE_REFUSED_TEXT.to_owned()
+            )
+        );
+        manager.set_test_keyring_trouble(None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// W2-DMN-4: a `BatchMode yes` in the person's ssh configuration must not suppress the
+    /// Sign in window's password prompt, so the interactive plan says `BatchMode=no` itself,
+    /// before the destination, where `ssh` reads options. The bridge stays unattended.
+    #[test]
+    fn the_interactive_sign_in_asks_for_prompts_and_the_bridge_never_does() {
+        let connection = Connection {
+            id: "sign-in-plan".into(),
+            node_id: None,
+            name: "sign in plan".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: Some("gate.example.test".into()),
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "sign-in-plan-workspace".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "sign-in-plan-cluster".into(),
+            mode: ClusterMode::Private,
+            institution_id: None,
+            policy_epoch: 1,
+            status: "offline".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        };
+        let args = sign_in_args(&connection, Path::new("/tmp/crew-control"));
+        let batch: Vec<usize> = args
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[0] == "-o" && pair[1].starts_with("BatchMode="))
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(batch.len(), 1, "exactly one BatchMode option: {args:?}");
+        assert_eq!(args[batch[0] + 1], "BatchMode=no");
+        let target = args.iter().position(|arg| arg == "crew@example.test");
+        assert_eq!(
+            target,
+            Some(args.len() - 1),
+            "the destination is last: {args:?}"
+        );
+        assert!(batch[0] < args.len() - 1);
+        for flag in [
+            "-M",
+            "-N",
+            "ControlPersist=600",
+            "StrictHostKeyChecking=yes",
+        ] {
+            assert!(args.iter().any(|arg| arg == flag), "{flag} kept: {args:?}");
+        }
     }
 
     #[tokio::test]
@@ -4805,7 +7312,16 @@ mod tests {
                 .expect_err("a stale private mode must be refused before I/O");
             assert_eq!(
                 mismatch.to_string(),
-                "Crew connection privacy changed; refresh the verified workspace before sending"
+                "Your connection is Public, but this request required Private. Nothing was sent."
+            );
+            let typed = CrewRefusal::find(&mismatch).expect("a typed refusal");
+            assert_eq!(typed.code(), "crew_mode_mismatch");
+            assert_eq!(
+                typed.fields(),
+                &[
+                    ("actual_mode", json!("public")),
+                    ("expected_mode", json!("private"))
+                ]
             );
 
             let missing = manager
@@ -4813,7 +7329,7 @@ mod tests {
                 .await
                 .expect_err("the fixture intentionally has no device credential");
             assert!(
-                !missing.to_string().contains("privacy changed"),
+                !stopped_by_a_privacy_guard(&missing),
                 "omitted mode should remain backward-compatible: {missing}"
             );
 
@@ -4827,11 +7343,175 @@ mod tests {
                 .await
                 .expect_err("matching mode reaches the credential boundary in this fixture");
             assert!(
-                !matching.to_string().contains("privacy changed"),
+                !stopped_by_a_privacy_guard(&matching),
                 "matching mode was rejected by the privacy guard: {matching}"
             );
         }
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-5: an expected mode is compared with the privacy in force as well as the
+    /// connection's own mode. A personal Public connection in a workspace that is Private for
+    /// everyone is Private in force, so a request that required Private goes ahead; one that
+    /// required Public is the connection's own mode, which the desktop sends as the mode it last
+    /// verified, and goes ahead too. The mismatch that matters is still refused, naming the mode
+    /// in force.
+    #[test]
+    fn an_expected_mode_is_judged_against_the_privacy_in_force() {
+        use ClusterMode::{Private, Public};
+        assert_eq!(effective_mode(Public, Some(Private)), Private);
+        assert_eq!(effective_mode(Public, Some(Public)), Public);
+        assert_eq!(effective_mode(Public, None), Public, "not known: its own");
+        assert_eq!(effective_mode(Private, Some(Public)), Private);
+        for (own, workspace, expected, passes) in [
+            (Public, Some(Private), Private, true),
+            (Public, Some(Private), Public, true),
+            (Public, Some(Public), Private, false),
+            (Public, None, Private, false),
+            (Private, Some(Public), Public, false),
+            (Private, None, Private, true),
+        ] {
+            let judged = require_mode(Some(&json!(expected)), own, workspace);
+            assert_eq!(
+                judged.is_ok(),
+                passes,
+                "{own:?} in {workspace:?}, {expected:?}"
+            );
+            if let Err(refused) = judged {
+                let typed = CrewRefusal::find(&refused).expect("typed");
+                assert_eq!(typed.code(), "crew_mode_mismatch");
+                assert_eq!(
+                    typed.fields()[0],
+                    ("actual_mode", json!(effective_mode(own, workspace)))
+                );
+            }
+        }
+        assert!(require_mode(None, Public, Some(Private)).is_ok());
+    }
+
+    /// T3-BE-5, through the manager: the workspace's signed `hello` says it is Private for
+    /// everyone, and a personal Public connection's post, file selection or task that required
+    /// Private is no longer refused as a mismatch. Before, each read "Your connection is Public,
+    /// but this request required Private." while every surface said Private.
+    #[tokio::test]
+    async fn a_request_that_requires_the_privacy_in_force_is_not_a_mismatch() {
+        let root = fixture_root("mode-in-force");
+        let manager = CrewManager::new(root.clone()).unwrap();
+        let connection_id = "mode-in-force-connection";
+        manager.registry.lock().await.connections.push(Connection {
+            id: connection_id.into(),
+            node_id: None,
+            name: "mode in force fixture".into(),
+            ssh_target: "crew@example.test".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/run/crew.sock".into(),
+            owner_uid: 10001,
+            workspace_id: "mode-in-force-workspace".into(),
+            workspace_public_key: "11".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: "mode-in-force-cluster".into(),
+            mode: ClusterMode::Public,
+            institution_id: None,
+            policy_epoch: 1,
+            status: "connected".into(),
+            last_error: None,
+            device_id: "22".repeat(32),
+            public_key: "33".repeat(32),
+        });
+        let workspace_mode = |mode: ClusterMode| {
+            manager.brokers.lock().unwrap().insert(
+                connection_id.into(),
+                BrokerHello {
+                    signature_version: 2,
+                    capabilities: vec![],
+                    workspace_name: Some("okafor-lab".into()),
+                    mode: Some(mode),
+                    institution_id: None,
+                    policy_epoch: Some(1),
+                    storage: None,
+                },
+            );
+        };
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("missing-cassette.json")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap();
+        let task = |expected| {
+            manager.begin_run_with_policy(
+                "mode-in-force-session",
+                connection_id,
+                "destination-channel",
+                vec![],
+                &provider,
+                RunPolicy {
+                    expected_mode: Some(expected),
+                    ..RunPolicy::default()
+                },
+            )
+        };
+        let code = |error: &anyhow::Error| CrewRefusal::find(error).map(CrewRefusal::code);
+
+        workspace_mode(ClusterMode::Private);
+        for expected in ["private", "public"] {
+            let post = manager
+                .human_request(
+                    connection_id,
+                    "message.post",
+                    json!({"personal_mode": expected}),
+                    None,
+                )
+                .await
+                .expect_err("the fixture has no device key");
+            assert_ne!(
+                code(&post),
+                Some("crew_mode_mismatch"),
+                "{expected}: {post}"
+            );
+        }
+        let admitted = task(ClusterMode::Private)
+            .await
+            .err()
+            .expect("the fixture has no device key");
+        assert_ne!(code(&admitted), Some("crew_mode_mismatch"), "{admitted}");
+        // A file selection is judged by the same rule, from the same signed `hello`.
+        let selection = |expected| {
+            require_expected_mode(
+                Some(expected),
+                ClusterMode::Public,
+                manager.signed_workspace_mode(connection_id),
+            )
+        };
+        for expected in [ClusterMode::Private, ClusterMode::Public] {
+            assert!(selection(expected).is_ok(), "{expected:?}");
+        }
+
+        // In a workspace that allows Public, the connection is Public in force.
+        workspace_mode(ClusterMode::Public);
+        let post = manager
+            .human_request(
+                connection_id,
+                "message.post",
+                json!({"personal_mode": "private"}),
+                None,
+            )
+            .await
+            .expect_err("a mismatch");
+        assert_eq!(code(&post), Some("crew_mode_mismatch"));
+        assert_eq!(
+            post.to_string(),
+            "Your connection is Public, but this request required Private. Nothing was sent."
+        );
+        let refused = task(ClusterMode::Private).await.err().expect("a mismatch");
+        assert_eq!(code(&refused), Some("crew_mode_mismatch"));
+        let refused = selection(ClusterMode::Private).expect_err("a mismatch");
+        assert_eq!(code(&refused), Some("crew_mode_mismatch"));
+        assert!(selection(ClusterMode::Public).is_ok());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4896,9 +7576,15 @@ mod tests {
                 "a public provider must be refused by a private cluster before manager reservation"
             ),
         };
+        // W2-DMN-9: in the manual's words, naming the workspace, with its own code.
         assert_eq!(
             private_public.to_string(),
-            "Private cluster blocks public models"
+            "Your connection to run mode policy fixture is Private, so a public model can't \
+             read it. Choose a private model."
+        );
+        assert_eq!(
+            CrewRefusal::find(&private_public).map(CrewRefusal::code),
+            Some("crew_public_model_refused")
         );
         assert!(!manager
             .registry
@@ -4925,7 +7611,11 @@ mod tests {
             .expect("a stale private mode must stop admission before signing");
         assert_eq!(
             mismatch.to_string(),
-            "Crew connection privacy changed; refresh the verified workspace before granting agent access"
+            "Your connection is Public, but this request required Private. Nothing was sent."
+        );
+        assert_eq!(
+            CrewRefusal::find(&mismatch).map(CrewRefusal::code),
+            Some("crew_mode_mismatch")
         );
 
         let legacy = manager
@@ -4941,7 +7631,7 @@ mod tests {
             .err()
             .expect("the fixture intentionally has no device credential");
         assert!(
-            !legacy.to_string().contains("privacy changed"),
+            !stopped_by_a_privacy_guard(&legacy),
             "missing expected_mode must preserve the legacy path: {legacy}"
         );
 
@@ -4963,7 +7653,12 @@ mod tests {
             .expect("a private-origin run must not be admitted to a public provider");
         assert_eq!(
             private_origin.to_string(),
-            "Private-origin local conversation cannot be admitted to a public Crew worker"
+            "This chat has used a private model, so a public model can't continue it with Crew \
+             context. Choose a private model."
+        );
+        assert_eq!(
+            CrewRefusal::find(&private_origin).map(CrewRefusal::code),
+            Some("crew_public_model_refused")
         );
 
         let _ = fs::remove_dir_all(root);
@@ -5071,6 +7766,7 @@ mod tests {
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let manager = CrewManager::new(root.clone())?;
@@ -5351,6 +8047,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         (connection, scope)
@@ -5642,6 +8339,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let registry = Registry {
@@ -5739,6 +8437,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let registry = Registry {
@@ -5933,6 +8632,7 @@ done
             expires_at: None,
             labels: None,
             session_incarnation: None,
+            session_store: None,
             revocation: None,
         };
         let registry = Registry {
@@ -6122,6 +8822,7 @@ done
                     expires_at: None,
                     labels: None,
                     session_incarnation: None,
+                    session_store: None,
                     revocation: None,
                 },
             )]),
@@ -6501,13 +9202,14 @@ done
             .any(|line| line.contains("\"method\":\"run.revoke\"")
                 && line.contains("worker-race-run")));
 
-        // Revoking a revoked grant asks the workspace again (its run.revoke is idempotent),
-        // and the confirming path answers with the run.
+        // Revoking a grant whose revocation the workspace confirmed answers with that
+        // confirmation and asks nothing again: each ask would be journalled there once more
+        // (W2-DMN-13).
         assert_eq!(
             manager.cancel_run("worker-race-session").await.unwrap(),
             revoked_run
         );
-        assert_eq!(logged_methods(&log, "run.revoke"), 2);
+        assert_eq!(logged_methods(&log, "run.revoke"), 1);
         assert!(manager.registry.lock().await.scopes["worker-race-session"].expired);
 
         manager.disconnect(connection_id).await.unwrap();
@@ -6612,7 +9314,7 @@ done
         for (error, sentence) in [
             (
                 refused("forbidden", "forbidden: channel unavailable"),
-                "That channel isn't available to you. It may be archived, or you may not be in it.",
+                "You're not in that channel.",
             ),
             (
                 refused("unauthorized", "unauthorized: unknown device"),
@@ -6641,7 +9343,7 @@ done
             (
                 refused("forbidden", "forbidden: channel unavailable")
                     .context("Couldn't start the transfer"),
-                "That channel isn't available to you. It may be archived, or you may not be in it.",
+                "You're not in that channel.",
             ),
         ] {
             assert_eq!(
@@ -6752,6 +9454,127 @@ done
                 "refusals speak of access, not of runs and grants: {text}"
             );
         }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-7: a worker request on a grant that ended (the context route's, among others) is
+    /// refused typed, `crew_grant_ended` with `409` and a `reason`, so a client can say what to do
+    /// in its own words. The sentence is the one the chat already reads.
+    #[tokio::test]
+    async fn an_ended_grant_is_refused_as_crew_grant_ended_with_its_reason() {
+        let root = fixture_root("grant-ended-typed");
+        let (connection, scope) = worker_race_connection(
+            "16161616-1616-4616-8616-161616161616",
+            ClusterMode::Public,
+            3,
+            false,
+        );
+        let manager = CrewManager::new(root.clone()).unwrap();
+        {
+            let mut registry = manager.registry.lock().await;
+            registry.connections.push(connection);
+            registry
+                .scopes
+                .insert("worker-race-session".into(), scope.clone());
+        }
+        let context = || async {
+            manager
+                .worker_request("worker-race-session", "context.manifest", json!({}))
+                .await
+                .unwrap_err()
+        };
+        let typed = |error: &anyhow::Error| {
+            let found = CrewRefusal::find(error).expect("typed");
+            assert_eq!(found.code(), "crew_grant_ended", "{error}");
+            assert_eq!(found.http_status(), 409);
+            let [("reason", reason)] = found.fields() else {
+                panic!("only a reason: {:?}", found.fields());
+            };
+            (error.to_string(), reason.as_str().unwrap().to_owned())
+        };
+
+        // Crew's settings moved since the grant: the connection's policy epoch is newer.
+        manager.registry.lock().await.connections[0].policy_epoch = 4;
+        assert_eq!(
+            typed(&context().await),
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                "settings_changed".to_owned()
+            )
+        );
+        manager.registry.lock().await.connections[0].policy_epoch = 3;
+
+        // Removed here.
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("worker-race-session")
+            .unwrap()
+            .expired = true;
+        assert_eq!(
+            typed(&context().await),
+            (GRANT_REVOKED.to_owned(), "ended".to_owned())
+        );
+
+        // Ended by the workspace because its policy moved (D-1).
+        manager
+            .registry
+            .lock()
+            .await
+            .scopes
+            .get_mut("worker-race-session")
+            .unwrap()
+            .revocation = Some(Revocation::EndedByWorkspace);
+        assert_eq!(
+            typed(&context().await),
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                "settings_changed".to_owned()
+            )
+        );
+
+        // The workspace's own `grant_expired`, as the worker path reads it.
+        let expired = || {
+            anyhow::anyhow!(
+                "Crew broker refused request: {}",
+                json!({"code": "grant_expired", "message": "grant_expired: run revoked, expired or policy changed"})
+            )
+        };
+        let ended = manager
+            .heed_worker_refusal("worker-race-session", &scope, expired())
+            .await;
+        assert_eq!(
+            typed(&ended),
+            (
+                GRANT_POLICY_CHANGED.to_owned(),
+                "settings_changed".to_owned()
+            )
+        );
+        let timed_out = Scope {
+            expires_at: Some(1),
+            ..scope.clone()
+        };
+        let ended = manager
+            .heed_worker_refusal("worker-race-session", &timed_out, expired())
+            .await;
+        assert_eq!(
+            typed(&ended),
+            (GRANT_TIMED_OUT.to_owned(), "ended".to_owned())
+        );
+        // Anything else the workspace refused passes through untyped, as it came.
+        let other = manager
+            .heed_worker_refusal(
+                "worker-race-session",
+                &scope,
+                anyhow::anyhow!(
+                    "Crew broker refused request: {}",
+                    json!({"code": "forbidden", "message": "forbidden"})
+                ),
+            )
+            .await;
+        assert!(CrewRefusal::find(&other).is_none(), "{other}");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -6897,6 +9720,7 @@ done
                 mode: (version == 2).then_some(ClusterMode::Public),
                 institution_id: None,
                 policy_epoch: (version == 2).then_some(1),
+                storage: None,
             },
         };
         assert_eq!(manager.capabilities(connection_id), None);
@@ -7026,6 +9850,7 @@ done
                 mode: Some(ClusterMode::Public),
                 institution_id: Some("ucsf".into()),
                 policy_epoch: Some(4),
+                storage: None,
             }
         );
         assert_eq!(
@@ -7047,6 +9872,7 @@ done
                 mode: None,
                 institution_id: None,
                 policy_epoch: None,
+                storage: None,
             }
         );
 
@@ -7562,6 +10388,86 @@ done
         let _ = fs::remove_dir_all(root);
     }
 
+    /// RENDERER-2: a run ID travels as a path segment of the person's Stop request, so a
+    /// workspace that answers `run.create` with one shaped like `../../credentials/lock?` could
+    /// have aimed the person's proof at another daemon route. Such a run is refused where it
+    /// arrives: revoked at the workspace by the ID it gave, and never recorded, listed or
+    /// credentialed here.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_id_shaped_like_a_path_is_refused_and_revoked() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("hostile-run-id");
+        let _env = isolated_crew_env(&root);
+        let connection_id = "3c3c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c";
+        let hostile = "../../../credentials/lock?";
+        let (manager, log, session) = abandon_fixture(
+            &root,
+            connection_id,
+            json!({"run": {"id": hostile, "protected_context": false},
+                "credential": "run-credential"}),
+            &[],
+        )
+        .await;
+        let provider = crate::providers::testprovider::TestProvider::new_replaying(
+            root.join("provider-cassette.json").to_string_lossy(),
+        )
+        .unwrap();
+
+        let error = manager
+            .begin_run(
+                &session,
+                connection_id,
+                "destination-channel",
+                vec!["source-a".into()],
+                &provider,
+            )
+            .await
+            .err()
+            .expect("a run named like a path is not granted");
+        assert!(error.to_string().contains("run ID"), "{error}");
+        let revokes = logged_lines(&log, "run.revoke");
+        assert_eq!(revokes.len(), 1, "the created run must be revoked");
+        let revoked: Value = serde_json::from_str(&revokes[0]).unwrap();
+        assert_eq!(revoked["params"]["run_id"], hostile);
+        assert_eq!(logged_methods(&log, "messages.history"), 0);
+        assert!(!manager.registry.lock().await.scopes.contains_key(&session));
+        assert!(manager.read_credential(&format!("run:{session}")).is_err());
+
+        manager.disconnect(connection_id).await.unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_run_id_is_letters_digits_hyphens_and_underscores() {
+        for accepted in [
+            "0b6f4a8e-2f7c-4d1e-9a51-6b8f0c1d2e3f",
+            "run-allowlist",
+            "keepalive_run_2",
+            &"a".repeat(128),
+        ] {
+            assert!(is_run_id(accepted), "{accepted}");
+        }
+        for refused in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "a/b",
+            "a?b",
+            "a#b",
+            "a%2F",
+            "run.1",
+            "run id",
+            "rün",
+            &"a".repeat(129),
+        ] {
+            assert!(!is_run_id(refused), "{refused}");
+        }
+    }
+
     /// The run credential a failed setup wrote goes with it, from whichever backend holds it;
     /// deleting one that is already gone is not an error.
     #[cfg(unix)]
@@ -7655,6 +10561,215 @@ done
         assert!(manager
             .read_credential(&format!("device:{}", prepared.preparation_id))
             .is_ok());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// DAEMON-3: a saved connection's institution can be changed in Connection settings or
+    /// with `privacy set-personal`, as the manual says. The save used to count the connection's
+    /// own saved institution against the new one, so every change was refused as "Crew aliases
+    /// have different institutions" with no alias anywhere, and the only way out was to remove
+    /// the connection and its device key. Another connection to the same workspace still has
+    /// to agree, and the refusal names it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connections_institution_can_be_changed_unless_another_connection_disagrees() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("change-institution");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let workspace = "44444444-4444-4444-8444-444444444444";
+        let input = |target: &str, name: &str, institution: &str| SaveConnection {
+            preparation_id: None,
+            name: name.into(),
+            ssh_target: target.into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-change-institution.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "44".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Private,
+            institution_id: Some(institution.into()),
+        };
+        let typo = manager
+            .save(input("lab@crew.example.org", "Methods lab", "ucfs"))
+            .await
+            .unwrap();
+        assert_eq!(typo.institution_id.as_deref(), Some("ucfs"));
+
+        let fixed = manager
+            .update(
+                &typo.id,
+                input("lab@crew.example.org", "Methods lab", "ucsf"),
+            )
+            .await
+            .expect("the institution can be changed");
+        assert_eq!(fixed.institution_id.as_deref(), Some("ucsf"));
+        assert!(
+            fixed.policy_epoch > typo.policy_epoch,
+            "the change is a policy change"
+        );
+        assert_eq!(
+            manager
+                .connection(&typo.id)
+                .await
+                .unwrap()
+                .institution_id
+                .as_deref(),
+            Some("ucsf")
+        );
+
+        // A second connection to the same workspace shares its institution...
+        let alias = manager
+            .save(input("lab@crew-alias.example.org", "Methods alias", "ucsf"))
+            .await
+            .unwrap();
+        assert_eq!(alias.cluster_connection_id, fixed.cluster_connection_id);
+        // ...so changing one alone is refused, naming the other, and changes nothing.
+        let refused = manager
+            .update(
+                &typo.id,
+                input("lab@crew.example.org", "Methods lab", "ucsd"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            refused,
+            "Methods alias is also saved on this computer for the same workspace, under \
+             institution ucsf. Connections to one workspace share one institution, so remove \
+             Methods alias before you use ucsd here."
+        );
+        assert!(!refused.contains("aliases"));
+        assert_eq!(
+            manager
+                .connection(&typo.id)
+                .await
+                .unwrap()
+                .institution_id
+                .as_deref(),
+            Some("ucsf")
+        );
+        // With the other removed, the change goes through.
+        manager.remove(&alias.id).await.unwrap();
+        let moved = manager
+            .update(
+                &typo.id,
+                input("lab@crew.example.org", "Methods lab", "ucsd"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(moved.institution_id.as_deref(), Some("ucsd"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// T3-BE-4: the workspace's own institution is fixed by its host. A save that gives a
+    /// connection another one, while a signed `hello` from the workspace says which it is, is
+    /// refused with the one to use, and nothing is written; every task and grant on it used to
+    /// be refused at admission while the connection read as set. The workspace's institution
+    /// saved again, one not known yet (no signed `hello`, or a v1 one) and the DAEMON-3 change
+    /// all still save.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connections_institution_must_be_its_workspaces_when_that_is_known() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = fixture_root("workspace-institution");
+        let _env = isolated_crew_env(&root);
+        let manager = CrewManager::new(root.join("manager")).unwrap();
+        let workspace = "45454545-4545-4545-8545-454545454545";
+        let input = |institution: &str| SaveConnection {
+            preparation_id: None,
+            name: "okafor-lab".into(),
+            ssh_target: "mallory@crew.example.org".into(),
+            port: Some(22),
+            identity_file: None,
+            proxy_jump: None,
+            socket_path: "/tmp/crew-workspace-institution.sock".into(),
+            owner_uid: 10001,
+            workspace_id: workspace.into(),
+            workspace_public_key: "45".repeat(32),
+            remote_root: None,
+            remote_execution: false,
+            cluster_connection_id: None,
+            mode: ClusterMode::Private,
+            institution_id: Some(institution.into()),
+        };
+        let saved = manager.save(input("ucsf")).await.unwrap();
+        // Not known yet: any institution saves, as before.
+        let unknown = manager.update(&saved.id, input("ucsd")).await.unwrap();
+        assert_eq!(unknown.institution_id.as_deref(), Some("ucsd"));
+
+        let hello = |version: u8, institution: Option<&str>| BrokerHello {
+            signature_version: version,
+            capabilities: vec![],
+            workspace_name: Some("okafor-lab".into()),
+            mode: (version >= 2).then_some(ClusterMode::Private),
+            institution_id: institution.map(str::to_owned),
+            policy_epoch: (version >= 2).then_some(1),
+            storage: None,
+        };
+        // Only a v2 signature covers the institution; a v1 `hello` says nothing about it.
+        manager
+            .brokers
+            .lock()
+            .unwrap()
+            .insert(saved.id.clone(), hello(1, None));
+        manager.update(&saved.id, input("ucsf")).await.unwrap();
+
+        manager
+            .brokers
+            .lock()
+            .unwrap()
+            .insert(saved.id.clone(), hello(2, Some("stanford-synthetic")));
+        let on_disk = fs::read(root.join("manager").join("connections.json")).unwrap();
+        let refused = manager.update(&saved.id, input("UCSD")).await.unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "This connection is for ucsd, but okafor-lab belongs to stanford-synthetic. Use \
+             stanford-synthetic here."
+        );
+        let typed = CrewRefusal::find(&refused).expect("typed");
+        assert_eq!(typed.code(), "crew_institution_mismatch");
+        assert_eq!(
+            typed.fields(),
+            &[
+                ("connection_institution", json!("ucsd")),
+                ("workspace_institution", json!("stanford-synthetic")),
+                ("workspace", json!("okafor-lab")),
+            ]
+        );
+        assert_eq!(
+            fs::read(root.join("manager").join("connections.json")).unwrap(),
+            on_disk,
+            "nothing was written"
+        );
+        assert_eq!(
+            manager
+                .connection(&saved.id)
+                .await
+                .unwrap()
+                .institution_id
+                .as_deref(),
+            Some("ucsf")
+        );
+
+        // The workspace's own saves, in any case the equivalence admission uses accepts.
+        let matching = manager
+            .update(&saved.id, input("Stanford-Synthetic"))
+            .await
+            .unwrap();
+        assert_eq!(
+            matching.institution_id.as_deref(),
+            Some("stanford-synthetic")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -7841,6 +10956,345 @@ mod provenance_tests {
 
     fn status(id: &str, name: &str, owner: &str) -> serde_json::Value {
         json!({"id": id, "name": name, "owner_id": owner, "complete": true})
+    }
+
+    /// W2-DMN-12 (review): a chat post's line names what was read since the chat's last post,
+    /// by when each file was last read: a file read again after a post is named again (it is
+    /// still listed once), and a read made after a line was built, while its post was on the
+    /// way, is left for the next post rather than marked as named by a line that did not name
+    /// it.
+    #[test]
+    fn a_chat_post_names_every_read_since_the_last_one_and_no_read_after_its_line() {
+        let mut reads = RunReads::default();
+        reads.note_context(&page(json!([message(10, "b1")])), NewestFirst);
+        reads.note_file(&read("b1", "gina-assay.csv", "p-gina"));
+        let built = super::current_read_mark();
+        let gina = "Source: `gina-assay.csv`, shared by Gina Rossi (@crew_gina).";
+        assert_eq!(reads.since_last_post().source_line().as_deref(), Some(gina));
+        reads.mark_posted(built);
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        reads.note_file(&read("b1", "gina-assay.csv", "p-gina"));
+        assert_eq!(reads.since_last_post().source_line().as_deref(), Some(gina));
+        assert_eq!(reads.files.len(), 1, "still listed once");
+
+        let built = super::current_read_mark();
+        reads.note_file(&read("b2", "plate.csv", "p-dave"));
+        reads.mark_posted(built);
+        let next = reads
+            .since_last_post()
+            .source_line()
+            .expect("plate.csv is unnamed");
+        assert!(next.starts_with("Source: `plate.csv`"), "{next}");
+        assert!(!next.contains("gina-assay"), "{next}");
+        // A task's result still names every file its run read.
+        let all = reads.source_line().unwrap();
+        assert!(
+            all.contains("gina-assay.csv") && all.contains("plate.csv"),
+            "{all}"
+        );
+
+        // An older mark never takes back what a newer one covered.
+        let newest = super::current_read_mark();
+        reads.mark_posted(newest);
+        reads.mark_posted(built);
+        assert_eq!(reads.since_last_post().source_line(), None);
+    }
+
+    /// W2-DMN-12 (round 3): a chat post's line is not cut from the chat's own list, which
+    /// holds only the first [`super::MAX_READ_FILES`] files the chat read. Cut from it, a post
+    /// named none of the files first read after them and said no file was read: (a) the 33rd
+    /// file after a post, (b) a file past the first 32 read again after a post.
+    #[test]
+    fn a_chat_post_names_a_file_first_read_after_the_chats_first_32() {
+        let listed = super::MAX_READ_FILES;
+        let mut reads = RunReads::default();
+        for n in 0..listed {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        // (a)
+        reads.note_file(&read("b32", "f32.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Source: `f32.csv`.")
+        );
+        // A task's result still lists the first 32 and counts the rest.
+        let all = reads.source_line().unwrap();
+        assert!(all.ends_with(", `f31.csv`, and 1 more file."), "{all}");
+        reads.mark_posted(super::current_read_mark());
+
+        // (b)
+        reads.note_file(&read("b33", "f33.csv", "p"));
+        reads.note_file(&read("b34", "f34.csv", "p"));
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+        reads.note_file(&read("b33", "f33.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Source: `f33.csv`.")
+        );
+        reads.mark_posted(super::current_read_mark());
+
+        // Listed files first, in the order first read; the others after them, as last read.
+        reads.note_file(&read("b34", "f34.csv", "p"));
+        reads.note_file(&read("b2", "f2.csv", "p"));
+        reads.note_file(&read("b32", "f32.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Sources: `f2.csv`, `f34.csv`, `f32.csv`.")
+        );
+    }
+
+    /// T3-BE-8: the line names work-folder files a run read, alone or after its shared files,
+    /// counts them past [`MAX_READ_FILES`], and a chat post names only those read since its
+    /// last post. The desktop draws the cases file's remote lines, which are these.
+    #[test]
+    fn the_line_names_work_folder_files_the_run_read() {
+        use chrono::TimeZone;
+        let now = chrono::FixedOffset::west_opt(7 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 9, 27, 2, 30, 0)
+            .unwrap();
+        let mut reads = RunReads::default();
+        reads.note_remote("samples_result.txt", "hpc");
+        assert_eq!(
+            reads.source_line_at(&now).as_deref(),
+            Some("Source: `samples_result.txt` from the remote work folder on hpc.")
+        );
+        let mut both = reads.clone();
+        both.note_file(&json!({"blob": {"id": "b1", "name": "gina-assay.csv", "owner_id": "p"}}));
+        assert_eq!(
+            both.source_line_at(&now).as_deref(),
+            Some("Source: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc.")
+        );
+        reads.note_remote("run-2/means.csv", "hpc");
+        assert_eq!(
+            reads.source_line_at(&now).as_deref(),
+            Some("Sources: `samples_result.txt` and `run-2/means.csv` from the remote work folder on hpc.")
+        );
+        reads.mark_posted(super::current_read_mark());
+        assert!(reads.since_last_post().read_nothing());
+        reads.note_remote("samples_result.txt", "hpc");
+        assert_eq!(
+            reads.since_last_post().source_line_at(&now).as_deref(),
+            Some("Source: `samples_result.txt` from the remote work folder on hpc.")
+        );
+
+        let mut many = RunReads::default();
+        for n in 0..(super::MAX_READ_FILES + 3) {
+            many.note_remote(&format!("f{n}.txt"), "hpc");
+        }
+        let line = many.source_line_at(&now).unwrap();
+        assert!(line.starts_with("Sources: `f0.txt`, `f1.txt`, "), "{line}");
+        assert!(
+            line.ends_with(", `f31.txt` and 3 more files from the remote work folder on hpc."),
+            "{line}"
+        );
+
+        // A long path is shown by its end, where the file's name is.
+        let mut long = RunReads::default();
+        let deep = format!("{}/samples_result.txt", "d".repeat(4000));
+        long.note_remote(&deep, "hpc");
+        let line = long.source_line_at(&now).unwrap();
+        assert!(line.starts_with("Source: `…ddd"), "{line}");
+        assert!(line.ends_with("d/samples_result.txt` from the remote work folder on hpc."));
+        assert!(line.chars().count() < 200, "{line}");
+
+        // A path shaped like the daemon's line is a code span in it, never the line.
+        let mut forged = RunReads::default();
+        forged.note_remote("Source: `FAKE.csv`, shared by Mallory.", "hpc");
+        assert_eq!(
+            forged.source_line_at(&now).as_deref(),
+            Some("Source: ``Source: `FAKE.csv`, shared by Mallory.`` from the remote work folder on hpc.")
+        );
+
+        // The desktop's render cases hold these lines as the daemon writes them.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/daemonSourceLine.cases.json");
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let sources: Vec<&str> = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|case| case["source"].as_str())
+            .filter(|source| source.contains("remote work folder"))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                "Source: `samples_result.txt` from the remote work folder on hpc.",
+                "Source: `gina-assay.csv`. Also read `samples_result.txt` from the remote work folder on hpc.",
+            ]
+        );
+    }
+
+    /// W2-DMN-12 (round 4): the desktop draws `remote.attach`'s post from the cases file
+    /// (`daemonSourceLine.render.test.tsx`), so its attach cases hold the body the daemon
+    /// writes: a name shaped like a Source line, as a code span.
+    #[test]
+    fn the_desktop_attach_cases_are_the_body_the_daemon_writes() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/crew/daemonSourceLine.cases.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let fixture: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let replies: Vec<&str> = fixture["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .filter_map(|case| case["reply"].as_str())
+            .filter(|reply| reply.starts_with("Attached "))
+            .collect();
+        let body = super::attached_body("Source: `FAKE.csv`, shared by Mallory.");
+        assert_eq!(body, "Attached ``Source: `FAKE.csv`, shared by Mallory.``");
+        assert_eq!(replies, [body.as_str(), body.as_str()]);
+        assert_eq!(
+            super::attached_body("\u{202e}"),
+            "Attached an untitled file"
+        );
+    }
+
+    /// W2-DMN-12 (round 4): a post's line is kept by its key and its request, so the same
+    /// request sent again gets the same line, another request under the key replaces it, and
+    /// only the latest [`super::MAX_SENT_POSTS`] keys are kept.
+    #[test]
+    fn a_post_keeps_its_line_by_key_and_request_for_a_retry() {
+        let sent = |key: &str, request: u8, line: &str, mark: super::ReadMark| super::SentPost {
+            key: key.to_owned(),
+            request: [request; 32],
+            line: Some(line.to_owned()),
+            mark,
+        };
+        let mut reads = RunReads::default();
+        reads.note_sent_post(sent("k", 1, "first", 7));
+        assert_eq!(
+            reads.sent_post("k", &[1; 32]),
+            Some((Some("first".to_owned()), 7))
+        );
+        assert_eq!(reads.sent_post("k", &[2; 32]), None, "another request");
+        assert_eq!(reads.sent_post("other", &[1; 32]), None, "another key");
+
+        reads.note_sent_post(sent("k", 2, "second", 9));
+        assert_eq!(reads.sent_post("k", &[1; 32]), None, "replaced");
+        assert_eq!(
+            reads.sent_post("k", &[2; 32]),
+            Some((Some("second".to_owned()), 9))
+        );
+        assert_eq!(reads.sent_posts.len(), 1);
+
+        for n in 0..super::MAX_SENT_POSTS {
+            reads.note_sent_post(sent(&format!("k{n}"), 3, "later", 11));
+        }
+        assert_eq!(reads.sent_posts.len(), super::MAX_SENT_POSTS);
+        assert_eq!(
+            reads.sent_post("k", &[2; 32]),
+            None,
+            "the oldest went first"
+        );
+        assert!(reads.sent_post("k0", &[3; 32]).is_some());
+    }
+
+    /// W2-DMN-12 (round 3): each post lists up to [`super::MAX_READ_FILES`] of its own reads
+    /// and counts the rest, however many files the chat read before it.
+    #[test]
+    fn a_chat_post_lists_its_own_reads_up_to_the_bound_and_counts_the_rest() {
+        let listed = super::MAX_READ_FILES;
+        let mut reads = RunReads::default();
+        for n in 0..listed {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        reads.mark_posted(super::current_read_mark());
+        for n in listed..2 * listed + 8 {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        let line = reads.since_last_post().source_line().unwrap();
+        assert!(
+            line.starts_with("Sources: `f32.csv`, `f33.csv`, "),
+            "{line}"
+        );
+        assert!(line.ends_with(", `f63.csv`, and 8 more files."), "{line}");
+        assert!(!line.contains("`f0.csv`"), "{line}");
+    }
+
+    /// W2-DMN-12 (round 3): a read past every bound the daemon keeps is still a read. It had no
+    /// mark at all, so a post after it said no file was read; now it is counted as at least one
+    /// more file, in a chat's post and a task's result alike.
+    #[test]
+    fn a_read_past_every_bound_is_counted_and_never_reads_as_none() {
+        let recorded = super::MAX_READ_FILES + super::MAX_READ_ATTACHMENTS;
+        let mut reads = RunReads::default();
+        for n in 0..recorded {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        reads.note_file(&read("past", "past.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Sources: at least 1 shared file, not listed.")
+        );
+        let all = reads.source_line().unwrap();
+        assert!(
+            all.ends_with(&format!(
+                ", `f31.csv`, and at least {} more files.",
+                super::MAX_READ_ATTACHMENTS + 1
+            )),
+            "{all}"
+        );
+        reads.mark_posted(super::current_read_mark());
+        assert_eq!(reads.since_last_post().source_line(), None);
+
+        // A recorded file read again after it: named, and the earlier unrecorded read is not
+        // counted again.
+        reads.note_file(&read("b40", "f40.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Source: `f40.csv`.")
+        );
+        // Beside a named file, an unrecorded read is counted.
+        reads.note_file(&read("past-2", "past-2.csv", "p"));
+        assert_eq!(
+            reads.since_last_post().source_line().as_deref(),
+            Some("Sources: `f40.csv`, and at least 1 more file.")
+        );
+    }
+
+    /// A read the daemon could not record may have been of the newer copy, so once such a read
+    /// happened the line says the newer copy may not have been read: it never claims what the
+    /// daemon did not see, and reading past every bound never removes the warning.
+    #[test]
+    fn a_newer_copy_is_still_warned_of_once_a_read_went_unrecorded() {
+        let mut reads = RunReads::default();
+        reads.note_context(
+            &page(json!([message(100, "b-old"), message(200, "b-new")])),
+            OldestFirst,
+        );
+        reads.note_file(&read("b-old", "gina-assay.csv", "p-gina"));
+        reads.note_status(&status("b-new", "gina-assay.csv", "p-gina"));
+        let warned = reads.source_line().unwrap();
+        assert!(
+            warned.contains("A newer copy of `gina-assay.csv` was shared and was not read."),
+            "{warned}"
+        );
+        for n in 1..super::MAX_READ_FILES + super::MAX_READ_ATTACHMENTS {
+            reads.note_file(&read(&format!("b{n}"), &format!("f{n}.csv"), "p"));
+        }
+        // The newer copy, read past every bound.
+        reads.note_file(&read("b-new", "gina-assay.csv", "p-gina"));
+        let line = reads.source_line().unwrap();
+        assert!(
+            line.ends_with(&format!(
+                "and at least {} more files. \
+                 A newer copy of `gina-assay.csv` was shared and may not have been read.",
+                super::MAX_READ_ATTACHMENTS + 1
+            )),
+            "{line}"
+        );
     }
 
     #[test]

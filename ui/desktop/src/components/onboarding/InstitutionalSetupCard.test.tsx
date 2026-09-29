@@ -86,12 +86,14 @@ describe('InstitutionalSetupCard', () => {
     expect(writtenKeys()).not.toContain('VERSA_AZURE_DEPLOYMENT_NAME');
   });
 
-  it('writes the key, the endpoint and the API version, then selects the provider', async () => {
+  it('writes the endpoint and the API version, then the key, then selects the provider', async () => {
+    // Settings first: a daemon that cannot prove a person refuses a moved
+    // endpoint, and the refusal must come before any key is saved.
     await connectVersaAzure();
     expect(mockUpsert.mock.calls).toEqual([
-      ['VERSA_AZURE_API_KEY', 'a-key', true],
       ['VERSA_AZURE_ENDPOINT', 'https://unified-api.ucsf.edu/general', false],
       ['VERSA_AZURE_API_VERSION', '2025-01-01-preview', false],
+      ['VERSA_AZURE_API_KEY', 'a-key', true],
       ['BIOROUTER_PROVIDER', 'versa_azure', false],
     ]);
   });
@@ -130,14 +132,46 @@ describe('InstitutionalSetupCard', () => {
     expect(written.filter((key) => key.startsWith('AWS_'))).toEqual([]);
   });
 
-  it('writes the Versa Bedrock credentials and overrides, then selects the provider', async () => {
+  it('writes the Versa Bedrock overrides, then the credentials, then selects the provider', async () => {
     await connectVersaBedrock();
     expect(mockUpsert.mock.calls).toEqual([
-      ['VERSA_BEDROCK_ACCESS_KEY_ID', 'an-id', true],
-      ['VERSA_BEDROCK_SECRET_ACCESS_KEY', 'a-secret', true],
       ['VERSA_BEDROCK_ENDPOINT', 'https://unified-api.ucsf.edu/general/awsai', false],
       ['VERSA_BEDROCK_REGION', 'us-west-2', false],
+      ['VERSA_BEDROCK_ACCESS_KEY_ID', 'an-id', true],
+      ['VERSA_BEDROCK_SECRET_ACCESS_KEY', 'a-secret', true],
       ['BIOROUTER_PROVIDER', 'versa_bedrock', false],
     ]);
+  });
+
+  /**
+   * W2-PRV-2: the key was saved over the working one and only then checked.
+   * It is now checked as a candidate first, and a refusal saves nothing and
+   * shows the daemon's sentence.
+   */
+  it('checks the key as a candidate before saving anything', async () => {
+    await connectVersaAzure();
+    expect(mockCheckProvider.mock.calls[0][0]).toMatchObject({
+      body: { provider: 'versa_azure', live: true, candidate: { VERSA_AZURE_API_KEY: 'a-key' } },
+    });
+    expect(mockCheckProvider.mock.invocationCallOrder[0]).toBeLessThan(
+      mockUpsert.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('saves nothing when the key is refused, and says why', async () => {
+    mockCheckProvider.mockRejectedValueOnce(
+      'Versa API Azure rejected these credentials: Invalid client id or secret'
+    );
+    const onSuccess = vi.fn();
+    render(<InstitutionalSetupCard onSuccess={onSuccess} />);
+    fireEvent.change(screen.getByLabelText(/API Key/i), { target: { value: 'a-key' } });
+    fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Azure OpenAI/i }));
+    expect(
+      await screen.findByText(
+        'Could not connect: Versa API Azure rejected these credentials: Invalid client id or secret'
+      )
+    ).toBeInTheDocument();
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(onSuccess).not.toHaveBeenCalled();
   });
 });

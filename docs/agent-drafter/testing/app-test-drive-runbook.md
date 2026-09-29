@@ -136,7 +136,9 @@ echo "daemon up on :8899"
 ```
 
 Keep **one** daemon up for the whole batch. Apps are served at
-`http://localhost:8899/apps/<app-id>/`. `GET`s under `/apps/*` are auth-exempt; the mutating routes
+`http://localhost:8899/apps/<app-id>/`, but only to a browser that opened the app's one-time link:
+`POST /apps/<app-id>/launch` with the secret answers its path. Without that link's cookie or the
+secret, every `/apps/*` request answers 401. The mutating routes
 (`POST /reply`, `POST /agent/start`, `POST /apps/{id}/build`, `DELETE /apps/{id}`) require the secret
 `test` — send it per the server's auth scheme (default header in debug is the secret key; confirm the
 exact header from `crates/biorouter-server/src/auth.rs` or the generated client

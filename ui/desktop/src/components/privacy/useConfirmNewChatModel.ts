@@ -8,6 +8,18 @@ import type { ProviderTier } from '../../api/types.gen';
 export const NEW_CHAT_MODEL_CHANGED_TITLE = 'Message not sent';
 
 /**
+ * How the refusal's toast is shown. The whole sentence is the point, because it
+ * says where the message went: it used to close after 5 s with its body clamped
+ * at "Your…". So it stays until dismissed, unclamped, and goes when the person
+ * leaves this screen (W2-PRV-11, W2-PRV-16).
+ */
+export const NEW_CHAT_MODEL_CHANGED_TOAST = {
+  scope: 'screen',
+  clampMessage: false,
+  toastOptions: { autoClose: false },
+} as const;
+
+/**
  * The toast for a send refused because the model on screen was not the model a
  * new chat would have started on.
  *
@@ -95,6 +107,7 @@ export function useConfirmNewChatModel(): () => Promise<boolean> {
     toastWarning({
       title: NEW_CHAT_MODEL_CHANGED_TITLE,
       msg: newChatModelChangedMessage(currentModel, fresh, providerName, tier),
+      ...NEW_CHAT_MODEL_CHANGED_TOAST,
     });
     return false;
   }, [currentModel, currentProvider, modelConfigStatus, syncAppModelSelection, getProviders]);

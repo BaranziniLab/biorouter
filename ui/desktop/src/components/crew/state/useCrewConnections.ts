@@ -8,6 +8,7 @@ import {
 } from 'react';
 import { crewHttp, type CrewConnection } from '../crewApi';
 import { classifyConnectFailure } from './connectFailure';
+import { forgetConnectionFailedTasks } from './crewRunStart';
 import { forgetConnectionDrafts, forgetLastChannel, resetBetweenTests } from './draftStash';
 import { forgetViewMemory } from './viewMemory';
 import type {
@@ -135,7 +136,11 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
   );
   const updateConnection = useCallback(
     async (id: string, input: SaveConnectionInput) => {
-      const saved = await crewHttp<CrewConnection>(`/connections/${id}`, 'PATCH', input);
+      const saved = await crewHttp<CrewConnection>(
+        `/connections/${encodeURIComponent(id)}`,
+        'PATCH',
+        input
+      );
       await loadConnections();
       return saved;
     },
@@ -143,7 +148,7 @@ export function useCrewConnections(generation: MutableRefObject<number>): CrewCo
   );
   const removeConnection = useCallback(
     async (id: string) => {
-      await crewHttp(`/connections/${id}`, 'DELETE');
+      await crewHttp(`/connections/${encodeURIComponent(id)}`, 'DELETE');
       forgetConnectionMemory(id);
       await loadConnections();
     },
@@ -277,14 +282,15 @@ export function wasDisconnectedHere(connectionId: string): boolean {
 }
 
 /**
- * Forget everything kept for a removed connection: drafts, last channel, and the remembered view
- * and pane (`viewMemory`).
+ * Forget everything kept for a removed connection: drafts, failed tasks, last channel, and the
+ * remembered view and pane (`viewMemory`).
  */
 export function forgetConnectionMemory(connectionId: string): void {
   quietReobserves.delete(connectionId);
   verifiedConnections.delete(connectionId);
   disconnectedHere.delete(connectionId);
   forgetConnectionDrafts(connectionId);
+  forgetConnectionFailedTasks(connectionId);
   forgetLastChannel(connectionId);
   forgetViewMemory(connectionId);
 }
@@ -454,7 +460,7 @@ export function createConnectionLifecycle(context: CrewConnectionLifecycleContex
     const target = connectionId;
     const accepted = await act('connect', 'connect', async () => {
       try {
-        await crewHttp(`/connections/${target}/connect`, 'POST', {});
+        await crewHttp(`/connections/${encodeURIComponent(target)}/connect`, 'POST', {});
       } catch (failure) {
         const classified = failures.record(target, failure);
         if (autoOpenSignIn && opts?.userInitiated && classified.kind === 'auth_required')
@@ -472,7 +478,7 @@ export function createConnectionLifecycle(context: CrewConnectionLifecycleContex
   const disconnect = async () => {
     const target = connectionId;
     await act('global', 'disconnect', async () => {
-      await crewHttp(`/connections/${target}/disconnect`, 'POST', {});
+      await crewHttp(`/connections/${encodeURIComponent(target)}/disconnect`, 'POST', {});
       // Before the list is read again, so the record's `disconnected` is never taken for a drop.
       noteDisconnectedHere(target);
       stopObserving();

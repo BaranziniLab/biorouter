@@ -261,7 +261,7 @@ impl SwitchReport {
         Some(match (self.origin, &self.last_change) {
             (SwitchOrigin::Settings, Some(change)) => format!(
                 "privacy tiers are OFF: {path} records that they were turned off in \
-                 Settings > Privacy at {at}{confirmed}. {consequence}",
+                 Settings > App > Privacy at {at}{confirmed}. {consequence}",
                 at = change.at,
                 confirmed = if change.system_authenticated {
                     ", confirmed by the operating system"
@@ -289,7 +289,7 @@ impl SwitchReport {
                          by an agent's shell.",
                     ),
                     _ => (
-                        "it records no change made in Settings > Privacy".to_string(),
+                        "it records no change made in Settings > App > Privacy".to_string(),
                         "It was edited directly — by hand, by a script or by an agent's shell \
                          — or written by a Biorouter too old to record changes.",
                     ),
@@ -297,7 +297,7 @@ impl SwitchReport {
                 format!(
                     "privacy tiers are OFF, and they were turned off outside the app: {path} \
                      says they are off, but {history}. {how} {consequence} Turn them back on \
-                     in Settings > Privacy."
+                     in Settings > App > Privacy."
                 )
             }
         })
@@ -1053,7 +1053,8 @@ mod tests {
             1,
             "OFF is announced however it got there: {logs}"
         );
-        assert!(warns[0].contains("Settings > Privacy"), "{logs}");
+        // Privacy is a section of Settings > App, not a tab of its own (W2-PRV-8).
+        assert!(warns[0].contains("Settings > App > Privacy"), "{logs}");
         assert!(
             warns[0].contains("confirmed by the operating system"),
             "{logs}"

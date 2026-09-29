@@ -66,14 +66,101 @@ pub fn bedrock_blocking_inference_config(
 ///
 /// This returns the service's own message when there is one, and a bare
 /// description otherwise. Both are safe to show and are what the reader needs.
-fn safe_detail<E: aws_sdk_bedrockruntime::error::ProvideErrorMetadata>(err: &E) -> String {
-    match err.message() {
-        Some(m) if !m.trim().is_empty() => m.trim().to_string(),
-        _ => match err.code() {
-            Some(c) if !c.trim().is_empty() => format!("error code {}", c.trim()),
-            _ => "no further detail was returned".to_string(),
-        },
+///
+/// `recovered` is the message [`gateway_message`] found where the SDK hid it
+/// (W2-PRV-9): a gateway that answers `{"message": "Invalid Client Id"}` with
+/// no error code gets `Unhandled` with EMPTY metadata, so `message()` is `None`
+/// although the sentence was parsed.
+fn safe_detail<E: aws_sdk_bedrockruntime::error::ProvideErrorMetadata>(
+    err: &E,
+    recovered: Option<String>,
+) -> String {
+    if let Some(message) = err.message().and_then(clean_gateway_message) {
+        return message;
     }
+    if let Some(message) = recovered {
+        return message;
+    }
+    match err.code() {
+        Some(c) if !c.trim().is_empty() => format!("error code {}", c.trim()),
+        _ => "no further detail was returned".to_string(),
+    }
+}
+
+/// A gateway's error message as a user may see it, or `None`.
+///
+/// ⚠ Bounded, single-line, and never anything that looks like request
+/// credentials: the UCSF gateway echoes the SigV4 `authorization` header in its
+/// response HEADERS (see [`safe_detail`]), and a message that ever carried it
+/// is dropped whole rather than trimmed.
+fn clean_gateway_message(message: &str) -> Option<String> {
+    let message = message.trim();
+    if message.is_empty() {
+        return None;
+    }
+    let lowered = message.to_ascii_lowercase();
+    if [
+        "aws4-hmac-sha256",
+        "signature=",
+        "credential=",
+        "authorization",
+        "x-amz-security-token",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+    {
+        return None;
+    }
+    Some(
+        message
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .take(300)
+            .collect(),
+    )
+}
+
+/// The message a gateway gave for an error the SDK could not type (W2-PRV-9).
+///
+/// The SDK parses `{"message": ...}` into an `ErrorMetadata`, and then, finding
+/// no error code, builds `Unhandled` with EMPTY metadata and the parsed one
+/// boxed as its `source`. So the message is still there, one hop down the
+/// source chain. Failing that, it is read from the bounded body bytes: JSON
+/// `message`, `Message` or `errorMessage`, the keys the SDK itself reads. Never
+/// the raw response and never `Debug` output (see [`safe_detail`]).
+pub fn gateway_message<E>(
+    err: &SdkError<E, aws_sdk_bedrockruntime::config::http::HttpResponse>,
+) -> Option<String>
+where
+    E: std::error::Error + 'static,
+{
+    source_chain_message(err).or_else(|| {
+        err.raw_response()
+            .and_then(|response| response.body().bytes())
+            .and_then(body_message)
+    })
+}
+
+fn source_chain_message(err: &(dyn std::error::Error + 'static)) -> Option<String> {
+    let mut current = Some(err);
+    while let Some(error) = current {
+        if let Some(meta) = error.downcast_ref::<aws_sdk_bedrockruntime::error::ErrorMetadata>() {
+            if let Some(message) = meta.message().and_then(clean_gateway_message) {
+                return Some(message);
+            }
+        }
+        current = error.source();
+    }
+    None
+}
+
+fn body_message(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
+    let body: Value = serde_json::from_str(&text).ok()?;
+    ["message", "Message", "errorMessage"]
+        .iter()
+        .find_map(|key| body.get(*key)?.as_str())
+        .and_then(clean_gateway_message)
 }
 
 /// Bound a *default* output allowance by the room compaction leaves for it.
@@ -745,7 +832,10 @@ pub fn classify_bedrock_converse_error(err: SdkError<ConverseError>) -> Provider
     }
 
     // Compact, credential-free detail. See `safe_detail`.
-    let detail = format!("Failed to call Bedrock: {}", safe_detail(&err));
+    let detail = format!(
+        "Failed to call Bedrock: {}",
+        safe_detail(&err, gateway_message(&err))
+    );
 
     match err.into_service_error() {
         ConverseError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
@@ -890,7 +980,10 @@ pub fn classify_bedrock_converse_stream_error(err: SdkError<ConverseStreamError>
         _ => {}
     }
 
-    let detail = format!("Failed to open Bedrock stream: {}", safe_detail(&err));
+    let detail = format!(
+        "Failed to open Bedrock stream: {}",
+        safe_detail(&err, gateway_message(&err))
+    );
 
     match err.into_service_error() {
         ConverseStreamError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
@@ -979,7 +1072,10 @@ pub fn classify_bedrock_stream_event_error<R: std::fmt::Debug + Send + Sync + 's
         _ => {}
     }
 
-    let detail = format!("Bedrock stream error: {}", safe_detail(&err));
+    let detail = format!(
+        "Bedrock stream error: {}",
+        safe_detail(&err, source_chain_message(&err))
+    );
 
     match err.into_service_error() {
         ConverseStreamOutputError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
@@ -2733,6 +2829,85 @@ mod bedrock_error_tests {
         )
     }
 
+    // ---- W2-PRV-9: the gateway's message survives the SDK -----------------
+
+    /// What the SDK really builds for the UCSF gateway's 403: the JSON body
+    /// `{"message": "Invalid Client Id"}` has no error code, so the parsed
+    /// metadata goes into `unhandled(...)`, whose own metadata is EMPTY. Built
+    /// with the SDK's constructor, not a hand-made fake whose `message()`
+    /// answers, which is how the old tests passed while users read "no further
+    /// detail was returned".
+    fn gateway_403() -> SdkError<ConverseError> {
+        service_err(
+            403,
+            r#"{"message": "Invalid Client Id"}"#,
+            ConverseError::unhandled(
+                ErrorMetadata::builder()
+                    .message("Invalid Client Id")
+                    .build(),
+            ),
+        )
+    }
+
+    #[test]
+    fn a_code_less_gateway_refusal_keeps_its_message() {
+        let err = gateway_403();
+        assert_eq!(err.message(), None, "the SDK's own metadata is empty here");
+        match classify_bedrock_converse_error(err) {
+            ProviderError::Authentication(message) => {
+                assert!(message.contains("Invalid Client Id"), "{message}");
+                assert!(!message.contains("no further detail"), "{message}");
+            }
+            other => panic!("expected an authentication error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_code_less_stream_refusal_keeps_its_message() {
+        let resp = HttpResponse::new(
+            StatusCode::try_from(403).unwrap(),
+            SdkBody::from(r#"{"message": "Invalid Client Id"}"#.as_bytes().to_vec()),
+        );
+        let err = SdkError::service_error(
+            ConverseStreamError::unhandled(
+                ErrorMetadata::builder()
+                    .message("Invalid Client Id")
+                    .build(),
+            ),
+            resp,
+        );
+        match classify_bedrock_converse_stream_error(err) {
+            ProviderError::Authentication(message) => {
+                assert!(message.contains("Invalid Client Id"), "{message}")
+            }
+            other => panic!("expected an authentication error, got {other:?}"),
+        }
+    }
+
+    /// With nothing in the source chain, the bounded body is read instead.
+    #[test]
+    fn the_body_is_the_fallback_for_the_message() {
+        let err = proxy_unhandled(403, r#"{"Message": "Invalid Client Id"}"#);
+        assert_eq!(gateway_message(&err).as_deref(), Some("Invalid Client Id"));
+        let err = proxy_unhandled(403, "<html>not json</html>");
+        assert_eq!(gateway_message(&err), None);
+    }
+
+    /// ⚠ Whatever a gateway puts in its body, request credentials never reach a
+    /// message: one that carries them is dropped whole.
+    #[test]
+    fn a_message_carrying_credentials_is_dropped() {
+        let err = proxy_unhandled(
+            403,
+            r#"{"message": "bad sig: AWS4-HMAC-SHA256 Credential=AKIA/x, Signature=abc"}"#,
+        );
+        assert_eq!(gateway_message(&err), None);
+        let classified = format!("{:?}", classify_bedrock_converse_error(err));
+        for forbidden in ["AWS4-HMAC-SHA256", "Signature=", "Credential="] {
+            assert!(!classified.contains(forbidden), "{classified}");
+        }
+    }
+
     // ---- looks_like_context_overflow --------------------------------------
 
     #[test]
@@ -3315,7 +3490,7 @@ mod safe_detail_tests {
             message: Some("Invalid Client Id".into()),
             code: None,
         };
-        assert_eq!(safe_detail(&e), "Invalid Client Id");
+        assert_eq!(safe_detail(&e, None), "Invalid Client Id");
     }
 
     /// ⚠ THE SECURITY ASSERTION. `format!("{:?}", err)` on a real
@@ -3331,7 +3506,7 @@ mod safe_detail_tests {
             message: Some("Invalid Client Id".into()),
             code: Some("AccessDenied".into()),
         };
-        let out = safe_detail(&e);
+        let out = safe_detail(&e, None);
         for forbidden in [
             "AWS4-HMAC-SHA256",
             "Signature=",
@@ -3354,12 +3529,12 @@ mod safe_detail_tests {
             message: Some("   ".into()),
             code: Some("ThrottlingException".into()),
         };
-        assert_eq!(safe_detail(&coded), "error code ThrottlingException");
+        assert_eq!(safe_detail(&coded, None), "error code ThrottlingException");
 
         let bare = FakeSdkError {
             message: None,
             code: None,
         };
-        assert_eq!(safe_detail(&bare), "no further detail was returned");
+        assert_eq!(safe_detail(&bare, None), "no further detail was returned");
     }
 }

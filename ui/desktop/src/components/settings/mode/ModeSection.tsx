@@ -5,7 +5,9 @@ import { ConversationLimitsDropdown } from './ConversationLimitsDropdown';
 
 export const ModeSection = () => {
   const [currentMode, setCurrentMode] = useState('auto');
-  const [maxTurns, setMaxTurns] = useState<number>(1000);
+  // `null` until a value is known to be saved; the field then shows the
+  // agent's default rather than a number it does not use.
+  const [maxTurns, setMaxTurns] = useState<number | null>(null);
   const { read, upsert } = useConfig();
 
   const handleModeChange = async (newMode: string) => {
@@ -31,9 +33,13 @@ export const ModeSection = () => {
 
   const fetchMaxTurns = useCallback(async () => {
     try {
-      const turns = (await read('BIOROUTER_MAX_TURNS', false)) as number;
-      if (turns) {
-        setMaxTurns(turns);
+      const turns = await read('BIOROUTER_MAX_TURNS', false);
+      // Every saved number is shown, 0 and negatives included. `if (turns)`
+      // hid a saved 0 (the value that stops every new chat) behind the
+      // default, so the field looked fine while nothing worked.
+      const stored = typeof turns === 'string' && turns.trim() !== '' ? Number(turns) : turns;
+      if (typeof stored === 'number' && Number.isFinite(stored)) {
+        setMaxTurns(stored);
       }
     } catch (error) {
       console.error('Error fetching max turns:', error);

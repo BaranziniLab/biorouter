@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { Button } from '../../ui/button';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { RotateCcw } from '../../icons/app-icons';
 import { useConfig } from '../../ConfigContext';
 import { View, ViewOptions } from '../../../utils/navigationUtils';
@@ -20,9 +22,14 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
    * would leave the session with no provider at all if it ever succeeded there.
    */
   const hostManaged = isBrowserSurface();
+  // The reset clears both keys and reloads the window, so it asks first: a
+  // destructive-styled button that acted on its first click was one stray
+  // click away from sending the person back through onboarding.
+  const [confirming, setConfirming] = useState(false);
 
   const handleResetProvider = async () => {
     if (hostManaged) return;
+    setConfirming(false);
     try {
       await remove('BIOROUTER_PROVIDER', false);
       await remove('BIOROUTER_MODEL', false);
@@ -50,7 +57,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
           give. */}
       <div className="biorouter-settings-control-strip pt-4">
         <Button
-          onClick={handleResetProvider}
+          onClick={() => setConfirming(true)}
           disabled={hostManaged}
           title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
           variant="destructive"
@@ -66,6 +73,16 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
         holds the whole of it for anyone who reaches for the control.
       */}
       <HostManagedModelNote short className="mt-3" />
+      <ConfirmationModal
+        isOpen={confirming}
+        title="Reset provider and model?"
+        message="New chats will have no provider or model until you choose them again. If no defaults are available, Biorouter opens the welcome screen."
+        confirmLabel="Reset"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        onConfirm={handleResetProvider}
+        onCancel={() => setConfirming(false)}
+      />
     </div>
   );
 }

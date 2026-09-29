@@ -44,8 +44,10 @@ biorouter serve --open
   Press Ctrl-C to stop.
 ```
 
-`--open` launches your browser at that address. Without it, copy the URL — including the `?t=`
-part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port; so does
+`--open` opens your browser at that address. It hands the browser a page only your account can
+read, which carries the address, and never the address itself: a browser's command line can be
+read by other accounts on the machine, and the address works for anyone until `serve` stops.
+Without `--open`, copy the URL, including the `?t=` part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port; so does
 stopping `serve` any other way (see [Stopping it](#stopping-it)).
 
 `biorouter headless` is an accepted alias for `biorouter serve` and behaves identically. It is the
@@ -62,10 +64,10 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-d
 |---|---|---|
 | `--host <addr>` | Address to bind. Anything reachable from another machine requires a token. | `127.0.0.1` |
 | `-p, --port <n>` | Port to listen on. | `8765` |
-| `--token <t>` | Use this access token instead of generating a fresh one. | A new random token each launch |
+| `--token <t>` | Use this access token instead of generating a fresh one. The flag stays on the command line, where other accounts can read it, and `serve` prints a note saying so; `BIOROUTER_BROWSER_TOKEN` does not. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
 | `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
-| `--open` | Open a browser once the server is ready. | Off |
+| `--open` | Open a browser once the server is ready, through a page only your account can read. | Off |
 
 The default port is `8765` rather than `3000` deliberately: `3000` is `biorouterd`'s own default, so
 a `serve` default of `3000` would collide with the daemon the command starts.
@@ -106,9 +108,11 @@ carries a credential instead.
   `?t=` parameter, and different every time. It is shown once, in the terminal; there is nowhere
   else to read it back from.
 - **Opening the address exchanges it for a cookie.** The daemon validates the token, sets an
-  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session`, and redirects to `/`. The
-  token then disappears from the address bar, so it is not left in browser history or in the
-  `Referer` of anything the page later loads.
+  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session`, and answers a short page
+  that moves the browser on to `/`. The token then disappears from the address bar and from the
+  tab's back and forward list, and it is not in the `Referer` of anything the page later loads. A
+  page rather than a redirect, because a redirect would lose the cookie when the address was opened
+  from a file, which is how `--open` opens it.
 - **It is not used up.** The exchange works every time the token is presented, from any browser,
   until the daemon stops — so a second browser, a colleague, or the same browser after it has
   discarded the cookie can all open the same address. Anyone holding the address can do the same,
@@ -245,6 +249,7 @@ differs:
 | A delegated subagent's own tab | **Read-only, and it says so before you try.** The tab shows the subagent's conversation and follows it while it works, but has no composer and no Stop button: sending to a subagent, steering it and stopping it need proof that a person acted, which only the desktop application holds. A note takes the composer's place, and one line takes the Stop button's ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Resetting app data (Settings → App → Reset) | **Not available, and it says so before you try.** A reset deletes chats, knowledge bases and the rest for good, private ones included, so the daemon performs one only for a request that proves a person asked, which only the desktop application can send. The panel still lists what each area covers, with a note in place of its buttons. On the machine running `biorouter serve`, reset from Settings in the Biorouter app there, or remove items from a terminal there with `biorouter session remove`, `schedule remove`, `skill remove` and `extension remove` ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
+| Crew | **Not available, and it says so before you try.** Opening **Crew** in the browser shows "Crew needs the Biorouter desktop app", and nothing on that page asks the daemon for Crew data. A chat shows no Crew bar. Every Crew action, even listing saved workspaces, needs the approval secret a person types into the desktop application or `biorouter crew`, and the daemon `biorouter serve` starts never holds one. A Crew request that reaches it anyway is refused with `crew_human_authority_unavailable` and the sentence "Crew isn't available in a browser opened with biorouter serve…", and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal, on your own computer. See the [Crew user manual](../crew/README.md) and [SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click). |
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |
 | Artifacts and diagnostics bundles | The artifact side panel works as usual. Opening an artifact outside the panel opens a new tab; a diagnostics bundle downloads as a file. |
 | Sending a region of the preview to the chat, and the agent's screenshot of the panel | **Not available, and it says so before you try.** Both are a picture taken by the desktop application's window, the only thing that can see into the sandboxed frames most previews draw in, and a browser page has no such window. The camera button in the panel's header is disabled and its tooltip says why; an agent that asks for a screenshot is told to read the panel's text instead, which works ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
@@ -280,7 +285,7 @@ machine. Fix it there, restart `serve`, and open the new address it prints. **Co
 notice copies the daemon's own words, for a bug report.
 
 **The tab says the link needs its access token.** The `?t=` part was dropped — from a copy-paste, a
-chat client shortening the link, or a bookmark saved after the redirect. Use the full address as
+chat client shortening the link, or a bookmark saved after the address changed to `/`. Use the full address as
 printed. If the launch has since restarted, the token has changed; read the new one from the
 terminal.
 

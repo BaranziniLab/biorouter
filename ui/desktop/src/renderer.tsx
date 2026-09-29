@@ -20,6 +20,7 @@ import { BROWSER_SURFACE_BODY_CLASS, BROWSER_SURFACE_MARKER } from './utils/surf
 // touches no global at import time, so it cannot disturb the polyfill above.
 import { installViewportPinWarning } from './utils/viewportPin';
 import { readRegistryDownload } from './utils/registryDownloadResult';
+import { openAppInThisBrowser } from './utils/appLaunchLink';
 
 const App = lazy(() => import('./App'));
 
@@ -216,6 +217,10 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       openExternal: async (url: string) => {
         window.open(url, '_blank', 'noopener,noreferrer');
       },
+      // Applications' "Launch in browser". This tab already is the browser, so
+      // the app's one-time launch link goes straight to a new tab (W2-HRD-1).
+      openAppInBrowser: (appId: string) =>
+        openAppInThisBrowser(headlessConfig.apiBaseUrl, appId, headlessConfig.secretKey),
       openInChrome: (url: string) => window.open(url, '_blank', 'noopener,noreferrer'),
       fetchMetadata: async (url: string) => {
         const response = await fetch(url);

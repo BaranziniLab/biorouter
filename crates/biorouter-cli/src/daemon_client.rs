@@ -1,9 +1,11 @@
 //! Human-operated clients for the profile's shared daemon.
+use crate::commands::needs_terminal;
 use anyhow::{bail, ensure, Context, Result};
 use biorouter::crew::observation::{ObserveEvent, ObserveRequest};
 use biorouter::daemon_runtime::{self, Descriptor, Identity};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
+#[cfg(unix)]
 use std::time::Duration;
 use zeroize::Zeroizing;
 
@@ -23,7 +25,83 @@ pub struct DaemonRefusal {
     /// The daemon's `institution_refusal` beside its institution refusal: the model, who
     /// approved it, the workspace and its institution, for the desktop's sentence (Q2-76).
     pub institution_refusal: Option<Value>,
+    /// The daemon's `connection_institution` beside an institution refusal about this
+    /// computer's connection rather than the model (admission's "This connection is for …,
+    /// but … belongs to …."). That refusal carries the model's details too, so this is what
+    /// tells the two apart; it is never printed.
+    pub connection_institution: Option<String>,
     message: String,
+    /// The daemon's `detail`: OpenSSH's own words beside a failed connect, each line made
+    /// terminal-safe on its own so the lines stay lines.
+    detail: Option<String>,
+    /// `actual_mode` and `expected_mode` beside a privacy-mode refusal (`crew_mode_mismatch`):
+    /// the connection's mode and the one the request required.
+    modes: Option<(String, String)>,
+    /// The refusal's other machine-readable fields, as the daemon sent them ([`REFUSAL_FIELDS`]),
+    /// bounded: what a script reads beside `code`, such as `actual_mode`, `institution_refusal`,
+    /// `reason` or `connection_id` (AGT2-N5). Never printed as text.
+    fields: serde_json::Map<String, Value>,
+}
+
+/// The optional fields of the daemon's `CrewError` a JSON failure carries through, beside the
+/// `error`, `code`, `broker_code` and `detail` the CLI writes itself ([`CLI_WRITTEN_FIELDS`]).
+/// The daemon's `request_id` is left out: the CLI's own is the one to retry with. A test in
+/// `commands::crew` reads `CrewError` from `ui/desktop/openapi.json` and fails when a field is
+/// in neither list, so a field the daemon adds is never silently dropped from JSON output.
+pub const REFUSAL_FIELDS: &[&str] = &[
+    "host",
+    "connection_id",
+    "reason",
+    "missing",
+    "ssh_code",
+    "workspace",
+    "actual_mode",
+    "expected_mode",
+    "institution_refusal",
+    "connection",
+    "connection_institution",
+    "institution",
+    "workspace_institution",
+    "institutions",
+    "kind",
+    "text",
+    "candidates",
+    "session_id",
+    "run_id",
+    "stopped_on_this_device",
+    "remote_revocation_confirmed",
+    "task_status",
+    "task_status_error",
+];
+
+/// The `CrewError` fields a JSON failure writes from the CLI's own reading rather than copying
+/// ([`REFUSAL_FIELDS`]): the sentence, the code, the CLI's request ID, and the broker's code and
+/// OpenSSH's detail, which are checked before they are kept.
+pub const CLI_WRITTEN_FIELDS: &[&str] = &["error", "code", "request_id", "broker_code", "detail"];
+
+/// A daemon value kept for JSON output, bounded so a malformed answer cannot grow it: strings
+/// to 4096 characters, lists to 64 items, objects to 32 fields, three levels deep.
+#[cfg(any(unix, test))]
+fn bounded_field(value: &Value, depth: usize) -> Value {
+    match value {
+        Value::String(text) => Value::String(text.chars().take(4096).collect()),
+        Value::Array(items) if depth > 0 => Value::Array(
+            items
+                .iter()
+                .take(64)
+                .map(|item| bounded_field(item, depth - 1))
+                .collect(),
+        ),
+        Value::Object(fields) if depth > 0 => Value::Object(
+            fields
+                .iter()
+                .take(32)
+                .map(|(key, item)| (key.clone(), bounded_field(item, depth - 1)))
+                .collect(),
+        ),
+        Value::Array(_) | Value::Object(_) => Value::Null,
+        other => other.clone(),
+    }
 }
 
 impl DaemonRefusal {
@@ -32,6 +110,200 @@ impl DaemonRefusal {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    /// OpenSSH's own words beside a failed connect (`detail`), terminal-safe, when the daemon
+    /// sent them.
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+
+    /// The connection's mode and the mode the request required, beside a privacy-mode refusal.
+    pub fn modes(&self) -> Option<(&str, &str)> {
+        self.modes
+            .as_ref()
+            .map(|(actual, expected)| (actual.as_str(), expected.as_str()))
+    }
+
+    /// The refusal's other fields ([`REFUSAL_FIELDS`]) that the daemon sent.
+    pub fn fields(&self) -> &serde_json::Map<String, Value> {
+        &self.fields
+    }
+
+    /// One of [`Self::fields`] as text, such as `reason` or `connection_id`.
+    pub fn field_text(&self, key: &str) -> Option<&str> {
+        self.fields.get(key).and_then(Value::as_str)
+    }
+
+    /// A refusal as the daemon would answer it with `body`, for a test elsewhere in the crate.
+    /// It builds on every platform, like the parser it calls: the crew tests that use it are
+    /// not Unix-only, and a Windows test build must still compile them.
+    #[cfg(test)]
+    pub fn for_test(status: u16, body: Value) -> Self {
+        daemon_refusal(status, Some(&body), "Daemon refused the request")
+    }
+}
+
+/// A refusal said in words for a person, keeping a stable code for JSON output. It is a
+/// definite answer: nothing was changed, so no retry is offered.
+#[derive(Debug)]
+pub struct Restated {
+    message: String,
+    pub code: Option<&'static str>,
+}
+
+impl Restated {
+    pub fn new(message: impl Into<String>, code: Option<&'static str>) -> Self {
+        Self {
+            message: message.into(),
+            code,
+        }
+    }
+}
+
+impl std::fmt::Display for Restated {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Restated {}
+
+/// A request the daemon never received (M16): hyper handed it back unsent, because the
+/// connection could not take it (it was not ready yet, or it closed first). Nothing reached the
+/// daemon, so running the command again is always safe, and no retry ID is needed.
+#[derive(Debug)]
+pub struct NotSent {
+    cause: String,
+}
+
+impl NotSent {
+    /// What a person reads: the connection, then that nothing was sent.
+    pub const SENTENCE: &'static str =
+        "The daemon connection wasn't ready. Nothing was sent; run it again.";
+    /// The JSON code beside [`Self::SENTENCE`], the daemon's own code for the same outcome.
+    pub const CODE: &'static str = "crew_not_sent";
+
+    #[cfg(unix)]
+    fn new(cause: impl std::fmt::Display) -> Self {
+        Self {
+            cause: cause.to_string(),
+        }
+    }
+
+    /// One for a test elsewhere in the crate.
+    #[cfg(test)]
+    pub fn for_test() -> Self {
+        Self {
+            cause: "connection was not ready".to_owned(),
+        }
+    }
+
+    /// hyper's own words, for a log or a bug report.
+    pub fn cause(&self) -> &str {
+        &self.cause
+    }
+}
+
+impl std::fmt::Display for NotSent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(Self::SENTENCE)
+    }
+}
+
+impl std::error::Error for NotSent {}
+
+/// Send `request` once `sender`'s connection can take it, and wait up to `timeout` for the
+/// answer.
+///
+/// Every connection here carries two requests: the identity check, then the request itself.
+/// hyper lets the first through at once, but takes the next only after the connection task
+/// has finished the previous answer, and that task runs on another thread. Sending without
+/// waiting was refused as "connection was not ready" about once in a thousand (M16). A request
+/// the connection hands back unsent is [`NotSent`]; one that failed after it was written keeps
+/// hyper's error, because its outcome is not known.
+#[cfg(unix)]
+async fn send_when_ready<B>(
+    sender: &mut hyper::client::conn::http1::SendRequest<B>,
+    request: hyper::Request<B>,
+    timeout: Duration,
+) -> Result<hyper::Response<hyper::body::Incoming>>
+where
+    B: hyper::body::Body + 'static,
+{
+    match tokio::time::timeout(Duration::from_secs(5), sender.ready()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(NotSent::new(error).into()),
+        Err(_) => return Err(NotSent::new("the connection did not become ready in time").into()),
+    }
+    match tokio::time::timeout(timeout, sender.try_send_request(request)).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(mut error)) => {
+            if error.take_message().is_some() {
+                Err(NotSent::new(error.into_error()).into())
+            } else {
+                Err(error.into_error().into())
+            }
+        }
+        Err(elapsed) => Err(elapsed.into()),
+    }
+}
+
+/// What `daemon status` and `--no-start` say when no daemon is running, whether it never
+/// started or it died and left its discovery record behind.
+pub const DAEMON_NOT_RUNNING: &str = "No Biorouter daemon is running for this profile.";
+/// The JSON code beside [`DAEMON_NOT_RUNNING`].
+pub const DAEMON_NOT_RUNNING_CODE: &str = "crew_daemon_not_running";
+/// An approval secret the running daemon did not accept.
+pub const WRONG_APPROVAL_SECRET: &str = "That approval secret doesn't match the running Biorouter daemon. Type the secret you chose when it started.";
+/// The JSON code beside [`WRONG_APPROVAL_SECRET`].
+pub const WRONG_APPROVAL_SECRET_CODE: &str = "crew_approval_secret_mismatch";
+/// Crew from a terminal needs the shared daemon's Unix socket.
+pub const PLATFORM_UNSUPPORTED: &str =
+    "Shared Crew daemon IPC is unavailable on this platform. biorouter crew runs on macOS and Linux.";
+/// The JSON code beside [`PLATFORM_UNSUPPORTED`].
+pub const PLATFORM_UNSUPPORTED_CODE: &str = "crew_platform_unsupported";
+/// A hidden prompt with no terminal to show it on.
+const SECRET_NEEDS_A_TERMINAL: &str = "Biorouter needs a terminal to ask for this secret without showing it. In a script, add --approval-key-stdin and send the secret as the first line of standard input.";
+/// The prompt when a command is about to start a new daemon.
+const NEW_DAEMON_SECRET_PROMPT: &str = "No Biorouter daemon is running for this profile, so this command starts one. Choose its Crew approval secret (32 to 4096 printable ASCII characters, no spaces):";
+/// The prompt of `daemon start`.
+const START_DAEMON_SECRET_PROMPT: &str = "Choose the Crew approval secret for the new Biorouter daemon (32 to 4096 printable ASCII characters, no spaces):";
+const APPROVAL_SECRET_AGAIN: &str = "Type the same approval secret again:";
+const APPROVAL_SECRETS_DIFFER: &str =
+    "The two approval secrets don't match. No daemon was started.";
+const NEW_VAULT_PASSPHRASE: &str =
+    "New vault passphrase (different from the Crew approval secret):";
+const VAULT_PASSPHRASE: &str = "Vault passphrase (different from the Crew approval secret):";
+const VAULT_PASSPHRASE_AGAIN: &str = "Type the same vault passphrase again:";
+const VAULT_PASSPHRASES_DIFFER: &str = "The two passphrases don't match. The vault was not set up.";
+
+/// Crew needs the shared daemon's Unix socket; on any other platform every command says so
+/// before it asks for anything.
+pub fn require_supported_platform(unix: bool) -> Result<()> {
+    if unix {
+        Ok(())
+    } else {
+        Err(Restated::new(PLATFORM_UNSUPPORTED, Some(PLATFORM_UNSUPPORTED_CODE)).into())
+    }
+}
+
+/// The daemon's answer to a proof it did not accept, in words: the approval secret is wrong.
+/// Anything else is left as it is.
+fn wrong_approval_secret(error: anyhow::Error) -> anyhow::Error {
+    let wrong = error
+        .downcast_ref::<DaemonRefusal>()
+        .is_some_and(|refused| {
+            refused.status == 403 && refused.kind.as_deref() == Some("crew_user_action_required")
+        });
+    if wrong {
+        Restated::new(WRONG_APPROVAL_SECRET, Some(WRONG_APPROVAL_SECRET_CODE)).into()
+    } else {
+        error
+    }
+}
+
+fn daemon_not_running() -> anyhow::Error {
+    Restated::new(DAEMON_NOT_RUNNING, Some(DAEMON_NOT_RUNNING_CODE)).into()
 }
 
 impl std::fmt::Display for DaemonRefusal {
@@ -46,7 +318,7 @@ impl std::fmt::Display for DaemonRefusal {
 
 impl std::error::Error for DaemonRefusal {}
 
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonRefusal {
     let message = value
         .and_then(|value| value.get("error").or_else(|| value.get("message")))
@@ -60,8 +332,32 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
         .and_then(broker_code_text)
         .or_else(|| legacy.as_ref().map(|(code, _)| code.clone()));
     let message = legacy.as_ref().map_or(message, |(_, text)| text.as_str());
+    let detail = value
+        .and_then(|value| value.get("detail"))
+        .and_then(Value::as_str)
+        .map(|detail| terminal_safe_lines(&detail.chars().take(4096).collect::<String>()))
+        .filter(|detail| !detail.trim().is_empty());
+    // A mode is one of two words: anything else is not one and is dropped, not printed.
+    let mode = |key: &str| {
+        value
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_str)
+            .filter(|mode| matches!(*mode, "private" | "public"))
+            .map(str::to_owned)
+    };
+    let modes = mode("actual_mode").zip(mode("expected_mode"));
+    let fields = REFUSAL_FIELDS
+        .iter()
+        .filter_map(|key| {
+            let field = value?.get(*key)?;
+            (!field.is_null()).then(|| ((*key).to_owned(), bounded_field(field, 3)))
+        })
+        .collect();
     DaemonRefusal {
         status,
+        detail,
+        modes,
+        fields,
         kind: value
             .and_then(|value| value.get("status").or_else(|| value.get("code")))
             .and_then(Value::as_str)
@@ -71,17 +367,23 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
             .and_then(|value| value.get("institution_refusal"))
             .filter(|details| details.is_object())
             .cloned(),
+        connection_institution: value
+            .and_then(|value| value.get("connection_institution"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|institution| !institution.is_empty())
+            .map(|institution| terminal_safe(&institution.chars().take(128).collect::<String>())),
         message: terminal_safe(&message.chars().take(1024).collect::<String>()),
     }
 }
 
 /// What an older daemon wrote before the broker's JSON error object.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 const LEGACY_BROKER_REFUSAL: &str = "Crew broker refused request: ";
 
 /// A broker code as the broker writes one (`[a-z][a-z0-9_]*`), capped like `kind`. Anything
 /// else is not a code and is dropped rather than printed.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn broker_code_text(code: &str) -> Option<String> {
     let mut chars = code.chars();
     let shaped = chars.next().is_some_and(|first| first.is_ascii_lowercase())
@@ -91,7 +393,7 @@ fn broker_code_text(code: &str) -> Option<String> {
 
 /// `Crew broker refused request: {"code":…,"message":…}` from a daemon that predates
 /// `broker_code`: the code, and the broker's own text (its message, else the code alone).
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
     let encoded = text.trim().strip_prefix(LEGACY_BROKER_REFUSAL)?;
     let error = serde_json::from_str::<Value>(encoded).ok()?;
@@ -110,7 +412,7 @@ fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
 /// would act on escaped: control characters and invisible formatting. `escape_debug` used to
 /// run here and printed `the model\'s` in text and `model\\'s` in JSON, so a script matching
 /// the daemon's canonical sentence missed it.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn terminal_safe(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     for ch in message.chars() {
@@ -121,6 +423,15 @@ fn terminal_safe(message: &str) -> String {
         }
     }
     out
+}
+
+/// [`terminal_safe`] line by line: the line breaks stay, and nothing else a terminal acts on.
+#[cfg(any(unix, test))]
+fn terminal_safe_lines(text: &str) -> String {
+    text.split('\n')
+        .map(|line| terminal_safe(line.strip_suffix('\r').unwrap_or(line)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl CrewClient {
@@ -140,13 +451,19 @@ impl CrewClient {
         let descriptor = match discover_shared_daemon().await? {
             Some(descriptor) => descriptor,
             None => {
-                ensure!(
-                    !no_start,
-                    "No live shared daemon is available; run biorouter crew daemon start"
-                );
-                let proof = read_approval_secret(
-                    "Crew approval secret (held separately from your profile):",
+                if no_start {
+                    return Err(Restated::new(
+                        format!("{DAEMON_NOT_RUNNING} Start one with biorouter crew daemon start, then run this command again."),
+                        Some(DAEMON_NOT_RUNNING_CODE),
+                    )
+                    .into());
+                }
+                // This secret becomes the new daemon's, for as long as it runs: say so, and
+                // ask twice on a terminal, so a typo cannot become a secret nobody knows.
+                let proof = choose_approval_secret(
+                    NEW_DAEMON_SECRET_PROMPT,
                     approval_key_stdin,
+                    read_secret,
                 )
                 .await?;
                 let descriptor = start_daemon(&proof).await?;
@@ -163,7 +480,11 @@ impl CrewClient {
         )
         .await?;
         let client = Self { descriptor, proof };
-        client.request("GET", "/crew/connections", None).await?;
+        // This request only proves the secret, so a refused proof means a wrong secret.
+        client
+            .request("GET", "/crew/connections", None)
+            .await
+            .map_err(wrong_approval_secret)?;
         Ok(client)
     }
 
@@ -276,9 +597,16 @@ impl CrewClient {
             request = request.header("Content-Type", "application/json");
         }
         let request = request.body(Full::new(bytes::Bytes::from(bytes)))?;
-        let response = tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
+        let response = send_when_ready(&mut sender, request, Duration::from_secs(180))
             .await
-            .context("Daemon response timed out; inspect session state before retrying")??;
+            .map_err(|error| {
+                if error.is::<tokio::time::error::Elapsed>() {
+                    error
+                        .context("Daemon response timed out; inspect session state before retrying")
+                } else {
+                    error
+                }
+            })?;
         if !response.status().is_success() {
             let status = response.status();
             let bytes = bounded_response(response, 16 * 1024)
@@ -296,14 +624,17 @@ impl CrewClient {
         Ok((response, connection))
     }
 
-    pub async fn observe<F>(
+    /// Follow the daemon's observer at `path`, handing each frame to `on_frame`, which may
+    /// wait (to look up an attachment's name, say) before the next frame is read.
+    pub async fn observe<F, Fut>(
         &self,
         path: &str,
         body: &ObserveRequest,
         on_frame: F,
     ) -> Result<Option<String>>
     where
-        F: FnMut(ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>>,
+        F: FnMut(ObserveEvent) -> Fut,
+        Fut: std::future::Future<Output = Result<std::ops::ControlFlow<Option<String>>>>,
     {
         #[cfg(not(unix))]
         {
@@ -330,9 +661,7 @@ impl CrewClient {
                 .header("X-Daemon-Instance", &self.descriptor.instance_id)
                 .header("X-User-Action", self.proof.as_str())
                 .body(Full::new(Bytes::from(serde_json::to_vec(body)?)))?;
-            let response =
-                tokio::time::timeout(Duration::from_secs(180), sender.send_request(request))
-                    .await??;
+            let response = send_when_ready(&mut sender, request, Duration::from_secs(180)).await?;
             ensure!(
                 response.status().is_success(),
                 "Crew observer refused ({}); check the connection, daemon and approval secret",
@@ -369,10 +698,9 @@ impl CrewClient {
             };
             use futures::{SinkExt, StreamExt};
             use tokio_tungstenite::tungstenite::Message;
-            ensure!(
-                std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
-                "SSH authentication needs an interactive terminal for native host-key and MFA prompts"
-            );
+            // SF2-N6: the usage refusal (exit 2, `crew_needs_terminal`), like every other
+            // command that needs a person at a terminal.
+            sign_in_possible(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())?;
             ensure!(
                 connection_id
                     .bytes()
@@ -380,7 +708,10 @@ impl CrewClient {
                 "Invalid connection ID"
             );
             let controller = uuid::Uuid::new_v4().to_string();
-            let (cols, rows) = terminal::size()?;
+            // A pty a script opened (`ssh -tt`) can report 0x0, which the daemon refuses.
+            let (cols, rows) = terminal::size().map_or(DEFAULT_SIGN_IN_SIZE, |(cols, rows)| {
+                sign_in_terminal_size(cols, rows)
+            });
             let started = self.request("POST", &format!("/crew/connections/{connection_id}/authentication"), Some(json!({"request_id": uuid::Uuid::new_v4().to_string(), "controller_id": controller, "cols": cols, "rows": rows}))).await?;
             let id = started["authentication_id"]
                 .as_str()
@@ -420,7 +751,10 @@ impl CrewClient {
                         _ => (),
                     },
                     event = input.next() => match event {
-                        Some(Ok(Event::Resize(cols, rows))) => socket.send(Message::Text(json!({"type":"resize","cols":cols,"rows":rows}).to_string().into())).await?,
+                        Some(Ok(Event::Resize(cols, rows))) => {
+                            let (cols, rows) = sign_in_terminal_size(cols, rows);
+                            socket.send(Message::Text(json!({"type":"resize","cols":cols,"rows":rows}).to_string().into())).await?;
+                        }
                         Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
                             let data = match key.code {
                                 KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) && c.is_ascii() => Some(((c.to_ascii_lowercase() as u8) & 0x1f) as char),
@@ -444,6 +778,32 @@ impl CrewClient {
             Ok(json!({"authentication_id":id,"exit_code":exit_code,"authenticated":true}))
         }
     }
+}
+
+/// What `crew auth` says with no terminal to show the server's prompts in (SF2-N6). A server that
+/// takes this computer's SSH key alone needs no prompt, so `connect` is named for it.
+pub const AUTH_NEEDS_A_TERMINAL: &str = "Signing in needs a terminal, to show the server's host-key and verification-code prompts. Run biorouter crew auth in a terminal. If the server takes this computer's SSH key alone, biorouter crew connect signs in without one.";
+
+/// `Ok` when `crew auth` has a terminal to sign in at, else the usage refusal (exit 2).
+#[cfg(unix)]
+fn sign_in_possible(terminal: bool) -> Result<(), needs_terminal::NeedsTerminal> {
+    needs_terminal::require(terminal, AUTH_NEEDS_A_TERMINAL)
+}
+
+/// The size a sign-in terminal gets when the real one reports none (a pty a script opened can
+/// report 0x0): the classic 80 by 24.
+#[cfg(unix)]
+const DEFAULT_SIGN_IN_SIZE: (u16, u16) = (80, 24);
+
+/// A terminal size the daemon's sign-in accepts (20 to 500 columns, 5 to 200 rows,
+/// `dimensions` in `crew/authentication.rs`): an unknown size (a zero) is 80 by 24, and any
+/// other is clamped into range, so a very small or very large window still signs in.
+#[cfg(unix)]
+fn sign_in_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
+    if cols == 0 || rows == 0 {
+        return DEFAULT_SIGN_IN_SIZE;
+    }
+    (cols.clamp(20, 500), rows.clamp(5, 200))
 }
 
 // Match the daemon turn replay hard ceiling, with room for SSE field framing.
@@ -638,8 +998,7 @@ async fn verified_observer_connection(
         .header("Host", "localhost")
         .header("X-Secret-Key", &descriptor.api_secret)
         .body(Full::new(Bytes::new()))?;
-    let response =
-        tokio::time::timeout(Duration::from_secs(5), sender.send_request(request)).await??;
+    let response = send_when_ready(&mut sender, request, Duration::from_secs(5)).await?;
     ensure!(
         response.status().is_success(),
         "Shared daemon identity was refused"
@@ -660,12 +1019,13 @@ async fn verified_observer_connection(
 }
 
 #[cfg(unix)]
-async fn read_observer_frames<F>(
+async fn read_observer_frames<F, Fut>(
     mut body: hyper::body::Incoming,
     mut on_frame: F,
 ) -> Result<Option<String>>
 where
-    F: FnMut(ObserveEvent) -> Result<std::ops::ControlFlow<Option<String>>>,
+    F: FnMut(ObserveEvent) -> Fut,
+    Fut: std::future::Future<Output = Result<std::ops::ControlFlow<Option<String>>>>,
 {
     use http_body_util::BodyExt;
     const MAX_FRAME: usize = 1024 * 1024;
@@ -687,7 +1047,7 @@ where
                 let value =
                     serde_json::from_slice(&pending).context("Invalid Crew observer frame")?;
                 pending.clear();
-                if let std::ops::ControlFlow::Break(cursor) = on_frame(value)? {
+                if let std::ops::ControlFlow::Break(cursor) = on_frame(value).await? {
                     return Ok(cursor);
                 }
             }
@@ -738,11 +1098,7 @@ async fn authenticated_terminal_socket(
         .header("Host", "localhost")
         .header("X-Secret-Key", &descriptor.api_secret)
         .body(Full::new(Bytes::new()))?;
-    let response = tokio::time::timeout(
-        Duration::from_secs(5),
-        sender.send_request(identity_request),
-    )
-    .await??;
+    let response = send_when_ready(&mut sender, identity_request, Duration::from_secs(5)).await?;
     ensure!(
         response.status().is_success(),
         "Shared daemon identity was refused before terminal authentication"
@@ -777,11 +1133,12 @@ async fn authenticated_terminal_socket(
         .headers_mut()
         .insert("X-Daemon-Instance", descriptor.instance_id.parse()?);
     let (parts, _) = upgrade.into_parts();
-    let mut response = tokio::time::timeout(
+    let mut response = send_when_ready(
+        &mut sender,
+        Request::from_parts(parts, Full::new(Bytes::new())),
         Duration::from_secs(15),
-        sender.send_request(Request::from_parts(parts, Full::new(Bytes::new()))),
     )
-    .await??;
+    .await?;
     validate_terminal_upgrade(&response, &expected_accept)?;
     let upgraded =
         tokio::time::timeout(Duration::from_secs(5), hyper::upgrade::on(&mut response)).await??;
@@ -840,6 +1197,81 @@ async fn read_approval_secret(prompt: &'static str, from_stdin: bool) -> Result<
     validate_approval_secret(&secret)?;
     Ok(secret)
 }
+
+/// A new secret, chosen now: read once, checked, and on a terminal read again and compared,
+/// because a hidden typo would become a secret nobody knows. From stdin the script supplies
+/// one line and owns its correctness, as it does for every other line it sends.
+async fn new_secret<R, F>(
+    prompts: [&'static str; 3],
+    from_stdin: bool,
+    validate: fn(&str) -> Result<()>,
+    mut read: R,
+) -> Result<Zeroizing<String>>
+where
+    R: FnMut(&'static str, bool) -> F,
+    F: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
+    let [prompt, again, differ] = prompts;
+    let secret = read(prompt, from_stdin).await?;
+    validate(&secret)?;
+    if !from_stdin {
+        let repeated = read(again, from_stdin).await?;
+        ensure!(secret.as_str() == repeated.as_str(), "{differ}");
+    }
+    Ok(secret)
+}
+
+/// The approval secret of a daemon about to start.
+async fn choose_approval_secret<R, F>(
+    prompt: &'static str,
+    from_stdin: bool,
+    read: R,
+) -> Result<Zeroizing<String>>
+where
+    R: FnMut(&'static str, bool) -> F,
+    F: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
+    new_secret(
+        [prompt, APPROVAL_SECRET_AGAIN, APPROVAL_SECRETS_DIFFER],
+        from_stdin,
+        validate_approval_secret,
+        read,
+    )
+    .await
+}
+
+/// The passphrase for `credentials init` (asked twice on a terminal) or `unlock` (once).
+async fn vault_passphrase<R, F>(
+    action: &str,
+    from_stdin: bool,
+    read: R,
+) -> Result<Zeroizing<String>>
+where
+    R: FnMut(&'static str, bool) -> F,
+    F: std::future::Future<Output = Result<Zeroizing<String>>>,
+{
+    if action == "init" {
+        new_secret(
+            [
+                NEW_VAULT_PASSPHRASE,
+                VAULT_PASSPHRASE_AGAIN,
+                VAULT_PASSPHRASES_DIFFER,
+            ],
+            from_stdin,
+            |_| Ok(()),
+            read,
+        )
+        .await
+    } else {
+        let mut read = read;
+        read(VAULT_PASSPHRASE, from_stdin).await
+    }
+}
+
+/// `Ok` when a hidden prompt can be shown, else the refusal that exits with the usage status.
+fn secret_prompt_possible(terminal: bool) -> Result<(), needs_terminal::NeedsTerminal> {
+    needs_terminal::require(terminal, SECRET_NEEDS_A_TERMINAL)
+}
 fn validate_approval_secret(secret: &str) -> Result<()> {
     ensure!(
         (32..=4096).contains(&secret.len())
@@ -856,20 +1288,30 @@ async fn read_secret(prompt: &'static str, from_stdin: bool) -> Result<Zeroizing
             let mut stdin = std::io::stdin().lock();
             for _ in 0..4097 {
                 let mut byte = [0u8];
-                if stdin.read(&mut byte)? == 0 || byte[0] == b'\n' { break; }
+                if stdin.read(&mut byte)? == 0 || byte[0] == b'\n' {
+                    break;
+                }
                 bytes.push(byte[0]);
             }
             ensure!(bytes.len() <= 4096, "Secret exceeds 4096 bytes");
-            if bytes.last() == Some(&b'\r') { bytes.pop(); }
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
             Zeroizing::new(std::str::from_utf8(&bytes)?.to_owned())
         } else {
-            ensure!(std::io::stdin().is_terminal() && std::io::stderr().is_terminal(), "An interactive no-echo prompt is required; select --approval-key-stdin explicitly to use a secret input pipe");
+            secret_prompt_possible(
+                std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+            )?;
             eprintln!("{prompt}");
             Zeroizing::new(console::Term::stderr().read_secure_line()?)
         };
-        ensure!(!secret.is_empty() && secret.len() <= 4096, "A nonempty secret of at most 4096 bytes is required");
+        ensure!(
+            !secret.is_empty() && secret.len() <= 4096,
+            "A nonempty secret of at most 4096 bytes is required"
+        );
         Ok(secret)
-    }).await?
+    })
+    .await?
 }
 
 #[cfg(unix)]
@@ -979,11 +1421,8 @@ async fn request(
             .header("Host", "localhost")
             .header("X-Secret-Key", &descriptor.api_secret)
             .body(Full::new(Bytes::new()))?;
-        let response = tokio::time::timeout(
-            Duration::from_secs(5),
-            sender.send_request(identity_request),
-        )
-        .await??;
+        let response =
+            send_when_ready(&mut sender, identity_request, Duration::from_secs(5)).await?;
         ensure!(
             response.status().is_success(),
             "Shared daemon identity was refused"
@@ -1019,11 +1458,12 @@ async fn request(
             .map(|body| serde_json::to_vec(&body))
             .transpose()?
             .unwrap_or_default();
-        let response = tokio::time::timeout(
+        let response = send_when_ready(
+            &mut sender,
+            builder.body(Full::new(Bytes::from(bytes)))?,
             Duration::from_secs(180),
-            sender.send_request(builder.body(Full::new(Bytes::from(bytes)))?),
         )
-        .await??;
+        .await?;
         let status = response.status();
         let bytes = bounded_response(response, 16 * 1024 * 1024).await?;
         let value: Value = if bytes.is_empty() {
@@ -1219,17 +1659,21 @@ async fn wait_for_daemon_stop(expected: &Descriptor) -> Result<Value> {
 
 pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Value> {
     match action {
-        "status" => {
-            let descriptor = daemon_runtime::read_descriptor()?;
-            verify_identity(&descriptor).await?;
-            Ok(serde_json::to_value(descriptor.identity())?)
-        }
+        // A missing discovery record and one a crashed daemon left behind (its socket gone or
+        // refusing) both mean no daemon is running, in one sentence with one code; anything
+        // else keeps its own error.
+        "status" => match discover_shared_daemon().await? {
+            Some(descriptor) => Ok(serde_json::to_value(descriptor.identity())?),
+            None => Err(daemon_not_running()),
+        },
         "start" => {
-            let proof = read_secret(
-                "Create/use your separately held Crew approval secret (at least 32 bytes):",
-                approval_key_stdin,
-            )
-            .await?;
+            ensure!(
+                discover_shared_daemon().await?.is_none(),
+                "A Biorouter daemon is already running for this profile, with the approval secret it was started with. Stop it first with biorouter crew daemon stop to choose a new one."
+            );
+            let proof =
+                choose_approval_secret(START_DAEMON_SECRET_PROMPT, approval_key_stdin, read_secret)
+                    .await?;
             let descriptor = start_daemon(&proof).await?;
             Ok(serde_json::to_value(descriptor.identity())?)
         }
@@ -1248,17 +1692,41 @@ pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Va
     }
 }
 
+/// What `credentials unlock` says when this profile keeps its Crew keys in the OS keyring.
+pub const NO_VAULT_TO_UNLOCK: &str = "There's no Crew vault to unlock: this computer keeps Crew keys in the OS keyring. To use a passphrase vault instead, run biorouter crew credentials init.";
+/// The same, on a computer whose keyring cannot keep a key (a headless Linux node).
+const NO_VAULT_NO_KEYRING: &str = "There's no Crew vault to unlock, and this computer has no keyring service Biorouter can use. Run biorouter crew credentials init to set up a vault.";
+/// The same, for a development profile that keeps its keys in files.
+const NO_VAULT_TO_UNLOCK_FILES: &str =
+    "There's no Crew vault to unlock: this development profile keeps Crew keys in files.";
+/// The JSON code beside [`NO_VAULT_TO_UNLOCK`].
+pub const NO_VAULT_TO_UNLOCK_CODE: &str = "crew_no_vault";
+
+/// `Ok` when `status` (`GET /crew/credentials`) names a vault `credentials unlock` can open;
+/// the refusal otherwise. Only an initialized encrypted vault can be unlocked.
+fn no_vault_to_unlock(status: &Value) -> Result<()> {
+    let sentence = match status["backend"].as_str() {
+        Some("encrypted_vault") if status["initialized"].as_bool() != Some(false) => return Ok(()),
+        Some("file") => NO_VAULT_TO_UNLOCK_FILES,
+        _ if status["available"].as_bool() == Some(false) => NO_VAULT_NO_KEYRING,
+        _ => NO_VAULT_TO_UNLOCK,
+    };
+    Err(Restated::new(sentence, Some(NO_VAULT_TO_UNLOCK_CODE)).into())
+}
+
 pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Result<Value> {
     let client = CrewClient::connect_with_input(true, approval_key_stdin).await?;
     match action {
         "status" => client.request("GET", "/crew/credentials", None).await,
         "lock" => client.request("POST", "/crew/credentials/lock", None).await,
         "init" | "unlock" => {
-            let passphrase = read_secret(
-                "Vault passphrase (different from the Crew approval secret):",
-                approval_key_stdin,
-            )
-            .await?;
+            if action == "unlock" {
+                // CLIDOCS-F6: with no vault there is nothing to unlock, so say so before asking
+                // for a passphrase that could only be refused.
+                let status = client.request("GET", "/crew/credentials", None).await?;
+                no_vault_to_unlock(&status)?;
+            }
+            let passphrase = vault_passphrase(action, approval_key_stdin, read_secret).await?;
             ensure!(
                 passphrase.as_str() != client.proof.as_str(),
                 "The vault passphrase must differ from the human approval secret"
@@ -1278,9 +1746,17 @@ pub async fn credentials_control(action: &str, approval_key_stdin: bool) -> Resu
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        daemon_refusal, open_daemon_owner_lock, read_observer_frames, wait_for_daemon_stop,
-        CrewClient, DaemonRefusal, EventDecoder, MAX_SSE_FRAME,
+        choose_approval_secret, daemon_control, daemon_refusal, no_vault_to_unlock,
+        open_daemon_owner_lock, read_observer_frames, require_supported_platform,
+        secret_prompt_possible, sign_in_possible, sign_in_terminal_size, vault_passphrase,
+        wait_for_daemon_stop, wrong_approval_secret, CrewClient, DaemonRefusal, EventDecoder,
+        Restated, APPROVAL_SECRET_AGAIN, AUTH_NEEDS_A_TERMINAL, DAEMON_NOT_RUNNING,
+        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_DAEMON_SECRET_PROMPT, NEW_VAULT_PASSPHRASE,
+        NO_VAULT_NO_KEYRING, NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES,
+        VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN, WRONG_APPROVAL_SECRET,
+        WRONG_APPROVAL_SECRET_CODE,
     };
+    use crate::commands::needs_terminal::NeedsTerminal;
     use biorouter::crew::observation::ObserveEvent;
     use biorouter::daemon_runtime::{self, Descriptor, Endpoint, Identity};
     use bytes::Bytes;
@@ -1644,11 +2120,11 @@ mod tests {
         let cursor = read_observer_frames(body, |frame| {
             let reconnect = matches!(&frame, ObserveEvent::Reconnect { .. });
             frames.push(frame);
-            if reconnect {
+            std::future::ready(if reconnect {
                 Ok(std::ops::ControlFlow::Break(Some("cursor-2".into())))
             } else {
                 Ok(std::ops::ControlFlow::Continue(()))
-            }
+            })
         })
         .await
         .expect("split NDJSON frames parse");
@@ -1670,17 +2146,21 @@ mod tests {
     #[tokio::test]
     async fn observer_parser_rejects_malformed_and_oversized_framing() {
         let malformed = observer_body(vec![b"{not-json}\n".to_vec()]).await;
-        let error = read_observer_frames(malformed, |_| Ok(std::ops::ControlFlow::Continue(())))
-            .await
-            .expect_err("malformed observer JSON must fail closed");
+        let error = read_observer_frames(malformed, |_| {
+            std::future::ready(Ok(std::ops::ControlFlow::Continue(())))
+        })
+        .await
+        .expect_err("malformed observer JSON must fail closed");
         assert!(error.to_string().contains("Invalid Crew observer frame"));
 
         let mut oversized = vec![b'x'; 1_048_577];
         oversized.push(b'\n');
         let oversized = observer_body(vec![oversized]).await;
-        let error = read_observer_frames(oversized, |_| Ok(std::ops::ControlFlow::Continue(())))
-            .await
-            .expect_err("oversized observer frame must fail closed");
+        let error = read_observer_frames(oversized, |_| {
+            std::future::ready(Ok(std::ops::ControlFlow::Continue(())))
+        })
+        .await
+        .expect_err("oversized observer frame must fail closed");
         assert!(error.to_string().contains("exceeds 1 MiB"));
     }
 
@@ -1857,6 +2337,71 @@ mod tests {
             "fallback",
         );
         assert_eq!(older.institution_refusal, None, "only an object is kept");
+        assert_eq!(
+            refusal.connection_institution, None,
+            "the model refusal names none"
+        );
+    }
+
+    /// W2-CLI-7: admission's refusal of a connection set to another institution carries the
+    /// model's details as well, and `connection_institution` is what marks it as being about
+    /// the connection, so it is kept beside them.
+    #[test]
+    fn a_connection_institution_refusal_keeps_the_connections_institution() {
+        const SENTENCE: &str = "This connection is for stanford, but lab belongs to ucsf.";
+        let details = serde_json::json!({
+            "model": "gpt-5.5",
+            "approved_for": ["ucsf"],
+            "workspace": "lab",
+            "workspace_institution": "ucsf",
+        });
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_institution_mismatch",
+                "error": SENTENCE,
+                "connection_institution": "stanford",
+                "institution_refusal": details,
+            })),
+            "fallback",
+        );
+        assert_eq!(refusal.connection_institution.as_deref(), Some("stanford"));
+        assert_eq!(refusal.institution_refusal.as_ref(), Some(&details));
+        assert_eq!(refusal.message(), SENTENCE);
+        for absent in [
+            serde_json::json!(""),
+            serde_json::json!(7),
+            serde_json::json!(null),
+        ] {
+            let refusal = daemon_refusal(
+                400,
+                Some(&serde_json::json!({
+                    "code": "crew_institution_mismatch",
+                    "error": SENTENCE,
+                    "connection_institution": absent,
+                })),
+                "fallback",
+            );
+            assert_eq!(refusal.connection_institution, None, "{absent}");
+        }
+    }
+
+    /// W2-CLI-14: the route's body for a request the daemon never sent (`lost_request`) keeps
+    /// its code and its sentence, which the crew commands then print as they are.
+    #[test]
+    fn a_request_the_daemon_never_sent_keeps_its_code_and_sentence() {
+        const SENTENCE: &str = "Couldn't sign in to hpc as bob: the server refused this computer's SSH key. Nothing was sent.";
+        let refusal = daemon_refusal(
+            503,
+            Some(&serde_json::json!({
+                "code": "crew_not_sent",
+                "error": SENTENCE,
+                "ssh_code": "crew_ssh_key_refused",
+            })),
+            "fallback",
+        );
+        assert_eq!(refusal.kind.as_deref(), Some("crew_not_sent"));
+        assert_eq!(refusal.message(), SENTENCE);
     }
 
     #[test]
@@ -2045,6 +2590,317 @@ mod tests {
         assert!(!text.contains("model\\'s"), "{text}");
     }
 
+    /// The prompts a scripted reader was asked, in order.
+    type Asked = Arc<Mutex<Vec<&'static str>>>;
+    /// One scripted answer.
+    type Answer = std::future::Ready<anyhow::Result<zeroize::Zeroizing<String>>>;
+
+    /// A reader that answers each prompt with the next scripted line and records the prompts.
+    fn scripted(answers: &[&str]) -> (Asked, impl FnMut(&'static str, bool) -> Answer) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&asked);
+        let mut answers: Vec<String> = answers.iter().rev().map(|a| (*a).to_owned()).collect();
+        (asked, move |prompt: &'static str, _stdin: bool| {
+            seen.lock().expect("prompts").push(prompt);
+            std::future::ready(
+                answers
+                    .pop()
+                    .map(zeroize::Zeroizing::new)
+                    .ok_or_else(|| anyhow::anyhow!("no more input")),
+            )
+        })
+    }
+
+    const SECRET: &str = "correct-horse-battery-staple-0123456789";
+
+    /// CLI-3: a new daemon's approval secret is asked for twice at the terminal, a mismatch
+    /// starts nothing, and the first answer is checked before the second is asked for.
+    #[tokio::test]
+    async fn a_new_daemons_secret_is_typed_twice_and_a_typo_starts_nothing() {
+        let (asked, read) = scripted(&[SECRET, SECRET]);
+        let secret = choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, false, read)
+            .await
+            .expect("the same secret twice");
+        assert_eq!(secret.as_str(), SECRET);
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [NEW_DAEMON_SECRET_PROMPT, APPROVAL_SECRET_AGAIN]
+        );
+        assert!(NEW_DAEMON_SECRET_PROMPT.starts_with("No Biorouter daemon is running"));
+
+        let (_, read) = scripted(&[SECRET, "correct-horse-battery-staple-0123456788"]);
+        let error = choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, false, read)
+            .await
+            .expect_err("a typo");
+        assert_eq!(
+            error.to_string(),
+            "The two approval secrets don't match. No daemon was started."
+        );
+
+        let (asked, read) = scripted(&["short"]);
+        choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, false, read)
+            .await
+            .expect_err("too short");
+        assert_eq!(asked.lock().unwrap().len(), 1, "no second prompt");
+
+        // A script sends one line and owns it.
+        let (asked, read) = scripted(&[SECRET]);
+        choose_approval_secret(NEW_DAEMON_SECRET_PROMPT, true, read)
+            .await
+            .expect("one line from stdin");
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    /// CLI-2: `credentials init` asks for the new passphrase twice and refuses a mismatch
+    /// before anything is sent; `unlock` asks once.
+    #[tokio::test]
+    async fn a_new_vault_passphrase_is_typed_twice() {
+        let (asked, read) = scripted(&["vault words", "vault words"]);
+        let passphrase = vault_passphrase("init", false, read)
+            .await
+            .expect("the same passphrase twice");
+        assert_eq!(passphrase.as_str(), "vault words");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [NEW_VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN]
+        );
+
+        let (_, read) = scripted(&["vault words", "vault wrods"]);
+        let error = vault_passphrase("init", false, read)
+            .await
+            .expect_err("a typo");
+        assert_eq!(
+            error.to_string(),
+            "The two passphrases don't match. The vault was not set up."
+        );
+
+        let (asked, read) = scripted(&["vault words"]);
+        vault_passphrase("unlock", false, read)
+            .await
+            .expect("unlock");
+        assert_eq!(*asked.lock().unwrap(), [VAULT_PASSPHRASE]);
+
+        let (asked, read) = scripted(&["vault words"]);
+        vault_passphrase("init", true, read)
+            .await
+            .expect("one line from stdin");
+        assert_eq!(asked.lock().unwrap().len(), 1);
+    }
+
+    /// CLI-7: a failed connect keeps OpenSSH's words, line by line, terminal-safe.
+    #[test]
+    fn a_connect_refusal_keeps_its_detail_line_by_line() {
+        let refused = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_ssh_host_key_unknown",
+                "error": "Crew SSH failure [host_key; child_before_cleanup=exit_255]: x",
+                "detail": "Host key verification failed.\r\nfingerprint SHA256:abc\u{1b}[2J"
+            })),
+            "fallback",
+        );
+        assert_eq!(refused.kind.as_deref(), Some("crew_ssh_host_key_unknown"));
+        assert_eq!(
+            refused.detail(),
+            Some("Host key verification failed.\nfingerprint SHA256:abc\\u{1b}[2J")
+        );
+        let none = daemon_refusal(400, Some(&serde_json::json!({"error": "x"})), "fallback");
+        assert_eq!(none.detail(), None);
+    }
+
+    /// CLI-3: the one refusal the secret check can give is said as a wrong secret.
+    #[test]
+    fn a_refused_proof_is_said_as_a_wrong_approval_secret() {
+        let refused = daemon_refusal(
+            403,
+            Some(&serde_json::json!({
+                "code": "crew_user_action_required",
+                "error": "Authorize this action in the Crew panel or native Crew CLI with your human approval secret."
+            })),
+            "fallback",
+        );
+        let error = wrong_approval_secret(refused.into());
+        assert_eq!(error.to_string(), WRONG_APPROVAL_SECRET);
+        assert_eq!(
+            error.downcast_ref::<Restated>().and_then(|r| r.code),
+            Some(WRONG_APPROVAL_SECRET_CODE)
+        );
+
+        let other = daemon_refusal(
+            403,
+            Some(&serde_json::json!({"code": "crew_human_authority_unavailable", "error": "x"})),
+            "fallback",
+        );
+        let error = wrong_approval_secret(other.into());
+        assert!(error.downcast_ref::<DaemonRefusal>().is_some());
+    }
+
+    /// CLI-12: no discovery record, and one a killed daemon left behind, both say that no
+    /// daemon is running, with one code, instead of the operating system's error.
+    #[tokio::test]
+    #[serial]
+    async fn status_says_no_daemon_is_running_whatever_it_left_behind() {
+        let directory = runtime_dir();
+        let socket = directory.join("daemon.sock");
+        // Nothing left; a record whose socket is gone; a record whose socket nobody listens on.
+        for left in ["nothing", "record", "dead socket"] {
+            let _ = fs::remove_file(&socket);
+            if left != "nothing" {
+                daemon_runtime::write_private(
+                    &daemon_runtime::descriptor_path(),
+                    &expected_descriptor(&directory),
+                )
+                .expect("stale descriptor writes");
+            }
+            if left == "dead socket" {
+                drop(std::os::unix::net::UnixListener::bind(&socket).expect("socket binds"));
+                fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
+                    .expect("socket is private");
+            }
+            let error = daemon_control("status", false)
+                .await
+                .expect_err("no daemon");
+            assert_eq!(error.to_string(), DAEMON_NOT_RUNNING, "left: {left}");
+            assert_eq!(
+                error.downcast_ref::<Restated>().and_then(|r| r.code),
+                Some(DAEMON_NOT_RUNNING_CODE)
+            );
+        }
+        let _ = fs::remove_file(daemon_runtime::descriptor_path());
+        let _ = fs::remove_file(&socket);
+    }
+
+    /// CLI-13 and CLI-14: the platform refusal comes before any prompt, and a hidden prompt
+    /// without a terminal is the usage refusal.
+    #[test]
+    fn platform_and_terminal_refusals_are_typed() {
+        require_supported_platform(true).expect("unix");
+        let error = require_supported_platform(false).expect_err("elsewhere");
+        assert!(error
+            .to_string()
+            .starts_with("Shared Crew daemon IPC is unavailable on this platform."));
+        assert_eq!(
+            error.downcast_ref::<Restated>().and_then(|r| r.code),
+            Some("crew_platform_unsupported")
+        );
+        secret_prompt_possible(true).expect("a terminal");
+        let refusal: NeedsTerminal = secret_prompt_possible(false).expect_err("no terminal");
+        assert!(refusal.to_string().contains("--approval-key-stdin"));
+    }
+
+    /// SF2-N6: `auth` with no terminal is the usage refusal every other such command gives
+    /// (exit 2), and names `connect` for a server that takes the key alone.
+    #[test]
+    fn auth_without_a_terminal_is_the_usage_refusal_and_names_connect() {
+        sign_in_possible(true).expect("a terminal");
+        let refusal: NeedsTerminal = sign_in_possible(false).expect_err("no terminal");
+        let text = refusal.to_string();
+        assert_eq!(text, AUTH_NEEDS_A_TERMINAL);
+        assert!(text.contains("biorouter crew connect"), "{text}");
+        assert!(!text.contains("MFA"), "{text}");
+        // It survives the `?` into an anyhow error, which is what `main` downcasts.
+        let error: anyhow::Error = sign_in_possible(false).unwrap_err().into();
+        assert!(error.chain().any(|cause| cause.is::<NeedsTerminal>()));
+    }
+
+    /// SETUPHPC2-F-B: a terminal size the daemon would refuse (a 0x0 pty from `ssh -tt`) is
+    /// never sent; an unknown size is 80 by 24 and any other is clamped into its range.
+    #[test]
+    fn a_sign_in_terminal_size_is_always_one_the_daemon_accepts() {
+        assert_eq!(sign_in_terminal_size(0, 0), (80, 24));
+        assert_eq!(sign_in_terminal_size(0, 50), (80, 24));
+        assert_eq!(sign_in_terminal_size(120, 0), (80, 24));
+        assert_eq!(sign_in_terminal_size(10, 2), (20, 5));
+        assert_eq!(sign_in_terminal_size(900, 900), (500, 200));
+        assert_eq!(sign_in_terminal_size(132, 43), (132, 43));
+        for cols in [0, 1, 19, 20, 80, 500, 501, u16::MAX] {
+            for rows in [0, 1, 4, 5, 24, 200, 201, u16::MAX] {
+                let (cols, rows) = sign_in_terminal_size(cols, rows);
+                assert!((20..=500).contains(&cols) && (5..=200).contains(&rows));
+            }
+        }
+    }
+
+    /// CLIDOCS-F6: `credentials unlock` with no vault refuses before any passphrase is asked,
+    /// in a sentence that names what to run, with its own code.
+    #[test]
+    fn unlocking_without_a_vault_is_refused_before_the_passphrase() {
+        for (status, sentence) in [
+            (
+                serde_json::json!({"backend": "keyring", "initialized": false, "locked": false, "available": true}),
+                NO_VAULT_TO_UNLOCK,
+            ),
+            (
+                serde_json::json!({"backend": "keyring", "initialized": false, "locked": false, "available": false}),
+                NO_VAULT_NO_KEYRING,
+            ),
+            (
+                serde_json::json!({"backend": "file", "initialized": false, "locked": false, "available": true}),
+                NO_VAULT_TO_UNLOCK_FILES,
+            ),
+        ] {
+            let error = no_vault_to_unlock(&status).expect_err("no vault");
+            assert_eq!(error.to_string(), sentence);
+            assert_eq!(
+                error.downcast_ref::<Restated>().and_then(|r| r.code),
+                Some(NO_VAULT_TO_UNLOCK_CODE)
+            );
+        }
+        for sentence in [NO_VAULT_TO_UNLOCK, NO_VAULT_NO_KEYRING] {
+            assert!(
+                sentence.contains("biorouter crew credentials init"),
+                "{sentence}"
+            );
+        }
+        no_vault_to_unlock(&serde_json::json!({"backend": "encrypted_vault", "initialized": true, "locked": true, "available": true}))
+            .expect("a locked vault can be unlocked");
+    }
+
+    /// AGT2-N5: a refusal keeps the daemon's machine-readable fields for JSON output, bounded,
+    /// and never the daemon's own `request_id`.
+    #[test]
+    fn a_refusal_keeps_the_daemons_structured_fields() {
+        let refusal = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_mode_mismatch",
+                "error": "Your connection is Private, but this request required Public.",
+                "actual_mode": "private",
+                "expected_mode": "public",
+                "workspace": "lab",
+                "request_id": "the-daemons",
+                "candidates": (0..100).map(|n| format!("c{n}")).collect::<Vec<_>>(),
+                "host": "x".repeat(5000),
+                "reason": null,
+                "unrelated": "dropped",
+            })),
+            "fallback",
+        );
+        let fields = refusal.fields();
+        assert_eq!(fields["actual_mode"], "private");
+        assert_eq!(fields["expected_mode"], "public");
+        assert_eq!(fields["workspace"], "lab");
+        assert_eq!(refusal.field_text("workspace"), Some("lab"));
+        assert!(!fields.contains_key("request_id"));
+        assert!(!fields.contains_key("unrelated"));
+        assert!(!fields.contains_key("reason"), "a null is not kept");
+        assert_eq!(fields["candidates"].as_array().map(Vec::len), Some(64));
+        assert_eq!(fields["host"].as_str().map(str::len), Some(4096));
+        let institution = daemon_refusal(
+            400,
+            Some(&serde_json::json!({
+                "code": "crew_institution_mismatch",
+                "error": "x",
+                "institution_refusal": {"model": "gpt-5.5", "approved_for": ["ucsf"], "workspace": "lab", "workspace_institution": "stanford"},
+            })),
+            "fallback",
+        );
+        assert_eq!(
+            institution.fields()["institution_refusal"]["approved_for"],
+            serde_json::json!(["ucsf"])
+        );
+    }
+
     fn decode_sse(input: &[u8]) -> anyhow::Result<(Vec<serde_json::Value>, EventDecoder)> {
         let mut decoder = EventDecoder::default();
         let mut events = Vec::new();
@@ -2112,5 +2968,130 @@ mod tests {
             .push(b'x')
             .expect_err("the byte after the bound must be refused");
         assert!(error.to_string().contains("exceeds 32 MiB"));
+    }
+
+    /// A daemon that serves every connection it is offered: `/daemon/identity` answers
+    /// `descriptor`'s identity and every other path answers `{"ok":true}`.
+    async fn serving_daemon_fixture() -> Descriptor {
+        let directory = runtime_dir();
+        let socket_path = directory.join("daemon.sock");
+        let _ = fs::remove_file(&socket_path);
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("fixture socket binds");
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+            .expect("fixture socket is private");
+        let mut descriptor = expected_descriptor(&directory);
+        descriptor.endpoint = Endpoint::Unix { path: socket_path };
+        daemon_runtime::write_private(&daemon_runtime::descriptor_path(), &descriptor)
+            .expect("fixture descriptor writes");
+        let identity = descriptor.identity();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let identity = identity.clone();
+                tokio::spawn(async move {
+                    let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+                        let body = if request.uri().path() == "/daemon/identity" {
+                            serde_json::to_vec(&identity).expect("identity serializes")
+                        } else {
+                            br#"{"ok":true}"#.to_vec()
+                        };
+                        async move {
+                            Ok::<_, std::convert::Infallible>(
+                                Response::builder()
+                                    .header("content-type", "application/json")
+                                    .body(Full::new(Bytes::from(body)))
+                                    .expect("fixture response builds"),
+                            )
+                        }
+                    });
+                    let _ = server_http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .await;
+                });
+            }
+        });
+        descriptor
+    }
+
+    /// M16: a request the connection hands back unsent is [`NotSent`], which says that nothing
+    /// was sent; a connection whose task is gone takes nothing.
+    #[tokio::test]
+    async fn a_request_the_connection_never_took_is_not_sent() {
+        let (client_end, _server_end) = tokio::net::UnixStream::pair().expect("a socket pair");
+        let (mut sender, connection) = http1::handshake::<_, Full<Bytes>>(TokioIo::new(client_end))
+            .await
+            .expect("handshake");
+        // The connection task is never run: its dispatcher is gone, so it can take nothing.
+        drop(connection);
+        let request = Request::builder()
+            .uri("/crew/connections")
+            .header("Host", "localhost")
+            .body(Full::new(Bytes::new()))
+            .expect("request builds");
+        let error = super::send_when_ready(&mut sender, request, Duration::from_secs(1))
+            .await
+            .expect_err("nothing can be sent");
+        let not_sent = error
+            .downcast_ref::<super::NotSent>()
+            .expect("the request was never written");
+        assert_eq!(
+            not_sent.to_string(),
+            "The daemon connection wasn't ready. Nothing was sent; run it again."
+        );
+        assert!(!not_sent.cause().is_empty());
+    }
+
+    /// M16: every request is the identity check and then the request itself, on one connection.
+    /// hyper takes the second only once the connection task has finished the first answer, and
+    /// that task runs on another thread (the CLI's `block_on` host thread is not a worker). A
+    /// second send that got there first was refused as "connection was not ready" about once
+    /// in a thousand, which failed `crew send` and every watch at random. Each send now waits
+    /// for the connection to be ready.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn back_to_back_requests_on_one_connection_never_fail_as_not_ready() {
+        // Before the fix this failed a few times in every few thousand. Four callers on their
+        // own threads, as the CLI's host thread is, make a regression all but certain to show.
+        const CALLERS: usize = 4;
+        const REQUESTS: usize = 5_000;
+        let descriptor = serving_daemon_fixture().await;
+        let client = Arc::new(CrewClient {
+            descriptor,
+            proof: zeroize::Zeroizing::new("synthetic-human-proof-01234567890123456789".into()),
+        });
+        let runtime = tokio::runtime::Handle::current();
+        let callers: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let client = Arc::clone(&client);
+                let runtime = runtime.clone();
+                std::thread::spawn(move || {
+                    runtime.block_on(async move {
+                        let mut failures = Vec::new();
+                        for _ in 0..REQUESTS {
+                            if let Err(error) =
+                                client.request("GET", "/crew/connections", None).await
+                            {
+                                failures.push(format!("{error:#}"));
+                            }
+                        }
+                        failures
+                    })
+                })
+            })
+            .collect();
+        let failures: Vec<String> = tokio::task::spawn_blocking(move || {
+            callers
+                .into_iter()
+                .flat_map(|caller| caller.join().expect("a caller thread"))
+                .collect()
+        })
+        .await
+        .expect("the callers finish");
+        assert!(
+            failures.is_empty(),
+            "{} of {} requests failed; the first: {:?}",
+            failures.len(),
+            CALLERS * REQUESTS,
+            failures.first()
+        );
     }
 }

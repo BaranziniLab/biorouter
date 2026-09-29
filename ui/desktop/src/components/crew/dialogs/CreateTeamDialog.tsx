@@ -5,9 +5,9 @@ import { Input } from '../../ui/input';
 import { toastSuccess } from '../../../toasts';
 import { isRecord, optionalText } from '../api/parse';
 import { unexpectedCrewResponse } from '../api/errors';
-import { nameKey, personLabel, teamName } from '../identity';
+import { nameKey, personLabel, teamName, withJoinerNames } from '../identity';
 import type { ErrorSource } from '../state/types';
-import { addPeopleCopy, createTeamCopy as copy } from './copy';
+import { addPeopleCopy, createTeamCopy as copy, nameRuleCopy } from './copy';
 import {
   DebouncedAnnouncement,
   ErrorNote,
@@ -18,7 +18,7 @@ import {
   useDialogError,
 } from './fields';
 import { teamNameProblem } from './nameRules';
-import { directAddResultFrom, directAddSupported } from './people';
+import { directAddResultFrom, directAddSupported, peopleInOrder } from './people';
 import { PersonPicker } from './PersonPicker';
 import { directAddRefusalText, isNameRefusal, nameRefusalText, refusalText } from './refusals';
 import { useDialogView } from './workspace';
@@ -88,7 +88,11 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
   // A broker that adds members directly puts them in the new team; an older one invites them.
   const directAdd = directAddSupported(crew.capabilities);
   const inviting = crew.isPending(directAdd ? ADD_KEY : INVITE_KEY);
-  const candidates = dir.people.filter((person) => !person.isYou && !person.isFormer && person.id);
+  // Named as the Joined row names them when they have not chosen a name (F8).
+  const candidates = withJoinerNames(
+    peopleInOrder(dir.people.filter((person) => !person.isYou && !person.isFormer && person.id)),
+    snapshot?.workspace.id ?? null
+  );
 
   const finish = (created: CreatedTeam) => {
     crew.selectTeam(created.id);
@@ -116,7 +120,8 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
     event.preventDefault();
     const person = candidates.find((item) => item.id === principalId);
     if (!team || !person?.id) return;
-    const label = personLabel(person, 'inline', dir);
+    // The candidate as listed, already current: the directory's copy would drop a stand-in name.
+    const label = personLabel(person, 'inline');
     void crew
       .act(SOURCE, directAdd ? ADD_KEY : INVITE_KEY, async () => {
         if (!directAdd) {
@@ -140,9 +145,10 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             { mutation: true }
           )
         );
+        // The team as well as its #general: every team has one (M11).
         return result.alreadyMember
           ? addPeopleCopy.alreadyIn(label, team.name)
-          : addPeopleCopy.added(label, team.general);
+          : addPeopleCopy.addedToTeam(label, team.name, team.general);
       })
       .then((said) => {
         if (said === undefined) return;
@@ -190,7 +196,13 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             />
           </Field>
           {error ? (
-            <ErrorNote text={directAdd ? directAddRefusalText(error) : refusalText(error)} />
+            <ErrorNote
+              text={
+                directAdd
+                  ? directAddRefusalText(error)
+                  : refusalText(error, { isHost: crew.isHost })
+              }
+            />
           ) : null}
         </form>
       </ModalShell>
@@ -199,6 +211,7 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
 
   const nameError = error && isNameRefusal(error) ? nameRefusalText(error, 'team') : null;
   const fieldError = nameError ?? teamNameProblem(name);
+  const consequenceId = `${formId}-consequence`;
   return (
     <ModalShell
       open
@@ -231,8 +244,9 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
             autoComplete="off"
             placeholder={teamExamplePlaceholder(snapshot?.teams ?? [])}
             aria-invalid={fieldError ? true : undefined}
-            // The helper ("Team names are unique in …"), or the error that replaces it.
-            aria-describedby={helpId(nameId)}
+            // The helper ("Team names are unique in …"), or the error that replaces it, then what
+            // a taken name tells people, as Create channel says under its name (F9).
+            aria-describedby={`${helpId(nameId)} ${consequenceId}`}
             value={name}
             onChange={(event) => {
               setName(event.target.value);
@@ -241,7 +255,12 @@ export function CreateTeamDialog({ onClose }: CreateTeamDialogProps) {
           />
         </Field>
         <DebouncedAnnouncement text={fieldError} />
-        {error && !nameError ? <ErrorNote text={refusalText(error)} /> : null}
+        <p id={consequenceId} className="text-supporting text-text-muted">
+          {nameRuleCopy.teamConsequence}
+        </p>
+        {error && !nameError ? (
+          <ErrorNote text={refusalText(error, { isHost: crew.isHost })} />
+        ) : null}
       </form>
     </ModalShell>
   );

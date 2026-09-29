@@ -86,8 +86,34 @@ describe('the count label', () => {
 
   it('treats several long paragraphs as prose, not as lines', () => {
     // Hard breaks alone do not make a log — the lines have to be short too.
-    const paragraphs = ['A'.repeat(300), 'B'.repeat(300), 'C'.repeat(300)].join('\n\n');
+    const paragraph = (word: string) => `${word} `.repeat(60).trim();
+    const paragraphs = [paragraph('alpha'), paragraph('beta'), paragraph('gamma')].join('\n\n');
     expect(measureMessageExtent(paragraphs).shape).toBe('prose');
+  });
+
+  /**
+   * QA M20: a one-line message is prose, and prose was stated only in words, so a message long
+   * because of its tokens (a sequence, a base64 blob, a minified line) said nothing useful: a
+   * 3,019 character line of four words read "4 words", and a 32 KB run "1 word".
+   */
+  it('states text whose words are too few or too long for a word count by its size', () => {
+    const sequence = `Longword test: ${'ACGT'.repeat(751)}`;
+    expect(sequence).toHaveLength(3019);
+    const long = measureMessageExtent(sequence);
+    expect(long.shape).toBe('size');
+    expect(formatMessageExtent(long)).toBe('2.9 KB');
+
+    expect(describeMessageLength('A'.repeat(32 * 1024)).label).toBe('32 KB');
+    // Unbroken lines of a blob, too long to be a log's.
+    expect(describeMessageLength(lines(3, 'QUJD'.repeat(250))).label).toBe('2.9 KB');
+    // Japanese written without spaces is one "word" however long it is: 700 characters, 2,100 bytes.
+    expect(describeMessageLength('日本語'.repeat(234).slice(0, 700)).label).toBe('2.1 KB');
+  });
+
+  it('keeps words for prose, even prose that carries long addresses', () => {
+    const withLinks = `${'see '.repeat(100)}${'https://www.ucsf.edu/news/2026/09/a-very-long-article-path '.repeat(3)}`;
+    expect(describeMessageLength(withLinks).label).toBe('103 words');
+    expect(describeMessageLength(lines(14, 'x'.repeat(40))).label).toMatch(/^14 lines · /);
   });
 
   it('singularises', () => {

@@ -15,8 +15,14 @@ import { QUICKSTART_GUIDE_URL } from '../../providers/modal/constants';
 import { Input } from '../../../ui/input';
 import { Select } from '../../../ui/Select';
 import { useConfig } from '../../../ConfigContext';
-import { useModelAndProvider } from '../../../ModelAndProviderContext';
-import type { View } from '../../../../utils/navigationUtils';
+import { CREW_MODEL_FIXED_TEXT, useModelAndProvider } from '../../../ModelAndProviderContext';
+import { useChatCrewAccessState } from '../../../crew/access/chatCrewAccess';
+import type { View, ViewOptions } from '../../../../utils/navigationUtils';
+import {
+  codingAgentStatusOnce,
+  isCodingAgentProviderId,
+  saveCodingAgentCommand,
+} from '../../../onboarding/codingAgentControls';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { AffiliationBadge } from '../../../ui/AffiliationBadge';
@@ -27,6 +33,7 @@ import {
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_TITLE } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
+import { useReturnFocusToOpener } from '../../useReturnFocusToOpener';
 import {
   llamacppStatus,
   ProviderType,
@@ -128,18 +135,25 @@ const modelOptionSearchText = (option: ModelOption) =>
  * (see `validation`), and until F3 the confirm only found out about one when it
  * was clicked.
  *
- * States the rule and stops there, deliberately, because for THIS chat there is
- * no way forward to name. A row's classification only ever rises:
- * `update_session_metadata` writes `privacy_tier = CASE WHEN privacy_tier <>
- * 'public' THEN privacy_tier ELSE ?`, so a chat that has gone private cannot be
- * returned to public, and §14.6's declassification control does not exist yet.
- * Offering "make the chat public" here would name an action the user cannot
- * take. The repair that DOES exist — switch to a private model — is the set of
- * rows left enabled right beside this one, and Gate B's card is where §14.4
- * puts the buttons.
+ * It names the way back. The classification only rises on its own
+ * (`update_session_metadata` never lowers `privacy_tier`), but §14.6's
+ * declassification shipped: History, then the chat, then Make public
+ * (`DeclassifySessionDialog`), the same path Gate A's refusal card names. This
+ * comment used to say that control did not exist, so the reason stopped short
+ * of the one exit there is (W2-PRV-7).
  */
-const PUBLIC_MODEL_IN_PRIVATE_CHAT =
-  'Unavailable: this is a private chat, so only private models may run in it';
+export const PUBLIC_MODEL_IN_PRIVATE_CHAT =
+  'Unavailable: this is a private chat, so only private models may run in it. Make it public from History to use this one.';
+
+/**
+ * W2-PRV-7 / privacy-tiers §14.8. The other direction of the ratchet, said
+ * before the switch instead of discovered after it: a public chat switched to a
+ * private model becomes private with its next message, and public models are
+ * then refused in it. Informational, never blocking: going private is the safe
+ * direction.
+ */
+export const PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP =
+  "After your next message this chat becomes private. Public models can't be used in it again unless you make it public from History.";
 
 /**
  * A provider row in the picker. `unavailableReason` is set for a provider the
@@ -169,9 +183,10 @@ const PROVIDER_NOT_SET_UP = 'this provider is not set up in Biorouter';
  * the dialog, before the user commits.
  *
  * Opened from a chat, the dialog changes that chat and nothing else unless the
- * box below the pickers is ticked; opened with no chat — Home's composer, a chat
- * not started yet, Settings → Models, onboarding — the only thing it can change
- * is the model new chats start on, in every window. The old description, "for
+ * box below the pickers is ticked; opened with no chat — Home's composer,
+ * Settings → Models, onboarding — the only thing it can change is the model new
+ * chats start on, in every window. A chat not sent yet counts as a chat
+ * (W2-PRV-6, `onChooseForUnsentChat`). The old description, "for
  * your chats", fitted neither, and the switch it described did both.
  */
 export const SWITCH_SCOPE_THIS_CHAT = 'Select a provider and model for this chat.';
@@ -212,10 +227,30 @@ const renderModelOptionLabel = (
   );
 };
 
+/**
+ * Where "Use other provider" sends the catalog back to, and for which chat.
+ * HashRouter: the screen the dialog was opened on is the hash, without its `#`.
+ *
+ * T3-SH-2: a chat not sent yet has no session to name, so it is named by its
+ * tab (`heldChatTabId`), and the catalog's model step holds its pick for that
+ * chat rather than writing the model every new chat starts on.
+ */
+export function configureProvidersReturn(
+  sessionId: string | null,
+  privacyTier: SessionClassification | undefined,
+  unsentChatTabId?: string
+): ViewOptions {
+  const returnTo = window.location.hash.replace(/^#/, '') || '/';
+  if (sessionId) {
+    return { returnTo, resumeSessionId: sessionId, ...(privacyTier ? { privacyTier } : {}) };
+  }
+  return unsentChatTabId ? { returnTo, heldChatTabId: unsentChatTabId } : { returnTo };
+}
+
 type SwitchModelModalProps = {
   sessionId: string | null;
   onClose: () => void;
-  setView: (view: View) => void;
+  setView: (view: View, options?: ViewOptions) => void;
   onModelSelected?: (model: string) => void;
   initialProvider?: string | null;
   initialModel?: string | null;
@@ -232,6 +267,18 @@ type SwitchModelModalProps = {
    * public model there would be wrong on every machine.
    */
   privacyTier?: SessionClassification;
+  /**
+   * W2-PRV-6. Set for a chat that has not been sent yet: the dialog then offers
+   * the started-chat scope ("for this chat", with "Also use for new chats"), and
+   * a pick is handed here to hold until the chat starts, instead of rewriting
+   * the model new chats start on. See `pendingChatModel.ts`.
+   */
+  onChooseForUnsentChat?: (model: Model) => void;
+  /**
+   * T3-SH-2. The tab of the unsent chat `onChooseForUnsentChat` holds a pick
+   * for, so "Use other provider" can name that chat to the catalog it opens.
+   */
+  unsentChatTabId?: string;
 };
 export const SwitchModelModal = ({
   sessionId,
@@ -242,9 +289,30 @@ export const SwitchModelModal = ({
   initialModel,
   titleOverride,
   privacyTier,
+  onChooseForUnsentChat,
+  unsentChatTabId,
 }: SwitchModelModalProps) => {
-  const { getProviders, getProviderModels, read } = useConfig();
+  const { getProviders, getProviderModels, read, upsert } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
+  // T3-SH-12: opened from state, not a Dialog.Trigger, so Radix alone would
+  // leave the focus on the page when Escape closes it.
+  const returnFocusToOpener = useReturnFocusToOpener();
+  /**
+   * W2-PRV-15. A chat with Crew access keeps the model its access was granted
+   * on: the daemon refuses any other (`crew_model_fixed`). Said up front, with
+   * every control that could change the model disabled, rather than offered and
+   * then refused. Read from the state the open chat already published; this
+   * never fetches, so a chat whose lookup has not answered is offered as usual
+   * and the refusal, if any, is shown in place (`onRefusal` below).
+   */
+  const crewAccessState = useChatCrewAccessState(sessionId);
+  /** Whether a pick here is about one chat (started or not) rather than new chats. */
+  const chatScope = !!sessionId || !!onChooseForUnsentChat;
+  const crewFixed =
+    !!sessionId &&
+    crewAccessState !== null &&
+    crewAccessState !== 'unknown' &&
+    crewAccessState !== 'none';
   const [providerOptions, setProviderOptions] = useState<ProviderOption[]>([]);
   const [activeProviders, setActiveProviders] = useState<ProviderDetails[]>([]);
   const [modelOptionsByProvider, setModelOptionsByProvider] = useState<
@@ -274,6 +342,14 @@ export const SwitchModelModal = ({
   const [providerInputValue, setProviderInputValue] = useState('');
   const [modelInputValue, setModelInputValue] = useState('');
   const loadedProvidersRef = useRef(false);
+  /**
+   * W2-PRV-5 — coding agents the catalog shows as Ready (installed, signed in on
+   * the person's subscription) whose command key was never saved. The daemon
+   * reports such an agent unconfigured until "Use <agent>" writes that key, so
+   * this list dropped a signed-in Codex without a word. It is offered here, and
+   * choosing it makes the same one write before the switch.
+   */
+  const [connectOnChoose, setConnectOnChoose] = useState<ReadonlySet<string>>(new Set());
 
   /**
    * The providers this chat may not be switched to (§14.2, Gate A's pre-flight).
@@ -336,6 +412,14 @@ export const SwitchModelModal = ({
     [activeProviders, provider]
   );
   const selectedAffiliationWords = affiliationPresentation(selectedAffiliation);
+
+  // W2-PRV-7: the provider the selection would bind, and whether that makes a
+  // public chat private (see PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP).
+  const selectedProviderName = usePredefinedModels ? selectedPredefinedModel?.provider : provider;
+  const becomesPrivate =
+    !!sessionId &&
+    privacyTier === 'public' &&
+    activeProviders.find((row) => row.name === selectedProviderName)?.metadata.tier === 'private';
 
   /**
    * SD-1, at the one place every model picker in the app ends up.
@@ -480,8 +564,11 @@ export const SwitchModelModal = ({
   const providerMessageId = useId();
   const providerMessage =
     validation.providerBlocked ?? (attemptedSubmit ? validation.errors.provider : '');
+  // W2-PRV-15's sentence, up front, and the confirm's reason while it holds.
+  const crewFixedId = useId();
   const confirmDescribedBy =
     [
+      crewFixed ? crewFixedId : null,
       validation.providerBlocked ? providerMessageId : null,
       validation.blocked ? modelMessageId : null,
     ]
@@ -519,6 +606,8 @@ export const SwitchModelModal = ({
     // second half of the same guard, for a keyboard submit or a call site that
     // renders its own confirm.
     if (hostManaged) return;
+    // W2-PRV-15: nothing here can change a Crew chat's model.
+    if (crewFixed) return;
     // Re-entrancy: the button is disabled while a switch is in flight, but a
     // keyboard submit reaches here directly. Two binds racing would write two
     // different providers through `/config/set_provider` and leave whichever
@@ -547,16 +636,49 @@ export const SwitchModelModal = ({
         modelObj = { name: model, provider: provider, subtext: providerDisplayName } as Model;
       }
 
+      // W2-PRV-5: a signed-in agent chosen here before "Use <agent>" was ever
+      // pressed gets that button's one write first, or the bind would name a
+      // provider the daemon still reports as not set up.
+      if (modelObj.provider && connectOnChoose.has(modelObj.provider)) {
+        const kind = modelObj.provider;
+        if (isCodingAgentProviderId(kind)) {
+          await saveCodingAgentCommand(upsert, kind);
+        }
+      }
+      // A refusal whose sentence is the whole answer (a Crew chat's fixed
+      // model) comes back here instead of as a toast, and is shown as it is:
+      // "then try again" can never work for it (W2-PRV-15).
+      let refusal: string | null = null;
+      const onRefusal = (sentence: string) => {
+        refusal = sentence;
+      };
+      // W2-PRV-6: an unsent chat holds its pick until it starts. Only the box
+      // makes it the model new chats start on as well.
+      if (!sessionId && onChooseForUnsentChat) {
+        if (alsoForNewChats && !(await changeModel(null, modelObj, { onRefusal }))) {
+          setSubmitError(
+            refusal ??
+              'The model for new chats was not changed. See the notification for what went wrong, then try again.'
+          );
+          return;
+        }
+        onChooseForUnsentChat(modelObj);
+        onModelSelected?.(modelObj.name);
+        onClose();
+        return;
+      }
       const changed = sessionId
-        ? await changeModel(sessionId, modelObj, { alsoForNewChats })
-        : await changeModel(null, modelObj);
+        ? await changeModel(sessionId, modelObj, { alsoForNewChats, onRefusal })
+        : await changeModel(null, modelObj, { onRefusal });
       if (!changed) {
-        // `changeModel` has already raised the toast that explains *why* — a
-        // privacy barrier, a missing user proof, a provider failure. This says
-        // the far plainer thing the toast cannot, in the place the user is
-        // looking: the dialog is still open because nothing was switched.
+        // Otherwise `changeModel` has already raised the toast that explains
+        // *why* — a privacy barrier, a missing user proof, a provider failure.
+        // This says the far plainer thing the toast cannot, in the place the
+        // user is looking: the dialog is still open because nothing was
+        // switched.
         setSubmitError(
-          'The model was not switched. See the notification for what went wrong, then try again.'
+          refusal ??
+            'The model was not switched. See the notification for what went wrong, then try again.'
         );
         return;
       }
@@ -624,9 +746,10 @@ export const SwitchModelModal = ({
         const activeProviders = providersResponse.filter((provider) => provider.is_configured);
         setActiveProviders(activeProviders);
         // Every usable provider, plus every provider the user set up that cannot
-        // run right now (see `unavailableReasonFor`) — in the daemon's order, so
-        // a disabled row sits where it always sat instead of sinking to the
-        // bottom — then "Use other provider". A provider that is simply not set
+        // run right now (see `unavailableReasonFor`) — in the daemon's order,
+        // which is stable (private first, then by name: `all_metadata_with_types`,
+        // W2-PRV-13), so a disabled row sits where it always sat instead of
+        // sinking to the bottom — then "Use other provider". A provider that is simply not set
         // up stays out, as before.
         const offered = providersResponse
           .filter((provider) => provider.is_configured || provider.unavailable_reason)
@@ -653,6 +776,52 @@ export const SwitchModelModal = ({
             label: 'Use other provider',
           },
         ]);
+
+        // W2-PRV-5. After the list is on screen, not before it: learning which
+        // agents are signed in may spawn their CLIs (once per renderer; see
+        // `codingAgentStatusOnce`), and nothing else here should wait for it.
+        const unconnected = providersResponse.filter(
+          (row) =>
+            isCodingAgentProviderId(row.name) && !row.is_configured && !row.unavailable_reason
+        );
+        if (unconnected.length > 0 && !isBrowserSurface()) {
+          void (async () => {
+            try {
+              const status = await codingAgentStatusOnce();
+              const ready = unconnected.filter((row) =>
+                status.agents.some(
+                  (agent) =>
+                    agent.providerId === row.name && agent.auth.state === 'signed_in_subscription'
+                )
+              );
+              if (ready.length === 0) return;
+              setActiveProviders((current) => [
+                ...current,
+                ...ready.filter((row) => !current.some((known) => known.name === row.name)),
+              ]);
+              setConnectOnChoose(new Set(ready.map((row) => row.name)));
+              setProviderOptions((current) => {
+                const readyOption = (name: string) => {
+                  const found = ready.find((row) => row.name === name);
+                  return found ? { value: found.name, label: found.metadata.display_name } : null;
+                };
+                // A row already there is the one the dialog opened on, marked
+                // "not set up" (`PROVIDER_NOT_SET_UP`); it is set up enough now.
+                const rest = current
+                  .filter((option) => option.value !== 'configure_providers')
+                  .map((option) => readyOption(option.value) ?? option);
+                const add = ready
+                  .filter((row) => !current.some((option) => option.value === row.name))
+                  .map((row) => ({ value: row.name, label: row.metadata.display_name }));
+                const other = current.filter((option) => option.value === 'configure_providers');
+                return [...rest, ...add, ...other];
+              });
+            } catch (error: unknown) {
+              // The list without them is what it always was.
+              console.error('Failed to read coding-agent status:', error);
+            }
+          })();
+        }
       } catch (error: unknown) {
         console.error('Failed to query providers:', error);
       }
@@ -839,7 +1008,7 @@ export const SwitchModelModal = ({
 
   return (
     <Dialog open={true} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-[500px]" onCloseAutoFocus={returnFocusToOpener}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Brain size={24} className="text-text-default" />
@@ -848,7 +1017,7 @@ export const SwitchModelModal = ({
           <DialogDescription>
             {hostManaged
               ? HOST_MANAGED_MODEL_TITLE
-              : sessionId
+              : chatScope
                 ? SWITCH_SCOPE_THIS_CHAT
                 : SWITCH_SCOPE_NEW_CHATS}
           </DialogDescription>
@@ -860,6 +1029,17 @@ export const SwitchModelModal = ({
           consequence clause. Renders nothing on the desktop.
         */}
         <HostManagedModelNote />
+
+        {crewFixed && (
+          <div
+            id={crewFixedId}
+            role="note"
+            data-testid="switch-model-crew-fixed"
+            className="rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-sm leading-relaxed text-text-default [overflow-wrap:anywhere]"
+          >
+            {CREW_MODEL_FIXED_TEXT}
+          </div>
+        )}
 
         <div className="flex flex-col gap-4 py-4">
           {usePredefinedModels ? (
@@ -879,14 +1059,20 @@ export const SwitchModelModal = ({
                       // same hole `validation` documents for the tier
                       // pre-flight, and it has to be closed here for the same
                       // reason.
-                      onClick={hostManaged ? undefined : () => setSelectedPredefinedModel(model)}
-                      aria-disabled={hostManaged || undefined}
+                      onClick={
+                        hostManaged || crewFixed
+                          ? undefined
+                          : () => setSelectedPredefinedModel(model)
+                      }
+                      aria-disabled={hostManaged || crewFixed || undefined}
                       className={[
                         'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-container transition-colors',
-                        hostManaged ? 'cursor-not-allowed opacity-60' : 'cursor-pointer',
+                        hostManaged || crewFixed
+                          ? 'cursor-not-allowed opacity-60'
+                          : 'cursor-pointer',
                         isSelected
                           ? '!border-border-default tint-selected tint-interactive'
-                          : hostManaged
+                          : hostManaged || crewFixed
                             ? ''
                             : 'hover:!border-border-default tint-interactive',
                       ].join(' ')}
@@ -936,6 +1122,14 @@ export const SwitchModelModal = ({
               </div>
 
               {modelMessageNode}
+              {becomesPrivate && (
+                <p
+                  data-testid="switch-model-becomes-private"
+                  className="text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
+                >
+                  {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+                </p>
+              )}
             </div>
           ) : (
             /* Manual Provider/Model Selection */
@@ -957,8 +1151,20 @@ export const SwitchModelModal = ({
                     const option = newValue as { value: string; label: string } | null;
                     setProviderInputValue('');
                     if (option?.value === 'configure_providers') {
-                      // Navigate to ConfigureProviders view
-                      setView('ConfigureProviders');
+                      // W2-PRV-5: the catalog is a detour, not a destination.
+                      // It carries where it was opened from (and, from a chat,
+                      // that chat and its tier), so a provider set up there
+                      // comes back here and its model is chosen for this chat.
+                      // It used to land on Settings > Models with no way back,
+                      // and set the model every new chat starts on.
+                      setView(
+                        'ConfigureProviders',
+                        configureProvidersReturn(
+                          sessionId,
+                          privacyTier,
+                          onChooseForUnsentChat ? unsentChatTabId : undefined
+                        )
+                      );
                       onClose(); // Close the current modal
                     } else {
                       setProvider(option?.value || null);
@@ -970,7 +1176,7 @@ export const SwitchModelModal = ({
                   }}
                   placeholder="Provider, type to search"
                   isClearable
-                  isDisabled={hostManaged}
+                  isDisabled={hostManaged || crewFixed}
                   // The private-chat pre-flight's shape, one level up: the row is
                   // react-select's own `aria-disabled` option, with the reason in
                   // its detail line — see `unavailableReasonFor`.
@@ -1014,6 +1220,14 @@ export const SwitchModelModal = ({
                     </p>
                   </div>
                 )}
+                {becomesPrivate && (
+                  <p
+                    data-testid="switch-model-becomes-private"
+                    className="mt-2 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
+                  >
+                    {PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP}
+                  </p>
+                )}
               </div>
 
               {provider && (
@@ -1041,7 +1255,10 @@ export const SwitchModelModal = ({
                         }
                         isClearable
                         isDisabled={
-                          loadingModels || hostManaged || validation.providerBlocked !== null
+                          loadingModels ||
+                          hostManaged ||
+                          crewFixed ||
+                          validation.providerBlocked !== null
                         }
                       />
 
@@ -1063,7 +1280,7 @@ export const SwitchModelModal = ({
                         placeholder="Type model name here"
                         onChange={(event) => setModel(event.target.value)}
                         value={model}
-                        disabled={hostManaged}
+                        disabled={hostManaged || crewFixed}
                       />
                       {modelMessageNode}
                     </div>
@@ -1085,7 +1302,7 @@ export const SwitchModelModal = ({
           (`htmlFor`) only the text toggled it and clicking the square itself did
           nothing — found in the running app, which is where it showed.
         */}
-        {sessionId && !hostManaged && (
+        {chatScope && !hostManaged && !crewFixed && (
           <label
             className="flex cursor-pointer items-start gap-2"
             data-testid="switch-model-also-new-chats"
@@ -1135,6 +1352,7 @@ export const SwitchModelModal = ({
               disabled={
                 !validation.isValid ||
                 hostManaged ||
+                crewFixed ||
                 switching ||
                 providerInputValue.trim().length > 0
               }

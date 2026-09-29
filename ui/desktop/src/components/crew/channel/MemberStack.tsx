@@ -1,5 +1,6 @@
 import { Avatar } from '../../ui/avatar';
 import { Button } from '../../ui/button';
+import { StatusDot } from '../../ui/status-dot';
 import { cn } from '../../../utils';
 import { personLabel, type CrewPerson, type PeopleDirectory } from '../identity';
 import { channelCopy } from './copy';
@@ -13,6 +14,8 @@ export interface MemberStackProps {
   dir: PeopleDirectory;
   /** Open the details pane on the Members tab. */
   onOpen(): void;
+  /** Who is online now (M18), or `null` when the broker says nothing: then nothing is said. */
+  online?: ReadonlySet<string> | null;
   className?: string;
 }
 
@@ -71,31 +74,49 @@ export function currentMembers(
  * and both count only the people in the channel now ({@link currentMembers}). A member the viewer
  * has no projection for gets a blank circle, never initials made from an ID.
  */
-export function MemberStack({ memberIds, ownerId, dir, onOpen, className }: MemberStackProps) {
+export function MemberStack({
+  memberIds,
+  ownerId,
+  dir,
+  onOpen,
+  online = null,
+  className,
+}: MemberStackProps) {
   const members = currentMembers(memberIds, dir, ownerId);
   const count = members.length;
   const people = members.slice(0, STACK_SIZE);
+  // Who of them is online, said in the name ("3 members, 1 online") only where the broker says.
+  const onlineCount = online ? members.filter(({ id }) => online.has(id)).length : null;
   return (
     <Button
       type="button"
       variant="ghost"
       size="sm"
-      aria-label={channelCopy.members(count)}
+      aria-label={
+        onlineCount !== null
+          ? channelCopy.membersOnline(count, onlineCount)
+          : channelCopy.members(count)
+      }
       className={cn('crew-member-stack no-drag gap-2', className)}
       onClick={onOpen}
     >
       {people.length > 0 && (
         <span className="flex items-center" aria-hidden="true">
           {people.map(({ id, person }, index) => (
-            <Avatar
+            <span
               key={id}
-              size={20}
-              ring
-              fallback={person?.avatar}
-              name={person?.displayName}
-              username={person?.username}
-              className={index > 0 ? '-ml-1' : undefined}
-            />
+              className={cn('crew-member-stack-avatar', index > 0 && '-ml-1')}
+              data-crew-online={online?.has(id) ? '' : undefined}
+            >
+              <Avatar
+                size={20}
+                ring
+                fallback={person?.avatar}
+                name={person?.displayName}
+                username={person?.username}
+              />
+              {online?.has(id) ? <StatusDot tone="success" /> : null}
+            </span>
           ))}
         </span>
       )}

@@ -3,10 +3,9 @@
  * Agents rows of "Sidebar and menus", and "Error strings").
  *
  * Tests import these rather than retyping them. `Review access and posting permission` and
- * `Allow this conversation to read and post here` are pinned: a regression test and the acceptance
- * evidence find the controls by them, so change them only together with those tests. The second is
- * the Allow button's name only while the chat's title is unknown; a chat this window knows by name
- * is named on the button itself (`allowChat`).
+ * `Allow` are pinned: a regression test and the acceptance evidence find the controls by them, so
+ * change them only together with those tests. The Allow button's name never changes: the chat it
+ * lets in is named by the sentence above it, `willBeAble` (UXN-10).
  *
  * A `chat` argument is a conversation's title, already fit to display, or `null` when the daemon
  * does not know it; every sentence that names a chat has a form for that case.
@@ -63,18 +62,35 @@ export const accessCopy = {
   /** The same, when no verified view names the person (the workspace is offline, F2). */
   post: (channel: string) => `Post in ${channel}`,
   posts: (channel: string) => `Posts in ${channel}`,
+  /**
+   * The connection's remote work folder, which a chat with a model that is not public reaches as a
+   * task does (HPC-N2): the consent listed only Read and Post while the chat wrote files and ran
+   * commands there. `path` is the folder as saved.
+   */
+  folderFiles: (path: string) => `Read and write files in ${path}`,
+  folderRun: (path: string) => `Read and write files, and run commands, in ${path}`,
+  foldersFiles: (path: string) => `Reads and writes files in ${path}`,
+  foldersRun: (path: string) => `Reads and writes files, and runs commands, in ${path}`,
   expiry: 'Access ends when you revoke it, or after an hour.',
+  /**
+   * The consent's facts (AG-F1): the workspace, and the chat's model with its tier. Access binds
+   * the chat to both, and to the channel, for good (`carry_previous_grant` in the daemon).
+   */
+  consentWorkspace: 'Workspace',
+  consentModel: 'Model',
+  fixedOnFirstAccess: 'The first access fixes this chat’s workspace, channel and model.',
   alsoRead: 'Also read',
   /** Beside Advanced while it is closed: what the chat reads, not what it doesn't (Q3-30). */
   alsoReadSummary: (count: number, channel: string) =>
     count === 0
       ? `Reads only ${channel}`
       : `Also reads ${count} ${count === 1 ? 'channel' : 'channels'}`,
-  /** Pinned. */
-  allow: 'Allow this conversation to read and post here',
-  /** The Allow button when the chat's title is known: the person sees which chat they let in. */
-  allowChat: (chat: string, channel: string) =>
-    `Allow ${quoted(chat)} to read and post in ${channel}`,
+  /**
+   * Pinned. One short word that stays put (UXN-10): the button used to name the chat and channel,
+   * wrapped to two lines, and changed its name under keyboard focus when the chat's title arrived.
+   * The consent above it names both.
+   */
+  allow: 'Allow',
   connected: 'Connected.',
   backToChat: 'Back to chat',
   openChat: 'Open chat',
@@ -102,6 +118,21 @@ export const accessCopy = {
    * the person to reconnect: it says what happens next.
    */
   unconfirmed: 'Stopped on this device. Crew confirms it with the workspace when it reconnects.',
+  /** The same, naming the workspace, where the note is the chat's one word on it (AG-F11). */
+  unconfirmedIn: (workspace: string) =>
+    `Stopped on this device. ${workspace} confirms it when it reconnects.`,
+  /**
+   * A Retry that came back "stopped on this device" again while the workspace is still out of
+   * reach (AG-F12): the same sentence as before read as if nothing had happened. `workspace` is
+   * null when this computer cannot name it.
+   */
+  stillUnreachable: (workspace: string | null) =>
+    workspace
+      ? `Still can’t reach ${workspace} · checked just now.`
+      : 'Still can’t reach the workspace · checked just now.',
+  /** After {@link accessCopy.stillUnreachable}: what confirms the stop sooner than waiting. */
+  connectToConfirm: 'Connect to confirm it now.',
+  connect: 'Connect',
   /** The same, once the connection is back and the daemon is asking the workspace (F3). */
   confirming: 'Stopped on this device. Confirming with the workspace…',
   /** The workspace confirmed a revoke this view saw waiting (F3). */
@@ -150,6 +181,11 @@ export const accessCopy = {
     unconfirmed: 'Stopped on this device',
     /** A task's grant after the task: it ended with the task, nobody revoked it (Q2-09). */
     ended: 'Ended',
+    /**
+     * A task's grant after the person stopped the task: "Stopped", as its card in the channel and
+     * `biorouter crew grants list` say (AGT2-N3), where "Ended" read as if it had finished.
+     */
+    stopped: 'Stopped',
   },
   /** Its rows read Ended, Revoked or Expired: one name for all of them (Q3-30). */
   showOld: (count: number) => `Show past access (${count})`,
@@ -158,10 +194,14 @@ export const accessCopy = {
   // The list holds this computer's own chats and tasks, never anyone else's agents: from a
   // member's seat "No chats or agents can post" was false whenever another person's agent posts
   // there (live QA round 3, Q3-29). It says whose, and how to connect one.
-  empty: (channel: string) => `None of your chats can post in ${channel} yet.`,
-  emptyWorkspace: (workspace: string) => `None of your chats can post in ${workspace} yet.`,
+  // With past rows listed below it, "yet" read as if nothing ever had (AG-F17): it says "now".
+  empty: (channel: string, past = false) =>
+    `None of your chats can post in ${channel} ${past ? 'now' : 'yet'}.`,
+  emptyWorkspace: (workspace: string, past = false) =>
+    `None of your chats can post in ${workspace} ${past ? 'now' : 'yet'}.`,
   /** Follows `empty`: a chat is connected from inside it. `/crew` is drawn as code. */
-  emptyHow: 'To connect one, open that chat and type /crew.',
+  // A chat with no message yet cannot connect: /crew there says "Start the chat first" (UXN-8).
+  emptyHow: 'To connect one, open that chat and type /crew. A new chat needs a message first.',
   untitled: 'Untitled chat',
   yourTask: 'Your task',
   /**

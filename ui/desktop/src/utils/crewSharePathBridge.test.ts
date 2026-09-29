@@ -172,7 +172,7 @@ function createMainHarness(
     getUserActionKey: () => 'user-action',
     log: { warn: (message: string) => logs.push(message) },
     CREW_SHARE_DROPPED_FILE_CHANNEL,
-    CrewSharePending: crewSharePath.CrewSharePending,
+    CrewSheetGate: crewSharePath.CrewSheetGate,
     crewShareCopy: crewSharePath.crewShareCopy,
     parseCrewShareRequest: crewSharePath.parseCrewShareRequest,
     shareDroppedFile: crewSharePath.shareDroppedFile,

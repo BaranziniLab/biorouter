@@ -244,6 +244,37 @@ describe('Settings > Configuration editor', () => {
     expect(stillEditable).toBeEnabled();
   });
 
+  /**
+   * W2-PRV-2, round 4. The daemon also refuses, to anyone it cannot prove is a
+   * person, a change to a setting that decides where a provider sends its
+   * requests and key: a host, an endpoint, the AWS endpoint overrides. A
+   * browser never can prove one, so those rows are frozen too, with their own
+   * reason, and a setting beside them that goes nowhere stays editable.
+   */
+  it('freezes the settings that decide where a provider sends its key', async () => {
+    browser();
+    mocks.currentProvider = 'openai';
+    mocks.config = {
+      BIOROUTER_PROVIDER: 'openai',
+      OPENAI_HOST: 'https://gateway.example',
+      OPENAI_TIMEOUT: '600',
+      AWS_ENDPOINT_URL_BEDROCK_RUNTIME: 'https://vpce.example',
+    };
+    await openEditor();
+
+    for (const frozen of ['OPENAI_HOST', 'AWS_ENDPOINT_URL_BEDROCK_RUNTIME']) {
+      const note = await screen.findByTestId(`host-managed-config-${frozen}`);
+      expect(note.textContent).toContain('where a provider sends its key');
+      expect(note.textContent).not.toContain('the model comes from');
+      const row = note.closest('.grid');
+      expect(row).not.toBeNull();
+      expect(within(row as HTMLElement).getByRole('textbox')).toBeDisabled();
+      expect(within(row as HTMLElement).getByRole('button')).toBeDisabled();
+    }
+    expect(screen.queryByTestId('host-managed-config-OPENAI_TIMEOUT')).toBeNull();
+    expect(screen.getByDisplayValue('600')).toBeEnabled();
+  });
+
   /** The control: passes before and after. */
   it('leaves every row editable in the desktop application', async () => {
     mocks.currentProvider = 'ollama';
@@ -254,5 +285,14 @@ describe('Settings > Configuration editor', () => {
     expect(screen.getByDisplayValue('ollama')).toBeEnabled();
     expect(screen.queryByTestId('host-managed-config-BIOROUTER_PROVIDER')).toBeNull();
     expect(screen.queryByTestId('host-managed-config-OLLAMA_HOST')).toBeNull();
+  });
+
+  it('leaves a provider host editable in the desktop application', async () => {
+    mocks.currentProvider = 'openai';
+    mocks.config = { BIOROUTER_PROVIDER: 'openai', OPENAI_HOST: 'https://gateway.example' };
+    await openEditor();
+
+    expect(await screen.findByDisplayValue('https://gateway.example')).toBeEnabled();
+    expect(screen.queryByTestId('host-managed-config-OPENAI_HOST')).toBeNull();
   });
 });

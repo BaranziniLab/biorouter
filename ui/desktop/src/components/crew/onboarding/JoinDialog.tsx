@@ -25,7 +25,7 @@ import {
   type CrewInvitationPreview,
 } from '../api/join';
 import { CREW_INVITATION_INVALID, crewErrorCode, isStaleDaemon } from '../api/errors';
-import type { CrewConnection } from '../crewApi';
+import { CrewHttpError, type CrewConnection } from '../crewApi';
 import {
   connectionNames,
   InstitutionName,
@@ -63,10 +63,22 @@ type PreviewState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'ready'; preview: CrewInvitationPreview }
-  | { kind: 'invalid' }
+  /** `reason`: why the daemon refused the paste (`invitation_malformed`, …), when it said. */
+  | { kind: 'invalid'; reason: string | null }
   | { kind: 'stale' }
   /** `connectionId`: the saved connection a 409 conflict concerns, to offer opening it. */
   | { kind: 'failed'; message: string; connectionId: string | null };
+
+/**
+ * A refused paste in words, by the daemon's reason (F1): a wrapped or cut invitation is a damaged
+ * one, not "not a Crew invitation", and one from a newer Crew needs a newer Biorouter. Anything
+ * else keeps the general sentence.
+ */
+export function invalidInvitationText(reason: string | null | undefined): string {
+  if (reason === 'invitation_malformed') return joinCopy.malformed;
+  if (reason === 'invitation_unsupported_version') return joinCopy.newerInvitation;
+  return joinCopy.invalid;
+}
 
 /** How long typing pauses before the pasted text is sent to the daemon for a preview. */
 export const INVITATION_PREVIEW_DELAY_MS = 250;
@@ -241,7 +253,10 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
         (failure: unknown) => {
           if (controller.signal.aborted) return;
           if (crewErrorCode(failure) === CREW_INVITATION_INVALID) {
-            setPreviewState({ kind: 'invalid' });
+            setPreviewState({
+              kind: 'invalid',
+              reason: failure instanceof CrewHttpError ? (failure.fields.reason ?? null) : null,
+            });
           } else if (isStaleDaemon(failure)) {
             // An older background service cannot read invitations: offer the manual details,
             // which every daemon accepts, and say how to get the newer one.
@@ -359,6 +374,12 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
 
   // A connection this computer already has for the workspace: offer it instead of saving again.
   const existingId = !manual ? (preview?.existing_connection_id ?? null) : null;
+  // A saved connection to this workspace that never joined and signs in some other way (F1):
+  // joining replaces it, rather than offering to open one that can never join.
+  const replaceableId =
+    !manual && !existingId ? (preview?.replaceable_connection_id ?? null) : null;
+  // The invitation is for another account than this computer signs in as (F2): said before Join.
+  const loginMismatch = !manual && !existingId ? (preview?.login_mismatch ?? null) : null;
   // A paste this computer pins differently (409 `crew_invitation_conflict` at preview).
   const previewConflictId =
     !manual && previewState.kind === 'failed' ? previewState.connectionId : null;
@@ -368,9 +389,11 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const submitLabel =
     phase === 'connecting'
       ? joinCopy.connecting(server || workspaceLabel)
-      : preview?.workspace_name
-        ? joinCopy.submit(workspaceLabel)
-        : joinCopy.submitFallback;
+      : replaceableId
+        ? joinCopy.replaceSaved
+        : preview?.workspace_name
+          ? joinCopy.submit(workspaceLabel)
+          : joinCopy.submitFallback;
 
   /**
    * The overrides the invitation route's contract names (naming-design "Joiner": port, identity
@@ -494,6 +517,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       }
       const overrides: CrewInvitationOverrides = { mode, institution_id: institutionId };
       if (username.trim()) overrides.username = username.trim();
+      if (replaceableId) overrides.replace = replaceableId;
       const extra = advanced();
       if (extra) overrides.advanced = extra;
       // What was saved before this submit. Saving an invitation for a workspace this computer
@@ -516,6 +540,8 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
       }
       // Without the daemon's list, the controller's own list still says which ones it knew.
       const known = before ?? new Set(crew.connections.map((item) => item.id));
+      // The replaced connection is gone, whatever id the new one has.
+      if (replaceableId) known.delete(replaceableId);
       const preexisting =
         connection.id === preview?.existing_connection_id || known.has(connection.id);
       isNew = !preexisting;
@@ -575,7 +601,7 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   const statedMode = preview?.workspace_mode ?? null;
   const invitationHelper =
     previewState.kind === 'invalid'
-      ? joinCopy.invalid
+      ? invalidInvitationText(previewState.reason)
       : previewState.kind === 'failed'
         ? previewState.message
         : previewState.kind === 'checking'
@@ -709,8 +735,34 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
               ) : null}
 
               {existingId ? (
-                <Note tone="info" role="status" testId="crew-join-existing">
-                  {joinCopy.existing(workspaceLabel)}
+                <Note
+                  tone="info"
+                  role="status"
+                  testId="crew-join-existing"
+                  action={
+                    // The saved connection's login is changed there, never by pasting again (F1).
+                    <Button
+                      type="button"
+                      variant="link"
+                      className="h-auto p-0"
+                      disabled={locked}
+                      onClick={() => {
+                        onClose();
+                        crew.openDialog({
+                          kind: 'connection-settings',
+                          connectionId: existingId,
+                        });
+                      }}
+                    >
+                      {joinCopy.connectionSettings}
+                    </Button>
+                  }
+                >
+                  {joinCopy.existing(workspaceLabel)} {joinCopy.existingLogin}
+                </Note>
+              ) : replaceableId ? (
+                <Note tone="info" role="status" testId="crew-join-replaceable">
+                  {joinCopy.replaceable(workspaceLabel)}
                 </Note>
               ) : null}
 
@@ -768,6 +820,16 @@ function JoinDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                     </Disclosure>
                   ) : null}
                 </div>
+              ) : null}
+
+              {loginMismatch ? (
+                <Note tone="warning" role="status" testId="crew-join-login-mismatch">
+                  {joinCopy.loginMismatch(
+                    loginMismatch.invitee,
+                    server || workspaceLabel,
+                    loginMismatch.config_user
+                  )}
+                </Note>
               ) : null}
 
               {preview && !existingId ? (

@@ -405,19 +405,42 @@ fn probe_until(cmd: &str, args: &[&str], deadline: std::time::Instant) -> ProbeO
     if !status.success() {
         return ProbeOutcome::Absent;
     }
-    let pick = |bytes: &[u8]| {
-        String::from_utf8_lossy(bytes)
-            .lines()
-            .next()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-    };
     // Bounded by the SAME deadline. A descendant holding the pipe cannot make a
     // probe outlive its budget; what it costs is the version string, not time.
     let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
     let stdout = out.recv_timeout(remaining()).unwrap_or_default();
     let stderr = err.recv_timeout(remaining()).unwrap_or_default();
-    ProbeOutcome::Version(pick(&stdout).or_else(|| pick(&stderr)).unwrap_or_default())
+    ProbeOutcome::Version(version_line(
+        &String::from_utf8_lossy(&stdout),
+        &String::from_utf8_lossy(&stderr),
+    ))
+}
+
+/// The line of a `--version` probe's output that states the version.
+///
+/// A well-behaved tool prints it as the first line of stdout, and that line
+/// wins. A tool that prints nothing there and logs to stderr first, as
+/// `llama-server --version` does (`... I srv  llama_server: initializing ...`,
+/// then `version: 0.5.0 (build ...)`), is read for its first line that names a
+/// version; doctor used to show that tool's first log line as its version.
+fn version_line(stdout: &str, stderr: &str) -> String {
+    let lines = |text: &str| {
+        text.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    if let Some(first) = lines(stdout).into_iter().next() {
+        return first;
+    }
+    let stderr = lines(stderr);
+    stderr
+        .iter()
+        .find(|line| line.to_ascii_lowercase().contains("version"))
+        .or_else(|| stderr.first())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Stop a probe and everything it started.
@@ -1314,6 +1337,39 @@ pub fn debug_prompt(failure: &DependencyFailure<'_>) -> String {
     ));
 
     out
+}
+
+#[cfg(test)]
+mod version_line_tests {
+    use super::version_line;
+
+    /// W2-PRV-11: `llama-server --version` writes nothing to stdout and logs to
+    /// stderr before it prints its version, and doctor showed the log line.
+    #[test]
+    fn a_tool_that_logs_before_its_version_is_read_for_the_version() {
+        let stderr = "0.00.000.123 I srv  llama_server: initializing ...\n\
+                      version: 0.5.0 (build 11146, abc123)\n\
+                      built with Apple clang for arm64\n";
+        assert_eq!(
+            version_line("", stderr),
+            "version: 0.5.0 (build 11146, abc123)"
+        );
+    }
+
+    #[test]
+    fn stdout_first_line_still_wins() {
+        assert_eq!(
+            version_line(
+                "git version 2.50.0\n",
+                "warning: a newer version is available\n"
+            ),
+            "git version 2.50.0"
+        );
+        assert_eq!(version_line("\n  10.9.0  \n", ""), "10.9.0");
+        // stderr with no line naming a version: its first line, as before.
+        assert_eq!(version_line("", "Python 3.12.1\n"), "Python 3.12.1");
+        assert_eq!(version_line("", ""), "");
+    }
 }
 
 #[cfg(test)]

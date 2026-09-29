@@ -2,10 +2,13 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  revealHiddenCharacters,
+  revealHiddenCharactersAcross,
   sanitizeArtifactTitle,
   sanitizeUntrustedLabel,
   stripHiddenCharacters,
   UNTRUSTED_LABEL_MAX_CHARS,
+  type RevealedSegment,
 } from './untrustedText';
 
 /**
@@ -79,6 +82,241 @@ describe('sanitizeArtifactTitle', () => {
     expect(sanitizeArtifactTitle('\u{202E}\n')).toBe('Artifact');
     expect(sanitizeArtifactTitle('', '\u{200B}')).toBe('Artifact');
     expect(sanitizeArtifactTitle(' ', 'Figure')).toBe('Figure');
+  });
+});
+
+/**
+ * A message body another person wrote, drawn with what could make it read as something else made
+ * visible (QA M3, SEC-9), and nothing that legitimate text needs taken away.
+ */
+describe('revealHiddenCharacters', () => {
+  /** The segments as text, each hidden character as `[escape]`. */
+  const shown = (segments: RevealedSegment[]) =>
+    segments.map((part) => (part.kind === 'text' ? part.text : `[${part.escape}]`)).join('');
+  /** What a copy of the segments gives back: the raw characters. */
+  const raw = (segments: RevealedSegment[]) =>
+    segments.map((part) => (part.kind === 'text' ? part.text : part.raw)).join('');
+
+  it('shows a right-to-left override as its escape, as the command line prints it', () => {
+    const segments = revealHiddenCharacters('invoice_\u{202E}gnp.exe and more');
+    expect(segments).toEqual([
+      { kind: 'text', text: 'invoice_' },
+      { kind: 'hidden', raw: '\u{202E}', escape: '\\u{202e}', codePoint: 'U+202E' },
+      { kind: 'text', text: 'gnp.exe and more' },
+    ]);
+  });
+
+  it.each([
+    ['every embedding, override and isolate', 'a\u{202A}b\u{202B}c\u{202C}d\u{202D}e', 4],
+    ['the isolates', '\u{2066}x\u{2067}y\u{2068}z\u{2069}', 4],
+    ['control characters other than a tab or a break', 'bell\u{7}back\u{8}esc\u{1B}c1\u{9B}', 4],
+    ['a tag character outside a flag', 'a\u{E0041}\u{E0042}b', 2],
+    ['a zero-width space inside a handle', 'hi @cre\u{200B}w_bob', 1],
+    ['a zero-width space inside a bare username', 'cre\u{200B}w_bob said', 1],
+    ['a word joiner inside an address', 'see https://www.ucsf\u{2060}.edu/login', 1],
+    ['a byte-order mark on a domain', 'open ucsf.edu\u{FEFF} now', 1],
+    [
+      'direction marks in text with no right-to-left letter',
+      'invoice\u{200F}.exe\u{200E}\u{61C}',
+      3,
+    ],
+    // Every other character that draws nothing, taken by category, not only the three
+    // zero-width characters the first version knew: each of these left `@crew_bob` looking whole.
+    ['a zero-width non-joiner inside a handle', '@cre\u{200C}w_bob', 1],
+    ['a zero-width joiner inside a handle', '@cre\u{200D}w_bob', 1],
+    ['an invisible separator inside a handle', '@cre\u{2063}w_bob', 1],
+    ['the invisible operators', 'a\u{2061}b\u{2062}c\u{2064}d', 3],
+    ['the Mongolian vowel separator inside a handle', '@cre\u{180E}w_bob', 1],
+    ['the deprecated format characters', 'a\u{206A}b\u{206F}c', 2],
+    ['the combining grapheme joiner', 'cre\u{34F}w_bob', 1],
+    ['a variation selector between ASCII letters', 'cre\u{FE0F}w_bob and cre\u{FE00}w', 2],
+    ['an ideographic variation selector between ASCII letters', 'cre\u{E0100}w_bob', 1],
+    ['a soft hyphen between ASCII letters', 'cre\u{AD}w_bob', 1],
+    ['a Hangul filler beside a name', '@crew\u{3164}bob', 1],
+    ['a run of invisible characters, each one', 'cre\u{200B}\u{200C}\u{200D}w_bob', 3],
+    [
+      'an invisible character between two visible escapes, looked through to the letters',
+      'cre\u{202E}\u{200C}\u{202C}w',
+      3,
+    ],
+    ['a joiner between a Thai word and a domain', 'ดู\u{200D}ucsf.edu', 1],
+    ['a zero-width space inside a domain written in another script', 'пример\u{200B}сайт.рф', 1],
+    ['a keycap selector with no keycap after it', 'cre1\u{FE0F}w', 1],
+    [
+      'a direction mark inside a handle, in a message with right-to-left words',
+      'שלום @cre\u{200F}w_bob and cre\u{200E}w_\u{200F}bob',
+      3,
+    ],
+    // Text hidden in text, for an agent to read where no person can.
+    [
+      'a run of zero-width characters between spaces',
+      'hello \u{200B}\u{200C}\u{200B}\u{200C} there',
+      4,
+    ],
+    [
+      'variation selectors after an emoji, past the first',
+      '\u{1F600}\u{FE00}\u{E0101}\u{E0102}!',
+      2,
+    ],
+    [
+      'a flag whose tags spell more than a subdivision',
+      '\u{1F3F4}\u{E0069}\u{E0067}\u{E006E}\u{E006F}\u{E0072}\u{E0065}\u{E0020}\u{E0061}\u{E007F}',
+      9,
+    ],
+    ['a flag spelled in capital tags', '\u{1F3F4}\u{E0047}\u{E0042}\u{E0053}\u{E007F}', 4],
+  ])('shows %s', (_label, value, count) => {
+    const segments = revealHiddenCharacters(value);
+    expect(segments.filter((part) => part.kind === 'hidden')).toHaveLength(count);
+    expect(raw(segments)).toBe(value);
+  });
+
+  it.each([
+    ['a Hebrew paragraph', 'שלום לכולם, הפגישה בשעה 3.'],
+    ['the direction marks of right-to-left text', 'שלום\u{200F} (C++)\u{200E} مرحبا\u{61C}'],
+    ['a mark after a Latin word before its full stop', 'אני משתמש ב-Windows\u{200E}. תודה'],
+    [
+      'an emoji joiner sequence',
+      'scientist \u{1F469}\u{1F3FD}\u{200D}\u{1F52C} and family \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}',
+    ],
+    ['a zero-width non-joiner in Persian', 'می\u{200C}خواهم'],
+    ['a zero-width space between Thai words', 'สวัสดี\u{200B}ครับ'],
+    ['a subdivision flag', 'go \u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}!'],
+    ['a state flag', 'from \u{1F3F4}\u{E0075}\u{E0073}\u{E0074}\u{E0078}\u{E007F}'],
+    ['the emoji smuggling test’s one selector', '\u{1F600}\u{FE0F} ok'],
+    ['tabs and newlines', 'a\tb\nc\r\nd'],
+    ['a soft hyphen between letters of another script', 'авто\u{AD}мобиль'],
+    ['a joiner in an Indic conjunct', 'क्\u{200D}ष'],
+    ['an emoji presentation selector', 'love \u{2764}\u{FE0F}it, \u{A9}\u{FE0F}2026'],
+    [
+      'a joiner sequence with a selector inside',
+      'heart on fire \u{2764}\u{FE0F}\u{200D}\u{1F525}go',
+    ],
+    ['a keycap', 'press 1\u{FE0F}\u{20E3} or #\u{FE0F}\u{20E3} now'],
+    ['an ideographic variation selector', '葛\u{E0100}城'],
+    ['an emoji in a handle-like token', '@bob\u{1F469}\u{200D}\u{1F52C} \u{2764}\u{FE0F}@lab.org'],
+    ['an Arabic number sign before ASCII digits', 'total \u{600}123'],
+    ['a Mongolian free variation selector between Mongolian letters', 'ᠠ\u{180B}ᠢ'],
+  ])('leaves %s alone', (_label, value) => {
+    expect(revealHiddenCharacters(value)).toEqual([{ kind: 'text', text: value }]);
+  });
+
+  it('keeps every raw character for a copy, whatever it shows', () => {
+    const value = '\u{202E}a\u{200B}@b\u{FEFF}c\u{E0041}\u{2066}';
+    const segments = revealHiddenCharacters(value);
+    expect(raw(segments)).toBe(value);
+    expect(shown(segments)).toBe('[\\u{202e}]a[\\u{200b}]@b[\\u{feff}]c[\\u{e0041}][\\u{2066}]');
+  });
+
+  it('never splits a surrogate pair', () => {
+    expect(revealHiddenCharacters('\u{1F600}\u{202E}\u{1F600}')).toEqual([
+      { kind: 'text', text: '\u{1F600}' },
+      { kind: 'hidden', raw: '\u{202E}', escape: '\\u{202e}', codePoint: 'U+202E' },
+      { kind: 'text', text: '\u{1F600}' },
+    ]);
+  });
+
+  it('returns nothing for nothing', () => {
+    expect(revealHiddenCharacters('')).toEqual([]);
+  });
+
+  /**
+   * It runs on the renderer's main thread each time a row mounts, on up to 64 KB (the broker's
+   * limit) that somebody else chose. The first version rescanned the whole token for every
+   * zero-width character and the whole tag run for every tag, so one message stalled every viewer:
+   * 21,800 zero-width spaces took 8 s, `@crew_bob` and 21,700 of them 20 s, a flag and 16,290 tags
+   * 4 s. One pass takes a few milliseconds; the bound leaves room for a loaded machine and none
+   * for a quadratic scan.
+   */
+  describe('within a bounded time, on a 64 KB body built to be slow', () => {
+    const LIMIT_BYTES = 64 * 1024;
+    const bytes = (value: string) => new TextEncoder().encode(value).length;
+    /** `unit` repeated to just under the broker's limit. */
+    const fill = (unit: string, lead = '') =>
+      lead + unit.repeat(Math.floor((LIMIT_BYTES - bytes(lead)) / bytes(unit)));
+
+    it.each([
+      ['zero-width spaces alone', fill('\u{200B}'), 'hidden'],
+      ['a letter and a zero-width space', fill('a\u{200B}'), 'hidden'],
+      ['a letter and a word joiner', fill('a\u{2060}'), 'hidden'],
+      ['a handle, then zero-width spaces', fill('\u{200B}', '@crew_bob'), 'hidden'],
+      ['a domain, then zero-width non-joiners', fill('\u{200C}', 'ucsf.edu'), 'hidden'],
+      ['tag characters alone', fill('\u{E0041}'), 'hidden'],
+      ['a black flag, then tag characters', fill('\u{E0067}', '\u{1F3F4}'), 'hidden'],
+      // Far more tags than a subdivision's code: shown, flag or not.
+      [
+        'a black flag, tag characters and a cancel tag',
+        `${fill('\u{E0067}', '\u{1F3F4}').slice(0, -2)}\u{E007F}`,
+        'hidden',
+      ],
+      ['an emoji, then variation selectors', fill('\u{E0100}', '\u{1F600}'), 'hidden'],
+      ['Thai words and zero-width spaces', fill('สวัสดี\u{200B}'), 'text'],
+      ['a plain line', fill('a'), 'text'],
+    ])('%s', (_label, value, kind) => {
+      expect(bytes(value)).toBeLessThanOrEqual(LIMIT_BYTES);
+      expect(bytes(value)).toBeGreaterThan(LIMIT_BYTES - 64);
+      const started = performance.now();
+      const segments = revealHiddenCharacters(value);
+      const elapsed = performance.now() - started;
+      expect(segments.map((part) => (part.kind === 'text' ? part.text : part.raw)).join('')).toBe(
+        value
+      );
+      expect(segments.some((part) => part.kind === kind)).toBe(true);
+      expect(elapsed).toBeLessThan(750);
+    });
+  });
+});
+
+/**
+ * Pieces a renderer draws side by side (a paragraph cut by emphasis or a link) are judged as the
+ * one text the eye reads, not one at a time: `@crew_b*{U+200B}*ob` puts a zero-width space in a
+ * piece of its own, where it had no neighbour and no token.
+ */
+describe('revealHiddenCharactersAcross', () => {
+  const hiddenPerPiece = (texts: string[]) =>
+    revealHiddenCharactersAcross(texts).map((segments) =>
+      segments.filter((segment) => segment.kind === 'hidden').map((segment) => segment.raw)
+    );
+
+  it.each([
+    ['a handle', ['hi @crew_b', '\u{200B}', 'ob']],
+    ['an email address', ['bob@lab', '\u{200B}', '.org']],
+    ['a domain', ['visit ucsf', '\u{2060}', '.edu']],
+    [
+      'a handle, with the characters on both sides in their own pieces',
+      ['@crew_', 'b', '\u{200B}', 'o', 'b'],
+    ],
+  ])('shows a hidden character alone in its piece inside %s', (_label, texts) => {
+    const hidden = hiddenPerPiece(texts);
+    expect(hidden.flat()).toHaveLength(1);
+    expect(hidden[texts.findIndex((text) => /^[\u{200B}\u{2060}]$/u.test(text))]).toHaveLength(1);
+  });
+
+  it('reads a direction mark with the right-to-left letters of another piece', () => {
+    expect(hiddenPerPiece(['שלום', '\u{200F}.'])).toEqual([[], []]);
+    expect(hiddenPerPiece(['file', '\u{200F}.txt'])).toEqual([[], ['\u{200F}']]);
+  });
+
+  it('keeps an emoji joiner sequence split across pieces', () => {
+    expect(hiddenPerPiece(['\u{1F469}', '\u{200D}\u{1F52C}']).flat()).toEqual([]);
+  });
+
+  it('never joins two lone surrogates of two pieces into a character neither draws', () => {
+    // Joined, these would be U+E0067, a tag character, and drawn as its escape. The third piece
+    // holds a hidden character, so the whole rule runs rather than the plain-text shortcut.
+    const segments = revealHiddenCharactersAcross(['a\uDB40', '\uDC67b', ' x\u{200B}y']);
+    expect(segments.slice(0, 2)).toEqual([
+      [{ kind: 'text', text: 'a\uDB40' }],
+      [{ kind: 'text', text: '\uDC67b' }],
+    ]);
+    expect(segments[2].filter((segment) => segment.kind === 'hidden')).toHaveLength(1);
+  });
+
+  it('gives each piece back unchanged when nothing is hidden, and an empty piece nothing', () => {
+    expect(revealHiddenCharactersAcross(['one ', '', 'two'])).toEqual([
+      [{ kind: 'text', text: 'one ' }],
+      [],
+      [{ kind: 'text', text: 'two' }],
+    ]);
   });
 });
 

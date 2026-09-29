@@ -887,9 +887,7 @@ describe('CrewView action and uncertain-start regressions', () => {
 
     // The mocked daemon holds no grant for this chat, so `/crew` opened its consent by itself
     // (Q3-28); while it is open the note's "Review access" is not drawn beside it (Q4-14).
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Allow this conversation to read and post here' })
-    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Allow' }));
     await waitFor(() =>
       expect(
         mocks.crewHttp.mock.calls.some(

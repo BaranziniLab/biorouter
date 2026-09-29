@@ -1,6 +1,7 @@
+import type * as Api from '../../../api/types.gen';
 import { CrewHttpError, crewHttp, type CrewConnection, type CrewPersonName } from '../crewApi';
 import { crewErrorCode, outdatedDaemonResponse, unexpectedCrewResponse } from './errors';
-import { isRecord, nullableNumber, nullableText, optionalText } from './parse';
+import { isRecord, nullableNumber, nullableText, optionalText, wireOf } from './parse';
 
 // Joining a workspace by invitation and device code (S3a). Only the daemon parses an invitation and
 // only the joiner's own daemon computes the device code; these helpers carry the person's request
@@ -23,19 +24,38 @@ export interface CrewInvitationOverrides {
   mode?: 'private' | 'public';
   institution_id?: string | null;
   advanced?: CrewInvitationAdvanced;
+  /**
+   * A saved connection to the same workspace that never joined, which saving replaces
+   * (W2-DMN-3): the daemon removes it, and its key, and saves this one. Only the id a preview
+   * named as `replaceable_connection_id`.
+   */
+  replace?: string;
+}
+
+/**
+ * The login saving would use is not the invitee's (W2-DMN-3): `config_user` is the User this
+ * computer's SSH settings sign in to the server as, `invitee` the account the invitation is for.
+ */
+export interface CrewLoginMismatch {
+  config_user: string;
+  invitee: string;
 }
 
 /** Join (S3a, 409): this computer already has the workspace, saved with other settings. */
-export const CREW_CONNECTION_EXISTS = 'crew_connection_exists';
+export const CREW_CONNECTION_EXISTS = 'crew_connection_exists' satisfies Api.CrewErrorCode;
 /** Join (S3a, 409): this computer pins a different identity for the same workspace. */
-export const CREW_INVITATION_CONFLICT = 'crew_invitation_conflict';
+export const CREW_INVITATION_CONFLICT = 'crew_invitation_conflict' satisfies Api.CrewErrorCode;
 /** Join status and claim (409): the connection is not connected; connect it, then ask again. */
-export const CREW_NOT_CONNECTED = 'crew_not_connected';
+export const CREW_NOT_CONNECTED = 'crew_not_connected' satisfies Api.CrewErrorCode;
 
 /** What saving an invitation still needs, which neither the invitation nor the person gave. */
-export type CrewInvitationMissing = 'username' | 'server' | 'institution';
+export type CrewInvitationMissing = Api.InvitationMissing;
 
-const INVITATION_MISSING: readonly string[] = ['username', 'server', 'institution'];
+const INVITATION_MISSING: readonly string[] = [
+  'username',
+  'server',
+  'institution',
+] satisfies CrewInvitationMissing[];
 
 /**
  * What an invitation says, as the daemon parsed it, before anything is saved. The labels are display
@@ -90,6 +110,17 @@ export interface CrewInvitationPreview {
    * changes nothing) when the settings match, and is refused otherwise: offer to open it instead.
    */
   existing_connection_id: string | null;
+  /**
+   * A saved connection to this workspace that never joined and signs in some other way (someone
+   * else's invitation saved by mistake, F1): saving with `replace` replaces it instead of offering
+   * to open it. Absent from an older daemon.
+   */
+  replaceable_connection_id?: string | null;
+  /**
+   * The invitation is for another account than this computer signs in as (F2, W2-DMN-3), or
+   * absent when they agree or the daemon cannot tell.
+   */
+  login_mismatch?: CrewLoginMismatch | null;
   /** What saving still needs; empty when it can save. */
   missing: CrewInvitationMissing[];
 }
@@ -100,15 +131,9 @@ export interface CrewInvitationMessage {
   line: string;
 }
 
-export type CrewJoinState =
-  | 'invited'
-  | 'approved'
-  | 'code_mismatch'
-  | 'not_invited'
-  | 'expired'
-  | 'joined'
-  /** The workspace's server cannot join by invitation: offer the invitation-token path. */
-  | 'unsupported';
+/** Where a join stands. `unsupported`: the workspace's server cannot join by invitation, so offer
+ * the invitation-token path. */
+export type CrewJoinState = Api.JoinState;
 
 const JOIN_STATES: readonly string[] = [
   'invited',
@@ -118,7 +143,7 @@ const JOIN_STATES: readonly string[] = [
   'expired',
   'joined',
   'unsupported',
-];
+] satisfies CrewJoinState[];
 
 export interface CrewJoinStatus {
   status: CrewJoinState;
@@ -177,8 +202,9 @@ export function groupDeviceCode(code: string): string {
   return (code.match(/.{1,4}/g) ?? []).join('-');
 }
 
-function personFrom(value: unknown): CrewPersonName | undefined {
-  if (!isRecord(value)) return undefined;
+function personFrom(wire: unknown): CrewPersonName | undefined {
+  const value = wireOf<Api.JoinPerson>(wire);
+  if (!value) return undefined;
   const username = optionalText(value.username);
   if (!username) return undefined;
   const displayName = optionalText(value.display_name);
@@ -207,8 +233,11 @@ function missingFrom(value: unknown): CrewInvitationMissing[] {
 
 function previewFrom(value: unknown): CrewInvitationPreview | null {
   // Accept the summary bare or inside a `preview` envelope.
-  const body = isRecord(value) && isRecord(value.preview) ? value.preview : value;
-  if (!isRecord(body)) return null;
+  const envelope = wireOf<Api.FromInvitationResponse>(value);
+  const body = wireOf<Api.InvitationSummary>(
+    envelope && isRecord(envelope.preview) ? envelope.preview : value
+  );
+  if (!body) return null;
   const workspaceId = optionalText(body.workspace_id);
   if (!workspaceId) return null;
   const port = nullableNumber(body.ssh_port);
@@ -237,8 +266,31 @@ function previewFrom(value: unknown): CrewInvitationPreview | null {
         ? ownerUid
         : null,
     existing_connection_id: optionalText(body.existing_connection_id) ?? null,
+    ...(connectionIdFrom(body.replaceable_connection_id)
+      ? { replaceable_connection_id: connectionIdFrom(body.replaceable_connection_id) }
+      : {}),
+    ...(loginMismatchFrom(body.login_mismatch)
+      ? { login_mismatch: loginMismatchFrom(body.login_mismatch) }
+      : {}),
     missing: missingFrom(body.missing),
   };
+}
+
+/** A connection id as the daemon writes one (a UUID), never a path: it is sent back verbatim. */
+function connectionIdFrom(value: unknown): string | null {
+  const id = optionalText(value);
+  return id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
+}
+
+/** Both names, or nothing: a half-said mismatch is not said. */
+function loginMismatchFrom(wire: unknown): CrewLoginMismatch | null {
+  const value = wireOf<Api.LoginMismatch>(wire);
+  if (!value) return null;
+  const configUser = optionalText(value.config_user);
+  const invitee = optionalText(value.invitee);
+  return configUser && invitee && configUser !== invitee
+    ? { config_user: configUser, invitee }
+    : null;
 }
 
 function invitationBody(invitation: string, overrides: CrewInvitationOverrides, preview: boolean) {
@@ -277,10 +329,13 @@ export async function saveFromInvitation(
     'POST',
     invitationBody(invitation, overrides, false)
   );
-  if (!isRecord(result)) throw outdatedDaemonResponse();
+  const answer = wireOf<Api.FromInvitationResponse>(result);
+  if (!answer) throw outdatedDaemonResponse();
   // Accept the connection bare, as `POST /crew/connections` returns it, or inside an envelope.
-  const connection = isRecord(result.connection) ? result.connection : result;
-  if (!optionalText(connection.id) || typeof connection.name !== 'string')
+  const connection = wireOf<Api.Connection>(
+    isRecord(answer.connection) ? answer.connection : result
+  );
+  if (!connection || !optionalText(connection.id) || typeof connection.name !== 'string')
     throw unexpectedCrewResponse('a saved connection');
   return connection as unknown as CrewConnection;
 }
@@ -306,11 +361,13 @@ export function refusalConnectionId(error: unknown, fallback?: string | null): s
  * existed. Throws when the daemon's answer can't be read: a caller must not guess "none".
  */
 export async function savedConnectionIds(signal?: AbortSignal): Promise<string[]> {
-  const result = await crewHttp<unknown>('/connections', 'GET', undefined, signal);
-  if (!isRecord(result) || !Array.isArray(result.connections))
+  const result = wireOf<Api.CrewConnectionList>(
+    await crewHttp<unknown>('/connections', 'GET', undefined, signal)
+  );
+  if (!result || !Array.isArray(result.connections))
     throw unexpectedCrewResponse('a connection list');
-  return result.connections.flatMap((row) => {
-    const id = isRecord(row) ? optionalText(row.id) : undefined;
+  return result.connections.flatMap((row: unknown) => {
+    const id = optionalText(wireOf<Api.Connection>(row)?.id);
     return id ? [id] : [];
   });
 }
@@ -324,16 +381,17 @@ export async function getInvitation(
   invitee?: string,
   signal?: AbortSignal
 ): Promise<CrewInvitationMessage> {
-  const query = invitee ? `?${new URLSearchParams({ invitee }).toString()}` : '';
+  const query: '' | `?${string}` = invitee ? `?${new URLSearchParams({ invitee }).toString()}` : '';
   const result = await crewHttp<unknown>(
     `/connections/${encodeURIComponent(connectionId)}/invitation${query}`,
     'GET',
     undefined,
     signal
   );
-  if (!isRecord(result)) throw outdatedDaemonResponse();
-  const message = optionalText(result.message);
-  const line = optionalText(result.line);
+  const text = wireOf<Api.InvitationText>(result);
+  if (!text) throw outdatedDaemonResponse();
+  const message = optionalText(text.message);
+  const line = optionalText(text.line);
   // The joiner pastes the whole message, so it must carry the line the daemon parses.
   if (!message || !line || !line.startsWith('brcrew1:') || !message.includes(line))
     throw unexpectedCrewResponse('an invitation');
@@ -354,23 +412,24 @@ export async function joinStatus(
     undefined,
     signal
   );
-  if (!isRecord(result)) throw outdatedDaemonResponse();
-  if (typeof result.status !== 'string' || !JOIN_STATES.includes(result.status))
+  const answer = wireOf<Api.JoinStatus>(result);
+  if (!answer) throw outdatedDaemonResponse();
+  if (typeof answer.status !== 'string' || !JOIN_STATES.includes(answer.status))
     throw unexpectedCrewResponse('a join status');
-  const status: CrewJoinStatus = { status: result.status as CrewJoinState };
-  const code = deviceCodeFrom(result.code);
-  if (result.code !== undefined && result.code !== null && !code)
+  const status: CrewJoinStatus = { status: answer.status as CrewJoinState };
+  const code = deviceCodeFrom(answer.code);
+  if (answer.code !== undefined && answer.code !== null && !code)
     throw unexpectedCrewResponse('a join status');
   if ((status.status === 'invited' || status.status === 'code_mismatch') && !code)
     throw unexpectedCrewResponse('a join status');
   if (code) status.code = code;
-  const inviter = personFrom(result.inviter);
+  const inviter = personFrom(answer.inviter);
   if (inviter) status.inviter = inviter;
-  const workspaceName = nullableText(result.workspace_name);
+  const workspaceName = nullableText(answer.workspace_name);
   if (workspaceName !== undefined) status.workspace_name = workspaceName;
-  const expiresAt = nullableNumber(result.expires_at);
+  const expiresAt = nullableNumber(answer.expires_at);
   if (expiresAt !== undefined) status.expires_at = expiresAt;
-  if (typeof result.add_device === 'boolean') status.add_device = result.add_device;
+  if (typeof answer.add_device === 'boolean') status.add_device = answer.add_device;
   return status;
 }
 
@@ -383,14 +442,15 @@ export async function claimJoin(connectionId: string): Promise<CrewJoinClaim> {
     `/connections/${encodeURIComponent(connectionId)}/join`,
     'POST'
   );
-  if (!isRecord(result)) throw outdatedDaemonResponse();
-  if (result.joined === false || (result.status !== undefined && result.status !== 'joined'))
+  const answer = wireOf<Api.JoinClaimed>(result);
+  if (!answer) throw outdatedDaemonResponse();
+  if (answer.joined === false || (answer.status !== undefined && answer.status !== 'joined'))
     throw unexpectedCrewResponse('a join answer');
   const claim: CrewJoinClaim = { joined: true };
-  const inviter = personFrom(result.inviter);
+  const inviter = personFrom(answer.inviter);
   if (inviter) claim.inviter = inviter;
-  const workspaceName = nullableText(result.workspace_name);
+  const workspaceName = nullableText(answer.workspace_name);
   if (workspaceName !== undefined) claim.workspace_name = workspaceName;
-  if (typeof result.add_device === 'boolean') claim.add_device = result.add_device;
+  if (typeof answer.add_device === 'boolean') claim.add_device = answer.add_device;
   return claim;
 }

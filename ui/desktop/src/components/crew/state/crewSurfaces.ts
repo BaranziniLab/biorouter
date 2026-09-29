@@ -10,9 +10,10 @@ import type {
 } from './types';
 
 /**
- * Dialogs whose content is drawn from the verified snapshot. A refresh or a lost verification
- * closes them; Join, Host, Connection settings, Keys, Invite people and Let in stay open because
- * they are about the connection or hold a result the person still has to copy.
+ * Dialogs whose content is drawn from the verified snapshot. A refresh (except for the ones that
+ * {@link survivesRefresh}) or a lost verification closes them; Join, Host, Connection settings,
+ * Keys, Invite people and Let in stay open because they are about the connection or hold a result
+ * the person still has to copy.
  */
 export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
   switch (dialog.kind) {
@@ -33,6 +34,28 @@ export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
 }
 
 /**
+ * Snapshot-bound dialogs a refresh leaves open. Workspace settings holds this connection's own
+ * privacy (its Privacy tab), and changing it makes the daemon connect again, which refreshes the
+ * view: closing on that refresh shut the dialog half a second after its own Make private was saved
+ * (SF2-N7).
+ *
+ * What it draws meanwhile depends on how the view went. A manual refresh keeps the last verified
+ * copy of the same connection, and the dialog draws that (`useDialogView`). The end the daemon
+ * sends when the connection's policy moves says `clear: true`, and that clears the last verified
+ * copy along with the live one (`clearProtectedState('refresh')`), so the dialog then has no
+ * snapshot at all. It says Checking… in place of everything the snapshot decides (who hosts, who
+ * is in, the workspace's own privacy) until the view verifies again, rather than drawing from a
+ * directory that names nobody as the host. It closes when the view is gone for good
+ * (`protected-cleared`, which a failed re-verification sends, a lost channel, another connection).
+ * The reconnect inside the save itself is never taken for that: an end while this window's save of
+ * the connection is on its way is left to the save and decided only once it is back
+ * (`leaveEndToSave`, T3-UI-15).
+ */
+export function survivesRefresh(dialog: DialogIntent): boolean {
+  return dialog.kind === 'workspace-settings';
+}
+
+/**
  * How the new layout's surfaces react when the controller resets them. The details pane survives
  * a refresh (an error shown in it must outlive a manual refresh) and a channel switch, on the same
  * tab, so two channels' members can be compared side by side (QA Q2-33); the agent and chat-access
@@ -45,7 +68,9 @@ export function nextUiAfterReset(ui: CrewUi, reason: SurfaceResetReason): CrewUi
     dialog && !isSnapshotBoundDialog(dialog) ? dialog : null;
   switch (reason) {
     case 'refresh':
-      return ui.dialog && isSnapshotBoundDialog(ui.dialog) ? { ...ui, dialog: null } : ui;
+      return ui.dialog && isSnapshotBoundDialog(ui.dialog) && !survivesRefresh(ui.dialog)
+        ? { ...ui, dialog: null }
+        : ui;
     case 'channel-changed': {
       const pane = ui.pane?.mode === 'details' ? ui.pane : null;
       const dialog = keepDialog(ui.dialog);

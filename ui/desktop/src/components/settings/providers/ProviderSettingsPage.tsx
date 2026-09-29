@@ -4,21 +4,30 @@ import { ScrollArea } from '../../ui/scroll-area';
 import BackButton from '../../ui/BackButton';
 import ProviderCatalog from './ProviderCatalog';
 import { useConfig } from '../../ConfigContext';
-import { ProviderDetails } from '../../../api';
+import { ProviderDetails, type SessionClassification } from '../../../api';
 import { createNavigationHandler } from '../../../utils/navigationUtils';
 import { persistDetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from '../../onboarding/CommercialSetupCard';
+import { KEY_STORAGE_NOTICE } from './modal/subcomponents/SecureStorageNotice';
 
 interface ProviderSettingsProps {
   onClose: () => void;
   isOnboarding: boolean;
   onProviderLaunched?: (model?: string) => void;
+  /** W2-PRV-5: the chat whose model picker opened this page; see `ProviderCatalog`. */
+  chatSessionId?: string | null;
+  chatPrivacyTier?: SessionClassification;
+  /** T3-SH-2: the tab of the unsent chat whose model picker opened this page. */
+  heldChatTabId?: string | null;
 }
 
 export default function ProviderSettings({
   onClose,
   isOnboarding,
   onProviderLaunched,
+  chatSessionId,
+  chatPrivacyTier,
+  heldChatTabId,
 }: ProviderSettingsProps) {
   const { getProviders, read, upsert } = useConfig();
   const navigate = useNavigate();
@@ -112,8 +121,8 @@ export default function ProviderSettings({
           </h1>
           <p className="text-sm text-text-muted">
             {isOnboarding
-              ? 'Pick where your models run. API keys are encrypted and stored locally, and you can switch providers any time in settings.'
-              : 'Configure your AI model providers. API keys are encrypted and stored locally.'}
+              ? `Pick where your models run, and switch providers any time in settings. ${KEY_STORAGE_NOTICE}`
+              : `Configure your AI model providers. ${KEY_STORAGE_NOTICE}`}
           </p>
         </div>
 
@@ -131,6 +140,9 @@ export default function ProviderSettings({
               onCommercialSuccess={handleCommercialSuccess}
               configuredProvider={configuredProvider}
               initialTab={tabHint}
+              chatSessionId={chatSessionId}
+              chatPrivacyTier={chatPrivacyTier}
+              heldChatTabId={heldChatTabId}
             />
           )}
         </div>

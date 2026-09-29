@@ -1,13 +1,22 @@
+import type * as Api from '../../../api/types.gen';
 import { CrewHttpError, crewHttp } from '../crewApi';
 import { observeListedRevocations } from '../access/pastAccess';
 import { CREW_REVOCATION_UNCONFIRMED, unexpectedCrewResponse } from './errors';
-import { isRecord, nullableNumber, nullableText, optionalText, stringArray } from './parse';
+import {
+  isRecord,
+  nullableNumber,
+  nullableText,
+  optionalText,
+  stringArray,
+  wireOf,
+  type Wire,
+} from './parse';
 
 // Chat and task grants (RV-R1). The daemon decides whether a grant exists and whether it may be
 // revoked; these helpers only read its answer and never gate anything themselves.
 
 /** `chat` is a conversation connected with /crew; `task` is an agent task started from Crew. */
-export type CrewGrantKind = 'chat' | 'task';
+export type CrewGrantKind = NonNullable<Api.CrewGrantView['kind']>;
 
 /** One channel's display label, as the person saw it when granting access. */
 export interface CrewGrantChannelLabel {
@@ -32,17 +41,22 @@ export interface CrewGrantLabels {
   sources?: CrewGrantChannelLabel[];
 }
 
-export interface CrewSessionGrant {
-  session_id: string;
-  run_id: string;
-  connection_id: string;
-  /** The channel the session may post in. */
-  channel_id: string;
-  /** Further channels it may read. */
-  source_channels: string[];
-  policy_epoch: number;
-  /** Stopped on this device: revoked, or its connection was removed. */
-  expired: boolean;
+/**
+ * A grant as the daemon lists it (`CrewGrantView`), validated. The fields it always sends keep the
+ * generated types; `channel_id` is the channel the session may post in, `source_channels` the
+ * further channels it may read, and `expired` means stopped on this device (revoked, or its
+ * connection was removed).
+ */
+export interface CrewSessionGrant extends Pick<
+  Api.GrantRow,
+  | 'session_id'
+  | 'run_id'
+  | 'connection_id'
+  | 'channel_id'
+  | 'source_channels'
+  | 'policy_epoch'
+  | 'expired'
+> {
   /** RV-D2; absent from a daemon that predates it. */
   kind?: CrewGrantKind;
   /** The conversation's title (RV-D2); null when the daemon could not find the session. */
@@ -67,9 +81,13 @@ export interface CrewSessionGrant {
 }
 
 /** A stopped grant's standing with the workspace, as the daemon's grant list says it. */
-export type CrewGrantRevocation = 'unconfirmed' | 'confirmed' | 'ended_by_workspace';
+export type CrewGrantRevocation = Api.Revocation;
 
-const GRANT_REVOCATIONS: readonly string[] = ['unconfirmed', 'confirmed', 'ended_by_workspace'];
+const GRANT_REVOCATIONS: readonly string[] = [
+  'unconfirmed',
+  'confirmed',
+  'ended_by_workspace',
+] satisfies CrewGrantRevocation[];
 
 export interface CrewRevokeResult {
   revoked: true;
@@ -81,8 +99,9 @@ export interface CrewRevokeResult {
 
 export type CrewGrantState = 'active' | 'expired' | 'revoked';
 
-function channelLabelFrom(value: unknown): CrewGrantChannelLabel | undefined {
-  if (!isRecord(value)) return undefined;
+function channelLabelFrom(wire: unknown): CrewGrantChannelLabel | undefined {
+  const value = wireOf<Api.ChannelLabel>(wire);
+  if (!value) return undefined;
   const label: CrewGrantChannelLabel = {};
   const channelId = optionalText(value.channel_id);
   if (channelId) label.channel_id = channelId;
@@ -94,8 +113,9 @@ function channelLabelFrom(value: unknown): CrewGrantChannelLabel | undefined {
 }
 
 /** The grant's `labels`, keeping only the fields that are what they claim to be. */
-export function grantLabelsFrom(value: unknown): CrewGrantLabels | undefined {
-  if (!isRecord(value)) return undefined;
+export function grantLabelsFrom(wire: unknown): CrewGrantLabels | undefined {
+  const value = wireOf<Api.AdmissionLabels>(wire);
+  if (!value) return undefined;
   const labels: CrewGrantLabels = {};
   const workspace = optionalText(value.workspace);
   if (workspace) labels.workspace = workspace;
@@ -111,8 +131,9 @@ export function grantLabelsFrom(value: unknown): CrewGrantLabels | undefined {
   return Object.keys(labels).length ? labels : undefined;
 }
 
-function grantFrom(row: unknown): CrewSessionGrant | null {
-  if (!isRecord(row)) return null;
+function grantFrom(wire: unknown): CrewSessionGrant | null {
+  const row = wireOf<Api.CrewGrantView>(wire);
+  if (!row) return null;
   const session_id = optionalText(row.session_id);
   const run_id = optionalText(row.run_id);
   const connection_id = optionalText(row.connection_id);
@@ -157,8 +178,13 @@ function grantFrom(row: unknown): CrewSessionGrant | null {
   return grant;
 }
 
-function rowsOf(result: unknown, list: 'grants' | 'replaced_grants', connectionId: string) {
-  const rows = isRecord(result) && Array.isArray(result[list]) ? result[list] : [];
+function rowsOf(
+  result: Wire<Api.CrewGrantList> | undefined,
+  list: keyof Api.CrewGrantList,
+  connectionId: string
+) {
+  const listed = result?.[list];
+  const rows = Array.isArray(listed) ? listed : [];
   return rows
     .map(grantFrom)
     .filter(
@@ -186,9 +212,10 @@ export async function listSessionGrants(
     undefined,
     signal
   );
-  const grants = rowsOf(result, 'grants', connectionId);
+  const listed = wireOf<Api.CrewGrantList>(result);
+  const grants = rowsOf(listed, 'grants', connectionId);
   if (!signal?.aborted)
-    observeListedRevocations(connectionId, grants, rowsOf(result, 'replaced_grants', connectionId));
+    observeListedRevocations(connectionId, grants, rowsOf(listed, 'replaced_grants', connectionId));
   return grants;
 }
 
@@ -232,21 +259,23 @@ export async function revokeSessionGrant(
     `/connections/${encodeURIComponent(connectionId)}/sessions/${encodeURIComponent(sessionId)}/revoke`,
     'POST'
   );
-  if (!isRecord(result) || result.revoked !== true) throw unexpectedCrewResponse('a revoke answer');
+  const answer = wireOf<Api.CrewRevocation>(result);
+  if (!answer || answer.revoked !== true) throw unexpectedCrewResponse('a revoke answer');
   // RV-D1 answers 503 when the workspace did not confirm. A 2xx that says so anyway is still not a
-  // confirmed revoke. A daemon from before RV-D1 omits the flag; it revoked remotely before
-  // answering 200, so its success is confirmed.
-  if (result.remote_revocation_confirmed === false)
+  // confirmed revoke, whose sentence (no field of the revoke answer) is used when it sent one. A
+  // daemon from before RV-D1 omits the flag; it revoked remotely before answering 200, so its
+  // success is confirmed.
+  if (answer.remote_revocation_confirmed === false)
     throw new CrewHttpError(
-      optionalText(result.error) ??
+      (isRecord(result) ? optionalText(result.error) : undefined) ??
         'Stopped on this device. The workspace has not confirmed yet; reconnect and retry.',
       200,
       CREW_REVOCATION_UNCONFIRMED
     );
   const revoked: CrewRevokeResult = { revoked: true, remote_revocation_confirmed: true };
-  const session = optionalText(result.session_id);
+  const session = optionalText(answer.session_id);
   if (session) revoked.session_id = session;
-  const run = optionalText(result.run_id);
+  const run = optionalText(answer.run_id);
   if (run) revoked.run_id = run;
   return revoked;
 }

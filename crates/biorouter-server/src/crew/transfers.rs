@@ -22,25 +22,31 @@ fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+/// What a file selection is for: a transfer, or approving the cleanup of a download's
+/// partial file.
+#[derive(Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FilePurpose {
     #[default]
     Transfer,
     Cleanup,
 }
-#[derive(Clone, Deserialize, Serialize)]
+/// A local file the person chose (`POST /crew/files`): the source of an upload, or the
+/// destination of a download.
+#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FileRequest {
     #[serde(default)]
     pub approval_pending: bool,
     #[serde(default)]
+    #[schema(inline)]
     pub expected_mode: Option<biorouter::crew::ClusterMode>,
     #[serde(default)]
     pub purpose: FilePurpose,
     pub connection_id: String,
     pub channel_id: String,
     pub direction: Direction,
+    #[schema(value_type = String)]
     pub path: PathBuf,
     #[serde(default)]
     pub overwrite: bool,
@@ -49,7 +55,8 @@ pub struct FileRequest {
     #[serde(default)]
     pub request_id: Option<String>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+/// Start a transfer with a file selection the person made (`POST /crew/transfers`).
+#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StartRequest {
     pub request_id: String,
@@ -59,7 +66,10 @@ pub struct StartRequest {
     pub file_capability: String,
     pub blob_id: Option<String>,
 }
-#[derive(Clone, Deserialize, Serialize)]
+/// A transfer as this computer records it, and as every transfer route answers it. The
+/// fields after `error` are the daemon's own bookkeeping for resuming and cleaning up; a
+/// client reads only `destination_identity` of them.
+#[derive(Clone, Deserialize, Serialize, utoipa::ToSchema)]
 pub struct Receipt {
     pub id: String,
     pub request_id: String,
@@ -70,10 +80,27 @@ pub struct Receipt {
     pub size: u64,
     pub sha256: String,
     pub offset: u64,
+    /// The workspace's attachment, once an upload has one or for a download; `null` before.
+    #[schema(required = true)]
     pub blob_id: Option<String>,
     pub state: String,
+    /// Why the transfer stopped, for a person; `null` otherwise.
+    #[schema(required = true)]
     pub error: Option<String>,
+    /// Why a `needs_file_selection` (paused) transfer stopped, when the daemon has a code for it:
+    /// `server_storage` when the workspace server could not save it (its disk is full, or its
+    /// storage failed). Resume it once the host has freed space: it continues from `offset`
+    /// (T3-BE-14). `null` otherwise; `error` says why in words either way.
+    #[serde(default)]
+    #[schema(required = true)]
+    pub pause_reason: Option<String>,
     binding: String,
+    /// A file selection for this upload required Private (T3-BE-5). Its attachment is begun as
+    /// Private, which the daemon holds against the workspace's mode as it is when the attachment
+    /// is begun, and it never adds a part to an attachment the workspace does not restrict. Once
+    /// set, a later selection never clears it. Always `false` for a download.
+    #[serde(default)]
+    requires_private: bool,
     #[serde(default)]
     intent: String,
     #[serde(default)]
@@ -83,10 +110,13 @@ pub struct Receipt {
     #[serde(default)]
     destination_selection: Option<String>,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     initial_target: Option<local_files::TargetApproval>,
 }
 struct Capability {
     approval_pending: bool,
+    /// The selection is an upload's and required Private ([`Receipt::requires_private`]).
+    requires_private: bool,
     purpose: FilePurpose,
     selection: Selection,
     connection_id: String,
@@ -98,7 +128,29 @@ struct Capability {
     request_id: Option<String>,
     replay_receipt_id: Option<String>,
 }
-fn capability_result(id: &str, cap: &Capability) -> Value {
+/// A file selection the person made, as `POST /crew/files` and its confirm route answer it:
+/// the capability a transfer is started with, and what was chosen.
+#[derive(Clone, Debug, Serialize, utoipa::ToSchema)]
+pub struct FileCapability {
+    /// Pass it as `file_capability`. It expires five minutes after the selection.
+    pub capability_id: String,
+    /// The file's name.
+    pub name: String,
+    /// The source's size in bytes; `null` for a download's destination.
+    pub size: Option<u64>,
+    /// A download's destination already exists and will be replaced.
+    pub target_exists: bool,
+    /// A download's destination still waits for the person's confirmation.
+    pub approval_pending: bool,
+}
+/// Whether `request` is an upload's selection that required Private, which its transfer then
+/// holds ([`Receipt::requires_private`], T3-BE-5).
+fn selection_requires_private(request: &FileRequest) -> bool {
+    request.purpose == FilePurpose::Transfer
+        && request.direction == Direction::Upload
+        && request.expected_mode == Some(biorouter::crew::ClusterMode::Private)
+}
+fn capability_result(id: &str, cap: &Capability) -> FileCapability {
     let exists = matches!(
         &cap.selection,
         Selection::Destination {
@@ -106,8 +158,13 @@ fn capability_result(id: &str, cap: &Capability) -> Value {
             ..
         }
     );
-    json!({"capability_id":id,"name":cap.selection.name(),"size":cap.selection.size(),
-        "target_exists":exists,"approval_pending":cap.approval_pending})
+    FileCapability {
+        capability_id: id.to_owned(),
+        name: cap.selection.name().to_owned(),
+        size: cap.selection.size(),
+        target_exists: exists,
+        approval_pending: cap.approval_pending,
+    }
 }
 #[derive(Default)]
 struct State {
@@ -234,7 +291,7 @@ impl TransferService {
         state.poisoned = false;
         Ok(())
     }
-    pub async fn register(&self, request: FileRequest) -> Result<Value> {
+    pub async fn register(&self, request: FileRequest) -> Result<FileCapability> {
         let _selection = self
             .selection_slots
             .try_acquire()
@@ -289,6 +346,7 @@ impl TransferService {
             capability_id.clone(),
             Capability {
                 approval_pending: request.approval_pending,
+                requires_private: selection_requires_private(&request),
                 purpose: request.purpose,
                 selection,
                 connection_id: request.connection_id,
@@ -331,7 +389,7 @@ impl TransferService {
         }
         Ok(())
     }
-    pub async fn confirm(&self, capability_id: &str) -> Result<Value> {
+    pub async fn confirm(&self, capability_id: &str) -> Result<FileCapability> {
         let connection_id = {
             let state = self.state.lock().await;
             state
@@ -442,7 +500,7 @@ impl TransferService {
         receipt: &Receipt,
         resuming: bool,
         purpose: FilePurpose,
-    ) -> Result<Selection> {
+    ) -> Result<Capability> {
         let cap = state
             .capabilities
             .remove(capability)
@@ -471,7 +529,7 @@ impl TransferService {
                 },
             "Local file approval does not match this transfer"
         );
-        Ok(cap.selection)
+        Ok(cap)
     }
     pub async fn start(self: &Arc<Self>, request: StartRequest) -> Result<Receipt> {
         ensure!(
@@ -480,6 +538,15 @@ impl TransferService {
         );
         let binding = connection_binding(&request.connection_id).await?;
         let mut state = self.state.lock().await;
+        self.start_bound(&mut state, request, binding)
+    }
+    /// [`Self::start`] once the connection's current `binding` is known.
+    fn start_bound(
+        self: &Arc<Self>,
+        state: &mut State,
+        request: StartRequest,
+        binding: String,
+    ) -> Result<Receipt> {
         ensure!(!state.poisoned, "Transfer store needs recovery");
         let previous = state
             .receipts
@@ -502,34 +569,30 @@ impl TransferService {
             blob_id: request.blob_id,
             state: "starting".into(),
             error: None,
+            pause_reason: None,
             binding,
+            requires_private: false,
             intent: String::new(),
             local_selection: String::new(),
             destination_identity: None,
             destination_selection: None,
             initial_target: None,
         };
-        let selection = Self::take_file(
-            &mut state,
+        let capability = Self::take_file(
+            state,
             &request.file_capability,
             &receipt,
             false,
             FilePurpose::Transfer,
         )?;
+        receipt.requires_private = capability.requires_private;
+        let selection = capability.selection;
         receipt.local_selection = local_files::selection_identity(&selection)?;
         receipt.destination_selection = local_files::destination_selection_identity(&selection)?;
         if let Selection::Destination { target, .. } = &selection {
             receipt.initial_target = Some(target.clone());
         }
-        receipt.intent = digest(&serde_json::to_vec(&json!([
-            "crew-transfer-intent-v2",
-            receipt.connection_id,
-            receipt.channel_id,
-            receipt.direction,
-            receipt.blob_id,
-            receipt.binding,
-            receipt.local_selection
-        ]))?);
+        receipt.intent = transfer_intent(&receipt)?;
         if let Some(previous) = previous {
             ensure!(
                 !previous.local_selection.is_empty()
@@ -546,7 +609,7 @@ impl TransferService {
         receipt.name = selection.name().into();
         receipt.size = selection.size().unwrap_or(0);
         state.receipts.insert(receipt.id.clone(), receipt.clone());
-        self.launch(&mut state, receipt, selection)
+        self.launch(state, receipt, selection)
     }
     pub async fn resume(self: &Arc<Self>, id: &str, capability: &str) -> Result<Receipt> {
         let mut state = self.state.lock().await;
@@ -561,14 +624,16 @@ impl TransferService {
             .context("Unknown transfer")?;
         ensure!(!matches!(receipt.state.as_str(), "completed" | "publishing" | "publication_unconfirmed"),
             "Transfer is completed or publication outcome needs inspection; do not replay publication");
-        let selection = Self::take_file(
+        let mut receipt = receipt;
+        let capability = Self::take_file(
             &mut state,
             capability,
             &receipt,
             true,
             FilePurpose::Transfer,
         )?;
-        self.launch(&mut state, receipt, selection)
+        receipt.requires_private |= capability.requires_private;
+        self.launch(&mut state, receipt, capability.selection)
     }
     pub async fn pause(&self, id: &str) -> Result<Receipt> {
         let mut state = self.state.lock().await;
@@ -604,6 +669,7 @@ impl TransferService {
             let Selection::Destination {
                 directory, name, ..
             } = Self::take_file(&mut state, capability, &receipt, true, FilePurpose::Cleanup)?
+                .selection
             else {
                 anyhow::bail!("A matching destination selection is required");
             };
@@ -674,6 +740,7 @@ impl TransferService {
         let cancel = CancellationToken::new();
         receipt.state = "starting".into();
         receipt.error = None;
+        receipt.pause_reason = None;
         state.active.insert(receipt.id.clone(), cancel.clone());
         state.receipts.insert(receipt.id.clone(), receipt.clone());
         if let Err(error) = self.persist(state) {
@@ -693,6 +760,7 @@ impl TransferService {
                 let (stopped, message) = stopped_transfer(&receipt, &error);
                 receipt.state = stopped.into();
                 receipt.error = Some(message);
+                receipt.pause_reason = pause_reason(stopped, &error).map(str::to_owned);
                 state.receipts.insert(receipt.id.clone(), receipt);
                 let _ = service.persist(&mut state);
             }
@@ -705,12 +773,35 @@ impl TransferService {
 #[path = "transfers_tests.rs"]
 mod transfers_tests;
 
+/// [`Receipt::pause_reason`] for a server that could not save a transfer.
+const SERVER_STORAGE: &str = "server_storage";
+
+/// Whether the workspace refused `error`'s request because its server could not save it: its
+/// disk or quota is full (`storage_full`), or its storage failed (`storage_failed`).
+fn server_storage_refused(error: &anyhow::Error) -> bool {
+    matches!(
+        biorouter::crew::workspace_refusal_code(error).as_deref(),
+        Some("storage_full" | "storage_failed")
+    )
+}
+
+/// [`Receipt::pause_reason`] for a transfer that stopped `stopped` with `error`.
+fn pause_reason(stopped: &str, error: &anyhow::Error) -> Option<&'static str> {
+    (stopped == "needs_file_selection" && server_storage_refused(error)).then_some(SERVER_STORAGE)
+}
+
 /// How a transfer that stopped with `error` ends, and what it says. A download stopped while
-/// publishing is `publication_unconfirmed`. One the workspace itself refused (the person was
-/// removed from the channel, say) is `failed`, with the workspace's reason as a sentence
-/// (F-1): reselecting the file cannot fix that, so it is never offered as the way on. Anything
-/// else (a pause, a dropped connection, a locked vault) is `needs_file_selection`, which a
-/// reselection resumes.
+/// publishing is `publication_unconfirmed`. One the workspace's server could not save
+/// (`storage_full`, `storage_failed`) is `needs_file_selection`, paused with the workspace's
+/// sentence and [`pause_reason`] `server_storage`: once the host frees space it resumes from its
+/// offset, so it is not a failure (T3-BE-14). Any other the workspace itself refused (the
+/// person was removed from the channel, say) is `failed`, with the workspace's reason as a
+/// sentence (F-1): reselecting the file cannot fix that, so it is never offered as the way on.
+/// So is one this device refused because it required Private and the workspace's attachment
+/// would not be (`crew_mode_mismatch`, T3-BE-5), with that refusal's sentence: the requirement
+/// stays with the transfer, so a reselection would meet the same refusal. Anything else (a
+/// pause, a dropped connection, a locked vault) is `needs_file_selection`, which a reselection
+/// resumes.
 fn stopped_transfer(receipt: &Receipt, error: &anyhow::Error) -> (&'static str, String) {
     if receipt.direction == Direction::Download
         && matches!(receipt.state.as_str(), "publishing" | "completed")
@@ -721,7 +812,15 @@ fn stopped_transfer(receipt: &Receipt, error: &anyhow::Error) -> (&'static str, 
         );
     }
     if let Some(sentence) = biorouter::crew::refusal_sentence(error) {
+        if server_storage_refused(error) {
+            return ("needs_file_selection", sentence);
+        }
         return ("failed", sentence);
+    }
+    if let Some(refusal) = biorouter::crew::CrewRefusal::find(error)
+        .filter(|refusal| refusal.code() == biorouter::crew::refusal::MODE_MISMATCH)
+    {
+        return ("failed", refusal.message().to_owned());
     }
     (
         "needs_file_selection",
@@ -738,7 +837,7 @@ fn transfer_recovery_message(error: &anyhow::Error, publication_unconfirmed: boo
             "Crew credential vault is locked; explicitly unlock it for this daemon session" => {
                 return "Unlock the Crew credential vault for this daemon session, then reselect the original local file or destination and resume.";
             }
-            "Crew connection is disconnected; authenticate and connect in Crew" => {
+            biorouter::crew::refusal::NOT_CONNECTED_TEXT => {
                 return "Authenticate and reconnect the saved connection in Crew, then reselect the original local file or destination and resume.";
             }
             "Connection identity or privacy policy changed; create a new approved transfer"
@@ -764,12 +863,63 @@ async fn connection_binding_with_expected(
     id: &str,
     expected_mode: Option<biorouter::crew::ClusterMode>,
 ) -> Result<String> {
-    let connection = biorouter::crew::manager()?.connection(id).await?;
-    ensure!(
-        expected_mode.is_none_or(|mode| mode == connection.mode),
-        "Crew connection privacy changed; refresh the verified workspace before selecting a file"
-    );
-    binding_for_connection(&connection)
+    let manager = biorouter::crew::manager()?;
+    let connection = manager.connection(id).await?;
+    judged_binding(
+        &connection,
+        manager.signed_workspace_mode(id),
+        expected_mode,
+    )
+}
+/// The binding of a file selection on `connection` that required `expected`, once that holds
+/// by the rule every other door judges by ([`biorouter::crew::require_expected_mode`]), against
+/// the workspace's mode as its last signed `hello` said (`workspace`). A selection that required
+/// Private on a personal Public connection in a workspace that is Private for everyone is
+/// Private in force, so it goes ahead (T3-BE-5); it used to be refused by comparing with the
+/// connection's own mode alone, while status and privacy show said Private. The desktop's
+/// verified mode and a terminal's `--expected-mode` both reach here, so a refusal names both
+/// modes and carries `crew_mode_mismatch` (W2-DMN-9).
+fn judged_binding(
+    connection: &biorouter::crew::Connection,
+    workspace: Option<biorouter::crew::ClusterMode>,
+    expected: Option<biorouter::crew::ClusterMode>,
+) -> Result<String> {
+    biorouter::crew::require_expected_mode(expected, connection.mode, workspace)?;
+    binding_for_connection(connection)
+}
+/// What a start request asks for, so a replay of its `request_id` is the same transfer: the
+/// scope, the connection's binding, the local selection and whether it required Private. A
+/// receipt that did not require Private keeps the digest it always had.
+fn transfer_intent(receipt: &Receipt) -> Result<String> {
+    let mut intent = vec![
+        json!("crew-transfer-intent-v2"),
+        json!(receipt.connection_id),
+        json!(receipt.channel_id),
+        json!(receipt.direction),
+        json!(receipt.blob_id),
+        json!(receipt.binding),
+        json!(receipt.local_selection),
+    ];
+    if receipt.requires_private {
+        intent.push(json!("requires-private"));
+    }
+    Ok(digest(&serde_json::to_vec(&intent)?))
+}
+/// The privacy `blob.begin` asks for: Private when a selection for the transfer required it
+/// (T3-BE-5), else the connection's own mode. The daemon holds a Private it is asked for against
+/// the workspace's mode as its latest `hello` says: an expectation met only because the
+/// workspace was Private for everyone is refused if the workspace has allowed Public since, and
+/// otherwise told to the workspace as Private, so the attachment is restricted even if that
+/// `hello` has gone stale.
+fn begin_mode(
+    receipt: &Receipt,
+    connection: &biorouter::crew::Connection,
+) -> biorouter::crew::ClusterMode {
+    if receipt.requires_private {
+        biorouter::crew::ClusterMode::Private
+    } else {
+        connection.mode
+    }
 }
 fn binding_for_connection(connection: &biorouter::crew::Connection) -> Result<String> {
     Ok(digest(&serde_json::to_vec(&json!([
@@ -781,7 +931,21 @@ fn binding_for_connection(connection: &biorouter::crew::Connection) -> Result<St
         connection.owner_uid,
     ]))?))
 }
-async fn remote(receipt: &Receipt, method: &str, mut params: Value) -> Result<Value> {
+/// `params` for `method` on `receipt`'s transfer over `connection`: `blob.begin` carries the
+/// privacy it asks for ([`begin_mode`]), and nothing else is changed.
+fn transfer_params(
+    receipt: &Receipt,
+    connection: &biorouter::crew::Connection,
+    method: &str,
+    mut params: Value,
+) -> Result<Value> {
+    if method == "blob.begin" {
+        ensure!(params.is_object(), "Blob parameters must be an object");
+        params["personal_mode"] = json!(begin_mode(receipt, connection));
+    }
+    Ok(params)
+}
+async fn remote(receipt: &Receipt, method: &str, params: Value) -> Result<Value> {
     let connection = biorouter::crew::manager()?
         .connection(&receipt.connection_id)
         .await?;
@@ -789,10 +953,7 @@ async fn remote(receipt: &Receipt, method: &str, mut params: Value) -> Result<Va
         binding_for_connection(&connection)? == receipt.binding,
         "Connection identity or privacy policy changed; create a new approved transfer"
     );
-    if method == "blob.begin" {
-        ensure!(params.is_object(), "Blob parameters must be an object");
-        params["personal_mode"] = json!(connection.mode);
-    }
+    let params = transfer_params(receipt, &connection, method, params)?;
     let result = biorouter::crew::manager()?
         .human_request(&receipt.connection_id, method, params, None)
         .await?;
@@ -812,6 +973,9 @@ struct Blob {
     complete: bool,
     #[serde(default)]
     media_type: String,
+    /// The workspace restricts the attachment to Private readers. Absent reads as not.
+    #[serde(default)]
+    restricted: bool,
 }
 impl Blob {
     fn validate(&self, receipt: &Receipt) -> Result<()> {
@@ -836,6 +1000,22 @@ impl Blob {
         );
         Ok(())
     }
+}
+
+/// Refuse to add to `blob` an upload whose selection required Private while the workspace does
+/// not restrict the attachment (T3-BE-5). One begun for this transfer is restricted, since it
+/// was begun as Private; one a resume finds, begun earlier under no such requirement while the
+/// workspace allowed Public, is not, and adding the rest of the file to it would share it
+/// unrestricted. Refused before any part is sent.
+fn refuse_unrestricted(receipt: &Receipt, blob: &Blob) -> Result<()> {
+    if receipt.requires_private && !blob.restricted {
+        return Err(biorouter::crew::CrewRefusal::mode_mismatch(
+            biorouter::crew::ClusterMode::Public,
+            biorouter::crew::ClusterMode::Private,
+        )
+        .into());
+    }
+    Ok(())
 }
 
 impl TransferService {
@@ -902,6 +1082,7 @@ impl TransferService {
             .await?
         })?;
         blob.validate(receipt)?;
+        refuse_unrestricted(receipt, &blob)?;
         receipt.blob_id = Some(blob.id.clone());
         receipt.offset = blob.offset;
         self.save(receipt, cancel).await?;
@@ -1133,7 +1314,8 @@ fn validate_cleanup_partial(file: &std::fs::File, size: u64) -> Result<()> {
     Ok(())
 }
 
-#[derive(Deserialize)]
+/// An image attachment to preview (`POST /crew/transfers/preview`).
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewRequest {
     pub connection_id: String,
@@ -1214,6 +1396,8 @@ impl TransferService {
             offset: 0,
             state: "preview".into(),
             error: None,
+            pause_reason: None,
+            requires_private: false,
             intent: String::new(),
             local_selection: String::new(),
             destination_identity: None,

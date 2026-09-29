@@ -17,8 +17,43 @@ use super::base::MessageStream;
 use super::formats::bedrock::{
     bedrock_blocking_inference_config, bedrock_inference_config, bedrock_message_stream,
     classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
-    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_messages, to_bedrock_tool_config,
+    from_bedrock_usage, gateway_message, map_bedrock_stop_reason, to_bedrock_messages,
+    to_bedrock_tool_config,
 };
+
+/// W2-PRV-9 — a key pair the Versa gateway refuses, said as that: whose
+/// refusal it is, the gateway's own reason, and where the pair is replaced.
+///
+/// The gateway answers a bad pair with a code-less 403 (`{"message": "Invalid
+/// Client Id"}`), and a real pair that does not sign with a different sentence,
+/// so the reason is what tells the two apart. It used to read "Bedrock endpoint
+/// returned HTTP 403 (unauthorized) ... no further detail was returned" for
+/// both, and named nowhere to fix it.
+///
+/// T3-SH-8: the place named is where the row really is. "Settings > Models >
+/// Versa API Bedrock" named a page that does not exist; the row is in the
+/// provider catalog, which Settings > Models opens with Configure providers.
+pub(crate) fn versa_rejected_key(error: ProviderError, said: Option<String>) -> ProviderError {
+    match error {
+        ProviderError::Authentication(_) => ProviderError::Authentication(format!(
+            "Versa rejected this key pair ({}). Replace it in Settings > Models > Configure \
+             providers > Institutional > Versa API Bedrock.",
+            said.unwrap_or_else(|| "no reason was given".to_string())
+        )),
+        other => other,
+    }
+}
+
+/// T3-SH-3 — the model id [`VersaBedrockProvider::check_credentials`] asks for:
+/// one that no gateway serves, so the probe can never run a model.
+///
+/// The UCSF gateway checks the key pair before it looks at the model. Measured
+/// on 2026-09-28 with a made-up pair: `Invalid Client Id` (403) for this id, for
+/// Haiku 4.5 and for Opus 4.8 alike, each in about a second. A pair it accepts
+/// is forwarded, and AWS refuses the id as invalid without running anything,
+/// so the check costs nothing and does not depend on which models the pair may
+/// use.
+pub(crate) const CREDENTIAL_PROBE_MODEL: &str = "biorouter-credential-check";
 use super::provider_binding::{
     model_without_restore_marker, PersistedRetryConfig, ProviderRestoreBinding, SecretFreeEndpoint,
 };
@@ -355,10 +390,10 @@ impl VersaBedrockProvider {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
         }
 
-        let response = request
-            .send()
-            .await
-            .map_err(classify_bedrock_converse_error)?;
+        let response = request.send().await.map_err(|err| {
+            let said = gateway_message(&err);
+            versa_rejected_key(classify_bedrock_converse_error(err), said)
+        })?;
 
         let finish_reason = map_bedrock_stop_reason(&response.stop_reason);
         match response.output {
@@ -396,10 +431,10 @@ impl VersaBedrockProvider {
             request = request.tool_config(to_bedrock_tool_config(tools)?);
         }
 
-        request
-            .send()
-            .await
-            .map_err(classify_bedrock_converse_stream_error)
+        request.send().await.map_err(|err| {
+            let said = gateway_message(&err);
+            versa_rejected_key(classify_bedrock_converse_stream_error(err), said)
+        })
     }
 }
 
@@ -583,12 +618,107 @@ impl Provider for VersaBedrockProvider {
     fn supports_restart_steering(&self) -> bool {
         true
     }
+
+    /// T3-SH-3. Bedrock's runtime has no model listing, so the default check
+    /// sent nothing and a made-up key pair was saved as Configured.
+    ///
+    /// One `Converse` call for [`CREDENTIAL_PROBE_MODEL`], which the gateway
+    /// authenticates before anything else. Only a refusal that names the
+    /// credential counts ([`super::names_a_rejected_credential`]): an
+    /// `AccessDenied` for a model the pair may not use is a 403 too, and a check
+    /// that refused it would roll a working pair back. A timeout, a network
+    /// failure or a server error says nothing about the pair and is passed on
+    /// as such; any other answer means the gateway let the pair through.
+    async fn check_credentials(&self) -> Result<(), ProviderError> {
+        let probe = bedrock::Message::builder()
+            .role(bedrock::ConversationRole::User)
+            .content(bedrock::ContentBlock::Text("ping".to_string()))
+            .build()
+            .map_err(|error| ProviderError::ExecutionError(error.to_string()))?;
+        let answer = self
+            .client
+            .converse()
+            .model_id(CREDENTIAL_PROBE_MODEL)
+            .messages(probe)
+            .inference_config(
+                bedrock::InferenceConfiguration::builder()
+                    .max_tokens(1)
+                    .build(),
+            )
+            .send()
+            .await;
+        let error = match answer {
+            Ok(_) => return Ok(()),
+            Err(error) => error,
+        };
+        let status = error
+            .raw_response()
+            .map(|response| response.status().as_u16());
+        let said = gateway_message(&error);
+        credential_probe_outcome(status, said, classify_bedrock_converse_error(error))
+    }
+}
+
+/// What [`VersaBedrockProvider::check_credentials`] makes of the gateway's
+/// answer: its HTTP status (`None` when nothing came back), its own sentence,
+/// and the error as the chat path classifies it.
+///
+/// A 401 is the pair. A 403 is the pair only in the words of a credential
+/// refusal. Any other answer below 500 means the gateway let the pair through
+/// and said something about the request (for the probe's model id, AWS's
+/// `ValidationException`, which the proxy may pass on untyped). A server error
+/// or no answer at all says nothing, and is handed back as it was classified.
+fn credential_probe_outcome(
+    status: Option<u16>,
+    said: Option<String>,
+    classified: ProviderError,
+) -> Result<(), ProviderError> {
+    match (status, classified) {
+        (Some(401), _) => {
+            Err(ProviderError::Authentication(said.unwrap_or_else(|| {
+                "the gateway answered 401 Unauthorized".to_string()
+            })))
+        }
+        (_, ProviderError::Authentication(_))
+            if said
+                .as_deref()
+                .is_some_and(super::names_a_rejected_credential) =>
+        {
+            Err(ProviderError::Authentication(said.unwrap_or_default()))
+        }
+        (Some(status), _) if status < 500 => Ok(()),
+        (_, unanswered) => Err(unanswered),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use aws_smithy_http_client::test_util::capture_request;
+
+    /// W2-PRV-9: a refused pair names Versa, the gateway's reason and where to
+    /// replace the pair; every other failure is left as it was classified.
+    #[test]
+    fn a_refused_key_pair_says_whose_refusal_and_where_to_fix_it() {
+        let refused = versa_rejected_key(
+            ProviderError::Authentication("Bedrock endpoint returned HTTP 403".to_string()),
+            Some("Invalid Client Id".to_string()),
+        );
+        assert_eq!(
+            refused.to_string(),
+            ProviderError::Authentication(
+                "Versa rejected this key pair (Invalid Client Id). Replace it in Settings > \
+                 Models > Configure providers > Institutional > Versa API Bedrock."
+                    .to_string()
+            )
+            .to_string()
+        );
+        let throttled = versa_rejected_key(
+            ProviderError::ServerError("HTTP 503".to_string()),
+            Some("busy".to_string()),
+        );
+        assert!(matches!(throttled, ProviderError::ServerError(_)));
+    }
 
     /// A provider wired the way `from_env` builds one, minus the credential and
     /// global-config lookups — `from_env` needs UCSF-issued secrets, so it
@@ -937,5 +1067,101 @@ mod tests {
         assert_eq!(institutions.len(), 1);
         assert_eq!(institutions[0].id, "ucsf");
         assert_eq!(institutions[0].display_name.as_deref(), Some("UCSF"));
+    }
+
+    /// T3-SH-3: the credential probe, answered the way the UCSF gateway was
+    /// measured to answer (2026-09-28), and the request it made.
+    async fn probed(status: u16, body: &str) -> (Result<(), ProviderError>, String) {
+        let response = axum::http::Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .body(aws_smithy_types::body::SdkBody::from(body.to_string()))
+            .unwrap();
+        let (http, captured) = capture_request(Some(response));
+        let provider = provider_at("https://versa-bedrock.invalid")
+            .await
+            .with_http_client(http);
+        let outcome = provider.check_credentials().await;
+        let path = captured.expect_request().uri().to_string();
+        (outcome, path)
+    }
+
+    #[tokio::test]
+    async fn a_pair_the_gateway_does_not_know_is_refused_in_its_words() {
+        let (outcome, path) = probed(403, r#"{"message": "Invalid Client Id"}"#).await;
+        match outcome {
+            Err(ProviderError::Authentication(reason)) => assert_eq!(reason, "Invalid Client Id"),
+            other => panic!("the gateway refused the pair, got {other:?}"),
+        }
+        // The probe asks for a model nothing serves, so it can never run one.
+        assert!(
+            path.contains(&format!("/model/{CREDENTIAL_PROBE_MODEL}/converse")),
+            "{path}"
+        );
+        let (outcome, _) = probed(
+            403,
+            r#"{"message": "The request signature we calculated does not match the signature you provided. Check your Mule client id and signing method."}"#,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Authentication(_))),
+            "{outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pair_the_gateway_lets_through_is_accepted() {
+        // What AWS says about a model id it does not know, once the gateway has
+        // accepted the pair.
+        let (outcome, _) = probed(
+            400,
+            r#"{"message": "The provided model identifier is invalid."}"#,
+        )
+        .await;
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    #[tokio::test]
+    async fn a_403_that_is_not_about_the_pair_never_rolls_it_back() {
+        // A valid pair not entitled to a model gets a 403 as well.
+        let (outcome, _) = probed(
+            403,
+            r#"{"message": "You don't have access to the model with the specified model ID."}"#,
+        )
+        .await;
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let (outcome, _) = probed(403, "").await;
+        assert!(
+            outcome.is_ok(),
+            "an unexplained 403 is not proof: {outcome:?}"
+        );
+    }
+
+    /// A 5xx is retried by the SDK, which a one-shot capture cannot answer, so
+    /// the rule is asserted where it is decided.
+    #[test]
+    fn a_gateway_that_does_not_answer_says_nothing_about_the_pair() {
+        for (status, classified) in [
+            (Some(503), ProviderError::ServerError("busy".to_string())),
+            (None, ProviderError::ServerError("timed out".to_string())),
+            (
+                None,
+                ProviderError::RequestFailed("connection refused".to_string()),
+            ),
+        ] {
+            let outcome = credential_probe_outcome(status, None, classified);
+            assert!(
+                matches!(
+                    outcome,
+                    Err(ProviderError::ServerError(_) | ProviderError::RequestFailed(_))
+                ),
+                "{status:?}: {outcome:?}"
+            );
+        }
+        // A 401 is the pair whatever else was said.
+        assert!(matches!(
+            credential_probe_outcome(Some(401), None, ProviderError::ServerError(String::new())),
+            Err(ProviderError::Authentication(_))
+        ));
     }
 }

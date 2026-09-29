@@ -17,6 +17,8 @@ import {
   stateFrame,
   type FixtureSnapshot,
 } from '../channel/crewTestHarness';
+import { CrewHttpError } from '../crewApi';
+import { crewActionCopy } from '../state/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
@@ -289,6 +291,46 @@ describe('AgentTaskPane', () => {
     expect(requestIds[1]).toBe(requestIds[0]);
   });
 
+  /**
+   * MSG2-N10: a start that failed on a dropped connection after the person had moved on stayed as a
+   * red bar under Connected, naming neither the task nor its channel, and the task was gone.
+   */
+  it('names the channel of a start that failed after the person moved on, and offers the task there again (MSG2-N10)', async () => {
+    const user = userEvent.setup();
+    let fail: (failure: unknown) => void = () => undefined;
+    mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+      if (path === '/connections') return { connections: [connection] };
+      if (path === `/connections/${connection.id}/runs` && method === 'POST')
+        return new Promise((_resolve, reject) => {
+          fail = reject;
+        });
+      return {};
+    });
+    renderCrew(Layout);
+    const task = await openAgent(user);
+    fireEvent.change(task, { target: { value: 'Plot the counts' } });
+    await chooseModel(user, 'fixture-model');
+    await user.click(startButton());
+    await waitFor(() => expect(runPosts()).toHaveLength(1));
+
+    // The person moves on while the start is out, and the connection drops under it.
+    act(() => currentCrew().selectChannel(methods.id));
+    await waitFor(() => expect(currentCrew().channel?.id).toBe(methods.id));
+    const reason = 'Biorouter couldn’t reach lab, so nothing was sent.';
+    await act(async () => {
+      fail(new CrewHttpError(reason, 503, 'crew_unavailable'));
+    });
+    await waitFor(() =>
+      expect(currentCrew().error?.message).toBe(crewActionCopy.startFailedIn('#general', reason))
+    );
+    // The link's failure: the connection verifying again takes it away.
+    expect(currentCrew().error).toMatchObject({ source: 'global', transport: true });
+
+    // Back in #general, Ask my agent has the task again.
+    act(() => currentCrew().selectChannel(general.id));
+    expect(await openAgent(user)).toHaveValue('Plot the counts');
+  });
+
   it('refuses to start without a model, on the field', async () => {
     const user = userEvent.setup();
     renderCrew(Layout);
@@ -501,16 +543,114 @@ describe('AgentTaskPane', () => {
       expect(screen.queryByText(/gpt-5\.5-2026-04-24/)).toBeNull();
     });
 
-    it('warns when a Public model is chosen for a Restricted channel', async () => {
+    // AG-F4: the amber hint left Start enabled, and then the daemon refused in its own words.
+    it('says before Start that a Private workspace refuses a Public model, and disables Start', async () => {
       const user = userEvent.setup();
       mocks.getProviders.mockResolvedValue([versa, openRouter]);
       renderCrew(Layout);
       await openAgent(user);
-      expect(screen.queryByText(agentCopy.publicHint)).toBeNull();
+      const refusal = agentCopy.publicWorkspace('lab');
+      expect(refusal).toBe(
+        'lab is Private, so a public model can’t read it. Choose a private model.'
+      );
+      expect(screen.queryByText(refusal)).toBeNull();
       await chooseModel(user, 'free-model');
-      expect(screen.getByText(agentCopy.publicHint)).toBeInTheDocument();
+      expect(screen.getByText(refusal)).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+      expect(startButton()).toHaveAccessibleDescription(refusal);
       await chooseModel(user, 'gpt-5.5');
-      expect(screen.queryByText(agentCopy.publicHint)).toBeNull();
+      expect(screen.queryByText(refusal)).toBeNull();
+      expect(startButton()).toBeEnabled();
+    });
+
+    it('says it for a Public-safe channel too when the workspace is Private', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      installObserver({
+        snapshot: makeSnapshot({
+          channels: base.channels.map((item) =>
+            item.id === general.id ? { ...item, classification: 'public_safe' as const } : item
+          ),
+        }),
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      await openAgent(user);
+      await chooseModel(user, 'free-model');
+      expect(screen.getByText(agentCopy.publicWorkspace('lab'))).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+    });
+
+    it('says a Restricted channel refuses a Public model in a Public workspace', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      installDaemon([{ ...connection, mode: 'public' }]);
+      installObserver({
+        snapshot: makeSnapshot({ workspace: { ...base.workspace, mode: 'public' } }),
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      await openAgent(user);
+      await chooseModel(user, 'free-model');
+      expect(screen.getByText(agentCopy.publicRestricted('#general'))).toBeInTheDocument();
+      expect(startButton()).toBeDisabled();
+    });
+
+    it('leaves Start alone for a Public model where nothing it reads is protected', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      installDaemon([{ ...connection, mode: 'public' }]);
+      installObserver({
+        snapshot: makeSnapshot({
+          workspace: { ...base.workspace, mode: 'public' },
+          channels: base.channels.map((item) => ({
+            ...item,
+            classification: 'public_safe' as const,
+          })),
+        }),
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await chooseModel(user, 'free-model');
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      expect(screen.queryByText(/public model can’t read/)).toBeNull();
+      expect(startButton()).toBeEnabled();
+    });
+
+    it('words an older daemon’s public-model refusal as the pane does', async () => {
+      const user = userEvent.setup();
+      const base = makeSnapshot();
+      // The pane cannot see why: nothing it reads is protected as far as it knows.
+      installDaemon([{ ...connection, mode: 'public' }]);
+      installObserver({
+        snapshot: makeSnapshot({
+          workspace: { ...base.workspace, mode: 'public' },
+          channels: base.channels.map((item) => ({
+            ...item,
+            classification: 'public_safe' as const,
+          })),
+        }),
+      });
+      mocks.crewHttp.mockImplementation(async (path: string, method = 'GET') => {
+        if (path === '/connections') return { connections: [{ ...connection, mode: 'public' }] };
+        if (path === `/connections/${connection.id}/runs` && method === 'POST')
+          throw new CrewHttpError(
+            'Daemon returned 400: Private cluster blocks public models',
+            400,
+            'crew_request_refused'
+          );
+        if (path.startsWith('/transfers?')) return { transfers: [] };
+        return method === 'GET' && path.endsWith('/runs') ? { runs: [] } : {};
+      });
+      mocks.getProviders.mockResolvedValue([versa, openRouter]);
+      renderCrew(Layout);
+      const task = await openAgent(user);
+      await chooseModel(user, 'free-model');
+      fireEvent.change(task, { target: { value: 'sum the columns' } });
+      fireEvent.click(startButton());
+      expect(await screen.findByText(agentCopy.publicRefused)).toBeInTheDocument();
+      expect(screen.queryByText(/cluster/i)).toBeNull();
     });
   });
 
@@ -967,22 +1107,36 @@ describe('AgentTaskPane', () => {
       );
     });
 
-    it('stays quiet on an older page, whose later messages are not loaded', async () => {
+    it('stays quiet on an older window, whose later messages are not loaded', async () => {
       const user = userEvent.setup();
-      // The live tail shares counts.csv; the page before it (answered by `messages.history`) is
-      // empty, and short of a full page, so it reads as the channel's start.
+      // The live tail shares counts.csv. Older pages are added above it (QA M6) until the window
+      // is full and its newest end, the message sharing counts.csv, gives way.
       installFiles({ 'blob-1': 'counts.csv' });
+      const history = mocks.crewRequest.getMockImplementation();
+      let pages = 0;
+      mocks.crewRequest.mockImplementation(
+        async (id: string, method: string, params?: Record<string, unknown>) => {
+          if (method !== 'messages.history') return history?.(id, method, params);
+          pages += 1;
+          return {
+            messages: Array.from({ length: 200 }, (_, index) => message(`old-${pages}-${index}`)),
+            cursor: null,
+          };
+        }
+      );
       installObserver({ messages: [{ ...message('5'), attachments: ['blob-1'] }] });
       renderCrew(Layout);
       await waitFor(() => expect(currentCrew().messages).toHaveLength(1));
       const task = await openAgent(user);
-      act(() => currentCrew().loadOlder());
-      await waitFor(() => expect(currentCrew().historyBefore).not.toBeNull());
-      await waitFor(() => expect(currentCrew().messagesLoaded).toBe(true));
-      expect(currentCrew().messages).toHaveLength(0);
+      for (const size of [201, 401, 600]) {
+        act(() => currentCrew().loadOlder());
+        await waitFor(() => expect(currentCrew().messages).toHaveLength(size));
+      }
+      expect(currentCrew().historyBefore).not.toBeNull();
+      expect(currentCrew().messages.some((item) => item.id === message('5').id)).toBe(false);
       fireEvent.change(task, { target: { value: 'Average counts.csv' } });
       await act(async () => undefined);
-      // counts.csv is shared, in a message this page does not hold.
+      // counts.csv is shared, in a message this window does not hold.
       expect(fileWarning()).toBeNull();
     });
 

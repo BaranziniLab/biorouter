@@ -1784,11 +1784,14 @@ impl Provider for ClaudeCodeProvider {
     ///    detached `claude` would keep burning the user's own subscription quota
     ///    on an answer nobody will read. `AbortOnDrop` aborts the reader, which
     ///    drops the child, which `kill_on_drop(true)` then reaps.
-    /// 3. **The turn ceiling lives inside the stream.** The blocking path's
-    ///    ceiling wraps `child.wait()` in `run`, which this path never calls, and
-    ///    the agent loop's cancellation check only fires *between* stream items —
-    ///    so without a deadline here a wedged child would hang the session
-    ///    forever with user cancel as the only escape.
+    /// 3. **The optional turn ceiling lives inside the stream.** A turn has no
+    ///    wall clock by default: it ends when the child finishes or the user
+    ///    cancels. When an operator sets `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS`
+    ///    (`coding_agent::turn_timeout`), the pump races that deadline itself,
+    ///    because the blocking path's ceiling wraps `child.wait()` in `run`,
+    ///    which this path never calls, and the agent loop's cancellation check
+    ///    only fires *between* stream items. Without it here the setting would
+    ///    silently not apply to a streamed turn.
     ///
     /// Text and thinking are decoded by the Anthropic decoder the API provider
     /// already uses; `claude_stream` diverts every `tool_use` event away from it
@@ -2855,8 +2858,9 @@ mod streaming_tests {
     /// and Linux refuses to `exec` a file that any process has open for
     /// writing — `ETXTBSY`, surfaced as `Text file busy (os error 26)`. macOS
     /// permits it, so the bug is invisible locally and fails the whole Linux
-    /// test job. `fs::write` closes the handle before it returns; the `TempDir`
-    /// is kept only so the directory outlives the child.
+    /// test job. A short-lived write handle is not safe either, so the file is
+    /// written by a child process (see `new`); the `TempDir` is kept only so the
+    /// directory outlives the child.
     struct FakeCli {
         _dir: tempfile::TempDir,
         path: std::path::PathBuf,
@@ -2864,12 +2868,33 @@ mod streaming_tests {
 
     impl FakeCli {
         fn new(body: &str) -> Self {
+            use std::io::Write;
             let dir = tempfile::tempdir().expect("temp dir");
             let path = dir.path().join("fake-cli");
-            std::fs::write(&path, body).expect("write the fake CLI");
-            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).expect("chmod");
+            // ⚠ Written by a child `sh`, not by this process. Even `fs::write` holds the
+            // file open for writing for a moment, and a test on another thread that forks
+            // in that moment gives its child a copy of the descriptor, which lives until
+            // that child execs. An `exec` of this file meanwhile fails with `ETXTBSY`
+            // (measured on the Linux CI runner, PR #377). A descriptor that only ever
+            // existed in another process cannot be inherited here.
+            let mut writer = std::process::Command::new("/bin/sh")
+                .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+                .arg(&path)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn sh to write the fake CLI");
+            writer
+                .stdin
+                .take()
+                .expect("sh's stdin")
+                .write_all(body.as_bytes())
+                .expect("write the fake CLI");
+            assert!(
+                writer.wait().expect("wait for sh").success(),
+                "sh could not write the fake CLI"
+            );
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "the fake CLI is executable");
             Self { _dir: dir, path }
         }
 
@@ -3320,8 +3345,9 @@ mod cancellation_tests {
     /// and Linux refuses to `exec` a file that any process has open for
     /// writing — `ETXTBSY`, surfaced as `Text file busy (os error 26)`. macOS
     /// permits it, so the bug is invisible locally and fails the whole Linux
-    /// test job. `fs::write` closes the handle before it returns; the `TempDir`
-    /// is kept only so the directory outlives the child.
+    /// test job. A short-lived write handle is not safe either, so the file is
+    /// written by a child process (see `new`); the `TempDir` is kept only so the
+    /// directory outlives the child.
     struct FakeCli {
         _dir: tempfile::TempDir,
         path: std::path::PathBuf,
@@ -3329,12 +3355,33 @@ mod cancellation_tests {
 
     impl FakeCli {
         fn new(body: &str) -> Self {
+            use std::io::Write;
             let dir = tempfile::tempdir().expect("temp dir");
             let path = dir.path().join("fake-cli");
-            std::fs::write(&path, body).expect("write the fake CLI");
-            let mut perms = std::fs::metadata(&path).expect("stat").permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&path, perms).expect("chmod");
+            // ⚠ Written by a child `sh`, not by this process. Even `fs::write` holds the
+            // file open for writing for a moment, and a test on another thread that forks
+            // in that moment gives its child a copy of the descriptor, which lives until
+            // that child execs. An `exec` of this file meanwhile fails with `ETXTBSY`
+            // (measured on the Linux CI runner, PR #377). A descriptor that only ever
+            // existed in another process cannot be inherited here.
+            let mut writer = std::process::Command::new("/bin/sh")
+                .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+                .arg(&path)
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn sh to write the fake CLI");
+            writer
+                .stdin
+                .take()
+                .expect("sh's stdin")
+                .write_all(body.as_bytes())
+                .expect("write the fake CLI");
+            assert!(
+                writer.wait().expect("wait for sh").success(),
+                "sh could not write the fake CLI"
+            );
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "the fake CLI is executable");
             Self { _dir: dir, path }
         }
 

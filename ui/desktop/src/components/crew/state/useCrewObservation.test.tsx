@@ -14,6 +14,7 @@ import {
   type ScopeFrame,
 } from './observationFailure';
 import {
+  MESSAGE_WINDOW_MAX,
   isLocalHistoryFailure,
   mergePeople,
   REOBSERVE_BACKOFF_MS,
@@ -364,11 +365,12 @@ describe('an older page', () => {
       }
     );
     act(() => crew.loadOlder());
-    await waitFor(() => expect(crew.messagesLoaded).toBe(true));
+    // Added above the messages on screen, which stay (QA M6): the window still reaches the tail.
+    await waitFor(() => expect(crew.messages.map((item) => item.id)).toEqual(['older', 'a']));
     expect(limits).toEqual([100, 50, 25]);
-    expect(crew.historyBefore).toBe('sequence-a');
-    expect(crew.pageSize).toBe(25);
-    expect(crew.messages.map((item) => item.id)).toEqual(['older']);
+    expect(crew.historyBefore).toBeNull();
+    // A page shorter than asked for reaches the channel's start.
+    expect(crew.reachesStart).toBe(true);
     expect(crew.people?.['person-dan']?.display_name).toBe('Dan Wu');
     expect(crew.snapshot).not.toBeNull();
   });
@@ -385,8 +387,296 @@ describe('an older page', () => {
     expect(crew.snapshot).not.toBeNull();
     expect(crew.refreshError).toBeNull();
     expect(crew.historyBefore).toBeNull();
-    // The live tail is observed afresh.
+    // The window is as it was, and still the live tail: nothing had to be observed again.
+    expect(crew.messages.map((item) => item.id)).toEqual(['a']);
+    expect(crew.historyLoading).toBeNull();
+    expect(mocks.observeCrew.mock.calls.length).toBe(observers);
+  });
+
+  /** A page of `count` messages named `label-0` … `label-{count - 1}`, oldest first. */
+  const pageOf = (label: string, count: number) =>
+    Array.from({ length: count }, (_, index) => message(`${label}-${index}`));
+
+  it('keeps older pages above a live tail that goes on arriving (QA M6)', async () => {
+    const session = await openFullTail(200);
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) =>
+      method === 'messages.history' ? { messages: pageOf('old', 200), cursor: null } : {}
+    );
+    act(() => crew.loadOlder());
+    await waitFor(() => expect(crew.messages).toHaveLength(201));
+    expect(crew.messages[0].id).toBe('old-0');
+    // Full: there may be more before it.
+    expect(crew.reachesStart).toBeUndefined();
+    send(session, messagesFrame('b'));
+    expect(crew.messages.map((item) => item.id).slice(-3)).toEqual(['old-199', 'a', 'b']);
+    expect(crew.messages[0].id).toBe('old-0');
+  });
+
+  it('lets the newest end go once the window is full, and follows it with newer pages', async () => {
+    const session = await openFullTail(200);
+    let page = 0;
+    const history: Record<string, unknown>[] = [];
+    mocks.crewRequest.mockImplementation(
+      async (_connection: string, method: string, params: Record<string, unknown>) => {
+        if (method !== 'messages.history') return {};
+        history.push(params);
+        if (params.after) return { messages: pageOf('newer', 200), cursor: null };
+        page += 1;
+        return { messages: pageOf(`older${page}`, 200), cursor: null };
+      }
+    );
+    for (const total of [201, 401, 601]) {
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(crew.messages).toHaveLength(Math.min(total, MESSAGE_WINDOW_MAX)));
+    }
+    // 601 would not fit: the newest end ('a') went, and the window no longer reaches the tail.
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages[0].id).toBe('older3-0');
+    expect(crew.historyBefore).toBe('sequence-a');
+    // Live frames wait while it does not reach the tail.
+    send(session, messagesFrame('c'));
+    expect(crew.messages.some((item) => item.id === 'c')).toBe(false);
+
+    // Newer messages: the page after the window's last, added below, its last message marking
+    // where the next one starts.
+    act(() => crew.loadNewer?.());
+    await waitFor(() => expect(crew.historyBefore).toBe('sequence-newer-199'));
+    expect(history[history.length - 1]).toMatchObject({ after: 'sequence-older1-199' });
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages[crew.messages.length - 1].id).toBe('newer-198');
+  });
+
+  it('goes back to the live tail when a newer page reaches it', async () => {
+    await openFullTail(200);
+    let reachedTail = false;
+    let page = 0;
+    mocks.crewRequest.mockImplementation(
+      async (_connection: string, method: string, params: Record<string, unknown>) => {
+        if (method !== 'messages.history') return {};
+        if (params.after) {
+          reachedTail = true;
+          return { messages: [message('b')], cursor: null };
+        }
+        page += 1;
+        return { messages: pageOf(`old${page}`, 200), cursor: null };
+      }
+    );
+    for (const total of [201, 401, 600]) {
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(crew.messages).toHaveLength(total));
+    }
+    expect(crew.historyBefore).not.toBeNull();
+    const observers = mocks.observeCrew.mock.calls.length;
+    act(() => crew.loadNewer?.());
+    await waitFor(() => expect(reachedTail).toBe(true));
+    await waitFor(() => expect(crew.historyBefore).toBeNull());
+    // The observer brings the live tail back.
     await waitFor(() => expect(mocks.observeCrew.mock.calls.length).toBeGreaterThan(observers));
+  });
+
+  /** A detached window of `MESSAGE_WINDOW_MAX` messages, `old3-0` … `old1-199`, its tail gone. */
+  async function detachedWindow(newer: () => ReturnType<typeof message>[]) {
+    const session = await openFullTail(200);
+    let page = 0;
+    mocks.crewRequest.mockImplementation(
+      async (_connection: string, method: string, params: Record<string, unknown>) => {
+        if (method !== 'messages.history') return {};
+        if (params.after) return { messages: newer(), cursor: null };
+        page += 1;
+        return { messages: pageOf(`old${page}`, 200), cursor: null };
+      }
+    );
+    for (const total of [201, 401, 600]) {
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(crew.messages).toHaveLength(total));
+    }
+    expect(crew.historyBefore).toBe('sequence-a');
+    return session;
+  }
+
+  /**
+   * MSG2-N2: a newer page that reached the live tail put the newest page in place of the window,
+   * so the reader at message 600 landed on 670 and everything between was skipped.
+   */
+  it('adds a short newer page below the window and follows the live tail from there (MSG2-N2)', async () => {
+    const first = await detachedWindow(() => [message('a'), message('b')]);
+    act(() => crew.loadNewer?.());
+    await waitFor(() => expect(crew.historyBefore).toBeNull());
+    // Added below, the window's top giving way only as far as its bound asks.
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages.map((item) => item.id).slice(-3)).toEqual(['old1-199', 'a', 'b']);
+    expect(crew.messages[0].id).toBe('old3-2');
+
+    // The observer starts again, and its opening page joins the window rather than replacing it.
+    const tail = await latestChannelObserver();
+    expect(tail).not.toBe(first);
+    send(tail, messagesFrame('a', { reset: true, remaining: 2, page_size: 200 }));
+    send(tail, messagesFrame('b', { remaining: 1 }));
+    send(tail, messagesFrame('c', { remaining: 0 }));
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages.map((item) => item.id).slice(-4)).toEqual(['old1-199', 'a', 'b', 'c']);
+    expect(crew.messages[0].id).toBe('old3-3');
+    // Live, and still a window with older pages above it.
+    send(tail, messagesFrame('d'));
+    expect(crew.messages.map((item) => item.id).slice(-2)).toEqual(['c', 'd']);
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.historyBefore).toBeNull();
+  });
+
+  it('puts the opening page in place of the window when a gap lies between them', async () => {
+    await detachedWindow(() => [message('a')]);
+    act(() => crew.loadNewer?.());
+    await waitFor(() => expect(crew.historyBefore).toBeNull());
+    const tail = await latestChannelObserver();
+    // More arrived meanwhile than a page holds: its oldest is not in the window.
+    send(tail, messagesFrame('z', { reset: true, remaining: 0, page_size: 200 }));
+    expect(crew.messages.map((item) => item.id)).toEqual(['z']);
+    // Its window is a page again: a live arrival no longer keeps what was above it.
+    expect(crew.reachesStart).toBeUndefined();
+  });
+
+  /**
+   * MSG2-N1: the channel's start was a flag that live arrivals never cleared, so once they had
+   * pushed the first messages out of a full window the intro stood above message 101 and nothing
+   * loaded the hundred before it.
+   */
+  it('reopens older history once live arrivals push the channel’s first message out (MSG2-N1)', async () => {
+    const session = await openFullTail(200);
+    mocks.crewRequest.mockImplementation(async (_connection: string, method: string) =>
+      method === 'messages.history' ? { messages: pageOf('start', 5), cursor: null } : {}
+    );
+    act(() => crew.loadOlder());
+    await waitFor(() => expect(crew.messages).toHaveLength(6));
+    expect(crew.reachesStart).toBe(true);
+
+    // Arrivals the window has room for keep the start.
+    send(session, { ...messagesFrame('x'), messages: pageOf('early', 10) });
+    expect(crew.messages[0].id).toBe('start-0');
+    expect(crew.reachesStart).toBe(true);
+
+    // Enough to fill it: the start gives way, and with it the claim.
+    send(session, { ...messagesFrame('x'), messages: pageOf('live', MESSAGE_WINDOW_MAX) });
+    expect(crew.messages).toHaveLength(MESSAGE_WINDOW_MAX);
+    expect(crew.messages[0].id).toBe('live-0');
+    expect(crew.reachesStart).toBe(false);
+
+    // And Older messages asks for what came before the new first message.
+    const asks: Record<string, unknown>[] = [];
+    mocks.crewRequest.mockImplementation(
+      async (_connection: string, method: string, params: Record<string, unknown>) => {
+        if (method !== 'messages.history') return {};
+        asks.push(params);
+        return { messages: pageOf('early', 10), cursor: null };
+      }
+    );
+    act(() => crew.loadOlder());
+    await waitFor(() => expect(asks).toHaveLength(1));
+    expect(asks[0]).toMatchObject({ before: 'sequence-live-0' });
+  });
+
+  /**
+   * W2-UIC-7: request IDs were counted from the request before, which a window reset clears, while
+   * the ID last answered only grew. So after one older page, the first Load older in another
+   * channel, or back at the live tail, reused an answered ID and was dropped: nothing was fetched
+   * and nothing said so.
+   */
+  describe('after the window was reset', () => {
+    const methods = { ...channel, id: 'channel-2', name: 'methods' };
+    const twoChannels = { ...snapshot, channels: [channel, methods] };
+    const historyAsks = () =>
+      mocks.crewRequest.mock.calls
+        .filter(([, method]) => method === 'messages.history')
+        .map(([, , params]) => params as Record<string, unknown>);
+
+    it('fetches the next older page in the channel it moved to', async () => {
+      mocks.crewRequest.mockImplementation(
+        async (_connection: string, method: string, params: Record<string, unknown>) =>
+          method === 'messages.history'
+            ? {
+                messages: [
+                  {
+                    ...message(`older-${String(params.channel_id)}`),
+                    channel_id: params.channel_id,
+                  },
+                ],
+                cursor: null,
+              }
+            : {}
+      );
+      render(
+        <MemoryRouter initialEntries={['/crew']}>
+          <Harness />
+        </MemoryRouter>
+      );
+      await waitFor(() => expect(sessions.length).toBeGreaterThan(0));
+      act(() => sessions[sessions.length - 1].receive(stateFrame({ snapshot: twoChannels })));
+      await waitFor(() => expect(crew.channelId).toBe(channel.id));
+      const openIn = async (channelId: string, id: string) => {
+        let session: Observation | undefined;
+        await waitFor(() => {
+          const open = sessions.filter(
+            (item) => item.channelId === channelId && !item.signal.aborted
+          );
+          session = open[open.length - 1];
+          expect(session).toBeDefined();
+        });
+        send(session!, stateFrame({ snapshot: twoChannels }));
+        send(session!, {
+          ...messagesFrame(id, { reset: true, remaining: 0, page_size: 200 }),
+          channel_id: channelId,
+          messages: [{ ...message(id), channel_id: channelId }],
+        });
+        await waitFor(() => expect(crew.messages.map((item) => item.id)).toEqual([id]));
+      };
+      await openIn(channel.id, 'a');
+
+      act(() => crew.loadOlder());
+      await waitFor(() =>
+        expect(crew.messages.map((item) => item.id)).toEqual([`older-${channel.id}`, 'a'])
+      );
+
+      act(() => crew.selectChannel(methods.id));
+      await waitFor(() => expect(crew.channelId).toBe(methods.id));
+      await openIn(methods.id, 'm');
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(historyAsks()).toHaveLength(2));
+      expect(historyAsks()[1]).toMatchObject({ channel_id: methods.id, before: 'sequence-m' });
+      await waitFor(() =>
+        expect(crew.messages.map((item) => item.id)).toEqual([`older-${methods.id}`, 'm'])
+      );
+      expect(crew.historyLoading).toBeNull();
+    });
+
+    it('fetches the next older page after a newer page brought the window back to the live tail', async () => {
+      const session = await openFullTail(200);
+      let older = 0;
+      mocks.crewRequest.mockImplementation(
+        async (_connection: string, method: string, params: Record<string, unknown>) => {
+          if (method !== 'messages.history') return {};
+          if (params.after) return { messages: [message('b')], cursor: null };
+          older += 1;
+          return { messages: pageOf(`old${older}`, 200), cursor: null };
+        }
+      );
+      for (const total of [201, 401, 600]) {
+        act(() => crew.loadOlder());
+        await waitFor(() => expect(crew.messages).toHaveLength(total));
+      }
+      act(() => crew.loadNewer?.());
+      await waitFor(() => expect(crew.historyBefore).toBeNull());
+      // The observer brings the live tail back, its opening page joining the window (MSG2-N2);
+      // then an older page is asked for again, before the window's first message.
+      const tail = await latestChannelObserver();
+      send(tail, messagesFrame('b', { reset: true, remaining: 0, page_size: 200 }));
+      await waitFor(() => expect(crew.messages[crew.messages.length - 1].id).toBe('b'));
+      expect(session.signal.aborted).toBe(true);
+      const first = crew.messages[0];
+      const asked = historyAsks().length;
+      act(() => crew.loadOlder());
+      await waitFor(() => expect(historyAsks()).toHaveLength(asked + 1));
+      expect(historyAsks()[asked]).toMatchObject({ before: first.sequence });
+      await waitFor(() => expect(crew.messages[0].id).toBe('old4-0'));
+    });
   });
 
   it.each([
@@ -499,9 +789,11 @@ describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
     send(first, ended('channel_access_changed'));
     expect(crew.channelId).toBe('');
     expect(crew.draft.body).toBe('');
-    expect(crew.error?.message).toBe(
-      `${crewObservationCopy.channelAccessLostNamed('#general')} ${crewObservationCopy.draftDiscarded}`
-    );
+    // The words are the person's: offered once, for copying, and never in any composer (QA M10).
+    expect(crew.error?.message).toBe(crewObservationCopy.channelAccessLostNamed('#general'));
+    expect(crew.lostDrafts).toEqual([
+      expect.objectContaining({ channel: '#general', body: 'for #general' }),
+    ]);
     expect(crew.refreshError).toBeNull();
     // It observes the workspace again rather than the channel it just lost.
     await waitFor(() =>
@@ -509,6 +801,22 @@ describe('a recoverable end of observation (live QA round 1, P0-1)', () => {
         true
       )
     );
+  });
+
+  it('drops a lost channel’s words, unoffered, when access to the workspace changes too', async () => {
+    const first = await observeChannel();
+    act(() => crew.setBody('for #general'));
+    send(first, ended('channel_access_changed'));
+    expect(crew.lostDrafts).toHaveLength(1);
+    // Access or privacy changed: nothing typed under the old one waits to be copied (QA M10).
+    const second = await waitFor(() => {
+      const session = sessions[sessions.length - 1];
+      if (!session || session.signal.aborted) throw new Error('no live observer');
+      return session;
+    });
+    send(second, ended('access_denied'));
+    await waitFor(() => expect(crew.refreshError).not.toBeNull());
+    expect(crew.lostDrafts).toEqual([]);
   });
 
   it('says plainly that updates stopped once three attempts in a minute have failed', async () => {

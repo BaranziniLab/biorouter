@@ -96,6 +96,20 @@ describe('WorkspaceSettingsDialog', () => {
     expect(within(dialog).queryByRole('tab', { name: 'Agent access' })).toBeNull();
   });
 
+  /**
+   * UXN-13: the popover says which models may read the workspace, "Only private and UCSF-approved
+   * models can read chen-lab.", and the Privacy tab, where "Privacy…" leads, did not.
+   */
+  it('says on the Privacy tab which models may read the workspace, as the popover does', async () => {
+    renderSettings({ tab: 'privacy' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const readers = dialog.querySelector('[data-crew-privacy-readers]');
+    expect(readers).not.toBeNull();
+    expect(readers?.textContent).toMatch(
+      /^Only private (and \S+-approved )?models can read lab\.$/
+    );
+  });
+
   it('renders the Agent access slot it is given', async () => {
     renderSettings({ tab: 'agent-access', agentAccess: <p>agent access fixture</p> });
     expect(await screen.findByText('agent access fixture')).toBeInTheDocument();
@@ -276,6 +290,65 @@ describe('WorkspaceSettingsDialog', () => {
     await waitFor(() => expect(dialog).toHaveTextContent('Members'));
     expect(dialog).not.toHaveTextContent('Waiting to join');
     expect(within(dialog).queryByRole('button', { name: copy.invite })).toBeNull();
+    // UXN-5: where the host sees Invite people…, the member is told who invites, by name.
+    expect(
+      within(dialog).getByText('Only the host, Alice Chen (@alice), can invite new people.')
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * SF2-N7: the dialog stays open through the reconnect its own privacy change causes, and that
+   * reconnect's `clear: true` end drops the last verified copy too. Drawn from no snapshot, the
+   * directory names nobody as the host: the host lost the Workspace row and read "Only the host can
+   * change … privacy.", "No one else has joined … yet." and "Only the host can invite new people."
+   */
+  it('says Checking… where the snapshot decides while there is none, in neither side’s words', async () => {
+    renderSettings({ tab: 'privacy' }, { snapshot: null });
+    // Titled by the saved connection's name meanwhile: the S2 name is the snapshot's.
+    const dialog = await screen.findByRole('dialog', { name: 'Fixture settings' });
+    const [general, people, privacy] = Array.from(
+      dialog.querySelectorAll<HTMLElement>('.crew-settings-panel')
+    );
+
+    // Nothing either a host or a member would read, on any tab.
+    for (const words of [
+      /Only the host/,
+      /can invite new people/,
+      /No one else has joined/,
+      /Not set/,
+      /Private for everyone|Allows Public/,
+      /your connection’s only|the workspace’s/,
+    ])
+      expect(dialog.textContent).not.toMatch(words);
+    for (const control of [
+      copy.invite,
+      copy.allowPublic,
+      copy.makePrivateForEveryone,
+      copy.setInstitution('ucsf'),
+      copy.rename,
+    ])
+      expect(within(dialog).queryByRole('button', { name: control, hidden: true })).toBeNull();
+
+    // General: the server is the saved connection's and stays; who hosts is the snapshot's.
+    expect(general).toHaveTextContent(`${copy.hostedBy}${copy.checking}`);
+    expect(general).toHaveTextContent('hpc.example.edu');
+    // People: who is in, who waits and who invites are all the snapshot's.
+    expect(people).toHaveTextContent(copy.checkingPeople('Fixture'));
+    expect(people).not.toHaveTextContent(copy.members);
+    // Privacy: this connection is the saved record, drawn as it is; the workspace's own mode and
+    // institution are the snapshot's.
+    expect(privacy.querySelector('[data-crew-privacy-badge="private"]')).not.toBeNull();
+    expect(privacy).toHaveTextContent(`${copy.workspace}${copy.checking}`);
+    expect(privacy).toHaveTextContent(`${copy.institution}${copy.checking}`);
+    expect(privacy.querySelector('[data-crew-privacy-readers]')).toBeNull();
+    expect(dialog.querySelector('.crew-settings-panels')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('keeps the host’s People tab to Invite people…, with no line saying who may invite', async () => {
+    renderSettings({ tab: 'people' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(within(dialog).getByRole('button', { name: copy.invite })).toBeInTheDocument();
+    expect(within(dialog).queryByText(/can invite new people/)).toBeNull();
   });
 
   it('asks for the workspace name before allowing Public, from the Privacy tab', async () => {
@@ -357,7 +430,13 @@ describe('WorkspaceSettingsDialog', () => {
     snapshot.workspace.institution_id = null;
     const { crew } = renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
-    expect(dialog).toHaveTextContent(copy.notSet);
+    // SF-F10: the institution in force, as the status-row popover names it: the connection's
+    // alone, saying so, never "Not set" here beside the popover's "ucsf".
+    const institutionRow = within(dialog).getByText(copy.institution).parentElement!;
+    expect(institutionRow).toHaveTextContent(
+      `ucsf (${sidebarCopy.privacy.values.institutionFrom.connection})`
+    );
+    expect(institutionRow).not.toHaveTextContent(copy.notSet);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set institution to ucsf…' }));
     const confirm = await screen.findByRole('alertdialog', {
       name: confirmCopy.setInstitution.title('lab', 'ucsf'),
@@ -368,6 +447,71 @@ describe('WorkspaceSettingsDialog', () => {
     await waitFor(() =>
       expect(requestsFor(crew, 'policy.set')).toEqual([{ mode: 'private', institution_id: 'ucsf' }])
     );
+  });
+
+  // M18: People said nothing about who is connected.
+  it('marks who is online in People where the broker says, and no one where it does not', async () => {
+    const view = renderSettings(
+      { tab: 'people' },
+      { snapshot: makeSnapshot({ online_principal_ids: [bob.id] }) }
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const marks = dialog.querySelectorAll('[data-crew-online]');
+    expect(marks).toHaveLength(1);
+    expect(marks[0].closest('li')).toHaveTextContent('Bob Lee');
+    expect(marks[0]).toHaveTextContent('Online');
+    view.unmount();
+
+    renderSettings({ tab: 'people' });
+    const older = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(older.querySelector('[data-crew-online]')).toBeNull();
+  });
+
+  it('tells the host how full the workspace is, and from 80% what happens at the end (W2-UIW-20)', async () => {
+    const MIB = 1024 * 1024;
+    const usage = (state: number) => ({
+      state_bytes: state,
+      state_limit: 16 * MIB,
+      state_admin_headroom: MIB,
+      journal_bytes: 0,
+      journal_limit: 1024 * MIB,
+      journal_admin_headroom: 16 * MIB,
+    });
+    const at = async (state: number, actor: typeof alice | typeof bob = alice) => {
+      const view = renderSettings({}, { snapshot: makeSnapshot({ actor, usage: usage(state) }) });
+      const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+      return { view, dialog };
+    };
+
+    // Below 80%: the number, and no warning.
+    let { view, dialog } = await at(3 * MIB);
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('20% full');
+    expect(dialog.querySelector('[data-crew-settings-storage-note]')).toBeNull();
+    view.unmount();
+
+    ({ view, dialog } = await at(Math.ceil(15 * MIB * 0.82)));
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('82% full');
+    expect(dialog.querySelector('[data-crew-settings-storage-note]')).toHaveTextContent(
+      'lab is 82% full. When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.'
+    );
+    view.unmount();
+
+    ({ view, dialog } = await at(15 * MIB + 1));
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('Full');
+    expect(dialog.querySelector('[data-crew-settings-storage-note]')).toHaveTextContent(
+      'lab is full. Only removing people and privacy changes work now; start a new workspace to keep posting.'
+    );
+    view.unmount();
+
+    // A member is never told, even were their snapshot to carry usage; nor is anyone on a broker
+    // that sends none.
+    ({ view, dialog } = await at(15 * MIB, bob));
+    expect(dialog.querySelector('[data-crew-settings-storage]')).toBeNull();
+    expect(dialog).not.toHaveTextContent('Storage');
+    view.unmount();
+    renderSettings();
+    const older = await screen.findByRole('dialog', { name: 'lab settings' });
+    expect(older.querySelector('[data-crew-settings-storage]')).toBeNull();
   });
 
   it('names its tab list and lets Shift+Tab leave it instead of looping on the tab', async () => {
@@ -563,9 +707,14 @@ describe('WorkspaceSettingsDialog, one vocabulary (QA Q2-29, Q2-66, Q2-69)', () 
     renderSettings({ tab: 'privacy' }, { snapshot });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
     const button = within(dialog).getByRole('button', { name: 'Make my connection public…' });
-    expect(button).toHaveAccessibleDescription(
-      sidebarCopy.privacy.makePublicEffect('lab', 'public')
-    );
+    const effect = sidebarCopy.privacy.makePublicEffect('lab', 'public');
+    expect(button).toHaveAccessibleDescription(effect);
+    // AG-F17: under the row whose button it describes, not after the list under Institution.
+    const row = button.closest('.crew-settings-row') as HTMLElement;
+    expect(row).toHaveTextContent(copy.yourConnection);
+    expect(within(row).getByText(effect)).toBeInTheDocument();
+    const institutionRow = within(dialog).getByText(copy.institution).closest('.crew-settings-row');
+    expect(institutionRow).not.toHaveTextContent(effect);
   });
 
   it('offers no downgrade in a workspace that is Private for everyone, as the popover (QA Q4-39)', async () => {

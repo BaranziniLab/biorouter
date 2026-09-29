@@ -53,6 +53,7 @@
 //! token, so the documented service deployment printed an address the operator
 //! could not know and refused the one they had published.
 
+use crate::commands::apps::{launch_pages_dir, open_launch_link, open_page_in_browser};
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
 use anyhow::{bail, Context, Result};
 use std::net::{TcpListener, ToSocketAddrs};
@@ -116,6 +117,7 @@ pub async fn handle_serve(
         std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
         || random_hex(32),
     );
+    token_flag_warning(&browser_token).inspect(|note| eprintln!("{note}"));
     let secret_key = random_hex(32);
 
     // Fail on an occupied port here, with a clear message, rather than letting
@@ -184,6 +186,9 @@ pub async fn handle_serve(
         .spawn()
         .with_context(|| format!("could not start {}", daemon.display()))?;
 
+    // The page `--open` hands the browser, removed however this ends: it holds
+    // the address, token and all.
+    let mut launch_page: Option<PathBuf> = None;
     let outcome: Result<()> = async {
         if let Some(digest) = computer_use_digest {
             use tokio::io::AsyncWriteExt;
@@ -206,7 +211,7 @@ pub async fn handle_serve(
             eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
         }
         if open_browser {
-            let _ = webbrowser::open(&url);
+            launch_page = open_in_browser(&url);
         }
 
         tokio::select! {
@@ -224,7 +229,72 @@ pub async fn handle_serve(
     .await;
 
     stop_daemon(&mut child, &mut stop).await;
+    if let Some(page) = launch_page {
+        let _ = std::fs::remove_file(page);
+    }
     outcome
+}
+
+/// How long the page `--open` hands the browser is kept. A browser reads it the
+/// moment it opens it, and the page holds the address, token and all, so it is
+/// removed once any browser has had ample time, or when `serve` stops.
+const LAUNCH_PAGE_KEPT: Duration = Duration::from_secs(120);
+
+/// Open `url` in the default browser without putting it on a command line, and
+/// answer the page that does it, for the caller to remove.
+///
+/// ⚠ `url` carries the browser token. It works until the daemon stops (SD-9),
+/// and the cookie it is exchanged for gets the shell, the daemon's secret with
+/// it, and on this daemon every app's browser surface too. An opener's
+/// arguments are readable by every account on the machine: `ps` on macOS, and
+/// `/proc/<pid>/cmdline` on Linux for as long as a browser that was not already
+/// running stays open. So the browser is handed a page only this account can
+/// read, which sends it on (`apps::write_launch_page`,
+/// `apps::open_page_in_browser`), and the daemon answers the token with a page
+/// of its own origin so the cookie survives a navigation a `file:` page started
+/// (`routes::web_ui` in `biorouter-server`). The address is on the banner, for
+/// a browser that cannot read the page.
+///
+/// Runs inside the runtime: the page is removed after [`LAUNCH_PAGE_KEPT`] by a
+/// task of its own, and by the caller when `serve` stops, whichever is first.
+fn open_in_browser(url: &str) -> Option<PathBuf> {
+    let page = open_in_browser_with(url, &launch_pages_dir(), open_page_in_browser)?;
+    let removed_later = page.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(LAUNCH_PAGE_KEPT).await;
+        let _ = std::fs::remove_file(removed_later);
+    });
+    Some(page)
+}
+
+/// [`open_in_browser`] with the folder and the opener passed in, for a test.
+fn open_in_browser_with(
+    url: &str,
+    directory: &Path,
+    opener: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Option<PathBuf> {
+    match open_launch_link(url, directory, opener) {
+        Ok(page) => Some(page),
+        Err(error) => {
+            eprintln!("  {error}. Open the address above instead.\n");
+            None
+        }
+    }
+}
+
+/// The line that says where a `--token` value can be read from, or nothing for
+/// a token that did not come from the flag.
+///
+/// The daemon gets the token in its environment, which only this account can
+/// read. The flag itself stays on this command's own command line for as long
+/// as it serves, readable by every account on the machine, and the token opens
+/// the interface for anyone until the daemon stops.
+fn token_flag_warning(token: &BrowserToken) -> Option<&'static str> {
+    matches!(token, BrowserToken::Flag(_)).then_some(
+        "  Note: --token is on this command's command line, where other accounts on this \
+         machine can read it (ps). Set BIOROUTER_BROWSER_TOKEN instead: an environment is \
+         readable by its own account alone.\n",
+    )
 }
 
 /// What the operator reads once the daemon is answering.
@@ -780,6 +850,95 @@ mod tests {
         );
         // Already bracketed stays that way rather than becoming [[::1]].
         assert_eq!(browser_url("[::1]", 8765, None), "http://[::1]:8765/");
+    }
+
+    /// `--open` hands the opener a page only this account can read, never the
+    /// address: the address carries a token that works until the daemon stops,
+    /// and an opener's arguments are readable by every account on the machine.
+    #[test]
+    fn open_hands_the_opener_a_private_page_and_never_the_token() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let token = "c0ffee".repeat(10);
+        let url = browser_url("127.0.0.1", 8765, Some(&token));
+        let mut handed = Vec::new();
+        let page = open_in_browser_with(&url, &dir, |page| {
+            handed.push(page.to_path_buf());
+            Ok(())
+        })
+        .expect("the page was written and handed over");
+
+        assert_eq!(handed, vec![page.clone()]);
+        let argument = page.to_string_lossy();
+        assert!(!argument.contains(&token), "{argument}");
+        assert!(!argument.contains("?t="), "{argument}");
+        let html = std::fs::read_to_string(&page).unwrap();
+        assert!(html.contains(&format!("content=\"0;url={url}\"")), "{html}");
+        assert!(
+            html.contains("<meta name=referrer content=no-referrer>"),
+            "{html}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&page), 0o600, "the page is this account's alone");
+            assert_eq!(mode(&dir), 0o700, "and so is its folder");
+        }
+    }
+
+    /// No browser: nothing is kept, and the address on the banner is the way in.
+    #[test]
+    fn a_failed_open_leaves_no_page_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("app-launch");
+        let url = browser_url("127.0.0.1", 8765, Some("tok"));
+        let page = open_in_browser_with(&url, &dir, |_| Err(std::io::Error::other("no display")));
+        assert_eq!(page, None);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    }
+
+    /// A source guard for the property above: this file names no opener of its
+    /// own, and opens the browser only through the launch page `apps` shares.
+    #[test]
+    fn nothing_but_a_launch_page_reaches_an_opener() {
+        let source = include_str!("serve.rs")
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .unwrap();
+        for opener in [
+            "webbrowser::",
+            "open::that",
+            "open::with",
+            "open::commands",
+            "Command::new(\"open\")",
+            "Command::new(\"xdg-open\")",
+        ] {
+            assert!(
+                !source.contains(opener),
+                "{opener}: an opener that is handed the URL puts the token on a command line"
+            );
+        }
+        // The one opener is the one `apps` uses, and it is handed a page.
+        assert!(
+            source.contains("open_in_browser_with(url, &launch_pages_dir(), open_page_in_browser)"),
+            "serve must open the browser through a launch page"
+        );
+    }
+
+    /// `--token` leaves the token on this command's command line for as long
+    /// as it serves; the variable does not, and a minted token is never there.
+    #[test]
+    fn only_a_token_from_the_flag_is_flagged_as_readable_by_others() {
+        let note = token_flag_warning(&BrowserToken::Flag("t".into())).unwrap();
+        assert!(note.contains("BIOROUTER_BROWSER_TOKEN"), "{note}");
+        for quiet in [
+            BrowserToken::Off,
+            BrowserToken::Variable("t".into()),
+            BrowserToken::Minted("t".into()),
+        ] {
+            assert_eq!(token_flag_warning(&quiet), None, "{quiet:?}");
+        }
     }
 
     #[test]

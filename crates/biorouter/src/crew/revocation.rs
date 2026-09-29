@@ -43,13 +43,34 @@ use std::time::Duration;
 
 /// How long an earlier grant is kept past its run's own end (`expires_at`), confirmed or not:
 /// by then the workspace no longer honors the run whatever it was told, and a task's ledger has
-/// long had its chance to follow the confirmation (F3).
-const REPLACED_KEPT_PAST_END: u64 = 7 * 24 * 60 * 60;
+/// long had its chance to follow the confirmation (F3). A deleted chat's grant is kept as long
+/// (CROSSCUT-8, [`CrewManager::forget_gone_grant`]).
+pub(super) const REPLACED_KEPT_PAST_END: u64 = 7 * 24 * 60 * 60;
 
-fn unix_now() -> u64 {
+pub(super) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+impl Scope {
+    /// This grant, stopped on this device by something other than a revoke of it: a newer
+    /// grant to the same chat replaced it, it was made to an earlier chat under the id
+    /// (SCOPE-BIND), or its connection is being removed. A grant still live is stopped here
+    /// now, and its revocation is unconfirmed until the workspace says otherwise, so the daemon
+    /// asks the workspace to revoke the run (DAEMON-1, DAEMON-7). What the workspace already
+    /// said about a stop stands: a confirmed revocation, or a run the workspace ended itself,
+    /// is never asked about again.
+    pub(super) fn into_stopped(mut self) -> Self {
+        self.expired = true;
+        if !matches!(
+            self.revocation,
+            Some(Revocation::Confirmed | Revocation::EndedByWorkspace)
+        ) {
+            self.revocation = Some(Revocation::Unconfirmed);
+        }
+        self
+    }
 }
 
 impl Registry {
@@ -134,16 +155,31 @@ impl CrewManager {
     }
 
     /// Record `scope` as `session`'s grant, in memory even when the saved registry cannot be
-    /// written (the error returned is then the file's). A stop of the chat's earlier grant that
-    /// the workspace has not confirmed is kept, never replaced away ([`Registry::keep_replaced`]),
-    /// and asked about again now, while the connection is known to be up — whether or not the
-    /// save succeeded, since the stop holds here either way (F3).
+    /// written (the error returned is then the file's). The chat's earlier grant, on another
+    /// run, is stopped by it ([`Scope::into_stopped`]): kept for its revocation, never replaced
+    /// away ([`Registry::keep_replaced`]), and asked about again now, while the connection is
+    /// known to be up — whether or not the save succeeded, since the stop holds here either
+    /// way (F3).
+    ///
+    /// ⚠ **Grant and revocation state; needs human review.** An earlier grant still live when
+    /// the chat was granted again (DAEMON-1: another context channel added, or "Grant access
+    /// again" after a settings change the workspace had not yet seen) used to be dropped here
+    /// with no `run.revoke`: the workspace honored its run until it lapsed, a remote job
+    /// started under it kept running, and it was listed nowhere, so nothing on this device
+    /// could revoke it. Its run credential is already gone by now (the new grant's replaced
+    /// it), so nothing here can use it either way.
     pub(super) async fn record_grant(&self, session: &str, scope: Scope) -> anyhow::Result<()> {
         let mut kept = None;
+        let run_id = scope.run_id.clone();
         let recorded = self
             .update_registry_keeping(|r| {
                 if let Some(previous) = r.scopes.insert(session.into(), scope) {
                     let connection = previous.connection_id.clone();
+                    let previous = if previous.run_id == run_id {
+                        previous
+                    } else {
+                        previous.into_stopped()
+                    };
                     if r.keep_replaced(session, previous) {
                         kept = Some(connection);
                     }
@@ -202,6 +238,15 @@ impl CrewManager {
         pending.sort();
         let mut seen = HashSet::new();
         pending.retain(|(_, run_id)| seen.insert(run_id.clone()));
+        // A run whose `run.revoke` is on its way now (a person's Stop) is that request's to
+        // confirm; asking beside it sent a second revoke for one Stop (W2-DMN-13). If it fails,
+        // it arms a pass of its own.
+        let in_flight = self
+            .revoking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        pending.retain(|(_, run_id)| !in_flight.contains(run_id));
         pending
     }
 

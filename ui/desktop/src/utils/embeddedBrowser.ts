@@ -14,6 +14,7 @@ import { validateExternalBrowserTarget } from './externalBrowserNavigation';
 import { isNavigableEmbeddedUrl } from './permissionPolicy';
 import {
   isManagedAppNavigation,
+  managedAppLaunchUrl,
   managedAppPreviewScope,
   type ManagedAppPreviewBackend,
 } from './managedAppPreviewPolicy';
@@ -249,10 +250,29 @@ function sourceRevision(entry: Entry): string {
   return `${entry.view.webContents.id}:${entry.revision}`;
 }
 
+/**
+ * The page's address as it is shown outside the view. A managed app's launch
+ * token is left out: the preview briefly commits the daemon's answer to the
+ * launch link (`/apps/<id>/?t=…`) before it moves on to the app, and although
+ * the token is spent by then, it has no business in the toolbar or in what the
+ * agent is shown.
+ */
+function shownUrl(entry: Entry, url: string): string {
+  if (!entry.managed) return url;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.searchParams.has('t')) return url;
+    parsed.searchParams.delete('t');
+    return parsed.href;
+  } catch {
+    return url;
+  }
+}
+
 function readState(entry: Entry, error: string | null = null): EmbeddedBrowserState {
   const contents = entry.view.webContents;
   return {
-    url: contents.getURL().slice(0, MAX_PAGE_URL_CHARS),
+    url: shownUrl(entry, contents.getURL()).slice(0, MAX_PAGE_URL_CHARS),
     title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
     managedApp: Boolean(entry.managed),
     sourceRevision: sourceRevision(entry),
@@ -410,6 +430,21 @@ export function createEmbeddedBrowser(
       if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
         if (!managed && isAuthenticationNavigation(initialUrl)) {
           entry.requestAuthenticationConfirmation(initialUrl);
+        } else if (managed) {
+          // An app's page is served only to a browser holding its access cookie
+          // (W2-HRD-1), so the preview opens the launch link that sets it.
+          void managedAppLaunchUrl(managed.scope).then(
+            (url) => {
+              if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
+                void contents.loadURL(url);
+              }
+            },
+            (error: unknown) => {
+              if (entryFor(window, viewId) === entry && !contents.isDestroyed()) {
+                push(error instanceof Error ? error.message : 'This app could not be opened.');
+              }
+            }
+          );
         } else {
           void contents.loadURL(initialUrl);
         }
@@ -585,7 +620,7 @@ export async function readEmbeddedBrowserText(
     )) as { text?: unknown; truncated?: unknown };
     if (revision !== entry.revision || url !== contents.getURL()) continue;
     return {
-      url: url.slice(0, MAX_PAGE_URL_CHARS),
+      url: shownUrl(entry, url).slice(0, MAX_PAGE_URL_CHARS),
       title: contents.getTitle().slice(0, MAX_PAGE_TITLE_CHARS),
       sourceRevision: sourceRevision(entry),
       text: typeof snapshot?.text === 'string' ? snapshot.text : '',
@@ -621,6 +656,39 @@ export async function captureEmbeddedBrowser(
   return { png: image.toPNG(), width: size.width, height: size.height, sourceRevision: revision };
 }
 
+/** Everything a page stores, except cookies: see `clearManagedAppSiteData`. */
+const MANAGED_APP_SITE_STORAGES: NonNullable<Electron.ClearStorageDataOptions['storages']> = [
+  'filesystem',
+  'indexdb',
+  'localstorage',
+  'shadercache',
+  'websql',
+  'serviceworkers',
+  'cachestorage',
+];
+
+/**
+ * "Clear site data" in a managed app preview.
+ *
+ * Everything the page stored goes, but not the app's access cookie (W2-HRD-1):
+ * the daemon set it when the preview opened the app's one-time launch link, and
+ * it is the preview's credential rather than the page's data. Clearing it made
+ * the reload that follows answer "Open this app from Biorouter" until the
+ * preview was closed and opened again, and that link cannot be opened a second
+ * time. The access cookie is told apart by `HttpOnly`, which only a response can
+ * set, so every cookie the page's own script wrote is still removed. The
+ * session is this app's alone, so everything in it is this app's.
+ */
+async function clearManagedAppSiteData(target: Session, origin: string): Promise<void> {
+  await target.clearStorageData({ origin, storages: MANAGED_APP_SITE_STORAGES });
+  const cookies = await target.cookies.get({});
+  await Promise.all(
+    cookies
+      .filter((cookie) => !cookie.httpOnly)
+      .map((cookie) => target.cookies.remove(`${origin}${cookie.path || '/'}`, cookie.name))
+  );
+}
+
 export async function clearEmbeddedBrowserData(
   window: BrowserWindow,
   viewId: string,
@@ -629,7 +697,9 @@ export async function clearEmbeddedBrowserData(
   const entry = entryFor(window, viewId);
   if (!entry) return false;
   const targetSession = entry.view.webContents.session;
-  if (allOrigins) {
+  if (entry.managed) {
+    await clearManagedAppSiteData(targetSession, entry.managed.scope.origin);
+  } else if (allOrigins) {
     await targetSession.clearStorageData();
   } else {
     const origin = new URL(entry.view.webContents.getURL()).origin;

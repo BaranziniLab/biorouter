@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -15,7 +16,7 @@ import {
   subscribeSessionNameChanges,
 } from '../../../utils/sessionNameSync';
 import { grantDestinationLabel, sessionGrantState, type CrewSessionGrant } from '../api/grants';
-import { AlertCircle } from '../../icons/app-icons';
+import { AlertCircle, AlertTriangle } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
@@ -24,13 +25,27 @@ import { Note } from '../../ui/note';
 import {
   PersonName,
   channelName,
+  channelNamesAcrossTeams,
   connectionNames,
   identityCopy,
+  isMachineIdShaped,
   sanitizeDisplayText,
-  teamName,
   usePeopleDirectory,
   type DaemonPersonLabels,
 } from '../identity';
+import { agentCopy } from '../pane/copy';
+import { ModelTierMarks } from '../pane/CrewModelPicker';
+import {
+  knownInstitutions,
+  modelDisplay,
+  modelMismatch,
+  modelRefusalText,
+  protectedRunContext,
+  publicModelRefusal,
+  runInstitution,
+  workspaceInstitutionLabel,
+} from '../pane/presentation';
+import { useConfiguredModels } from '../pane/useConfiguredModels';
 import { useCrew, useCrewErrorSlot, useCrewSurfaceReset } from '../state/CrewControllerContext';
 import { accessStatusOf, accessStatusTone, channelLabels, chatTitleOf } from './accessRows';
 import { rememberChannelLabels } from './chatCrewAccess';
@@ -41,6 +56,7 @@ import {
   RevokeResultNote,
   useConfirmedAfterWait,
 } from './RevokeControls';
+import { useChatModel } from './useChatModel';
 import {
   announceGrantsChanged,
   revocationUnconfirmed,
@@ -151,9 +167,8 @@ export function useKnownChatTitle(sessionId: string | null): string | null {
  * pane"; the pane's header, title and close control belong to the details pane).
  *
  * - **No grant:** the consent summary — which chat, what it will be able to read and where it will
- *   post, as whom — with Advanced "Also read", and **Allow “Plot review” to read and post in
- *   #general** (the pinned **Allow this conversation to read and post here** while the chat's title
- *   is unknown).
+ *   post, as whom — with Advanced "Also read", and the pinned **Allow**, whose name never changes
+ *   while it has focus (UXN-10).
  * - **After Allow:** "Connected.", a primary **Back to chat** and **Revoke access**. It does not
  *   navigate by itself (L10), so the person sees where Revoke lives.
  * - **Active:** the summary with its "Active · ends 4:40 PM" badge (plain "Active" only until the
@@ -209,7 +224,21 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   const [outcome, setOutcome] = useState<RevokeOutcome | null>(null);
   const revokeButton = useRef<HTMLButtonElement>(null);
   const allowButton = useFocusAllowOnConsent();
+  // Allow and Revoke take their own button away with them: focus goes to the first action of the
+  // view that replaced it (`data-crew-access-next`), rather than falling to the page (UXN-7).
+  const paneRoot = useRef<HTMLDivElement>(null);
+  const [focusNext, setFocusNext] = useState(0);
+  useEffect(() => {
+    if (focusNext === 0) return;
+    paneRoot.current?.querySelector<HTMLElement>('[data-crew-access-next]')?.focus();
+  }, [focusNext]);
   const cachedTitle = useKnownChatTitle(sessionId);
+  // The chat's own model, which the grant binds (AG-F1, SF-F5): named in the consent, and checked
+  // before Allow as Ask my agent checks its model before Start. Outside the app's configuration (a
+  // test harness) nothing is known about it, and the pane says nothing about it.
+  const models = useConfiguredModels({ optional: true });
+  const chatModel = useChatModel(sessionId);
+  const blockId = useId();
 
   // A new pane intent (Review, Manage, Grant again, a row) or another chat starts fresh.
   useEffect(() => {
@@ -246,7 +275,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
 
   if (!sessionId) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <p className="text-supporting text-text-muted">{accessCopy.paneNoChat}</p>
       </div>
     );
@@ -298,6 +327,47 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
       )
     : consentExtras;
 
+  // The workspace and the chat's model, as the consent names them and the checks read them. The
+  // workspace as Ask my agent names it: its own name, else the saved connection's.
+  const signedName = sanitizeDisplayText(view?.workspace.name);
+  const workspace =
+    (signedName && !isMachineIdShaped(signedName) ? signedName : '') ||
+    (connectionId && workspaces.get(connectionId)) ||
+    identityCopy.unnamedWorkspace;
+  const chatProvider = chatModel
+    ? models.providers?.find((item) => item.name === chatModel.provider)
+    : undefined;
+  const shownModel = chatModel ? modelDisplay(chatModel, chatProvider) : null;
+  const known = knownInstitutions(models.providers);
+  const checkContext = {
+    connection: controller.connection,
+    snapshot: view,
+    channel,
+    contextChannels: consentExtras,
+  };
+  const institution = runInstitution({ ...checkContext, known });
+  const mismatch = modelMismatch(chatProvider, institution);
+  // What the daemon would refuse this chat's model for, said before Allow, which it disables
+  // (SF-F5): the words Ask my agent says before Start.
+  const mismatchText =
+    mismatch && institution && shownModel
+      ? mismatch.affiliation
+        ? agentCopy.institutionMismatch(
+            shownModel.model,
+            mismatch.affiliation,
+            workspace,
+            institution.label
+          )
+        : agentCopy.institutionUnstated(shownModel.model, workspace, institution.label)
+      : null;
+  const publicText = publicModelRefusal({
+    ...checkContext,
+    provider: chatProvider,
+    workspace,
+    channelLabel: (item) => destinations.get(item.id) ?? channelName(item),
+  });
+  const blockText = mismatchText ?? publicText;
+
   const openChat = () => navigate(chatRoute(sessionId));
 
   const revoke = async () => {
@@ -321,6 +391,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     setRevoking(false);
     setOutcome(result);
     if (result.kind === 'revoked') setGranted(false);
+    setFocusNext((count) => count + 1);
   };
 
   const allow = async (event: FormEvent<HTMLFormElement>) => {
@@ -332,21 +403,30 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     if (!ok) return;
     setOutcome(null);
     setGranted(true);
+    setFocusNext((count) => count + 1);
     rememberChannelLabels(connectionId, destinations, [channelId]);
     announceGrantsChanged({ connectionId, sessionId, change: 'granted' });
   };
 
+  // A model refusal in the words Ask my agent uses (SF-F4, SF-F5); any other as the daemon words it.
   const errorNote =
     showError && controller.error ? (
       <Note tone="danger" icon={AlertCircle} role="alert" testId="crew-chat-access-error">
-        {controller.error.message}
+        {modelRefusalText({
+          error: controller.error,
+          mismatch: mismatchText,
+          publicText,
+          model: shownModel?.model ?? agentCopy.model,
+          institution:
+            institution?.label ?? workspaceInstitutionLabel(controller.connection, view, known),
+        }) ?? controller.error.message}
       </Note>
     ) : null;
 
   // ── Loading and failure, before anything is known ────────────────────────────────────────
   if (!granted && !grant && (connectionsState !== 'loaded' || grants.status === 'loading')) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <p role="status" className="text-supporting text-text-muted">
           {accessCopy.noteChecking}
         </p>
@@ -355,7 +435,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   }
   if (!granted && !grant && grants.anyFailed) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <Note
           tone="warning"
           icon={AlertCircle}
@@ -381,14 +461,20 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── A confirmed revoke ───────────────────────────────────────────────────────────────────
   if (outcome?.kind === 'revoked') {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <RevokeResultNote
           outcome={outcome}
           chat={chat}
           onRetry={() => void revoke()}
           successActions={
             <>
-              <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={openChat}
+                data-crew-access-next=""
+              >
                 {accessCopy.openChat}
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={controller.closePane}>
@@ -401,8 +487,29 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
     );
   }
 
-  // You, at the authority point: whom the chat posts as. Only for this connection's grants.
-  const me = dir.me ? <PersonName person={dir.me} context="authority" dir={dir} /> : null;
+  // Whose agent the chat posts as, at the authority point (AG-F1): its posts appear as "Dave
+  // Patel's agent", never as Dave. Only for this connection's grants.
+  const me = dir.me ? <PersonName person={dir.me} context="authority" dir={dir} agent you /> : null;
+  // The connection's remote work folder, which the daemon opens to a chat whose model is not
+  // public, commands included when the connection allows them (HPC-N2). Said unless the model is
+  // known to be public: a consent that says too much is safer than one that says too little.
+  const folder =
+    sameConnection && controller.connection?.remote_root && chatProvider?.resolved_tier !== 'public'
+      ? {
+          path: controller.connection.remote_root,
+          run: controller.connection.remote_execution === true,
+        }
+      : null;
+  const folderLine = (future: boolean) =>
+    folder
+      ? future
+        ? folder.run
+          ? accessCopy.folderRun(folder.path)
+          : accessCopy.folderFiles(folder.path)
+        : folder.run
+          ? accessCopy.foldersRun(folder.path)
+          : accessCopy.foldersFiles(folder.path)
+      : null;
   const summaryLines = (future: boolean, where: string, extras: string[], who: ReactNode) => (
     <ul className="flex flex-col gap-1 text-secondary text-text-default">
       <li>
@@ -425,13 +532,18 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           accessCopy.posts(where)
         )}
       </li>
+      {folder ? (
+        <li data-crew-access-folder="">
+          <bdi translate="no">{folderLine(future)}</bdi>
+        </li>
+      ) : null}
     </ul>
   );
 
   // ── Stopped on this device, waiting for the workspace to confirm ─────────────────────────
   if (stoppedHere) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-2">
             <p className="min-w-0 text-label text-text-default">{accessCopy.chatName(chat)}</p>
@@ -449,7 +561,13 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
             confirmation={confirmation}
           />
           <div>
-            <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={openChat}
+              data-crew-access-next=""
+            >
               {accessCopy.openChat}
             </Button>
           </div>
@@ -467,7 +585,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
         ? accessStatusOf(grant, Date.now(), false)
         : { status: 'active' as const, label: accessCopy.status.active };
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           <div className="flex items-start justify-between gap-2">
             <p className="min-w-0 text-label text-text-default">{accessCopy.canNow(chat)}</p>
@@ -504,11 +622,17 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           ) : (
             <div className="flex flex-wrap items-center justify-between gap-2">
               {granted ? (
-                <Button type="button" size="sm" onClick={openChat}>
+                <Button type="button" size="sm" onClick={openChat} data-crew-access-next="">
                   {accessCopy.backToChat}
                 </Button>
               ) : (
-                <Button type="button" variant="secondary" size="sm" onClick={openChat}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={openChat}
+                  data-crew-access-next=""
+                >
                   {accessCopy.openChat}
                 </Button>
               )}
@@ -534,7 +658,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   // ── A task's access after the task: it ended with it, and a task is not granted again ────────
   if (grant && grant.kind === 'task') {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           <p className="text-label text-text-default">{accessCopy.paneTaskFinished}</p>
           <div>
@@ -563,7 +687,7 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
 
   if (!canGrant) {
     return (
-      <div className={className} data-testid="crew-chat-access-pane">
+      <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
         <div className="flex flex-col gap-3">
           {confirmedNote}
           {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
@@ -579,12 +703,33 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
   }
 
   return (
-    <div className={className} data-testid="crew-chat-access-pane">
+    <div ref={paneRoot} className={className} data-testid="crew-chat-access-pane">
       <form className="flex flex-col gap-3" onSubmit={(event) => void allow(event)}>
         {confirmedNote}
         {lapsed ? <p className="text-label text-text-default">{lapsed}</p> : null}
         <p className="text-label text-text-default">{accessCopy.willBeAble(chat)}</p>
         {summaryLines(true, here, consentExtras, me)}
+        {/* Where and with what (AG-F1): the workspace, and the chat's model with its tier, as
+            Ask my agent names a model. */}
+        <dl className="crew-consent-facts text-secondary">
+          <dt className="text-text-muted">{accessCopy.consentWorkspace}</dt>
+          <dd className="min-w-0 break-words text-text-default">{workspace}</dd>
+          {shownModel ? (
+            <>
+              <dt className="text-text-muted">{accessCopy.consentModel}</dt>
+              <dd className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-text-default">
+                <span className="min-w-0 break-words">
+                  {agentCopy.modelChoice(shownModel.model, shownModel.provider)}
+                </span>
+                <ModelTierMarks
+                  provider={chatProvider}
+                  privateOnly={protectedRunContext(checkContext)}
+                />
+              </dd>
+            </>
+          ) : null}
+        </dl>
+        <p className="text-supporting text-text-muted">{accessCopy.fixedOnFirstAccess}</p>
         <p className="text-supporting text-text-muted">{accessCopy.expiry}</p>
         <AlsoRead
           contextChannels={contextChannels}
@@ -592,22 +737,26 @@ export function ChatAccessPane({ sessionId: sessionProp, className }: ChatAccess
           currentChannelId={channelId}
           currentChannelName={here}
         />
+        {/* Before Allow, which it disables: what the daemon would refuse this chat's model for. */}
+        {blockText ? (
+          <Note tone="warning" icon={AlertTriangle} testId="crew-chat-access-model-refused">
+            <span id={blockId}>{blockText}</span>
+          </Note>
+        ) : null}
         {errorNote}
         <div className="flex justify-end">
-          {/* It names the chat, and a chat's title can be long: the label wraps rather than
-              overflowing the pane or hiding which chat is being let in. The button's base class is
-              `shrink-0`, so wrapping alone never narrowed it: its one-line width overflowed a
-              328px pane to the left and clipped "Allow" off the front (live QA round 2, Q2-06).
-              It takes the row's width instead, and its lines are centred. */}
+          {/* One word that stays put (UXN-10): naming the chat here wrapped it to two lines and
+              changed its name under keyboard focus when the chat's title arrived. The sentence
+              above, `willBeAble`, names the chat. */}
           <Button
             key="crew-chat-access-allow"
             ref={allowButton}
             onKeyDown={onAllowKeyDown}
             type="submit"
-            className="h-auto min-h-control-md w-full min-w-0 max-w-full whitespace-normal break-words py-1.5 text-center"
-            disabled={controller.isPending('grant')}
+            disabled={controller.isPending('grant') || blockText !== null}
+            aria-describedby={blockText ? blockId : undefined}
           >
-            {chat && channel ? accessCopy.allowChat(chat, here) : accessCopy.allow}
+            {accessCopy.allow}
           </Button>
         </div>
       </form>
@@ -637,16 +786,12 @@ function AlsoRead({
       (snapshot?.channels ?? []).filter((item) => item.id !== currentChannelId && !item.archived),
     [snapshot, currentChannelId]
   );
-  const labels = useMemo(() => {
-    // "Team / #channel" on every row: the list spans teams.
-    const teams = new Map((snapshot?.teams ?? []).map((team) => [team.id, team]));
-    return new Map(
-      candidates.map((item) => [
-        item.id,
-        `${teamName(teams.get(item.team_id))} / ${channelName(item)}`,
-      ])
-    );
-  }, [snapshot, candidates]);
+  // The team only where two teams have a channel by that name, as Ask my agent names the same list
+  // (AG-F17): "Patel Group / #general" on every row said the team where it told nothing apart.
+  const labels = useMemo(
+    () => channelNamesAcrossTeams(snapshot?.channels ?? [], snapshot?.teams ?? []),
+    [snapshot]
+  );
   if (candidates.length === 0) return null;
   const chosen = contextChannels.filter((id) => candidates.some((item) => item.id === id));
   return (
@@ -668,7 +813,7 @@ function AlsoRead({
                 )
               }
             />
-            <span className="min-w-0 truncate">{labels.get(item.id)}</span>
+            <span className="min-w-0 truncate">{labels.get(item.id) ?? channelName(item)}</span>
           </label>
         ))}
       </fieldset>
