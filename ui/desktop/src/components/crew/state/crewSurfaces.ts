@@ -37,9 +37,16 @@ export function isSnapshotBoundDialog(dialog: DialogIntent): boolean {
  * Snapshot-bound dialogs a refresh leaves open. Workspace settings holds this connection's own
  * privacy (its Privacy tab), and changing it makes the daemon connect again, which refreshes the
  * view: closing on that refresh shut the dialog half a second after its own Make private was saved
- * (SF2-N7). While the view verifies again it draws the last verified copy, as every Crew surface
- * does through a refresh (`useDialogView`), and it still closes when that copy goes
- * (`protected-cleared`, a lost channel, another connection).
+ * (SF2-N7).
+ *
+ * What it draws meanwhile depends on how the view went. A manual refresh keeps the last verified
+ * copy of the same connection, and the dialog draws that (`useDialogView`). The end the daemon
+ * sends when the connection's policy moves says `clear: true`, and that clears the last verified
+ * copy along with the live one (`clearProtectedState('refresh')`), so the dialog then has no
+ * snapshot at all. It says Checking… in place of everything the snapshot decides (who hosts, who
+ * is in, the workspace's own privacy) until the view verifies again, rather than drawing from a
+ * directory that names nobody as the host. It closes when the view is gone for good
+ * (`protected-cleared`, which a failed re-verification sends, a lost channel, another connection).
  */
 export function survivesRefresh(dialog: DialogIntent): boolean {
   return dialog.kind === 'workspace-settings';

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CrewConnection } from '../crewApi';
@@ -243,5 +243,82 @@ describe('privacy changes: exposing asks first, the reverse is one click', () =>
     await waitFor(() =>
       expect(policySets()).toEqual([{ mode: 'private', institution_id: 'ucsf' }])
     );
+  });
+});
+
+/**
+ * SF2-N7: Workspace settings stays open through the reconnect its own privacy change causes. The
+ * daemon ends that view with `policy_changed` and `clear: true`, which drops the last verified copy
+ * as well, so until the view verifies again the dialog has no snapshot. Drawn from none, the people
+ * directory named nobody as the host, and the host who had just pressed Make private lost the
+ * Workspace row and read a member's sentences on the Privacy and People tabs.
+ */
+describe('Workspace settings through the reconnect its privacy change causes (SF2-N7)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const MEMBER_WORDS = [/Only the host/, /can invite new people/, /No one else has joined/];
+
+  it('stays open for the host, says Checking… meanwhile and never a member’s words, then draws the host’s view again', async () => {
+    const publicConnection = { ...connection, mode: 'public' as const };
+    const daemon = savingDaemon({
+      connections: [publicConnection],
+      connectionMode: 'public',
+      snapshot: richSnapshot({ workspace: { ...richSnapshot().workspace, mode: 'public' } }),
+    });
+    renderCrew();
+    await channelReady();
+    const user = userEvent.setup();
+
+    await workspaceAction('Privacy…', /^lab/);
+    const settings = await screen.findByRole('dialog', { name: `${WORKSPACE} settings` });
+    // The host's own control on the Workspace row, before.
+    expect(
+      within(settings).getByRole('button', { name: 'Make Private for everyone…' })
+    ).toBeInTheDocument();
+
+    // The daemon saves the connection as Private, then holds the next view back while it connects
+    // again, and ends the view the refresh opened with the policy change (`clear: true`).
+    daemon.state.connections = [{ ...publicConnection, mode: 'private' }];
+    daemon.state.connectionMode = 'private';
+    daemon.state.hold = true;
+    const before = mocked.observeCrew.mock.calls.length;
+    await user.click(within(settings).getByRole('button', { name: 'Make private' }));
+    await waitFor(() => expect(patches()).toEqual([fullBody('private', publicConnection)]));
+    await waitFor(() => expect(mocked.observeCrew.mock.calls.length).toBeGreaterThan(before));
+    const ending = mocked.observeCrew.mock.calls.length;
+    act(() =>
+      daemon.emit({
+        type: 'error',
+        code: 'policy_changed',
+        clear: true,
+        error: 'Room observation ended.',
+      })
+    );
+
+    // Nothing verified to draw: the dialog is still open, and says Checking… where the snapshot
+    // decides, on every tab (they are all mounted), in no member's words.
+    const checking = await screen.findByRole('dialog', { name: /settings$/ });
+    for (const words of MEMBER_WORDS) expect(checking.textContent).not.toMatch(words);
+    expect(checking.querySelector('.crew-settings-panels')).toHaveAttribute('aria-busy', 'true');
+    expect(checking.querySelectorAll('[data-crew-settings-checking]').length).toBeGreaterThan(0);
+
+    // It observes again by itself, still held: the same, and still open.
+    await waitFor(() => expect(mocked.observeCrew.mock.calls.length).toBeGreaterThan(ending));
+    const waiting = screen.getByRole('dialog', { name: /settings$/ });
+    for (const words of MEMBER_WORDS) expect(waiting.textContent).not.toMatch(words);
+
+    // The fresh view arrives: the host's view again, in the same dialog.
+    act(() => daemon.release());
+    const verified = await screen.findByRole('dialog', { name: `${WORKSPACE} settings` });
+    await waitFor(() =>
+      expect(
+        within(verified).getByRole('button', { name: 'Make Private for everyone…' })
+      ).toBeInTheDocument()
+    );
+    expect(verified.querySelector('[data-crew-settings-checking]')).toBeNull();
+    expect(verified.querySelector('.crew-settings-panels')).not.toHaveAttribute('aria-busy');
+    for (const words of MEMBER_WORDS) expect(verified.textContent).not.toMatch(words);
   });
 });

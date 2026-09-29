@@ -296,6 +296,54 @@ describe('WorkspaceSettingsDialog', () => {
     ).toBeInTheDocument();
   });
 
+  /**
+   * SF2-N7: the dialog stays open through the reconnect its own privacy change causes, and that
+   * reconnect's `clear: true` end drops the last verified copy too. Drawn from no snapshot, the
+   * directory names nobody as the host: the host lost the Workspace row and read "Only the host can
+   * change … privacy.", "No one else has joined … yet." and "Only the host can invite new people."
+   */
+  it('says Checking… where the snapshot decides while there is none, in neither side’s words', async () => {
+    renderSettings({ tab: 'privacy' }, { snapshot: null });
+    // Titled by the saved connection's name meanwhile: the S2 name is the snapshot's.
+    const dialog = await screen.findByRole('dialog', { name: 'Fixture settings' });
+    const [general, people, privacy] = Array.from(
+      dialog.querySelectorAll<HTMLElement>('.crew-settings-panel')
+    );
+
+    // Nothing either a host or a member would read, on any tab.
+    for (const words of [
+      /Only the host/,
+      /can invite new people/,
+      /No one else has joined/,
+      /Not set/,
+      /Private for everyone|Allows Public/,
+      /your connection’s only|the workspace’s/,
+    ])
+      expect(dialog.textContent).not.toMatch(words);
+    for (const control of [
+      copy.invite,
+      copy.allowPublic,
+      copy.makePrivateForEveryone,
+      copy.setInstitution('ucsf'),
+      copy.rename,
+    ])
+      expect(within(dialog).queryByRole('button', { name: control, hidden: true })).toBeNull();
+
+    // General: the server is the saved connection's and stays; who hosts is the snapshot's.
+    expect(general).toHaveTextContent(`${copy.hostedBy}${copy.checking}`);
+    expect(general).toHaveTextContent('hpc.example.edu');
+    // People: who is in, who waits and who invites are all the snapshot's.
+    expect(people).toHaveTextContent(copy.checkingPeople('Fixture'));
+    expect(people).not.toHaveTextContent(copy.members);
+    // Privacy: this connection is the saved record, drawn as it is; the workspace's own mode and
+    // institution are the snapshot's.
+    expect(privacy.querySelector('[data-crew-privacy-badge="private"]')).not.toBeNull();
+    expect(privacy).toHaveTextContent(`${copy.workspace}${copy.checking}`);
+    expect(privacy).toHaveTextContent(`${copy.institution}${copy.checking}`);
+    expect(privacy.querySelector('[data-crew-privacy-readers]')).toBeNull();
+    expect(dialog.querySelector('.crew-settings-panels')).toHaveAttribute('aria-busy', 'true');
+  });
+
   it('keeps the host’s People tab to Invite people…, with no line saying who may invite', async () => {
     renderSettings({ tab: 'people' });
     const dialog = await screen.findByRole('dialog', { name: 'lab settings' });

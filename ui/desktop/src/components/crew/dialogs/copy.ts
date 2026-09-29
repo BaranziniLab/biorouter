@@ -184,6 +184,15 @@ export const workspaceSettingsCopy = {
   /** Under Privacy, for a member: names what "this" was (QA Q4-39). */
   hostOnly: (workspace: string) => `Only the host can change ${workspace}’s privacy.`,
   noMembers: (workspace: string) => `No one else has joined ${workspace} yet.`,
+  /**
+   * While the view is observed again with no verified copy to draw (SF2-N7): the value of a row
+   * the snapshot decides (who hosts, the workspace's privacy and institution), which is not
+   * guessed. Without a snapshot nobody reads as the host, so a guess would give the host a
+   * member's words.
+   */
+  checking: 'Checking…',
+  /** People's whole tab in the same state: who is in, and who may invite, come from the view. */
+  checkingPeople: (workspace: string) => `Checking who is in ${workspace}…`,
   done: 'Done',
 } as const;
 
