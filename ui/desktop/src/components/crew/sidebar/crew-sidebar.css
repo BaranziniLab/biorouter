@@ -607,8 +607,9 @@
 
 /* The fingerprint line, with its small Copy at the end (Q4-49). The digits
    never truncate (SF-F6): a host reads all sixteen out, and in the 288px menu
-   the line is a few pixels too long, so it wraps between the digit groups
-   instead, the Copy staying at the end of the first line. */
+   the line is a few pixels too long, so it wraps, the Copy staying at the end
+   of the first line. It wraps after "Fingerprint", never inside the digits
+   (UXN-12): "A807 9E4F B6B1" over "91EA" read as two numbers. */
 .crew-sidebar-menu-fingerprint {
   display: flex;
   align-items: flex-start;
@@ -620,6 +621,10 @@
   min-width: 0;
   white-space: normal;
   overflow-wrap: normal;
+}
+
+.crew-sidebar-menu-fingerprint-value {
+  white-space: nowrap;
 }
 
 /* The Copy itself: a menu item (so the arrow keys reach it) drawn as a compact

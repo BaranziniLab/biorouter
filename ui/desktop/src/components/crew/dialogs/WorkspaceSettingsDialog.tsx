@@ -31,7 +31,7 @@ import {
   type CrewPerson,
 } from '../identity';
 import { sidebarCopy } from '../sidebar/copy';
-import { useKnownInstitutions } from '../sidebar/sidebarView';
+import { keepNamesWhole, useKnownInstitutions, verifiedPrivacy } from '../sidebar/sidebarView';
 import { fullnessNeedsAttention, workspaceFullness } from '../sidebar/workspaceFullness';
 import { useFocusReturn } from '../state/focusReturn';
 import { useMenuCopy } from '../timeline/TimelineCopy';
@@ -694,9 +694,23 @@ function PrivacyTab({
   const publicEffect = offerPublic
     ? sidebarCopy.privacy.makePublicEffect(workspace, 'public')
     : null;
+  // The popover's first sentence, which models may read the workspace, from the same verified
+  // privacy (UXN-13): the tab said what each setting is and never what they add up to. Nothing is
+  // said while the view is not verified, as the popover does not open then.
+  const privacy = verifiedPrivacy(crew, known);
+  const readers = privacy
+    ? privacy.effective === 'private'
+      ? sidebarCopy.privacy.private(workspace, privacy.institution)
+      : sidebarCopy.privacy.public(workspace)
+    : null;
 
   return (
     <div className="flex flex-col">
+      {readers ? (
+        <p className="px-3 pb-2 text-secondary text-text-default" data-crew-privacy-readers="">
+          {keepNamesWhole(readers, [workspace])}
+        </p>
+      ) : null}
       <div className="biorouter-settings-list">
         {/* The line saying what "Make my connection public…" changes sits under that row, not
             after the whole list, under Institution (AG-F17). */}

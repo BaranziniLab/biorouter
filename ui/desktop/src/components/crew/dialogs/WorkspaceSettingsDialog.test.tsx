@@ -96,6 +96,20 @@ describe('WorkspaceSettingsDialog', () => {
     expect(within(dialog).queryByRole('tab', { name: 'Agent access' })).toBeNull();
   });
 
+  /**
+   * UXN-13: the popover says which models may read the workspace, "Only private and UCSF-approved
+   * models can read chen-lab.", and the Privacy tab, where "Privacy…" leads, did not.
+   */
+  it('says on the Privacy tab which models may read the workspace, as the popover does', async () => {
+    renderSettings({ tab: 'privacy' });
+    const dialog = await screen.findByRole('dialog', { name: 'lab settings' });
+    const readers = dialog.querySelector('[data-crew-privacy-readers]');
+    expect(readers).not.toBeNull();
+    expect(readers?.textContent).toMatch(
+      /^Only private (and \S+-approved )?models can read lab\.$/
+    );
+  });
+
   it('renders the Agent access slot it is given', async () => {
     renderSettings({ tab: 'agent-access', agentAccess: <p>agent access fixture</p> });
     expect(await screen.findByText('agent access fixture')).toBeInTheDocument();

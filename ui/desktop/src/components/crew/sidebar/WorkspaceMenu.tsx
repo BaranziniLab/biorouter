@@ -285,7 +285,7 @@ export function WorkspaceMenu({
           >
             <span className="crew-sidebar-menu-fingerprint-text">
               {copy.fingerprint}{' '}
-              <bdi className="font-mono" translate="no">
+              <bdi className="crew-sidebar-menu-fingerprint-value font-mono" translate="no">
                 {fingerprint}
               </bdi>
             </span>

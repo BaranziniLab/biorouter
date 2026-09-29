@@ -146,6 +146,12 @@ function FakeCrewProvider({
           policyEpoch: 1,
         }
       : null,
+    // Private unless both this connection and the workspace allow Public, as the observer says.
+    effectivePrivacy: snapshot
+      ? selected?.mode === 'public' && snapshot.workspace.mode === 'public'
+        ? 'public'
+        : 'private'
+      : null,
     labels: null,
     teamId: 'team-1',
     channelId: 'channel-general',

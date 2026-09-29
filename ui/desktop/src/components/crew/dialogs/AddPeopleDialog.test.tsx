@@ -850,6 +850,43 @@ describe('AddPeopleDialog, several people at once (QA Q2-05)', () => {
       expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveFocus()
     );
   });
+
+  /**
+   * UXN-12: after adding Bob, the search still read "bob" and said "No one matches “bob”.", the
+   * person it found being gone from the list.
+   */
+  it('starts the search over once the person it found is added', async () => {
+    renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      { snapshot: four(), answer: { already_member: false } }
+    );
+    const search = await screen.findByRole('searchbox', { name: addPeopleCopy.search });
+    fireEvent.change(search, { target: { value: 'dan' } });
+    await tick(/Dan Wu/);
+    await add('Add');
+    expect(await screen.findByText('Added Dan Wu (@dan) to #methods.')).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveValue('');
+    expect(screen.queryByText(/No one matches/)).toBeNull();
+  });
+
+  it('keeps the search when no one was added', async () => {
+    renderDirect(
+      { target: 'channel', targetId: 'channel-methods' },
+      {
+        snapshot: four(),
+        request: (method) => {
+          if (method === 'channel.add_member') throw new Error('forbidden: Not allowed.');
+          return {};
+        },
+      }
+    );
+    const search = await screen.findByRole('searchbox', { name: addPeopleCopy.search });
+    fireEvent.change(search, { target: { value: 'dan' } });
+    await tick(/Dan Wu/);
+    await add('Add');
+    expect(await screen.findByText(/^Couldn’t add Dan Wu/)).toBeInTheDocument();
+    expect(screen.getByRole('searchbox', { name: addPeopleCopy.search })).toHaveValue('dan');
+  });
 });
 
 describe('TransferOwnershipDialog', () => {

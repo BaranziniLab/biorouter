@@ -749,6 +749,91 @@ describe('mentions and hidden characters in rows', () => {
  * carries, and a continuation's time was named by a <time> holding its drawn "2:15" as well as
  * its spoken "2:15 PM, Monday…".
  */
+/**
+ * UXN-12: opening the details pane narrowed the log, its rows reflowed taller, and the newest
+ * message sat under the composer at an older place for about a second. The scroll area's anchor
+ * follows only a change of its height.
+ */
+describe('a change of the log’s width', () => {
+  function recordResizeObservers() {
+    const observers: { callback: () => void; targets: Element[] }[] = [];
+    class Recording {
+      private readonly entry: { callback: () => void; targets: Element[] };
+      constructor(callback: () => void) {
+        this.entry = { callback, targets: [] };
+        observers.push(this.entry);
+      }
+      observe(target: Element) {
+        this.entry.targets.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        this.entry.targets = [];
+      }
+    }
+    vi.stubGlobal('ResizeObserver', Recording);
+    return (target: Element) => {
+      for (const entry of observers)
+        if (entry.targets.includes(target)) act(() => entry.callback());
+    };
+  }
+  function viewportOf(): HTMLElement {
+    const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]');
+    if (!viewport) throw new Error('no viewport');
+    return viewport;
+  }
+  afterEach(() => {
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+  });
+
+  it('keeps a reader at the bottom there when the log narrows', () => {
+    const resize = recordResizeObservers();
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ id: 'a' }), message({ id: 'b', body: 'Newest.' })] })
+    );
+    const viewport = viewportOf();
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2_400 });
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 520 });
+    resize(viewport);
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 2_400 }));
+    // The same width again is no reflow: nothing moves.
+    scrollTo.mockClear();
+    resize(viewport);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('leaves a reader who scrolled up where they are', () => {
+    const resize = recordResizeObservers();
+    renderWithController(
+      <Timeline />,
+      makeController({ messages: [message({ id: 'a' }), message({ id: 'b', body: 'Newest.' })] })
+    );
+    const viewport = viewportOf();
+    const scrollTo = vi.fn();
+    viewport.scrollTo = scrollTo as typeof viewport.scrollTo;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 20_000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 600 });
+    // The scroll area sees its height first, as a laid-out page has it, then the reader scrolls up.
+    resize(viewport);
+    viewport.scrollTop = 0;
+    fireEvent.scroll(viewport);
+    scrollTo.mockClear();
+    Object.defineProperty(viewport, 'clientWidth', { configurable: true, value: 520 });
+    resize(viewport);
+    expect(scrollTo).not.toHaveBeenCalled();
+  });
+});
+
 describe('what every row is named by', () => {
   it('names every group and row only by ids that are in the document', () => {
     renderWithController(

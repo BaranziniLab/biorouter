@@ -182,6 +182,12 @@ export interface PersonChecklistProps {
   disabled?: boolean;
   /** The search box, for a caller that puts focus back there. */
   searchRef?: React.Ref<HTMLInputElement>;
+  /**
+   * A value that changes when the search should start over: Add people changes it after people
+   * were added, whom the search found and who are gone from the list now (UXN-12). The search kept
+   * "bob" after Bob was added, and said "No one matches “bob”.".
+   */
+  searchResetKey?: unknown;
 }
 
 /**
@@ -204,8 +210,14 @@ export function PersonChecklist({
   dir,
   disabled,
   searchRef,
+  searchResetKey,
 }: PersonChecklistProps) {
   const [query, setQuery] = React.useState('');
+  const [resetKey, setResetKey] = React.useState(searchResetKey);
+  if (resetKey !== searchResetKey) {
+    setResetKey(searchResetKey);
+    setQuery('');
+  }
   const listId = React.useId();
   const chosen = new Set(selected);
   // The one order every people list uses (M17), whatever order the caller built.

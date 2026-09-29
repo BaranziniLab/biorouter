@@ -155,10 +155,19 @@ describe('WorkspaceSwitcher', () => {
     expect(line.closest('[data-crew-menu-fingerprint]')).toHaveTextContent(
       `${copy.fingerprint} ${expected}`
     );
-    // SF-F6: all sixteen digits, never cut: the line wraps between groups instead of truncating.
+    // SF-F6: all sixteen digits, never cut: the line wraps instead of truncating.
     const text = line.closest('.crew-sidebar-menu-fingerprint-text');
     expect(text).not.toBeNull();
     expect(text).not.toHaveClass('crew-sidebar-truncate');
+    // UXN-12: and it wraps after "Fingerprint", never inside the digits. jsdom lays nothing out,
+    // so the rule is read at the source.
+    expect(line).toHaveClass('crew-sidebar-menu-fingerprint-value');
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync(`${__dirname}/crew-sidebar.css`, 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      ''
+    );
+    expect(css).toMatch(/\.crew-sidebar-menu-fingerprint-value \{\s*white-space: nowrap;\s*\}/);
     // After the verified status line, in the header the menu is described by.
     const verified = within(header).getByText(crewStatusCopy.verified);
     expect(verified.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

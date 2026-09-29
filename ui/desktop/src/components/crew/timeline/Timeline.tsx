@@ -300,6 +300,24 @@ function ChannelTimeline({
     }
   }, []);
   const anchorBottom = useCallback(() => followingRef.current, []);
+  // A narrower log reflows its rows taller, and the scroll area's own anchor follows only a change
+  // of its height: opening the details pane left the newest message under the composer, at an
+  // older place, until the reader scrolled (UXN-12). A reader at the bottom stays there through a
+  // change of width, set before the frame is drawn (a ResizeObserver runs after layout, before
+  // paint).
+  useEffect(() => {
+    const viewport = scroller.current?.viewportRef.current;
+    if (!viewport || typeof ResizeObserver === 'undefined') return;
+    let width = viewport.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const next = viewport.clientWidth;
+      if (next === width) return;
+      width = next;
+      if (followingRef.current) scrollToBottom(scroller.current, 'auto');
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
 
   // ── The opening: the live tail streams in, one message per frame ────────
   // The observer sends the channel's newest messages oldest first, one per

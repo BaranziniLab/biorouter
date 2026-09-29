@@ -113,6 +113,8 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
   // The people this dialog added, kept out of the list until the next state frame shows them in.
   const [added, setAdded] = React.useState<ReadonlySet<string>>(() => new Set());
   const [summary, setSummary] = React.useState<Summary | null>(null);
+  /** How many times people were added: the checklist's search starts over each time (UXN-12). */
+  const [addRounds, setAddRounds] = React.useState(0);
   const searchRef = React.useRef<HTMLInputElement>(null);
   const doneRef = React.useRef<HTMLButtonElement>(null);
   // "Members of {team}…" asked for the list; its "Add people to {team}…" switches to adding.
@@ -288,6 +290,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
         const landed = outcomes.filter((outcome) => outcome.ok).map((outcome) => outcome.person.id);
         setAdded((current) => new Set([...current, ...(landed as string[])]));
         setSelected((current) => current.filter((id) => !landed.includes(id)));
+        if (landed.length > 0) setAddRounds((rounds) => rounds + 1);
         setSummary(summarize(outcomes));
       });
   };
@@ -481,6 +484,7 @@ export function AddPeopleDialog({ target, targetId, view, onClose }: AddPeopleDi
                 dir={dir}
                 disabled={sending}
                 searchRef={searchRef}
+                searchResetKey={addRounds}
               />
             </div>
             {!directAdd && pending.length > 0 ? (
