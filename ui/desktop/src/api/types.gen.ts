@@ -11085,6 +11085,10 @@ export type DeclassifySessionErrors = {
      */
     404: unknown;
     /**
+     * The chat read Crew channels, whose permissions marking it public cannot remove. Nothing was changed (body = plain text, a sentence to show as it is)
+     */
+    409: unknown;
+    /**
      * Internal server error. Nothing was changed (body = plain text)
      */
     500: unknown;
