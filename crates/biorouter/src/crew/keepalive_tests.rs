@@ -2161,10 +2161,13 @@ async fn only_a_lost_change_leaves_the_submitted_operation_alarm() {
 }
 
 /// T3-BE-5 (review): an expectation met by the workspace's last `hello` is met again where it
-/// could have gone stale. A post that required Private is told to the workspace as Private, so
-/// it is restricted even if the workspace stopped being Private for everyone since; and a task
-/// that required Private is judged again against the snapshot admission reads, whose policy
-/// epoch the workspace checks, so one that allows Public now is refused before any run exists.
+/// could have gone stale. A post or an upload's attachment (`blob.begin`, which a file transfer
+/// that required Private sends as Private) that required Private is told to the workspace as
+/// Private, so it is restricted even if the workspace stopped being Private for everyone since;
+/// once a `hello` says the workspace allows Public, the same request is refused and nothing is
+/// written. A task that required Private is judged again against the snapshot admission reads,
+/// whose policy epoch the workspace checks, so one that allows Public now is refused before any
+/// run exists.
 #[tokio::test]
 async fn an_expectation_met_by_a_stale_hello_is_held_where_it_counts() {
     if !crate::test_sandbox::in_a_process_of_its_own() {
@@ -2184,24 +2187,66 @@ async fn an_expectation_met_by_a_stale_hello_is_held_where_it_counts() {
         .unwrap()
         .insert(CONNECTION_ID.into(), hello);
 
-    let posted_mode = |root: &Path| {
+    let told_mode = |root: &Path, method: &str| {
         frames(root)
             .into_iter()
-            .rfind(|frame| frame["method"] == "message.post")
+            .rfind(|frame| frame["method"] == method)
             .map(|frame| frame["params"]["personal_mode"].clone())
     };
-    for (expected, told) in [("private", "private"), ("public", "public")] {
-        f.manager
-            .human_request(
-                CONNECTION_ID,
-                "message.post",
-                json!({"channel_id": "keepalive-channel", "body": "x", "personal_mode": expected}),
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(posted_mode(&f.root), Some(json!(told)), "{expected}");
+    let params = |method: &str, expected: &str| match method {
+        "message.post" => {
+            json!({"channel_id": "keepalive-channel", "body": "x", "personal_mode": expected})
+        }
+        _ => json!({"channel_id": "keepalive-channel", "name": "assay.csv",
+            "media_type": "text/csv", "size": 2, "sha256": "00".repeat(32),
+            "personal_mode": expected}),
+    };
+    for method in ["message.post", "blob.begin"] {
+        for (expected, told) in [("private", "private"), ("public", "public")] {
+            f.manager
+                .human_request(CONNECTION_ID, method, params(method, expected), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                told_mode(&f.root, method),
+                Some(json!(told)),
+                "{method} {expected}"
+            );
+        }
     }
+    // A later `hello` says the workspace allows Public: an expectation of Private no longer
+    // holds on this personal Public connection, and neither request is written.
+    let mut hello = f.manager.broker_hello(CONNECTION_ID).unwrap();
+    hello.mode = Some(ClusterMode::Public);
+    f.manager
+        .brokers
+        .lock()
+        .unwrap()
+        .insert(CONNECTION_ID.into(), hello.clone());
+    for method in ["message.post", "blob.begin"] {
+        let asked = requests(&f.root).len();
+        let refused = f
+            .manager
+            .human_request(CONNECTION_ID, method, params(method, "private"), None)
+            .await
+            .expect_err("the workspace allows Public now");
+        assert_eq!(
+            super::CrewRefusal::find(&refused).map(super::CrewRefusal::code),
+            Some("crew_mode_mismatch"),
+            "{method}: {refused:#}"
+        );
+        assert_eq!(
+            requests(&f.root).len(),
+            asked,
+            "{method}: nothing was written"
+        );
+    }
+    hello.mode = Some(ClusterMode::Private);
+    f.manager
+        .brokers
+        .lock()
+        .unwrap()
+        .insert(CONNECTION_ID.into(), hello);
 
     let asked = requests(&f.root).len();
     let refused = f

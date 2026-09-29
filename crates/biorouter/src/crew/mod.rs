@@ -1696,6 +1696,19 @@ fn require_mode(
     }
     Err(CrewRefusal::mode_mismatch(in_force, expected).into())
 }
+/// [`require_mode`] for a door outside this module that holds the expectation as a typed mode:
+/// a file selection (`POST /crew/files`) that required `expected`, on a connection in `own`
+/// mode to a workspace in `workspace` mode ([`CrewManager::signed_workspace_mode`]). The same
+/// rule every other door judges by (T3-BE-5), so `--expected-mode private` from a personal
+/// Public connection in a workspace that is Private for everyone is not refused on the file
+/// surface while status and privacy show say Private.
+pub fn require_expected_mode(
+    expected: Option<ClusterMode>,
+    own: ClusterMode,
+    workspace: Option<ClusterMode>,
+) -> Result<()> {
+    require_mode(expected.map(|mode| json!(mode)).as_ref(), own, workspace)
+}
 pub(super) fn safe_atom(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -1850,8 +1863,9 @@ impl CrewManager {
             .cloned()
     }
     /// The workspace's own privacy mode, as its last `hello` signed it (v2); `None` when no
-    /// signed `hello` said (not connected, or an older broker).
-    fn signed_workspace_mode(&self, id: &str) -> Option<ClusterMode> {
+    /// signed `hello` said (not connected, or an older broker). It can be stale: a request the
+    /// daemon sends on an expectation it met re-checks it where the workspace's mode counts.
+    pub fn signed_workspace_mode(&self, id: &str) -> Option<ClusterMode> {
         self.broker_hello(id).and_then(|hello| hello.mode)
     }
     /// Whether `connection`'s workspace server has stopped saving changes, as its last verified
@@ -7361,8 +7375,8 @@ mod tests {
     }
 
     /// T3-BE-5, through the manager: the workspace's signed `hello` says it is Private for
-    /// everyone, and a personal Public connection's post that required Private, or a task that
-    /// did, is no longer refused as a mismatch. Before, both read "Your connection is Public,
+    /// everyone, and a personal Public connection's post, file selection or task that required
+    /// Private is no longer refused as a mismatch. Before, each read "Your connection is Public,
     /// but this request required Private." while every surface said Private.
     #[tokio::test]
     async fn a_request_that_requires_the_privacy_in_force_is_not_a_mismatch() {
@@ -7449,6 +7463,17 @@ mod tests {
             .err()
             .expect("the fixture has no device key");
         assert_ne!(code(&admitted), Some("crew_mode_mismatch"), "{admitted}");
+        // A file selection is judged by the same rule, from the same signed `hello`.
+        let selection = |expected| {
+            require_expected_mode(
+                Some(expected),
+                ClusterMode::Public,
+                manager.signed_workspace_mode(connection_id),
+            )
+        };
+        for expected in [ClusterMode::Private, ClusterMode::Public] {
+            assert!(selection(expected).is_ok(), "{expected:?}");
+        }
 
         // In a workspace that allows Public, the connection is Public in force.
         workspace_mode(ClusterMode::Public);
@@ -7468,6 +7493,9 @@ mod tests {
         );
         let refused = task(ClusterMode::Private).await.err().expect("a mismatch");
         assert_eq!(code(&refused), Some("crew_mode_mismatch"));
+        let refused = selection(ClusterMode::Private).expect_err("a mismatch");
+        assert_eq!(code(&refused), Some("crew_mode_mismatch"));
+        assert!(selection(ClusterMode::Public).is_ok());
         let _ = fs::remove_dir_all(root);
     }
 

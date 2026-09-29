@@ -4054,6 +4054,13 @@ export type Receipt = {
      */
     pause_reason: string | null;
     request_id: string;
+    /**
+     * A file selection for this upload required Private (T3-BE-5). Its attachment is begun as
+     * Private, which the daemon holds against the workspace's mode as it is when the attachment
+     * is begun, and it never adds a part to an attachment the workspace does not restrict. Once
+     * set, a later selection never clears it. Always `false` for a download.
+     */
+    requires_private?: boolean;
     sha256: string;
     size: number;
     state: string;
@@ -8534,7 +8541,7 @@ export type CrewTransferRegisterFileData = {
 
 export type CrewTransferRegisterFileErrors = {
     /**
-     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_file_name_invisible` (a file to share whose name has an invisible or formatting character, or a blank-looking one such as a Hangul filler; rename it), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when the connection is in the other privacy mode than the one sent
+     * `crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_file_name_invisible` (a file to share whose name has an invisible or formatting character, or a blank-looking one such as a Hangul filler; rename it), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when `expected_mode` is neither the privacy in force (Private when the connection or, by its last signed hello, the workspace is) nor the connection's own mode
      */
     400: CrewError;
     /**
