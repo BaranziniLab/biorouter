@@ -6694,6 +6694,22 @@ mod tests {
     };
     use tokio_util::sync::CancellationToken;
 
+    /// Whether a request was stopped by one of the privacy guards (mode, public model,
+    /// institution). The fixtures below have no device credential, so a request the guards let
+    /// through fails at the credential store instead. That failure is typed too on a host with
+    /// no keyring service (a Linux CI runner answers `crew_credential_store_unavailable`), so
+    /// "no typed refusal at all" would fail there while the guard behaved correctly.
+    fn stopped_by_a_privacy_guard(error: &anyhow::Error) -> bool {
+        matches!(
+            CrewRefusal::find(error).map(CrewRefusal::code),
+            Some(
+                refusal::MODE_MISMATCH
+                    | refusal::PUBLIC_MODEL_REFUSED
+                    | refusal::INSTITUTION_MISMATCH
+            )
+        )
+    }
+
     /// A chat saved in this process's shared store: the only kind a grant can be made to
     /// (SCOPE-BIND). Call it only in a process of the test's own.
     async fn saved_chat(root: &Path) -> String {
@@ -7313,7 +7329,7 @@ mod tests {
                 .await
                 .expect_err("the fixture intentionally has no device credential");
             assert!(
-                CrewRefusal::find(&missing).is_none(),
+                !stopped_by_a_privacy_guard(&missing),
                 "omitted mode should remain backward-compatible: {missing}"
             );
 
@@ -7327,7 +7343,7 @@ mod tests {
                 .await
                 .expect_err("matching mode reaches the credential boundary in this fixture");
             assert!(
-                CrewRefusal::find(&matching).is_none(),
+                !stopped_by_a_privacy_guard(&matching),
                 "matching mode was rejected by the privacy guard: {matching}"
             );
         }
@@ -7615,7 +7631,7 @@ mod tests {
             .err()
             .expect("the fixture intentionally has no device credential");
         assert!(
-            CrewRefusal::find(&legacy).is_none(),
+            !stopped_by_a_privacy_guard(&legacy),
             "missing expected_mode must preserve the legacy path: {legacy}"
         );
 
