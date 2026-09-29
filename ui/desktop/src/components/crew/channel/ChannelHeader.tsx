@@ -64,8 +64,9 @@ function ClassificationBadge({
             className="crew-channel-classification no-drag biorouter-focus-surface"
             onClick={onOpen}
           >
-            {label}
-            <span className="sr-only">{nameSuffix}</span>
+            {/* One hidden run for the whole name: two read "Restricted : only…" (UXN-15). */}
+            <span aria-hidden="true">{label}</span>
+            <span className="sr-only">{`${label}${nameSuffix}`}</span>
           </button>
         </Badge>
       </TooltipTrigger>

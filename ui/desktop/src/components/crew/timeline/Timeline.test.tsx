@@ -348,8 +348,8 @@ describe('the log', () => {
     expect(articles[0]).toHaveAccessibleName(/Bob Lee.*10:02 AM/);
     expect(within(articles[0]).getByText('Counts are in.')).toBeInTheDocument();
     expect(within(articles[0]).getByText('Plot next?')).toBeInTheDocument();
-    const time = within(articles[0]).getAllByText('10:02 AM')[0];
-    expect(time.tagName).toBe('TIME');
+    const time = within(articles[0]).getAllByText('10:02 AM')[0].closest('time') as HTMLElement;
+    expect(time).not.toBeNull();
     await userEvent.hover(time);
     expect(await screen.findByRole('tooltip')).toHaveTextContent(
       'Tuesday, September 22, 2026 at 10:02 AM'
@@ -405,9 +405,10 @@ describe('the log', () => {
     ];
     const { unmount } = renderWithController(<Timeline />, makeController({ messages }));
     expect(screen.getAllByText(timelineCopy.restricted)).toHaveLength(1);
-    expect(screen.getByText(timelineCopy.restricted)).toHaveTextContent(
-      timelineCopy.restrictedTooltip
-    );
+    // One hidden run holds the whole name (UXN-15: two read "Restricted : only…" in Chrome).
+    expect(
+      screen.getByText(`${timelineCopy.restricted}: ${timelineCopy.restrictedTooltip}`)
+    ).toHaveClass('sr-only');
     unmount();
 
     renderWithController(
@@ -740,6 +741,63 @@ describe('mentions and hidden characters in rows', () => {
     const writeText = vi.spyOn(navigator.clipboard, 'writeText');
     await user.click(screen.getByRole('button', { name: /^Copy text of Bob Lee’s message/ }));
     expect(writeText).toHaveBeenCalledWith(body);
+  });
+});
+
+/**
+ * UXN-15: every row named itself by a "mentions you" id that only a row mentioning the viewer
+ * carries, and a continuation's time was named by a <time> holding its drawn "2:15" as well as
+ * its spoken "2:15 PM, Monday…".
+ */
+describe('what every row is named by', () => {
+  it('names every group and row only by ids that are in the document', () => {
+    renderWithController(
+      <Timeline />,
+      makeController({
+        messages: [
+          message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2) }),
+          message({ id: 'b', body: 'Hey @alice, plot next?', at: new Date(2026, 8, 22, 10, 3) }),
+          message({ id: 'c', body: 'Done.', at: new Date(2026, 8, 22, 10, 3, 30) }),
+          message({ id: 't', actor_id: ID.carol, run_id: ID.run, body: 'Task: List the files' }),
+          message({ actor_id: ID.carol, run_id: ID.run, body: 'Requested remote.execute: ls' }),
+          message({ actor_id: ID.carol, run_id: ID.run, body: 'Listed.' }),
+        ],
+      })
+    );
+    const labelled = Array.from(document.querySelectorAll<HTMLElement>('[aria-labelledby]'));
+    expect(labelled.length).toBeGreaterThan(4);
+    for (const element of labelled) {
+      for (const id of (element.getAttribute('aria-labelledby') ?? '').split(/\s+/)) {
+        expect(
+          document.getElementById(id),
+          `${element.outerHTML.slice(0, 80)} → ${id}`
+        ).not.toBeNull();
+      }
+    }
+    const rows = screen.getAllByRole('group').filter((row) => row.hasAttribute('data-crew-row'));
+    expect(rows.map((row) => /mentions you$/.test(nameOf(row)))).toEqual(
+      rows.map((row) => row.textContent?.includes('@alice') === true)
+    );
+  });
+
+  it('names a row by its spoken time alone, never the drawn one beside it', () => {
+    const messages = [
+      message({ id: 'a', body: 'Counts are in.', at: new Date(2026, 8, 22, 10, 2) }),
+      message({ id: 'b', body: 'Plot next?', at: new Date(2026, 8, 22, 10, 3) }),
+    ];
+    renderWithController(<Timeline />, makeController({ messages }));
+    const [head, continuation] = screen
+      .getAllByRole('group')
+      .filter((node) => node.hasAttribute('data-crew-row'));
+    expect(nameOf(head)).toBe('Bob Lee @bob 10:02 AM, Tuesday, September 22, 2026');
+    expect(nameOf(continuation)).toBe('Bob Lee @bob 10:03 AM, Tuesday, September 22, 2026');
+    for (const row of [head, continuation]) {
+      const timeId = (row.getAttribute('aria-labelledby') ?? '').split(/\s+/)[1];
+      const spoken = document.getElementById(timeId) as HTMLElement;
+      expect(spoken.tagName).toBe('SPAN');
+      expect(spoken).toHaveClass('sr-only');
+      expect(spoken.querySelector('[aria-hidden="true"]')).toBeNull();
+    }
   });
 });
 

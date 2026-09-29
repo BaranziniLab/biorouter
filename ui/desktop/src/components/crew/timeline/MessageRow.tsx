@@ -1,4 +1,4 @@
-import { useCallback, useId, useMemo, useState } from 'react';
+import { useCallback, useId, useLayoutEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
@@ -180,13 +180,17 @@ function HeadMeta({
       {group.agent && <Badge tone="neutral">{timelineCopy.agentBadge}</Badge>}
       <Tooltip>
         <TooltipTrigger asChild>
-          <time
-            id={ids.time}
-            dateTime={isoTime(time)}
-            className="text-supporting text-text-muted tabular-nums"
-          >
-            {shortTime(time)}
-            {date && <span className="sr-only">, {date}</span>}
+          <time dateTime={isoTime(time)} className="text-supporting text-text-muted tabular-nums">
+            {/* The spoken time is one run, and the one the row is named by: a drawn run beside a
+                hidden one read "10:02 AM , Tuesday…" in Chrome (UXN-15). */}
+            {date ? (
+              <>
+                <span aria-hidden="true">{shortTime(time)}</span>
+                <span id={ids.time} className="sr-only">{`${shortTime(time)}, ${date}`}</span>
+              </>
+            ) : (
+              <span id={ids.time}>{shortTime(time)}</span>
+            )}
           </time>
         </TooltipTrigger>
         <TooltipContent>{fullDateTime(time)}</TooltipContent>
@@ -202,8 +206,8 @@ function RestrictedMarker() {
     <Tooltip>
       <TooltipTrigger asChild>
         <span className="crew-message-restricted text-supporting text-text-muted">
-          {timelineCopy.restricted}
-          <span className="sr-only">: {timelineCopy.restrictedTooltip}</span>
+          <span aria-hidden="true">{timelineCopy.restricted}</span>
+          <span className="sr-only">{`${timelineCopy.restricted}: ${timelineCopy.restrictedTooltip}`}</span>
         </span>
       </TooltipTrigger>
       <TooltipContent>{timelineCopy.restrictedTooltip}</TooltipContent>
@@ -219,12 +223,15 @@ function GutterTime({ time, id }: { time: Date; id: string }) {
   const date = spokenDate(time);
   return (
     <time
-      id={id}
       dateTime={isoTime(time)}
       className="crew-message-gutter-time text-supporting text-text-muted tabular-nums"
     >
       <span aria-hidden="true">{gutterTime(time)}</span>
-      <span className="sr-only">{date ? `${shortTime(time)}, ${date}` : shortTime(time)}</span>
+      {/* The row is named by this run alone, never the <time> around the drawn "2:15" as well,
+          which read "2:152:15 PM, Monday…" (UXN-15). */}
+      <span id={id} className="sr-only">
+        {date ? `${shortTime(time)}, ${date}` : shortTime(time)}
+      </span>
     </time>
   );
 }
@@ -320,6 +327,13 @@ export function MessageRow({
   const timeId = entry.head ? ids.time : ownTime;
   // Your own words never mention you; your agent's may.
   const mention = !group.agent && group.authorId === viewerId ? null : viewerUsername;
+  // The body adds its hidden "mentions you" only when it marks a mention: the row names itself by
+  // it then, and never by an id nothing carries (UXN-15). Read from what the body drew, as the
+  // body alone decides what counts as a mention.
+  const [mentioned, setMentioned] = useState(false);
+  useLayoutEffect(() => {
+    setMentioned(document.getElementById(mentionLabel) !== null);
+  }, [mentionLabel, message.body, mention, group.agent]);
   const who = useAuthorLabel(group);
   // Two rows of one author in one minute would read the same: each says which of them it is.
   const when = entry.sameMinute
@@ -332,7 +346,9 @@ export function MessageRow({
   return (
     <div
       role="group"
-      aria-labelledby={`${ids.author} ${timeId} ${mentionLabel}`}
+      aria-labelledby={
+        mentioned ? `${ids.author} ${timeId} ${mentionLabel}` : `${ids.author} ${timeId}`
+      }
       ref={useRowRef(message.id)}
       className="crew-message-row"
       data-crew-row=""

@@ -6,16 +6,13 @@
  */
 export const channelHeaderCopy = {
   /**
-   * The `<h1>` trigger's accessible name, computed from its content: the visible `#name` (the `#`
-   * is spoken through a visually hidden character, the glyph being decorative) and then, visually
-   * hidden, ", channel menu". A heading jump reads "#general, channel menu", never
-   * "general channel menu". `aria-haspopup="menu"` already says what the button opens.
+   * The `<h1>` trigger's accessible name, computed from its content: one visually hidden run
+   * beside the drawn slug, which is hidden from the tree (the `#` glyph is decorative). A heading
+   * jump reads "#general, channel menu", never "general channel menu", and never the
+   * "# general , channel menu" Chrome read from three runs, putting a space around each hidden
+   * one (UXN-15). `aria-haspopup="menu"` already says what the button opens.
    */
   menuName: (slug: string) => `#${slug}, channel menu`,
-  /** The visually hidden text before the slug. */
-  hash: '#',
-  /** The visually hidden text after the slug. */
-  menuSuffix: ', channel menu',
   /** Refresh channel's answer once the channel is verified again: shown briefly, then gone. */
   upToDate: 'Up to date',
   /** The page title while a channel is open (WCAG 2.4.2). */
@@ -29,8 +26,9 @@ export const channelHeaderCopy = {
    */
   restrictedHint: 'Only private models can read it. It doesn’t limit who’s in the channel.',
   /**
-   * The chip's accessible name after its visible "Restricted", visually hidden, so the whole name
-   * is "Restricted: only private models can read it. It doesn’t limit who’s in the channel."
+   * The chip's accessible name after its visible "Restricted": the whole name, "Restricted: only
+   * private models can read it. It doesn’t limit who’s in the channel.", is one visually hidden
+   * run (Chrome read two runs as "Restricted : only…", UXN-15).
    */
   restrictedNameSuffix: ': only private models can read it. It doesn’t limit who’s in the channel.',
 
