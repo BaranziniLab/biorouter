@@ -5,6 +5,7 @@ use biorouter::crew::observation::{ObserveEvent, ObserveRequest};
 use biorouter::daemon_runtime::{self, Descriptor, Identity};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
+#[cfg(unix)]
 use std::time::Duration;
 use zeroize::Zeroizing;
 
@@ -72,7 +73,7 @@ pub const REFUSAL_FIELDS: &[&str] = &[
 
 /// A daemon value kept for JSON output, bounded so a malformed answer cannot grow it: strings
 /// to 4096 characters, lists to 64 items, objects to 32 fields, three levels deep.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn bounded_field(value: &Value, depth: usize) -> Value {
     match value {
         Value::String(text) => Value::String(text.chars().take(4096).collect()),
@@ -126,7 +127,9 @@ impl DaemonRefusal {
     }
 
     /// A refusal as the daemon would answer it with `body`, for a test elsewhere in the crate.
-    #[cfg(all(test, unix))]
+    /// It builds on every platform, like the parser it calls: the crew tests that use it are
+    /// not Unix-only, and a Windows test build must still compile them.
+    #[cfg(test)]
     pub fn for_test(status: u16, body: Value) -> Self {
         daemon_refusal(status, Some(&body), "Daemon refused the request")
     }
@@ -307,7 +310,7 @@ impl std::fmt::Display for DaemonRefusal {
 
 impl std::error::Error for DaemonRefusal {}
 
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonRefusal {
     let message = value
         .and_then(|value| value.get("error").or_else(|| value.get("message")))
@@ -367,12 +370,12 @@ fn daemon_refusal(status: u16, value: Option<&Value>, fallback: &str) -> DaemonR
 }
 
 /// What an older daemon wrote before the broker's JSON error object.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 const LEGACY_BROKER_REFUSAL: &str = "Crew broker refused request: ";
 
 /// A broker code as the broker writes one (`[a-z][a-z0-9_]*`), capped like `kind`. Anything
 /// else is not a code and is dropped rather than printed.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn broker_code_text(code: &str) -> Option<String> {
     let mut chars = code.chars();
     let shaped = chars.next().is_some_and(|first| first.is_ascii_lowercase())
@@ -382,7 +385,7 @@ fn broker_code_text(code: &str) -> Option<String> {
 
 /// `Crew broker refused request: {"code":…,"message":…}` from a daemon that predates
 /// `broker_code`: the code, and the broker's own text (its message, else the code alone).
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
     let encoded = text.trim().strip_prefix(LEGACY_BROKER_REFUSAL)?;
     let error = serde_json::from_str::<Value>(encoded).ok()?;
@@ -401,7 +404,7 @@ fn legacy_broker_refusal(text: &str) -> Option<(String, String)> {
 /// would act on escaped: control characters and invisible formatting. `escape_debug` used to
 /// run here and printed `the model\'s` in text and `model\\'s` in JSON, so a script matching
 /// the daemon's canonical sentence missed it.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn terminal_safe(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     for ch in message.chars() {
@@ -415,7 +418,7 @@ fn terminal_safe(message: &str) -> String {
 }
 
 /// [`terminal_safe`] line by line: the line breaks stay, and nothing else a terminal acts on.
-#[cfg(unix)]
+#[cfg(any(unix, test))]
 fn terminal_safe_lines(text: &str) -> String {
     text.split('\n')
         .map(|line| terminal_safe(line.strip_suffix('\r').unwrap_or(line)))
