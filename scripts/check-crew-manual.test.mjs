@@ -1638,6 +1638,22 @@ test('drop-refusals: the files page says what a dropped file with a hidden-chara
   // The fix and the page together: the page quotes the one sentence, and nothing else fails.
   const fixedDrop = overlay({ [SHARE_PATH]: wordInvisible(), [MESSAGES]: withoutDragNote }, fixed);
   assert.deepEqual(checkCrewManual(fixedDrop), checkCrewManual(fixed));
+  // The same with the arm written as a block behind a label that falls through to it.
+  const blockArm = (text) =>
+    wordInvisible()(text).replace(
+      "    case CREW_FILE_NAME_INVISIBLE:\n      return crewShareCopy.nameInvisible(visibleText(name) || 'This file');\n",
+      "    case CREW_FILE_NAME_INVISIBLE:\n    case 'crew_file_name_unshown': {\n" +
+        "      const shown = visibleText(name) || 'This file';\n" +
+        '      return crewShareCopy.nameInvisible(shown);\n    }\n'
+    );
+  assert.match(blockArm(real.read(SHARE_PATH)), /case 'crew_file_name_unshown': \{/);
+  assert.deepEqual(
+    failuresOf(
+      overlay({ [SHARE_PATH]: blockArm, [MESSAGES]: withoutDragNote }, fixed),
+      'drop-refusals'
+    ),
+    []
+  );
   // The drop flow's copy in other words than the daemon's: the page quotes what a drop gets, so
   // the two cannot drift apart with the page quoting only the daemon's.
   const otherWords = '“{name}” has an invisible character. Rename it and share it again.';

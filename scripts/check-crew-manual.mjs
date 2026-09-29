@@ -1898,15 +1898,19 @@ export function checkCrewManual(tree = repoTree()) {
       const cased = worded.includes(refused);
       // A drop that fell back to the daemon's own sentence would show it for every code.
       const shown = cased || /\bdaemonRefusalSentence\(/.test(drop);
-      // The sentence the drop flow gives the code: the copy its case returns.
+      // The sentence the drop flow gives the code: the one copy its case arm returns, past any
+      // labels that fall through to it.
       const names = [...constants].filter(([, value]) => value === refused).map(([name]) => name);
       const arm = new RegExp(
-        `\\bcase (?:${[...names, `'${refused}'`].map(escapeRegExp).join('|')}):\\s*return crewShareCopy\\.(\\w+)\\b`
+        `\\bcase (?:${[...names, `'${refused}'`].map(escapeRegExp).join('|')}):(?:\\s*case [^:]+:)*([\\s\\S]*?)(?=\\n\\s*(?:case\\b|default:)|$)`
       ).exec(refusal);
+      const keys = new Set(
+        [...(arm?.[1] ?? '').matchAll(/\bcrewShareCopy\.(\w+)\b/g)].map((m) => m[1])
+      );
       const copy =
-        arm &&
+        keys.size === 1 &&
         new RegExp(
-          `\\n  ${arm[1]}:\\s*(?:\\([^)]*\\)\\s*=>\\s*)?(\`(?:[^\`\\\\]|\\\\[\\s\\S])*\`|'(?:[^'\\\\\\n]|\\\\.)*')`
+          `\\n  ${[...keys][0]}:\\s*(?:\\([^)]*\\)\\s*=>\\s*)?(\`(?:[^\`\\\\]|\\\\[\\s\\S])*\`|'(?:[^'\\\\\\n]|\\\\.)*')`
         ).exec(code);
       const sentence = copy ? tsLiterals(copy[1])[0] : null;
       if (cased && !sentence) {
