@@ -167,7 +167,7 @@ A command in the work folder runs in a closed space on the server:
 - It cannot start other processes, so a shell, or a script that runs other programs, fails.
 - It can read only the work folder and the programs and libraries under `/usr/bin`, `/usr/lib`, `/bin` and `/lib`. It cannot read `/etc`, so it cannot look up users.
 
-So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. The switch in **Connection settings…** says so too: "Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there." Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
+So cluster tools such as `sbatch`, `squeue`, `sinfo` and `scontrol` do not run there, often with no message. Your agent is told these limits, and a command that fails without an error reminds it of them, so it should tell you rather than try again. The switch in **Connection settings…** says so too: "Commands run with no network and can’t start other programs, so cluster tools such as sbatch won’t run there." Submit cluster jobs yourself, for example from your own SSH session, then let the agent read their results in the folder. The size and time limits of one command are in [Workspace limits](administration.md#workspace-limits).
 
 ## Refusals when you start or allow
 

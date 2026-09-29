@@ -57,6 +57,9 @@ The workspace menu shows who you are signed in as, such as "Signed in as @bob on
 
 After a network drop, or while the workspace is stopped on the server, the background service reconnects by itself for up to an hour, and your channels come back without a click. It never asks for a password or a code, and never opens the Sign in window. To try at once, choose **Connect to {workspace}**.
 
+- After a drop, it tries again after 20 seconds, then 1 minute and 3 minutes later, then every 5 minutes. Meanwhile the main area says "Reconnecting to {workspace}" and "The connection dropped, and Crew has been dialling it again by itself since {time}. That can take a few minutes, and nothing reaches the workspace until then. You can connect now instead.", with **Connect now**.
+- While the workspace is stopped on the server, it tries every 30 seconds, so it connects within about a minute of the host starting Crew. A member reads "The workspace server isn’t running. Once {host} starts Crew, this computer connects by itself within a few minutes, or you can connect now."
+
 Crew does not reconnect by itself in these cases. Choose **Connect to {workspace}**, or follow the screen in the main area.
 
 - **Disconnect**, or a saved change to your server login, port, identity file or jump hosts in **Connection settings…**.
@@ -168,7 +171,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | Message | What to do |
 |---|---|
 | "Can’t reach…" or "Couldn’t reach…" | Check that you are online, and on the VPN (virtual private network) if your institution requires one. Crew keeps trying for an hour. |
-| "Crew isn’t running on {server}" | The workspace is stopped on the server, for example after the server restarted. If you host it, the screen shows the line that starts it, with **Copy**: run it on the server, as [After the server restarts](hosting-a-workspace.md#after-the-server-restarts) shows. Otherwise, ask your host to start Crew. Crew connects by itself once it runs. |
+| "Crew isn’t running on {server}" | The workspace is stopped on the server, for example after the server restarted. If you host it, the screen shows the line that starts it, with **Copy**: run it on the server, as [After the server restarts](hosting-a-workspace.md#after-the-server-restarts) shows. Otherwise, the screen says "The workspace server isn’t running. Once {host} starts Crew, this computer connects by itself within a few minutes, or you can connect now." Ask your host to start Crew if they have not. Crew tries every 30 seconds, so it connects within about a minute of the start. |
 | "{server} refused this computer’s SSH key" | The server offered no password or code, so the Sign in window cannot help. Check **Your server login** and **Identity file** in **Connection settings…**, and ask IT which login and key to use. |
 | "Can’t connect…", "Crew can’t connect." or "It didn’t connect" | Your server name may reach a different machine from the one that runs Crew. Ask your host. Otherwise, check **Connection settings…** with IT. |
 | "…asked you to sign in" | [Sign in](#sign-in-to-the-server). |
@@ -178,7 +181,7 @@ For messages on the join screen, see [Problems while you wait](joining-a-workspa
 | "You already use this server for {other workspace}…" | One computer uses one institution for each server. Ask your host which is right. |
 | "…dropped while it was idle." | Wait, or choose **Reconnect**. |
 | "SSH bridge failed…" | The connection broke during a request, and Crew does not resend it. Choose **Reconnect**. Before you repeat your last action, check if it went through. |
-| "Reconnecting to {workspace}. Nothing was sent; try again in a moment." | Crew is dialling a broken connection again. Try the action again in a moment. |
+| "Reconnecting to {workspace}. Nothing was sent; try again in a moment." or "Reconnecting to {workspace} in about {N} seconds. Nothing was sent. Connect now to try at once." | Crew is dialling a broken connection again, and your action was not sent. Try it again once the status reads "Connected", or choose **Connect now** in the main area to try at once. |
 | "Crew couldn’t confirm whether this reached {workspace}…" | The connection broke after the request left. Check the channel before you repeat the action. |
 | "…no longer a member…" or "…doesn’t recognize this computer any more…" | Your host removed you or this computer. Ask your host. |
 | "{workspace} was removed from this computer, so it can’t be opened." | The workspace was removed here while Crew was open, for example with `biorouter crew connections remove`, and Crew opened another. To use it here again, follow [Add this computer to your existing account](joining-a-workspace.md#add-this-computer-to-your-existing-account). |

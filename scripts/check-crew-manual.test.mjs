@@ -1443,6 +1443,60 @@ test('app-sentences: the agents page quotes the refusal to make a Crew chat publ
   );
 });
 
+test('reconnect-timing: the pages say how soon Crew tries again, and quote each reconnect sentence (T3-DOC-6)', () => {
+  // The member row as the live check found it: "ask your host", with no time.
+  assertCaught(
+    {
+      [TROUBLE]: (text) =>
+        text
+          .replace(
+            /Otherwise, the screen says "The workspace server isn’t running\.[^|]*\|/,
+            'Otherwise, ask your host to start Crew. Crew connects by itself once it runs. |'
+          )
+          .replace(/ A member reads "The workspace server isn’t running\.[^"]*"/, ''),
+    },
+    'app-sentences',
+    /troubleshooting\.md does not quote the stopped-server sentence for a member/
+  );
+  // The old member sentence, back in a quote.
+  assertCaught(
+    {
+      'docs/crew/joining-a-workspace.md': (text) =>
+        text.replace(
+          'Once Alice Chen starts Crew, this computer connects by itself within a few minutes, or you can connect now.',
+          'Ask Alice Chen to start Crew.'
+        ),
+    },
+    'app-sentences',
+    /quotes "The workspace server isn’t running\. Ask Alice Chen to start Crew\.", which is not how/
+  );
+  // The timing, gone from the page, or changed in the keepalive.
+  assertCaught(
+    { [TROUBLE]: (text) => text.replaceAll('every 30 seconds', 'regularly') },
+    'reconnect-timing',
+    /does not say Crew tries again "every 30 seconds"/
+  );
+  assertCaught(
+    {
+      'crates/biorouter/src/crew/keepalive.rs': swap(
+        'broker_down_every: Duration::from_secs(30),',
+        'broker_down_every: Duration::from_secs(15),'
+      ),
+    },
+    'reconnect-timing',
+    /does not say Crew tries again "every 15 seconds"/
+  );
+  // The longer reconnect sentence the daemon now gives, unquoted.
+  assertCaught(
+    {
+      [COMMAND_LINE]: (text) =>
+        text.replace(/When the next try is further off, it says when, such as `[^`]*` /, ''),
+    },
+    'daemon-sentences',
+    /command-line\.md does not quote the crew_reconnecting sentence .* in about \{when\}/
+  );
+});
+
 test('the tree as committed passes every rule', () => {
   assert.deepEqual(checkCrewManual(real), []);
 });

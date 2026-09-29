@@ -178,7 +178,7 @@ A message under a field, or in a red note, names the rule a value broke. Correct
 | "This isn’t the workspace you joined" | Send your host the text from **Copy details**, and wait. |
 | "Crew isn’t set up for your account on lab.example.edu" | See [Install Crew in your server account](#install-crew-in-your-server-account). |
 | "Can’t sign in to lab.example.edu" with "lab.example.edu refused this computer’s SSH key for bob." | The server takes no password here, so signing in cannot help. Check **Your server login** in **Connection settings…**, and ask IT which login and key to use. |
-| "Crew isn’t running on lab.example.edu" | The workspace stopped on the server, for example after it restarted. Ask your host to start Crew. Crew connects by itself once it runs. |
+| "Crew isn’t running on lab.example.edu" with "The workspace server isn’t running. Once Alice Chen starts Crew, this computer connects by itself within a few minutes, or you can connect now." | The workspace stopped on the server, for example after it restarted. Ask your host to start Crew if they have not. Crew connects by itself within about a minute of the start, or choose **Connect to chen-lab** to try at once. |
 | "It didn’t connect" | Choose **Connect to chen-lab** again. If it repeats, ask your host. The server name may reach a different machine each time. |
 | "You already use this server for {other workspace}…" | One computer uses a server for one institution only. Ask your host. |
 

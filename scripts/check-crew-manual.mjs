@@ -89,6 +89,9 @@
 //     (T3-DOC-6). The agents page quotes the Chat access pane's work folder
 //     lines and the work folder switch's help (T3-DOC-5).
 //   * `pause-reasons` also reads a reason kept as its own constant (T3-DOC-6).
+//   * `reconnect-timing`: the pages say how soon Crew tries again, in the
+//     keepalive's own figures, and quote each form of the reconnecting
+//     sentence and the member's stopped-server sentence (T3-DOC-6).
 //   * `allow-button`: the Chat access pane's Allow button is named as the
 //     pane labels it, never with the chat's title it used to carry.
 //   * `refusal-codes` also holds every code the command line gives its own
@@ -174,6 +177,7 @@ const ONBOARDING_COPY = 'ui/desktop/src/components/crew/onboarding/copy.ts';
 const BAR_COPY = 'ui/desktop/src/components/crew/channel/copy.ts';
 const INSTITUTION_RS = 'crates/biorouter/src/crew/institution.rs';
 const DECLASSIFY_RS = 'crates/biorouter/src/privacy/declassify.rs';
+const KEEPALIVE_RS = 'crates/biorouter/src/crew/keepalive.rs';
 const LOCAL_FILES_RS = 'crates/biorouter-server/src/crew/local_files.rs';
 const REMOTE_RS = 'crates/biorouter-crew/src/remote.rs';
 /** Where the code that writes Crew's files on a member computer lives. */
@@ -867,9 +871,13 @@ export function checkCrewManual(tree = repoTree()) {
     {
       name: `the crew_reconnecting sentence in ${CREW_CORE}`,
       opens: /^Reconnecting to\b/,
-      templates: [formatSentence(coreSource, 'Reconnecting to {')],
+      // Every form: a wait over ten seconds names how long (T3-BE-16).
+      templates: rustLiterals(coreSource || '').filter((text) =>
+        text.startsWith('Reconnecting to {')
+      ),
       source: coreSource,
-      requiredIn: [COMMAND_LINE],
+      requiredIn: [COMMAND_LINE, TROUBLESHOOTING],
+      requiredEach: true,
     },
     {
       name: `the storage_full and storage_failed sentences in ${BROKER}`,
@@ -1097,6 +1105,28 @@ export function checkCrewManual(tree = repoTree()) {
       templates: opening(rustLiterals(declassifySource || ''), /^This chat read Crew channels\b/),
       source: declassifySource,
       requiredIn: [AGENTS_PAGE],
+      requiredWhole: true,
+    },
+    {
+      name: `the re-dial state in ${ONBOARDING_COPY}`,
+      opens: /^The connection dropped, and Crew has been dialling\b/,
+      templates: opening(
+        tsLiterals(onboardingSource || ''),
+        /^The connection dropped, and Crew has been dialling\b/
+      ),
+      source: onboardingSource,
+      requiredIn: [TROUBLESHOOTING],
+      requiredWhole: true,
+    },
+    {
+      name: `the stopped-server sentence for a member in ${ONBOARDING_COPY} and ${BAR_COPY}`,
+      opens: /^The workspace server isn't running\b/,
+      templates: opening(
+        [...tsLiterals(onboardingSource || ''), ...tsLiterals(barSource || '')],
+        /^The workspace server isn't running\b/
+      ),
+      source: onboardingSource,
+      requiredIn: [TROUBLESHOOTING, JOINING_PAGE],
       requiredWhole: true,
     },
     {
@@ -1698,6 +1728,54 @@ export function checkCrewManual(tree = repoTree()) {
           'allow-button',
           `${AGENTS_PAGE} does not name the Chat access pane's **${allow}** button`
         );
+      }
+    }
+  }
+
+  // ── reconnect-timing ─────────────────────────────────────────────────────
+  // How soon Crew connects by itself (T3-DOC-6): members were told only that it would, and waited
+  // minutes after the host had started the server again. The pages give the keepalive's own
+  // figures: the gaps after a drop, the late retries, and the steady retry while the server is
+  // not running.
+  const keepalive = need(KEEPALIVE_RS, 'reconnect-timing');
+  if (keepalive !== null) {
+    const defaults = /impl Default for KeepaliveTiming[\s\S]*?\n\}/.exec(keepalive)?.[0] ?? '';
+    const seconds = (field) => {
+      const match = new RegExp(`\\b${field}:\\s*Duration::from_secs\\(([\\d\\s*]+)\\)`).exec(
+        defaults
+      );
+      return match
+        ? match[1].split('*').reduce((product, n) => product * Number(n.trim()), 1)
+        : null;
+    };
+    const gaps = [
+      ...(/retry_delays:\s*\[([\s\S]*?)\]/.exec(defaults)?.[1] ?? '').matchAll(
+        /from_secs\((\d+)\)/g
+      ),
+    ].map((m) => Number(m[1]));
+    const late = seconds('late_retry_every');
+    const down = seconds('broker_down_every');
+    if (gaps.length < 2 || late === null || down === null) {
+      fail(
+        'reconnect-timing',
+        `found no KeepaliveTiming defaults in ${KEEPALIVE_RS}; update this reader`
+      );
+    } else {
+      const spoken = (n) =>
+        n % 60 === 0 ? `${n / 60} minute${n === 60 ? '' : 's'}` : `${n} seconds`;
+      const claims = [
+        [TROUBLESHOOTING, `after ${spoken(gaps[0])}`],
+        [TROUBLESHOOTING, `every ${spoken(late)}`],
+        [TROUBLESHOOTING, `every ${spoken(down)}`],
+        [COMMAND_LINE, `every ${spoken(down)}`],
+      ];
+      for (const [page, phrase] of claims) {
+        if (!(tree.read(page) || '').includes(phrase)) {
+          fail(
+            'reconnect-timing',
+            `${page} does not say Crew tries again "${phrase}", as ${KEEPALIVE_RS}'s KeepaliveTiming does`
+          );
+        }
       }
     }
   }
