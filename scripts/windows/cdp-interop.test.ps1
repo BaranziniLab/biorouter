@@ -35,6 +35,14 @@ public static class ReleaseCDPLoopback {
                 var bytes = Encoding.UTF8.GetBytes(frame);
                 await websocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
             }
+            using var closeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            try {
+                var closing = await websocket.ReceiveAsync(new ArraySegment<byte>(buffer), closeTimeout.Token);
+                if (closing.MessageType != WebSocketMessageType.Close)
+                    throw new Exception("Expected the synthetic client to finish after its response");
+            } catch (WebSocketException) {
+                // Invoke-CDP disposes its connection without a close handshake.
+            }
         } finally { listener.Stop(); }
     }
 }

@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import sys
 from pathlib import Path
 import pwd
 import select
@@ -40,8 +42,38 @@ def encoded(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 
+RUN_DIAGNOSTICS = None
+
+
+def redacted_output(value, argv, limit):
+    text = value.decode(errors="replace") if isinstance(value, bytes) else str(value or "")
+    for argument in map(str, argv):
+        if len(argument) >= 16:
+            text = text.replace(argument, "[argument]")
+    text = re.sub(r"[A-Za-z0-9+/_=\-]{32,}", "[opaque]", text)
+    text = re.sub(r"[^\x09\x0a\x0d\x20-\x7e]", "?", text)
+    return text[:limit]
+
+
 def run(argv, **options):
-    return subprocess.run(argv, check=True, capture_output=True, **options)
+    result = subprocess.run(argv, capture_output=True, **options)
+    if result.returncode:
+        methods = {"start", "status", "stop", "genpkey", "pkey", "pkeyutl"}
+        shape = dict(executable=Path(str(argv[0])).name,
+                     method=next((str(a) for a in argv if str(a) in methods), "operation"),
+                     argumentCount=len(argv), exitCode=result.returncode)
+        if RUN_DIAGNOSTICS is not None:
+            raw = {**shape, "stdout": result.stdout.decode(errors="replace"),
+                   "stderr": result.stderr.decode(errors="replace")}
+            path = RUN_DIAGNOSTICS / ("child-" + uuid.uuid4().hex + ".json")
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(descriptor, "w") as output:
+                json.dump(raw, output)
+        safe = {**shape, "stderr": redacted_output(result.stderr, argv, 2048),
+                "stdout": redacted_output(result.stdout, argv, 512)}
+        print("NATIVE_CHILD_FAILURE " + json.dumps(safe), file=sys.stderr, flush=True)
+        raise RuntimeError("Native acceptance child failed; safe receipt emitted")
+    return result
 
 
 class Person:
@@ -163,6 +195,9 @@ def accept(binary, root, report, source_sha, run_id):
     require(os.geteuid() == 0 and os.uname().machine == "x86_64", "Native root-owned Linux CI required")
     require(not root.exists(), "Acceptance root must be fresh")
     root.mkdir(mode=0o755)
+    global RUN_DIAGNOSTICS
+    RUN_DIAGNOSTICS = root / "diagnostics"
+    RUN_DIAGNOSTICS.mkdir(mode=0o700)
     require(binary.is_file() and not binary.is_symlink(), "Exact broker file required")
     require(run([str(binary), "--version"]).stdout.strip() == b"biorouter-crew 1.92.0", "Broker version mismatch")
     binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -183,6 +218,13 @@ def accept(binary, root, report, source_sha, run_id):
     runtime = None
     evidence = None
     try:
+        parents = []
+        for path in (root.parent, root, alice.home, state, binary.parent, binary):
+            metadata = path.stat()
+            parents.append(dict(role=("fixture-root" if path == root else "home" if path == alice.home else
+                                      "state" if path == state else "protected-binary" if path == binary else "parent"),
+                                uid=metadata.st_uid, gid=metadata.st_gid, mode=oct(metadata.st_mode & 0o7777)))
+        print("NATIVE_START_METADATA " + json.dumps(parents), flush=True)
         alice.command([binary, "start", "--name", "native-release-acceptance", "--state-dir", state,
                        "--bootstrap-key", alice.public])
         runtime = wait_runtime(state)
@@ -244,7 +286,15 @@ def accept(binary, root, report, source_sha, run_id):
                                         sqlResult=result, bobHistoryMatched=True,
                         noGrantDenied=True, revokedGrantDenied=True, sqliteUnchanged=True)
     finally:
-        cleanup(alice, bob, binary, state, runtime)
+        try:
+            if runtime is None and (state / "runtime.json").exists():
+                candidate = wait_runtime(state)
+                require(candidate.get("host_uid") == alice.account.pw_uid and
+                        Path("/proc").joinpath(str(candidate["pid"]), "exe").resolve() == binary,
+                        "Partially started broker cleanup identity mismatch")
+                runtime = candidate
+        finally:
+            cleanup(alice, bob, binary, state, runtime)
     require(evidence is not None, "Acceptance evidence missing")
     evidence["exactBrokerCleanup"] = True
     report.write_text(json.dumps(evidence, indent=2) + "\n")

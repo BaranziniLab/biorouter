@@ -61,6 +61,31 @@ class BridgeTests(unittest.TestCase):
             acceptance.cleanup(alice, bob, Path("/broker"), Path("/state"), {"pid": 123})
 
 
+class ChildFailureTests(unittest.TestCase):
+    def test_failure_receipt_redacts_long_arguments_and_opaque_values(self):
+        secret = "synthetic-long-credential-value-000000000000000000"
+        result = Mock(returncode=1, stdout=("opaque " + "a" * 64).encode(),
+                      stderr=("Permission denied " + secret).encode())
+        output = io.StringIO()
+        with patch.object(acceptance.subprocess, "run", return_value=result), \
+                patch.object(acceptance, "RUN_DIAGNOSTICS", None), patch.object(acceptance.sys, "stderr", output):
+            with self.assertRaisesRegex(RuntimeError, "safe receipt"):
+                acceptance.run(["/usr/bin/broker", "start", "--bootstrap-key", secret])
+        receipt = output.getvalue()
+        self.assertIn("Permission denied", receipt)
+        self.assertIn('"exitCode": 1', receipt)
+        self.assertIn('"method": "start"', receipt)
+        self.assertNotIn(secret, receipt)
+        self.assertNotIn("a" * 64, receipt)
+
+    def test_success_keeps_captured_output_without_a_failure_receipt(self):
+        result = Mock(returncode=0, stdout=b"ready", stderr=b"")
+        with patch.object(acceptance.subprocess, "run", return_value=result), \
+                patch.object(acceptance.sys, "stderr", io.StringIO()) as output:
+            self.assertIs(acceptance.run(["/broker", "start"]), result)
+        self.assertEqual(output.getvalue(), "")
+
+
 class ArtifactRedirectTests(unittest.TestCase):
     def redirect(self, target):
         request = acceptance.urllib.request.Request(
