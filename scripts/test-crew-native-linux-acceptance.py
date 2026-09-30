@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+import importlib.util
+import io
+from pathlib import Path
+import unittest
+from unittest.mock import Mock, patch
+
+spec = importlib.util.spec_from_file_location("acceptance", Path(__file__).with_name("crew-native-linux-acceptance.py"))
+acceptance = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(acceptance)
+
+
+class BridgeTests(unittest.TestCase):
+    def person(self, response):
+        person = acceptance.Person.__new__(acceptance.Person)
+        person.bridge = type("Bridge", (), {"stdin": io.BytesIO(), "stdout": io.BytesIO(response)})()
+        return person
+
+    def test_signing_payload_canonicalizes_nested_fields(self):
+        self.assertEqual(acceptance.encoded(["w", 1001, "n", "run.create", {"z": {"b": 2, "a": 1}, "a": 0}]),
+                         b'["w",1001,"n","run.create",{"a":0,"z":{"a":1,"b":2}}]')
+
+    def test_matching_response_is_accepted(self):
+        person = self.person(b'{"id":"expected","result":{"ok":true}}\n')
+        with patch.object(acceptance.uuid, "uuid4", return_value="expected"), patch.object(acceptance.select, "select", return_value=([1], [], [])):
+            self.assertEqual(person.call("hello", {}), {"ok": True})
+
+    def test_response_from_another_request_is_rejected(self):
+        person = self.person(b'{"id":"other","result":{}}\n')
+        with patch.object(acceptance.uuid, "uuid4", return_value="expected"), patch.object(acceptance.select, "select", return_value=([1], [], [])):
+            with self.assertRaisesRegex(RuntimeError, "identity mismatch"):
+                person.call("hello", {})
+
+    def test_protocol_error_is_not_success(self):
+        person = self.person(b'{"id":"expected","error":{"code":"forbidden"}}\n')
+        with patch.object(acceptance.uuid, "uuid4", return_value="expected"), patch.object(acceptance.select, "select", return_value=([1], [], [])):
+            with self.assertRaisesRegex(RuntimeError, "refused"):
+                person.call("run.create", {})
+
+    def test_timeout_is_not_an_empty_result(self):
+        person = self.person(b'')
+        with patch.object(acceptance.select, "select", return_value=([], [], [])):
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                person.call("hello", {})
+
+    def test_bob_and_exact_stop_are_attempted_after_alice_close_fails(self):
+        alice = Mock()
+        bob = Mock()
+        alice.close.side_effect = RuntimeError("Alice bridge close failed")
+        alice.command.return_value.stdout = b'{"stopped":true,"pid":123}'
+        with self.assertRaisesRegex(RuntimeError, "Alice bridge close failed"):
+            acceptance.cleanup(alice, bob, Path("/broker"), Path("/state"), {"pid": 123})
+        bob.close.assert_called_once_with()
+        alice.command.assert_called_once_with([Path("/broker"), "stop", "--state-dir", Path("/state")])
+
+    def test_cleanup_rejects_a_different_broker_pid(self):
+        alice = Mock()
+        bob = Mock()
+        alice.command.return_value.stdout = b'{"stopped":true,"pid":999}'
+        with self.assertRaisesRegex(RuntimeError, "Exact broker cleanup failed"):
+            acceptance.cleanup(alice, bob, Path("/broker"), Path("/state"), {"pid": 123})
+
+
+class ChildFailureTests(unittest.TestCase):
+    def test_failure_receipt_redacts_long_arguments_and_opaque_values(self):
+        secret = "synthetic-long-credential-value-000000000000000000"
+        result = Mock(returncode=1, stdout=("opaque " + "a" * 64).encode(),
+                      stderr=("Permission denied " + secret).encode())
+        output = io.StringIO()
+        with patch.object(acceptance.subprocess, "run", return_value=result), \
+                patch.object(acceptance, "RUN_DIAGNOSTICS", None), patch.object(acceptance.sys, "stderr", output):
+            with self.assertRaisesRegex(RuntimeError, "safe receipt"):
+                acceptance.run(["/usr/bin/broker", "start", "--bootstrap-key", secret])
+        receipt = output.getvalue()
+        self.assertIn("Permission denied", receipt)
+        self.assertIn('"exitCode": 1', receipt)
+        self.assertIn('"method": "start"', receipt)
+        self.assertNotIn(secret, receipt)
+        self.assertNotIn("a" * 64, receipt)
+
+    def test_success_keeps_captured_output_without_a_failure_receipt(self):
+        result = Mock(returncode=0, stdout=b"ready", stderr=b"")
+        with patch.object(acceptance.subprocess, "run", return_value=result), \
+                patch.object(acceptance.sys, "stderr", io.StringIO()) as output:
+            self.assertIs(acceptance.run(["/broker", "start"]), result)
+        self.assertEqual(output.getvalue(), "")
+
+
+class ArtifactRedirectTests(unittest.TestCase):
+    def redirect(self, target):
+        request = acceptance.urllib.request.Request(
+            "https://api.github.com/repos/example/actions/artifacts/1/zip",
+            headers={"Authorization": "Bearer synthetic-test-only", "Accept": "application/vnd.github+json"})
+        result = acceptance.ArtifactRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, target)
+        return request, result
+
+    def test_github_bearer_is_not_forwarded_to_signed_blob(self):
+        original, redirected = self.redirect("https://example.blob.core.windows.net/artifact?sig=synthetic")
+        self.assertFalse(redirected.has_header("Authorization"))
+        self.assertEqual(original.get_header("Authorization"), "Bearer synthetic-test-only")
+        self.assertEqual(redirected.get_header("Accept"), "application/vnd.github+json")
+
+    def test_same_origin_redirect_keeps_api_authorization(self):
+        _, redirected = self.redirect("https://api.github.com:443/repos/example/actions/artifacts/2/zip")
+        self.assertEqual(redirected.get_header("Authorization"), "Bearer synthetic-test-only")
+
+    def test_different_origin_port_removes_authorization(self):
+        _, redirected = self.redirect("https://api.github.com:444/artifact")
+        self.assertFalse(redirected.has_header("Authorization"))
+
+    def test_artifact_redirect_cannot_downgrade_https(self):
+        with self.assertRaisesRegex(RuntimeError, "remain HTTPS"):
+            self.redirect("http://example.blob.core.windows.net/artifact")
+
+
+if __name__ == "__main__":
+    unittest.main()

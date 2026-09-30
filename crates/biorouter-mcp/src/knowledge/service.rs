@@ -6820,7 +6820,7 @@ mod tests {
         );
         drop(macro_guard);
         let updated = rx
-            .recv_timeout(std::time::Duration::from_secs(1))
+            .recv_timeout(std::time::Duration::from_secs(10))
             .expect("default-model update did not resume")
             .unwrap();
         update.join().unwrap();

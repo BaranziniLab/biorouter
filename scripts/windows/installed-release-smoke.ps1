@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'release-startup-diagnostics.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'This installer test requires a disposable Windows GitHub Actions runner.'
 }
@@ -20,12 +21,16 @@ $root = Join-Path $env:RUNNER_TEMP ('br-installed-' + [Guid]::NewGuid().ToString
 $local = Join-Path $root 'local'
 $installed = Join-Path $local "biorouter_app/app-$Version"
 $owned = @{}
+$desktop = $null
+$daemon = $null
 $changedEnvironment = @('LOCALAPPDATA', 'APPDATA', 'SQUIRREL_TEMP', 'BIOROUTER_PATH_ROOT',
     'BIOROUTER_DISABLE_KEYRING', 'BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
     'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL',
-    'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT')
+    'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'DOTENV_CONFIG_PATH')
 $originalEnvironment = @{}
+$originalEnvironmentPresent = @{}
 foreach ($name in $changedEnvironment) {
+    $originalEnvironmentPresent[$name] = Test-Path -LiteralPath "Env:$name"
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 $result = [ordered]@{ version = $Version; passed = $false; assets = @(); installed = $installed;
@@ -51,7 +56,7 @@ function Update-OwnedProcesses {
 
 function Start-OwnedProcess {
     param([string]$File, [string[]]$Arguments, [string]$Label, [switch]$ShowWindow)
-    $options = @{ FilePath = $File; ArgumentList = $Arguments; PassThru = $true;
+    $options = @{ FilePath = $File; ArgumentList = $Arguments; PassThru = $true; WorkingDirectory = $root;
         RedirectStandardOutput = (Join-Path $root "$Label.stdout.log");
         RedirectStandardError = (Join-Path $root "$Label.stderr.log") }
     if (-not $ShowWindow) { $options.WindowStyle = 'Hidden' }
@@ -114,7 +119,7 @@ try {
     $env:BIOROUTER_DISABLE_KEYRING = 'true'
     foreach ($name in @('BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
         'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL')) {
-        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     $defaultInstall = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'biorouter_app'
     if (Test-Path -LiteralPath $defaultInstall) {
@@ -207,7 +212,24 @@ try {
 
     $env:ENABLE_PLAYWRIGHT = 'true'
     $env:PLAYWRIGHT_CDP_PORT = [string](Get-FreePort)
-    [Environment]::SetEnvironmentVariable('BIOROUTER_PORT', $null, 'Process')
+    Remove-Item -LiteralPath Env:BIOROUTER_PORT -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath Env:BIOROUTER_SERVER__SECRET_KEY -ErrorAction SilentlyContinue
+    $result.desktopServerSecretPreseedCleared = $true
+    $selector = [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
+    $result.desktopSharedSelectorBeforeClear = if (-not (Test-Path -LiteralPath Env:BIOROUTER_SHARED_DAEMON)) { 'absent' }
+        elseif ($selector.Length -eq 0) { 'empty' }
+        elseif ($selector.Trim().ToLowerInvariant() -in @('0', 'false', 'off', 'no')) { 'falsy' } else { 'truthy' }
+    Remove-Item -LiteralPath Env:BIOROUTER_SHARED_DAEMON -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath Env:DOTENV_CONFIG_PATH -ErrorAction SilentlyContinue
+    $result.desktopSharedSelectorProviderAbsent = -not (Test-Path -LiteralPath Env:BIOROUTER_SHARED_DAEMON)
+    $result.desktopDotenvPathProviderAbsent = -not (Test-Path -LiteralPath Env:DOTENV_CONFIG_PATH)
+    $result.desktopSharedSelectorAbsent = $null -eq [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
+    $result.desktopDotenvPathAbsent = $null -eq [Environment]::GetEnvironmentVariable('DOTENV_CONFIG_PATH', 'Process')
+    if (-not ($result.desktopSharedSelectorProviderAbsent -and $result.desktopDotenvPathProviderAbsent -and
+        $result.desktopSharedSelectorAbsent -and $result.desktopDotenvPathAbsent)) {
+        throw 'Desktop fixture retained a shared-daemon or dotenv environment override'
+    }
+    $result.desktopOwnedWorkingDirectory = $true
     $desktop = Start-OwnedProcess -File (Join-Path $installed 'Biorouter.exe') `
         -Arguments @("--user-data-dir=`"$(Join-Path $root 'electron')`"") -Label 'desktop' -ShowWindow
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
@@ -224,8 +246,8 @@ try {
                 Where-Object { $_.OwningProcess -in $childPids })
         }
         try {
-            $pages = @(Invoke-RestMethod "http://127.0.0.1:$env:PLAYWRIGHT_CDP_PORT/json/list" -TimeoutSec 2)
-            $renderer = @($pages | Where-Object { $_.type -eq 'page' -and $_.url -like 'file:*' })
+            $pages = @(Get-ReleaseCDPTargets -Port ([int]$env:PLAYWRIGHT_CDP_PORT))
+            $renderer = @($pages | Where-Object { Test-ReleaseFileTarget -Target $_ })
             if ($desktop.MainWindowHandle -ne 0 -and $listeners.Count -gt 0 -and $renderer.Count -gt 0) {
                 $ready = $true
                 $result.desktopDaemonPids = $childPids
@@ -239,9 +261,23 @@ try {
     $desktop.Refresh()
     if ($desktop.HasExited) { throw 'Installed desktop exited after startup' }
     $result.desktop = $true
+    Update-OwnedProcesses
+    foreach ($identity in @($owned.Values | Sort-Object CreationDate -Descending)) {
+        Stop-OwnedProcess -Identity $identity
+    }
+    Start-Sleep -Seconds 2
+    & (Join-Path $PSScriptRoot 'normal-release-smoke.ps1') -AppDirectory $installed `
+        -ZipAppDirectory $ZipAppDirectory -Version $Version -AssetEvidence $AssetEvidence `
+        -Report (Join-Path (Split-Path -Parent $Report) 'normal/windows-normal-smoke.json')
+    $result.normalDesktop = $true
     $result.passed = $true
 } catch {
-    $result.error = $_.Exception.Message
+    $result.error = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
+    try {
+        Update-OwnedProcesses
+        $result.startupDiagnostics = Get-ReleaseStartupSnapshot -Owned $owned -Desktop $desktop `
+            -DaemonPath $daemon -CDPPort ([int]$env:PLAYWRIGHT_CDP_PORT)
+    } catch { $result.startupDiagnosticError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message }
     throw
 } finally {
     try {
@@ -279,15 +315,23 @@ try {
         throw
     } finally {
         foreach ($name in $changedEnvironment) {
-            [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+            if ($originalEnvironmentPresent[$name]) {
+                [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+            } else {
+                Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+            }
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Report) | Out-Null
         foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
-            Copy-Item -LiteralPath $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
+            Copy-RedactedReleaseLog -Source $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
         }
         $setupLog = Join-Path $local 'SquirrelTemp/SquirrelSetup.log'
         if (Test-Path -LiteralPath $setupLog) {
-            Copy-Item -LiteralPath $setupLog -Destination (Join-Path (Split-Path -Parent $Report) 'SquirrelSetup.log')
+            Copy-RedactedReleaseLog -Source $setupLog -Destination (Join-Path (Split-Path -Parent $Report) 'SquirrelSetup.log')
+        }
+        foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'electron/logs') -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
+            Copy-RedactedReleaseLog -Source $log.FullName `
+                -Destination (Join-Path (Split-Path -Parent $Report) ('desktop-' + $log.Name))
         }
         try {
             if ($result.cleanup -and (Test-Path -LiteralPath $root)) {
