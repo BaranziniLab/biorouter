@@ -26,7 +26,7 @@ activities:
   - Validate Crew empty-state onboarding, isolated Alice/Bob/Carol development profiles, and private-by-default workspace presentation
   - Exercise Crew first-host preparation and SSH trust validation with synthetic invitation metadata only
   - Verify Crew request idempotency, human-only session access, and scoped normal-chat tool denial paths
-  - Exercise Crew CLI and daemon parity against an isolated synthetic profile, including help/version and explicit failure reporting
+  - Exercise Crew CLI and daemon parity against an isolated synthetic profile, including help/version and no-start refusal without a vault prompt
   - Verify Crew transfer lifecycle receipts, resume/forget behavior, and bounded file cleanup using disposable fixtures only
   - Measure performance and resource usage
   - Generate comprehensive test report
@@ -534,7 +534,7 @@ prompt: |
   only phase-owned state rooted under `{{ workspace_dir }}` for model-driven
   tool actions. The test harness may initialize the already-authorized Versa
   GPT-5.5 provider from the dedicated synthetic Alice provider host, without
-  copying or exporting its API key, approval secret, private key, SSH key,
+  copying or exporting its API key, saved user-action key, private key, SSH key,
   keyring entry, saved credential, or profile files into this phase. Keep that
   provider host and all secret-bearing files outside model tools and audit logs.
   Never request or manufacture human proof, start a daemon, open an SSH
@@ -571,6 +571,11 @@ prompt: |
      admission remain separate synthetic acceptance coverage.
      An unavailable binary is NOT OBSERVABLE, not a pass, and must not trigger a
      build or fallback.
+     Then run `<biorouter> crew --no-start --output-format json credentials status`
+     with closed standard input in the fresh isolated root. Require exit 1 with
+     code `crew_daemon_not_running`, no vault passphrase prompt, and no daemon
+     started. The shared service normally starts and connects silently; this
+     explicit `--no-start` check must refuse before any credential setup.
   4. Recheck the isolated snapshots and audit the harness metadata. Allow only
      expected new test-session metadata from the standalone conversation; do
      not falsely claim that no session row or run metadata was created. Require

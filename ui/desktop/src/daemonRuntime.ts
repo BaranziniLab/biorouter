@@ -3,7 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import net from 'node:net';
-import { timingSafeEqual } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { biorouterConfigDir } from './utils/biorouterPaths';
 
 export interface DaemonRuntime {
@@ -44,7 +45,7 @@ export interface DaemonProxy {
   probe(): Promise<DaemonLoss | undefined>;
   /**
    * Point this proxy, at the same local address, at another instance of the same profile's
-   * daemon. Only after a person agreed to it: the proxy never follows a different instance on its
+   * daemon. Only when the app reconnects: the proxy never follows a different instance on its
    * own. The new instance is verified first (its identity on the private socket, and that it
    * accepts `daemonProof` as a person's approval); if either check fails nothing changes.
    */
@@ -57,7 +58,7 @@ export type DaemonConnectionEvent =
 
 /**
  * The attached instance answered as a different one: its identity, or its refusal of the secret
- * this app holds for it. Never followed; a person decides whether to reattach.
+ * this app holds for it. Never followed; the app reconnects to the new instance explicitly.
  */
 export class DaemonIdentityChangedError extends Error {
   constructor() {
@@ -83,7 +84,7 @@ export function daemonLossOf(error: unknown): DaemonLossReason | undefined {
 export const DAEMON_RESTARTED_CODE = 'daemon_restarted';
 /** What a person reads for it, wherever a surface shows the daemon's own words. */
 export const DAEMON_RESTARTED_MESSAGE =
-  "Biorouter's background service restarted. Reconnect when Biorouter asks, or quit and reopen Biorouter.";
+  "Biorouter's background service restarted. Biorouter reconnects to it on its own; if this message stays, quit and reopen Biorouter.";
 /** The status a proxied request fails with for any other verification failure. */
 export const DAEMON_UNAVAILABLE_CODE = 'daemon_unavailable';
 export const DAEMON_UNAVAILABLE_MESSAGE =
@@ -111,7 +112,7 @@ function privateOwned(location: string, kind: 'file' | 'directory' | 'socket'): 
     !valid ||
     stat.isSymbolicLink() ||
     stat.uid !== process.getuid?.() ||
-    (stat.mode & 0o777) !== (kind === 'directory' ? 0o700 : 0o600)
+    (stat.mode & 0o7777) !== (kind === 'directory' ? 0o700 : 0o600)
   )
     throw new Error(
       `Daemon ${kind} must be private, owned by this user, and not a symbolic link: ${location}`
@@ -126,7 +127,7 @@ function privateJson(location: string): unknown {
     if (
       !stat.isFile() ||
       stat.uid !== process.getuid?.() ||
-      (stat.mode & 0o777) !== 0o600 ||
+      (stat.mode & 0o7777) !== 0o600 ||
       stat.size > 16384 ||
       stat.nlink !== 1
     )
@@ -279,10 +280,22 @@ export async function verifyDaemonRuntime(runtime: DaemonRuntime): Promise<void>
 }
 
 /**
+ * The instance refused the user-action key this app presented (403 on a person-gated route). It
+ * was started with another key, for example by an earlier Biorouter that asked a person for one,
+ * so this app cannot use it and replaces it.
+ */
+export class DaemonKeyRefusedError extends Error {
+  constructor() {
+    super('The background service did not accept the user-action key Biorouter saved for it.');
+    this.name = 'DaemonKeyRefusedError';
+  }
+}
+
+/**
  * Whether the verified instance accepts `daemonProof` as a person's approval: a person-gated
  * route (`GET /crew/connections`) asked over the same verified connection, with the instance's
- * own secret. What the desktop's first attach asks through its proxy, asked before a proxy is
- * pointed at the instance.
+ * own secret. Rejects with {@link DaemonKeyRefusedError} when the instance refuses the key, and
+ * with another error for any other failure.
  */
 export async function verifyHumanAuthorizedAccess(
   runtime: DaemonRuntime,
@@ -313,13 +326,308 @@ export async function verifyHumanAuthorizedAccess(
       request.on('error', reject);
       request.end();
     });
+    if (status === 403) throw new DaemonKeyRefusedError();
     if (status < 200 || status >= 300)
-      throw new Error(
-        'The background service did not accept that approval secret. Check it, then reconnect again.'
-      );
+      throw new Error(`The background service answered its approval check with status ${status}.`);
   } finally {
     agent.destroy();
   }
+}
+
+/**
+ * The version the verified instance reports (`GET /system_info`, `app_version`), asked over the
+ * verified connection with the instance's own secret.
+ */
+export async function daemonVersion(runtime: DaemonRuntime): Promise<string> {
+  const agent = await authenticatedAgent(runtime);
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const request = http.request(
+        {
+          socketPath: runtime.endpoint.path,
+          path: '/system_info',
+          agent,
+          headers: { 'X-Secret-Key': runtime.api_secret },
+        },
+        (response) => {
+          let body = '';
+          response.on('data', (chunk: Buffer) => {
+            body += chunk.toString();
+            if (body.length > 65536)
+              response.destroy(new Error('Daemon system information exceeds its size limit.'));
+          });
+          response.on('error', reject);
+          response.on('end', () => {
+            let info: { app_version?: unknown } | null = null;
+            try {
+              info = JSON.parse(body);
+            } catch {
+              info = null;
+            }
+            if (response.statusCode !== 200 || typeof info?.app_version !== 'string') {
+              reject(new Error('The background service did not report its version.'));
+              return;
+            }
+            resolve(info.app_version);
+          });
+        }
+      );
+      request.setTimeout(5000, () =>
+        request.destroy(new Error('Reading the background service version timed out.'))
+      );
+      request.on('error', reject);
+      request.end();
+    });
+  } finally {
+    agent.destroy();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The user-action key file
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The file that holds the shared daemon's user-action key, beside `runtime.json` in the same
+ * private directory. Whoever starts the daemon (this app or `biorouter crew`) mints the key, sends
+ * only its SHA-256 digest to the daemon on stdin, and saves the key here (mode 0600) so the app
+ * and the CLI connect without asking anyone for anything. The daemon removes it when it exits.
+ */
+export const USER_ACTION_KEY_FILE = 'user-action-key.json';
+
+export function userActionKeyPath(): string {
+  return path.join(path.dirname(daemonRuntimePath()), USER_ACTION_KEY_FILE);
+}
+
+interface UserActionKeyRecord {
+  version: 1;
+  profile_id: string;
+  instance_id: string;
+  pid: number;
+  key: string;
+}
+
+const USER_ACTION_KEY_FIELDS = ['instance_id', 'key', 'pid', 'profile_id', 'version'];
+
+/** A new user-action key: 32 random bytes as 64 lowercase hex characters. */
+export function generateUserActionKey(): string {
+  return randomBytes(32).toString('hex');
+}
+
+/** The key in `value`, when it is a well-formed record for exactly this instance. */
+function keyFor(value: unknown, runtime: DaemonRuntime): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(',') !== USER_ACTION_KEY_FIELDS.join(',')) return undefined;
+  if (
+    record.version !== 1 ||
+    record.profile_id !== runtime.profile_id ||
+    record.instance_id !== runtime.instance_id ||
+    record.pid !== runtime.pid ||
+    typeof record.key !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(record.key)
+  )
+    return undefined;
+  return record.key;
+}
+
+/** The saved key for `runtime` as the file holds it now, or `undefined`. */
+function readUserActionKeyOnce(runtime: DaemonRuntime): string | undefined {
+  try {
+    return keyFor(privateJson(userActionKeyPath()), runtime);
+  } catch {
+    // Missing, not private, or not JSON: no key this app can use.
+    return undefined;
+  }
+}
+
+/**
+ * The user-action key saved for `runtime`, or `undefined` when there is none for this exact
+ * instance. The starter writes the file right after the daemon publishes `runtime.json`, so a
+ * missing or mismatched record is read again every `intervalMs` for up to `graceMs`.
+ */
+export async function readUserActionKey(
+  runtime: DaemonRuntime,
+  { graceMs = 5000, intervalMs = 100 }: { graceMs?: number; intervalMs?: number } = {}
+): Promise<string | undefined> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    const key = readUserActionKeyOnce(runtime);
+    if (key || Date.now() >= deadline) return key;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+/**
+ * Save `key` as the user-action key of `runtime`: mode 0600, in the private runtime directory,
+ * written to a temporary file in the same directory and renamed over the old one, so a reader
+ * never sees a partial record.
+ */
+export function writeUserActionKey(runtime: DaemonRuntime, key: string): void {
+  if (!/^[0-9a-f]{64}$/.test(key)) throw new Error('A user-action key is 64 lowercase hex digits.');
+  const target = userActionKeyPath();
+  const directory = path.dirname(target);
+  privateOwned(directory, 'directory');
+  const record: UserActionKeyRecord = {
+    version: 1,
+    profile_id: runtime.profile_id,
+    instance_id: runtime.instance_id,
+    pid: runtime.pid,
+    key,
+  };
+  const temporary = path.join(
+    directory,
+    `.${USER_ACTION_KEY_FILE}.${randomBytes(8).toString('hex')}.tmp`
+  );
+  const handle = fs.openSync(
+    temporary,
+    fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW,
+    0o600
+  );
+  let renamed = false;
+  try {
+    try {
+      fs.fchmodSync(handle, 0o600);
+      fs.writeFileSync(handle, JSON.stringify(record));
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+    fs.renameSync(temporary, target);
+    renamed = true;
+    syncDirectory(directory);
+  } finally {
+    if (!renamed) fs.rmSync(temporary, { force: true });
+  }
+}
+
+function syncDirectory(directory: string): void {
+  let handle: number | undefined;
+  try {
+    handle = fs.openSync(directory, fs.constants.O_RDONLY);
+    fs.fsyncSync(handle);
+  } catch {
+    // Not every platform can fsync a directory; the rename has already landed.
+  } finally {
+    if (handle !== undefined) fs.closeSync(handle);
+  }
+}
+
+/** Remove the saved key, only while it still belongs to `runtime`. */
+export function removeUserActionKey(runtime: DaemonRuntime): void {
+  if (readUserActionKeyOnce(runtime) === undefined) return;
+  fs.rmSync(userActionKeyPath(), { force: true });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stopping a daemon this app cannot use
+// ---------------------------------------------------------------------------------------------
+
+/** The signals a stop sends. */
+export type StopSignal = 'SIGTERM' | 'SIGKILL';
+
+export interface StopDaemonDeps {
+  /** `kill(pid, signal)`; signal 0 only asks whether the process exists. */
+  kill(pid: number, signal: StopSignal | 0): void;
+  /** The executable name of `pid`, or `undefined` when it cannot be read. */
+  processName(pid: number): Promise<string | undefined>;
+  wait(ms: number): Promise<void>;
+  now(): number;
+}
+
+async function processName(pid: number): Promise<string | undefined> {
+  if (process.platform === 'linux') {
+    // `comm`, not `exe`: after a package upgrade `exe` reads "... (deleted)".
+    try {
+      return (await fs.promises.readFile(`/proc/${pid}/comm`, 'utf8')).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return new Promise((resolve) => {
+    execFile('ps', ['-o', 'comm=', '-p', String(pid)], { timeout: 5000 }, (error, stdout) => {
+      const name = String(stdout ?? '').trim();
+      resolve(error || !name ? undefined : path.basename(name));
+    });
+  });
+}
+
+const defaultStopDeps: StopDaemonDeps = {
+  kill: (pid, signal) => {
+    process.kill(pid, signal);
+  },
+  processName,
+  wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: () => Date.now(),
+};
+
+function alive(deps: StopDaemonDeps, pid: number): boolean {
+  try {
+    deps.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: string }).code !== 'ESRCH';
+  }
+}
+
+async function waitForExit(deps: StopDaemonDeps, pid: number, ms: number): Promise<boolean> {
+  const deadline = deps.now() + ms;
+  while (alive(deps, pid)) {
+    if (deps.now() >= deadline) return false;
+    await deps.wait(100);
+  }
+  return true;
+}
+
+function couldNotStop(pid: number): Error {
+  return new Error(
+    `Biorouter could not stop the old background service (process ${pid}). Quit it, then open Biorouter again.`
+  );
+}
+
+/**
+ * Stop this profile's daemon without a user-action key. It runs as the same user, so a signal
+ * is enough, and it is sent only after checking that `pid` really is this profile's daemon: the
+ * instance on the private socket answers with the descriptor's pid and instance, and the process
+ * is named `biorouterd`. SIGTERM first (the daemon's graceful stop, which removes its runtime
+ * records), SIGKILL after 15 seconds.
+ */
+export async function stopProfileDaemon(
+  runtime: DaemonRuntime,
+  deps: StopDaemonDeps = defaultStopDeps,
+  verify: (runtime: DaemonRuntime) => Promise<void> = verifyDaemonRuntime
+): Promise<void> {
+  const { pid } = runtime;
+  try {
+    await verify(runtime);
+  } catch (error) {
+    // Nothing answers on its socket any more: nothing to stop unless the process lingers.
+    if (daemonLossOf(error) !== 'gone') throw error;
+    if (!alive(deps, pid)) return;
+  }
+  if ((await deps.processName(pid)) !== 'biorouterd')
+    throw new Error(
+      `Process ${pid} is not a Biorouter background service, so Biorouter did not stop it.`
+    );
+  try {
+    deps.kill(pid, 'SIGTERM');
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ESRCH') return;
+    throw error;
+  }
+  if (await waitForExit(deps, pid, 15000)) return;
+  if ((await deps.processName(pid)) !== 'biorouterd') {
+    if (!alive(deps, pid)) return;
+    throw couldNotStop(pid);
+  }
+  try {
+    deps.kill(pid, 'SIGKILL');
+  } catch (error) {
+    if ((error as { code?: string }).code === 'ESRCH') return;
+    throw error;
+  }
+  if (await waitForExit(deps, pid, 3000)) return;
+  throw couldNotStop(pid);
 }
 
 function matches(value: string | string[] | undefined, expected: string): boolean {
@@ -336,8 +644,8 @@ function matches(value: string | string[] | undefined, expected: string): boolea
  * private socket is verified on the same connection the request then travels, so a request never
  * reaches a different instance. When that instance is lost (restarted, stopped, replaced), requests
  * fail with `daemon_restarted` and listeners hear `lost`; the proxy never follows the new instance
- * by itself. {@link DaemonProxy.retarget} is how a person's decision to reattach is carried out,
- * at the same local address, so every window's `BIOROUTER_API_HOST` stays valid (R-1).
+ * by itself. {@link DaemonProxy.retarget} is how the app reconnects to a new instance, at the
+ * same local address, so every window's `BIOROUTER_API_HOST` stays valid (R-1).
  */
 export async function createDaemonProxy(
   runtime: DaemonRuntime,
@@ -632,7 +940,7 @@ export async function createDaemonProxy(
       if (next.profile_id !== target.runtime.profile_id)
         throw new Error('That background service belongs to another Biorouter profile.');
       // Verified before anything changes: the instance on the private socket, and that it takes
-      // the secret the person gave as a person's approval.
+      // the saved user-action key as a person's approval.
       await verifyHumanAuthorizedAccess(next, proof);
       if (closed) throw new Error('The daemon proxy is closed.');
       const previous = target;

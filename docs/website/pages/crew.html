@@ -34,14 +34,14 @@
   <li><strong>An invitation.</strong> The host sends it. It expires after 24 hours.</li>
 </ul>
 
-<h3 id="crew-approval-secret">The approval secret</h3>
-<p>On macOS and Linux, the background service acts for you only with your approval secret. It is not your login or SSH password. The first time the service starts, and after each restart of your computer, Biorouter asks you to choose one.</p>
-<ol class="steps">
-  <li><strong>Set it</strong> In "Set approval secret for shared Biorouter daemon", enter 32 to 4096 letters, numbers and punctuation marks, with no spaces. You can paste it.</li>
-  <li><strong>Keep it</strong> Save it in your password manager. Biorouter cannot show it again.</li>
-  <li><strong>Confirm it</strong> Enter it again in "Confirm shared daemon approval secret". Biorouter opens.</li>
-</ol>
-<p>Quitting the app leaves the service running. When you open Biorouter again, type the secret in "Connect to existing Biorouter daemon". If you forget it, restart your computer and set a new one. Windows has no approval secret. There, quitting the app stops the service, and the <code>biorouter crew</code> commands do not work.</p>
+<h3 id="crew-approval-secret">The background service</h3>
+<p>On macOS and Linux, Biorouter starts the background service and connects to it automatically. You do not choose or type a daemon approval secret. Quitting the app leaves the service running, so Crew stays connected. Opening the app again uses the same service.</p>
+<ul>
+  <li>After your computer restarts, opening Biorouter or running a <code>biorouter crew</code> command starts the service again.</li>
+  <li>After an update, the app replaces the older service when you open it. This can interrupt a task or transfer, so check their status afterward.</li>
+  <li>On Windows, quitting the app stops the service, and the <code>biorouter crew</code> commands do not work.</li>
+</ul>
+<p>A Crew vault has its own passphrase. Setting one up or unlocking it still asks for that passphrase; see <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/privacy-and-security.md#use-an-encrypted-vault">Use an encrypted vault</a>.</p>
 
 <h2 id="crew-join">Join a workspace</h2>
 <p>Send the host your exact username on the server. The host sends back an invitation message that ends with a line starting <code>brcrew1:</code>. It holds no secret.</p>
@@ -179,8 +179,9 @@
 <h2 id="crew-command-line">Command line</h2>
 <p>The <code>biorouter crew</code> commands reach the same workspaces as the app, on macOS and Linux. Add <code class="code-token">--help</code> after any command for its options.</p>
 <ul>
-  <li>Every command except <code>daemon status</code> asks for your approval secret.</li>
-  <li><code class="code-token">--approval-key-stdin</code> reads the secret from the first line of standard input instead. Use it in a script.</li>
+  <li>Workspace and credentials commands start the background service when needed and connect without a daemon approval secret. <code class="code-token">--no-start</code> connects only to an existing service. <code>daemon status</code> checks the status without starting it.</li>
+  <li>Setting up or unlocking a Crew vault still asks for its passphrase. In a script, <code class="code-token">--passphrase-stdin</code> reads that passphrase from the first line of standard input.</li>
+  <li><code class="code-token">--approval-key-stdin</code> remains accepted for older scripts: it reads and ignores the first line of standard input. It cannot be combined with <code class="code-token">--passphrase-stdin</code>.</li>
   <li><code>--connection NAME</code> chooses a saved connection when you have more than one.</li>
   <li><code>--output-format json</code> prints JSON, errors included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>
 </ul>
@@ -200,6 +201,7 @@ biorouter crew tasks start methods \
 <p><code>privacy set-personal public</code> and <code>privacy set-workspace public</code> ask you to type the workspace name first, as the desktop app does. In a script, add <code>--confirm WORKSPACE</code>. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md">Command line</a>.</p>
 
 <h2 id="crew-troubleshooting">When something goes wrong</h2>
+<p>If Crew says a feature needs a newer background service, quit and reopen Biorouter. On macOS and Linux it replaces the older service. For command-line use, run <code>biorouter crew daemon stop</code>, then your command again. An open app starts a new service and reconnects automatically.</p>
 <p>The status row names your connection's state, such as Connected, Offline or Sign-in needed, and the main area or the connection bar says what to do next. After a network drop, Crew reconnects by itself for up to an hour, and it never sends a message twice. If the server's identity changed, do not connect. Copy the details for your IT team instead. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/connections-and-troubleshooting.md">Connections and troubleshooting</a> lists every status and message.</p>
 
 <h2 id="crew-administrators">Server setup for administrators</h2>

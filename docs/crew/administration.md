@@ -192,7 +192,6 @@ On member computers, each Biorouter background service listens on a TCP port on 
 - Each member needs the Biorouter app or command line, and the OpenSSH client.
 - On macOS and Linux, the app and command line share one background service per profile, which keeps running after the app closes. The command line needs `biorouterd` beside `biorouter`. On Windows it cannot use the service: `Shared Crew daemon IPC is unavailable on this platform`.
 - A [managed policy](../security/managed-policy.md) with a hook under `hooks` or `allow_project_hooks: true`, or one that does not parse, blocks agent tasks and chat access with "Crew is unavailable with required managed hooks…" or "…the managed policy could not be loaded…". Messages and files still work.
-- Each person also keeps an approval secret. See [Getting started](getting-started.md).
 - Crew keeps device keys in the system keyring, and never in a plain file. A Linux computer with no keyring service (Secret Service), such as a login node reached only over SSH, needs `biorouter crew credentials init` before its first workspace. See [Keep device keys in an encrypted vault](command-line.md#keep-device-keys-in-an-encrypted-vault).
 
 ## Where Crew keeps its data
@@ -250,7 +249,7 @@ The new broker reads the journal as it is. To roll back, work in `~/.local/bin`:
 
 Members replace their own copy the same way. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", upgrade the broker.
 
-After a Biorouter update, each computer's background service stays old until it restarts, because reopening Biorouter on macOS or Linux attaches to the running one. "…needs a newer Biorouter background service…" in the app, or `Restart the shared Biorouter daemon to …` in a terminal, means this. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
+After a Biorouter update, reopening Biorouter on macOS or Linux replaces an older background service automatically. A terminal command replaces a service it cannot use, while `--no-start` refuses instead. An already open window can still show "…needs a newer Biorouter background service…", or a terminal command can say `Restart the shared Biorouter daemon to …`. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
 
 ## Back up a workspace
 

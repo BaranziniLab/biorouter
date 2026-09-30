@@ -29,7 +29,7 @@
 
 <h2 id="architecture-daemon">The background service</h2>
 <p><code>biorouterd</code> serves the agent over local HTTP and WebSocket. The desktop app starts one for all of its windows. Schedules run inside it, so they run while it runs.</p>
-<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit.</p>
+<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit. The shared service starts and connects automatically, without a daemon approval secret. After an update, opening the app replaces the older service; this can interrupt a running task or transfer.</p>
 <p>The same release adds Crew, which connects the service to a lab workspace. The host runs the workspace with <code>biorouter-crew</code> on a shared Linux server, and each member's service reaches it over SSH through that member's own account on the server. Each member's agent still runs on their own computer, with their own model.</p>
 
 <h2 id="architecture-interfaces">How each interface connects</h2>

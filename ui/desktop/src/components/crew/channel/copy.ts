@@ -79,8 +79,8 @@ export const connectionBarCopy = {
    */
   /**
    * The app lost its background service (it restarted), so no Crew request can reach it until
-   * Biorouter reconnects (RES2-N7): said in place of "Live updates stopped" and its Retry, which
-   * led only to "Crew couldn't load your saved workspaces". Reconnect is the sidebar notice's.
+   * Biorouter reconnects, which it does on its own (RES2-N7): said in place of "Live updates
+   * stopped" and its Retry, which led only to "Crew couldn't load your saved workspaces".
    */
   /**
    * The workspace server has stopped saving changes (its `hello` says so, T3-BE-13, RES2-N2):
@@ -98,7 +98,7 @@ export const connectionBarCopy = {
       ? `Ask ${hostName ?? 'your host'} to free space on the server and restart Crew.`
       : `Ask ${hostName ?? 'your host'} to check the server’s storage and restart Crew.`,
   daemonAway:
-    'Biorouter’s background service restarted, so Crew can’t reach your workspaces until Biorouter reconnects.',
+    'Biorouter lost its connection to its background service, so Crew can’t reach your workspaces until Biorouter reconnects.',
   daemonReconnect: 'Reconnect',
   daemonReconnecting: 'Reconnecting…',
   keyRefused: (host: string, user: string | null) =>

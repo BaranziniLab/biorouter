@@ -97,7 +97,7 @@ When Crew refuses an agent or a setting for privacy, the message names the rule.
 
 You send your code, such as `7QK2-M9XA-3JTP-WZ4D`, to the host to be let in. Your computer makes it, so the server cannot change it. The workspace fingerprint, such as `3F2A 9C1E 77B0 D4E1`, is never sent. To check an invitation, open **Check this invitation (optional)** when you join, and join only if your host reads the same fingerprint from Crew.
 
-Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account. If Biorouter asks you to "Set approval secret for shared Biorouter daemon", keep your own copy. You need it to reconnect.
+Your device key's private half never leaves your computer. **Keys and security…**, in the You menu at the bottom of the Crew sidebar, shows where your keys are stored and each device on your account.
 
 ### New device notice
 
@@ -109,7 +109,7 @@ A vault keeps your device keys in a file locked by a passphrase, instead of the 
 
 1. Open **Keys and security…** from the You menu.
 2. Choose **Use an encrypted vault instead**, then **Set up vault…**.
-3. In "Initialize Crew encrypted vault", type a new passphrase. It must differ from the approval secret.
+3. In "Initialize Crew encrypted vault", type a new passphrase.
 4. In "Confirm Crew vault passphrase", type it again.
 
 **Keys and security…** now reads "Stored in an encrypted vault" and offers **Lock**. When the vault is locked, the connection bar says "Your Crew vault is locked." Choose **Unlock** there or in **Keys and security…**, then type the passphrase.

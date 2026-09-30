@@ -631,13 +631,12 @@ export async function shareDroppedFile(
 }
 
 /**
- * The development auto-confirm's gate: exactly the development approval stdin's conditions
- * (`createDevelopmentApprovalReader`): an unpackaged app, a validated development profile,
+ * The development auto-confirm's gate: an unpackaged app, a validated development profile,
  * `ENABLE_PLAYWRIGHT` and shared daemon mode, plus `BIOROUTER_DEV_AUTO_CONFIRM_SHARE=1` exactly.
  *
- * Unlike the approval stdin it never throws: a stray variable in an installed build must not stop
- * the app from starting. It fails closed instead, leaving the native dialog on, and says why in
- * `notice` so the refusal is not silent.
+ * It never throws: a stray variable in an installed build must not stop the app from starting.
+ * It fails closed instead, leaving the native dialog on, and says why in `notice` so the refusal
+ * is not silent.
  */
 export function resolveDevAutoConfirmShare(options: {
   value: string | undefined;

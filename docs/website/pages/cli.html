@@ -148,7 +148,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
-    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. With <code class="code-token">--approval-key-stdin</code>, <code class="code-token">--no-start</code> and <code class="code-token">--create-only</code>.</td></tr>
+    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
   </tbody>
 </table></div>
 <div class="doc-table-scroll"><table class="ref">
@@ -346,7 +346,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Steering a turn while it runs</td><td>No. What you type waits and is sent when the turn ends.</td></tr>
     <tr><td>A subagent's own tab</td><td>Read only.</td></tr>
     <tr><td>Changing the model or provider</td><td>No, by design. See above.</td></tr>
-    <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs the approval secret a person types into the desktop app or <code>biorouter crew</code>, and the daemon <code>serve</code> starts never holds one. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
+    <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
     <tr><td>Approvals that need proof a person acted</td><td>A note takes the place of the buttons, and the agent is not offered skill or extension installs and removals. Run <code>biorouter skill</code> and <code>biorouter extension</code> on the host instead.</td></tr>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>

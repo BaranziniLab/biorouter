@@ -2553,7 +2553,7 @@ impl Ctx {
                 None => "Biorouter daemon running for this profile.".into(),
             });
             if value.get("user_action_installed").and_then(Value::as_bool) == Some(false) {
-                out.push("It has no human approval authority; restart it with the trusted Crew terminal launcher.".into());
+                out.push("It cannot verify human Crew actions. Stop it with biorouter crew daemon stop, and the next biorouter crew command starts a new one.".into());
             }
         }
         out.extend(self.detail_ids(value, DAEMON_IDS));

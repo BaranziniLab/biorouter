@@ -12,6 +12,9 @@
 #   bump <ver>        Bump version in the 5 release files + refresh Cargo.lock.
 #   backends <ver>    Compile release backends for all 4 targets
 #                     (mac arm64, mac x64, windows-gnu, linux-gnu).
+#   mac-backends <ver>
+#                     Compile mac arm64/x64 backends and signed helpers; use
+#                     adopt-ci for Linux and Windows packages from the same SHA.
 #   linux-backend <ver>
 #                     Rebuild just the linux x86_64 backend from scratch.
 #   mac-arm64 <ver>   Package + sign + NOTARIZE the Apple Silicon .dmg.
@@ -202,7 +205,7 @@ start_release_provenance() {
 assert_release_source() {
   local v="$1" file source_sha
   file="$(release_provenance_file "$v")"
-  [ -f "$file" ] || die "release provenance missing: run scripts/release.sh backends $v before packaging"
+  [ -f "$file" ] || die "release provenance missing: run scripts/release.sh mac-backends $v (or backends) before packaging"
   [ "$(release_provenance_value "$file" schema)" = "$RELEASE_PROVENANCE_SCHEMA" ] \
     || die "unsupported or corrupt release provenance: $file"
   [ "$(release_provenance_value "$file" version)" = "$v" ] \
@@ -408,15 +411,30 @@ run_cross_release() { # <cross function> <target volume> <cargo command> <post c
   return "$rc"
 }
 
-cmd_backends() {
-  local v="$1"
-  start_release_provenance "$v"
+build_mac_backends() {
+  local v="$1" helper_target
   activate_hermit
   log "compiling mac arm64 release backend"
   cargo build --release
   log "compiling mac x64 release backend"
   cargo build --release --target x86_64-apple-darwin
+  for helper_target in darwin-arm64 darwin-x64; do
+    build_computer_use_helper "$helper_target"
+  done
+  assert_release_source "$v"
+}
 
+cmd_mac-backends() {
+  local v="$1"
+  start_release_provenance "$v"
+  build_mac_backends "$v"
+  log "mac backends and signed helpers compiled; adopt-ci supplies Linux and Windows"
+}
+
+cmd_backends() {
+  local v="$1"
+  start_release_provenance "$v"
+  build_mac_backends "$v"
   ensure_docker
   log "cross-compiling windows-gnu backend (docker)"
   run_cross_release \
@@ -430,11 +448,6 @@ cmd_backends() {
      $WIN_DLL_STAGE"
 
   cmd_linux-backend "$v"
-  # Only the payloads the release path packages here. The win32 and linux ones
-  # are built by the phases that package them (see build_computer_use_helper).
-  for helper_target in darwin-arm64 darwin-x64; do
-    build_computer_use_helper "$helper_target"
-  done
   assert_release_source "$v"
   log "all 4 backends compiled"
 }
@@ -1275,7 +1288,7 @@ case "$CMD" in
       log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
     fi
     ;;
-  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|adopt-ci|verify|draft|publish|landing)
+  backends|mac-backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|adopt-ci|verify|draft|publish|landing)
     need_version "$VER"
     # Keywords are deliberately REFUSED here. These phases run against a tree
     # that `bump` has already rewritten, so `minor` would resolve against the
@@ -1286,5 +1299,5 @@ case "$CMD" in
         die "'$VER' is only valid for 'bump' and 'all'. This phase needs the explicit version the tree is already at: $(current_version)" ;;
     esac
     "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|adopt-ci|verify|draft|publish|landing|all} <version|major|minor|patch>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|mac-backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|adopt-ci|verify|draft|publish|landing|all} <version|major|minor|patch>" ;;
 esac

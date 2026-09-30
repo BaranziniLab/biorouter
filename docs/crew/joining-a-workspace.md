@@ -13,7 +13,6 @@ Examples use the host Alice Chen (@alice), the workspace `chen-lab` on `lab.exam
 | You need | If it is missing |
 |---|---|
 | The Biorouter desktop app. | See [Installation and setup](../getting-started/installation.md). |
-| An approval secret, on a Mac or Linux computer. | See [The approval secret](getting-started.md#the-approval-secret). |
 | An account on the lab server, reached with SSH (Secure Shell, how your computer signs in to a server). | Ask your IT team. |
 | Your exact server username, sent to your host before they invite you. It is the name before the @ in `ssh bob@lab.example.edu`. `bob` does not match `crew_bob`. | Ask IT for it. |
 | The invitation. It lasts 24 hours. | Ask your host to invite you again. |
@@ -60,7 +59,7 @@ To install it yourself, follow [Install Crew on the server](hosting-a-workspace.
 
 The invitation is a message with a line that starts `brcrew1:`. It holds no secret. Nobody can join with a copy alone.
 
-1. Open Biorouter. On a Mac or Linux computer, type your approval secret when Biorouter asks ([The approval secret](getting-started.md#the-approval-secret)).
+1. Open Biorouter.
 2. Choose **Crew** in the left sidebar, then **Join a workspace**. If you already have a workspace, choose its name at the top of the Crew sidebar, then **Add a workspace** and **Join a workspace…**.
 3. Paste the whole message into **Invitation from your host**. The box folds to "Invitation read", and a summary appears. **Edit** reopens the box.
 4. Check that the summary names the right workspace and host, for example "Hosted by Alice Chen (@alice) on lab.example.edu". If not, choose **Cancel**.
@@ -220,7 +219,7 @@ If your host asks for a join request, or sends a token, while your code card sho
 
 ## Related documentation
 
-- [Getting started](getting-started.md): the approval secret and jump hosts.
+- [Getting started](getting-started.md): the background service and jump hosts.
 - [Hosting a workspace](hosting-a-workspace.md): your host's side.
 - [Teams, channels and people](teams-channels-and-people.md): your name and teams.
 - [Privacy and security](privacy-and-security.md): Private, Public and fingerprints.

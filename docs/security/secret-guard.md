@@ -34,6 +34,14 @@ does not recognise, so the name is the only thing that stops a read.
 Their neighbours stay readable: `.git/config`, `.ssh/config`, `.docker/daemon.json`,
 `.kube/cache/…` and `.config/gh/config.yml`.
 
+Since 2026-09-29 it also names `daemon/user-action-key.json`. That file holds the key that tells
+the shared background service a person is acting through the desktop app or `biorouter crew`.
+It lives beside the service's `runtime.json`, at `~/.local/state/biorouter/daemon/` by default
+(`$BIOROUTER_PATH_ROOT/state/daemon/` or `$XDG_STATE_HOME/biorouter/daemon/` when set). Whoever
+starts the service writes it with mode 0600 in a 0700 directory, and the service removes it when
+it exits. The name stops a model's casual read. The computer belongs to its user, so the design
+does not try to stop an agent the user runs from acting as them. `runtime.json` is not on the floor.
+
 The floor is not only the agent's. Crew's local file registration
 ([`crates/biorouter-server/src/crew/local_files.rs`](../../crates/biorouter-server/src/crew/local_files.rs))
 refuses an upload source or a download destination the floor names (Q3-01), consulting only the

@@ -47,9 +47,9 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <ul>
   <li><strong><code>config.yaml</code></strong> is checked each time a setting is read, so a change from the app, <code>biorouter configure</code> or an editor is seen at the next read, without a restart.</li>
   <li><strong>A chat</strong> takes its permission mode and the managed policy when its agent starts. Open a new chat to be sure a change applies.</li>
-  <li><strong>Environment variables</strong> are read by each program when it starts. A command sees your shell's variables. The desktop app passes the environment it was opened from to its background service, so an app opened from the Dock or the Start menu does not see a variable set only in a terminal.</li>
+  <li><strong>Environment variables</strong> are read by each program when it starts. A command sees your shell's variables. When the desktop app starts its background service, it passes the environment it was opened from, so an app opened from the Dock or the Start menu does not see a variable set only in a terminal.</li>
   <li><strong>Secrets</strong> are read from the credential store once per process. A key saved in the app is used at once. A key changed by another program is read when Biorouter's background service next starts.</li>
-  <li><span class="chip">Next release</span> On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. See <a href="#architecture-daemon">The background service</a>.</li>
+  <li><span class="chip">Next release</span> On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. To restart it, run <code>biorouter crew daemon stop</code>; an open app starts a new service and reconnects. See <a href="#architecture-daemon">The background service</a>.</li>
 </ul>
 
 <h2 id="config-env">Environment variables</h2>

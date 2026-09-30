@@ -2095,7 +2095,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID",
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID",
             "content": {
               "application/json": {
                 "schema": {
@@ -2141,7 +2141,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter",
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter",
             "content": {
               "application/json": {
                 "schema": {
@@ -2181,7 +2181,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2229,7 +2229,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2309,7 +2309,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2400,7 +2400,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2469,7 +2469,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2550,7 +2550,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2611,7 +2611,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2692,7 +2692,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2743,7 +2743,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2796,7 +2796,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2857,7 +2857,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -2938,7 +2938,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3017,7 +3017,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3110,7 +3110,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3233,7 +3233,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes",
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes",
             "content": {
               "application/json": {
                 "schema": {
@@ -3334,7 +3334,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3394,7 +3394,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3504,7 +3504,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3575,7 +3575,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3667,7 +3667,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_session_unavailable`: the chat is out of this caller's reach",
+            "description": "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_session_unavailable`: the chat is out of this caller's reach",
             "content": {
               "application/json": {
                 "schema": {
@@ -3779,7 +3779,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3859,7 +3859,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3899,7 +3899,7 @@
             }
           },
           "400": {
-            "description": "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way",
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the user-action key, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way",
             "content": {
               "application/json": {
                 "schema": {
@@ -3909,7 +3909,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -3989,7 +3989,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4029,7 +4029,7 @@
             }
           },
           "400": {
-            "description": "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way",
+            "description": "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the user-action key, a profile with no vault, or another credential operation under way",
             "content": {
               "application/json": {
                 "schema": {
@@ -4039,7 +4039,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4109,7 +4109,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4159,7 +4159,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4240,7 +4240,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4291,7 +4291,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4343,7 +4343,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4416,7 +4416,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4466,7 +4466,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4528,7 +4528,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4640,7 +4640,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4688,7 +4688,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4788,7 +4788,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4889,7 +4889,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -4954,7 +4954,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -5035,7 +5035,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -5096,7 +5096,7 @@
             }
           },
           "403": {
-            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key",
+            "description": "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key",
             "content": {
               "application/json": {
                 "schema": {
@@ -18025,7 +18025,7 @@
       },
       "SecretBody": {
         "type": "object",
-        "description": "The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing\nelse. It must differ from the human approval secret.",
+        "description": "The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing\nelse. The launcher supplies the request's separate user-action key automatically.",
         "required": [
           "passphrase"
         ],

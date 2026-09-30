@@ -6,40 +6,44 @@ import { Note } from '../ui/note';
 type DaemonConnectionState = 'attached' | 'lost' | 'reconnecting';
 
 export const daemonNoticeCopy = {
-  restarted: "Biorouter's background service restarted.",
-  /** What is true until the person acts, so the notice explains the failures around it. */
+  failed: "Biorouter couldn't reconnect to its background service.",
+  /** What is true until a reconnect works, so the notice explains the failures around it. */
   consequence: "Chats and Crew can't reach it until Biorouter reconnects.",
-  reconnect: 'Reconnect',
+  retry: 'Try again',
   reconnecting: 'Reconnecting…',
   restart: 'Quit and reopen',
 } as const;
 
 /**
- * The standing notice for R-1: the shared daemon this app verified is gone or was replaced,
- * and the local proxy refuses to follow a new instance by itself. The main process asks once
- * in a native prompt; this is what stays after "Not Now", so every failure around it has an
- * explanation and a way on. Reconnect asks the main process to reattach (it asks for the
- * approval secret in its own native prompt; nothing secret passes through here), and Quit and
- * reopen is the existing `restartApp`.
+ * The standing notice for R-1. When the shared daemon this app verified is gone or was replaced,
+ * the main process reconnects on its own, and nothing is shown while it does. This appears only
+ * after those attempts failed, so every failure around it has an explanation and a way on. Try
+ * again asks the main process for one more attempt (nothing secret passes through here), and
+ * Quit and reopen is the existing `restartApp`.
  *
- * Renders nothing while attached, and nothing on a surface with no shared daemon (a browser,
- * an external backend), which has no `getDaemonConnection`.
+ * Renders nothing while attached or while the app reconnects by itself, and nothing on a surface
+ * with no shared daemon (a browser, an external backend), which has no `getDaemonConnection`.
  */
 export default function DaemonRestartNotice() {
   const [state, setState] = useState<DaemonConnectionState>('attached');
+  // Shown from the first failure until the app is attached again, including while a Try again
+  // runs; hidden during the automatic reconnect that comes before any failure.
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     const electron = window.electron;
     if (!electron?.getDaemonConnection) return;
     let cancelled = false;
-    const dispose = electron.onDaemonConnection?.((next) => {
-      if (!cancelled) setState(next);
-    });
+    const apply = (next: DaemonConnectionState) => {
+      if (cancelled) return;
+      setState(next);
+      if (next === 'lost') setFailed(true);
+      if (next === 'attached') setFailed(false);
+    };
+    const dispose = electron.onDaemonConnection?.(apply);
     electron
       .getDaemonConnection()
-      .then((current) => {
-        if (!cancelled) setState(current);
-      })
+      .then(apply)
       .catch(() => {
         // Live events stay the source of truth when the first read fails.
       });
@@ -49,11 +53,11 @@ export default function DaemonRestartNotice() {
     };
   }, []);
 
-  if (state === 'attached') return null;
+  if (state === 'attached' || !failed) return null;
   const reconnecting = state === 'reconnecting';
   return (
     <Note tone="warning" role="status" icon={AlertTriangle} testId="daemon-restart-notice">
-      <p>{daemonNoticeCopy.restarted}</p>
+      <p>{daemonNoticeCopy.failed}</p>
       <p>{daemonNoticeCopy.consequence}</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <Button
@@ -63,7 +67,7 @@ export default function DaemonRestartNotice() {
           disabled={reconnecting}
           onClick={() => void window.electron?.reconnectDaemon?.()}
         >
-          {reconnecting ? daemonNoticeCopy.reconnecting : daemonNoticeCopy.reconnect}
+          {reconnecting ? daemonNoticeCopy.reconnecting : daemonNoticeCopy.retry}
         </Button>
         <Button
           type="button"

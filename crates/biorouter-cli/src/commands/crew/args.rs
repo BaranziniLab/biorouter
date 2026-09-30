@@ -71,9 +71,14 @@ pub struct CrewOptions {
     /// Require an already-running shared daemon.
     #[arg(long, global = true)]
     pub no_start: bool,
-    /// Read the human approval key from stdin's first line instead of a hidden prompt.
+    /// Accepted for compatibility; Biorouter no longer needs an approval secret. The first
+    /// line of standard input is read and ignored.
     #[arg(long, global = true)]
     pub approval_key_stdin: bool,
+    /// Read the vault passphrase from the first line of standard input instead of a hidden
+    /// prompt.
+    #[arg(long, global = true, conflicts_with = "approval_key_stdin")]
+    pub passphrase_stdin: bool,
     /// Print text for people (the default), indented JSON, or one JSON value per line.
     #[arg(long, global = true, value_enum, default_value = "text")]
     pub output_format: OutputFormat,
@@ -189,9 +194,9 @@ pub enum CrewCommand {
 
 #[derive(Subcommand)]
 pub enum DaemonCommand {
-    /// Start the shared daemon and choose its approval secret.
+    /// Start the shared daemon.
     Start,
-    /// Show whether the shared daemon is running, without asking for the approval secret.
+    /// Show whether the shared daemon is running.
     Status,
     /// Stop the shared daemon, for the desktop app too.
     Stop,
@@ -1367,7 +1372,7 @@ mod tests {
     }
 
     /// CLI-14: a wrong command line is refused while it is read, with clap's usage status 2,
-    /// before any approval secret is asked for or a daemon is started.
+    /// before anything is asked for or a daemon is started.
     #[test]
     fn usage_mistakes_are_refused_before_anything_is_asked() {
         let usage = |args: &[&str]| {

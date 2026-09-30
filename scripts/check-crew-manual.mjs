@@ -454,9 +454,8 @@ export function checkCrewManual(tree = repoTree()) {
   // The manual tells a person to trust the native secret windows by name, so
   // it must name them exactly as main.ts titles them. A title is a string
   // literal of three or more words in promptNativeSecret's first argument
-  // (the vault prompt picks its title with a ternary). The three daemon
-  // approval-secret windows are the ones "The approval secret" in
-  // getting-started.md walks a person through, so that page quotes each one.
+  // (the vault prompt picks its title with a ternary). Only the Crew vault
+  // passphrase windows remain; the shared daemon asks for nothing.
   const mainTs = need(MAIN_TS, 'dialog-titles');
   if (mainTs !== null) {
     const titles = [
@@ -468,22 +467,12 @@ export function checkCrewManual(tree = repoTree()) {
         )
       ),
     ];
-    const daemonTitles = titles.filter((title) => /\bdaemon\b/.test(title));
-    if (daemonTitles.length < 3) {
+    if (titles.length === 0) {
       fail(
         'dialog-titles',
-        `found ${daemonTitles.length} daemon approval-secret titles in ${MAIN_TS} (expected set, confirm and connect); ` +
+        `found no native secret window titles in ${MAIN_TS}; ` +
           'if promptNativeSecret changed shape, update this reader'
       );
-    }
-    const gettingStarted = tree.read(`${MANUAL_DIR}/getting-started.md`) || '';
-    for (const title of daemonTitles) {
-      if (!gettingStarted.includes(`"${title}"`)) {
-        fail(
-          'dialog-titles',
-          `${MANUAL_DIR}/getting-started.md does not quote the dialog title "${title}" exactly as ${MAIN_TS} shows it`
-        );
-      }
     }
     for (const title of titles) {
       for (const { path, blocks } of surfaces) {
@@ -1060,10 +1049,10 @@ export function checkCrewManual(tree = repoTree()) {
     },
     {
       name: `the background-service note in ${BAR_COPY}`,
-      opens: /^Biorouter's background service restarted, so\b/,
+      opens: /^Biorouter lost its connection to its background service, so\b/,
       templates: opening(
         tsLiterals(barSource || ''),
-        /^Biorouter's background service restarted, so\b/
+        /^Biorouter lost its connection to its background service, so\b/
       ),
       source: barSource,
       requiredIn: [TROUBLESHOOTING],

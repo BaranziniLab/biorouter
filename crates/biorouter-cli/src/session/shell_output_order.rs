@@ -491,7 +491,7 @@ mod tests {
         "      --no-start",
         "          Require an already-running shared daemon",
         "      --approval-key-stdin",
-        "          Read the human approval key from stdin's first line instead of a hidden prompt",
+        "          Accepted for compatibility; Biorouter no longer needs an approval secret. The first",
         "      --output-format <OUTPUT_FORMAT>",
         "          [default: text] [possible values: text, json, stream-json]",
         "      --request-id <REQUEST_ID>",

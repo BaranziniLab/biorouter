@@ -16,8 +16,17 @@ import { ExternalBiorouterdConfig } from './utils/settings';
 import { isSharedDaemonEnabled } from './biorouterdSingleton';
 import {
   createDaemonProxy,
+  daemonLossOf,
+  daemonVersion,
+  DaemonKeyRefusedError,
   discoverDaemonRuntime,
+  generateUserActionKey,
+  readUserActionKey,
+  removeUserActionKey,
+  stopProfileDaemon,
   verifyDaemonRuntime,
+  verifyHumanAuthorizedAccess,
+  writeUserActionKey,
   type DaemonConnectionEvent,
   type DaemonLoss,
   type DaemonProxy,
@@ -245,7 +254,7 @@ export interface BiorouterdResult {
  * The attachment to the profile's shared daemon, for the main process to watch and to reattach
  * (R-1). A daemon restart (a crash, `biorouter crew daemon stop`, a CLI that started a new one)
  * always brings a new instance, which the proxy refuses to follow; this is how the app learns of
- * it and, once the person agrees, attaches the same local address to the new instance.
+ * it and attaches the same local address to the new instance.
  */
 export interface SharedDaemonLink {
   /** Every loss of the attached instance, and a `gone` one answering again. */
@@ -253,10 +262,10 @@ export interface SharedDaemonLink {
   /** Check the attached instance now: the loss, or `undefined` when it answers as itself. */
   probe(): Promise<DaemonLoss | undefined>;
   /**
-   * Attach to the profile's daemon as it is now: the instance that answers (asking for its
-   * independently held approval secret, never reading one from disk), or, when none does, a new
-   * one this app starts (asking for a new secret, as a first launch does). Call only after the
-   * person asked for it. Rejects, changing nothing, when it cannot.
+   * Attach to the profile's daemon as it is now: the instance that answers, with the user-action
+   * key its starter saved, or, when none answers or it cannot be used, a new one this app starts,
+   * exactly as a first launch does. Asks nobody for anything. Rejects, changing nothing, when it
+   * cannot.
    */
   reconnect(): Promise<void>;
 }
@@ -325,31 +334,18 @@ interface BiorouterProcessEnv {
  */
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
-export function validateDaemonApprovalSecret(secret: string | undefined): asserts secret is string {
-  if (!secret || secret.length < 32 || secret.length > 4096 || /[^!-~]/.test(secret))
-    throw new Error(
-      'Approval secret must contain 32–4096 printable ASCII characters without spaces or other whitespace.'
-    );
-}
-
 export interface StartBiorouterdOptions {
   app: App;
   serverSecret: string;
-  /** Per-launch renderer proof retained by main. Shared daemons receive the
-   * digest of a separately supplied approval secret; the local proxy maps a
-   * valid renderer proof to that secret only for the authenticated instance.
-   * Legacy private daemons still receive this key's digest through stdin.
+  /** Per-launch renderer proof retained by main. A shared daemon receives the digest of its
+   * own user-action key, which its starter minted and saved in the private key file; the local
+   * proxy maps a valid renderer proof to that key only for the authenticated instance.
+   * Private per-window daemons still receive this key's digest through stdin.
    */
   userActionKey?: string;
   dir: string;
   env?: Partial<BiorouterProcessEnv>;
   externalBiorouterd?: ExternalBiorouterdConfig;
-  requestNewUserActionKey?: () => Promise<string | undefined>;
-  requestUserActionKey?: (runtime: {
-    profileId: string;
-    instanceId: string;
-    userActionInstalled: boolean;
-  }) => Promise<string | undefined>;
 }
 
 /** An existing attachment a reconnect points at the profile's current daemon. */
@@ -361,39 +357,14 @@ async function attachSharedDaemon(
   options: StartBiorouterdOptions,
   runtime: DaemonRuntime,
   workingDir: string,
+  daemonProof: string,
+  reattach?: Reattach,
   ownedProcess?: ChildProcess,
-  errorLog: string[] = [],
-  ownedProof?: string,
-  reattach?: Reattach
+  errorLog: string[] = []
 ): Promise<BiorouterdResult> {
-  await verifyDaemonRuntime(runtime);
-  if (reattach && runtime.instance_id === reattach.proxy.instanceId()) {
-    // The instance this app verified still answers as itself: nothing to follow, and no secret
-    // to ask for. The check reports it answering, which settles a `gone` loss.
-    const loss = await reattach.proxy.probe();
-    if (loss) throw new Error('The background service stopped answering. Try again in a moment.');
-    return reattachedResult(options, reattach, workingDir, errorLog);
-  }
-  const owned = ownedProcess?.pid === runtime.pid;
-  if (!owned && !runtime.user_action_installed)
-    throw new Error(
-      'This existing daemon has no installed human approval proof. Stop it explicitly and restart it through a trusted desktop launcher before attaching.'
-    );
-  const daemonProof = owned
-    ? ownedProof
-    : await options.requestUserActionKey?.({
-        profileId: runtime.profile_id,
-        instanceId: runtime.instance_id,
-        userActionInstalled: runtime.user_action_installed,
-      });
-  if (!owned && (!runtime.user_action_installed || !daemonProof))
-    throw new Error(
-      'This profile daemon requires its independently held approval secret. Enter it through the desktop attachment prompt; it is never loaded from daemon metadata.'
-    );
-  validateDaemonApprovalSecret(daemonProof);
   if (reattach) {
     // The same local address, now checked against the new instance. `retarget` verifies it and
-    // that it accepts this approval secret before anything changes.
+    // that it accepts this user-action key before anything changes.
     await reattach.proxy.retarget(runtime, daemonProof);
     if (ownedProcess) options.app.once('will-quit', () => ownedProcess.unref());
     return reattachedResult(options, reattach, workingDir, errorLog);
@@ -416,7 +387,7 @@ async function attachSharedDaemon(
     await response.body?.cancel();
     if (!response.ok)
       throw new Error(
-        'The daemon did not accept human-authorized access. Reopen the app to retry with its existing approval secret, or cancel attachment.'
+        `The background service refused this app's connection (status ${response.status}). Quit and reopen Biorouter to try again.`
       );
   } catch (error) {
     proxy.close();
@@ -499,10 +470,59 @@ async function stopFailedSharedStartup(child: ChildProcess): Promise<boolean> {
 export const startBiorouterd = (options: StartBiorouterdOptions): Promise<BiorouterdResult> =>
   startOrAttachBiorouterd(options);
 
+/** What this app can do with the profile's running daemon. */
+type ExistingDaemon =
+  | { kind: 'usable'; key: string }
+  /** Nothing answers on its socket: the descriptor is left over from a daemon that is gone. */
+  | { kind: 'gone' }
+  /** It answers, but this app cannot use it, and replaces it. */
+  | { kind: 'unusable'; why: string };
+
 /**
- * `startBiorouterd`, and a shared attachment's reconnect: the same discovery, the same prompts
- * and, when no daemon answers, the same start of a new one. With `reattach`, what is found is
- * attached to that existing proxy instead of a new one.
+ * Whether the running daemon `runtime` describes can be used: it answers as that instance, it
+ * holds a user-action key, it is this app's version, and it accepts the key its starter saved.
+ * A daemon started by an earlier Biorouter that asked a person for a secret has no saved key,
+ * and one from another version would keep running old code after an update.
+ */
+async function inspectExistingDaemon(app: App, runtime: DaemonRuntime): Promise<ExistingDaemon> {
+  try {
+    await verifyDaemonRuntime(runtime);
+  } catch (error) {
+    if (daemonLossOf(error) === 'gone') return { kind: 'gone' };
+    throw error;
+  }
+  if (!runtime.user_action_installed)
+    return { kind: 'unusable', why: 'it was started without a user-action key' };
+  const appVersion = typeof app.getVersion === 'function' ? app.getVersion() : undefined;
+  if (appVersion) {
+    let version: string;
+    try {
+      version = await daemonVersion(runtime);
+    } catch (error) {
+      return { kind: 'unusable', why: `its version could not be read (${String(error)})` };
+    }
+    if (version !== appVersion)
+      return {
+        kind: 'unusable',
+        why: `it is version ${version} and this app is version ${appVersion}`,
+      };
+  }
+  const key = await readUserActionKey(runtime);
+  if (!key) return { kind: 'unusable', why: 'there is no saved user-action key for this instance' };
+  try {
+    await verifyHumanAuthorizedAccess(runtime, key);
+  } catch (error) {
+    if (error instanceof DaemonKeyRefusedError)
+      return { kind: 'unusable', why: 'it refused the saved user-action key' };
+    throw error;
+  }
+  return { kind: 'usable', key };
+}
+
+/**
+ * `startBiorouterd`, and a shared attachment's reconnect: the same discovery and, when no usable
+ * daemon answers, the same start of a new one. Nobody is asked for anything. With `reattach`,
+ * what is found is attached to that existing proxy instead of a new one.
  */
 async function startOrAttachBiorouterd(
   options: StartBiorouterdOptions,
@@ -534,31 +554,40 @@ async function startOrAttachBiorouterd(
   let staleInstance: string | undefined;
   if (sharedRuntime) {
     const existing = discoverDaemonRuntime();
-    if (existing) {
+    if (existing && reattach && existing.instance_id === reattach.proxy.instanceId()) {
+      let gone = false;
       try {
         await verifyDaemonRuntime(existing);
       } catch (error) {
-        const failure = error as Error & { code?: string; syscall?: string };
-        if (
-          failure.syscall !== 'connect' ||
-          !['ENOENT', 'ECONNREFUSED'].includes(failure.code || '')
-        )
-          throw error;
-        staleInstance = existing.instance_id;
+        if (daemonLossOf(error) !== 'gone') throw error;
+        gone = true;
       }
-      if (!staleInstance)
-        return attachSharedDaemon(options, existing, dir, undefined, [], undefined, reattach);
+      if (!gone) {
+        // The instance this app verified still answers as itself: nothing to follow. The check
+        // reports it answering, which settles a `gone` loss.
+        const loss = await reattach.proxy.probe();
+        if (loss)
+          throw new Error('The background service stopped answering. Try again in a moment.');
+        return reattachedResult(options, reattach, dir, []);
+      }
+      staleInstance = existing.instance_id;
+    } else if (existing) {
+      const found = await inspectExistingDaemon(app, existing);
+      if (found.kind === 'usable')
+        return attachSharedDaemon(options, existing, dir, found.key, reattach);
+      if (found.kind === 'unusable') {
+        log.warn(
+          `Replacing the running background service (process ${existing.pid}) because ${found.why}.`
+        );
+        await stopProfileDaemon(existing);
+      }
+      staleInstance = existing.instance_id;
     }
   }
 
-  const newDaemonProof = sharedRuntime ? await options.requestNewUserActionKey?.() : undefined;
-  if (sharedRuntime) {
-    if (newDaemonProof === undefined)
-      throw new Error(
-        'Shared daemon startup cancelled. Reopen the app to supply your independently held approval secret. No daemon was started.'
-      );
-    validateDaemonApprovalSecret(newDaemonProof);
-  }
+  // A shared daemon's user-action key: minted here, its digest sent on stdin below, and saved
+  // in the private key file once the daemon has published itself.
+  const newDaemonProof = sharedRuntime ? generateUserActionKey() : undefined;
 
   let biorouterdPath = getBiorouterdBinaryPath(app);
 
@@ -744,33 +773,62 @@ async function startOrAttachBiorouterd(
     appendStderrLine(`error: failed to spawn biorouterd: ${err.message}`);
   });
 
-  if (sharedRuntime) {
+  if (sharedRuntime && newDaemonProof) {
+    let wroteKeyFor: DaemonRuntime | undefined;
     try {
-      for (let attempt = 0; attempt < 100; attempt++) {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
         const runtime = discoverDaemonRuntime();
-        if (runtime && runtime.instance_id !== staleInstance)
+        if (runtime && runtime.pid === biorouterdProcess.pid) {
+          await verifyDaemonRuntime(runtime);
+          writeUserActionKey(runtime, newDaemonProof);
+          wroteKeyFor = runtime;
           return await attachSharedDaemon(
             options,
             runtime,
             dir,
-            biorouterdProcess,
-            stderrLines,
             newDaemonProof,
-            reattach
+            reattach,
+            biorouterdProcess,
+            stderrLines
           );
+        }
         if (
           biorouterdProcess.exitCode !== null ||
           stderrLines.some((line) => /^error:/i.test(line.trim()))
-        )
-          throw new Error(
-            'Shared profile daemon failed to start. Inspect its startup diagnostics.'
-          );
+        ) {
+          // Two starters at once: only one daemon takes the profile's lock and the other exits.
+          // If the winner has published itself, use it as any running daemon is used.
+          const winner = runtime ?? discoverDaemonRuntime();
+          if (
+            winner &&
+            winner.pid !== biorouterdProcess.pid &&
+            winner.instance_id !== staleInstance
+          ) {
+            const found = await inspectExistingDaemon(app, winner);
+            if (found.kind === 'usable')
+              return await attachSharedDaemon(options, winner, dir, found.key, reattach);
+          }
+          if (biorouterdProcess.pid === undefined)
+            throw new Error(
+              'Shared profile daemon failed to start. Inspect its startup diagnostics.'
+            );
+        }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       throw new Error(
-        'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
+        biorouterdProcess.exitCode !== null
+          ? 'Shared profile daemon failed to start. Inspect its startup diagnostics.'
+          : 'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
       );
     } catch (error) {
+      if (wroteKeyFor) {
+        try {
+          removeUserActionKey(wroteKeyFor);
+        } catch (removeError) {
+          log.warn('Could not remove the saved user-action key of a failed start:', removeError);
+        }
+      }
       const stopped = await stopFailedSharedStartup(biorouterdProcess);
       if (!stopped)
         throw Object.assign(

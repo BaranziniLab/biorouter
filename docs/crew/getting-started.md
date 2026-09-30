@@ -1,14 +1,14 @@
 # Getting started with Crew
 
-> **What this is.** The first page of the Crew user manual: what you need, the approval secret, the first screen, the parts of the Crew view, and the terms the manual uses.
-> **Status:** Current. Checked against the Crew code on 2026-09-28.
+> **What this is.** The first page of the Crew user manual: what you need, the background service, the first screen, the parts of the Crew view, and the terms the manual uses.
+> **Status:** Current. Checked against the Crew code on 2026-09-29.
 > **Audience:** Lab members who are new to Crew, including people who have never used SSH or a terminal.
 
 Crew is the part of the Biorouter desktop app where your lab chats, shares files and runs AI agents. Open it from **Crew** in the Biorouter sidebar, below **New chat**. As in Slack, a workspace holds channels where you post messages and files. Teams group channels, and agents read and post in a channel when you allow it. You see only the channels you are in. To get into another one, ask its owner. The host can also add you, but only to a team or channel the host is in.
 
 One lab member, the host, runs the workspace on a shared Linux server. You connect with your own account on that server over SSH (Secure Shell, the standard way to sign in to a server), and Crew makes that connection for you. The desktop app and the `biorouter crew` [commands](command-line.md) share one background service, so they show the same workspaces.
 
-Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`. There, **Crew** in the sidebar opens a page titled "Crew needs the Biorouter desktop app" in place of your workspaces. The background service that `biorouter serve` starts never holds the [approval secret](#the-approval-secret) Crew needs, so nothing you do in the browser changes that, and signing in again or restarting does not help. Open Crew in the desktop app on your own computer, or use `biorouter crew` in a terminal there.
+Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`. There, **Crew** in the sidebar opens a page titled "Crew needs the Biorouter desktop app" in place of your workspaces. Every Crew action needs proof that a person is at this computer, which the desktop app and `biorouter crew` supply themselves and the background service that `biorouter serve` starts never holds, so nothing you do in the browser changes that, and signing in again or restarting does not help. Open Crew in the desktop app on your own computer, or use `biorouter crew` in a terminal there.
 
 A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "Connect to lab".
 
@@ -31,24 +31,15 @@ When the server asks for a password or a code, the Sign in window opens. Type it
 
 Use a jump host, a server you pass through to reach the lab server, only if IT gives you one. Type it under **Advanced** in the Join or Host dialog, in **Jump hosts**, with commas between several, or later in **Connection settings…** in the workspace menu. IT must also add its settings to `~/.ssh/config` (see [SSH requirements](administration.md#ssh-requirements)). Without them, or with a custom `ProxyCommand` or `GSSAPIDelegateCredentials yes`, Crew does not connect and shows a sentence that starts "Crew SSH host" and names the jump host. Send that sentence to IT. Those settings also make SSH check the jump host strictly, so verify it on its own before your first connection (step 3 of [Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)).
 
-## The approval secret
+## The background service
 
-Biorouter's background service (the daemon) accepts actions that need a person's approval only with your approval secret. The secret is not your login password, SSH password or vault passphrase. On macOS and Linux, Biorouter asks for it each time you open it:
+Biorouter's background service (the daemon) keeps your workspaces connected. On a Mac or Linux computer it starts by itself when you first open Biorouter, and it keeps running after you quit, so Crew stays connected. The desktop app and `biorouter crew` connect to it without asking you anything.
 
-- The first time, and after your computer restarts, the service is not running. You set a secret in "Set approval secret for shared Biorouter daemon" and repeat it in "Confirm shared daemon approval secret".
-- At other times the service is still running, even after you quit Biorouter. You type its secret in "Connect to existing Biorouter daemon".
+- After your computer restarts, the service starts again when you open Biorouter or run a `biorouter crew` command.
+- After you update Biorouter, the new version replaces the older service the next time you open Biorouter. Replacing it may interrupt a running agent task or file transfer, so check [your tasks](agents-and-chat-access.md#follow-a-task) and [your transfers](messages-and-files.md#transfer-states) afterward.
+- On Windows, quitting Biorouter stops the service.
 
-To set a secret:
-
-1. Before you open Biorouter, create the secret: 32 to 4096 English letters, numbers and punctuation marks, with no spaces. A password manager can make and keep one, and IT can tell you which one your institution provides. Without one, join several unrelated words with periods until you have at least 32 characters, then write the secret down and keep it where only you can reach it. Biorouter cannot show it again.
-2. Paste it into the first window with Command+V (Ctrl+V on Linux), or type it. The box shows dots. Choose **Continue** (**OK** on Linux), or press Enter.
-3. Enter it again in the confirm window and choose **Continue**. Biorouter opens.
-
-Use the same secret every time. Each window waits three minutes. If a "Biorouter Error" window appears, its message names the cause, and Biorouter closes when you close it. "The daemon did not accept human-authorized access" means the secret is not the one the running service started with. Open Biorouter again with the secret ready.
-
-### If you forget the approval secret
-
-Restart your computer. Biorouter then asks you to set a new secret. To end the service without a restart, see [If you forget the approval secret](command-line.md#if-you-forget-the-approval-secret). Ending the service may interrupt a running agent task or file transfer, so check [your tasks](agents-and-chat-access.md#follow-a-task) and [your transfers](messages-and-files.md#transfer-states) afterward.
+If a "Biorouter Error" window appears when you open Biorouter, its message names the cause, and Biorouter closes when you close it.
 
 ## The first screen
 
@@ -92,8 +83,7 @@ If support staff ask for an ID, **Copy for support** in the menu of that person,
 | Term | Meaning |
 |---|---|
 | Agent | An AI model working for you. It reads and posts in a channel only when you allow it. |
-| Approval secret | The secret you choose and type when you open Biorouter. See [The approval secret](#the-approval-secret). |
-| Background service (daemon) | The Biorouter program that keeps running after you quit the app. The app and `biorouter crew` share it. |
+| Background service (daemon) | The Biorouter program that keeps running after you quit the app. The app and `biorouter crew` share it and connect to it by themselves. See [The background service](#the-background-service). |
 | Channel owner | The person who adds and removes a channel's members and can rename or archive it. At first, its creator. |
 | Chat access | Lets an ordinary chat read and post in a channel after you type `/crew` in it. It ends when you revoke it, or after an hour. |
 | Connection | This computer's saved link to one workspace: your server login, SSH settings, privacy choice and institution. Change it in **Connection settings…**. |

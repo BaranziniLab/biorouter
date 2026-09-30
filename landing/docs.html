@@ -402,7 +402,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
-    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. With <code class="code-token">--approval-key-stdin</code>, <code class="code-token">--no-start</code> and <code class="code-token">--create-only</code>.</td></tr>
+    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
   </tbody>
 </table></div>
 <div class="doc-table-scroll"><table class="ref">
@@ -600,7 +600,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Steering a turn while it runs</td><td>No. What you type waits and is sent when the turn ends.</td></tr>
     <tr><td>A subagent's own tab</td><td>Read only.</td></tr>
     <tr><td>Changing the model or provider</td><td>No, by design. See above.</td></tr>
-    <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs the approval secret a person types into the desktop app or <code>biorouter crew</code>, and the daemon <code>serve</code> starts never holds one. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
+    <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
     <tr><td>Approvals that need proof a person acted</td><td>A note takes the place of the buttons, and the agent is not offered skill or extension installs and removals. Run <code>biorouter skill</code> and <code>biorouter extension</code> on the host instead.</td></tr>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>
@@ -1568,14 +1568,14 @@ biorouter apps serve cohort-explorer</code></pre>
   <li><strong>An invitation.</strong> The host sends it. It expires after 24 hours.</li>
 </ul>
 
-<h3 id="crew-approval-secret">The approval secret</h3>
-<p>On macOS and Linux, the background service acts for you only with your approval secret. It is not your login or SSH password. The first time the service starts, and after each restart of your computer, Biorouter asks you to choose one.</p>
-<ol class="steps">
-  <li><strong>Set it</strong> In "Set approval secret for shared Biorouter daemon", enter 32 to 4096 letters, numbers and punctuation marks, with no spaces. You can paste it.</li>
-  <li><strong>Keep it</strong> Save it in your password manager. Biorouter cannot show it again.</li>
-  <li><strong>Confirm it</strong> Enter it again in "Confirm shared daemon approval secret". Biorouter opens.</li>
-</ol>
-<p>Quitting the app leaves the service running. When you open Biorouter again, type the secret in "Connect to existing Biorouter daemon". If you forget it, restart your computer and set a new one. Windows has no approval secret. There, quitting the app stops the service, and the <code>biorouter crew</code> commands do not work.</p>
+<h3 id="crew-approval-secret">The background service</h3>
+<p>On macOS and Linux, Biorouter starts the background service and connects to it automatically. You do not choose or type a daemon approval secret. Quitting the app leaves the service running, so Crew stays connected. Opening the app again uses the same service.</p>
+<ul>
+  <li>After your computer restarts, opening Biorouter or running a <code>biorouter crew</code> command starts the service again.</li>
+  <li>After an update, the app replaces the older service when you open it. This can interrupt a task or transfer, so check their status afterward.</li>
+  <li>On Windows, quitting the app stops the service, and the <code>biorouter crew</code> commands do not work.</li>
+</ul>
+<p>A Crew vault has its own passphrase. Setting one up or unlocking it still asks for that passphrase; see <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/privacy-and-security.md#use-an-encrypted-vault">Use an encrypted vault</a>.</p>
 
 <h2 id="crew-join">Join a workspace</h2>
 <p>Send the host your exact username on the server. The host sends back an invitation message that ends with a line starting <code>brcrew1:</code>. It holds no secret.</p>
@@ -1713,8 +1713,9 @@ biorouter apps serve cohort-explorer</code></pre>
 <h2 id="crew-command-line">Command line</h2>
 <p>The <code>biorouter crew</code> commands reach the same workspaces as the app, on macOS and Linux. Add <code class="code-token">--help</code> after any command for its options.</p>
 <ul>
-  <li>Every command except <code>daemon status</code> asks for your approval secret.</li>
-  <li><code class="code-token">--approval-key-stdin</code> reads the secret from the first line of standard input instead. Use it in a script.</li>
+  <li>Workspace and credentials commands start the background service when needed and connect without a daemon approval secret. <code class="code-token">--no-start</code> connects only to an existing service. <code>daemon status</code> checks the status without starting it.</li>
+  <li>Setting up or unlocking a Crew vault still asks for its passphrase. In a script, <code class="code-token">--passphrase-stdin</code> reads that passphrase from the first line of standard input.</li>
+  <li><code class="code-token">--approval-key-stdin</code> remains accepted for older scripts: it reads and ignores the first line of standard input. It cannot be combined with <code class="code-token">--passphrase-stdin</code>.</li>
   <li><code>--connection NAME</code> chooses a saved connection when you have more than one.</li>
   <li><code>--output-format json</code> prints JSON, errors included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>
 </ul>
@@ -1734,6 +1735,7 @@ biorouter crew tasks start methods \
 <p><code>privacy set-personal public</code> and <code>privacy set-workspace public</code> ask you to type the workspace name first, as the desktop app does. In a script, add <code>--confirm WORKSPACE</code>. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md">Command line</a>.</p>
 
 <h2 id="crew-troubleshooting">When something goes wrong</h2>
+<p>If Crew says a feature needs a newer background service, quit and reopen Biorouter. On macOS and Linux it replaces the older service. For command-line use, run <code>biorouter crew daemon stop</code>, then your command again. An open app starts a new service and reconnects automatically.</p>
 <p>The status row names your connection's state, such as Connected, Offline or Sign-in needed, and the main area or the connection bar says what to do next. After a network drop, Crew reconnects by itself for up to an hour, and it never sends a message twice. If the server's identity changed, do not connect. Copy the details for your IT team instead. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/connections-and-troubleshooting.md">Connections and troubleshooting</a> lists every status and message.</p>
 
 <h2 id="crew-administrators">Server setup for administrators</h2>
@@ -1895,9 +1897,9 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <ul>
   <li><strong><code>config.yaml</code></strong> is checked each time a setting is read, so a change from the app, <code>biorouter configure</code> or an editor is seen at the next read, without a restart.</li>
   <li><strong>A chat</strong> takes its permission mode and the managed policy when its agent starts. Open a new chat to be sure a change applies.</li>
-  <li><strong>Environment variables</strong> are read by each program when it starts. A command sees your shell's variables. The desktop app passes the environment it was opened from to its background service, so an app opened from the Dock or the Start menu does not see a variable set only in a terminal.</li>
+  <li><strong>Environment variables</strong> are read by each program when it starts. A command sees your shell's variables. When the desktop app starts its background service, it passes the environment it was opened from, so an app opened from the Dock or the Start menu does not see a variable set only in a terminal.</li>
   <li><strong>Secrets</strong> are read from the credential store once per process. A key saved in the app is used at once. A key changed by another program is read when Biorouter's background service next starts.</li>
-  <li><span class="chip">Next release</span> On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. See <a href="#architecture-daemon">The background service</a>.</li>
+  <li><span class="chip">Next release</span> On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. To restart it, run <code>biorouter crew daemon stop</code>; an open app starts a new service and reconnects. See <a href="#architecture-daemon">The background service</a>.</li>
 </ul>
 
 <h2 id="config-env">Environment variables</h2>
@@ -1962,7 +1964,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 
 <h2 id="architecture-daemon">The background service</h2>
 <p><code>biorouterd</code> serves the agent over local HTTP and WebSocket. The desktop app starts one for all of its windows. Schedules run inside it, so they run while it runs.</p>
-<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit.</p>
+<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit. The shared service starts and connects automatically, without a daemon approval secret. After an update, opening the app replaces the older service; this can interrupt a running task or transfer.</p>
 <p>The same release adds Crew, which connects the service to a lab workspace. The host runs the workspace with <code>biorouter-crew</code> on a shared Linux server, and each member's service reaches it over SSH through that member's own account on the server. Each member's agent still runs on their own computer, with their own model.</p>
 
 <h2 id="architecture-interfaces">How each interface connects</h2>
