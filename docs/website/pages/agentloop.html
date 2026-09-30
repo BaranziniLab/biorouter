@@ -1,0 +1,97 @@
+<div class="doc-page" id="doc-agentloop">
+<h1>The agent loop</h1>
+<p class="doc-lede">Each request runs as a loop of model calls and tool calls. Biorouter runs the loop, so it decides what the model sees and what may run.</p>
+
+<h2 id="agentloop-turn">How a turn runs</h2>
+<figure class="doc-figure">
+  <div class="flow">
+    <div class="node"><b>Build context</b><span>instructions, tools, history</span></div>
+    <i class="arrow"></i>
+    <div class="node"><b>Model</b><span>answers, or asks for a tool</span></div>
+    <i class="arrow labeled"><span class="arrow-label">tool call</span></i>
+    <i class="arrow back labeled"><span class="arrow-label">result</span></i>
+    <div class="node"><b>Run a tool</b><span>after the permission gate</span></div>
+  </div>
+  <figcaption>The loop ends when the model answers without asking for a tool and no check sends it back. A simple question needs one model call and no tools.</figcaption>
+</figure>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Stage</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Receive</strong></td><td>One turn runs in a chat at a time. A message you send while it runs waits in a queue; see <a href="#agentloop-steering">Steering a running turn</a>. Commands such as <code>/goal</code> and <code>/schedule</code> are handled before the model is called.</td></tr>
+    <tr><td><strong>Build&nbsp;context</strong></td><td>The system instructions (base instructions, permission mode, date, guidance from each extension, any workflow instructions), the tool list, the skills in use, up to five passages from a knowledge base you referenced with <code>/kb:</code>, a map of the working folder of up to about 2,000 tokens, and the conversation so far. At 80% of the model's context window, older turns are summarized for the model; your history is kept in full.</td></tr>
+    <tr><td><strong>Call&nbsp;the&nbsp;model</strong></td><td>The reply streams back as text, tool calls, token counts and a reason for stopping. A reply cut off at the length limit is continued up to 12 times.</td></tr>
+    <tr><td><strong>Permission&nbsp;gate</strong></td><td>Each tool call is checked by the administrator's managed policy, the command policy, your permission mode and any hooks. Deny is checked before ask, and ask before allow; an administrator's deny or ask always wins. A few destructive commands are refused in every mode. The modes are on the <a href="#vaulting">Security</a> page. Up to 8 tool calls run at once; writes to the same file run one at a time.</td></tr>
+    <tr><td><strong>Run&nbsp;and&nbsp;return</strong></td><td>The result goes back to the model. A large result is saved to a file, and the model gets a preview. Private keys and stored credentials in a result are withheld. An error goes back as an error the model can act on, not as the end of the turn.</td></tr>
+    <tr><td><strong>Finish</strong></td><td>When the model answers without a tool call, the active checks run: a workflow's <code>response</code> schema, Stop hooks and a <code>/goal</code>. A failed check sends the turn back to work. A Stop hook can do this 5 times, and a <code>/goal</code> is dropped at the limits in <a href="#agentloop-goal">Goals</a>. A workflow's <code>retry</code> checks run after the chat finishes, and a failure starts the run again from the beginning. The whole turn is saved to the chat.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="agentloop-limits">Loop limits</h2>
+<p>Several checks watch a long turn for repetition and runaway cost. Most warn the model first.</p>
+<ul>
+  <li><strong>Exact repeats.</strong> The same call with the same arguments: a warning at 3, and the fifth identical call is refused.</li>
+  <li><strong>Near repeats.</strong> Nearly the same call, or two calls taking turns: a warning at 4.</li>
+  <li><strong>Repeated failure.</strong> The same failure from the same tool: a nudge at 3, then “change approach or ask the user” at 5. After 6, the next call to that tool is refused.</li>
+  <li><strong>Failures in a row.</strong> Failed calls to any tool: a nudge at 3. At 6, the model is told to change route or hand the work back to you.</li>
+  <li><strong>Stalls.</strong> A check for a stall after 30 actions in one turn, then every 10. A confirmed stall gets a short grace period to answer, then the turn stops.</li>
+  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. Quick reasoning effort halves both, and Deep doubles them. Set <code class="code-token">BIOROUTER_MAX_TURNS</code> or <code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
+  <li><strong>Reply budget.</strong> A limit on the time, tokens or cost of one reply. Off by default. Set <code class="code-token">BIOROUTER_REPLY_BUDGET_SECONDS</code>, <code class="code-token">BIOROUTER_REPLY_BUDGET_TOKENS</code> or <code class="code-token">BIOROUTER_REPLY_BUDGET_USD</code> for a warning, a request to wrap up, then a stop.</li>
+</ul>
+
+<h2 id="agentloop-delegation">Delegation and several chats</h2>
+<h3>Subagents</h3>
+<p>Ask in plain language, for example “Have a subagent check the QC report while you draft the methods.” A subagent is a separate chat that runs one task and reports back to the chat that started it. Several can run one after another or in parallel. In the desktop app each one opens in a background tab marked as a subagent, where you can read it as it works, type to steer it, and stop it. Closing the tab does not stop it. If you typed into it, the parent is told.</p>
+<ul>
+  <li>A subagent has the parent's extensions unless you name fewer, 25 turns (<code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code>) and 5 minutes by default.</li>
+  <li>It cannot start subagents of its own, change the parent's extensions, or change schedules.</li>
+  <li>It never moves work across the privacy boundary. A public chat cannot start a subagent on a private model, and a private chat cannot start one on a public model. A public subagent is given no private data extensions, and the parent is told which were left out. See <a href="#privacy">Private and public</a>.</li>
+</ul>
+<p>The <code>subagent</code> tool is offered only when all five of these hold. If a request for a subagent gets an ordinary answer, check them in order.</p>
+<ol>
+  <li>The permission mode is Autonomous (the default).</li>
+  <li>The model's name does not start with <code>gemini</code>.</li>
+  <li>The chat is not itself a subagent.</li>
+  <li>At least one extension besides Workspace Control is turned on.</li>
+  <li>The chat is not a built app that delegates to its own worker profiles.</li>
+</ol>
+
+<h3>Workspace Control</h3>
+<p>Workspace Control lets the agent work across your chats. It is on by default. To turn it off for new chats, use <strong>Settings → Chat → Capabilities</strong> in the app, or run <code>biorouter configure</code> in a terminal and choose <strong>Toggle Extensions</strong>, then <code>workspace</code>. The agent can:</p>
+<ul>
+  <li>open a new chat in a tab, a split pane or a new window. New tabs open in the background and start in your working folder.</li>
+  <li>list what is running, and read another chat as a summary, a transcript, its tool calls or a subagent's starting instructions. A public chat cannot read a private one.</li>
+  <li>send a prompt into another chat and wait for it to finish.</li>
+  <li>change another chat's extensions, skills, model or knowledge bases.</li>
+</ul>
+<p>Some changes show a confirmation card in every permission mode: giving a chat an extension that can start programs, removing one that matters for security, switching its model provider, or adding a skill. The changed chat shows who changed what. The first time a private chat writes into a public chat, Biorouter shows you what it would send and asks first.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Limit</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Panes in one window</td><td>6</td></tr>
+    <tr><td>Subagent tabs from one parent at once</td><td>4. More subagents run without a tab. Turn on <strong>Show subagent runs</strong> in History to see them under the parent.</td></tr>
+    <tr><td>Subagents running at once</td><td>8. More wait for a free slot.</td></tr>
+    <tr><td>Chats one chat can drive at once</td><td>4</td></tr>
+  </tbody>
+</table></div>
+<p>From a terminal:</p>
+<pre><code># chats, with their subagents
+biorouter session list --subagents
+# follow a running chat
+biorouter session attach &lt;id&gt;</code></pre>
+<p><code>attach</code> needs a <code>biorouterd</code> this terminal can reach, and the desktop app's own service is not one. <a href="#cli-sessions">Command line</a> covers the session commands.</p>
+
+<h2 id="agentloop-steering">Steering a running turn</h2>
+<p>You do not have to wait for a turn to finish. A message you send while it runs waits in a queue at the text box, with two choices:</p>
+<ul>
+  <li><strong>Add now</strong> adds the message to the running turn without stopping it. With the text box empty, <kbd>Cmd+Enter</kbd> (<kbd>Ctrl+Enter</kbd> on Windows and Linux) does the same for the first message in the queue.</li>
+  <li><strong>Stop &amp; send</strong> stops the turn and sends the message as a new one.</li>
+</ul>
+<p>An added message reaches the model at the next safe point. A running tool is never cut off for it. If an approval card is waiting, the message waits until you answer the card, because a message never answers a card. If the turn ends before the model reads it, the message stays in the chat marked as not answered. A message with attachments cannot be added to a running turn; it waits, or you can use <strong>Stop &amp; send</strong>.</p>
+<div class="note"><p>A browser opened with <code>biorouter serve</code> cannot add messages to a running turn, and neither can any other client of that service. Stop still works. Use the desktop app. <code>biorouter session attach</code> can add to a running turn only on a service started with a user action key; see <a href="#cli-sessions">Command line</a>.</p></div>
+
+<h2 id="agentloop-goal">Goals: <code>/goal</code></h2>
+<p><code>/goal</code> keeps the agent working until a condition you can check is true.</p>
+<pre><code>/goal the notebook runs with no errors</code></pre>
+<p>Work starts at once. Each time the agent tries to finish, an evaluator reads the recent part of the chat and checks the condition. If it is not met, the evaluator's feedback goes back to the agent and the turn continues. After 20 evaluations, or when the evaluator gives nearly the same feedback 3 times in a row, the goal is dropped and the agent reports what it did, what is unfinished and what stands in the way.</p>
+<p><code>/goal</code> on its own shows the active goal, and <code>/goal clear</code> removes it. The goal is saved with the chat, so it survives a restart. Write the condition as an end state the agent can show, such as a file that exists or a test that passes.</p>
+</div>

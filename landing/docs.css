@@ -37,6 +37,7 @@
 .docs-nav-item.active { color: var(--ink); background: var(--sidebar-active); }
 .docs-nav-item.active::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--coral-bar); }
 .docs-menu-btn { display: none; }
+html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
 @media (max-width: 880px) {
   .docs-side { position: static; max-height: none; overflow: visible; padding: 0; border-bottom: 1px solid var(--line); margin-bottom: 36px; }
   .docs-menu-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 44px; padding: 0; border: 0; background: none; font: inherit; font-size: 15px; color: var(--ink); cursor: pointer; }
@@ -44,6 +45,8 @@
   .docs-menu-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
   .docs-side-body { display: none; padding: 8px 0 18px; }
   .docs-side-body.open { display: block; }
+  html:not(.js) .docs-side-body { display: block; }
+  html:not(.js) .docs-menu-btn { display: none; }
 }
 
 /* ── On this page ────────────────────────────────────────── */
@@ -88,6 +91,7 @@
 .doc-page td code { font-size: 12.5px; }
 /* Code in a table's first column is a name: keep it whole. */
 .doc-page td:first-child code { white-space: nowrap; }
+.doc-page code.code-token { white-space: nowrap; }
 /* A table wider than the column scrolls sideways; a soft shadow at the
    scrolling edge says so (the classic scroll-shadow backgrounds). */
 .doc-table-scroll {
@@ -101,6 +105,13 @@
   background-attachment: local, local, scroll, scroll;
 }
 @media (max-width: 640px) { .doc-page table { font-size: 14px; } .doc-page td { padding-right: 12px; } }
+@media (max-width: 640px) {
+  .doc-page .doc-options colgroup, .doc-page .doc-options thead { display: none; }
+  .doc-page .doc-options tbody, .doc-page .doc-options tr { display: block; }
+  .doc-page .doc-options tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .doc-page .doc-options td { display: block; padding: 0; border: 0; }
+  .doc-page .doc-options td + td { margin-top: 7px; }
+}
 
 /* A note: a quiet line, not a box */
 .note { border-left: 2px solid var(--coral-bar); padding: 2px 0 2px 16px; margin: 0 0 20px; }

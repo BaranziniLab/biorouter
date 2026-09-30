@@ -8,7 +8,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 | ---- | ---- |
 | `index.html` | Introduction: the model routing hub, the three principles, a Slack band and six capability tiles |
 | `download.html` | Download: the detected installer, every platform, first steps, the command line and servers |
-| `docs.html` | Documentation: one file holding every docs page as a `<div class="doc-page" id="doc-NAME">` |
+| `docs.html` | Documentation assembled from the tracked shell and fourteen fragments in `docs/website/` |
 | `baam.html` | BAAM, the Biorouter AI Agent Marketplace: extensions, skills and workflows |
 | `about.html` | About: the team, collaborators, inspirations and updates |
 | `intro.html`, `skills.html` | Redirects kept for old links (to `index.html` and `baam.html`) |
@@ -27,7 +27,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 ## Rules the checks enforce
 
 - **BAAM.** `baam.html`'s static cards are the input of `scripts/build-registry.mjs`, which writes `registry.json`, the desktop app's bundled copy and the Rust privacy list. After any card change run `node landing/scripts/build-registry.mjs`; in CI `--check` fails if the three copies differ. The browser tests in `scripts/baam-privacy-facet.test.mjs` and `scripts/baam-search.test.mjs` hold the rendered page to the same contract.
-- **Docs.** `scripts/check-docs-privacy.mjs` reads the "Extension agents in the marketplace" table, and `../scripts/check-crew-manual.mjs` reads the Crew page and the browser table. Both match markup byte for byte.
+- **Docs.** Edit the sources in [`docs/website/`](../docs/website/README.md), then run `node landing/scripts/assemble-docs.mjs` from the repository root. Do not hand edit `docs.html`. `scripts/check-docs-privacy.mjs` reads the "Extension agents in the marketplace" table, and `../scripts/check-crew-manual.mjs` reads the Crew page and the browser table. Both match markup byte for byte.
 - **Versions.** `scripts/release.sh` rewrites the version in `index.html`, `download.html` and `docs.html` only, and expects `about.html`'s `news-list` to start with the new release.
 
 ## Writing for the site

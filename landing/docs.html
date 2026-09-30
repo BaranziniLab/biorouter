@@ -44,29 +44,29 @@
       </div>
       <nav id="docs-nav">
         <div class="docs-group"><h2>Start</h2><ul>
-          <li><button class="docs-nav-item" id="dnav-getstarted" data-page="getstarted">Getting started</button></li>
-          <li><button class="docs-nav-item" id="dnav-app" data-page="app">The desktop app</button></li>
-          <li><button class="docs-nav-item" id="dnav-cli" data-page="cli">Command line</button></li>
+          <li><a class="docs-nav-item" id="dnav-getstarted" data-page="getstarted" href="#doc-getstarted">Getting started</a></li>
+          <li><a class="docs-nav-item" id="dnav-app" data-page="app" href="#doc-app">The desktop app</a></li>
+          <li><a class="docs-nav-item" id="dnav-cli" data-page="cli" href="#doc-cli">Command line</a></li>
         </ul></div>
         <div class="docs-group"><h2>Models and privacy</h2><ul>
-          <li><button class="docs-nav-item" id="dnav-providers" data-page="providers">Models and providers</button></li>
-          <li><button class="docs-nav-item" id="dnav-privacy" data-page="privacy">Private and public</button></li>
-          <li><button class="docs-nav-item" id="dnav-vaulting" data-page="vaulting">Security</button></li>
+          <li><a class="docs-nav-item" id="dnav-providers" data-page="providers" href="#doc-providers">Models and providers</a></li>
+          <li><a class="docs-nav-item" id="dnav-privacy" data-page="privacy" href="#doc-privacy">Private and public</a></li>
+          <li><a class="docs-nav-item" id="dnav-vaulting" data-page="vaulting" href="#doc-vaulting">Security</a></li>
         </ul></div>
         <div class="docs-group"><h2>Build</h2><ul>
-          <li><button class="docs-nav-item" id="dnav-extensions" data-page="extensions">Extensions and skills</button></li>
-          <li><button class="docs-nav-item" id="dnav-workflows" data-page="workflows">Workflows and scheduling</button></li>
-          <li><button class="docs-nav-item" id="dnav-knowledge" data-page="knowledge">Knowledge bases</button></li>
-          <li><button class="docs-nav-item" id="dnav-apps" data-page="apps">Built apps</button></li>
-          <li><button class="docs-nav-item" id="dnav-crew" data-page="crew">Crew</button></li>
+          <li><a class="docs-nav-item" id="dnav-extensions" data-page="extensions" href="#doc-extensions">Extensions and skills</a></li>
+          <li><a class="docs-nav-item" id="dnav-workflows" data-page="workflows" href="#doc-workflows">Workflows and scheduling</a></li>
+          <li><a class="docs-nav-item" id="dnav-knowledge" data-page="knowledge" href="#doc-knowledge">Knowledge bases</a></li>
+          <li><a class="docs-nav-item" id="dnav-apps" data-page="apps" href="#doc-apps">Built apps</a></li>
+          <li><a class="docs-nav-item" id="dnav-crew" data-page="crew" href="#doc-crew">Crew</a></li>
         </ul></div>
         <div class="docs-group"><h2>How it works</h2><ul>
-          <li><button class="docs-nav-item" id="dnav-agentloop" data-page="agentloop">The agent loop</button></li>
-          <li><button class="docs-nav-item" id="dnav-config" data-page="config">Configuration</button></li>
-          <li><button class="docs-nav-item" id="dnav-architecture" data-page="architecture">Architecture</button></li>
+          <li><a class="docs-nav-item" id="dnav-agentloop" data-page="agentloop" href="#doc-agentloop">The agent loop</a></li>
+          <li><a class="docs-nav-item" id="dnav-config" data-page="config" href="#doc-config">Configuration</a></li>
+          <li><a class="docs-nav-item" id="dnav-architecture" data-page="architecture" href="#doc-architecture">Architecture</a></li>
         </ul></div>
       </nav>
-      <div class="docs-slack">Questions? Ask on Slack.<br><a class="slack-link" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a></div>
+      <div class="docs-slack">Ask on Slack.<br><a class="slack-link" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a></div>
     </div>
   </aside>
 
@@ -255,7 +255,7 @@
 <div class="doc-page" id="doc-cli">
 <h1>Command line</h1>
 <p class="doc-lede">The <code>biorouter</code> command runs the same agent as the desktop app, from a terminal. It shares your settings, chats and extensions with the app.</p>
-<p>The desktop app includes the command; <a href="#getstarted-cli">Getting started</a> shows how to put it on your PATH. On a Linux server, install the <code>biorouter-cli</code> package instead. Add <code>--help</code> to any command to see its flags.</p>
+<p>The desktop app includes the command; <a href="#getstarted-cli">Getting started</a> shows how to put it on your PATH. On a Linux server, install the <code>biorouter-cli</code> package instead. Add <code class="code-token">--help</code> to any command to see its flags.</p>
 
 <h2 id="cli-everyday">Everyday use</h2>
 
@@ -266,7 +266,7 @@
 biorouter models set --provider PROVIDER --model MODEL</code></pre>
 
 <h3 id="cli-chat">Chat in the terminal</h3>
-<p>Run <code>biorouter</code> with no command to start a chat. On a real terminal it opens a full screen chat. Set <code>BIOROUTER_CLI_CLASSIC=1</code> for the older line by line prompt, which Biorouter also uses when the output is not a terminal. When no settings exist yet, <code>biorouter</code> runs <code>configure</code> first.</p>
+<p>Run <code>biorouter</code> with no command to start a chat. On a real terminal it opens a full screen chat. Set <code>BIOROUTER_CLI_CLASSIC</code> to any value for the older line by line prompt, which Biorouter also uses when the output is not a terminal. When no settings exist yet, <code>biorouter</code> runs <code>configure</code> first.</p>
 <pre>
 <code># A new chat, or a new chat with a name
 biorouter
@@ -275,7 +275,7 @@ biorouter session -n gwas-followup
 # Continue the last chat, or a named one with its history
 biorouter session --resume
 biorouter session --resume -n gwas-followup --history</code></pre>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <thead><tr><th>Key</th><th>In the full screen chat</th></tr></thead>
   <tbody>
     <tr><td><kbd>Enter</kbd></td><td>Send. While the agent is answering, the message waits and is sent when the turn ends.</td></tr>
@@ -289,7 +289,7 @@ biorouter session --resume -n gwas-followup --history</code></pre>
 
 <h3 id="cli-slash">Slash commands</h3>
 <p>The desktop app, the full screen chat and the classic prompt share these commands.</p>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <thead><tr><th>Command</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code>/compact</code></td><td>Summarize the chat so far to free context.</td></tr>
@@ -334,7 +334,7 @@ biorouter session --resume -n gwas-followup --history</code></pre>
 biorouter session export -n gwas-followup -o gwas-followup.md
 biorouter session rename -n gwas-followup --new-name hla-loci
 biorouter session remove --session-id 20260929_3</code></pre>
-<p>The live commands need a <code>biorouterd</code> this terminal can reach, on <code>BIOROUTER_PORT</code> (3000 unless set) with the same <code>BIOROUTER_SERVER__SECRET_KEY</code> it was started with. The desktop app's own service picks a random port and a new key at every launch and publishes neither, so an open app does not count. Start a service you control:</p>
+<p>The live commands need a <code>biorouterd</code> this terminal can reach, on <code class="code-token">BIOROUTER_PORT</code> (3000 unless set) with the same <code class="code-token">BIOROUTER_SERVER__SECRET_KEY</code> it was started with. The desktop app's own service picks a random port and a new key at every launch and publishes neither, so an open app does not count. Start a service you control:</p>
 <pre>
 <code># Terminal 1: a service with a key you choose
 BIOROUTER_SERVER__SECRET_KEY=KEY biorouterd agent
@@ -374,77 +374,77 @@ biorouter schedule list
 biorouter schedule run-now --schedule-id review-weekly
 biorouter schedule sessions --schedule-id review-weekly -l 10
 biorouter schedule remove --schedule-id review-weekly</code></pre>
-<p><code>deeplink</code> prints a link that opens the workflow in the desktop app. <code>--cron</code> takes five fields, six with seconds first, or <code>@hourly</code>, <code>@daily</code>, <code>@weekly</code> or <code>@monthly</code>; <code>schedule cron-help</code> prints examples. A job keeps its own copy of the workflow, so later edits to the file do not change it. <code>--id</code> is short for <code>--schedule-id</code>.</p>
+<p><code>deeplink</code> prints a link that opens the workflow in the desktop app. <code class="code-token">--cron</code> takes five fields, six with seconds first, or <code>@hourly</code>, <code>@daily</code>, <code>@weekly</code> or <code>@monthly</code>; <code>schedule cron-help</code> prints examples. A job keeps its own copy of the workflow, so later edits to the file do not change it. <code class="code-token">--id</code> is short for <code class="code-token">--schedule-id</code>.</p>
 <p>Jobs run in the background while a Biorouter service is running. When this terminal can reach a running service (the same two variables as the live session commands), that service makes the change. Otherwise <code>add</code> and <code>remove</code> ask you to confirm and write the schedule file themselves, and a running Biorouter, the desktop app included, picks up the change within 60 seconds. <code>run-now</code> asks, then runs the job once in this terminal. Because a job is an agent that runs unattended, none of them goes ahead without a person at a terminal.</p>
 
 <h3 id="cli-doctor">Fix a missing tool</h3>
-<p><code>biorouter doctor</code> checks the tools extensions depend on (Git and uv are required; Python 3, Node.js, the AWS CLI, <code>llama-server</code> and Rust are optional), whether <code>biorouter</code> is on your PATH, the local model server, and whether a newer release exists. <code>--fix</code> opens a chat that already knows the failing tool and this machine, so the agent can repair it with you. With no tool named, it takes the first missing required one. <code>--format json</code> prints the checks for a script, and <code>--no-update</code> skips the release check.</p>
+<p><code>biorouter doctor</code> checks the tools extensions depend on (Git and uv are required; Python 3, Node.js, the AWS CLI, <code>llama-server</code> and Rust are optional), whether <code>biorouter</code> is on your PATH, the local model server, and whether a newer release exists. <code class="code-token">--fix</code> opens a chat that already knows the failing tool and this machine, so the agent can repair it with you. With no tool named, it takes the first missing required one. <code>--format json</code> prints the checks for a script, and <code class="code-token">--no-update</code> skips the release check.</p>
 <pre>
 <code>biorouter doctor
 biorouter doctor --fix
 biorouter doctor --fix uv</code></pre>
 
 <h2 id="cli-reference">Reference</h2>
-<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">three settings</a> only the command line reads and the two under <a href="#cli-serve">Browser access</a>.</p>
+<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the two under <a href="#cli-serve">Browser access</a>.</p>
 
 <h3 id="cli-ref-session"><code>session</code></h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref doc-options">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Flag</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>--name</code></td><td>Name a new chat (<code>-n NAME</code>). With <code>--resume</code>, pick a chat by name.</td></tr>
-    <tr><td><code>--session-id</code></td><td>Pick a chat by ID, with <code>--resume</code>. Also <code>--id</code>.</td></tr>
-    <tr><td><code>--resume</code></td><td>Continue the last chat, or the one named (<code>-r</code>).</td></tr>
-    <tr><td><code>--history</code></td><td>Show earlier messages when resuming.</td></tr>
-    <tr><td><code>--provider</code></td><td>Use this provider for this chat. <code>--model</code> picks its model.</td></tr>
-    <tr><td><code>--with-builtin</code></td><td>Turn on built in extensions by name, as <code>developer,memory</code>.</td></tr>
-    <tr><td><code>--with-extension</code></td><td>A local extension from a command, as <code>"ENV=value command args"</code>, or a remote one with <code>--with-streamable-http-extension URL</code>. Both repeat.</td></tr>
-    <tr><td><code>--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
-    <tr><td><code>--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
-    <tr><td><code>--debug</code></td><td>Show full tool output and full paths.</td></tr>
-    <tr><td><code>--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. With <code>--approval-key-stdin</code>, <code>--no-start</code> and <code>--create-only</code>.</td></tr>
+    <tr><td><code class="code-token">--name</code></td><td>Name a new chat (<code>-n NAME</code>). With <code class="code-token">--resume</code>, pick a chat by name.</td></tr>
+    <tr><td><code class="code-token">--session-id</code></td><td>Pick a chat by ID, with <code class="code-token">--resume</code>. Also <code class="code-token">--id</code>.</td></tr>
+    <tr><td><code class="code-token">--resume</code></td><td>Continue the last chat, or the one named (<code>-r</code>).</td></tr>
+    <tr><td><code class="code-token">--history</code></td><td>Show earlier messages when resuming.</td></tr>
+    <tr><td><code class="code-token">--provider</code></td><td>Use this provider for this chat. <code class="code-token">--model</code> picks its model.</td></tr>
+    <tr><td><code class="code-token">--with-builtin</code></td><td>Turn on built in extensions by name, as <code>developer,memory</code>.</td></tr>
+    <tr><td><code class="code-token">--with-extension</code></td><td>A local extension from a command, as <code>"ENV=value command args"</code>, or a remote one with <code>--with-streamable-http-extension URL</code>. Both repeat.</td></tr>
+    <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
+    <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
+    <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
+    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. With <code class="code-token">--approval-key-stdin</code>, <code class="code-token">--no-start</code> and <code class="code-token">--create-only</code>.</td></tr>
   </tbody>
 </table></div>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Subcommand</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>list</code></td><td>Newest first. <code>--format json</code>, <code>--ascending</code>, <code>-w DIR</code> for one folder, <code>-l N</code>. <code>--subagents</code> nests subagent runs; <code>--include-empty</code> adds chats with no messages.</td></tr>
+    <tr><td><code>list</code></td><td>Newest first. <code>--format json</code>, <code class="code-token">--ascending</code>, <code>-w DIR</code> for one folder, <code>-l N</code>. <code class="code-token">--subagents</code> nests subagent runs; <code class="code-token">--include-empty</code> adds chats with no messages.</td></tr>
     <tr><td><code>export</code></td><td>A Markdown transcript, or a full copy with <code>--format json</code> or <code>yaml</code>. <code>-o FILE</code>.</td></tr>
     <tr><td><code>rename</code></td><td><code>--new-name NAME</code>.</td></tr>
     <tr><td><code>diverge</code></td><td>Copy a chat into a new one and print the new ID. <code>--branch-name NAME</code>.</td></tr>
-    <tr><td><code>remove</code></td><td>Delete chats for good. It asks first unless <code>--yes</code>, which a script must pass. <code>-r REGEX</code> matches IDs; <code>--subagents</code> and <code>--include-empty</code> widen <code>-r</code> and the picker.</td></tr>
+    <tr><td><code>remove</code></td><td>Delete chats for good. It asks first unless <code class="code-token">--yes</code>, which a script must pass. <code>-r REGEX</code> matches IDs; <code class="code-token">--subagents</code> and <code class="code-token">--include-empty</code> widen <code>-r</code> and the picker.</td></tr>
     <tr><td><code>diagnostics</code></td><td>A zip of the chat, settings and recent logs for a bug report. Read it before you share it.</td></tr>
     <tr><td><code>declassify</code></td><td>Make a private chat public, after you confirm. See <a href="#privacy">Private and public</a>.</td></tr>
-    <tr><td><code>watch</code></td><td>Print a live chat's events without changing it. <code>--follow</code> keeps watching after the turn ends.</td></tr>
-    <tr><td><code>send</code></td><td>Send a message and stream the turn. <code>--no-wait</code> returns once the turn starts.</td></tr>
-    <tr><td><code>attach</code></td><td>Follow a running chat and send what you type. <code>--name NAME</code> instead of an ID, <code>--of PARENT_ID</code> for its running subagent, <code>--read-only</code> to only watch. <kbd>Ctrl+C</kbd> leaves the turn running, after a warning if you sent it from here.</td></tr>
+    <tr><td><code>watch</code></td><td>Print a live chat's events without changing it. <code class="code-token">--follow</code> keeps watching after the turn ends.</td></tr>
+    <tr><td><code>send</code></td><td>Send a message and stream the turn. <code class="code-token">--no-wait</code> returns once the turn starts.</td></tr>
+    <tr><td><code>attach</code></td><td>Follow a running chat and send what you type. <code>--name NAME</code> instead of an ID, <code>--of PARENT_ID</code> for its running subagent, <code class="code-token">--read-only</code> to only watch. <kbd>Ctrl+C</kbd> leaves the turn running, after a warning if you sent it from here.</td></tr>
     <tr><td><code>cancel</code></td><td>Stop the running turn, like Stop in the app.</td></tr>
   </tbody>
 </table></div>
-<p><code>export</code>, <code>rename</code>, <code>diverge</code>, <code>remove</code> and <code>diagnostics</code> take the chat as <code>--session-id ID</code> or <code>-n NAME</code>, and ask you to pick one when you give neither. <code>send</code>, <code>attach</code> and <code>cancel</code> take <code>--user-action-key-stdin</code> for a service started with a user action key.</p>
+<p><code>export</code>, <code>rename</code>, <code>diverge</code>, <code>remove</code> and <code>diagnostics</code> take the chat as <code>--session-id ID</code> or <code>-n NAME</code>, and ask you to pick one when you give neither. <code>send</code>, <code>attach</code> and <code>cancel</code> take <code class="code-token">--user-action-key-stdin</code> for a service started with a user action key.</p>
 
 <h3 id="cli-ref-run"><code>run</code></h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref doc-options">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Flag</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>--text</code></td><td>The request as text (<code>-t</code>).</td></tr>
-    <tr><td><code>--instructions</code></td><td>The request from a file (<code>-i FILE</code>). <code>-</code> reads standard input.</td></tr>
-    <tr><td><code>--workflow</code></td><td>A workflow by name or path. Give one of these three.</td></tr>
-    <tr><td><code>--params</code></td><td>A workflow parameter as <code>KEY=VALUE</code>. Repeatable, as is <code>--sub-workflow</code>.</td></tr>
-    <tr><td><code>--explain</code></td><td>Show a workflow's title and parameters without running it. <code>--render-workflow</code> prints it filled in.</td></tr>
-    <tr><td><code>--system</code></td><td>Extra instructions for the agent. Not with <code>--workflow</code>.</td></tr>
-    <tr><td><code>--interactive</code></td><td>Keep chatting after the first answer (<code>-s</code>).</td></tr>
-    <tr><td><code>--no-session</code></td><td>Store nothing. <code>-n NAME</code> names the session instead, and <code>-r</code> resumes a previous run.</td></tr>
-    <tr><td><code>--quiet</code></td><td>Print only the answer (<code>-q</code>).</td></tr>
-    <tr><td><code>--output-format</code></td><td><code>text</code>, <code>json</code> for one result at the end, or <code>stream-json</code> for events as they happen.</td></tr>
+    <tr><td><code class="code-token">--text</code></td><td>The request as text (<code>-t</code>).</td></tr>
+    <tr><td><code class="code-token">--instructions</code></td><td>The request from a file (<code>-i FILE</code>). <code>-</code> reads standard input.</td></tr>
+    <tr><td><code class="code-token">--workflow</code></td><td>A workflow by name or path. Give one of these three.</td></tr>
+    <tr><td><code class="code-token">--params</code></td><td>A workflow parameter as <code>KEY=VALUE</code>. Repeatable, as is <code class="code-token">--sub-workflow</code>.</td></tr>
+    <tr><td><code class="code-token">--explain</code></td><td>Show a workflow's title and parameters without running it. <code class="code-token">--render-workflow</code> prints it filled in.</td></tr>
+    <tr><td><code class="code-token">--system</code></td><td>Extra instructions for the agent. Not with <code class="code-token">--workflow</code>.</td></tr>
+    <tr><td><code class="code-token">--interactive</code></td><td>Keep chatting after the first answer (<code>-s</code>).</td></tr>
+    <tr><td><code class="code-token">--no-session</code></td><td>Store nothing. <code>-n NAME</code> names the session instead, and <code>-r</code> resumes a previous run.</td></tr>
+    <tr><td><code class="code-token">--quiet</code></td><td>Print only the answer (<code>-q</code>).</td></tr>
+    <tr><td><code class="code-token">--output-format</code></td><td><code>text</code>, <code>json</code> for one result at the end, or <code>stream-json</code> for events as they happen.</td></tr>
   </tbody>
 </table></div>
 <p>The model, limit and extension flags work as they do for <code>session</code>.</p>
 
 <h3 id="cli-ref-models"><code>models</code></h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Subcommand</th><th>What it does</th></tr></thead>
   <tbody>
@@ -460,23 +460,23 @@ biorouter doctor --fix uv</code></pre>
 <p>The listing commands take <code>--format json</code>. <a href="#providers">Models and providers</a> lists every provider and its default model.</p>
 
 <h3 id="cli-ref-extensions"><code>extension</code></h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Subcommand</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>install</code></td><td>Install a <code>.brxt</code> bundle, such as one from BAAM, and ask for each secret with echo off. <code>--env KEY=VALUE</code> sets a setting, <code>--secret-stdin</code> reads secrets as <code>KEY=VALUE</code> lines, <code>--no-enable</code> installs it switched off. <code>--secret KEY=VALUE</code> also works but shows in <code>ps</code>.</td></tr>
+    <tr><td><code>install</code></td><td>Install a <code>.brxt</code> bundle, such as one from BAAM, and ask for each secret with echo off. <code>--env KEY=VALUE</code> sets a setting, <code class="code-token">--secret-stdin</code> reads secrets as <code>KEY=VALUE</code> lines, <code class="code-token">--no-enable</code> installs it switched off. <code>--secret KEY=VALUE</code> also works but shows in <code>ps</code>.</td></tr>
     <tr><td><code>configure</code></td><td>Enter or change an installed extension's credentials.</td></tr>
     <tr><td><code>list</code></td><td>List extensions.</td></tr>
-    <tr><td><code>remove</code></td><td>Remove an extension. <code>--purge</code> also deletes its installed files.</td></tr>
+    <tr><td><code>remove</code></td><td>Remove an extension. <code class="code-token">--purge</code> also deletes its installed files.</td></tr>
   </tbody>
 </table></div>
 
 <h3 id="cli-ref-skill"><code>skill</code></h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Subcommand</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>install</code></td><td>Install from a <code>.zip</code> or a repository URL. <code>--force</code> replaces an installed copy. <code>--as bundle</code> or <code>--as individual</code> answers when a source could be either.</td></tr>
+    <tr><td><code>install</code></td><td>Install from a <code>.zip</code> or a repository URL. <code class="code-token">--force</code> replaces an installed copy. <code>--as bundle</code> or <code>--as individual</code> answers when a source could be either.</td></tr>
     <tr><td><code>list</code></td><td>Installed skills and whether each is on.</td></tr>
     <tr><td><code>enable</code></td><td>Switch a skill on, or off with <code>disable</code>, without removing it.</td></tr>
     <tr><td><code>remove</code></td><td>Remove a skill.</td></tr>
@@ -485,42 +485,43 @@ biorouter doctor --fix uv</code></pre>
 <p>See <a href="#extensions">Extensions and skills</a>.</p>
 
 <h3 id="cli-ref-knowledge"><code>knowledge</code></h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Subcommand</th><th>What it does</th></tr></thead>
   <tbody>
     <tr><td><code>list</code></td><td>List knowledge bases.</td></tr>
-    <tr><td><code>active</code></td><td>Show or set the primary base, where writes go when no <code>--kb</code> is given. <code>--set ID</code>, <code>--clear</code>, <code>--inherit</code>; <code>--session ID</code> for one chat.</td></tr>
-    <tr><td><code>create</code></td><td>A new base with an ID such as <code>ms-genetics</code>. <code>--name</code> and <code>--color</code> are optional.</td></tr>
-    <tr><td><code>ingest</code></td><td>Add a source with <code>--url</code>, <code>--file</code> or <code>--text</code>. <code>--kb ID</code>, <code>--focus HINTS</code>.</td></tr>
+    <tr><td><code>active</code></td><td>Show or set the primary base, where writes go when no <code class="code-token">--kb</code> is given. <code>--set ID</code>, <code class="code-token">--clear</code>, <code class="code-token">--inherit</code>; <code>--session ID</code> for one chat.</td></tr>
+    <tr><td><code>create</code></td><td>A new base with an ID such as <code>ms-genetics</code>. <code class="code-token">--name</code> and <code class="code-token">--color</code> are optional.</td></tr>
+    <tr><td><code>ingest</code></td><td>Add a source with <code class="code-token">--url</code>, <code class="code-token">--file</code> or <code class="code-token">--text</code>. <code>--kb ID</code>, <code>--focus HINTS</code>.</td></tr>
     <tr><td><code>ingest-conversation</code></td><td>Digest chats into a base. <code>--session ID</code> (repeatable; the latest chat by default), <code>--new-kb NAME</code>.</td></tr>
-    <tr><td><code>query</code></td><td>Ask a base a question. <code>--save</code> keeps the answer as a page.</td></tr>
-    <tr><td><code>lint</code></td><td>Check a base for problems. <code>--fix</code> lets the agent repair them.</td></tr>
+    <tr><td><code>query</code></td><td>Ask a base a question. <code class="code-token">--save</code> keeps the answer as a page.</td></tr>
+    <tr><td><code>lint</code></td><td>Check a base for problems. <code class="code-token">--fix</code> lets the agent repair them.</td></tr>
     <tr><td><code>hide</code></td><td>Hide a base from the agent; <code>unhide</code> brings it back.</td></tr>
   </tbody>
 </table></div>
-<p>The ingest, query and lint commands take <code>--provider</code> and <code>--model</code>. See <a href="#knowledge">Knowledge bases</a>.</p>
+<p>The ingest, query and lint commands take <code class="code-token">--provider</code> and <code class="code-token">--model</code>. See <a href="#knowledge">Knowledge bases</a>.</p>
 
 <h3 id="cli-ref-env">Settings only the command line reads</h3>
-<p>As on <a href="#config-env">Configuration</a>, each can be written in <code>config.yaml</code> or set as a variable, and the variable wins.</p>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<p>The first three settings can be written in <code>config.yaml</code> or set as a variable. The variable wins. <code class="code-token">BIOROUTER_CLI_CLASSIC</code> works only from the environment.</p>
+<div class="doc-table-scroll"><table class="ref doc-options">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>BIOROUTER_<wbr>CLI_<wbr>THEME</code></td><td>Colors for replies in the classic prompt and in <code>run</code>: <code>light</code>, <code>dark</code> or <code>ansi</code>, the default. <code>/t</code> changes it and saves it.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>CLI_<wbr>SHOW_<wbr>COST</code></td><td><code>true</code> adds an estimated cost to the classic prompt's context line.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>WORKFLOW_<wbr>GITHUB_<wbr>REPO</code></td><td>A GitHub <code>owner/repo</code> to find workflows in by name. It needs the <code>gh</code> command, signed in. <code>configure</code> can set it.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CLI_THEME</code></td><td>Colors for replies in the classic prompt and in <code>run</code>: <code>light</code>, <code>dark</code> or <code>ansi</code>, the default. <code>/t</code> changes it and saves it.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CLI_SHOW_COST</code></td><td><code>true</code> adds an estimated cost to the classic prompt's context line.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_WORKFLOW_GITHUB_REPO</code></td><td>A GitHub <code>owner/repo</code> to find workflows in by name. It needs the <code>gh</code> command, signed in. <code>configure</code> can set it.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CLI_CLASSIC</code></td><td>Any value selects the classic terminal prompt instead of the full screen chat.</td></tr>
   </tbody>
 </table></div>
 
 <h3 id="cli-exit-codes">Exit codes</h3>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
   <tbody>
     <tr><td><code>0</code></td><td>Finished.</td></tr>
     <tr><td><code>1</code></td><td>Any other error.</td></tr>
-    <tr><td><code>2</code></td><td>The command needs a person at a terminal and found none, for example <code>configure</code>, or <code>session remove</code> without <code>--yes</code>.</td></tr>
+    <tr><td><code>2</code></td><td>The command needs a person at a terminal and found none, for example <code>configure</code>, or <code>session remove</code> without <code class="code-token">--yes</code>.</td></tr>
     <tr><td><code>70</code></td><td>The provider call failed for a reason other than credentials, for example a network error, a server error or a rate limit.</td></tr>
     <tr><td><code>75</code></td><td>The provider rejected the credentials.</td></tr>
     <tr><td><code>76</code></td><td>The model kept calling one tool until the loop guard stopped the turn.</td></tr>
@@ -545,24 +546,24 @@ sudo apt install ./biorouter-cli_*_amd64.deb
 # Rocky, RHEL, Fedora
 sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
   <li><strong>Choose the model</strong> Run <code>biorouter configure</code>, as the account that will run <code>serve</code>. The browser cannot change the model later; see <a href="#serve-fixed-model">The model is fixed</a>.</li>
-  <li><strong>Start it</strong> Run <code>biorouter serve --open</code>. It opens your browser and stays in the foreground. Without <code>--open</code>, copy the whole address from these lines of its output:
+  <li><strong>Start it</strong> Run <code>biorouter serve --open</code>. It opens your browser and stays in the foreground. Without <code class="code-token">--open</code>, copy the whole address from these lines of its output:
 <pre>
 <code>  Biorouter is serving at
 
       http://127.0.0.1:8765/?t=1f4c9e02...</code></pre></li>
 </ol>
 <p><kbd>Ctrl+C</kbd> stops <code>serve</code> and its service and frees the port. Past chats show in both <code>serve</code> and the desktop app, since both read the same chat store, but a turn running in one does not show in the other.</p>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref doc-options">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Flag</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>--host</code></td><td>The address to listen on, <code>127.0.0.1</code> by default. An address other machines can reach requires a token.</td></tr>
-    <tr><td><code>--port</code></td><td>The port, <code>8765</code> by default (<code>-p</code>).</td></tr>
-    <tr><td><code>--open</code></td><td>Open a browser when the server is ready, without putting the token on a command line.</td></tr>
-    <tr><td><code>--token</code></td><td>Use a fixed token instead of a new one. Other accounts can read it in <code>ps</code>; <a href="#cli-serve-token">The access token</a> has a safer way.</td></tr>
-    <tr><td><code>--no-token</code></td><td>Serve with no token. Refused unless the address is local.</td></tr>
-    <tr><td><code>--web-dir</code></td><td>The folder holding the built interface, when <code>serve</code> cannot find it. It must contain an <code>index.html</code>. <code>BIOROUTER_SERVE_UI</code> does the same.</td></tr>
-    <tr><td><code>--computer-use-approval</code></td><td>Set a Biorouter Copilot approval key of at least 16 characters, typed at the terminal. It is never saved.</td></tr>
+    <tr><td><code class="code-token">--host</code></td><td>The address to listen on, <code>127.0.0.1</code> by default. An address other machines can reach requires a token.</td></tr>
+    <tr><td><code class="code-token">--port</code></td><td>The port, <code>8765</code> by default (<code>-p</code>).</td></tr>
+    <tr><td><code class="code-token">--open</code></td><td>Open a browser when the server is ready, without putting the token on a command line.</td></tr>
+    <tr><td><code class="code-token">--token</code></td><td>Use a fixed token instead of a new one. Other accounts can read it in <code>ps</code>; <a href="#cli-serve-token">The access token</a> has a safer way.</td></tr>
+    <tr><td><code class="code-token">--no-token</code></td><td>Serve with no token. Refused unless the address is local.</td></tr>
+    <tr><td><code class="code-token">--web-dir</code></td><td>The folder holding the built interface, when <code>serve</code> cannot find it. It must contain an <code>index.html</code>. <code class="code-token">BIOROUTER_SERVE_UI</code> does the same.</td></tr>
+    <tr><td><code class="code-token">--computer-use-approval</code></td><td>Set a Biorouter Copilot approval key of at least 16 characters, typed at the terminal. It is never saved.</td></tr>
   </tbody>
 </table></div>
 
@@ -571,7 +572,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
   <li>The address ends in <code>?t=</code> and a token. Unless you set a fixed one, the token is new on every launch and shown once.</li>
   <li>Opening the address gives the browser a cookie and removes the token from the address bar.</li>
   <li>The token is not used up. Anyone with the address can open it until <code>serve</code> stops, so stopping <code>serve</code> is how you revoke it.</li>
-  <li>To keep one address across restarts, set <code>BIOROUTER_BROWSER_TOKEN</code> to a long random value, for example from <code>openssl rand -hex 32</code>.</li>
+  <li>To keep one address across restarts, set <code class="code-token">BIOROUTER_BROWSER_TOKEN</code> to a long random value, for example from <code>openssl rand -hex 32</code>.</li>
 </ul>
 
 <h3 id="cli-serve-remote">Reach it from another machine</h3>
@@ -589,7 +590,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <p>So the model is chosen once, at the terminal, and every chat in that <code>serve</code> runs on it: private for its whole life on a private model, public on a public one. A private chat started in the desktop app opens in the browser only when the host's model is private too. To change the model, stop <code>serve</code>, run <code>biorouter configure</code> and start it again.</p>
 
 <h3 id="cli-serve-works">What works in a browser</h3>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Capability</th><th>In a browser</th></tr></thead>
   <tbody>
@@ -603,29 +604,28 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Approvals that need proof a person acted</td><td>A note takes the place of the buttons, and the agent is not offered skill or extension installs and removals. Run <code>biorouter skill</code> and <code>biorouter extension</code> on the host instead.</td></tr>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>
-    <tr><td>Biorouter Copilot</td><td>Only when <code>serve</code> started with <code>--computer-use-approval</code>. It controls the serving machine's desktop.</td></tr>
+    <tr><td>Biorouter Copilot</td><td>Only when <code>serve</code> started with <code class="code-token">--computer-use-approval</code>. It controls the serving machine's desktop.</td></tr>
     <tr><td>The app's terminal, updates, notifications, dock and menu bar icons, a second window</td><td>No</td></tr>
   </tbody>
 </table></div>
 
 <h2 id="cli-other">Other commands</h2>
-<div class="doc-table-scroll"><table class="ref" style="min-width: 0">
+<div class="doc-table-scroll"><table class="ref">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Command</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>--version</code></td><td>The installed version.</td></tr>
+    <tr><td><code class="code-token">--version</code></td><td>The installed version.</td></tr>
     <tr><td><code>info</code></td><td>Where your settings, chats and logs are. <code>-v</code> also prints the settings.</td></tr>
-    <tr><td><code>usage</code></td><td>Tokens and cost per day, or per model with <code>--by-model</code>. <code>--from</code> and <code>--to</code> take <code>YYYY-MM-DD</code>; the default is the last 30 days. <code>--json</code>.</td></tr>
+    <tr><td><code>usage</code></td><td>Tokens and cost per day, or per model with <code class="code-token">--by-model</code>. <code class="code-token">--from</code> and <code class="code-token">--to</code> take <code>YYYY-MM-DD</code>; the default is the last 30 days. <code class="code-token">--json</code>.</td></tr>
     <tr><td><code>setup-path</code></td><td>Put <code>biorouter</code> on your PATH.</td></tr>
     <tr><td><code>term</code></td><td>One chat per terminal window, and <code>@biorouter</code> or <code>@g</code> to ask from the prompt with your recent commands as context. Add <code>eval "$(biorouter term init zsh)"</code> to <code>~/.zshrc</code>; <code>term init</code> also takes <code>bash</code>, <code>fish</code> and <code>powershell</code>.</td></tr>
     <tr><td><code>project</code></td><td>Continue in your last project folder. <code>projects</code> lists recent ones to pick from.</td></tr>
     <tr><td><code>apps</code></td><td>Open an app the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Built apps</a>.</td></tr>
     <tr><td><code>crew</code> <span class="chip">Next release</span></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
     <tr><td><code>mcp</code></td><td>A bundled MCP server over standard input and output, for a host to start: <code>autovisualiser</code>, <code>computercontroller</code>, <code>webdocuments</code>, <code>developer</code> or <code>memory</code>.</td></tr>
-    <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code>--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>
+    <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code class="code-token">--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>
     <tr><td><code>completion</code></td><td>A completion script for bash, zsh, fish, powershell or elvish.</td></tr>
     <tr><td><code>bench</code></td><td>Benchmark a model setup on a set of tasks.</td></tr>
-    <tr><td><code>web</code></td><td>Deprecated. Use <code>serve</code>.</td></tr>
   </tbody>
 </table></div>
 
@@ -767,7 +767,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <pre><code>settings:
   biorouter_provider: llamacpp
   biorouter_model: gemma4-12b</code></pre>
-<p><strong>Lead and worker.</strong> Set <code>BIOROUTER_LEAD_MODEL</code> (and <code>BIOROUTER_LEAD_PROVIDER</code> if it is another provider) to start each chat on a lead model for its first turns, three by default, before your default model takes over. Biorouter goes back to the lead when the worker fails repeatedly. Both models see the whole chat, so the pair counts as private only when both are private.</p>
+<p><strong>Lead and worker.</strong> Set <code class="code-token">BIOROUTER_LEAD_MODEL</code> (and <code class="code-token">BIOROUTER_LEAD_PROVIDER</code> if it is another provider) to start each chat on a lead model for its first turns, three by default, before your default model takes over. Biorouter goes back to the lead when the worker fails repeatedly. Both models see the whole chat, so the pair counts as private only when both are private.</p>
 </div>
 
 <div class="doc-page" id="doc-privacy">
@@ -899,7 +899,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>Linux</strong><br>Secret&nbsp;Service</td><td>GNOME Keyring or KWallet. No prompt on a desktop session, which opens the store when you log in.</td></tr>
   </tbody>
 </table></div>
-<p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code>BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. Prefer the credential store where there is one.</p>
+<p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code class="code-token">BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. Prefer the credential store where there is one.</p>
 <ul>
   <li><strong>In the current release</strong>, on macOS and Linux the file gets your computer's default permissions, which can let other accounts on the computer read it. Run <code>chmod&nbsp;600 ~/.config/<wbr>biorouter/<wbr>secrets.yaml</code> to make it readable by your account only. Biorouter keeps that setting when it writes the file again.</li>
   <li><span class="chip">Next release</span> Biorouter creates the file readable by your account only, and tightens an existing file the next time it writes it.</li>
@@ -931,7 +931,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>A <a href="#apps">built app</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the app's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the app's <code>.vault/</code> folder, and the app refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported app leaves <code>.vault/</code> behind.</p>
 
 <h2 id="vaulting-modes">Permission modes</h2>
-<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Mode</strong>, with <code>/mode</code> at the classic terminal prompt, or in the settings menu of <code>biorouter configure</code>. It is stored as <code>BIOROUTER_MODE</code>.</p>
+<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Mode</strong>, with <code>/mode</code> at the classic terminal prompt, or in the settings menu of <code>biorouter configure</code>. It is stored as <code class="code-token">BIOROUTER_MODE</code>.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Mode</th><th>Value</th><th>What the agent does</th></tr></thead>
   <tbody>
@@ -959,9 +959,9 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Computer</th><th>Policy file</th></tr></thead>
   <tbody>
-    <tr><td><strong>macOS</strong></td><td><code>/Library/<wbr>Application Support/<wbr>Biorouter/<wbr><span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
-    <tr><td><strong>Linux</strong></td><td><code>/etc/<wbr>biorouter/<wbr><span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
-    <tr><td><strong>Windows</strong></td><td><code>%ProgramData%\<wbr>Biorouter\<wbr><span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>macOS</strong></td><td><code>/Library/Application Support/Biorouter/<span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>Linux</strong></td><td><code>/etc/biorouter/<span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>Windows</strong></td><td><code>%ProgramData%\Biorouter\<span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
   </tbody>
 </table></div>
 <pre>
@@ -976,11 +976,11 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <ul>
   <li>On macOS and Linux the file is read only if it and its folder belong to root or to you, and neither the group nor others can write to them. On Windows the <code>%ProgramData%</code> location is trusted, and ownership is not checked yet.</li>
   <li>A file that fails the check or does not parse is ignored with a warning, and Biorouter runs as usual.</li>
-  <li><code>BIOROUTER_PATH_ROOT</code> moves the file into <code>&lt;root&gt;/managed/</code>.</li>
+  <li><code class="code-token">BIOROUTER_PATH_ROOT</code> moves the file into <code>&lt;root&gt;/managed/</code>.</li>
 </ul>
 
 <h2 id="vaulting-sandbox">Shell sandbox</h2>
-<p>The shell sandbox is off by default. With the environment variable <code>BIOROUTER_SHELL_SANDBOX</code> set (it has no effect in <code>config.yaml</code>), each shell command runs in an operating system sandbox that lets it write only to the working folder and the temporary folder, and blocks outbound network where the kernel allows it. <code>biorouter doctor</code> shows which parts your computer gets. The sandbox is Seatbelt on macOS, and Landlock with seccomp on Linux, or bubblewrap where the kernel lacks them. Windows has no shell sandbox yet.</p>
+<p>The shell sandbox is off by default. With the environment variable <code class="code-token">BIOROUTER_SHELL_SANDBOX</code> set (it has no effect in <code>config.yaml</code>), each shell command runs in an operating system sandbox that lets it write only to the working folder and the temporary folder, and blocks outbound network where the kernel allows it. <code>biorouter doctor</code> shows which parts your computer gets. The sandbox is Seatbelt on macOS, and Landlock with seccomp on Linux, or bubblewrap where the kernel lacks them. Windows has no shell sandbox yet.</p>
 <ul>
   <li><code>auto</code> (or <code>1</code>, <code>true</code>, <code>on</code>) uses the best sandbox available. Where there is none, it warns once and runs the command anyway.</li>
   <li><code>strict</code> refuses to run a command when a full sandbox is not available.</li>
@@ -1294,8 +1294,8 @@ biorouter schedule run-now --schedule-id review-weekly
 biorouter schedule sessions --schedule-id review-weekly
 biorouter schedule remove --schedule-id review-weekly
 biorouter schedule cron-help    # cron examples</code></pre>
-<p><code>--cron</code> takes five fields (minute, hour, day of month, month, day of week), or six with seconds first, in this computer's local time; <code>"0 8 * * 1"</code> is every Monday at 8:00. The schedule keeps its own copy of the workflow as it was when you added it.</p>
-<p>When this terminal cannot reach a Biorouter service, which is always the case next to the desktop app and in an agent's shell, the command writes the schedule file itself, and a running service picks it up within 60 seconds. In that case <code>add</code>, <code>remove</code> and <code>run-now</code> ask you to confirm at the terminal, and refuse when there is no terminal to ask, so an agent's shell cannot add a schedule on its own. When <code>BIOROUTER_SERVER__SECRET_KEY</code> and <code>BIOROUTER_PORT</code> point at a running service, that service makes the change without asking, or refuses it when the schedule would run on a private model.</p>
+<p><code class="code-token">--cron</code> takes five fields (minute, hour, day of month, month, day of week), or six with seconds first, in this computer's local time; <code>"0 8 * * 1"</code> is every Monday at 8:00. The schedule keeps its own copy of the workflow as it was when you added it.</p>
+<p>When this terminal cannot reach a Biorouter service, which is always the case next to the desktop app and in an agent's shell, the command writes the schedule file itself, and a running service picks it up within 60 seconds. In that case <code>add</code>, <code>remove</code> and <code>run-now</code> ask you to confirm at the terminal, and refuse when there is no terminal to ask, so an agent's shell cannot add a schedule on its own. When <code class="code-token">BIOROUTER_SERVER__SECRET_KEY</code> and <code class="code-token">BIOROUTER_PORT</code> point at a running service, that service makes the change without asking, or refuses it when the schedule would run on a private model.</p>
 
 <h3>What a scheduled run needs</h3>
 <ul>
@@ -1442,7 +1442,7 @@ biorouter knowledge active --set ms-genetics
 biorouter knowledge ingest --file ./paper.pdf
 biorouter knowledge query "What predicts relapse?" --save
 biorouter knowledge lint</code></pre>
-<p>Once <code style="white-space: nowrap">active --set</code> has made a base the primary, commands without <code>--kb</code> use it. <code>kb</code> is a short name for <code>knowledge</code>. Every flag is in the <a href="#cli-ref-knowledge">command line reference</a>.</p>
+<p>Once <code style="white-space: nowrap">active --set</code> has made a base the primary, commands without <code class="code-token">--kb</code> use it. <code>kb</code> is a short name for <code>knowledge</code>. Every flag is in the <a href="#cli-ref-knowledge">command line reference</a>.</p>
 </div>
 
 <div class="doc-page" id="doc-apps">
@@ -1529,7 +1529,7 @@ biorouter knowledge lint</code></pre>
 <pre><code>biorouter apps list
 biorouter apps open cohort-explorer
 biorouter apps serve cohort-explorer</code></pre>
-<p><code>list</code> prints every app (<code>--json</code> for scripts). <code>open</code> and <code>serve</code> use the background service on <code>BIOROUTER_PORT</code> (3000 by default) and start one if none is running. <code>open</code> opens the app in your browser; <code>serve</code> prints its address, and when it started the service it stays in the foreground and stops it when you press <kbd>Ctrl+C</kbd>. Apps always open in a browser, not in the terminal.</p>
+<p><code>list</code> prints every app (<code class="code-token">--json</code> for scripts). <code>open</code> and <code>serve</code> use the background service on <code class="code-token">BIOROUTER_PORT</code> (3000 by default) and start one if none is running. <code>open</code> opens the app in your browser; <code>serve</code> prints its address, and when it started the service it stays in the foreground and stops it when you press <kbd>Ctrl+C</kbd>. Apps always open in a browser, not in the terminal.</p>
 </div>
 
 <div class="doc-page" id="doc-crew">
@@ -1711,10 +1711,10 @@ biorouter apps serve cohort-explorer</code></pre>
 <p>A file can be up to 1 GiB, one computer runs at most four agent tasks at once, and a workspace keeps up to 16 MiB of state and 10 GiB of shared files. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#workspace-limits">Workspace limits</a> lists the rest.</p>
 
 <h2 id="crew-command-line">Command line</h2>
-<p>The <code>biorouter crew</code> commands reach the same workspaces as the app, on macOS and Linux. Add <code>--help</code> after any command for its options.</p>
+<p>The <code>biorouter crew</code> commands reach the same workspaces as the app, on macOS and Linux. Add <code class="code-token">--help</code> after any command for its options.</p>
 <ul>
   <li>Every command except <code>daemon status</code> asks for your approval secret.</li>
-  <li><code>--approval-key-stdin</code> reads the secret from the first line of standard input instead. Use it in a script.</li>
+  <li><code class="code-token">--approval-key-stdin</code> reads the secret from the first line of standard input instead. Use it in a script.</li>
   <li><code>--connection NAME</code> chooses a saved connection when you have more than one.</li>
   <li><code>--output-format json</code> prints JSON, errors included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>
 </ul>
@@ -1784,15 +1784,15 @@ biorouter crew tasks start methods \
   <li><strong>Repeated failure.</strong> The same failure from the same tool: a nudge at 3, then “change approach or ask the user” at 5. After 6, the next call to that tool is refused.</li>
   <li><strong>Failures in a row.</strong> Failed calls to any tool: a nudge at 3. At 6, the model is told to change route or hand the work back to you.</li>
   <li><strong>Stalls.</strong> A check for a stall after 30 actions in one turn, then every 10. A confirmed stall gets a short grace period to answer, then the turn stops.</li>
-  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. Quick reasoning effort halves both, and Deep doubles them. Set <code>BIOROUTER_MAX_TURNS</code> or <code>BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
-  <li><strong>Reply budget.</strong> A limit on the time, tokens or cost of one reply. Off by default. Set <code>BIOROUTER_REPLY_BUDGET_SECONDS</code>, <code>BIOROUTER_REPLY_BUDGET_TOKENS</code> or <code>BIOROUTER_REPLY_BUDGET_USD</code> for a warning, a request to wrap up, then a stop.</li>
+  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. Quick reasoning effort halves both, and Deep doubles them. Set <code class="code-token">BIOROUTER_MAX_TURNS</code> or <code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
+  <li><strong>Reply budget.</strong> A limit on the time, tokens or cost of one reply. Off by default. Set <code class="code-token">BIOROUTER_REPLY_BUDGET_SECONDS</code>, <code class="code-token">BIOROUTER_REPLY_BUDGET_TOKENS</code> or <code class="code-token">BIOROUTER_REPLY_BUDGET_USD</code> for a warning, a request to wrap up, then a stop.</li>
 </ul>
 
 <h2 id="agentloop-delegation">Delegation and several chats</h2>
 <h3>Subagents</h3>
 <p>Ask in plain language, for example “Have a subagent check the QC report while you draft the methods.” A subagent is a separate chat that runs one task and reports back to the chat that started it. Several can run one after another or in parallel. In the desktop app each one opens in a background tab marked as a subagent, where you can read it as it works, type to steer it, and stop it. Closing the tab does not stop it. If you typed into it, the parent is told.</p>
 <ul>
-  <li>A subagent has the parent's extensions unless you name fewer, 25 turns (<code>BIOROUTER_SUBAGENT_MAX_TURNS</code>) and 5 minutes by default.</li>
+  <li>A subagent has the parent's extensions unless you name fewer, 25 turns (<code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code>) and 5 minutes by default.</li>
   <li>It cannot start subagents of its own, change the parent's extensions, or change schedules.</li>
   <li>It never moves work across the privacy boundary. A public chat cannot start a subagent on a private model, and a private chat cannot start one on a public model. A public subagent is given no private data extensions, and the parent is told which were left out. See <a href="#privacy">Private and public</a>.</li>
 </ul>
@@ -1864,22 +1864,22 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>What</th><th>Path</th></tr></thead>
   <tbody>
-    <tr><td><strong>Settings</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>config.yaml</code></td></tr>
-    <tr><td><strong>Tool rules</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>permission.yaml</code>: always allow, ask or never allow, for single tools</td></tr>
-    <tr><td><strong>Secrets</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>secrets.yaml</code>, only without a credential store</td></tr>
-    <tr><td><strong>Privacy switch</strong></td><td><code>~/.config/<wbr>biorouter/<wbr><span style="white-space: nowrap">privacy-tiers.json</span></code>: whether private and public protection is on</td></tr>
-    <tr><td><strong>Workflows</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>workflows/</code></td></tr>
-    <tr><td><strong>Skills</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>skills/</code></td></tr>
-    <tr><td><strong>Installed extensions</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>extensions/</code></td></tr>
-    <tr><td><strong>Knowledge bases</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>knowledge/</code></td></tr>
-    <tr><td><strong>Global memories</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>memory/</code></td></tr>
-    <tr><td><strong>Built apps</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>agent_drafter/</code></td></tr>
-    <tr><td><strong>Chats</strong></td><td><code>~/.local/<wbr>share/<wbr>biorouter/<wbr>sessions/<wbr>sessions.db</code></td></tr>
-    <tr><td><strong>Schedules</strong></td><td><code>~/.local/<wbr>share/<wbr>biorouter/<wbr>schedule.json</code>, with a copy of each scheduled workflow in <code>scheduled_workflows/</code> beside it</td></tr>
-    <tr><td><strong>Logs</strong></td><td><code>~/.local/<wbr>state/<wbr>biorouter/<wbr>logs/</code></td></tr>
+    <tr><td><strong>Settings</strong></td><td><code>~/.config/biorouter/config.yaml</code></td></tr>
+    <tr><td><strong>Tool rules</strong></td><td><code>~/.config/biorouter/permission.yaml</code>: always allow, ask or never allow, for single tools</td></tr>
+    <tr><td><strong>Secrets</strong></td><td><code>~/.config/biorouter/secrets.yaml</code>, only without a credential store</td></tr>
+    <tr><td><strong>Privacy switch</strong></td><td><code>~/.config/biorouter/<span style="white-space: nowrap">privacy-tiers.json</span></code>: whether private and public protection is on</td></tr>
+    <tr><td><strong>Workflows</strong></td><td><code>~/.config/biorouter/workflows/</code></td></tr>
+    <tr><td><strong>Skills</strong></td><td><code>~/.config/biorouter/skills/</code></td></tr>
+    <tr><td><strong>Installed extensions</strong></td><td><code>~/.config/biorouter/extensions/</code></td></tr>
+    <tr><td><strong>Knowledge bases</strong></td><td><code>~/.config/biorouter/knowledge/</code></td></tr>
+    <tr><td><strong>Global memories</strong></td><td><code>~/.config/biorouter/memory/</code></td></tr>
+    <tr><td><strong>Built apps</strong></td><td><code>~/.config/biorouter/agent_drafter/</code></td></tr>
+    <tr><td><strong>Chats</strong></td><td><code>~/.local/share/biorouter/sessions/sessions.db</code></td></tr>
+    <tr><td><strong>Schedules</strong></td><td><code>~/.local/share/biorouter/schedule.json</code>, with a copy of each scheduled workflow in <code>scheduled_workflows/</code> beside it</td></tr>
+    <tr><td><strong>Logs</strong></td><td><code>~/.local/state/biorouter/logs/</code></td></tr>
   </tbody>
 </table></div>
-<p>An administrator's policy file sits outside your profile; see <a href="#vaulting-managed-policy">Managed policy</a>. <code>BIOROUTER_PATH_ROOT</code> moves everything above under one folder, in <code>config/</code>, <code>data/</code> and <code>state/</code>.</p>
+<p>An administrator's policy file sits outside your profile; see <a href="#vaulting-managed-policy">Managed policy</a>. <code class="code-token">BIOROUTER_PATH_ROOT</code> moves everything above under one folder, in <code>config/</code>, <code>data/</code> and <code>state/</code>.</p>
 
 <h2 id="config-precedence">Which setting wins</h2>
 <p>When the same setting comes from several places, the first of these wins:</p>
@@ -1902,30 +1902,30 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 
 <h2 id="config-env">Environment variables</h2>
 <p>These settings can be written in <code>config.yaml</code> or set as a variable. The variable wins.</p>
-<div class="doc-table-scroll"><table>
+<div class="doc-table-scroll"><table class="doc-options">
   <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>BIOROUTER_<wbr>PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>MODEL</code></td><td>The model, for example <code>gemma4</code>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>AUTO_COMPACT_<wbr>THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>gemma4</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
   </tbody>
 </table></div>
 <p>These work only as environment variables. Written in <code>config.yaml</code>, they have no effect.</p>
-<div class="doc-table-scroll"><table>
+<div class="doc-table-scroll"><table class="doc-options">
   <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code>BIOROUTER_<wbr>SUBAGENT_<wbr>MAX_TURNS</code></td><td>The turn limit for a subagent. Default <code>25</code>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>CONTEXT_LIMIT</code></td><td>Overrides the model's context window, in tokens. Useful for a model Biorouter does not know.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>DISABLE_KEYRING</code></td><td>Any value keeps secrets in <code>secrets.yaml</code> instead of the credential store.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code></td><td>The turn limit for a subagent. Default <code>25</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CONTEXT_LIMIT</code></td><td>Overrides the model's context window, in tokens. Useful for a model Biorouter does not know.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_DISABLE_KEYRING</code></td><td>Any value keeps secrets in <code>secrets.yaml</code> instead of the credential store.</td></tr>
     <tr><td>A key's own name, such as <code>OPENAI_API_KEY</code></td><td>Supplies that secret, ahead of the stored one.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>SHELL_SANDBOX</code></td><td><code>off</code> (the default), <code>auto</code> or <code>strict</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>WORKFLOW_PATH</code></td><td>More folders to search for workflows, separated by <code>:</code> on macOS and Linux and by <code>;</code> on Windows.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>WORKFLOW_<wbr>SCAN_<wbr>WORKING_DIR</code></td><td><code>1</code> also lists workflows found loose in the working folder. Off by default.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>PORT</code></td><td>The port of the <code>biorouterd</code> that live <code>session</code> commands reach. Default <code>3000</code>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>SERVER__<wbr>SECRET_KEY</code></td><td>The API key those commands and that service share. See <a href="#cli-sessions">Sessions</a>.</td></tr>
-    <tr><td><code>BIOROUTER_<wbr>PATH_ROOT</code></td><td>Keeps all settings, data and logs under one folder. Useful for tests and for separate setups.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_SHELL_SANDBOX</code></td><td><code>off</code> (the default), <code>auto</code> or <code>strict</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_WORKFLOW_PATH</code></td><td>More folders to search for workflows, separated by <code>:</code> on macOS and Linux and by <code>;</code> on Windows.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_WORKFLOW_SCAN_WORKING_DIR</code></td><td><code>1</code> also lists workflows found loose in the working folder. Off by default.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_PORT</code></td><td>The port of the <code>biorouterd</code> that live <code>session</code> commands reach. Default <code>3000</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_SERVER__SECRET_KEY</code></td><td>The API key those commands and that service share. See <a href="#cli-sessions">Sessions</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_PATH_ROOT</code></td><td>Keeps all settings, data and logs under one folder. Useful for tests and for separate setups.</td></tr>
   </tbody>
 </table></div>
 <p>The variables for browser access are on <a href="#cli-serve">Browser access</a>. Settings for single providers, such as <code>OLLAMA_HOST</code>, are on <a href="#providers">Models and providers</a>.</p>
@@ -1973,7 +1973,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><strong>Browser</strong></td><td><code style="white-space: nowrap">biorouter serve</code> starts <code>biorouterd</code>, which serves the same interface from its own address. See <a href="#cli-serve">Browser access</a>.</td></tr>
     <tr><td><strong>Command line, on its own</strong></td><td>By default, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> start the agent inside the terminal's own process. <code style="white-space: nowrap">session list</code>, <code>export</code>, <code>rename</code> and <code>remove</code> use the chat store directly. Nothing else needs to run.</td></tr>
     <tr><td><strong>Command line, live</strong></td><td><code style="white-space: nowrap">session send</code>, <code>watch</code>, <code>attach</code> and <code>cancel</code> talk to a running <code>biorouterd</code>, because a turn in progress exists only inside the service running it. See <a href="#cli-sessions">Sessions</a>.</td></tr>
-    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code>--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
+    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code class="code-token">--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
   </tbody>
 </table></div>
 <div class="note"><p>The app and the command line share one settings file, one credential store and one chat store, so a provider, an extension or a chat set up in one appears in the other. See <a href="#config-files">Where files live</a>.</p></div>
@@ -2000,7 +2000,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <section class="community docs-community" aria-labelledby="docs-community-h">
       <div>
         <p class="label">Community</p>
-        <h2 id="docs-community-h">Questions? Ask on Slack.</h2>
+        <h2 id="docs-community-h">Ask on Slack.</h2>
         <p class="sub" id="docs-community-sub">Researchers and the developers who build Biorouter answer there.</p>
       </div>
       <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
@@ -2111,7 +2111,8 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   }
 
   navItems.forEach(function (b) {
-    b.addEventListener('click', function () {
+    b.addEventListener('click', function (e) {
+      e.preventDefault();
       showDoc(b.getAttribute('data-page'));
       if (menuBtn && getComputedStyle(menuBtn).display !== 'none') { menuBtn.setAttribute('aria-expanded', 'false'); sideBody.classList.remove('open'); }
     });
@@ -2120,7 +2121,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   // In-page links (#name or #section) switch pages without a reload.
   document.addEventListener('click', function (e) {
     var a = e.target.closest('a[href^="#"]');
-    if (!a || a.classList.contains('skip')) return;
+    if (!a || a.classList.contains('skip') || a.classList.contains('docs-nav-item')) return;
     var id = a.getAttribute('href').slice(1);
     if (!id) return;
     if (document.getElementById('doc-' + id)) { e.preventDefault(); showDoc(id); }

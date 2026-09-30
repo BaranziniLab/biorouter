@@ -1,0 +1,114 @@
+<div class="doc-page" id="doc-privacy">
+<h1>Private and public</h1>
+<p class="doc-lede">Every chat is private or public. Once a chat has used a private model or private data, Biorouter keeps it away from models hosted outside your institution.</p>
+
+<h2 id="privacy-what">What is private</h2>
+<figure class="doc-figure">
+  <div class="split">
+    <div>
+      <h4><span class="privacy is-private">Private</span></h4>
+      <ul>
+        <li>Llama Server and Ollama, running on this computer</li>
+        <li>Versa API Azure and Versa API Bedrock, hosted by UCSF</li>
+        <li>CDWAgent and UCSFOMOPAgent, marked “UCSF data” in BAAM</li>
+        <li>Every chat that has used one of these, and every knowledge base a private chat wrote to</li>
+      </ul>
+    </div>
+    <div>
+      <h4><span class="privacy is-public">Public</span></h4>
+      <ul>
+        <li>Every other provider, including Claude Code and Codex</li>
+        <li>Every other extension</li>
+        <li>Chats and knowledge bases that never touched private material</li>
+      </ul>
+    </div>
+  </div>
+  <figcaption>What is private, and what it makes private in turn.</figcaption>
+</figure>
+<p>A provider is private only when Biorouter can tell where inference runs. Ollama or Llama Server pointed at another machine is public. Azure OpenAI and Amazon Bedrock on the Public tab stay public even when they point at a UCSF address; only the Versa providers are treated as UCSF's. <a href="#providers">Models and providers</a> lists every provider by tab.</p>
+<p>A private chat, model, extension or knowledge base shows a padlock and the word Private. Public ones show the word Public.</p>
+
+<h2 id="privacy-becomes">How a chat becomes private</h2>
+<p>A chat becomes private the first time either of these happens:</p>
+<ol class="steps">
+  <li><strong>A turn runs on a private model</strong> You send a message while Llama Server, Ollama or a Versa model is selected.</li>
+  <li><strong>A private data extension answers</strong> CDWAgent or UCSFOMOPAgent returns a result to one of the chat's tool calls.</li>
+</ol>
+<p>It then stays private. The mark survives restarts and travels with the chat into diverged chats, imports, scheduled runs and subagents. Only you can remove it; see <a href="#privacy-make-public">Make a chat public</a>.</p>
+<figure class="doc-figure">
+  <div class="flow">
+    <div class="node"><b>Public chat</b><span>Any model can run it</span></div>
+    <i class="arrow"></i>
+    <div class="node private"><b>Private chat</b><span>After a private model or UCSF data</span></div>
+    <i class="arrow labeled blocked"><span class="arrow-label">switch</span></i>
+    <div class="node refused"><b>Public model</b><span>Refused; the chat is unchanged</span></div>
+  </div>
+  <figcaption>The mark only goes up. A private chat cannot move to a public model.</figcaption>
+</figure>
+<p>When you pick a private model for a public chat you have already sent a message in, <strong>Switch models</strong> says so before it applies: “After your next message this chat becomes private. Public models can't be used in it again unless you make it public from History.”</p>
+
+<h2 id="privacy-refused">What Biorouter refuses</h2>
+<ul>
+  <li><strong>A private chat cannot switch to a public model.</strong> In <strong>Switch models</strong> each public model reads “Unavailable: this is a private chat, so only private models may run in it. Make it public from History to use this one.” The command line and other chats get the same refusal, and it names the provider. To use a public model, start a new chat.</li>
+  <li><strong>A public model cannot read a private chat</strong>, through chat recall or through the tools that read other conversations.</li>
+  <li><strong>A public model cannot read a private knowledge base.</strong> The refusal names the base.</li>
+  <li><strong>A public model cannot use a private extension</strong>, and one cannot be turned on in a chat that runs a public model.</li>
+  <li><strong>A subagent never crosses the line.</strong> See the table below.</li>
+  <li><strong>A private chat writing into a public one asks you first.</strong> Before the agent in a private chat sends a message to a public chat or changes its tools, Biorouter shows you what it will send. It asks once for each pair of chats.</li>
+</ul>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Parent chat</th><th>Subagent's model</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>Public</td><td>Public</td><td>Runs. The subagent is public.</td></tr>
+    <tr><td>Public</td><td>Private</td><td>Refused.</td></tr>
+    <tr><td>Private</td><td>Private</td><td>Runs. The subagent is private.</td></tr>
+    <tr><td>Private</td><td>Public</td><td>Refused. The task a private chat writes is private too.</td></tr>
+  </tbody>
+</table></div>
+<p>A public subagent is started without the parent's private extensions, and the parent is told what was left out. If a spawn is refused, retrying will not help: switch the parent chat, or start a new chat on the model you want.</p>
+
+<h2 id="privacy-institutions">Institutions</h2>
+<p>Private is about how sensitive the data is. A second check asks whose agreements cover it, because compliance approved at one institution does not cover another institution's data.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Model</th><th>Affiliation</th><th>May use</th></tr></thead>
+  <tbody>
+    <tr><td>Llama Server, Ollama on this computer</td><td>Local</td><td>Every private extension. Nothing leaves the computer, so no agreement is needed.</td></tr>
+    <tr><td>Versa API Azure, Versa API Bedrock</td><td>UCSF</td><td>Private extensions that allow UCSF, which today are CDWAgent and UCSFOMOPAgent.</td></tr>
+    <tr><td>Public models</td><td>None</td><td>No private extension.</td></tr>
+  </tbody>
+</table></div>
+<p>By default, when a model from one institution reaches an extension that belongs to another, the call is refused before anything is sent. The refusal opens with “Cross-institutional data flow” and names both institutions, and a button, <strong>Approve this flow for</strong> followed by the extension's name, appears under it. Only you can press it; an agent cannot. “Approving records your acceptance for this chat, this extension and this model's institution only.”</p>
+<div class="note warn"><p>Approving is not a compliance decision. Biorouter cannot know whether a BAA, DUA or IRB approval covers the flow. Your compliance office answers that.</p></div>
+
+<h2 id="privacy-knowledge">Knowledge bases</h2>
+<p>A knowledge base takes the tier of the most sensitive chat that has written to it. Merging two bases gives the more sensitive tier of the two.</p>
+<p>To change a base's tier, open it in the <strong>Knowledge</strong> view. <strong>Make private</strong> takes one click. <strong>Make public</strong> asks you to type the base's ID and tells you how many pages and raw sources every model will then be able to read, including anything a private chat wrote. Content that has already been read cannot be recalled.</p>
+
+<h2 id="privacy-make-public">Make a chat public</h2>
+<ol class="steps">
+  <li><strong>Open Chat history</strong> Choose <strong>See all</strong> under Recents, or press <kbd>Cmd+2</kbd> (<kbd>Ctrl+2</kbd> on Windows and Linux).</li>
+  <li><strong>Open the chat's menu</strong> Choose <strong>More actions</strong> (the three dots) on the chat's row, then <strong>Make this chat public</strong>. A chat opened from History also has a <strong>Make public</strong> button.</li>
+  <li><strong>Confirm</strong> What you are asked for depends on why the chat is private.</li>
+</ol>
+<ul>
+  <li><strong>A chat Biorouter saw run a turn on a private model</strong> needs one click, then gives you five seconds to undo.</li>
+  <li><strong>Any other private chat</strong> (it reached private data, was imported, came from a private parent, or was marked from the model it last used when privacy tiers arrived) asks you to type the last six characters of the chat's ID, then to pass your computer's own password prompt.</li>
+</ul>
+<p>The contents are not changed, and the change cannot be undone once it lands. It is written to a record on your computer. An agent can ask you to do this but cannot do it. From a terminal:</p>
+<pre><code>biorouter session declassify SESSION_ID</code></pre>
+
+<h2 id="privacy-switch">Turning the protection off</h2>
+<p><strong>Settings → App → Privacy</strong> has one switch, <strong>Privacy tiers</strong>, which is on by default. Turning it off asks you to type <code>DISABLE PRIVACY TIERS</code>, choose <strong>Turn off privacy tiers</strong>, then pass your computer's own password prompt. Turning it back on takes one click.</p>
+<p>While it is off, nothing separates private chats, extensions and knowledge bases from public models, and a chat that uses a private model or private data while it is off is not marked private. Turning it back on protects what was already marked, but it cannot mark what happened in between.</p>
+<p>The switch is kept in its own file beside <code>config.yaml</code>, not in it. An agent with a shell could still edit that file, which Biorouter cannot prevent, so it announces the off state instead: a note reading “Privacy tiers are off.” sits above every message box until you turn it back on. If the file was changed outside the app, the note says so.</p>
+
+<h2 id="privacy-limits">What this does not protect</h2>
+<p>These rules govern what the agent can reach through Biorouter's own chats, knowledge bases and extensions. They prevent mistakes; they do not stop a determined person or an agent following injected instructions.</p>
+<ul>
+  <li><strong>Files are not isolated.</strong> A public chat with a shell can read ordinary files on this computer, including files a private chat wrote and Biorouter's own chat store and knowledge base folders. The rules above cover what the agent reaches through Biorouter's tools, not through the shell.</li>
+  <li><strong>The desktop is not isolated.</strong> Once you approve Biorouter Copilot for a request, the model receives screenshots and the text of other open apps. Close clinical windows first.</li>
+</ul>
+<p>Every model that is not private carries this line, on the model chip, above the API providers on the Public tab, and in <code>biorouter configure</code>, whether or not privacy tiers are on:</p>
+<div class="note"><p>“Not HIPAA-compliant, not on-premise, not local. This model can read files on this computer. Biorouter will not hand it another chat's transcript or a knowledge base marked private.”</p></div>
+<p>For patient data, use a local model or an institutional one, and check with your institution before you start.</p>
+</div>

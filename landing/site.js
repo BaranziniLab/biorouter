@@ -33,8 +33,9 @@
     var running = false;
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
-        if (e.isIntersecting && !running) { running = true; if (ctl.start) ctl.start(); }
-        else if (!e.isIntersecting && running) { running = false; if (ctl.stop) ctl.stop(); }
+        var visible = e.isIntersecting && e.intersectionRatio >= 0.2;
+        if (visible && !running) { running = true; if (ctl.start) ctl.start(); }
+        else if (!visible && running) { running = false; if (ctl.stop) ctl.stop(); }
       });
     }, { threshold: 0.2 });
     io.observe(el);

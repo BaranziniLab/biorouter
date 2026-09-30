@@ -1,0 +1,65 @@
+<div class="doc-page" id="doc-architecture">
+<h1>Architecture</h1>
+<p class="doc-lede">Biorouter has three layers: the interface you use, the agent that reasons and acts, and the extensions that give it tools. In the desktop app and the browser, the agent runs inside a background service, <code>biorouterd</code>.</p>
+
+<h2 id="architecture-layers">Three layers</h2>
+<figure class="doc-figure">
+  <div class="flow">
+    <div class="stack">
+      <div class="node"><b>Desktop app</b><span>Electron and React</span></div>
+      <div class="node"><b>Browser</b><span><code>biorouter serve</code></span></div>
+      <div class="node"><b>Command line</b><span>live session commands</span></div>
+    </div>
+    <i class="arrow"></i>
+    <div class="node accent"><b>biorouterd</b><span>The background service, reached over HTTP and WebSocket. The agent runs here: the loop, chats, model calls, workflows and schedules.</span></div>
+    <i class="arrow"></i>
+    <div class="stack">
+      <div class="node"><b>Extensions</b><span>MCP servers that give the agent its tools</span></div>
+      <div class="node ground"><b>Model providers</b><span>Local, Institutional or Public</span></div>
+      <div class="node quiet"><b>Crew broker <span class="chip">Next release</span></b><span><code>biorouter-crew</code> on a lab server, over SSH</span></div>
+    </div>
+  </div>
+  <figcaption>Model providers and the Crew broker are services <code>biorouterd</code> connects to. They are not extensions.</figcaption>
+</figure>
+<ul>
+  <li><strong>Interface.</strong> The desktop app, a browser opened with <code>biorouter serve</code>, or the <code>biorouter</code> command line. It shows the conversation and holds no reasoning of its own.</li>
+  <li><strong>Agent.</strong> The loop that sends the conversation to a model, runs the tools the model asks for and returns the answer, together with chat history, the connections to model providers, and the running of workflows and schedules. See <a href="#agentloop">The agent loop</a>.</li>
+  <li><strong>Extensions.</strong> Servers that speak the Model Context Protocol (MCP), the open standard for giving a model tools. An extension that ships with Biorouter and one you install look the same to the agent. See <a href="#extensions">Extensions and skills</a>.</li>
+</ul>
+
+<h2 id="architecture-daemon">The background service</h2>
+<p><code>biorouterd</code> serves the agent over local HTTP and WebSocket. The desktop app starts one for all of its windows. Schedules run inside it, so they run while it runs.</p>
+<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit.</p>
+<p>The same release adds Crew, which connects the service to a lab workspace. The host runs the workspace with <code>biorouter-crew</code> on a shared Linux server, and each member's service reaches it over SSH through that member's own account on the server. Each member's agent still runs on their own computer, with their own model.</p>
+
+<h2 id="architecture-interfaces">How each interface connects</h2>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Interface</th><th>How it reaches the agent</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Desktop app</strong></td><td>The app's main process starts <code>biorouterd</code>, and each window talks to it over HTTP and WebSocket, through a client generated from the service's OpenAPI description.</td></tr>
+    <tr><td><strong>Browser</strong></td><td><code style="white-space: nowrap">biorouter serve</code> starts <code>biorouterd</code>, which serves the same interface from its own address. See <a href="#cli-serve">Browser access</a>.</td></tr>
+    <tr><td><strong>Command line, on its own</strong></td><td>By default, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> start the agent inside the terminal's own process. <code style="white-space: nowrap">session list</code>, <code>export</code>, <code>rename</code> and <code>remove</code> use the chat store directly. Nothing else needs to run.</td></tr>
+    <tr><td><strong>Command line, live</strong></td><td><code style="white-space: nowrap">session send</code>, <code>watch</code>, <code>attach</code> and <code>cancel</code> talk to a running <code>biorouterd</code>, because a turn in progress exists only inside the service running it. See <a href="#cli-sessions">Sessions</a>.</td></tr>
+    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code class="code-token">--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
+  </tbody>
+</table></div>
+<div class="note"><p>The app and the command line share one settings file, one credential store and one chat store, so a provider, an extension or a chat set up in one appears in the other. See <a href="#config-files">Where files live</a>.</p></div>
+
+<h2 id="architecture-crates">The code</h2>
+<p>The backend is a Rust workspace. The desktop app is Electron, React and TypeScript, in <code>ui/desktop</code>.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Part</th><th>Crate</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Agent library</strong></td><td><code>biorouter</code> holds the loop, model providers, chats, privacy, workflows and schedules, and capabilities such as Code Execution, Skills, Todo, Chat Recall and Workspace.</td></tr>
+    <tr><td><strong>Background service</strong></td><td><code>biorouter-server</code> builds <code>biorouterd</code> and its HTTP and WebSocket API.</td></tr>
+    <tr><td><strong>Command line</strong></td><td><code>biorouter-cli</code> builds <code>biorouter</code>.</td></tr>
+    <tr><td><strong>Bundled extensions</strong></td><td><code>biorouter-mcp</code> holds Developer, Biorouter Copilot, Web &amp; Documents, Memory, Auto Visualiser, Knowledge and Agent Drafter, plus the data, files and compute servers that built apps use.</td></tr>
+    <tr><td><strong>Shell sandbox</strong></td><td><code>biorouter-sandbox</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
+    <tr><td><strong>Crew broker</strong> <span class="chip">Next release</span></td><td><code>biorouter-crew</code> builds the <code>biorouter-crew</code> program for Linux.</td></tr>
+    <tr><td><strong>Editor support</strong></td><td><code>biorouter-acp</code> adds Agent Client Protocol support, so programs such as code editors can drive Biorouter through <code>biorouter acp</code>.</td></tr>
+    <tr><td><strong>macOS prompt</strong></td><td><code>biorouter-authprompt</code> shows the macOS authentication prompt that the background service cannot show itself.</td></tr>
+    <tr><td><strong>Tests</strong></td><td><code>biorouter-bench</code> holds benchmarks, and <code>biorouter-test</code> holds integration tests.</td></tr>
+  </tbody>
+</table></div>
+<p>The source is on <a href="https://github.com/BaranziniLab/biorouter">GitHub</a>, under the Apache 2.0 license.</p>
+</div>

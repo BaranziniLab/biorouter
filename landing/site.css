@@ -159,6 +159,10 @@ code, kbd, pre, samp { font-family: var(--mono); }
   .nav a:last-child { border-bottom: 0; }
   .nav a[aria-current="page"]::after { display: none; }
   .nav a[aria-current="page"] { color: var(--coral); }
+  html:not(.js) .site-header .wrap { height: auto; padding-top: 16px; flex-wrap: wrap; }
+  html:not(.js) .menu-btn, html:not(.js) .header-slack { display: none; }
+  html:not(.js) .nav { position: static; width: 100%; margin: 0; padding: 0 0 16px; visibility: visible; opacity: 1; transform: none; }
+  html:not(.js) .nav .slack-link { display: inline-flex; align-self: flex-start; margin-top: 12px; }
 }
 
 /* ── Type ───────────────────────────────────────────────── */

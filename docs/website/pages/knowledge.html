@@ -1,0 +1,138 @@
+<div class="doc-page" id="doc-knowledge">
+<h1>Knowledge bases</h1>
+<p class="doc-lede">A knowledge base is a folder of linked pages that the agent writes from your papers, files, links and notes.</p>
+
+<h2 id="knowledge-what">What a knowledge base is</h2>
+<p>Each base is one folder with its own git history, at <code>~/.config/biorouter/knowledge/&lt;id&gt;/</code>. The sources you add and the pages the agent writes are kept apart, so a page can always be traced to the file it came from.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Path</th><th>What it holds</th></tr></thead>
+  <tbody>
+    <tr><td><code>raw/&lt;source&gt;/</code></td><td>Each source as you added it, its Markdown conversion (<code>source.md</code>) and <code>meta.yaml</code>: title, link, checksum and credibility grade.</td></tr>
+    <tr><td><code>knowledge/&lt;type&gt;/</code></td><td>The pages the agent writes, one per concept, filed by type. Each page starts with a short YAML header that names its type.</td></tr>
+    <tr><td><code>index.md</code>, <code>log.md</code></td><td>A catalog of the pages and a change log, both kept by the agent.</td></tr>
+    <tr><td><code>schema.md</code></td><td>How this base is written. The agent reads it on every run, and you can edit it.</td></tr>
+  </tbody>
+</table></div>
+<p>A base stays on your disk. Its only network calls are credibility lookups (Crossref and OpenAlex), the links you ask it to fetch, and the model that digests your sources. Git is built in; you do not need it installed.</p>
+
+<h2 id="knowledge-create">Create a base</h2>
+<ol class="steps">
+  <li><strong>Open Knowledge</strong> Open the sidebar's Components group and choose Knowledge.</li>
+  <li><strong>Start a new base</strong> Choose the base's name at the top of the view. In the menu that opens, choose <strong>Create knowledge base…</strong></li>
+  <li><strong>Name it and pick a format</strong> The format decides how pages are written and checked. Then choose <strong>Create knowledge base</strong>.</li>
+</ol>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Choice</th><th>Format</th><th>Use it for</th></tr></thead>
+  <tbody>
+    <tr><td><strong>General knowledge</strong></td><td>OKF</td><td>Notes, project context and anything that is not curated biology. Any page type and any link name; nothing is rejected.</td></tr>
+    <tr><td><strong>Curated biomedical</strong></td><td>BioOKF</td><td>Biomedical literature, or a base another institution will read. The vocabulary is checked, and every link names its evidence.</td></tr>
+  </tbody>
+</table></div>
+<p>The format is fixed when the base is created. The dialog says so: “You cannot change a knowledge base's format yet.” A base from an older version keeps working and is marked Legacy. <code style="white-space: nowrap">biorouter knowledge create</code> makes an OKF base; to make a BioOKF base, use the app or ask the agent.</p>
+
+<h3 id="knowledge-biookf">The BioOKF vocabulary</h3>
+<p>BioOKF v0.5 is a strict biomedical profile of the Open Knowledge Format (OKF v0.2). A page's type is one of 28: 20 biomedical entity types, such as Gene, Variant, Disease and CellType, and 8 provenance and context types, such as Publication, Study and Dataset. A typed link uses one of 35 predicates: 24 positive predicates such as <code>causes</code> and <code>treats</code>, and 11 negations such as <code>not_treats</code>. Every link names its evidence: a knowledge level, an agent type and a primary source page. A value outside the vocabulary is flagged with the closest legal one.</p>
+
+<h2 id="knowledge-primary">Visible bases and the primary</h2>
+<p>Every base is visible to a chat unless you hide it. When the agent searches without naming a base, it searches all the visible bases and says which base each result came from.</p>
+<p>One visible base is the <strong>primary</strong>: where the agent writes when no base is named, the base it reads by default, and the base the Knowledge view shows. Soul is the primary until you choose another.</p>
+<ul>
+  <li><strong>Hide a base from a chat.</strong> Choose the knowledge chip under the text box. Each base has a switch, and <strong>Hide all</strong> or <strong>Show all</strong> sets them together. A hidden base stays on disk.</li>
+  <li><strong>Change the primary.</strong> In the Knowledge view, choose the base's name at the top and pick another base. <strong>Manage bases…</strong> lists every base with its format, its privacy and a switch that includes it in the chat.</li>
+  <li><strong>Point one message at a base.</strong> Type <code>/</code> in the composer and pick it, or write <code>/kb:ID</code>.</li>
+</ul>
+<p>If you hide the primary, the next visible base takes its place. If you delete it, the chat has no primary until you choose one, and a write that names no base is refused with the list of bases to choose from.</p>
+
+<h2 id="knowledge-ingest">Add sources</h2>
+<p>Open a base in the Knowledge view. Sources sit beside the graph; in a narrow window they are the <strong>Sources</strong> tab.</p>
+<ol class="steps">
+  <li><strong>Stage sources</strong> Drop files or folders on the dropzone, or choose it to browse. Folders and archives are unpacked, and each readable file is staged on its own. <strong>Paste text</strong> takes notes or an excerpt, and offers any links in it as sources of their own.</li>
+  <li><strong>Check the model</strong> The panel shows the model this base digests with. Change it there.</li>
+  <li><strong>Choose Digest staged sources</strong> Progress streams in as pages are written. <strong>Stop</strong> ends the run.</li>
+</ol>
+<p>Readable formats: PDF, Word (<code>.docx</code>), PowerPoint (<code>.pptx</code>, speaker notes included), Excel and OpenDocument spreadsheets (<code>.xlsx</code>, <code>.xls</code>, <code>.ods</code>), CSV, HTML, Markdown and plain text. Save an old <code>.ppt</code> as <code>.pptx</code> first. A scanned PDF with no text layer ingests with a warning.</p>
+<p>In a chat, ask the agent to add files, folders or links to a base. It runs the same pipeline and reports any source it could not digest. It can also digest past chats into a base.</p>
+<figure class="doc-figure">
+  <div class="flow">
+    <div class="node ground"><b>Source</b><span>file, link, text</span></div>
+    <i class="arrow"></i>
+    <div class="node"><b>Convert</b><span>to Markdown</span></div>
+    <i class="arrow"></i>
+    <div class="node accent"><b>Digest</b><span>writes pages</span></div>
+    <i class="arrow"></i>
+    <div class="node"><b>Commit</b><span>to git</span></div>
+  </div>
+  <figcaption>Each source becomes linked pages in one git commit, and the graph is rebuilt from the links.</figcaption>
+</figure>
+<p>Conversion runs once. It also grades the source's credibility, and its result is kept. The digest is a subagent that works from that Markdown, never the original file. It reads the base's <code>schema.md</code> and the pages it may change, writes a page for the source, updates related pages and links them. If it fails, its changes are rolled back and the raw source is kept so you can try again.</p>
+
+<h2 id="knowledge-graph">The graph</h2>
+<p>The <strong>Graph</strong> draws each page as a node and each link as an edge. Choose a node to inspect its page. Type is the fill, credibility is the ring.</p>
+<ul>
+  <li><strong>Fill.</strong> In a BioOKF base each of the 28 types has its own color, grouped into seven families: genomic, molecular, anatomy, clinical, exposome, physical and provenance. Provenance types are drawn as open circles, so the evidence stands apart from the science. In an OKF base the color comes from the type's name.</li>
+  <li><strong>Ring.</strong> A source's ring counts its credibility in arcs, from four for peer reviewed to one for gray literature. Web and personal sources have a dashed ring and a retracted source a solid one. The legend groups them as Well sourced, Weakly sourced, Not academic and Retracted.</li>
+</ul>
+<p>Biorouter grades each source when it is converted. It looks for a DOI and checks it with Crossref, then OpenAlex, then checks the host, then looks for journal markers in the text. When none of these answers, the model grades it.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Tier</th><th>Ring</th><th>How it is detected</th></tr></thead>
+  <tbody>
+    <tr><td>Peer&nbsp;reviewed</td><td>4&nbsp;arcs</td><td>A DOI resolves to a journal article, or the text carries clear journal markers.</td></tr>
+    <tr><td>Book</td><td>3 arcs</td><td>Crossref or OpenAlex report a book or a chapter.</td></tr>
+    <tr><td>Preprint</td><td>2 arcs</td><td>A preprint server such as arXiv, bioRxiv or medRxiv, or a DOI registered as a preprint.</td></tr>
+    <tr><td>Gray&nbsp;literature</td><td>1&nbsp;arc</td><td><code>.gov</code> and <code>.edu</code> hosts, WHO, CDC, NIH, FDA, ClinicalTrials.gov, EMA and standards bodies.</td></tr>
+    <tr><td>Web</td><td>Dashed</td><td>Any other page.</td></tr>
+    <tr><td>Personal</td><td>Dashed</td><td>Pasted text with no stated source.</td></tr>
+    <tr><td>Retracted</td><td>Solid</td><td>Crossref or OpenAlex mark it retracted, whatever its tier.</td></tr>
+  </tbody>
+</table></div>
+<p>A graph with nodes and no edges means the pages hold no links, and a lint reports each of them as an orphan.</p>
+
+<h2 id="knowledge-history">Search, history and restore</h2>
+<ul>
+  <li><strong>Search.</strong> The agent searches the pages by keyword (BM25), and the original source text when you ask for it. In a chat it reads the pages it finds and answers from them.</li>
+  <li><strong>History.</strong> Every change is a git commit tagged by kind: ingest, link, flag, query, lint, restore or manual. <strong>Change log</strong>, in the base's ⋯ menu, lists them, and <code>log.md</code> keeps the same record.</li>
+  <li><strong>Restore.</strong> In the change log, <strong>Preview</strong> shows the base as it was at a commit, and <strong>Restore</strong> adds a new commit that returns the base to that point, so a restore can itself be undone.</li>
+</ul>
+
+<h2 id="knowledge-brkb">Export and import</h2>
+<p><strong>Export as .brkb</strong>, in the base's ⋯ menu, writes the whole base to one file: pages, original sources and git history. To bring one in, open <strong>Manage bases…</strong> and choose <strong>Import from .brkb</strong>. The import keeps its id, or takes a numbered suffix if that id is in use, so it never replaces a base you have. A private base stays private when it is exported and imported. A <code>.brkb</code> dropped on the dropzone is not imported.</p>
+
+<h2 id="knowledge-merge">Merge two bases</h2>
+<p>Ask the agent to merge one base into another. It previews the merge first: what carries over, what is renamed and what the result's privacy will be. Then it merges.</p>
+<ul>
+  <li>The destination wins every clash. An incoming page whose identifier already exists is renamed, and every link to it is rewritten.</li>
+  <li>Sources the destination already holds are skipped. The source base is left unchanged.</li>
+  <li>The merge is one commit, and any failure leaves the destination as it was.</li>
+  <li>A BioOKF base can merge into an OKF base. An OKF base cannot merge into a BioOKF base.</li>
+  <li>The result takes the more sensitive privacy of the two.</li>
+</ul>
+
+<h2 id="knowledge-macros">Ingest, query and lint</h2>
+<p>Three operations run on a base. When one needs a model, it runs as a subagent with a limit on steps and time: 60 steps and 15 minutes to ingest a source, and 30 steps and five minutes to answer a query or repair what a lint found.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Operation</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Ingest</strong></td><td>Digests one source into linked pages, as one commit. Run it with <strong>Digest staged sources</strong>, from a chat, or with <code style="white-space: nowrap">knowledge ingest</code>.</td></tr>
+    <tr><td><strong>Query</strong></td><td>Searches the base and writes an answer that cites its pages. <code style="white-space: nowrap">knowledge query --save</code> also files the answer as a page.</td></tr>
+    <tr><td><strong>Lint</strong></td><td>Reads every page and reports orphans, contradictions, missing pages, stale sources and anything that breaks the format's rules. In a BioOKF base that includes the vocabulary, the evidence on each link, and sources that are retracted or too weak for the claims on them. <strong>Check for problems</strong> and a chat only report; <code style="white-space: nowrap">knowledge lint --fix</code> lets the agent repair what it finds.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="knowledge-soul">Soul</h2>
+<p><strong>Soul</strong> (id <code>soul</code>) ships with Biorouter and starts empty. It collects lasting facts about you: how you approach research questions, the tools and commands you use, and the name, role and preferences you mention.</p>
+<p>A schedule named <strong>Daily Meditation</strong> keeps it current. Every day at 3:00 AM, while Biorouter's background service is running, it runs the Meditation workflow, which uses the <code style="white-space: nowrap">update-soul</code> skill to read up to three recent chats and add what matters. It skips scheduled runs and small talk, and makes no change when there is nothing new. You can see and pause it in Scheduler.</p>
+<p>The agent cannot delete Soul, and if you delete it Biorouter creates it again. <strong>Settings → App → Reset → Knowledge &amp; memory</strong> deletes every base, creates an empty Soul and clears saved memory.</p>
+
+<h2 id="knowledge-privacy">Private and public bases</h2>
+<p>A new base is public. It becomes private the first time a private chat writes to it, and it stays private until you make it public. A private base shows a padlock and the word Private beside its name. A public model that tries to read it is refused, and the refusal names the base.</p>
+<p>The control sits on the Sources side. On a private base, hovering its badge shows “Private. Biorouter only lets a private model read or write this knowledge base.” <strong>Make private</strong> takes effect at once. <strong>Make public</strong> asks you to type the base's id first, because every model, public ones included, will then be able to read everything a private chat wrote into it. See <a href="#privacy-knowledge">Private and public</a>.</p>
+
+<h2 id="knowledge-cli">Command line</h2>
+<pre><code>biorouter knowledge list
+biorouter knowledge create ms-genetics --name "MS genetics"
+biorouter knowledge active --set ms-genetics
+biorouter knowledge ingest --file ./paper.pdf
+biorouter knowledge query "What predicts relapse?" --save
+biorouter knowledge lint</code></pre>
+<p>Once <code style="white-space: nowrap">active --set</code> has made a base the primary, commands without <code class="code-token">--kb</code> use it. <code>kb</code> is a short name for <code>knowledge</code>. Every flag is in the <a href="#cli-ref-knowledge">command line reference</a>.</p>
+</div>
