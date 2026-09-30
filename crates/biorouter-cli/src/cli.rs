@@ -103,7 +103,7 @@ pub struct SharedDaemonOptions {
     #[arg(
         long,
         requires = "shared_daemon",
-        help = "Read the shared daemon approval secret from stdin"
+        help = "Accepted for compatibility; Biorouter no longer needs an approval secret. The first line of standard input is read and ignored"
     )]
     pub approval_key_stdin: bool,
     #[arg(

@@ -110,7 +110,7 @@ enum Input {
     responses(
         (status = 200, description = "The sign-in, ready for its terminal", body = AuthenticationSession),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a connection that can't be signed in to this way, a sign-in already under way for another controller, or one that could not start; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
@@ -142,7 +142,7 @@ pub async fn prepare(
     responses(
         (status = 200, description = "The sign-in, stopped, and its connection disconnected", body = CrewCancelled),
         (status = 400, description = "`crew_request_refused`: no such sign-in for this controller", body = CrewError),
-        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID", body = CrewError)
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -170,7 +170,7 @@ pub async fn cancel(
     responses(
         (status = 101, description = "The human-authorized terminal WebSocket"),
         (status = 400, description = "`crew_request_refused`: no such sign-in for this controller", body = CrewError),
-        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter", body = CrewError)
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -413,12 +413,12 @@ fn person_refusal(proof: UserActionProof) -> Option<AdmissionRefusal> {
         UserActionProof::Unproven => Some(AdmissionRefusal::new(
             StatusCode::FORBIDDEN,
             USER_ACTION_REQUIRED_CODE,
-            "Authorize this action in the Crew panel or native Crew CLI with your human approval secret. Agent tools use their separate task grant.",
+            "Only a person using the Biorouter desktop app or the biorouter crew command can do this. Agent tools use their separate task grant.",
         )),
         UserActionProof::NoKeyInstalled => Some(AdmissionRefusal::new(
             StatusCode::FORBIDDEN,
             HUMAN_AUTHORITY_UNAVAILABLE_CODE,
-            no_human_authority("This daemon cannot verify human Crew actions. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
+            no_human_authority("This daemon cannot verify human Crew actions. Start it from the Biorouter desktop app or with biorouter crew daemon start."),
         )),
     }
 }
@@ -720,7 +720,7 @@ pub struct FromInvitationResponse {
     responses(
         (status = 200, description = "`preview` for a preview (nothing saved), else `connection`: the saved connection, pinned exactly as the invitation says", body = FromInvitationResponse),
         (status = 400, description = "`crew_invitation_invalid` (with `reason`: the invitation codec's code, `invalid_choice`, or `missing` with `missing`), `crew_request_invalid` for a body that is not JSON, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be saved, or `crew_request_refused` with a fixed sentence for any other failure", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 409, description = "`crew_invitation_conflict`: this computer pins a different identity for the same workspace; `crew_connection_exists`: it already has the workspace with other settings. Both carry `connection_id`", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
@@ -789,7 +789,7 @@ fn invitee(typed: Option<&str>) -> Result<Option<String>, AdmissionRefusal> {
     responses(
         (status = 200, description = "The message to send, and the `brcrew1:` line inside it. Built from this computer's verified connection, the workspace's own word about its name and privacy, and `ssh -G` (never a local alias or the connection's local name)", body = InvitationText),
         (status = 400, description = "`crew_invalid_selector` for an invitee that is not an account name, `crew_request_invalid` for an unknown query parameter, a typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), or `crew_request_refused` with a fixed sentence when the invitation can't be built for any other reason (the cause goes to the log)", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
         (status = 409, description = "`crew_not_connected`: connect first", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
@@ -821,7 +821,7 @@ pub async fn invitation(
     responses(
         (status = 200, description = "Where this computer stands in joining. `code` is computed here from the saved device key and the pinned workspace key, never read from the workspace's answer. `unsupported` when the workspace's server can't join by invitation", body = JoinStatus),
         (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
         (status = 409, description = "`crew_not_connected`: connect first", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
@@ -876,7 +876,7 @@ impl JoinClaimed {
     responses(
         (status = 200, description = "This computer is a member. Idempotent: a member answers this without asking the workspace again", body = JoinClaimed),
         (status = 400, description = "A typed connection failure (`crew_ssh_*`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_workspace_identity_mismatch`), a failed sign-in handoff (`crew_handoff_failed`), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused` with a fixed sentence for any other failure. The workspace's own words, which are unauthenticated, go to the log and never into the answer", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
         (status = 409, description = "`crew_not_connected`, or a typed join refusal: `crew_join_unsupported`, `crew_join_not_approved`, `crew_join_code_mismatch`, `crew_join_not_invited`, `crew_join_expired`, `crew_join_replaced`, `crew_join_account_changed`, `crew_join_device_conflict`, `crew_join_identity_conflict` or `crew_join_refused`", body = CrewError),
         (status = 503, description = "The claim did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (whether the workspace applied it is not known; claiming again is safe) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)

@@ -1,7 +1,7 @@
 # Crew command line
 
 > **What this is.** A task reference for the `biorouter crew` commands: their syntax, what they print and their exit status.
-> **Status:** Current. Checked against Biorouter 1.91.2 (`biorouter crew --help`) and the Crew code on 2026-09-28.
+> **Status:** Current. Checked against the Biorouter 1.92.0 Crew code on 2026-09-29.
 > **Audience:** IT staff, lab managers, and lab members who prefer a terminal or want to script Crew. You should know how to open a terminal and run a command.
 
 These commands and the desktop app share one background service on your computer, the Biorouter daemon (`biorouterd`), and its saved connections, so both show the same workspace.
@@ -21,30 +21,19 @@ You need:
 
 If this computer is the server that runs the workspace, also read [Join from the workspace's own server](#join-from-the-workspaces-own-server).
 
-## The approval secret
+## The daemon starts by itself
 
-Every command except `daemon status` first asks for your Crew approval secret, at a hidden prompt that names the `Crew approval secret`. It proves that a person, not a program or an AI agent, is acting. The desktop app asks for the same secret.
+The commands connect to the daemon without asking you for anything. When no daemon is running, the first command that needs one starts it. The desktop app then connects to the same daemon.
 
-- The secret is 32 to 4096 printable ASCII characters, with no spaces.
-- You choose it when the daemon starts, and it stays until the daemon stops. Use the same secret every time.
-- When no daemon is running, the first command says `No Biorouter daemon is running for this profile, so this command starts one.` and asks you to choose the secret, then to type it again. If the two differ, no daemon starts.
-- Biorouter cannot show or recover it. Keep it in your password manager.
-- A wrong secret fails with `That approval secret doesn't match the running Biorouter daemon.`
+A daemon started by an older version of Biorouter may not accept these commands. A command then stops it and starts a new one. With `--no-start`, the command refuses instead, with code `crew_daemon_needs_restart` and `The running Biorouter daemon was started by an older version of Biorouter, so this command cannot use it. Run biorouter crew daemon stop, then run this command again.` Your connections, keys and workspaces stay. A running task or transfer may stop, so follow [Recover after a restart](#recover-after-a-restart).
 
-### If you forget the approval secret
+### Run commands from a script
 
-`daemon stop` needs the secret too, so end the daemon another way:
+To send the vault passphrase for `credentials init` or `credentials unlock`, add `--passphrase-stdin` and send the passphrase as the first line of standard input, for example `print-passphrase | biorouter crew --passphrase-stdin credentials unlock`. A script sends a new passphrase once; only a terminal asks for it twice, so the script is responsible for sending the one it means. Never put the passphrase in an argument, shell history, environment variable or file.
 
-1. Quit the desktop app. Quitting it does not stop the daemon.
-2. Run `biorouter crew daemon status` and note the pid in `Biorouter daemon running (pid 4242) for this profile.`
-3. Run `kill 4242` with your pid, or restart your computer. `daemon status` then prints `No Biorouter daemon is running for this profile.`
-4. Run `daemon start`, or open the desktop app, and choose a new secret. `daemon status` then prints a new pid.
+`--approval-key-stdin` is still accepted so older scripts keep working. The command reads the first line of standard input and ignores it, and any further input, such as a passphrase or `send --input -` text, follows on the next lines.
 
-Your connections, keys and workspaces stay. A running task or transfer may stop, so follow [Recover after a restart](#recover-after-a-restart).
-
-### Supply the secret from a script
-
-Add `--approval-key-stdin` and send the secret as the first line of standard input, for example `print-approval-secret | biorouter crew --approval-key-stdin history methods`. Any further input, such as `send --input -` text or the `credentials init` or `credentials unlock` passphrase, follows on the next lines. A script sends a new secret or passphrase once; only a terminal asks for it twice, so the script is responsible for sending the one it means. Never put the secret in an argument, shell history, environment variable or file. `auth` always needs a real terminal. Without one it exits with `2` (code `crew_needs_terminal`), and says that `connect` signs in without one when the server takes this computer's SSH key alone.
+`auth` always needs a real terminal. Without one it exits with `2` (code `crew_needs_terminal`), and says that `connect` signs in without one when the server takes this computer's SSH key alone.
 
 ## Global options
 
@@ -56,7 +45,8 @@ These work before or after the command name.
 | `--show-ids` | Adds IDs to text output. JSON always has them. |
 | `--output-format json` or `stream-json` | Prints JSON, indented or one value per line. |
 | `--no-start` | Fails instead of starting a daemon. |
-| `--approval-key-stdin` | Reads the approval secret from the first line of standard input. See [Supply the secret from a script](#supply-the-secret-from-a-script). |
+| `--passphrase-stdin` | Reads the vault passphrase from the first line of standard input. See [Run commands from a script](#run-commands-from-a-script). |
+| `--approval-key-stdin` | Accepted for older scripts. Reads the first line of standard input and ignores it. |
 | `--request-id ID` | Reuses the ID of a change whose result was uncertain. See [Retry after an uncertain result](#retry-after-an-uncertain-result). |
 | `--expected-mode private` or `public` | Refuses `send`, `tasks start`, `grants grant` and file transfers unless the mode you name is the privacy in force, the one `status` shows, or your connection's own setting. |
 | `--expected-policy-epoch N`, `--expected-workspace-policy-epoch N` | Refuse `tasks start` and `grants grant` when the policy changed. See [Privacy settings](#privacy-settings). |
@@ -82,7 +72,7 @@ In JSON, an error has `error` and `request_id`, and usually a `code`. The code i
 | `crew_message_too_long` | The message is over 64 KB. See [Post and read messages](#post-and-read-messages). Exit `2`. |
 | `crew_nothing_to_replace` | `connections join-invitation --replace` found no saved connection it may replace. Exit `2`. |
 | `crew_daemon_not_running` | No daemon runs for this profile. See [Start, check and stop the daemon](#start-check-and-stop-the-daemon). |
-| `crew_approval_secret_mismatch` | The approval secret does not match the running daemon. |
+| `crew_daemon_needs_restart` | With `--no-start`, the running daemon was started by an older version of Biorouter. Run `daemon stop`, then the command again. |
 | `crew_platform_unsupported` | This computer runs Windows, where the commands do not work. |
 | `crew_no_vault` | `credentials unlock` found no vault to unlock, because this computer keeps Crew keys in its keyring. |
 | `crew_not_sent` | The request never left this computer. Run it again as it was. |
@@ -106,11 +96,11 @@ In a very large workspace, the daemon may list fewer of your teams and channels 
 
 ## Start, check and stop the daemon
 
-- `daemon status` needs no secret. It prints the pid, or exits with `1` and `No Biorouter daemon is running for this profile.` (code `crew_daemon_not_running`), also when a daemon that crashed left its files behind.
-- `daemon start` asks you to choose the secret, then to type it again, and refuses while a daemon is running. Most commands start the daemon for you.
-- `daemon stop` stops it for the desktop app too. Closing the app does not stop it. An open desktop app then asks "Biorouter's background service restarted. Reconnect?". **Reconnect** asks for the approval secret of a daemon that runs by then, or starts a new one and asks you to choose a secret.
+- `daemon status` prints the pid, or exits with `1` and `No Biorouter daemon is running for this profile.` (code `crew_daemon_not_running`), also when a daemon that crashed left its files behind.
+- `daemon start` starts the daemon. While one is running it refuses with `A Biorouter daemon is already running for this profile. Stop it first with biorouter crew daemon stop.` Most commands start the daemon for you.
+- `daemon stop` stops it for the desktop app too. Closing the app does not stop it. An open desktop app starts a new one right away and reconnects by itself.
 
-A message that starts `Restart the shared Biorouter daemon` means the daemon is older than the command, so stop and start it. For the same problem in the desktop app, see [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service). `This daemon has no human approval authority` means it refuses every command, so end it as in [If you forget the approval secret](#if-you-forget-the-approval-secret). After `Stop accepted, but ... shutdown is unconfirmed`, wait until `daemon status` shows no daemon.
+A message that starts `Restart the shared Biorouter daemon` means the daemon is older than the command, so run `daemon stop`, then the command again. For the same problem in the desktop app, see [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service). After a message that starts `Stop accepted, but`, wait until `daemon status` shows no daemon.
 
 ## Keep device keys in an encrypted vault
 
@@ -120,8 +110,8 @@ A Linux computer with no desktop session, such as a login node you reach only ov
 
 `credentials init` works only in a Crew profile that holds no keys yet. A keyring that stops answering after you have joined gives a sentence asking you to start it again, for example by signing in to the computer's desktop. A keyring that is locked or that refused access (code `crew_credential_store_refused`) asks you to unlock it or allow access.
 
-- The passphrase is 1 to 1024 bytes and must differ from the approval secret. `credentials init` asks for it twice and sets up nothing if the two differ, because a vault nobody can unlock loses the keys in it.
-- `credentials lock` and `credentials unlock` close and open the vault. The `credentials` commands never start a daemon.
+- The passphrase is 1 to 1024 bytes. `credentials init` asks for it twice and sets up nothing if the two differ, because a vault nobody can unlock loses the keys in it.
+- `credentials lock` and `credentials unlock` close and open the vault. Like other Crew commands, they start the daemon if needed; `--no-start` refuses instead.
 - If the vault files go missing, restore them from backup. Biorouter never replaces them with a new vault.
 
 ## Join a workspace

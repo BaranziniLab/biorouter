@@ -103,18 +103,18 @@ fn person(headers: &HeaderMap) -> std::result::Result<(), Refusal> {
         UserActionProof::Unproven => Err(Refusal::new(
             StatusCode::FORBIDDEN,
             USER_ACTION_REQUIRED,
-            "Crew profile operations require the existing human approval secret. Authorize this action in the Crew panel or the native Crew CLI.",
+            "Only a person using the Biorouter desktop app or the biorouter crew command can change Crew profile credentials.",
         )),
         UserActionProof::NoKeyInstalled => Err(Refusal::new(
             StatusCode::FORBIDDEN,
             HUMAN_AUTHORITY_UNAVAILABLE,
-            super::crew_authentication::no_human_authority("This daemon cannot verify the human approval secret that Crew profile operations require. Start the trusted desktop launcher or biorouter crew daemon start with your separately held approval secret."),
+            super::crew_authentication::no_human_authority("This daemon cannot verify human Crew actions. Start it from the Biorouter desktop app or with biorouter crew daemon start."),
         )),
     }
 }
 
 /// The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing
-/// else. It must differ from the human approval secret.
+/// else. The launcher supplies the request's separate user-action key automatically.
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SecretBody {
@@ -135,7 +135,7 @@ fn secret<'de, D: serde::Deserializer<'de>>(
     responses(
         (status = 200, description = "Where this profile keeps its Crew keys, and whether that store can be used now", body = CredentialStatus),
         (status = 400, description = "`crew_profile_refused`: the credential store's state could not be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -150,8 +150,8 @@ pub async fn credentials(headers: HeaderMap) -> Result<CredentialStatus> {
     request_body = SecretBody,
     responses(
         (status = 200, description = "The vault, created and unlocked; this profile keeps its Crew keys in it from now on", body = CredentialStatus),
-        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the user-action key, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
@@ -172,8 +172,8 @@ pub async fn init(
     request_body = SecretBody,
     responses(
         (status = 200, description = "The vault, unlocked", body = CredentialStatus),
-        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the user-action key, a profile with no vault, or another credential operation under way", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body other than `{passphrase}`; `detail` says what", body = CrewError)
@@ -194,10 +194,7 @@ async fn change_secret(
     person(&headers)?;
     if headers.get("X-User-Action").and_then(|h| h.to_str().ok()) == Some(body.passphrase.as_str())
     {
-        return Err(anyhow::anyhow!(
-            "The vault passphrase must differ from the human approval secret"
-        )
-        .into());
+        return Err(anyhow::anyhow!("Choose a different vault passphrase.").into());
     }
     let _permit = SECRET_OPERATIONS.clone().try_acquire_owned().map_err(|_| {
         anyhow::anyhow!("Another credential operation is active; retry after it finishes")
@@ -217,7 +214,7 @@ async fn change_secret(
     responses(
         (status = 200, description = "The vault, locked; locking a locked vault changes nothing", body = CredentialStatus),
         (status = 400, description = "`crew_profile_refused`: the vault could not be locked", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -252,7 +249,7 @@ pub async fn lock(headers: HeaderMap) -> Result<CredentialStatus> {
     responses(
         (status = 200, description = "The chats and tasks holding a grant on this connection, and the earlier grants whose revocation the workspace has not confirmed yet", body = CrewGrantList),
         (status = 400, description = "`crew_profile_refused`: no saved connection has that ID, or the grants could not be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -332,7 +329,7 @@ async fn session_name(state: &AppState, session: &str) -> Option<String> {
     responses(
         (status = 200, description = "The workspace's own manifest of the grant's context, forwarded unchanged", body = CrewWorkspaceAnswer),
         (status = 400, description = "`crew_profile_refused` for a chat with no Crew grant, a grant on another connection, or a manifest the workspace refused; `crew_credential_store_unavailable` or `crew_credential_store_refused` when the grant's key cannot be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent; `crew_grant_ended`: the grant has ended, with `reason` `settings_changed` (Crew's settings changed since access was granted) or `ended` (removed, timed out, or its task finished); grant access again to continue", body = CrewError),
         (status = 503, description = "The workspace could not be asked: `crew_not_sent` (nothing reached it; `ssh_code` when an SSH failure caused it) or `crew_reconnecting` (Biorouter is dialling it again; `workspace` names it)", body = CrewError)
     ),
@@ -382,7 +379,7 @@ pub async fn context(
     responses(
         (status = 200, description = "Stopped here and confirmed by the workspace. A task's grant adds `task_status`, and `task_status_error` when the task's status could not be saved", body = CrewRevocation),
         (status = 400, description = "`crew_profile_refused`: the revocation could not be asked for", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_grant_not_found`: the chat holds no Crew grant on this computer", body = CrewError),
         (status = 409, description = "`crew_grant_other_connection`: the chat's grant is on another connection; `crew_grant_replaced`: the chat was granted access again while this grant was being revoked, and the new grant is live", body = CrewError),
         (status = 500, description = "`crew_revocation_not_saved`: stopped on this device, but the stop could not be saved, so a restart would honor the grant again. Retry", body = CrewError),
@@ -589,7 +586,7 @@ mod tests {
     fn credential_operations_refuse_without_human_proof() {
         for headers in [HeaderMap::new(), {
             let mut wrong = HeaderMap::new();
-            wrong.insert("X-User-Action", "not-the-approval-secret".parse().unwrap());
+            wrong.insert("X-User-Action", "not-the-user-action-key".parse().unwrap());
             wrong
         }] {
             let refusal = person(&headers).unwrap_err();
@@ -599,7 +596,7 @@ mod tests {
                 "an unproven request was refused with {}",
                 refusal.code
             );
-            assert!(refusal.error.contains("human approval secret"));
+            assert!(refusal.error.contains("biorouter crew"));
         }
     }
 

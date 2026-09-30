@@ -129,7 +129,8 @@ scripts/release.sh all patch           # same, version resolved from the current
 # or one phase at a time (resumable):
 scripts/release.sh bump 1.80.1
 scripts/release.sh bump patch          # major | minor | patch also accepted
-scripts/release.sh backends 1.80.1     # mac arm64/x64 + windows + linux (docker)
+scripts/release.sh mac-backends 1.80.1 # mac arm64/x64 + signed helpers; adopt-ci supplies Linux/Windows
+# scripts/release.sh backends 1.80.1   # optional: build all four targets locally
 scripts/release.sh linux-backend 1.80.1 # just the linux x86_64 backend (re-runnable)
 scripts/release.sh mac-arm64 1.80.1    # sign + notarize
 scripts/release.sh mac-intel 1.80.1
@@ -1524,6 +1525,7 @@ After changing server routes, always run `just generate-openapi` to regenerate t
 - User config: `~/.config/biorouter/config.yaml` (providers, API keys, extensions)
 - Session history: `~/.config/biorouter/sessions/` (SQLite)
 - Workflows/skills: `~/.config/biorouter/workflows/` and `~/.config/biorouter/skills/`
+- Shared daemon user-action key (macOS and Linux): `~/.local/state/biorouter/daemon/user-action-key.json`, mode 0600, written by whoever starts the daemon (desktop app or `biorouter crew`), read by every later client, removed by the daemon on exit. Nobody types an approval secret; a daemon whose key is missing or refused is stopped and replaced.
 - Secrets: OS credential store (macOS Keychain / Windows Credential Manager / Linux Secret Service) via the `keyring` crate, read once per process and cached in memory so macOS shows at most one Keychain authorization prompt per run (tell users to click "Always Allow"). `BIOROUTER_DISABLE_KEYRING=true` switches to plaintext `secrets.yaml`; headless Linux falls back to it automatically. On Windows the secrets blob is chunked across credentials (2560-byte cap each). `just copy-binary` re-signs dev binaries with the Developer ID (when present) so Keychain grants survive rebuilds. Logic in `crates/biorouter/src/config/base.rs`; see `docs/security/secret-storage.md`.
 
 Key environment variables:

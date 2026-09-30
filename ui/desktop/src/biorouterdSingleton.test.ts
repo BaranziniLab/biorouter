@@ -5,8 +5,8 @@ import {
   getSharedBackend,
   resetSharedBackend,
   isSharedDaemonEnabled,
+  DAEMON_RECONNECT_BACKOFF_MS,
   type DaemonReattachDeps,
-  type DaemonRestartChoice,
 } from './biorouterdSingleton';
 
 const fakeResult = (baseUrl: string): BiorouterdResult => ({
@@ -107,112 +107,135 @@ describe('createDaemonReattachController (R-1)', () => {
   };
   const controller = (overrides: Partial<DaemonReattachDeps> = {}) => {
     const broadcast = vi.fn<DaemonReattachDeps['broadcast']>();
+    const waits: number[] = [];
     const deps = {
-      ask: vi.fn<DaemonReattachDeps['ask']>(async () => 'reconnect'),
       reportFailure: vi.fn<DaemonReattachDeps['reportFailure']>(async () => 'close'),
       reconnect: vi.fn<DaemonReattachDeps['reconnect']>(async () => undefined),
       restart: vi.fn<DaemonReattachDeps['restart']>(),
+      wait: vi.fn(async (ms: number) => {
+        waits.push(ms);
+      }),
       ...overrides,
       broadcast,
     };
-    return { deps, reattach: createDaemonReattachController(deps) };
+    return { deps, waits, reattach: createDaemonReattachController(deps) };
   };
+  const states = (deps: { broadcast: ReturnType<typeof vi.fn> }) =>
+    deps.broadcast.mock.calls.map(([state]) => state);
 
-  it('asks once, and reattaches only after the person chose Reconnect', async () => {
-    const answer = deferred<DaemonRestartChoice>();
-    const { deps, reattach } = controller({ ask: vi.fn(() => answer.promise) });
+  it('asks nothing: it has no way to, and reconnects on its own', async () => {
+    const { deps, reattach } = controller();
+    // The dependencies are the whole of what the controller can do: there is no prompt among them.
+    expect(Object.keys(deps).sort()).toEqual([
+      'broadcast',
+      'reconnect',
+      'reportFailure',
+      'restart',
+      'wait',
+    ]);
+    await expect(reattach.lost()).resolves.toBe(true);
+    expect(deps.reconnect).toHaveBeenCalledTimes(1);
+    expect(deps.reportFailure).not.toHaveBeenCalled();
+    expect(reattach.state()).toBe('attached');
+    expect(states(deps)).toEqual(['reconnecting', 'attached']);
+  });
+
+  it('runs one reconnect at a time, however many losses are reported meanwhile', async () => {
+    const done = deferred<void>();
+    const { deps, reattach } = controller({ reconnect: vi.fn(() => done.promise) });
     const first = reattach.lost();
     const second = reattach.lost();
-    expect(deps.ask).toHaveBeenCalledTimes(1);
-    expect(deps.reconnect).not.toHaveBeenCalled();
-    expect(reattach.state()).toBe('lost');
-    answer.resolve('reconnect');
-    await expect(first).resolves.toBe(true);
-    await expect(second).resolves.toBe(true);
+    const fromSidebar = reattach.reconnect();
+    expect(reattach.state()).toBe('reconnecting');
+    done.resolve();
+    await expect(Promise.all([first, second, fromSidebar])).resolves.toEqual([true, true, true]);
     expect(deps.reconnect).toHaveBeenCalledTimes(1);
-    expect(reattach.state()).toBe('attached');
-    expect(deps.broadcast.mock.calls.map(([state]) => state)).toEqual([
-      'lost',
-      'reconnecting',
-      'attached',
-    ]);
   });
 
-  it('never reattaches by itself: Not Now leaves it lost, and asks no more until asked to', async () => {
-    const { deps, reattach } = controller({ ask: vi.fn(async () => 'later' as const) });
+  it('tries three times with 1 s and 2 s between, then says why once and stays lost', async () => {
+    const { deps, waits, reattach } = controller({
+      reconnect: vi.fn(async () => {
+        throw new Error('The background service stopped answering.');
+      }),
+    });
     await expect(reattach.lost()).resolves.toBe(false);
-    await expect(reattach.lost()).resolves.toBe(false);
-    expect(deps.ask).toHaveBeenCalledTimes(1);
-    expect(deps.reconnect).not.toHaveBeenCalled();
+    expect(deps.reconnect).toHaveBeenCalledTimes(3);
+    expect(waits).toEqual([...DAEMON_RECONNECT_BACKOFF_MS]);
+    expect(waits).toEqual([1000, 2000]);
+    expect(deps.reportFailure).toHaveBeenCalledTimes(1);
+    expect(deps.reportFailure).toHaveBeenCalledWith('The background service stopped answering.');
     expect(reattach.state()).toBe('lost');
-    // A new window asks again.
-    await reattach.lost({ ask: true });
-    expect(deps.ask).toHaveBeenCalledTimes(2);
+    // Only the final failure is broadcast: no window shows a notice while attempts remain.
+    expect(states(deps)).toEqual(['reconnecting', 'lost']);
   });
 
-  it('quits and reopens when the person chooses that', async () => {
-    const { deps, reattach } = controller({ ask: vi.fn(async () => 'restart' as const) });
-    await expect(reattach.lost()).resolves.toBe(false);
-    expect(deps.restart).toHaveBeenCalledTimes(1);
-    expect(deps.reconnect).not.toHaveBeenCalled();
+  it('attaches on a later attempt without reporting anything', async () => {
+    const reconnect = vi
+      .fn<DaemonReattachDeps['reconnect']>()
+      .mockRejectedValueOnce(new Error('not yet'))
+      .mockResolvedValueOnce(undefined);
+    const { deps, reattach } = controller({ reconnect });
+    await expect(reattach.lost()).resolves.toBe(true);
+    expect(reconnect).toHaveBeenCalledTimes(2);
+    expect(deps.reportFailure).not.toHaveBeenCalled();
+    expect(reattach.state()).toBe('attached');
   });
 
-  it('says why a reconnect failed, stays lost, and offers to quit and reopen', async () => {
+  it('quits and reopens when the person chooses that in the failure report', async () => {
     const { deps, reattach } = controller({
       reconnect: vi.fn(async () => {
-        throw new Error('Daemon attachment cancelled.');
+        throw new Error('nope');
       }),
       reportFailure: vi.fn(async () => 'restart' as const),
     });
     await expect(reattach.lost()).resolves.toBe(false);
-    expect(deps.reportFailure).toHaveBeenCalledWith('Daemon attachment cancelled.');
-    expect(deps.restart).toHaveBeenCalledTimes(1);
-    expect(reattach.state()).toBe('lost');
+    await vi.waitFor(() => expect(deps.restart).toHaveBeenCalledTimes(1));
   });
 
-  it('runs one reconnect at a time from the sidebar, without asking again', async () => {
-    const done = deferred<void>();
+  it('keeps one failure report on screen at a time', async () => {
+    const report = deferred<'restart' | 'close'>();
     const { deps, reattach } = controller({
-      ask: vi.fn(async () => 'later' as const),
-      reconnect: vi.fn(() => done.promise),
+      reconnect: vi.fn(async () => {
+        throw new Error('nope');
+      }),
+      reportFailure: vi.fn(() => report.promise),
     });
     await reattach.lost();
-    const first = reattach.reconnect();
-    const second = reattach.reconnect();
-    expect(reattach.state()).toBe('reconnecting');
-    // A loss reported meanwhile joins the reconnect instead of asking.
-    const during = reattach.lost();
-    expect(deps.ask).toHaveBeenCalledTimes(1);
-    done.resolve();
-    await expect(Promise.all([first, second, during])).resolves.toEqual([true, true, true]);
-    expect(deps.reconnect).toHaveBeenCalledTimes(1);
-    expect(reattach.state()).toBe('attached');
+    await reattach.lost();
+    expect(deps.reportFailure).toHaveBeenCalledTimes(1);
+    report.resolve('close');
+    await report.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await reattach.lost();
+    expect(deps.reportFailure).toHaveBeenCalledTimes(2);
   });
 
-  it('is attached again when the instance answers while the prompt is open, whatever the answer', async () => {
-    const answer = deferred<DaemonRestartChoice>();
-    const { deps, reattach } = controller({ ask: vi.fn(() => answer.promise) });
-    const asked = reattach.lost();
-    reattach.answered();
+  it('Try again from the sidebar is one attempt, and attaches when it works', async () => {
+    const reconnect = vi.fn<DaemonReattachDeps['reconnect']>(async () => {
+      throw new Error('nope');
+    });
+    const { deps, reattach } = controller({ reconnect });
+    await reattach.lost();
+    expect(reconnect).toHaveBeenCalledTimes(3);
+    reconnect.mockResolvedValueOnce(undefined);
+    await expect(reattach.reconnect()).resolves.toBe(true);
+    expect(reconnect).toHaveBeenCalledTimes(4);
     expect(reattach.state()).toBe('attached');
-    answer.resolve('later');
-    await expect(asked).resolves.toBe(true);
-    expect(reattach.state()).toBe('attached');
-    expect(deps.reconnect).not.toHaveBeenCalled();
-    // A later loss asks again: "Not Now" was about an instance that came back.
-    reattach.lost();
-    expect(deps.ask).toHaveBeenCalledTimes(2);
+    expect(states(deps)).toEqual(['reconnecting', 'lost', 'reconnecting', 'attached']);
   });
 
-  it('is attached again, with nothing asked, when the lost instance answers by itself', async () => {
-    const { deps, reattach } = controller({ ask: vi.fn(async () => 'later' as const) });
+  it('is attached again when the lost instance answers by itself', async () => {
+    const { deps, reattach } = controller({
+      reconnect: vi.fn(async () => {
+        throw new Error('nope');
+      }),
+    });
     await reattach.lost();
     reattach.answered();
     expect(reattach.state()).toBe('attached');
-    expect(deps.reconnect).not.toHaveBeenCalled();
-    expect(deps.broadcast.mock.calls.map(([state]) => state)).toEqual(['lost', 'attached']);
-    // A reconnect while attached does nothing.
+    expect(states(deps)).toEqual(['reconnecting', 'lost', 'attached']);
+    // Try again while attached does nothing.
     await expect(reattach.reconnect()).resolves.toBe(true);
-    expect(deps.reconnect).not.toHaveBeenCalled();
+    expect(deps.reconnect).toHaveBeenCalledTimes(3);
   });
 });

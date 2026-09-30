@@ -843,7 +843,7 @@ biorouter &lt;subcommand&gt; --help  # per-subcommand help, flags, and defaults<
     <tr><td><code>--provider &lt;PROVIDER&gt;</code></td><td>string</td><td>config</td><td>Override the provider for this session (overrides <code>BIOROUTER_PROVIDER</code>).</td></tr>
     <tr><td><code>--model &lt;MODEL&gt;</code></td><td>string</td><td>config</td><td>Override the model for this session (overrides <code>BIOROUTER_MODEL</code>). The provider must support it.</td></tr>
     <tr><td><code>--shared-daemon</code></td><td>flag</td><td>off</td><td>Run the session in your profile's shared background service, the one the desktop app and <code>biorouter crew</code> use. It does not give the session Crew access.</td></tr>
-    <tr><td><code>--approval-key-stdin</code></td><td>flag</td><td>off</td><td>Read the shared service's approval secret from standard input. Requires <code>--shared-daemon</code>.</td></tr>
+    <tr><td><code>--approval-key-stdin</code></td><td>flag</td><td>off</td><td>Accepted for older scripts. Reads the first line of standard input and ignores it. Requires <code>--shared-daemon</code>.</td></tr>
     <tr><td><code>--no-start</code></td><td>flag</td><td>off</td><td>Use only a shared service that is already running. Requires <code>--shared-daemon</code>.</td></tr>
     <tr><td><code>--create-only</code></td><td>flag</td><td>off</td><td>Create the conversation in the shared service without sending a prompt. Requires <code>--shared-daemon</code>.</td></tr>
   </tbody>
@@ -1141,7 +1141,7 @@ biorouter knowledge query "which HLA alleles raise MS risk?" --save</code></pre>
 <h2>Lab workspaces</h2>
 
 <h3>crew</h3>
-<p>Work in a Crew workspace from the terminal: join or host a workspace, manage teams and channels, post and read messages, share files, run agent tasks, and give a chat access to a channel. The commands use the same background service and saved connections as the desktop app. Every command except <code>daemon status</code> asks for your Crew approval secret.</p>
+<p>Work in a Crew workspace from the terminal: join or host a workspace, manage teams and channels, post and read messages, share files, run agent tasks, and give a chat access to a channel. The commands use the same background service and saved connections as the desktop app. The commands start the service when it is not running and connect silently. Setting up or unlocking a Crew vault still asks for its passphrase.</p>
 <pre><code>biorouter crew [--connection NAME] &lt;COMMAND&gt; [ARGS]</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Commands</th><th>What they do</th></tr></thead>
@@ -1332,7 +1332,7 @@ biorouter serve --host 0.0.0.0 --port 8765</code></pre>
     <tr><td>Knowledge bases and ingest</td><td>Yes</td></tr>
     <tr><td>Agent Drafter apps, including their live agent sockets</td><td>Yes</td></tr>
     <tr><td>Changing the model or provider</td><td>No, by design, see above</td></tr>
-    <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs the approval secret a person types into the desktop app or <code>biorouter crew</code>, and the daemon <code>serve</code> starts never holds one. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
+    <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
     <tr><td>Dragging a file in from your own computer</td><td>No. The agent runs on the server, which cannot see your local disk. Images are the exception: they are uploaded with the message. Reference other files by their path <em>on the server</em>.</td></tr>
     <tr><td>Shell features only the desktop app has (tray, dock, native terminal dock)</td><td>No</td></tr>
     <tr><td>Biorouter Copilot (desktop observation and control)</td><td>Only with <code>--computer-use-approval</code>, which sets the approval key a browser must enter. It controls the serving host's desktop, not the device the browser is running on.</td></tr>
@@ -1911,7 +1911,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>You need</th><th>Details</th></tr></thead>
   <tbody>
-    <tr><td>The Biorouter desktop app</td><td>Tested on macOS. The <code>biorouter crew</code> commands also work in a terminal. Crew does not work in a web browser opened with <code>biorouter serve</code>, where it shows "Crew needs the Biorouter desktop app", because the service <code>biorouter serve</code> starts never holds the approval secret Crew needs.</td></tr>
+    <tr><td>The Biorouter desktop app</td><td>Tested on macOS. The <code>biorouter crew</code> commands also work in a terminal. Crew does not work in a web browser opened with <code>biorouter serve</code>, where it shows "Crew needs the Biorouter desktop app", because the service <code>biorouter serve</code> starts cannot confirm that a person is acting.</td></tr>
     <tr><td>An account on the lab's Linux server</td><td>Your own login, with an SSH key, a password or a verification code. Your IT team provides it.</td></tr>
     <tr><td><code>biorouter-crew</code> in your server account</td><td>Every account that connects, the host's included, needs its own copy. You install it in your own account, or IT does. See <a href="#crew-administrators">Server setup for administrators</a>.</td></tr>
     <tr><td>The server already verified</td><td>Crew connects only to a server whose SSH host key is in your known hosts file. Check the server's fingerprint with your IT team once.</td></tr>
@@ -1919,16 +1919,9 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
   </tbody>
 </table></div>
 
-<h3>The approval secret</h3>
-<p>On a Mac or a Linux computer, the background service that the app and the command line share acts for you only with your approval secret. The first time Biorouter starts the service, it asks you to choose one.</p>
-<ol>
-  <li>In the window "Set approval secret for shared Biorouter daemon", enter 32 to 4096 letters, numbers and punctuation marks, with no spaces. You can paste it.</li>
-  <li>Save the secret in your password manager. Biorouter does not save it.</li>
-  <li>Enter it again in "Confirm shared daemon approval secret". Biorouter opens.</li>
-</ol>
-<p>When the service is already running, the app asks for the secret in "Connect to existing Biorouter daemon". Closing the app leaves the service running.</p>
-<p>If you forget the secret, restart your computer. Biorouter then asks you to set a new one. Open Crew and choose <strong>Connect to chen-lab</strong>.</p>
-<p>Windows has no approval secret. There, closing the app stops the service, and the <code>biorouter crew</code> commands do not work.</p>
+<h3>The background service</h3>
+<p>On a Mac or a Linux computer, the background service that the app and the command line share starts by itself the first time you open Biorouter, and keeps running after you quit, so Crew stays connected. The app and <code>biorouter crew</code> connect to it without asking you anything. After an update, the new version replaces the older service the next time you open Biorouter.</p>
+<p>On Windows, closing the app stops the service, and the <code>biorouter crew</code> commands do not work.</p>
 
 <h2 id="crew-window">The Crew window</h2>
 <p>The first Crew screen offers <strong>Join a workspace</strong> and <strong>Host a new workspace</strong>.</p>
@@ -2090,7 +2083,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>Not set up on this server</td><td>Install <code>biorouter-crew</code> in your own server account, as <strong>Install it yourself</strong> on that screen or <a href="#crew-administrators">Server setup for administrators</a> shows, or ask IT. Then choose <strong>Try again</strong>.</td></tr>
   </tbody>
 </table></div>
-<p>When the network drops, or the workspace is stopped on the server, Crew reconnects by itself for up to an hour. It never sends a message a second time, so if the connection broke while you sent something, check whether it arrived. If the background service restarts while Biorouter is open, Biorouter asks "Biorouter's background service restarted. Reconnect?". Choose <strong>Reconnect</strong> and type the approval secret.</p>
+<p>When the network drops, or the workspace is stopped on the server, Crew reconnects by itself for up to an hour. It never sends a message a second time, so if the connection broke while you sent something, check whether it arrived. If the background service restarts while Biorouter is open, Biorouter reconnects by itself.</p>
 
 <h3 id="crew-server-identity">Server identity</h3>
 <p>Crew connects only to a server whose host key is in your known hosts file, and only to the workspace your invitation names.</p>
@@ -2119,7 +2112,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
     <tr><td>"The workspace server can’t save messages right now…"</td><td>The server's disk is full or failing. The host frees space, then stops and starts Crew on the server.</td></tr>
     <tr><td>"The workspace server has stopped saving changes. Reading still works."</td><td>The same problem, shown in the connection bar. Reading works, and posts and uploads are refused until the host frees space and restarts Crew on the server. Crew then connects again by itself, and paused uploads can be resumed.</td></tr>
     <tr><td>"Confirm this workspace's institution before granting an agent…"</td><td>Ask the host to set the workspace's institution.</td></tr>
-    <tr><td>"This feature needs a newer Biorouter background service."</td><td>On a Mac or a Linux computer, reopening Biorouter keeps the old service running. Restart the computer, or run <code>daemon stop</code> as <a href="#crew-command-line">Command line</a> shows, then open Biorouter. On Windows, quit and reopen Biorouter. See <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#upgrade-crew" target="_blank">Upgrade Crew</a>.</td></tr>
+    <tr><td>"This feature needs a newer Biorouter background service."</td><td>Quit and reopen Biorouter. On a Mac or a Linux computer, it then replaces the old service. If you use only the command line, run <code>daemon stop</code> as <a href="#crew-command-line">Command line</a> shows, then run your command again. See <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md#upgrade-crew" target="_blank">Upgrade Crew</a>.</td></tr>
     <tr><td>"Authorize this action in the Crew panel…"</td><td>Do the action yourself in Crew. If it repeats, quit and reopen Biorouter.</td></tr>
     <tr><td>"This workspace has grown past the size Crew supports…"</td><td>Reading still works. Ask the host about a new workspace.</td></tr>
   </tbody>
@@ -2128,7 +2121,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
 <h2 id="crew-command-line">Command line</h2>
 <p>The <code>biorouter crew</code> commands reach the same workspaces as the app. Add <code>--help</code> after any command for its options.</p>
 <ul>
-  <li>Every command except <code>daemon status</code> asks for your approval secret. In a script, add <code>--approval-key-stdin</code> and send the secret as the first line of standard input.</li>
+  <li>The commands start the background service when it is not running and connect silently. Setting up or unlocking a Crew vault still asks for its passphrase. In a script, add <code>--passphrase-stdin</code> to send a vault passphrase as the first line of standard input.</li>
   <li>Add <code>--connection NAME</code> when you have more than one saved connection.</li>
   <li>Write a channel without its <code>#</code>, or quote it: <code>'#methods'</code>. Name people by username, such as <code>@bob</code>. Files, tasks and chats take an ID.</li>
   <li><code>--output-format json</code> prints JSON, an error included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>

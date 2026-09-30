@@ -85,6 +85,9 @@ pub const DEFAULT_SECRET_PATTERNS: &[&str] = &[
     "**/.docker/config.json",
     "**/.kube/config",
     "**/.config/gh/hosts.yml",
+    // The shared daemon's user-action key, saved by whoever started the daemon so the desktop
+    // app and `biorouter crew` can connect without asking the person for anything.
+    "**/daemon/user-action-key.json",
 ];
 
 /// Object keys whose string values are treated as file paths and scanned in
@@ -1011,6 +1014,10 @@ mod tests {
         assert!(g.is_denied(Path::new(".aws/credentials")));
         assert!(g.is_denied(Path::new(".codex/auth.json")));
         assert!(g.is_denied(Path::new(".claude/.credentials.json")));
+        assert!(g.is_denied(Path::new("daemon/user-action-key.json")));
+        assert!(g.is_denied(Path::new(
+            ".local/state/biorouter/daemon/user-action-key.json"
+        )));
         assert!(!g.is_denied(Path::new("normal.txt")));
         assert!(!g.is_denied(Path::new("data.csv")));
     }

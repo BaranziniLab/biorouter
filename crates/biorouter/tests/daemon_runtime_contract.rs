@@ -2,7 +2,8 @@
 
 use biorouter::daemon_runtime::{
     descriptor_path, private_directory, profile_identity, profile_record, read_descriptor,
-    read_private, write_private, Endpoint, ProfileIdentity, RuntimeOwner,
+    read_private, read_user_action_key, user_action_key_path, write_private, write_user_action_key,
+    Endpoint, ProfileIdentity, RuntimeOwner,
 };
 use serde_json::json;
 use std::{
@@ -45,6 +46,11 @@ fn private_directory_requires_absolute_owned_0700_real_directory() {
     fs::create_dir(&public).unwrap();
     fs::set_permissions(&public, fs::Permissions::from_mode(0o755)).unwrap();
     assert!(private_directory(&public).is_err());
+    for mode in [0o500, 0o600, 0o4700, 0o2700, 0o1700] {
+        fs::set_permissions(&public, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(private_directory(&public).is_err());
+    }
+    fs::set_permissions(&public, fs::Permissions::from_mode(0o700)).unwrap();
 
     let target = root.path().join("target");
     fs::create_dir(&target).unwrap();
@@ -73,6 +79,10 @@ fn read_private_rejects_symlink_nonregular_public_and_hardlinked_records() {
 
     fs::set_permissions(&record, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(read_private::<ProfileIdentity>(&record).is_err());
+    for mode in [0o400, 0o700, 0o4600, 0o2600, 0o1600] {
+        fs::set_permissions(&record, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(read_private::<ProfileIdentity>(&record).is_err());
+    }
     fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
 
     let hardlink = root.path().join("record-hardlink.json");
@@ -134,6 +144,61 @@ fn descriptor_identity_excludes_endpoint_and_secret_material() {
         .contains("secret-that-must-not-be-in-identity"));
 }
 
+fn assert_user_action_key_contract(descriptor: &biorouter::daemon_runtime::Descriptor, key: &str) {
+    write_user_action_key(descriptor, key).unwrap();
+    assert!(read_user_action_key(descriptor).unwrap().unwrap().as_str() == key);
+    assert_eq!(
+        fs::metadata(user_action_key_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o600
+    );
+    let key_link = user_action_key_path().with_file_name("key-symlink.json");
+    fs::rename(user_action_key_path(), &key_link).unwrap();
+    symlink(&key_link, user_action_key_path()).unwrap();
+    assert!(read_user_action_key(descriptor).is_err());
+    fs::remove_file(user_action_key_path()).unwrap();
+    fs::rename(&key_link, user_action_key_path()).unwrap();
+    fs::hard_link(user_action_key_path(), &key_link).unwrap();
+    assert!(read_user_action_key(descriptor).is_err());
+    fs::remove_file(&key_link).unwrap();
+    let mut wrong_instance = descriptor.clone();
+    wrong_instance.instance_id = "66666666-6666-4666-8666-666666666666".into();
+    assert!(read_user_action_key(&wrong_instance).unwrap().is_none());
+    let mut wrong_pid = descriptor.clone();
+    wrong_pid.pid += 1;
+    assert!(read_user_action_key(&wrong_pid).unwrap().is_none());
+    let mut wrong_profile = descriptor.clone();
+    wrong_profile.profile_id = "77777777-7777-4777-8777-777777777777".into();
+    assert!(read_user_action_key(&wrong_profile).unwrap().is_none());
+    for mode in [0o400, 0o644, 0o700, 0o4600, 0o2600, 0o1600] {
+        fs::set_permissions(user_action_key_path(), fs::Permissions::from_mode(mode)).unwrap();
+        assert!(read_user_action_key(descriptor).is_err());
+    }
+    fs::set_permissions(user_action_key_path(), fs::Permissions::from_mode(0o600)).unwrap();
+
+    let record: serde_json::Value = read_private(&user_action_key_path()).unwrap();
+    for field in ["version", "profile_id", "instance_id", "pid", "key"] {
+        let mut missing = record.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        write_private(&user_action_key_path(), &missing).unwrap();
+        assert!(read_user_action_key(descriptor).is_err());
+    }
+    for (field, value) in [
+        ("extra", json!(true)),
+        ("version", json!(2)),
+        ("key", json!("A".repeat(64))),
+    ] {
+        let mut invalid = record.clone();
+        invalid[field] = value;
+        write_private(&user_action_key_path(), &invalid).unwrap();
+        assert!(read_user_action_key(descriptor).is_err());
+    }
+    write_user_action_key(descriptor, key).unwrap();
+}
+
 #[test]
 fn runtime_owner_child() {
     if std::env::var_os("BIOROUTER_RUNTIME_CHILD").is_none() {
@@ -152,6 +217,9 @@ fn runtime_owner_child() {
     let published = read_descriptor().unwrap();
     assert_eq!(published.instance_id, owner.descriptor.instance_id);
     assert_eq!(published.profile_id, profile.profile_id);
+
+    let key = biorouter::daemon_runtime::generate_user_action_key();
+    assert_user_action_key_contract(&owner.descriptor, &key);
 
     let mut foreign_profile = owner.descriptor.clone();
     foreign_profile.profile_id = "33333333-3333-4333-8333-333333333333".into();
@@ -176,7 +244,9 @@ fn runtime_owner_child() {
     let mut newer_descriptor = owner.descriptor.clone();
     newer_descriptor.instance_id = "55555555-5555-4555-8555-555555555555".into();
     write_private(&descriptor_path(), &newer_descriptor).unwrap();
+    write_user_action_key(&newer_descriptor, &key).unwrap();
     drop(owner);
+    assert!(read_user_action_key(&newer_descriptor).unwrap().is_some());
     assert_eq!(
         read_descriptor().unwrap().instance_id,
         newer_descriptor.instance_id
@@ -185,8 +255,17 @@ fn runtime_owner_child() {
     let replacement =
         RuntimeOwner::acquire("abcdef0123456789abcdef0123456789".into(), false).unwrap();
     replacement.publish().unwrap();
+    write_user_action_key(&replacement.descriptor, &key).unwrap();
     drop(replacement);
     assert!(read_descriptor().is_err());
+    assert!(!user_action_key_path().exists());
+    let owner_lock = biorouter::daemon_runtime::runtime_directory().join("owner.lock");
+    for mode in [0o400, 0o644, 0o700, 0o4600, 0o2600, 0o1600] {
+        fs::set_permissions(&owner_lock, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(RuntimeOwner::acquire("0123456789abcdef0123456789abcdef".into(), true).is_err());
+    }
+    fs::set_permissions(owner_lock, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(RuntimeOwner::acquire("0123456789abcdef0123456789abcdef".into(), true).is_ok());
 }
 
 #[test]

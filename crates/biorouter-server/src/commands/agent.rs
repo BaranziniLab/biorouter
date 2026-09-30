@@ -419,7 +419,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     let shared_runtime = if std::env::var(biorouter::daemon_runtime::SHARED_ENV).as_deref()
         == Ok("1")
     {
-        anyhow::ensure!(user_action_digest.is_some(), "Shared Crew daemon requires an installed human approval digest; use the trusted desktop or Crew terminal launcher");
+        anyhow::ensure!(user_action_digest.is_some(), "Shared daemon started without a user-action key. Start it from the Biorouter desktop app or with biorouter crew daemon start.");
         let runtime = biorouter::daemon_runtime::RuntimeOwner::acquire(secret_key.clone(), true)?;
         biorouter_server::daemon_service::install(runtime.descriptor.identity())?;
         Some(runtime)

@@ -48,16 +48,94 @@ smoke_mac() {
   # artifact, not the keychain.
   mkdir -p "$tmp/Library/Keychains"
   security create-keychain -p "" "$tmp/Library/Keychains/login.keychain-db" 2>/dev/null || true
-  HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true \
-    "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu >"$tmp/app.log" 2>&1 &
+  # ⚠ **`--user-data-dir`, because HOME does not move it.** On macOS Electron resolves userData
+  # through the system (~/Library/Application Support/Biorouter), not through $HOME, so without
+  # it the smoke run wrote into the operator's real profile, beside an app they may be using.
+  # The app sets no userData path of its own, and Electron honours the switch (measured on the
+  # Linux build: main.log and the whole profile moved into the given directory).
+  HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true XDG_STATE_HOME="$tmp/.local/state" \
+    /usr/bin/env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu --user-data-dir="$tmp/userData" \
+    >"$tmp/app.log" 2>&1 &
   local pid=$!
-  sleep 12
-  kill -0 "$pid" 2>/dev/null || { sed -n '1,160p' "$tmp/app.log" >&2; die "$arch desktop exited during startup"; }
-  kill "$pid" 2>/dev/null || true
-  sleep 1
-  kill -KILL "$pid" 2>/dev/null || true
-  pkill -KILL -f "$mount/Biorouter.app/Contents/" 2>/dev/null || true
+  local main_log="$tmp/userData/logs/main.log" failure="" tree="" prompt="" child
+  local runtime="$tmp/.local/state/biorouter/daemon/runtime.json"
+  local key="$tmp/.local/state/biorouter/daemon/user-action-key.json" daemon_pid=""
+  for _ in $(seq 1 60); do
+    prompt="$(pgrep -P "$pid" -x osascript 2>/dev/null | head -n 1 || true)"
+    if [ -n "$prompt" ]; then
+      failure="$arch desktop opened a startup prompt"
+      break
+    fi
+    kill -0 "$pid" 2>/dev/null || break
+    grep -qs 'Fatal error during startup' "$main_log" && break
+    sleep 0.5
+  done
+  if [ -f "$runtime" ]; then
+    daemon_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$runtime")"
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    failure="$arch desktop exited during startup"
+  elif grep -qs 'Fatal error during startup' "$main_log"; then
+    failure="$arch desktop failed during startup"
+  elif ! grep -qs 'React ready event received' "$main_log"; then
+    failure="$arch desktop did not become ready within 30 s"
+  elif [ -z "$failure" ]; then
+    if ! python3 - "$runtime" "$key" <<'PYKEY'
+import json, os, stat, sys
+runtime_path, key_path = sys.argv[1:]
+with open(runtime_path) as f:
+    runtime = json.load(f)
+with open(key_path) as f:
+    key = json.load(f)
+assert stat.S_IMODE(os.stat(os.path.dirname(key_path)).st_mode) == 0o700
+assert stat.S_IMODE(os.stat(key_path).st_mode) == 0o600
+assert all(key[field] == runtime[field] for field in ("profile_id", "instance_id", "pid"))
+os.kill(runtime["pid"], 0)
+PYKEY
+    then
+      failure="$arch desktop did not save a private matching daemon key"
+    fi
+  fi
+  # Keep the descendant list for bounded cleanup if the app fails to quit.
+  mac_descendants() {
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null || true); do
+      printf '%s\n' "$c"
+      mac_descendants "$c"
+    done
+  }
+  tree="$(mac_descendants "$pid" | tr '\n' ' ')"
+  # Let the app quit before cleaning up its remaining descendants.
+  kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 40); do
+    ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z || break
+    sleep 0.5
+  done
+  if ps -o stat= -p "$pid" 2>/dev/null | grep -qv Z; then
+    [ -n "$failure" ] || failure="$arch desktop did not exit within 20 s of SIGTERM"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
   wait "$pid" 2>/dev/null || true
+  for child in $tree; do
+    [ "$child" = "$daemon_pid" ] && continue
+    kill -KILL "$child" 2>/dev/null || true
+  done
+  if [ -n "$daemon_pid" ] && [ "$(ps -o comm= -p "$daemon_pid" 2>/dev/null | xargs basename 2>/dev/null)" = biorouterd ]; then
+    kill -TERM "$daemon_pid" 2>/dev/null || true
+    for _ in $(seq 1 30); do
+      ps -o stat= -p "$daemon_pid" 2>/dev/null | grep -qv Z || break
+      sleep 0.5
+    done
+    if ps -o stat= -p "$daemon_pid" 2>/dev/null | grep -qv Z; then
+      [ -n "$failure" ] || failure="$arch shared daemon did not stop within 15 s"
+      [ "$(ps -o comm= -p "$daemon_pid" 2>/dev/null | xargs basename 2>/dev/null)" != biorouterd ] \
+        || kill -KILL "$daemon_pid" 2>/dev/null || true
+    fi
+  fi
+  if [ -n "$failure" ]; then
+    sed -n '1,160p' "$tmp/app.log" >&2
+    if [ -f "$main_log" ]; then sed -n '1,160p' "$main_log" >&2; fi
+  fi
   hdiutil detach "$mount" >/dev/null 2>&1 || {
     sleep 2
     hdiutil detach -force "$mount" >/dev/null
@@ -70,56 +148,45 @@ smoke_mac() {
   # release reported "verification failed" because it could not tidy up.
   chmod -R u+w "$mount" "$tmp" 2>/dev/null || true
   rm -rf "$mount" "$tmp" 2>/dev/null || true
-  log "macOS $arch DMG, CLI, daemon, and desktop startup passed"
+  [ -z "$failure" ] || die "$failure"
+  log "macOS $arch DMG, CLI, daemon, silent shared startup, and desktop shutdown passed"
 }
+
+# Both packages use the same bounded silent-startup, replacement, fatal-error shutdown,
+# and per-window checks. `timeout` also bounds the whole container run.
+LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 
 smoke_deb() {
   local deb="$DESK/out/make/deb/x64/biorouter_${VERSION}_amd64.deb"
   require_file "$deb"
+  require_file "$LINUX_DESKTOP_SMOKE"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    -v "$deb":/pkg/biorouter.deb:ro debian:bookworm-slim bash -euxc '
+    -v "$deb":/pkg/biorouter.deb:ro \
+    -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter.deb xvfb >/dev/null
       /usr/lib/biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
-      HOME=/tmp/biorouter-home BIOROUTER_DISABLE_KEYRING=true \
-        xvfb-run -a /usr/bin/biorouter --no-sandbox >/tmp/biorouter.log 2>&1 &
-      pid=$!
-      sleep 12
-      kill -0 "$pid"
-      kill "$pid" || true
-      sleep 1
-      kill -KILL "$pid" || true
-      wait "$pid" || true
+      timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/biorouter
     '
-  log "Linux desktop DEB, CLI, daemon, and Xvfb startup passed"
+  log "Linux desktop DEB, CLI, daemon, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_rpm() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-${VERSION}-1.x86_64.rpm"
   require_file "$rpm"
+  require_file "$LINUX_DESKTOP_SMOKE"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
-    -v "$rpm":/pkg/biorouter.rpm:ro rockylinux:9 bash -euxc '
+    -v "$rpm":/pkg/biorouter.rpm:ro \
+    -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
       /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
-      Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
-      xvfb=$!
-      export DISPLAY=:99
-      HOME=/tmp/biorouter-home BIOROUTER_DISABLE_KEYRING=true \
-        /usr/bin/Biorouter --no-sandbox >/tmp/biorouter.log 2>&1 &
-      pid=$!
-      sleep 12
-      kill -0 "$pid"
-      kill "$pid"
-      if ! wait "$pid"; then
-        sed -n "1,160p" /tmp/biorouter.log >&2
-        exit 1
-      fi
-      kill "$xvfb" || true
-      wait "$xvfb" || true
+      timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/Biorouter
     '
-  log "Linux desktop RPM, CLI, daemon, Xvfb startup, and desktop shutdown passed"
+  log "Linux desktop RPM, CLI, daemon, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_cli_packages() {

@@ -222,7 +222,7 @@ fn validate_options(options: &SharedConversationOptions) -> Result<Format> {
     );
     ensure!(
         !options.approval_key_stdin || !options.interactive,
-        "Approval-key stdin cannot share interactive conversation input"
+        "The compatibility --approval-key-stdin flag cannot share interactive conversation input"
     );
     ensure!(
         !options.interactive || (std::io::stdin().is_terminal() && std::io::stderr().is_terminal()),
@@ -1486,6 +1486,11 @@ mod tests {
                 descriptor_file
                     .sync_all()
                     .expect("synthetic daemon descriptor syncs");
+                daemon_runtime::write_user_action_key(
+                    &synthetic_descriptor,
+                    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                )
+                .expect("synthetic launcher saves its user-action key");
                 Self {
                     _directory: directory,
                     accept_task: Some(accept_task),
@@ -1495,7 +1500,13 @@ mod tests {
             }
 
             fn client(&self) -> CrewClient {
-                CrewClient::for_test(self.descriptor.clone(), "synthetic-proof")
+                CrewClient::for_test(
+                    self.descriptor.clone(),
+                    daemon_runtime::read_user_action_key(&self.descriptor)
+                        .expect("synthetic key is private")
+                        .expect("synthetic key matches the daemon")
+                        .as_str(),
+                )
             }
 
             fn requests(&self) -> Vec<(String, String, Value)> {
@@ -1721,7 +1732,8 @@ mod tests {
         let mut interactive = options();
         interactive.interactive = true;
         interactive.approval_key_stdin = true;
-        let error = validate_options(&interactive).expect_err("stdin approval cannot share input");
+        let error =
+            validate_options(&interactive).expect_err("compatibility stdin cannot share input");
         assert!(error.to_string().contains("cannot share interactive"));
     }
 

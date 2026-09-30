@@ -4602,7 +4602,7 @@ export type ScheduledJob = {
 
 /**
  * The Crew vault's passphrase (`POST /crew/credentials/init` and `/unlock`), and nothing
- * else. It must differ from the human approval secret.
+ * else. The launcher supplies the request's separate user-action key automatically.
  */
 export type SecretBody = {
     passphrase: string;
@@ -7393,7 +7393,7 @@ export type CrewAuthenticationCancelErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID
      */
     403: CrewError;
 };
@@ -7427,7 +7427,7 @@ export type CrewAuthenticationTerminalErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key); `crew_request_invalid`: the `X-Crew-Controller` header is missing or not a UUID; `crew_request_refused`: a browser page, which must use the native terminal adapter
      */
     403: CrewError;
 };
@@ -7447,7 +7447,7 @@ export type CrewListConnectionsErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -7476,7 +7476,7 @@ export type CrewSaveConnectionErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7517,7 +7517,7 @@ export type CrewConnectionFromInvitationErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7567,7 +7567,7 @@ export type CrewRemoveConnectionErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7605,7 +7605,7 @@ export type CrewUpdateConnectionErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7651,7 +7651,7 @@ export type CrewAuthenticationPlanErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -7685,7 +7685,7 @@ export type CrewAuthenticationPrepareErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7731,7 +7731,7 @@ export type CrewConnectErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -7765,7 +7765,7 @@ export type CrewDisconnectErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -7799,7 +7799,7 @@ export type CrewProfileGrantsErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -7839,7 +7839,7 @@ export type CrewConnectionInvitationErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7885,7 +7885,7 @@ export type CrewConnectionJoinStatusErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7931,7 +7931,7 @@ export type CrewConnectionJoinErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -7977,7 +7977,7 @@ export type CrewObserveErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8035,7 +8035,7 @@ export type CrewRequestErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes
      */
     403: CrewError;
     /**
@@ -8089,7 +8089,7 @@ export type CrewListRunsErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8123,7 +8123,7 @@ export type CrewStartRunErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8181,7 +8181,7 @@ export type CrewCancelRunErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8223,7 +8223,7 @@ export type CrewProfileContextErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8269,7 +8269,7 @@ export type CrewGrantSessionErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_session_unavailable`: the chat is out of this caller's reach
+     * No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_session_unavailable`: the chat is out of this caller's reach
      */
     403: CrewError;
     /**
@@ -8327,7 +8327,7 @@ export type CrewProfileRevokeErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8372,7 +8372,7 @@ export type CrewProfileCredentialsErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8397,11 +8397,11 @@ export type CrewProfileInitData = {
 
 export type CrewProfileInitErrors = {
     /**
-     * `crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the approval secret, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way
+     * `crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a passphrase equal to the user-action key, a vault that already exists, a profile that already holds a Crew identity, or another credential operation under way
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8446,7 +8446,7 @@ export type CrewProfileLockErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8471,11 +8471,11 @@ export type CrewProfileUnlockData = {
 
 export type CrewProfileUnlockErrors = {
     /**
-     * `crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the approval secret, a profile with no vault, or another credential operation under way
+     * `crew_request_invalid` for a body that is not JSON; `crew_profile_refused` for a wrong passphrase, a passphrase equal to the user-action key, a profile with no vault, or another credential operation under way
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8516,7 +8516,7 @@ export type CrewPrepareDeviceErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8545,7 +8545,7 @@ export type CrewTransferRegisterFileErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8591,7 +8591,7 @@ export type CrewTransferDiscardFileErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8625,7 +8625,7 @@ export type CrewTransferConfirmFileErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8654,7 +8654,7 @@ export type CrewHostStartErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8696,7 +8696,7 @@ export type CrewHostStartCancelData = {
 
 export type CrewHostStartCancelErrors = {
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8730,7 +8730,7 @@ export type CrewHostStartStatusData = {
 
 export type CrewHostStartStatusErrors = {
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8763,7 +8763,7 @@ export type CrewResolveErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8821,7 +8821,7 @@ export type CrewTransferListErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -8850,7 +8850,7 @@ export type CrewTransferStartErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8899,7 +8899,7 @@ export type CrewTransferPreviewErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -8956,7 +8956,7 @@ export type CrewTransferForgetErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
@@ -9002,7 +9002,7 @@ export type CrewTransferStatusErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -9036,7 +9036,7 @@ export type CrewTransferPauseErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
 };
@@ -9070,7 +9070,7 @@ export type CrewTransferResumeErrors = {
      */
     400: CrewError;
     /**
-     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key
+     * No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key
      */
     403: CrewError;
     /**
