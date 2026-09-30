@@ -19,7 +19,7 @@ that path.
 
 | Document | What it covers |
 |---|---|
-| [1.92.0 release handoff](v1.92.0-release-handoff.md) | Work in progress: how to finish the paused 1.92.0 release. The state of `main`, the unfinished removal of the daemon approval secret on branch `fix/no-daemon-approval-secret`, the rebuild and verify steps, and the loose ends. Delete or move to history once 1.92.0 is published. |
+| [1.92.0 release record](v1.92.0-release-handoff.md) | Completed release: launch changes, distribution validation, publication evidence and the historical pause/continuation. |
 | [Auto-update test checklist](auto-update-test-checklist.md) | The verification plan for the one-click "Restart & Update" flow on macOS and the assisted-download fallback on Windows and Linux. Sections B–H are the live pre-release QA script to work through each release; Section A is a completed evidence log frozen at the 1.86.0 cycle, most recently executed 2026-07-14. |
 | [Privacy and workspace test checklist](privacy-and-workspace-test-checklist.md) | The manual pass for privacy tiers, institutional affiliation and workspace control. States what a FAILURE looks like for each row, because several of these fail by doing nothing visible. |
 | [v1.89.0 visual review](v1.89.0-visual-review.md) | Findings from a screenshot-by-screenshot pass over the desktop GUI after the Astryx rebuild and the privacy-tiers merge — fourteen defects and nine taste items, each with the surface, the theme and the measurement that explains it. The class of failure the automated suite cannot see, because jsdom has no layout and never runs Tailwind. |

@@ -1,8 +1,6 @@
 <div class="doc-page" id="doc-crew">
 <h1>Crew</h1>
 <p class="doc-lede">Crew is where a lab works together in the Biorouter desktop app: channels, shared files, and agent tasks the whole channel can see. One member, the host, runs the workspace on a shared Linux server.</p>
-<!-- crew-next-release: delete this note in the release that ships Crew. -->
-<div class="note"><p><strong>Crew arrives in the next release.</strong> It is merged into Biorouter's main branch but is not in a published release yet, so the app you download today does not have it.</p></div>
 <p>The examples use the workspace <code>chen-lab</code> on the server <code>lab.example.edu</code>, hosted by Alice Chen (<code>@alice</code>), and the member Bob Lee (<code>@bob</code>). A word in braces, such as {team}, is a name Crew fills in. Every dialog, message and command is in the <a href="https://github.com/BaranziniLab/biorouter/tree/main/docs/crew">Crew manual</a> on GitHub.</p>
 
 <figure class="doc-figure">
@@ -211,7 +209,6 @@ biorouter crew tasks start methods \
   <li>A local disk for the workspace's state. NFS, CIFS and SMB are refused.</li>
   <li>An ordinary account for the host, and each member's own account on the same machine.</li>
 </ul>
-<!-- crew-next-release: in the release that ships Crew, drop "From the next release on," and start this paragraph at "Take". -->
-<p>From the next release on, take <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm on the <a href="https://github.com/BaranziniLab/biorouter/releases">release page</a> and install it in <code>~/.local/bin</code> in each account. It needs no administrator rights. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the install commands, the full requirements and the upgrade steps.</p>
+<p>Take <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm on the <a href="https://github.com/BaranziniLab/biorouter/releases">release page</a> and install it in <code>~/.local/bin</code> in each account. It needs no administrator rights. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the install commands, the full requirements and the upgrade steps.</p>
 
 </div>
