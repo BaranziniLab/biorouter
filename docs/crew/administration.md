@@ -249,7 +249,7 @@ The new broker reads the journal as it is. To roll back, work in `~/.local/bin`:
 
 Members replace their own copy the same way. It takes effect at their next connection. If a member reads that the server "can't let people join with a code yet" or "can't add people directly yet", upgrade the broker.
 
-After a Biorouter update, each computer's background service stays old until it restarts, because reopening Biorouter on macOS or Linux attaches to the running one. "…needs a newer Biorouter background service…" in the app, or `Restart the shared Biorouter daemon to …` in a terminal, means this. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
+After a Biorouter update, reopening Biorouter on macOS or Linux replaces an older background service automatically. A terminal command replaces a service it cannot use, while `--no-start` refuses instead. An already open window can still show "…needs a newer Biorouter background service…", or a terminal command can say `Restart the shared Biorouter daemon to …`. [Replace an old background service](connections-and-troubleshooting.md#replace-an-old-background-service) gives the fix. Stopping the service affects every window and terminal using it.
 
 ## Back up a workspace
 

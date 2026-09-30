@@ -285,16 +285,11 @@ pub fn require_supported_platform(unix: bool) -> Result<()> {
 
 /// True when the daemon refused the user-action key itself (as opposed to anything else going
 /// wrong): the daemon holds a different key, so this command cannot use it.
+#[cfg(unix)]
 fn key_refused(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<DaemonRefusal>()
-        .is_some_and(|refused| {
-            refused.status == 403
-                && matches!(
-                    refused.kind.as_deref(),
-                    Some("crew_user_action_required" | "crew_human_authority_unavailable")
-                )
-        })
+        .is_some_and(|refused| refused.status == 403)
 }
 
 fn daemon_needs_restart() -> anyhow::Error {
@@ -633,8 +628,7 @@ impl CrewClient {
             return Err(daemon_refusal(
                 status.as_u16(),
                 value.as_ref(),
-                std::str::from_utf8(&bytes)
-                    .unwrap_or("Request refused; check the daemon"),
+                std::str::from_utf8(&bytes).unwrap_or("Request refused; check the daemon"),
             )
             .into());
         }
@@ -1030,7 +1024,7 @@ async fn verified_observer_connection(
     let identity: Identity = serde_json::from_slice(&bytes)?;
     ensure!(
         identity == descriptor.identity(),
-        "Shared daemon identity changed; no approval credentials were sent"
+        "Shared daemon identity changed; no user-action credentials were sent"
     );
     Ok((sender, connection))
 }
@@ -1130,10 +1124,10 @@ async fn authenticated_terminal_socket(
     let identity: Identity = serde_json::from_slice(&bytes)?;
     ensure!(
         identity == descriptor.identity(),
-        "Shared daemon identity changed; no approval credentials were sent"
+        "Shared daemon identity changed; no user-action credentials were sent"
     );
     // Upgrade the identity-verified HTTP/1 connection itself. Never reconnect
-    // between this check and sending the separately held human approval proof.
+    // between this check and sending the saved user-action proof.
     let mut upgrade = format!("ws://localhost{path}").into_client_request()?;
     *upgrade.uri_mut() = path.parse()?;
     let expected_accept = derive_accept_key(upgrade.headers()["Sec-WebSocket-Key"].as_bytes());
@@ -1223,7 +1217,7 @@ async fn discard_legacy_approval_line(approval_key_stdin: bool) -> Result<()> {
     }
     tokio::task::spawn_blocking(|| -> Result<()> {
         let mut stdin = std::io::stdin().lock();
-        for _ in 0..4097 {
+        loop {
             let mut byte = Zeroizing::new([0u8]);
             if stdin.read(byte.as_mut())? == 0 || byte[0] == b'\n' {
                 break;
@@ -1326,7 +1320,7 @@ async fn checked_socket(descriptor: &Descriptor) -> Result<tokio::net::UnixStrea
     let current = daemon_runtime::read_descriptor()?;
     ensure!(
         current.identity() == descriptor.identity(),
-        "Daemon instance changed; reconnect and authorize the current instance"
+        "Daemon instance changed; reconnect to the current instance"
     );
     let daemon_runtime::Endpoint::Unix { path } = &descriptor.endpoint;
     let metadata = std::fs::symlink_metadata(path)?;
@@ -1443,7 +1437,7 @@ async fn request(
         let identity: Identity = serde_json::from_slice(&bytes)?;
         ensure!(
             identity == descriptor.identity(),
-            "Shared daemon identity changed; no approval credentials were sent"
+            "Shared daemon identity changed; no user-action credentials were sent"
         );
         if path == "/daemon/identity" && method == "GET" {
             return Ok(serde_json::to_value(identity)?);
@@ -1502,10 +1496,12 @@ async fn start_daemon() -> Result<CrewClient> {
     {
         use std::process::Stdio;
         use tokio::io::AsyncWriteExt;
-        ensure!(
-            discover_shared_daemon().await?.is_none(),
-            "A Biorouter daemon is already running for this profile."
-        );
+        if let Some(descriptor) = discover_shared_daemon().await? {
+            if let Some(client) = CrewClient::with_saved_key(descriptor.clone()).await? {
+                return Ok(client);
+            }
+            stop_by_signal(&descriptor).await?;
+        }
         let binary = std::env::current_exe()?
             .parent()
             .context("CLI executable has no directory")?
@@ -1539,13 +1535,14 @@ async fn start_daemon() -> Result<CrewClient> {
             .take()
             .context("New daemon has no startup pipe")?;
         let digest = daemon_runtime::user_action_digest_hex(&proof);
-        if let Err(error) = pipe.write_all(format!("{digest}\n").as_bytes()).await {
+        let startup_error = pipe.write_all(format!("{digest}\n").as_bytes()).await.err();
+        drop(pipe);
+        if startup_error.is_some() {
             child.kill().await.ok();
             child.wait().await.ok();
-            return Err(error.into());
         }
-        drop(pipe);
-        for _ in 0..300 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while tokio::time::Instant::now() < deadline {
             if child.try_wait()?.is_some() {
                 // Another launcher's daemon may have taken the profile first; use it.
                 if let Some(descriptor) = discover_shared_daemon().await? {
@@ -1555,40 +1552,48 @@ async fn start_daemon() -> Result<CrewClient> {
                         }
                     }
                 }
-                bail!(
-                    "The Biorouter daemon exited while starting; inspect the profile and installed daemon"
-                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
             }
             if let Ok(descriptor) = daemon_runtime::read_descriptor() {
                 if descriptor.pid == child_pid
                     && descriptor.user_action_installed
                     && verify_identity(&descriptor).await.is_ok()
                 {
-                    let client = CrewClient { descriptor, proof };
-                    let ready = match daemon_runtime::write_user_action_key(
-                        &client.descriptor,
-                        &client.proof,
-                    ) {
-                        Ok(()) => client.request("GET", "/crew/connections", None).await,
-                        Err(error) => Err(error),
-                    };
-                    if let Err(error) = ready {
-                        child.kill().await.ok();
-                        child.wait().await.ok();
-                        daemon_runtime::remove_user_action_key(&client.descriptor.instance_id);
-                        return Err(error);
-                    }
-                    return Ok(client);
+                    return finish_daemon_start(&mut child, descriptor, proof).await;
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         child.kill().await.ok();
         child.wait().await.ok();
+        if let Some(error) = startup_error {
+            return Err(error.into());
+        }
         bail!(
             "The daemon did not establish authenticated shared readiness; only the newly started child was stopped"
         )
     }
+}
+
+#[cfg(unix)]
+async fn finish_daemon_start(
+    child: &mut tokio::process::Child,
+    descriptor: Descriptor,
+    proof: Zeroizing<String>,
+) -> Result<CrewClient> {
+    let client = CrewClient { descriptor, proof };
+    let ready = match daemon_runtime::write_user_action_key(&client.descriptor, &client.proof) {
+        Ok(()) => client.request("GET", "/crew/connections", None).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = ready {
+        child.kill().await.ok();
+        child.wait().await.ok();
+        daemon_runtime::remove_user_action_key(&client.descriptor.instance_id);
+        return Err(error);
+    }
+    Ok(client)
 }
 
 /// Stop the verified daemon `descriptor` describes without its key: it runs as this same user,
@@ -1604,7 +1609,7 @@ async fn stop_by_signal(descriptor: &Descriptor) -> Result<()> {
     {
         let could_not_stop = || {
             anyhow::anyhow!(
-                "Biorouter could not stop the old background service (process {}). Stop that process, then run this command again.",
+                "Biorouter could not stop the old background service (process {}). Quit it, then open Biorouter again.",
                 descriptor.pid
             )
         };
@@ -1664,7 +1669,7 @@ fn open_daemon_owner_lock() -> Result<std::fs::File> {
     ensure!(
         metadata.is_file()
             && metadata.uid() == unsafe { libc::geteuid() }
-            && metadata.mode() & 0o077 == 0
+            && metadata.mode() & 0o7777 == 0o600
             && metadata.nlink() == 1,
         "Daemon owner lock must be a private regular file owned by this user"
     );
@@ -1732,6 +1737,7 @@ async fn wait_for_daemon_stop(expected: &Descriptor) -> Result<Value> {
 }
 
 pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Value> {
+    discard_legacy_approval_line(approval_key_stdin).await?;
     match action {
         // A missing discovery record and one a crashed daemon left behind (its socket gone or
         // refusing) both mean no daemon is running, in one sentence with one code; anything
@@ -1741,7 +1747,6 @@ pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Va
             None => Err(daemon_not_running()),
         },
         "start" => {
-            discard_legacy_approval_line(approval_key_stdin).await?;
             ensure!(
                 discover_shared_daemon().await?.is_none(),
                 "A Biorouter daemon is already running for this profile. Stop it first with biorouter crew daemon stop."
@@ -1750,7 +1755,6 @@ pub async fn daemon_control(action: &str, approval_key_stdin: bool) -> Result<Va
             Ok(serde_json::to_value(client.descriptor.identity())?)
         }
         "stop" => {
-            discard_legacy_approval_line(approval_key_stdin).await?;
             let Some(descriptor) = discover_shared_daemon().await? else {
                 return Err(daemon_not_running());
             };
@@ -1801,10 +1805,11 @@ fn no_vault_to_unlock(status: &Value) -> Result<()> {
 /// (how 1.92.0 scripts send it), else from a hidden prompt.
 pub async fn credentials_control(
     action: &str,
+    no_start: bool,
     approval_key_stdin: bool,
     passphrase_stdin: bool,
 ) -> Result<Value> {
-    let client = CrewClient::connect_with_input(true, approval_key_stdin).await?;
+    let client = CrewClient::connect_with_input(no_start, approval_key_stdin).await?;
     match action {
         "status" => client.request("GET", "/crew/credentials", None).await,
         "lock" => client.request("POST", "/crew/credentials/lock", None).await,
@@ -1815,12 +1820,9 @@ pub async fn credentials_control(
                 let status = client.request("GET", "/crew/credentials", None).await?;
                 no_vault_to_unlock(&status)?;
             }
-            let passphrase = vault_passphrase(
-                action,
-                approval_key_stdin || passphrase_stdin,
-                read_secret,
-            )
-            .await?;
+            let passphrase =
+                vault_passphrase(action, approval_key_stdin || passphrase_stdin, read_secret)
+                    .await?;
             client
                 .request(
                     "POST",
@@ -1836,11 +1838,11 @@ pub async fn credentials_control(
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        daemon_control, daemon_refusal, key_refused, no_vault_to_unlock, open_daemon_owner_lock,
-        read_observer_frames, require_supported_platform, secret_prompt_possible,
-        sign_in_possible, sign_in_terminal_size, vault_passphrase, wait_for_daemon_stop,
-        CrewClient, DaemonRefusal, EventDecoder, Restated, AUTH_NEEDS_A_TERMINAL,
-        DAEMON_NEEDS_RESTART, DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING,
+        credentials_control, daemon_control, daemon_refusal, key_refused, no_vault_to_unlock,
+        open_daemon_owner_lock, read_observer_frames, require_supported_platform,
+        secret_prompt_possible, sign_in_possible, sign_in_terminal_size, vault_passphrase,
+        wait_for_daemon_stop, CrewClient, DaemonRefusal, EventDecoder, Restated,
+        AUTH_NEEDS_A_TERMINAL, DAEMON_NEEDS_RESTART, DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING,
         DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING,
         NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
         VAULT_PASSPHRASE_AGAIN,
@@ -2129,12 +2131,14 @@ mod tests {
         assert!(open_daemon_owner_lock().is_err());
         fs::remove_file(directory.join("owner.lock")).expect("symlink removes");
         fs::write(directory.join("owner.lock"), b"lock").expect("lock writes");
-        fs::set_permissions(
-            directory.join("owner.lock"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .expect("insecure mode sets");
-        assert!(open_daemon_owner_lock().is_err());
+        for mode in [0o400, 0o644, 0o700, 0o4600, 0o2600, 0o1600] {
+            fs::set_permissions(
+                directory.join("owner.lock"),
+                fs::Permissions::from_mode(mode),
+            )
+            .expect("insecure mode sets");
+            assert!(open_daemon_owner_lock().is_err());
+        }
         fs::remove_file(target).expect("target removes");
     }
 
@@ -2759,10 +2763,14 @@ mod tests {
     }
 
     /// A 403 that says the key was not accepted marks the daemon as one this command cannot
-    /// use; any other refusal is an ordinary error.
+    /// use; a non-403 refusal is an ordinary error.
     #[test]
     fn a_refused_key_marks_the_daemon_unusable() {
-        for code in ["crew_user_action_required", "crew_human_authority_unavailable"] {
+        for code in [
+            "crew_user_action_required",
+            "crew_human_authority_unavailable",
+            "unknown_forbidden",
+        ] {
             let refused = daemon_refusal(
                 403,
                 Some(&serde_json::json!({"code": code, "error": "x"})),
@@ -2820,6 +2828,26 @@ mod tests {
         );
         let _ = fs::remove_file(daemon_runtime::user_action_key_path());
         let _ = fs::remove_file(daemon_runtime::descriptor_path());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn crew_credentials_no_start_refuses_before_any_vault_prompt() {
+        runtime_dir();
+        for action in ["status", "lock", "init", "unlock"] {
+            let error = credentials_control(action, true, false, false)
+                .await
+                .expect_err(
+                    "no-start credentials must not launch a daemon or ask for a passphrase",
+                );
+            assert_eq!(
+                error
+                    .downcast_ref::<Restated>()
+                    .and_then(|refusal| refusal.code),
+                Some(DAEMON_NOT_RUNNING_CODE),
+                "{action} must report missing daemon before reaching its credential operation"
+            );
+        }
     }
 
     /// `daemon stop` with nothing running says so and asks for nothing.

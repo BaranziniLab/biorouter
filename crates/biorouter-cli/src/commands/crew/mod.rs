@@ -392,7 +392,13 @@ async fn execute(options: CrewOptions, sent: Arc<AtomicBool>) -> Result<()> {
             CredentialCommand::Lock => "lock",
         };
         return emit_with(
-            &crate::daemon_client::credentials_control(action, approval_key_stdin, passphrase_stdin).await?,
+            &crate::daemon_client::credentials_control(
+                action,
+                no_start,
+                approval_key_stdin,
+                passphrase_stdin,
+            )
+            .await?,
             output_format,
             &HumanOptions::new(show_ids),
         );

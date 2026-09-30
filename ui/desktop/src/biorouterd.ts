@@ -776,7 +776,8 @@ async function startOrAttachBiorouterd(
   if (sharedRuntime && newDaemonProof) {
     let wroteKeyFor: DaemonRuntime | undefined;
     try {
-      for (let attempt = 0; attempt < 100; attempt++) {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
         const runtime = discoverDaemonRuntime();
         if (runtime && runtime.pid === biorouterdProcess.pid) {
           await verifyDaemonRuntime(runtime);
@@ -808,14 +809,17 @@ async function startOrAttachBiorouterd(
             if (found.kind === 'usable')
               return await attachSharedDaemon(options, winner, dir, found.key, reattach);
           }
-          throw new Error(
-            'Shared profile daemon failed to start. Inspect its startup diagnostics.'
-          );
+          if (biorouterdProcess.pid === undefined)
+            throw new Error(
+              'Shared profile daemon failed to start. Inspect its startup diagnostics.'
+            );
         }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       throw new Error(
-        'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
+        biorouterdProcess.exitCode !== null
+          ? 'Shared profile daemon failed to start. Inspect its startup diagnostics.'
+          : 'Shared profile daemon did not publish its private runtime descriptor. Inspect the daemon before retrying.'
       );
     } catch (error) {
       if (wroteKeyFor) {

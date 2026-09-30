@@ -683,8 +683,10 @@ describe.sequential('the user-action key file', () => {
     const key = generateUserActionKey();
     writeUserActionKey(current.runtime, key);
     const target = userActionKeyPath();
-    fs.chmodSync(target, 0o644);
-    await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+    for (const mode of [0o400, 0o644, 0o700, 0o4600, 0o2600, 0o1600]) {
+      fs.chmodSync(target, mode);
+      await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+    }
     fs.chmodSync(target, 0o600);
 
     fs.linkSync(target, target + '.alias');
@@ -696,6 +698,16 @@ describe.sequential('the user-action key file', () => {
     fs.renameSync(target, real);
     fs.symlinkSync(real, target);
     await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
+  });
+
+  it('refuses to write a key into a daemon directory with a non-0700 mode', async () => {
+    const current = (fixture = await unixFixture());
+    const directory = path.dirname(userActionKeyPath());
+    for (const mode of [0o500, 0o600, 0o755, 0o4700, 0o2700, 0o1700]) {
+      fs.chmodSync(directory, mode);
+      expect(() => writeUserActionKey(current.runtime, generateUserActionKey())).toThrow();
+    }
+    fs.chmodSync(directory, 0o700);
   });
 
   it('waits for a starter that writes the key just after the daemon publishes', async () => {

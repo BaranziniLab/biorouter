@@ -8,7 +8,6 @@
 
 use super::*;
 use std::{env, fs, future::Future, process::Stdio, sync::Arc};
-use tokio::io::AsyncWriteExt;
 
 fn required(name: &str) -> String {
     env::var(name).unwrap_or_else(|_| panic!("live acceptance requires {name}"))
@@ -56,8 +55,6 @@ async fn revoke_source() {
     let alice_connection = required("BIOROUTER_LIVE_ALICE_CONNECTION");
     let source = required("BIOROUTER_LIVE_SOURCE_CHANNEL");
     let principal = required("BIOROUTER_LIVE_BOB_PRINCIPAL");
-    let approval_file = required("BIOROUTER_LIVE_ALICE_APPROVAL_FILE");
-    let approval = fs::read_to_string(approval_file).expect("read live approval from fixture file");
     let mut command = tokio::process::Command::new(bin);
     command
         .args([
@@ -65,30 +62,23 @@ async fn revoke_source() {
             "--connection",
             &alice_connection,
             "--no-start",
-            "--approval-key-stdin",
             "remove-member",
             &source,
             &principal,
+            "--yes",
         ])
         .env("BIOROUTER_PATH_ROOT", alice_root)
         .env(
             "BIOROUTER_DEV_PROFILE_ROOT",
             required("BIOROUTER_LIVE_ALICE_PROFILE_ROOT"),
         )
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     biorouter_mcp::developer::shell::no_console_window(&mut command);
-    let mut child = command
+    let child = command
         .spawn()
         .expect("spawn ordinary Alice revoke command");
-    child
-        .stdin
-        .take()
-        .expect("approval stdin")
-        .write_all(approval.as_bytes())
-        .await
-        .expect("write approval to child");
     let output = child
         .wait_with_output()
         .await

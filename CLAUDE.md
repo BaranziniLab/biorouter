@@ -129,7 +129,8 @@ scripts/release.sh all patch           # same, version resolved from the current
 # or one phase at a time (resumable):
 scripts/release.sh bump 1.80.1
 scripts/release.sh bump patch          # major | minor | patch also accepted
-scripts/release.sh backends 1.80.1     # mac arm64/x64 + windows + linux (docker)
+scripts/release.sh mac-backends 1.80.1 # mac arm64/x64 + signed helpers; adopt-ci supplies Linux/Windows
+# scripts/release.sh backends 1.80.1   # optional: build all four targets locally
 scripts/release.sh linux-backend 1.80.1 # just the linux x86_64 backend (re-runnable)
 scripts/release.sh mac-arm64 1.80.1    # sign + notarize
 scripts/release.sh mac-intel 1.80.1

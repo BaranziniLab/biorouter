@@ -41,18 +41,55 @@ git -C "$ROOT" -c user.name=Release-Test -c user.email=release-test@example.inva
   commit -q -m fixture
 SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 
+(
+  MAC_TRACE="$FIXTURE_ROOT/mac-backends.trace"
+  activate_hermit() { :; }
+  cargo() { printf 'cargo %s\n' "$*" >>"$MAC_TRACE"; }
+  build_computer_use_helper() { printf 'helper %s\n' "$1" >>"$MAC_TRACE"; }
+  ensure_docker() { fail "mac-backends unexpectedly requested Docker"; }
+  run_cross_release() { fail "mac-backends unexpectedly cross-compiled a CI target"; }
+  cmd_mac-backends "$VERSION"
+  expected="$(printf '%s\n' 'cargo build --release' 'cargo build --release --target x86_64-apple-darwin' 'helper darwin-arm64' 'helper darwin-x64')"
+  [ "$(cat "$MAC_TRACE")" = "$expected" ] || fail "mac-backends did not build both architectures and helpers"
+  assert_release_source "$VERSION"
+  mutating_mac_build() {
+    cargo() { printf 'source changed\n' >"$ROOT/changed-during-build.txt"; }
+    cmd_mac-backends "$VERSION"
+  }
+  expect_failure "source changed during mac backend build" mutating_mac_build
+  rm -f "$ROOT/changed-during-build.txt"
+)
+
+# Plain fixture bytes exercise provenance, not archive extraction or signing.
+# The production recorder obtains these rows from verify-computer-use-artifact.py.
+record_fixture_asset() {
+  local asset="$1" rel="${1#"$ROOT"/}"
+  record_release_asset "$VERSION" "$asset"
+  case "$asset" in
+    *.yml|*.exe) ;;
+    *) printf 'computer_use\t%s\t{"fixture":true}\n' "$rel" >>"$(release_provenance_file "$VERSION")" ;;
+  esac
+}
+
 start_release_provenance "$VERSION"
 while IFS= read -r asset; do
   mkdir -p "$(dirname "$asset")"
   printf 'fixture bytes for %s\n' "$(basename "$asset")" >"$asset"
-  record_release_asset "$VERSION" "$asset"
+  record_fixture_asset "$asset"
 done < <(release_assets "$VERSION")
 verify_release_provenance "$VERSION"
 
 FIRST_ASSET="$(release_assets "$VERSION" | head -1)"
 printf 'changed\n' >>"$FIRST_ASSET"
 expect_failure "changed local asset provenance check" verify_release_provenance "$VERSION"
-record_release_asset "$VERSION" "$FIRST_ASSET"
+record_fixture_asset "$FIRST_ASSET"
+verify_release_provenance "$VERSION"
+
+fixture_manifest="$(release_provenance_file "$VERSION")"
+awk -F '\t' -v rel="${FIRST_ASSET#"$ROOT"/}" '!($1 == "computer_use" && $2 == rel)' "$fixture_manifest" >"$FIXTURE_ROOT/missing-helper.tsv"
+mv "$FIXTURE_ROOT/missing-helper.tsv" "$fixture_manifest"
+expect_failure "missing helper attestation check" verify_release_provenance "$VERSION"
+record_fixture_asset "$FIRST_ASSET"
 verify_release_provenance "$VERSION"
 
 printf 'source moved\n' >"$ROOT/source-moved.txt"

@@ -67,7 +67,7 @@ impl IntoResponse for TransferError {
 fn human(headers: &HeaderMap) -> Result<(), TransferError> {
     match user_action_proof(headers) {
         UserActionProof::Proven => Ok(()),
-        // A daemon with no approval key says so in the words every Crew route uses there
+        // A daemon with no user-action key says so in the words every Crew route uses there
         // (CROSSCUT-5), with the code the interface reads.
         UserActionProof::NoKeyInstalled => Err(TransferError(
             StatusCode::FORBIDDEN,
@@ -91,7 +91,7 @@ const HUMAN_ACTION_REQUIRED: &str = "A verified human action is required for loc
     responses(
         (status = 200, description = "The selection, as a capability a transfer is started with. A download's destination may still wait for confirmation (`approval_pending`)", body = FileCapability),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a selection the daemon refuses (a symlink, a file too large, too many pending selections, an idempotency key of another transfer); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_file_name_invisible` (a file to share whose name has an invisible or formatting character, or a blank-looking one such as a Hangul filler; rename it), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch` when `expected_mode` is neither the privacy in force (Private when the connection or, by its last signed hello, the workspace is) nor the connection's own mode", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
@@ -113,7 +113,7 @@ pub async fn register_file(
     responses(
         (status = 200, description = "The selection, confirmed", body = FileCapability),
         (status = 400, description = "`crew_transfer_refused` for a selection that expired, is not a download's, or whose connection policy changed (select the file again); `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -132,7 +132,7 @@ pub async fn confirm_file(
     responses(
         (status = 200, description = "Given back, whether or not it was still pending", body = CrewFileDiscarded),
         (status = 400, description = "`crew_transfer_refused`: the transfer service is unavailable", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -152,7 +152,7 @@ pub async fn discard_file(
     responses(
         (status = 200, description = "The transfer, recorded and under way (or the transfer this `request_id` already started)", body = Receipt),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for a file selection that expired or does not match, a transfer the workspace refused, or an idempotency key of another transfer; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
@@ -185,7 +185,7 @@ pub struct Filter {
     responses(
         (status = 200, description = "This computer's transfers", body = CrewTransferList),
         (status = 400, description = "`crew_transfer_refused`: the transfer service is unavailable", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -220,7 +220,7 @@ pub async fn list(
     responses(
         (status = 200, description = "The transfer as this computer records it", body = Receipt),
         (status = 400, description = "`crew_transfer_refused`: no transfer has that ID", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -244,7 +244,7 @@ pub struct Resume {
     responses(
         (status = 200, description = "The transfer, under way again from where it stopped", body = Receipt),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, a selection that does not match it, or a step the workspace refused; `crew_file_is_credential` (a credential file, or a credential or settings location), `crew_file_name_hidden` (a dotted name in the home folder), `crew_folder_shared` (a folder other accounts can change), `crew_destination_is_folder`, `crew_destination_exists` (replace it, or choose another name) or `crew_file_is_program`; `crew_mode_mismatch`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
@@ -271,7 +271,7 @@ pub async fn resume(
     responses(
         (status = 200, description = "The transfer, paused", body = Receipt),
         (status = 400, description = "`crew_transfer_refused`: no transfer has that ID, or it cannot be paused", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -288,7 +288,7 @@ pub async fn pause(headers: HeaderMap, Path(id): Path<String>) -> TransferResult
     responses(
         (status = 200, description = "The record, removed after any authorized cleanup. The workspace's attachments and published downloads are not deleted", body = CrewTransferForgotten),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an unknown transfer, one still under way, or a cleanup approval that does not match it", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError)
@@ -321,7 +321,7 @@ pub async fn forget(
     responses(
         (status = 200, description = "The image's bytes, verified against the attachment's digest and bounded in size, with its own media type (`image/png`, `image/jpeg`, `image/gif` or `image/webp`)", body = CrewPreviewImage, content_type = "image/*"),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_transfer_refused` for an attachment that is not an image, too large to preview, not in that channel, or refused by the workspace; `crew_mode_mismatch`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_transfer_refused` (a verified human action is required), or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),

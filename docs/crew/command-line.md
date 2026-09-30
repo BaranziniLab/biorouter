@@ -1,7 +1,7 @@
 # Crew command line
 
 > **What this is.** A task reference for the `biorouter crew` commands: their syntax, what they print and their exit status.
-> **Status:** Current. Checked against Biorouter 1.91.2 (`biorouter crew --help`) and the Crew code on 2026-09-28.
+> **Status:** Current. Checked against the Biorouter 1.92.0 Crew code on 2026-09-29.
 > **Audience:** IT staff, lab managers, and lab members who prefer a terminal or want to script Crew. You should know how to open a terminal and run a command.
 
 These commands and the desktop app share one background service on your computer, the Biorouter daemon (`biorouterd`), and its saved connections, so both show the same workspace.
@@ -111,7 +111,7 @@ A Linux computer with no desktop session, such as a login node you reach only ov
 `credentials init` works only in a Crew profile that holds no keys yet. A keyring that stops answering after you have joined gives a sentence asking you to start it again, for example by signing in to the computer's desktop. A keyring that is locked or that refused access (code `crew_credential_store_refused`) asks you to unlock it or allow access.
 
 - The passphrase is 1 to 1024 bytes. `credentials init` asks for it twice and sets up nothing if the two differ, because a vault nobody can unlock loses the keys in it.
-- `credentials lock` and `credentials unlock` close and open the vault. The `credentials` commands never start a daemon.
+- `credentials lock` and `credentials unlock` close and open the vault. Like other Crew commands, they start the daemon if needed; `--no-start` refuses instead.
 - If the vault files go missing, restore them from backup. Biorouter never replaces them with a new vault.
 
 ## Join a workspace

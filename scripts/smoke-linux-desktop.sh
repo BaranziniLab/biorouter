@@ -2,22 +2,8 @@
 # Runs INSIDE the DEB and RPM smoke containers; scripts/smoke-test-release-artifacts.sh mounts it.
 # One script for both packages, so the two checks cannot drift apart.
 #
-# It launches the installed desktop app under Xvfb and checks what a first launch really does,
-# not merely that a process is alive after a few seconds (which is also true of an app stuck at
-# a prompt or an error box):
-#
-#   1. Shared daemon (the default): the app must be waiting at the zenity approval prompt, and
-#      SIGTERM must end it and its prompt within a bounded time.
-#   2. Same path, prompt closed without an answer: the app reports a fatal startup error and
-#      must still exit on SIGTERM while that error is on screen. 1.92.0 sat in a synchronous
-#      error box that ignored SIGTERM and hung verify.
-#   3. Per-window daemon (BIOROUTER_SHARED_DAEMON=0): biorouterd must start and the window must
-#      load, and SIGTERM must shut both down.
-#
-# Every wait is bounded. On any failure it prints the app's logs and exits non-zero.
-#
-# LANG and LC_ALL are left unset on purpose. That is the C locale 1.92.0 failed in: zenity could
-# not convert the prompt's non-ASCII text, exited 255, and the app called it a cancellation.
+# Checks silent shared startup, reuse, missing-key replacement, fatal-error shutdown,
+# and per-window startup under Xvfb. Every wait is bounded; LANG stays unset.
 set -euo pipefail
 
 APP="${1:?usage: smoke-linux-desktop.sh <desktop launcher>}"
@@ -32,9 +18,21 @@ say() { printf '[linux-desktop-smoke] %s\n' "$*"; }
 started=()
 home=""
 app_log=""
+daemon_records=()
+runtime_records=()
 cleanup() {
   local p
   for p in "${started[@]}"; do kill -KILL "$p" 2>/dev/null || true; done
+  local runtime
+  for runtime in "${runtime_records[@]}"; do
+    [ -f "$runtime" ] || continue
+    daemon_records+=("$(json_field "$runtime" pid)")
+  done
+  for p in "${daemon_records[@]}"; do
+    [ "$(cat "/proc/$p/comm" 2>/dev/null)" = biorouterd ] || continue
+    kill -TERM "$p" 2>/dev/null || true
+    wait_for 15 gone "$p" || kill -KILL "$p" 2>/dev/null || true
+  done
 }
 trap cleanup EXIT
 
@@ -121,16 +119,22 @@ main_log_has() {
   [ -n "$main_log" ] && grep -q -- "$1" "$main_log"
 }
 
+json_field() {
+  sed -nE 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"?([^",}[:space:]]+)"?.*/\1/p' "$1"
+}
+
 launch() {
   local label="$1"
   shift
   home="/tmp/biorouter-home-$label"
   app_log="/tmp/biorouter-$label.log"
-  rm -rf "$home"
   mkdir -p "$home"
-  env HOME="$home" "$@" "$APP" --no-sandbox >"$app_log" 2>&1 &
+  rm -f "$home/userData/logs/main.log"
+  env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT -u XDG_STATE_HOME HOME="$home" "$@" \
+    "$APP" --no-sandbox --user-data-dir="$home/userData" >"$app_log" 2>&1 &
   app_pid=$!
   started+=("$app_pid")
+  runtime_records+=("$home/.local/state/biorouter/daemon/runtime.json")
   say "$label: started the app as pid $app_pid"
 }
 
@@ -143,29 +147,34 @@ stop_app() {
   say "the app exited after SIGTERM (status $status)"
 }
 
-have_prompt() {
-  prompt_pid="$(descendants_named "$app_pid" zenity)"
-  prompt_pid="${prompt_pid%%$'\n'*}"
-  [ -n "$prompt_pid" ]
+assert_no_prompt() {
+  [ -z "$(descendants_named "$app_pid" zenity)" ] || fail "startup opened a zenity prompt"
 }
 app_gone_or_fatal() { gone "$app_pid" || main_log_has 'Fatal error during startup'; }
-prompt_or_failure() { have_prompt || app_gone_or_fatal; }
-
-wait_for_prompt() {
-  wait_for 45 prompt_or_failure || fail "no approval prompt appeared within 45 s"
-  if ! have_prompt; then
-    gone "$app_pid" && fail "the app exited before showing the approval prompt"
-    fail "startup failed before the approval prompt"
-  fi
-  started+=("$prompt_pid")
-  say "the approval prompt is open (zenity pid $prompt_pid)"
-  # A prompt that could not open exits at once (1.92.0: exit 255 after about 0.2 s).
-  sleep 3
-  alive "$prompt_pid" || fail "the approval prompt closed by itself"
-  alive "$app_pid" || fail "the app exited while its approval prompt was open"
-  if main_log_has 'Fatal error during startup'; then
-    fail "startup failed while the approval prompt was open"
-  fi
+window_ready() {
+  assert_no_prompt
+  main_log_has 'React ready event received' || app_gone_or_fatal
+}
+require_ready() {
+  wait_for "$1" window_ready || fail "the window did not finish loading within $1 s"
+  main_log_has 'Fatal error during startup' && fail "startup failed"
+  gone "$app_pid" && fail "the app exited during startup"
+  assert_no_prompt
+}
+require_key() {
+  local runtime="$home/.local/state/biorouter/daemon/runtime.json"
+  local key="$home/.local/state/biorouter/daemon/user-action-key.json"
+  [ -f "$runtime" ] && [ -f "$key" ] || fail "shared daemon did not save its runtime and key"
+  [ "$(stat -c %a "${key%/*}")" = 700 ] || fail "daemon directory is not mode 700"
+  [ "$(stat -c %a "$key")" = 600 ] || fail "daemon key is not mode 600"
+  daemon_pid="$(json_field "$runtime" pid)"
+  daemon_instance="$(json_field "$runtime" instance_id)"
+  [ -n "$daemon_pid" ] && [ -n "$daemon_instance" ] || fail "invalid daemon identity"
+  [ "$(json_field "$key" instance_id)" = "$daemon_instance" ] || fail "key instance does not match"
+  [ "$(json_field "$key" profile_id)" = "$(json_field "$runtime" profile_id)" ] || fail "key profile does not match"
+  [ "$(json_field "$key" pid)" = "$daemon_pid" ] || fail "key pid does not match"
+  [ "$(cat "/proc/$daemon_pid/comm" 2>/dev/null)" = biorouterd ] || fail "shared daemon is not running"
+  daemon_records+=("$daemon_pid")
 }
 
 # Xvfb first, and wait until it accepts connections rather than guessing a delay.
@@ -180,30 +189,50 @@ if gone "$xvfb_pid"; then
 fi
 say "Xvfb is ready on $DISPLAY"
 
-# 1. Default first launch: the shared daemon asks for an approval secret before it starts.
-launch shared-prompt
-wait_for_prompt
+# First launch and relaunch must reach the window without a prompt.
+rm -rf /tmp/biorouter-home-shared
+launch shared
+require_ready 90
+require_key
+original_pid="$daemon_pid"
+original_instance="$daemon_instance"
 stop_app 20
-wait_for 10 gone "$prompt_pid" \
-  || fail "the approval prompt (zenity pid $prompt_pid) outlived the app by 10 s"
-say "shared daemon: the app waited at its approval prompt and quit on SIGTERM, closing the prompt"
+alive "$original_pid" || fail "shared daemon did not survive app quit"
+launch shared
+require_ready 45
+require_key
+[ "$daemon_pid" = "$original_pid" ] && [ "$daemon_instance" = "$original_instance" ] \
+  || fail "relaunch replaced a usable shared daemon"
+stop_app 20
+say "shared daemon: silent first launch and reuse passed"
 
-# 2. Same path, with the prompt closed without an answer: the fatal startup error must not
-#    leave a process that ignores SIGTERM.
-launch shared-cancelled
-wait_for_prompt
-kill -TERM "$prompt_pid" 2>/dev/null || true
-fatal_logged() { main_log_has 'Fatal error during startup' || gone "$app_pid"; }
-wait_for 20 fatal_logged || fail "closing the approval prompt did not end startup within 20 s"
-main_log_has 'Shared daemon startup cancelled' \
-  || fail "closing the approval prompt was not reported as a cancellation"
-alive "$app_pid" || fail "the app exited instead of reporting that startup was cancelled"
-# Give the error dialog time to open, so SIGTERM arrives while it is on screen.
+# A missing key requires a verified replacement after the starter grace period.
+rm "$home/.local/state/biorouter/daemon/user-action-key.json"
+launch shared
+require_ready 45
+require_key
+[ "$daemon_pid" != "$original_pid" ] && [ "$daemon_instance" != "$original_instance" ] \
+  || fail "missing key did not replace the daemon"
+wait_for 3 gone "$original_pid" || fail "old daemon survived replacement"
+main_log_has 'Replacing the running background service' || fail "replacement was not reported"
+stop_app 20
+say "shared daemon: missing-key replacement passed"
+
+# Startup failure must still accept SIGTERM while its error box is open.
+rm -rf /tmp/biorouter-home-fatal
+mkdir -p /tmp/biorouter-home-fatal/.local/state/biorouter/daemon
+chmod 755 /tmp/biorouter-home-fatal/.local/state/biorouter/daemon
+launch fatal
+fatal_logged() { assert_no_prompt; main_log_has 'Fatal error during startup' || gone "$app_pid"; }
+wait_for 30 fatal_logged || fail "insecure directory did not produce a startup error"
+main_log_has 'Fatal error during startup' || fail "startup error was not logged"
+alive "$app_pid" || fail "app exited before showing its startup error"
 sleep 2
 stop_app 20
-say "shared daemon: after the prompt was closed the app reported it, and quit on SIGTERM"
+say "fatal startup error: bounded SIGTERM passed"
 
 # 3. Per-window daemon: biorouterd starts and the window loads.
+rm -rf /tmp/biorouter-home-per-window
 launch per-window BIOROUTER_SHARED_DAEMON=0
 have_daemon() {
   daemon_pid="$(descendants_named "$app_pid" biorouterd)"
@@ -214,10 +243,7 @@ wait_for 60 have_daemon || fail "biorouterd did not start within 60 s"
 gone "$app_pid" && fail "the app exited during startup"
 started+=("$daemon_pid")
 say "per-window daemon: biorouterd is running (pid $daemon_pid)"
-window_ready() { main_log_has 'React ready event received' || app_gone_or_fatal; }
-wait_for 90 window_ready || fail "the window did not finish loading within 90 s"
-main_log_has 'Fatal error during startup' && fail "startup failed"
-gone "$app_pid" && fail "the app exited during startup"
+require_ready 90
 say "per-window daemon: the window loaded"
 stop_app 20
 wait_for 15 gone "$daemon_pid" || fail "biorouterd (pid $daemon_pid) outlived the app by 15 s"

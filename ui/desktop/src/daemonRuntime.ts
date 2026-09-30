@@ -112,7 +112,7 @@ function privateOwned(location: string, kind: 'file' | 'directory' | 'socket'): 
     !valid ||
     stat.isSymbolicLink() ||
     stat.uid !== process.getuid?.() ||
-    (stat.mode & 0o777) !== (kind === 'directory' ? 0o700 : 0o600)
+    (stat.mode & 0o7777) !== (kind === 'directory' ? 0o700 : 0o600)
   )
     throw new Error(
       `Daemon ${kind} must be private, owned by this user, and not a symbolic link: ${location}`
@@ -127,7 +127,7 @@ function privateJson(location: string): unknown {
     if (
       !stat.isFile() ||
       stat.uid !== process.getuid?.() ||
-      (stat.mode & 0o777) !== 0o600 ||
+      (stat.mode & 0o7777) !== 0o600 ||
       stat.size > 16384 ||
       stat.nlink !== 1
     )

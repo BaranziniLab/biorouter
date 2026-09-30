@@ -113,7 +113,10 @@ fn lower_hex(bytes: &[u8]) -> String {
 }
 
 fn is_user_action_key(key: &str) -> bool {
-    key.len() == 64 && key.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    key.len() == 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Save `key` for the daemon `descriptor` describes, privately (0600 in the 0700 runtime
@@ -176,9 +179,8 @@ pub fn process_is_biorouterd(pid: u32) -> bool {
         let Ok(pid) = libc::c_int::try_from(pid) else {
             return false;
         };
-        let length = unsafe {
-            libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32)
-        };
+        let length =
+            unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
         if length <= 0 {
             return false;
         }
@@ -209,7 +211,7 @@ pub fn private_directory(path: &Path) -> Result<()> {
             {
                 use std::os::unix::fs::PermissionsExt;
                 ensure!(
-                    metadata.permissions().mode() & 0o077 == 0,
+                    metadata.permissions().mode() & 0o7777 == 0o700,
                     "Private daemon directory must have mode 0700: {}",
                     path.display()
                 );
@@ -270,8 +272,8 @@ pub fn read_private<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         ensure!(
-            metadata.permissions().mode() & 0o077 == 0 && metadata.nlink() == 1,
-            "Daemon discovery must be private and have one link"
+            metadata.permissions().mode() & 0o7777 == 0o600 && metadata.nlink() == 1,
+            "Daemon discovery must have mode 0600 and one link"
         );
     }
     let mut bytes = Vec::new();
@@ -313,7 +315,7 @@ fn lock_file(path: &Path) -> Result<File> {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         ensure!(
-            metadata.nlink() == 1 && metadata.permissions().mode() & 0o077 == 0,
+            metadata.nlink() == 1 && metadata.permissions().mode() & 0o7777 == 0o600,
             "Daemon lock must be private and have one link"
         );
     }

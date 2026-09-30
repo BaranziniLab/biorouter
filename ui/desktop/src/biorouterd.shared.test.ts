@@ -356,6 +356,24 @@ describe('shared daemon attachment without an approval secret', () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  it('waits for the winning starter to publish after its own child exits', async () => {
+    const child = makeChild(fresh.pid);
+    mocks.spawn.mockReturnValue(child);
+    let discoveries = 0;
+    mocks.discover.mockImplementation(() => {
+      discoveries += 1;
+      if (discoveries === 1) return undefined;
+      child.exitCode = 1;
+      return discoveries < 6 ? undefined : runtime;
+    });
+    successfulProxy();
+    successfulFetch();
+    await start();
+    expect(mocks.writeKey).not.toHaveBeenCalled();
+    expect(mocks.readKey).toHaveBeenCalledWith(runtime);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   it('reports a child that exited before publishing and leaves it alone', async () => {
     const child = makeChild(fresh.pid);
     mocks.spawn.mockReturnValue(child);
@@ -365,9 +383,16 @@ describe('shared daemon attachment without an approval secret', () => {
       if (discoveries === 2) child.exitCode = 1;
       return undefined;
     });
-    await expect(start()).rejects.toThrow(/failed to start/i);
-    expect(child.kill).not.toHaveBeenCalled();
-    expect(mocks.writeKey).not.toHaveBeenCalled();
+    vi.useFakeTimers();
+    try {
+      const failed = expect(start()).rejects.toThrow(/failed to start/i);
+      await vi.advanceTimersByTimeAsync(10000);
+      await failed;
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(mocks.writeKey).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports a spawn failure from a child with no pid without attempting termination', async () => {

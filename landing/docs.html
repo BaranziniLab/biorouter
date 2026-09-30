@@ -1141,7 +1141,7 @@ biorouter knowledge query "which HLA alleles raise MS risk?" --save</code></pre>
 <h2>Lab workspaces</h2>
 
 <h3>crew</h3>
-<p>Work in a Crew workspace from the terminal: join or host a workspace, manage teams and channels, post and read messages, share files, run agent tasks, and give a chat access to a channel. The commands use the same background service and saved connections as the desktop app. The commands start the service when it is not running, and never ask for a secret.</p>
+<p>Work in a Crew workspace from the terminal: join or host a workspace, manage teams and channels, post and read messages, share files, run agent tasks, and give a chat access to a channel. The commands use the same background service and saved connections as the desktop app. The commands start the service when it is not running and connect silently. Setting up or unlocking a Crew vault still asks for its passphrase.</p>
 <pre><code>biorouter crew [--connection NAME] &lt;COMMAND&gt; [ARGS]</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Commands</th><th>What they do</th></tr></thead>
@@ -2121,7 +2121,7 @@ biorouter knowledge lint  --kb my-kb --fix</code></pre>
 <h2 id="crew-command-line">Command line</h2>
 <p>The <code>biorouter crew</code> commands reach the same workspaces as the app. Add <code>--help</code> after any command for its options.</p>
 <ul>
-  <li>The commands start the background service when it is not running and never ask for a secret. In a script, add <code>--passphrase-stdin</code> to send a vault passphrase as the first line of standard input.</li>
+  <li>The commands start the background service when it is not running and connect silently. Setting up or unlocking a Crew vault still asks for its passphrase. In a script, add <code>--passphrase-stdin</code> to send a vault passphrase as the first line of standard input.</li>
   <li>Add <code>--connection NAME</code> when you have more than one saved connection.</li>
   <li>Write a channel without its <code>#</code>, or quote it: <code>'#methods'</code>. Name people by username, such as <code>@bob</code>. Files, tasks and chats take an ID.</li>
   <li><code>--output-format json</code> prints JSON, an error included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>

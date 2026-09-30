@@ -87,6 +87,7 @@ cross_linux() {
   _cross_need_docker || return 1
   # shellcheck disable=SC2046  # reg_arg is deliberately word-split into two args
   docker run --rm \
+    ${CARGO_BUILD_JOBS:+-e CARGO_BUILD_JOBS} \
     -v "$ROOT":/usr/src/myapp \
     $(_cross_registry_arg biorouter-linux-bullseye-cache) \
     ${CROSS_TARGET_MOUNT:+-v "$CROSS_TARGET_MOUNT":/cross-target} \
@@ -127,6 +128,7 @@ cross_windows() {
   _cross_need_docker || return 1
   # shellcheck disable=SC2046
   docker run --rm \
+    ${CARGO_BUILD_JOBS:+-e CARGO_BUILD_JOBS} \
     -v "$ROOT":/usr/src/myapp \
     $(_cross_registry_arg biorouter-windows-cache) \
     ${CROSS_TARGET_MOUNT:+-v "$CROSS_TARGET_MOUNT":/cross-target} \

@@ -650,7 +650,7 @@ fn observe_refusal(status: StatusCode, code: &str, error: &str) -> (StatusCode, 
     responses(
         (status = 200, description = "Bounded NDJSON room events (one schema instance per line). An `error` frame ends the stream: its `code` is the workspace's refusal code or one of `policy_changed`, `scope_changed`, `channel_access_changed`, `stale_cursor`, `human_authority_required`, `observer_capacity_reached`, `response_too_large` and `observation_refused`, and `clear` asks the client to drop what the observation showed", body = ObserveEvent, content_type = "application/x-ndjson"),
         (status = 400, description = "`crew_request_invalid`: a body that is not JSON, or a channel or cursor that is empty, longer than 128 bytes, or a cursor without its channel", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
@@ -666,7 +666,7 @@ pub async fn observe(
     CrewJson(request): CrewJson<ObserveRequest>,
 ) -> Result<Response, (StatusCode, Json<CrewError>)> {
     person(&headers).map_err(|_| {
-        // A daemon with no approval key says so in the words every Crew route uses there
+        // A daemon with no user-action key says so in the words every Crew route uses there
         // (CROSSCUT-5), with the code the interface reads.
         match user_action_proof(&headers) {
             UserActionProof::NoKeyInstalled => observe_refusal(

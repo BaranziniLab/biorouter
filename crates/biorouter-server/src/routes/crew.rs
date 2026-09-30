@@ -406,7 +406,7 @@ fn saved_connection_view(
     responses(
         (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known", body = CrewConnectionList),
         (status = 400, description = "`crew_request_refused`: Crew's saved settings could not be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -427,7 +427,7 @@ pub async fn list_connections(headers: HeaderMap) -> CrewResult<CrewConnectionLi
     responses(
         (status = 200, description = "A new device key, or the one this profile already prepared. Save the connection with its `preparation_id`", body = PreparedDevice),
         (status = 400, description = "The key could not be saved: `crew_credential_store_unavailable` (no keyring service answers and there is no Crew vault), `crew_credential_store_refused` (the keyring did not let Biorouter use it), or `crew_request_refused`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -444,7 +444,7 @@ pub async fn prepare_device(headers: HeaderMap) -> CrewResult<PreparedDevice> {
     responses(
         (status = 200, description = "The saved connection", body = CrewConnectionView),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a body the daemon refuses (an unknown field included), a setting it does not accept, or a device key it could not keep; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`), or when the institution is not the workspace's own, as its host fixed it (`connection_institution`, `workspace_institution`, `workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read or saved", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
@@ -471,7 +471,7 @@ pub async fn save_connection(
     responses(
         (status = 200, description = "The connection as saved. A save that would change nothing changes nothing, and answers the connection as it stands; a save that keeps the route of a connected connection reconnects it", body = CrewConnectionView),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for an unknown connection, a body the daemon refuses (an unknown field included) or a setting it does not accept; `crew_institution_mismatch` when another connection to the same workspace is under another institution (`connection`, `connection_institution`, `institution`) or the workspace's connections disagree (`institutions`), or when the institution is not the workspace's own, as its host fixed it (`connection_institution`, `workspace_institution`, `workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError)
@@ -498,7 +498,7 @@ pub async fn update_connection(
     responses(
         (status = 200, description = "Removed, with its keys. A workspace that is online is asked to end the connection's grants", body = CrewConnectionRemoved),
         (status = 400, description = "`crew_request_refused`: no saved connection has that ID, or it could not be removed", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 409, description = "`crew_registry_unreadable`: Crew's saved settings on this computer can't be read by this build, so nothing was changed; `detail` holds the reader's own words, for support", body = CrewError)
     ),
     tag = "Crew"
@@ -520,7 +520,7 @@ pub async fn remove_connection(
     responses(
         (status = 200, description = "The connection, connected and verified against its pinned workspace key", body = CrewConnectionView),
         (status = 400, description = "`code` classifies an SSH or workspace-identity failure (`crew_ssh_auth_required`, `crew_ssh_key_refused`, `crew_ssh_host_key_unknown`, `crew_ssh_host_key_changed`, `crew_ssh_unreachable`, `crew_bridge_missing`, `crew_broker_not_running`, `crew_ssh_failed`, `crew_workspace_identity_mismatch`); `error` is the unchanged message, `detail`, when present, OpenSSH's own bounded words for Copy details, and `host`, when present, the host the failure concerns (a jump host's included). Otherwise `crew_institution_mismatch` when the workspace's connections disagree about its institution, `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read, or `crew_request_refused`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -576,7 +576,7 @@ fn connect_refusal(error: anyhow::Error) -> CrewRouteError {
     responses(
         (status = 200, description = "Disconnected. Disconnecting a connection that is not connected changes nothing", body = CrewDisconnected),
         (status = 400, description = "`crew_request_refused`: no saved connection has that ID", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -597,7 +597,7 @@ pub async fn disconnect(
     responses(
         (status = 200, description = "The command that signs in to the connection's server in a terminal", body = AuthenticationPlan),
         (status = 400, description = "`crew_request_refused`: no saved connection has that ID, or it cannot be signed in to this way", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -632,7 +632,7 @@ fn host_start_refusal(error: anyhow::Error) -> CrewRouteError {
     responses(
         (status = 200, description = "The run, started (or the run already under way for this host setup): poll `GET /crew/host/start/{job_id}`. `command` is the exact text that runs", body = HostStartStatus),
         (status = 400, description = "`crew_request_invalid`: a body that is not JSON, or a name, login, route or field outside what the dialog allows (an unknown field included); `crew_request_refused` for an SSH configuration the preflight refuses", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 409, description = "`crew_host_setup_unknown`: no pending host setup with that ID on this computer; `crew_host_setup_used`: it already has a saved connection; `crew_host_start_busy`: too many runs at once", body = CrewError)
@@ -668,7 +668,7 @@ pub async fn host_start(
     params(("job_id" = String, Path, description = "The run `POST /crew/host/start` answered")),
     responses(
         (status = 200, description = "`state` is `running`, `finished` (`result`: `found` with the `text` to preview and pin, exactly as a paste; or a `problem`) or `failed` (`error`: a typed code and a sentence, such as `crew_ssh_auth_required`, `crew_host_start_timed_out` or `crew_host_start_cancelled`)", body = HostStartStatus),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_host_start_not_found`: no such run on this computer", body = CrewError)
     ),
     tag = "Crew"
@@ -695,7 +695,7 @@ pub async fn host_start_state(
     params(("job_id" = String, Path, description = "The run to stop")),
     responses(
         (status = 200, description = "Stopped; stopping a finished run changes nothing", body = CrewCancelled),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 404, description = "`crew_host_start_not_found`: no such run on this computer", body = CrewError)
     ),
     tag = "Crew"
@@ -729,7 +729,7 @@ pub async fn host_start_cancel(
     responses(
         (status = 200, description = "One resolution per selector, in the order sent", body = ResolveResponse),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; invalid selectors (`crew_invalid_selector`), a connection no saved connection matches (`unknown_name`, with `kind` and `text`), no connection named while several are saved (`crew_connection_required`), or the workspace's snapshot could not be read (`crew_request_refused`, with `broker_code` when the workspace refused)", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
@@ -824,7 +824,7 @@ fn empty_object() -> Value {
     responses(
         (status = 200, description = "The workspace's own answer, forwarded unchanged", body = CrewWorkspaceAnswer),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` (with `broker_code` when the workspace itself refused), `crew_mode_mismatch` (`actual_mode`, `expected_mode`: the request required the other privacy mode; nothing was sent), `crew_credential_store_unavailable` or `crew_credential_store_refused` when the device key cannot be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes", body = CrewError),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_typed_run_required`: `run.*` and `worker.*` methods go through the task and grant routes", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
@@ -928,7 +928,7 @@ fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
     responses(
         (status = 200, description = "The task, running. The same `request_id` with the same request answers the same task again", body = RunView),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active, a model Crew cannot isolate) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
@@ -2009,7 +2009,7 @@ async fn publish_run_finished(ledger: &RunLedger, view: &RunView) {
     responses(
         (status = 200, description = "This computer's tasks on the connection, newest first", body = CrewRunList),
         (status = 400, description = "`crew_request_refused`: the task ledger could not be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError)
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
     tag = "Crew"
 )]
@@ -2136,7 +2136,7 @@ fn unix_millis() -> u64 {
     responses(
         (status = 200, description = "Stopped here, and the workspace confirmed revoking the task's grant; or the task had already ended (`already_finished`). Stopping the task's remote jobs is not confirmed", body = CrewRunCancellation),
         (status = 400, description = "`crew_request_refused`: a run ID of another shape, a task that is not this computer's on this connection, or a ledger that could not be read", body = CrewError),
-        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key", body = CrewError),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 503, description = "Stopped here, not confirmed: `crew_revocation_unconfirmed` (the workspace has not confirmed revoking the grant; retry to confirm it) or `crew_cancel_persistence_failed` (the task's status could not be saved; inspect the task before retrying)", body = CrewError)
     ),
     tag = "Crew"
@@ -2401,7 +2401,7 @@ pub struct GrantSessionRequest {
     responses(
         (status = 200, description = "The chat's grant", body = CrewSessionGrant),
         (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a chat that is busy, not open, or can't use Crew, or a grant the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`", body = CrewError),
-        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no approval key), or `crew_session_unavailable`: the chat is out of this caller's reach", body = CrewError),
+        (status = 403, description = "No proof that a person asked (`crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key), or `crew_session_unavailable`: the chat is out of this caller's reach", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
