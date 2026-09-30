@@ -86,7 +86,21 @@
 .doc-page td { padding: 11px 16px 11px 0; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
 .doc-page tr > :last-child { padding-right: 0; }
 .doc-page td code { font-size: 12.5px; }
-@media (max-width: 640px) { .doc-page table { font-size: 14px; } .doc-table-scroll table { min-width: 520px; } }
+/* Code in a table's first column is a name: keep it whole. */
+.doc-page td:first-child code { white-space: nowrap; }
+/* A table wider than the column scrolls sideways; a soft shadow at the
+   scrolling edge says so (the classic scroll-shadow backgrounds). */
+.doc-table-scroll {
+  background:
+    linear-gradient(to right, var(--paper) 30%, rgba(255, 255, 255, 0)),
+    linear-gradient(to left, var(--paper) 30%, rgba(255, 255, 255, 0)) 100% 0,
+    radial-gradient(farthest-side at 0 50%, rgba(42, 37, 32, .14), rgba(42, 37, 32, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(42, 37, 32, .14), rgba(42, 37, 32, 0)) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 36px 100%, 36px 100%, 12px 100%, 12px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+@media (max-width: 640px) { .doc-page table { font-size: 14px; } .doc-page td { padding-right: 12px; } }
 
 /* A note: a quiet line, not a box */
 .note { border-left: 2px solid var(--coral-bar); padding: 2px 0 2px 16px; margin: 0 0 20px; }
@@ -185,3 +199,6 @@
 /* Community note at the foot of the docs sidebar */
 .docs-slack { display: block; margin: 8px 0 0; padding: 14px 10px 0; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); line-height: 1.5; }
 .docs-slack a { display: inline-flex; margin-top: 10px; }
+
+/* Community band at the foot of every docs page */
+.docs-community { margin-top: 64px; }

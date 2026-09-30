@@ -134,14 +134,6 @@ cd -</code></pre>
   <li><a href="#crew">Crew</a>: channels, files and agent tasks shared with your lab. Arrives in the next release.</li>
 </ul>
 
-<div class="community">
-  <div>
-    <p class="label">Community</p>
-    <div class="subtitle" role="heading" aria-level="2">Join the Biorouter Slack.</div>
-    <p class="sub">Ask questions, report problems and share what you build with the researchers and developers who use Biorouter.</p>
-  </div>
-  <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
-</div>
 </div>
 
 <div class="doc-page" id="doc-app">
@@ -636,14 +628,6 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
   </tbody>
 </table></div>
 
-<div class="community" style="margin-top: 56px">
-  <div>
-    <p class="label">Community</p>
-    <div class="subtitle" role="heading" aria-level="2">Join the Biorouter Slack.</div>
-    <p class="sub">Ask about terminal setups and serving Biorouter on a lab server.</p>
-  </div>
-  <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
-</div>
 </div>
 
 <div class="doc-page" id="doc-providers">
@@ -1271,14 +1255,6 @@ biorouter schedule remove --schedule-id review-weekly</code></pre>
   <li>The model's credentials, the extensions and the files the workflow uses, all in place on this computer when the run starts. A workflow that works in a chat can still fail on a schedule if it depends on something only you supply there.</li>
 </ul>
 <p>A failed run is recorded on the schedule, and the schedule runs again at its next time.</p>
-<div class="community" style="margin-top: 56px">
-  <div>
-    <p class="label">Community</p>
-    <div class="subtitle" role="heading" aria-level="2">Join the Biorouter Slack.</div>
-    <p class="sub">Ask about workflows and schedules, and share the ones you write with other labs.</p>
-  </div>
-  <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
-</div>
 </div>
 
 <div class="doc-page" id="doc-knowledge">
@@ -1365,7 +1341,7 @@ biorouter schedule remove --schedule-id review-weekly</code></pre>
     <tr><td>Gray&nbsp;literature</td><td>1&nbsp;arc</td><td><code>.gov</code> and <code>.edu</code> hosts, WHO, CDC, NIH, FDA, ClinicalTrials.gov, EMA and standards bodies.</td></tr>
     <tr><td>Web</td><td>Dashed</td><td>Any other page.</td></tr>
     <tr><td>Personal</td><td>Dashed</td><td>Pasted text with no stated source.</td></tr>
-    <tr><td>Retracted</td><td>Solid</td><td>Crossref or OpenAlex mark the work retracted, whatever its tier.</td></tr>
+    <tr><td>Retracted</td><td>Solid</td><td>Crossref or OpenAlex mark it retracted, whatever its tier.</td></tr>
   </tbody>
 </table></div>
 <p>A graph with nodes and no edges means the pages hold no links, and a lint reports each of them as an orphan.</p>
@@ -1716,14 +1692,6 @@ biorouter crew tasks start methods --text "Summarize this week" \
 <!-- crew-next-release: in the release that ships Crew, drop "From the next release on," and start this paragraph at "Take". -->
 <p>From the next release on, take <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm on the <a href="https://github.com/BaranziniLab/biorouter/releases">release page</a> and install it in <code>~/.local/bin</code> in each account. It needs no administrator rights. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the install commands, the full requirements and the upgrade steps.</p>
 
-<div class="community" style="margin-top: 56px">
-  <div>
-    <p class="label">Community</p>
-    <div class="subtitle" role="heading" aria-level="2">Join the Biorouter Slack.</div>
-    <p class="sub">Ask about Crew and about hosting a workspace for your lab.</p>
-  </div>
-  <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
-</div>
 </div>
 
 <div class="doc-page" id="doc-agentloop">
@@ -1975,6 +1943,14 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 <p>The source is on <a href="https://github.com/BaranziniLab/biorouter">GitHub</a>, under the Apache 2.0 license.</p>
 </div>
     <nav class="doc-pager" id="doc-pager" aria-label="Previous and next page"></nav>
+    <section class="community docs-community" aria-labelledby="docs-community-h">
+      <div>
+        <p class="label">Community</p>
+        <h2 id="docs-community-h">Questions? Ask on Slack.</h2>
+        <p class="sub" id="docs-community-sub">Researchers and the developers who build Biorouter answer there.</p>
+      </div>
+      <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
+    </section>
   </main>
 
   <aside class="docs-toc" aria-label="On this page"><h2>On this page</h2><ul id="docs-toc"></ul></aside>
@@ -2005,6 +1981,9 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   var sideBody = document.getElementById('docs-side-body');
   var menuLabel = document.getElementById('docs-menu-label');
   var current = null;
+  var COMMUNITY = {"cli": "Ask about terminal setups and serving Biorouter on a lab server.", "crew": "Ask about Crew and about hosting a workspace for your lab.", "getstarted": "Ask questions, report problems and share what you build with the researchers and developers who use Biorouter.", "workflows": "Ask about workflows and schedules, and share the ones you write with other labs."};
+  var communitySub = document.getElementById('docs-community-sub');
+  var communityDefault = communitySub ? communitySub.textContent : '';
 
   function slug(t) { return t.toLowerCase().replace(/<[^>]+>/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60); }
 
@@ -2048,6 +2027,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     buildToc(page);
     buildPager(name);
     if (menuLabel) menuLabel.textContent = titleOf(name);
+    if (communitySub) communitySub.textContent = COMMUNITY[name] || communityDefault;
     document.title = titleOf(name) + ' · Biorouter docs';
     if (!keepScroll) window.scrollTo(0, 0);
     return true;

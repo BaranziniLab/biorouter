@@ -116,7 +116,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .brand .word { font-family: var(--brand-font); font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
 .brand .word b { font-weight: 600; color: var(--navy); }
 .brand .word i { font-style: normal; color: var(--coral); }
-.nav { display: flex; align-items: center; gap: 28px; margin-left: auto; font-size: 14px; }
+.nav { display: flex; align-items: center; gap: clamp(14px, 1.9vw, 28px); margin-left: auto; font-size: 14px; white-space: nowrap; }
 .nav a { color: var(--muted); padding: 6px 0; position: relative; }
 .nav a:hover { color: var(--ink); text-decoration: none; }
 .nav a[aria-current="page"] { color: var(--ink); }
@@ -138,6 +138,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 }
 .slack-link:hover { background: var(--coral); color: #fff !important; text-decoration: none; }
 .slack-link svg { width: 14px; height: 14px; flex: none; }
+.nav .slack-link { padding: 0 12px; color: var(--coral); }
 .nav .slack-link::after { display: none; }
 .header-slack { display: none; }
 
