@@ -545,10 +545,15 @@ async function processName(pid: number): Promise<string | undefined> {
     }
   }
   return new Promise((resolve) => {
-    execFile('ps', ['-o', 'comm=', '-p', String(pid)], { timeout: 5000 }, (error, stdout) => {
-      const name = String(stdout ?? '').trim();
-      resolve(error || !name ? undefined : path.basename(name));
-    });
+    execFile(
+      'ps',
+      ['-o', 'comm=', '-p', String(pid)],
+      { timeout: 5000, windowsHide: true },
+      (error, stdout) => {
+        const name = String(stdout ?? '').trim();
+        resolve(error || !name ? undefined : path.basename(name));
+      }
+    );
   });
 }
 
