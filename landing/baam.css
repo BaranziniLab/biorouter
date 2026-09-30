@@ -1,0 +1,408 @@
+/* BAAM, the Biorouter AI Agent Marketplace.
+   Every entry is a row on the page, separated by hairlines, that opens in
+   place. Class names and ids here are read by build-registry.mjs and by the
+   browser tests in landing/scripts, so restyle them but never rename them.
+   Tokens come from site.css. */
+
+/* Anything the page hides with the hidden attribute stays hidden, whatever
+   display a class gives it. */
+#main [hidden] { display: none; }
+
+/* ── Hero ───────────────────────────────────────────────── */
+.baam-hero { padding-top: 88px; }
+.baam-hero .display { font-size: clamp(38px, 5.4vw, 70px); letter-spacing: -0.055em; text-wrap: balance; }
+/* Balanced on its own: Chrome does not balance across the <br>, which left
+   "workflows." alone on the last line of a phone. */
+.baam-hero .display .soft { display: block; text-wrap: balance; }
+.baam-hero .lede { color: var(--muted); max-width: 640px; }
+/* Slack near the top as well as in the band at the foot of the page. */
+.baam-slack { margin: 26px 0 0; }
+.baam-slack .text-link { gap: 28px; }
+@media (max-width: 760px) { .baam-hero { padding-top: 48px; } }
+
+/* ── Search and shelf tabs ──────────────────────────────── */
+.baam-catalog { padding-top: 64px; }
+.baam-search-wrap { position: relative; display: block; max-width: 780px; }
+.baam-search-wrap svg {
+  position: absolute; left: 0; top: 50%; width: 20px; height: 20px; margin-top: -10px;
+  color: var(--faint); pointer-events: none;
+  fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round;
+}
+#baam-search {
+  display: block; width: 100%; height: 60px; padding: 0 4px 0 34px; margin: 0;
+  font: inherit; font-size: 21px; letter-spacing: -0.02em; color: var(--ink);
+  background: transparent; border: 0; border-bottom: 1px solid var(--line-2); border-radius: 0;
+  outline: none; -webkit-appearance: none; appearance: none;
+  transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
+}
+#baam-search::placeholder { color: var(--faint); opacity: 1; }
+#baam-search:hover { border-bottom-color: var(--ghost); }
+#baam-search:focus { border-bottom-color: var(--coral); box-shadow: 0 1px 0 var(--coral); }
+#baam-search:focus-visible { outline: none; }
+@media (max-width: 640px) { #baam-search { height: 54px; font-size: 18px; padding-left: 30px; } .baam-search-wrap svg { width: 18px; height: 18px; margin-top: -9px; } }
+
+.baam-tabs { display: flex; gap: 34px; margin-top: 44px; border-bottom: 1px solid var(--line); }
+.baam-tab {
+  position: relative; display: inline-flex; align-items: baseline; gap: 8px;
+  padding: 0 0 14px; margin: 0; background: none; border: 0; cursor: pointer;
+  font-size: 15px; color: var(--muted); white-space: nowrap;
+  transition: color var(--dur-fast) ease;
+}
+.baam-tab:hover { color: var(--ink); }
+.baam-tab.active { color: var(--ink); }
+.baam-tab.active::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  border-radius: 2px 2px 0 0; background: var(--coral-bar);
+}
+.baam-tab:focus-visible { outline-offset: 4px; }
+.tab-count { font-size: 13px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { .baam-tabs { gap: 24px; } .baam-tab { font-size: 14.5px; } }
+
+/* ── Facets ─────────────────────────────────────────────── */
+.shelf { position: relative; }
+.shelf-bar { display: flex; align-items: flex-start; gap: 14px 28px; padding-top: 22px; }
+/* The count is the quiet note at the right of the tab row: anchored to the
+   shelf's top edge, which is the tab row's hairline, so the chips below can
+   take the whole width. */
+.shelf-count {
+  position: absolute; right: 0; bottom: 100%; margin: 0 0 14px;
+  font-size: 13px; line-height: 24px; color: var(--subtle); white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.shelf-count a { color: var(--subtle); border-bottom: 1px solid var(--coral-bar); }
+.shelf-count a:hover { color: var(--ink); text-decoration: none; }
+.filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 0; min-width: 0; }
+/* Quiet facets: an inactive chip is its word, like the tabs; only the active
+   chip wears the app's active-row fill. */
+.fchip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 7px; margin: 0;
+  border: 0; border-radius: var(--r-inner); background: none;
+  font-size: 13px; line-height: 1; color: var(--muted); cursor: pointer; white-space: nowrap;
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
+}
+.fchip:hover { color: var(--ink); background: var(--medium); }
+.fchip.active { color: var(--ink); background: var(--sidebar-active); }
+.fchip:active { transform: scale(0.98); }
+.fchip:focus-visible { outline-offset: 1px; }
+.fchip[data-facet="privacy"][data-match="private"]::before {
+  content: ''; width: 11px; height: 11px; flex: none; background: currentColor;
+  -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat;
+}
+.chip-sep { width: 1px; height: 16px; margin: 0 5px; background: var(--line); }
+@media (max-width: 640px) {
+  .baam-catalog { padding-top: 44px; }
+  .baam-tabs { margin-top: 32px; }
+  /* The count shows only while a filter is on, so it sits under the chips
+     and never moves them. */
+  .shelf-bar { flex-direction: column; gap: 10px; padding-top: 18px; }
+  .shelf-count { position: static; margin: 0; line-height: 1.4; }
+  /* One row that scrolls sideways, edge to edge, instead of a wall of chips. */
+  .filter-chips {
+    align-self: stretch; flex-wrap: nowrap; gap: 0;
+    overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter);
+    scroll-padding: 0 var(--gutter);
+  }
+  .filter-chips::-webkit-scrollbar { display: none; }
+  .fchip { flex: none; height: 32px; padding: 0 9px; }
+  .chip-sep { flex: none; margin: 0 5px; }
+}
+
+/* ── Group heads ────────────────────────────────────────── */
+/* Each group opens on the hairline of its first row. The head puts the
+   coral lead segment of site.css's .rule-line on that hairline, so it sits
+   on whichever row the filter leaves first. */
+.group-head, .subsection-title {
+  position: relative;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
+  padding: 48px 0 14px; margin: 0;
+  font-size: 14px; line-height: 1.4; color: var(--ink);
+}
+.group-head::after, .subsection-title::after {
+  content: ''; position: absolute; z-index: 1; left: 0; bottom: -1px;
+  width: 40px; height: 2px; background: var(--coral-bar);
+}
+.group-head h2, .subsection-title h2 { font-size: 14px; font-weight: 400; line-height: 1.4; margin: 0; }
+.group-head p { margin: 0 0 0 auto; font-size: 13px; color: var(--subtle); }
+.group-head .n, .subsection-title .sub-count { font-size: 13px; color: var(--subtle); font-variant-numeric: tabular-nums; }
+.subsection-title .sub-note { font-size: 13px; color: var(--subtle); }
+.subsection-title .sub-link { margin-left: auto; }
+.group-head .sub-link, .subsection-title .sub-link { font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--coral-bar); }
+.group-head .sub-link:hover, .subsection-title .sub-link:hover { color: var(--ink); text-decoration: none; }
+@media (max-width: 640px) {
+  .group-head, .subsection-title { padding-top: 40px; }
+  .group-head p { margin-left: 0; flex-basis: 100%; }
+  .subsection-title .sub-link { margin-left: 0; }
+}
+
+/* ── Rows ───────────────────────────────────────────────── */
+/* Every row carries a hairline above it and a shadow line below it; between
+   two rows the two coincide, and the last visible row is closed off by its
+   own, whatever the filter leaves. */
+.ext-card, .skill-card, .wf-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 50px minmax(0, 1fr) auto auto auto;
+  align-items: start;
+  padding: 22px 0;
+  background: var(--paper);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 1px 0 var(--line);
+  min-width: 0;
+}
+/* Only baam.js opens a row, so only a page running it shows the pointer. */
+.js .ext-card, .js .skill-card, .js .wf-card { cursor: pointer; }
+.ext-card-header, .ext-footer, .skill-card-header, .skill-footer, .wf-card-header { display: contents; }
+.feat-eyebrow { display: none; }
+
+/* The open row wears the app's active rail. */
+.ext-card.open::before, .skill-card.open::before, .wf-card.open::before {
+  content: ''; position: absolute; left: -14px; top: 26px; width: 2px; height: 16px;
+  border-radius: 2px; background: var(--coral-bar);
+}
+.skill-card.open::before { top: 22px; }
+
+/* The glyph */
+.icon-tile {
+  grid-column: 1; grid-row: 1 / span 3;
+  width: 32px; height: 32px; margin-top: -4px;
+  display: grid; place-items: center;
+  border-radius: var(--r-element); background: var(--muted-ground); color: var(--muted);
+}
+.icon-tile svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-tile svg.glyph { stroke-width: 1.4; }
+.ext-card[data-privacy="private"] .icon-tile { background: var(--navy-wash); color: var(--navy); }
+
+/* Name, then org and version */
+.ext-meta, .skill-meta, .wf-meta {
+  grid-column: 2; grid-row: 1; min-width: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px;
+}
+.ext-card h3, .skill-card h3, .wf-card h3 {
+  font-size: 17px; font-weight: 400; letter-spacing: -0.015em; line-height: 1.4;
+  color: var(--ink); overflow-wrap: anywhere;
+}
+.ext-org, .skill-type, .wf-org { font-size: 13px; line-height: 1.4; color: var(--subtle); }
+
+/* Two lines of description on a closed row. clampDesc() in baam.js splits
+   the text at the end of the second line into .d-lead and .d-rest, so the
+   paragraph still holds the whole description (the search reads it) and an
+   open row shows all of it. Without JS every row shows its full text. */
+.ext-desc, .skill-desc, .wf-desc {
+  grid-column: 2; grid-row: 2; max-width: 760px; margin: 6px 0 0;
+  font-size: 14.5px; line-height: 1.6; color: var(--muted);
+}
+:not(.open) > .clamped > .d-rest { display: none; }
+:not(.open) > .clamped > .d-lead::after { content: '\2026'; }
+.ext-desc { --accent: var(--ink); }
+.ext-desc a, .skill-desc a { color: var(--ink); border-bottom: 1px solid var(--coral-bar); }
+.ext-desc code, .skill-desc code, .wf-desc code { font-size: 12.5px; }
+.ext-desc strong, .skill-desc strong { font-weight: 400; color: var(--ink); }
+
+/* The tag row: privacy badge, then institution, then subject tags. ONE line:
+   trimTagRows() in baam.js hides from the end whatever does not fit. */
+.ext-tags, .skill-tags, .wf-tags {
+  grid-column: 2; grid-row: 3; min-width: 0; margin-top: 12px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.ext-tags { max-height: 20px; overflow: hidden; }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 7px; border-radius: var(--r-inner);
+  border: 1px solid var(--line); background: var(--paper);
+  font-size: 12px; line-height: 1; color: var(--muted); white-space: nowrap;
+}
+/* Privacy badges follow the app: Private is the padlock on the muted ground,
+   Public is the quiet word. They never animate. */
+.tag.private { border-color: transparent; background: var(--muted-ground); color: var(--ink); }
+.tag.private::before {
+  content: ''; width: 10px; height: 10px; flex: none; background: currentColor;
+  -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat;
+}
+.tag.public { border-color: transparent; background: var(--wash); color: var(--muted); }
+.tag.affiliation { border-color: transparent; background: var(--navy-wash); color: var(--navy); }
+
+/* Actions, at the right of the row */
+.ext-gh-link {
+  grid-column: 3; grid-row: 1 / span 3; align-self: center; margin-left: 24px;
+  width: 34px; height: 34px; display: grid; place-items: center;
+  border-radius: var(--r-element); color: var(--muted);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.ext-gh-link svg { width: 16px; height: 16px; fill: currentColor; stroke: none; }
+.ext-gh-link:hover { background: var(--medium); color: var(--ink); text-decoration: none; }
+.brxt-chip, .skill-dl-btn {
+  grid-column: 4; grid-row: 1 / span 3; align-self: center; margin-left: 8px;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 13px; border-radius: var(--r-element);
+  border: 1px solid var(--line-2); background: var(--paper); color: var(--ink);
+  font-size: 13.5px; line-height: 1; white-space: nowrap;
+  transition: border-color var(--dur-fast) ease, background var(--dur-fast) ease, transform var(--dur-fast) var(--ease);
+}
+.brxt-chip svg, .skill-dl-btn svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.brxt-chip:hover, .skill-dl-btn:hover { border-color: var(--coral); color: var(--coral); text-decoration: none; }
+.brxt-chip:active, .skill-dl-btn:active { transform: scale(0.98); }
+.row-toggle {
+  grid-column: 5; grid-row: 1 / span 3; align-self: center; margin: 0 0 0 6px; padding: 0;
+  width: 34px; height: 34px; display: grid; place-items: center;
+  border: 0; border-radius: var(--r-element); background: none; color: var(--faint); cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.row-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; transition: transform var(--dur-med) var(--ease); }
+.ext-card:hover > .row-toggle, .skill-card:hover > .row-toggle, .wf-card:hover > .row-toggle, .row-toggle:focus-visible { color: var(--ink); background: var(--medium); }
+.open > .row-toggle { color: var(--ink); }
+.open > .row-toggle svg { transform: rotate(180deg); }
+
+/* Skills are denser: the name, one line, and the tags only when open */
+.skill-card { grid-template-columns: 50px minmax(0, 1fr) auto auto; padding: 18px 0; }
+.skill-card .icon-tile { grid-row: 1 / span 3; }
+.skill-desc { margin-top: 3px; max-width: 720px; }
+.skill-tags { display: none; }
+.skill-card.open .skill-tags { display: flex; }
+.skill-card .skill-dl-btn { grid-column: 3; grid-row: 1 / span 2; }
+.skill-card > .row-toggle { grid-column: 4; grid-row: 1 / span 2; }
+.skill-card .skill-meta { gap: 2px 10px; }
+
+/* The collapsed skill groups show their first eight rows */
+.skill-grid.collapsed > .skill-card:nth-child(n+9) { display: none; }
+
+/* ── The open panel ─────────────────────────────────────── */
+.row-detail {
+  grid-column: 2 / -1; grid-row: 4; min-width: 0;
+  margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line);
+  cursor: auto; animation: baam-open var(--dur-med) var(--ease);
+}
+@keyframes baam-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.detail-list { margin: 0; display: grid; gap: 18px; }
+.detail-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 4px 28px; }
+.detail-row dt { font-size: 13px; line-height: 1.6; color: var(--subtle); padding-top: 1px; }
+.detail-row dd { margin: 0; max-width: 740px; font-size: 14.5px; line-height: 1.65; color: var(--ink-2); overflow-wrap: anywhere; }
+.detail-row dd p { margin: 0; }
+.detail-row dd p + p, .detail-row dd ul + p { margin-top: 8px; }
+.detail-row ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.detail-row .asks li { color: var(--ink); }
+.detail-row .asks li::before { content: '\201C'; color: var(--faint); }
+.detail-row .asks li::after { content: '\201D'; color: var(--faint); }
+.detail-row .src li { padding-left: 14px; position: relative; }
+.detail-row .src li::before { content: ''; position: absolute; left: 0; top: 0.8em; width: 5px; height: 1px; background: var(--ghost); }
+.detail-row code, .detail-row .tools code {
+  font-size: 12.5px; line-height: 1.5; color: var(--ink);
+  background: var(--wash); border-radius: var(--r-inner); padding: 2px 6px;
+}
+.detail-row pre code { padding: 0; background: none; border-radius: 0; font-size: inherit; line-height: inherit; }
+.detail-row .tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail-row .tools code { overflow-wrap: anywhere; }
+.detail-row .fine { font-size: 13.5px; color: var(--muted); }
+.detail-row .how li { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 2px 14px; }
+.detail-row .how .k { color: var(--subtle); font-size: 13px; padding-top: 1px; }
+.detail-row .how a { border-bottom: 1px solid var(--coral-bar); }
+.detail-row .how a:hover { text-decoration: none; color: var(--coral); }
+.detail-links { display: flex; flex-wrap: wrap; gap: 14px 36px; margin: 26px 0 4px 178px; }
+.detail-links .text-link { font-size: 14px; }
+.wf-yaml {
+  margin: 0; max-height: 360px; overflow: auto;
+  background: var(--wash); border-radius: var(--r-container);
+  padding: 16px 18px; font-size: 12.5px; line-height: 1.7; color: var(--ink);
+  white-space: pre;
+}
+/* The file, line by line: a long line wraps with a hanging indent, so a
+   wrapped value never starts at column 0 and reads as a key. */
+.wf-yaml.lines { white-space: pre-wrap; max-height: none; }
+.wf-yaml .yl { display: block; padding-left: 4ch; text-indent: -4ch; }
+@media (max-width: 760px) {
+  .detail-row { grid-template-columns: minmax(0, 1fr); }
+  .detail-links { margin-left: 0; }
+  .wf-yaml { max-height: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .row-detail { animation: none; }
+  .row-toggle svg { transition: none; }
+}
+
+/* ── Show more and nothing found ────────────────────────── */
+.show-all-btn, .show-more-btn {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  margin: 0; padding: 17px 0; border: 0; border-top: 1px solid var(--line); background: none;
+  font-size: 14px; color: var(--ink); cursor: pointer; text-align: left;
+}
+.show-all-btn .chev, .show-more-btn .chev { width: 14px; height: 14px; color: var(--coral); transition: transform var(--dur-med) var(--ease); }
+.show-all-btn.open .chev, .show-more-btn.open .chev { transform: rotate(180deg); }
+.show-all-btn:hover .lbl, .show-more-btn:hover .lbl { color: var(--coral); }
+.no-results { padding: 36px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 15px; }
+.no-results a { color: var(--ink); border-bottom: 1px solid var(--coral-bar); white-space: nowrap; }
+.no-results a:hover { color: var(--coral); text-decoration: none; }
+.noscript-note { margin: 16px 0 0; font-size: 14px; color: var(--muted); }
+.noscript-note a { color: var(--ink); border-bottom: 1px solid var(--coral-bar); }
+
+/* ── Workflows shelf ────────────────────────────────────── */
+.shelf-intro { max-width: 640px; margin: 0; padding-top: 30px; font-size: 16px; line-height: 1.65; color: var(--muted); }
+.shelf-intro b { font-weight: 400; color: var(--ink); }
+.wf-card .wf-tags { margin-top: 12px; }
+.wf-card .skill-dl-btn { grid-column: 4; }
+
+/* ── Contribute ─────────────────────────────────────────── */
+.contrib { margin: 0; padding: 0; list-style: none; }
+/* The head sits on the first row's hairline, like the catalog's group heads,
+   so the section opens on one line with its coral lead. */
+.contribute .group-head { padding-top: 0; }
+.contrib li { border-bottom: 1px solid var(--line); }
+.contrib li:first-child { border-top: 1px solid var(--line); }
+.contrib a {
+  display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) 20px; gap: 6px 28px; align-items: baseline;
+  padding: 20px 0; color: var(--ink);
+}
+.contrib a:hover { text-decoration: none; }
+.contrib a:hover .k { text-decoration: underline; text-decoration-color: var(--coral-bar); text-underline-offset: 5px; text-decoration-thickness: 1px; }
+.contrib .k { font-size: 16px; letter-spacing: -0.01em; }
+.contrib .k small { display: block; margin-top: 4px; font-size: 14px; color: var(--muted); letter-spacing: 0; }
+.contrib code { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.contrib .arrow { grid-column: 3; color: var(--coral); text-align: right; }
+.contribute { padding-bottom: 136px; }
+@media (max-width: 680px) {
+  .contrib a { grid-template-columns: minmax(0, 1fr) 20px; }
+  .contrib code { grid-column: 1; grid-row: 2; }
+  .contrib .arrow { grid-column: 2; grid-row: 1; }
+  .contribute { padding-bottom: 88px; }
+}
+
+/* ── Tablets: the text takes the whole width ─────────────── */
+/* Below 860px three controls beside the text would squeeze it into a narrow
+   column. The chevron moves up beside the name, and the GitHub link and the
+   download move to the end of the tag row. */
+@media (max-width: 860px) {
+  .ext-card, .wf-card { padding: 20px 0; }
+  .ext-meta, .wf-meta { grid-column: 2 / 5; grid-row: 1; }
+  .ext-card > .row-toggle, .wf-card > .row-toggle { grid-column: 5; grid-row: 1; align-self: start; margin: -6px -6px 0 8px; }
+  .ext-desc, .wf-desc { grid-column: 2 / -1; grid-row: 2; }
+  .ext-tags, .wf-tags { grid-column: 2; grid-row: 3; align-self: center; }
+  .ext-gh-link { grid-column: 3; grid-row: 3; align-self: center; margin: 12px 0 0 16px; }
+  .brxt-chip, .wf-card .skill-dl-btn { grid-column: 4 / 6; grid-row: 3; align-self: center; justify-self: end; margin: 12px 0 0 8px; }
+  .ext-card > .row-detail, .wf-card > .row-detail { grid-column: 2 / -1; grid-row: 4; }
+  .ext-card.open::before, .wf-card.open::before { top: 24px; }
+}
+
+/* Phones: the glyph goes and its column closes to nothing, and the actions
+   move under the tags so the tag row keeps its width. */
+@media (max-width: 640px) {
+  .ext-card, .wf-card { grid-template-columns: 0 auto auto minmax(0, 1fr) auto; }
+  .ext-card .icon-tile, .wf-card .icon-tile, .skill-card .icon-tile { display: none; }
+  .ext-tags, .wf-tags { grid-column: 2 / -1; align-self: start; }
+  .brxt-chip, .wf-card .skill-dl-btn { grid-column: 2; grid-row: 4; align-self: start; justify-self: start; margin: 16px 0 0; }
+  .ext-gh-link { grid-column: 3; grid-row: 4; align-self: start; margin: 16px 0 0 6px; }
+  .ext-card > .row-detail, .wf-card > .row-detail { grid-row: 5; }
+
+  /* The name shares its line with the .zip and the chevron; the type line
+     under it takes the whole width, so a long /slug never breaks. */
+  .skill-card { grid-template-columns: minmax(0, 1fr) auto auto; padding: 16px 0; }
+  .skill-card .skill-meta { display: contents; }
+  .skill-card h3 { grid-column: 1; grid-row: 1; }
+  .skill-card .skill-type { grid-column: 1 / -1; grid-row: 2; margin-top: 2px; }
+  .skill-desc { grid-column: 1 / -1; grid-row: 3; }
+  .skill-tags { grid-column: 1 / -1; grid-row: 4; }
+  .skill-card .skill-dl-btn { grid-column: 2; grid-row: 1; align-self: start; margin: -4px 0 0 12px; height: 32px; padding: 0 11px; }
+  .skill-card > .row-toggle { grid-column: 3; grid-row: 1; align-self: start; margin: -5px -6px 0 4px; }
+  .skill-card > .row-detail { grid-column: 1 / -1; grid-row: 5; }
+
+  .ext-card.open::before, .skill-card.open::before, .wf-card.open::before { left: -12px; }
+}

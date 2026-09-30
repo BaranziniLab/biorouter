@@ -1,0 +1,86 @@
+<div class="doc-page" id="doc-apps">
+<h1>Built apps</h1>
+<p class="doc-lede">Agent Drafter builds apps: a small web page with its own agent, which fills panels, draws charts and asks you questions while you use it.</p>
+
+<h2 id="apps-what">What an app is</h2>
+<p>An app is a TypeScript front end (<code>index.html</code> and <code>src/main.ts</code>) with a <code>manifest.json</code> that sets its agent: instructions, model, extensions, skills, knowledge bases and what the app may do. Apps live in <code>~/.config/biorouter/agent_drafter/&lt;id&gt;/</code>. Biorouter's background service serves each one at <code>/apps/&lt;id&gt;/</code> and connects the page to its agent over a WebSocket.</p>
+<p>Build one when a task needs a working surface rather than a transcript: a cohort reviewer, a variant workbench, a knowledge graph explorer, a dashboard for one lab. To see every app you have, open the sidebar's Components group and choose <strong>Built apps</strong>.</p>
+
+<h2 id="apps-drive">How the agent drives the app</h2>
+<p>Each app's agent gets a set of tools that act on the page. A call becomes a message on the app's socket and the page's SDK applies it. What you do in the page, such as answering a form or selecting a row, comes back over the same socket.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Tool</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>ui_describe</code></td><td>Lists the page's regions, panels, declared actions and signals, and state. The agent calls it first.</td></tr>
+    <tr><td><code>ui_panel</code>, <code>ui_render</code></td><td>Open a panel, or render widgets (cards, tables, stats, forms, Markdown) into a target.</td></tr>
+    <tr><td><code>ui_patch</code></td><td>Change rendered widgets in place by id, keeping scroll position and typed input.</td></tr>
+    <tr><td><code>ui_chart</code>, <code>ui_graph</code>, <code>ui_figure</code></td><td>Draw a chart, a network graph, or an Auto Visualiser figure such as a volcano plot or a survival curve.</td></tr>
+    <tr><td><code>ui_html</code></td><td>Render HTML that Biorouter has cleaned of scripts and forms. Off unless the app allows it.</td></tr>
+    <tr><td><code>ui_highlight</code>, <code>ui_notify</code>, <code>ui_suggest</code></td><td>Point at a region, show a short message, or offer up to five next steps the user can choose or ignore.</td></tr>
+    <tr><td><code>ui_theme</code>, <code>ui_layout</code></td><td>Switch the theme pack, accent, light or dark mode and density, or rearrange the layout.</td></tr>
+    <tr><td><code>ui_state</code>, <code>ui_patch_state</code></td><td>Read and change the shared state the page is bound to.</td></tr>
+    <tr><td><code>ui_ask</code></td><td>Show a form and wait for the answer. See <a href="#apps-ask">Questions that wait</a>.</td></tr>
+    <tr><td><code>ui_subscribe</code></td><td>Listen to signals the app declares, such as a row being selected.</td></tr>
+    <tr><td><code>app_call</code>, <code>emit_result</code></td><td>Call an action the app registered, or return a structured result the app is waiting for.</td></tr>
+    <tr><td><code>consult</code></td><td>Ask one of the app's worker profiles a question that stands on its own. Works only when the app declares worker profiles; otherwise it says there are none.</td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="apps-regions">Regions</h2>
+<p>An app marks the places the agent may write with a region attribute:</p>
+<pre><code>&lt;section data-br-region="results"&gt;
+&lt;/section&gt;</code></pre>
+<p>The agent finds regions with <code>ui_describe</code> and writes to <code>@region:results</code>. It can also target <code>@panel:ID</code>, <code>@main</code>, <code>@chat</code> or a CSS selector such as <code>#out</code>. Panels need no region: every app has a dock for them. Up to 12 panels stay open by default, and the oldest closes when a new one opens.</p>
+
+<h2 id="apps-ask">Questions that wait</h2>
+<p><code>ui_ask</code> shows a form in the page and holds the tool call until you submit it. The answers come back as the tool's result, so the agent can act on them in the same turn. Many apps have no chat box, so the agent asks this way rather than in prose.</p>
+<p>A form holds up to 24 fields and waits up to 300 seconds by default. If the page closes or reconnects, the waiting question is released. Unlike <code>ui_ask</code>, <code>ui_suggest</code> never makes the turn wait.</p>
+
+<h2 id="apps-archetypes">Archetypes</h2>
+<p>A new app starts from a working archetype rather than a blank page. When none is named, one is picked from the app's title and description, and <code>dashboard</code> is the fallback. Each starter runs as it is and passes the build checks; all but <code>chat</code> declare their own actions and signals.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Archetype</th><th>Shape</th></tr></thead>
+  <tbody>
+    <tr><td><code>explorer</code></td><td>A network graph the agent draws, with an inspector and search.</td></tr>
+    <tr><td><code>dashboard</code></td><td>A grid of key numbers bound to state, with a refresh action.</td></tr>
+    <tr><td><code>workbench</code></td><td>A table, row selection and a detail pane.</td></tr>
+    <tr><td><code>wizard</code></td><td>A form in stages that saves as it goes, then submits.</td></tr>
+    <tr><td><code>canvas</code></td><td>A drawing surface with actions the agent calls.</td></tr>
+    <tr><td><code>chat</code></td><td>A plain conversation panel, picked only when the description asks for a chat or an assistant.</td></tr>
+  </tbody>
+</table></div>
+<p>An app starts with Biorouter's look. Six theme packs are available: <code>biorouter</code>, <code>clinical</code>, <code style="white-space: nowrap">lab-notebook</code>, <code>terminal</code>, <code>journal</code> and <code>midnight</code>.</p>
+
+<h2 id="apps-build">Build and export an app</h2>
+<ol class="steps">
+  <li><strong>Ask for it</strong> In a chat, describe the app, for example “Use Agent Drafter to build a dashboard app for this cohort.” Agent Drafter is on by default.</li>
+  <li><strong>Let it build</strong> The agent creates the app from an archetype, edits its source, sets its model and tools, then builds it. <code>build_app</code> bundles <code>src/main.ts</code> and runs the app's checks; an error must be fixed before the app launches or exports.</li>
+  <li><strong>Open it</strong> A preview card appears in the chat; choose it to open the app in the side panel. The agent can also open it in your browser.</li>
+</ol>
+<p>In <strong>Built apps</strong>, each row can <strong>Launch in browser</strong>, open the chat where the app was built, <strong>Export to a folder</strong> or delete the app. The card in a chat has no delete control. Delete an app here, or ask the agent to.</p>
+<h3 id="apps-export">Exporting</h3>
+<p><strong>Export to a folder</strong> offers two modes:</p>
+<ul>
+  <li><strong>Launcher (app + scripts)</strong> writes the app and its launch scripts. It uses the knowledge bases, skills, extensions and models already on the computer that runs it.</li>
+  <li><strong>Full (bundle server-side content)</strong> also packs the app's knowledge base (as a <code>.brkb</code> file) and the skills you tick, and optionally <code>biorouterd</code> itself. BAAM extensions you tick are listed in <code>export.json</code>, at the top of the folder, for the recipient to install. On the first run the launcher lists the skills and knowledge base and asks first. If you agree, it installs the skills and copies the knowledge base to <code>~/.config/biorouter/knowledge-imports/</code>, for you to bring in with <strong>Import from .brkb</strong> in Knowledge.</li>
+</ul>
+<p>The folder runs without a build step or Node.js. On macOS open <code>run.command</code>, on Linux run <code style="white-space: nowrap">bash run.sh</code>, and on Windows open <code>run.bat</code>. The launcher uses the <code>biorouterd</code> bundled in a Full export, or the one Biorouter installed on the computer. If there is none, it stops and says so; install Biorouter, or set <code>BIOROUTERD_BIN</code> to its path. It starts <code>biorouterd</code> in the background when it needs to and opens the app in the browser. An export carries no API keys, so the app uses the models configured by whoever runs it. The app's vault is never exported.</p>
+
+<h2 id="apps-security">Security model</h2>
+<p>Biorouter treats an app's page as untrusted.</p>
+<ul>
+  <li><strong>The socket.</strong> Each app has its own socket token, held in memory for one run of the background service and never written to disk. The socket accepts only the app page's own origin.</li>
+  <li><strong>What the page sends.</strong> Action arguments, signals and widget submissions reach the agent wrapped in <code style="white-space: nowrap">&lt;app-data&gt;</code>, which the agent is told to treat as data, not instructions.</li>
+  <li><strong>What the agent writes.</strong> State bindings set text and a short list of attributes, never code. <code>ui_html</code> is off unless the app allows it, and Biorouter cleans the HTML even then.</li>
+  <li><strong>Capabilities.</strong> Control of the page is on by default, since it reaches only the app's own page. Files, data sources, compute and the vault are off until the manifest grants them. A signal that starts a turn by itself is off, and only you can turn it on; the agent cannot.</li>
+  <li><strong>Knowledge.</strong> An app reads only the knowledge bases its manifest names, and writes only where it is granted write access.</li>
+  <li><strong>Sensitive data.</strong> An app with an OMOP or CDW source, or a knowledge base it can write, may not send work to a public model. A model route or a worker profile that names one is refused.</li>
+</ul>
+<p>An app's agent is a chat like any other, so the rules in <a href="#privacy">Private and public</a> apply to it.</p>
+
+<h2 id="apps-cli">Command line</h2>
+<pre><code>biorouter apps list
+biorouter apps open cohort-explorer
+biorouter apps serve cohort-explorer</code></pre>
+<p><code>list</code> prints every app (<code class="code-token">--json</code> for scripts). <code>open</code> and <code>serve</code> use the background service on <code class="code-token">BIOROUTER_PORT</code> (3000 by default) and start one if none is running. <code>open</code> opens the app in your browser; <code>serve</code> prints its address, and when it started the service it stays in the foreground and stops it when you press <kbd>Ctrl+C</kbd>. Apps always open in a browser, not in the terminal.</p>
+</div>

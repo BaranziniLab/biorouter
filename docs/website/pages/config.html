@@ -1,0 +1,84 @@
+<div class="doc-page" id="doc-config">
+<h1>Configuration</h1>
+<p class="doc-lede">Biorouter keeps its settings in one YAML file that the app and the command line share. This page lists the files Biorouter writes, the environment variables it reads, and which source wins.</p>
+
+<h2 id="config-file">The settings file</h2>
+<p><code>~/.config/biorouter/config.yaml</code> holds the provider and model, the permission mode, turn limits, the extensions under the <code>extensions</code> key, and the other general settings. The app writes it when you change Settings, <code>biorouter configure</code> writes it from a terminal, and you can edit it by hand.</p>
+<pre>
+<code>BIOROUTER_PROVIDER: llamacpp
+BIOROUTER_MODEL: gemma4
+BIOROUTER_MODE: smart_approve
+BIOROUTER_MAX_TURNS: 100</code></pre>
+<p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
+
+<h2 id="config-files">Where files live</h2>
+<p>The paths below are for macOS and Linux. On Windows, <code>~/.config/biorouter/</code> is <code>%APPDATA%\Block\biorouter\config\</code>, and both <code>~/.local/share/biorouter/</code> and <code>~/.local/state/biorouter/</code> are <code>%APPDATA%\Block\biorouter\data\</code>. <code>biorouter info</code> prints the paths on your computer.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>What</th><th>Path</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Settings</strong></td><td><code>~/.config/biorouter/config.yaml</code></td></tr>
+    <tr><td><strong>Tool rules</strong></td><td><code>~/.config/biorouter/permission.yaml</code>: always allow, ask or never allow, for single tools</td></tr>
+    <tr><td><strong>Secrets</strong></td><td><code>~/.config/biorouter/secrets.yaml</code>, only without a credential store</td></tr>
+    <tr><td><strong>Privacy switch</strong></td><td><code>~/.config/biorouter/<span style="white-space: nowrap">privacy-tiers.json</span></code>: whether private and public protection is on</td></tr>
+    <tr><td><strong>Workflows</strong></td><td><code>~/.config/biorouter/workflows/</code></td></tr>
+    <tr><td><strong>Skills</strong></td><td><code>~/.config/biorouter/skills/</code></td></tr>
+    <tr><td><strong>Installed extensions</strong></td><td><code>~/.config/biorouter/extensions/</code></td></tr>
+    <tr><td><strong>Knowledge bases</strong></td><td><code>~/.config/biorouter/knowledge/</code></td></tr>
+    <tr><td><strong>Global memories</strong></td><td><code>~/.config/biorouter/memory/</code></td></tr>
+    <tr><td><strong>Built apps</strong></td><td><code>~/.config/biorouter/agent_drafter/</code></td></tr>
+    <tr><td><strong>Chats</strong></td><td><code>~/.local/share/biorouter/sessions/sessions.db</code></td></tr>
+    <tr><td><strong>Schedules</strong></td><td><code>~/.local/share/biorouter/schedule.json</code>, with a copy of each scheduled workflow in <code>scheduled_workflows/</code> beside it</td></tr>
+    <tr><td><strong>Logs</strong></td><td><code>~/.local/state/biorouter/logs/</code></td></tr>
+  </tbody>
+</table></div>
+<p>An administrator's policy file sits outside your profile; see <a href="#vaulting-managed-policy">Managed policy</a>. <code class="code-token">BIOROUTER_PATH_ROOT</code> moves everything above under one folder, in <code>config/</code>, <code>data/</code> and <code>state/</code>.</p>
+
+<h2 id="config-precedence">Which setting wins</h2>
+<p>When the same setting comes from several places, the first of these wins:</p>
+<ol>
+  <li><strong>Managed policy</strong>, for the tool permissions and hooks it names.</li>
+  <li><strong>Environment variables</strong>, for the program that starts with them.</li>
+  <li><strong><code>config.yaml</code></strong>.</li>
+  <li><strong>Defaults.</strong></li>
+</ol>
+<p>For example, <code>BIOROUTER_MODE=chat biorouter</code> starts a terminal chat in Chat only mode and leaves the file alone. Most settings in <code>config.yaml</code>, such as those in the first table under <a href="#config-env">Environment variables</a>, can also be set as a variable of the same name. The variables in the second table work only from the environment.</p>
+
+<h2 id="config-reload">When a change takes effect</h2>
+<ul>
+  <li><strong><code>config.yaml</code></strong> is checked each time a setting is read, so a change from the app, <code>biorouter configure</code> or an editor is seen at the next read, without a restart.</li>
+  <li><strong>A chat</strong> takes its permission mode and the managed policy when its agent starts. Open a new chat to be sure a change applies.</li>
+  <li><strong>Environment variables</strong> are read by each program when it starts. A command sees your shell's variables. When the desktop app starts its background service, it passes the environment it was opened from, so an app opened from the Dock or the Start menu does not see a variable set only in a terminal.</li>
+  <li><strong>Secrets</strong> are read from the credential store once per process. A key saved in the app is used at once. A key changed by another program is read when Biorouter's background service next starts.</li>
+  <li><span class="chip">Next release</span> On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. To restart it, run <code>biorouter crew daemon stop</code>; an open app starts a new service and reconnects. See <a href="#architecture-daemon">The background service</a>.</li>
+</ul>
+
+<h2 id="config-env">Environment variables</h2>
+<p>These settings can be written in <code>config.yaml</code> or set as a variable. The variable wins.</p>
+<div class="doc-table-scroll"><table class="doc-options">
+  <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>gemma4</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>100</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
+  </tbody>
+</table></div>
+<p>These work only as environment variables. Written in <code>config.yaml</code>, they have no effect.</p>
+<div class="doc-table-scroll"><table class="doc-options">
+  <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code></td><td>The turn limit for a subagent. Default <code>25</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CONTEXT_LIMIT</code></td><td>Overrides the model's context window, in tokens. Useful for a model Biorouter does not know.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_DISABLE_KEYRING</code></td><td>Any value keeps secrets in <code>secrets.yaml</code> instead of the credential store.</td></tr>
+    <tr><td>A key's own name, such as <code>OPENAI_API_KEY</code></td><td>Supplies that secret, ahead of the stored one.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_SHELL_SANDBOX</code></td><td><code>off</code> (the default), <code>auto</code> or <code>strict</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_WORKFLOW_PATH</code></td><td>More folders to search for workflows, separated by <code>:</code> on macOS and Linux and by <code>;</code> on Windows.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_WORKFLOW_SCAN_WORKING_DIR</code></td><td><code>1</code> also lists workflows found loose in the working folder. Off by default.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_PORT</code></td><td>The port of the <code>biorouterd</code> that live <code>session</code> commands reach. Default <code>3000</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_SERVER__SECRET_KEY</code></td><td>The API key those commands and that service share. See <a href="#cli-sessions">Sessions</a>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_PATH_ROOT</code></td><td>Keeps all settings, data and logs under one folder. Useful for tests and for separate setups.</td></tr>
+  </tbody>
+</table></div>
+<p>The variables for browser access are on <a href="#cli-serve">Browser access</a>. Settings for single providers, such as <code>OLLAMA_HOST</code>, are on <a href="#providers">Models and providers</a>.</p>
+</div>

@@ -1148,7 +1148,7 @@ Then re-run: scripts/release.sh landing $v"
   else
     log "landing site: v$prev → v$v"
     local f
-    for f in "$content" landing/index.html landing/download.html landing/docs.html; do
+    for f in "$content" landing/index.html landing/download.html; do
       [ -f "$f" ] || continue
       if [ "$f" = "$content" ]; then
         # Every current-release slot EXCEPT the News section, which keeps the
@@ -1166,6 +1166,9 @@ Then re-run: scripts/release.sh landing $v"
       fi
     done
   fi
+
+  node landing/scripts/assemble-docs.mjs \
+    || die "documentation assembly failed after the version update; fix the sources before committing"
 
   # The site's own guard is the check, not this function's diff.
   ( cd landing && node scripts/check-consistency.mjs ) \

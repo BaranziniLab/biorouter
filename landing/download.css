@@ -1,0 +1,205 @@
+/* Download page layout. Tokens and shared parts come from site.css. */
+
+/* Inline code and prose links on this page */
+.body-muted code, .rule-line code, .dl-note code, .dl-cmds dt code {
+  font-size: 0.88em; color: var(--ink); white-space: nowrap;
+  background: var(--wash); padding: 2px 5px; border-radius: var(--r-inner);
+}
+.nw { white-space: nowrap; }
+.get-alt a, .dl-note a:not(.text-link), .dl-meta a, .rule-line p a {
+  color: var(--ink);
+  text-decoration: underline; text-decoration-color: var(--coral-bar);
+  text-decoration-thickness: 1px; text-underline-offset: 4px;
+}
+/* The hero already carries the coral rule of "All platforms": its quieter links
+   wear the grey hairline of the table's file links and turn coral on hover. */
+.get-alt a, .dl-meta a { text-decoration-color: var(--line-2); }
+.get-alt a:hover, .dl-note a:not(.text-link):hover, .dl-meta a:hover, .rule-line p a:hover { color: var(--coral); text-decoration-color: var(--coral-bar); }
+.rule-line p a { color: var(--muted); }
+/* Short lines of prose should not end on one word. */
+.dl-cli .body-muted, .dl-req p, .dl-cmds dt, .dl-cmds .cmd-note, .dl-steps p, .get-file, .dl-note, .dl-meta { text-wrap: pretty; }
+
+/* ── Hero ───────────────────────────────────────────────── */
+.dl-hero { padding-top: 88px; }
+.dl-icon { width: 72px; height: 72px; margin: 0 0 18px -7px; }
+
+.get {
+  margin-top: 48px;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 28px;
+  grid-template-areas: "btns link" "file file" "alt alt";
+  align-items: center; justify-items: start;
+}
+/* Hidden until the script has picked an installer, so nothing jumps. Without
+   the script the static state below is shown as written. */
+.js .get:not(.ready) { visibility: hidden; }
+.get [hidden] { display: none; }
+.get-btns { grid-area: btns; display: flex; flex-wrap: wrap; gap: 12px; }
+/* The text link's 9px underline gap, mirrored above, puts its words on the
+   button label's line. */
+#get-all { grid-area: link; padding-top: 9px; }
+.btn-get { height: 48px; padding: 0 22px; font-size: 15px; }
+.get-file { grid-area: file; margin: 16px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--muted); }
+.get-file code, .get-alt code { font-size: 12.5px; color: var(--ink); }
+.get-file .part { white-space: nowrap; }
+.get-file .sep { color: var(--ghost); }
+.get-alt { grid-area: alt; margin: 4px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--muted); }
+/* No installer to offer (a phone, an ARM Linux machine, an unknown system):
+   the sentence leads and the link follows it. */
+.get.is-note { grid-template-columns: minmax(0, 1fr); grid-template-areas: "file" "link"; }
+.get.is-note .get-btns, .get.is-note .get-alt { display: none; }
+.get.is-note #get-all { padding-top: 0; }
+.get.is-note .get-file { font-size: 17px; line-height: 1.6; color: var(--ink); max-width: 520px; margin: 0 0 22px; }
+
+.dl-meta { margin: 44px 0 0; font-size: 13px; color: var(--faint); }
+.dl-meta a { color: var(--muted); }
+
+/* ── Platform table ─────────────────────────────────────── */
+.dl-table { font-size: 14.5px; }
+.dl-table th { white-space: nowrap; }
+.dl-table [hidden] { display: none; }
+/* Sizes come only from the live release: the release script rewrites the
+   file names in this page but not the sizes, so a static size would go stale. */
+.dl-table.sizes-pending .c-size { display: none; }
+.dl-table .group th {
+  font-size: 14px; color: var(--ink); white-space: normal;
+  padding: 34px 0 10px; border-bottom: 1px solid var(--line);
+}
+.dl-table tbody:first-of-type .group th { padding-top: 22px; }
+.dl-table .group th span { color: var(--muted); margin-left: 8px; }
+.dl-table td { vertical-align: top; padding-top: 14px; padding-bottom: 14px; }
+.dl-table .c-os { color: var(--ink); white-space: nowrap; position: relative; width: 1%; }
+.dl-table .c-os span { display: block; color: var(--muted); font-size: 13px; }
+.dl-table .c-file { width: 1%; white-space: nowrap; }
+.dl-table .c-file code { background: none; padding: 0; font-size: 13px; color: var(--ink); }
+.dl-link {
+  display: inline-block; padding-bottom: 3px;
+  border-bottom: 1px solid var(--line-2);
+  transition: border-color var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.dl-link:hover { text-decoration: none; border-bottom-color: var(--coral-bar); }
+.dl-link:hover code { color: var(--coral); }
+.dl-table .c-size { width: 1%; white-space: nowrap; color: var(--muted); }
+.dl-table .c-how { color: var(--muted); }
+.cmd { display: inline-flex; align-items: baseline; gap: 14px; max-width: 100%; }
+.dl-table .cmd code { font-size: 12.5px; color: var(--ink); white-space: nowrap; }
+.cmd .copy-btn { padding: 0; font-size: 12.5px; }
+@media (max-width: 380px) {
+  .dl-table .cmd { flex-wrap: wrap; row-gap: 4px; }
+  .dl-table .cmd .nw { white-space: normal; overflow-wrap: anywhere; }
+}
+
+/* The row this computer needs wears the app's active row rail. */
+.dl-table tr.is-detected .c-os::before {
+  content: ''; position: absolute; left: -14px; top: 15px;
+  width: 2px; height: 16px; border-radius: 2px; background: var(--coral-bar);
+}
+
+.dl-note { margin: 22px 0 0; font-size: 13.5px; color: var(--muted); }
+
+@media (max-width: 1080px) {
+  .dl-table .cmd code { white-space: normal; }
+}
+
+/* Below this width each row becomes a short stack, still on hairlines. */
+@media (max-width: 860px) {
+  /* The roles in the markup keep this a table for screen readers once its
+     parts are blocks. Each stacked cell names what it is on its own. */
+  .dl-table, .dl-table tbody { display: block; width: 100%; }
+  .dl-table thead { display: none; }
+  .dl-table tr { display: block; }
+  .dl-table .group th { display: block; padding: 34px 0 10px; border-bottom-color: var(--line-2); }
+  .dl-table tbody:first-of-type .group th { padding-top: 0; }
+  .dl-table .group th span { display: block; margin: 2px 0 0; font-size: 13px; }
+  .dl-table tr[data-row] {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px;
+    padding: 16px 0; border-bottom: 1px solid var(--line);
+  }
+  .dl-table tr[data-row][hidden] { display: none; }
+  .dl-table tr[data-row] td { display: block; width: auto; padding: 0; border: 0; }
+  .dl-table .c-os { grid-column: 1; grid-row: 1; white-space: normal; }
+  .dl-table .c-os span { display: inline; margin-left: 6px; }
+  .dl-table .c-size { grid-column: 2; grid-row: 1; text-align: right; font-size: 13px; }
+  .dl-table .c-file { grid-column: 1 / -1; white-space: normal; }
+  .dl-table .c-file code { overflow-wrap: anywhere; }
+  .dl-table .c-how { grid-column: 1 / -1; font-size: 13.5px; }
+  .dl-table tr.is-detected .c-os::before { left: -12px; top: 4px; }
+  .cmd { gap: 12px; }
+}
+
+/* ── After you install ──────────────────────────────────── */
+.dl-steps {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 48px;
+}
+.dl-steps .n { font-size: 13px; color: var(--coral); margin: 0 0 16px; font-variant-numeric: tabular-nums; }
+.dl-steps h3 { font-size: 21px; letter-spacing: -0.03em; line-height: 1.25; margin: 0 0 10px; }
+.dl-steps p:not(.n) { color: var(--muted); font-size: 15px; line-height: 1.65; margin: 0; max-width: 360px; }
+.dl-steps .text-link { margin-top: 22px; font-size: 14px; }
+@media (max-width: 860px) {
+  .dl-steps { grid-template-columns: 1fr; gap: 36px; }
+  .dl-steps li { display: grid; grid-template-columns: 44px minmax(0, 1fr); }
+  .dl-steps .n { grid-row: 1 / span 3; margin: 4px 0 0; }
+  .dl-steps .text-link { justify-self: start; }
+}
+
+/* ── Command line and servers ───────────────────────────── */
+.dl-cli {
+  display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-rows: auto 1fr;
+  gap: 32px 72px; align-items: start;
+}
+/* The commands span both rows, so the docs link follows the prose on a wide
+   screen and the commands on a narrow one. */
+.dl-cli-text { grid-column: 1; grid-row: 1; }
+.dl-cmds { grid-column: 2; grid-row: 1 / span 2; }
+.dl-cli-docs { grid-column: 1; grid-row: 2; justify-self: start; font-size: 14px; }
+.dl-cli .subtitle { margin-bottom: 18px; }
+.dl-cli .subtitle .soft { color: var(--faint); }
+.dl-cli .body-muted { margin: 0; }
+.dl-cli .body-muted + .body-muted { margin-top: 14px; }
+.dl-cmds { margin: 0; display: grid; gap: 22px; }
+.dl-cmds dt { font-size: 14px; color: var(--muted); margin: 0 0 8px; }
+.dl-cmds dt code { font-size: 12.5px; }
+.dl-cmds dd.cmd {
+  margin: 0; display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  background: var(--wash); border-radius: var(--r-container); padding: 12px 16px 12px 18px;
+}
+.dl-cmds dd.cmd code { font-size: 13.5px; color: var(--ink); white-space: nowrap; overflow-x: auto; }
+/* The app's own path is long: it breaks after a slash, never inside a name. */
+.dl-cmds dd.cmd code.long { white-space: normal; overflow-x: visible; min-width: 0; }
+.dl-cmds dd.cmd-note { margin: 8px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--muted); }
+.dl-cmds dd.cmd-note code { font-size: 12.5px; color: var(--ink); background: var(--wash); padding: 2px 5px; border-radius: var(--r-inner); white-space: nowrap; }
+/* The Windows path stays whole; only the narrowest phones break it, after a
+   backslash (Chrome breaks at a <wbr> even under nowrap, so hide them). */
+.dl-cmds dd.cmd-note code wbr { display: none; }
+@media (max-width: 380px) {
+  .dl-cmds dd.cmd-note code { white-space: normal; }
+  .dl-cmds dd.cmd-note code wbr { display: inline; }
+}
+.dl-cmds .copy-btn { padding: 0; }
+
+@media (max-width: 860px) {
+  .dl-cli { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; gap: 36px; }
+  .dl-cli-text, .dl-cmds, .dl-cli-docs { grid-column: 1; grid-row: auto; }
+}
+
+/* ── Requirements ───────────────────────────────────────── */
+.dl-req { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px 48px; }
+.dl-req h3 { font-size: 16px; letter-spacing: -0.01em; margin: 0 0 8px; }
+.dl-req p { color: var(--muted); font-size: 14.5px; line-height: 1.65; margin: 0; max-width: 340px; }
+@media (max-width: 760px) { .dl-req { grid-template-columns: 1fr; gap: 26px; } }
+
+/* ── End of page ────────────────────────────────────────── */
+.dl-last { padding-bottom: 128px; }
+@media (max-width: 760px) {
+  .dl-hero { padding-top: 48px; }
+  .dl-icon { width: 64px; height: 64px; margin-left: -6px; }
+  .get { margin-top: 36px; }
+  .dl-last { padding-bottom: 88px; }
+}
+@media (max-width: 480px) {
+  .get { grid-template-columns: minmax(0, 1fr); grid-template-areas: "btns" "file" "alt" "link"; justify-items: stretch; }
+  .get-btns .btn-get { flex: 1 1 100%; }
+  #get-all { justify-self: start; margin-top: 24px; padding-top: 0; }
+  .get.is-note { grid-template-areas: "file" "link"; }
+  .get.is-note #get-all { margin-top: 0; }
+}

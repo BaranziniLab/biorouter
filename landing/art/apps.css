@@ -1,0 +1,226 @@
+/* apps: an app the agent built ("Cohort explorer"), then drives.
+   The agent draws a chart into the app's results region with ui_chart, asks
+   with a ui_ask form, and replaces the chart with two series after the answer.
+   Coral marks only the running tool call (its 2px rail), the pressed submit
+   button and the new series. Everything is scoped under [data-art="apps"]. */
+
+[data-art="apps"] .apps-stage {
+  position: absolute; inset: 0;
+  container-type: size;
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+
+/* The app window */
+[data-art="apps"] .apps-win {
+  position: absolute;
+  inset: clamp(14px, 6.4cqh, 18px) clamp(14px, 5cqw, 18px);
+  display: flex; flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-container);
+  overflow: hidden;
+}
+[data-art="apps"] .apps-bar {
+  position: relative; flex: none;
+  height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+[data-art="apps"] .apps-dots { position: absolute; left: 10px; top: 50%; display: flex; gap: 5px; transform: translateY(-50%); }
+[data-art="apps"] .apps-dots i { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); }
+[data-art="apps"] .apps-name { font-size: 12px; line-height: 1; color: var(--ink-2); white-space: nowrap; }
+
+/* The page, with one author region */
+[data-art="apps"] .apps-page { position: relative; flex: 1 1 auto; min-height: 0; }
+[data-art="apps"] .apps-region {
+  position: absolute;
+  inset: clamp(10px, 5cqh, 14px) clamp(12px, 5cqw, 18px) clamp(9px, 4cqh, 12px);
+}
+[data-art="apps"] .apps-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px dashed var(--line-2); border-radius: var(--r-element);
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="apps"] .apps-empty span { font-family: var(--mono); font-size: 11px; line-height: 1; color: var(--faint); }
+[data-art="apps"] .apps-chart {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="apps"] .is-chart .apps-empty { opacity: 0; transition-duration: var(--dur-menu); }
+[data-art="apps"] .is-chart .apps-chart { opacity: 1; transition-delay: 150ms; }
+/* Loop end: the chart and the empty region cross-fade. */
+[data-art="apps"] .apps-stage.is-out .apps-chart { opacity: 0; transition-duration: var(--dur-slow); transition-delay: 0s; }
+[data-art="apps"] .apps-stage.is-out .apps-empty { opacity: 1; transition-duration: var(--dur-slow); transition-delay: 150ms; }
+
+[data-art="apps"] .apps-head {
+  flex: none; height: 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+[data-art="apps"] .apps-title { font-size: 12px; line-height: 1; color: var(--ink); white-space: nowrap; }
+[data-art="apps"] .apps-legend {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; line-height: 1; color: var(--muted); white-space: nowrap;
+  opacity: 0; transition: opacity var(--dur-slow) var(--ease);
+}
+[data-art="apps"] .apps-legend span { display: inline-flex; align-items: center; gap: 5px; }
+[data-art="apps"] .apps-legend i { display: block; width: 9px; height: 9px; border-radius: 2px 2px 0 0; }
+[data-art="apps"] .is-split .apps-legend { opacity: 1; transition-delay: 200ms; }
+
+[data-art="apps"] .apps-plot {
+  position: relative; flex: 1 1 auto; min-height: 0;
+  margin-top: clamp(6px, 3cqh, 10px);
+  border-bottom: 1px solid var(--line-2);
+}
+[data-art="apps"] .apps-g {
+  position: absolute; bottom: 0; top: 0;
+  left: calc(var(--i) * 20% + 3.5%); width: 13%;
+}
+[data-art="apps"] .apps-g i {
+  position: absolute; bottom: 0; display: block;
+  height: 0;
+  border-radius: 2px 2px 0 0;
+}
+/* Series fills: a pale body under a 2px cap, like the app's rails. */
+[data-art="apps"] .apps-g .t { background: var(--medium); box-shadow: inset 0 2px 0 var(--ghost); }
+/* Female is its own neutral, darker cap than the first chart's totals. */
+[data-art="apps"] .apps-g .f,
+[data-art="apps"] .apps-legend .f { background: var(--sidebar-active); box-shadow: inset 0 2px 0 var(--subtle); }
+[data-art="apps"] .apps-g .m,
+[data-art="apps"] .apps-legend .m { background: var(--coral-wash); box-shadow: inset 0 2px 0 var(--coral-bar); }
+
+[data-art="apps"] .apps-g .t {
+  left: 0; width: 100%;
+  transition: height var(--dur-slow) var(--ease) calc(var(--i) * 90ms), opacity var(--dur-med) var(--ease);
+}
+[data-art="apps"] .apps-g .f { left: 0; width: calc(50% - 1px); }
+[data-art="apps"] .apps-g .m { left: calc(50% + 1px); width: calc(50% - 1px); }
+[data-art="apps"] .apps-g .f,
+[data-art="apps"] .apps-g .m { transition: height var(--dur-slow) var(--ease) calc(var(--i) * 90ms); }
+[data-art="apps"] .is-grown .apps-g .t { height: var(--h); }
+/* The second ui_chart replaces the first: the old bars fade, then both new series grow. */
+[data-art="apps"] .is-clear .apps-g .t { opacity: 0; }
+[data-art="apps"] .is-split .apps-g .f { height: var(--hf); }
+[data-art="apps"] .is-split .apps-g .m { height: var(--hm); }
+
+[data-art="apps"] .apps-axis {
+  position: relative; flex: none; height: 15px;
+}
+[data-art="apps"] .apps-axis span {
+  position: absolute; bottom: 0;
+  left: calc(var(--i) * 20% + 10%);
+  transform: translateX(-50%);
+  font-size: 11px; line-height: 1; color: var(--subtle); white-space: nowrap;
+}
+
+/* ui_ask: a form card over the page; the tool call waits for the answer */
+[data-art="apps"] .apps-scrim {
+  position: absolute; inset: 0;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="apps"] .apps-ask {
+  /* Centred on the plot, below the chart title. */
+  position: absolute; left: 50%; top: calc(50% + 8px);
+  min-width: 164px;
+  padding: 11px 12px 10px;
+  background: var(--paper);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-container);
+  opacity: 0;
+  transform: translate(-50%, calc(-50% + 6px));
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-slow) var(--ease);
+}
+[data-art="apps"] .apps-ask p { margin: 0; font-size: 13px; line-height: 16px; color: var(--ink); white-space: nowrap; }
+[data-art="apps"] .apps-check {
+  display: flex; align-items: center; gap: 7px;
+  margin-top: 9px;
+  font-size: 12px; line-height: 14px; color: var(--ink-2); white-space: nowrap;
+}
+[data-art="apps"] .apps-box {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  width: 12px; height: 12px; border-radius: var(--r-inner);
+  background: var(--ink); color: var(--paper);
+}
+[data-art="apps"] .apps-box svg { display: block; width: 12px; height: 12px; }
+[data-art="apps"] .apps-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+[data-art="apps"] .apps-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 24px; padding: 0 11px; border-radius: var(--r-element);
+  font-size: 12px; line-height: 1; white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="apps"] .apps-skip { color: var(--muted); }
+[data-art="apps"] .apps-go { color: var(--ink); background: var(--paper); border: 1px solid var(--line-2); }
+[data-art="apps"] .is-ask .apps-scrim { opacity: 1; }
+[data-art="apps"] .is-ask .apps-ask { opacity: 1; transform: translate(-50%, -50%); }
+[data-art="apps"] .is-press .apps-go { background: var(--coral); border-color: var(--coral); color: var(--paper); }
+[data-art="apps"] .is-down .apps-go { transform: scale(0.98); }
+/* Short tiles: a tighter card so it sits clear of the chart title. */
+@container (max-height: 232px) {
+  [data-art="apps"] .apps-ask { padding: 9px 11px 8px; }
+  [data-art="apps"] .apps-check { margin-top: 6px; }
+  [data-art="apps"] .apps-actions { margin-top: 7px; }
+  [data-art="apps"] .apps-btn { height: 22px; }
+}
+
+/* The pointer that answers */
+[data-art="apps"] .apps-cursor {
+  position: absolute; left: 0; top: 0;
+  width: 13px; height: 18px;
+  opacity: 0;
+  transform: translate(var(--cx, 0px), var(--cy, 0px));
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-slow) var(--ease);
+  pointer-events: none;
+}
+[data-art="apps"] .apps-cursor svg { display: block; width: 13px; height: 18px; overflow: visible; transition: transform var(--dur-fast) var(--ease); transform-origin: 2px 2px; }
+[data-art="apps"] .apps-cursor path { fill: var(--ink); stroke: var(--paper); }
+[data-art="apps"] .is-point .apps-cursor { opacity: 1; }
+[data-art="apps"] .is-down .apps-cursor svg { transform: scale(0.9); }
+
+/* The agent strip: one tool call row, a line and not a card */
+[data-art="apps"] .apps-strip {
+  position: relative;
+  flex: none; height: 30px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 10px 0 12px;
+  background: var(--sidebar);
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+/* The app's active row rail: 2px coral, 16px tall, only while the tool runs. */
+[data-art="apps"] .apps-rail {
+  position: absolute; left: 4px; top: 50%;
+  width: 2px; height: 16px; margin-top: -8px;
+  border-radius: 2px;
+  background: var(--coral-bar);
+  opacity: 0;
+  transition: opacity var(--dur-menu) var(--ease);
+}
+[data-art="apps"] .apps-strip.is-active .apps-rail { opacity: 1; }
+[data-art="apps"] .apps-strip svg { flex: none; width: 14px; height: 14px; transition: opacity var(--dur-fast) var(--ease); }
+[data-art="apps"] .apps-strip .apps-chev { width: 12px; height: 12px; margin-left: auto; opacity: 0.6; }
+[data-art="apps"] .apps-rowwrap { min-width: 0; transition: opacity var(--dur-fast) var(--ease); }
+[data-art="apps"] .apps-rowwrap.is-swap { opacity: 0; }
+[data-art="apps"] .apps-row { display: block; font-size: 12.5px; line-height: 1; white-space: nowrap; }
+[data-art="apps"] .apps-row code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); }
+[data-art="apps"] .apps-row.is-running { animation: apps-breathe 2.4s ease-in-out infinite; }
+[data-art="apps"] .apps-stage.is-paused .apps-row { animation-play-state: paused; }
+
+/* A fresh start: the tool row is hidden for a moment, then fades in. */
+[data-art="apps"] .apps-stage.is-quiet .apps-strip > * { opacity: 0; transition-duration: var(--dur-med); }
+
+@keyframes apps-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Loop reset: jump to the first frame without animating back.
+   The doubled class outranks every transition rule above. */
+[data-art="apps"] .apps-stage.apps-instant.apps-instant * { transition: none; }

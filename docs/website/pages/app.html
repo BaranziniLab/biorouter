@@ -1,0 +1,116 @@
+<div class="doc-page" id="doc-app">
+<h1>The desktop app</h1>
+<p class="doc-lede">The app is where you chat with a model, watch the agent work and read what it makes.</p>
+
+<h2 id="app-window">The window</h2>
+<p>The sidebar runs down the left. The rest of the window shows the page you opened. In a chat, tabs run across the top, the conversation fills the middle and the composer sits at the bottom.</p>
+<p>Files, figures and apps the agent makes open in a side panel on the right. In the conversation each one is a card; choose it to open it in the panel. In a live chat the panel opens on the newest one by itself. A terminal can open below the conversation.</p>
+<p>Drag the sidebar's edge to resize it, or press <kbd>Cmd+B</kbd> to hide and show it. Shortcuts on this page are shown for macOS; see <a href="#app-shortcuts">Keyboard shortcuts</a>.</p>
+
+<h2 id="app-sidebar">The sidebar</h2>
+<p>From top to bottom:</p>
+<ul>
+  <li><strong>Home.</strong> A greeting, a heatmap of your recent activity and a composer. Typing there starts a new chat.</li>
+  <li><strong>New chat.</strong> An empty chat in a new tab.</li>
+  <li><strong>Crew.</strong> <span class="chip">Next release</span> Your lab's shared workspace: channels, files and agent tasks. See <a href="#crew">Crew</a>.</li>
+  <li><strong>Components.</strong> A group holding the six rows below. It starts collapsed and stays the way you last left it.
+    <ul>
+      <li><strong>Workflows.</strong> Saved recipes that start a chat with the same instructions, tools and model. See <a href="#workflows">Workflows and scheduling</a>.</li>
+      <li><strong>Scheduler.</strong> Workflows set to run on a schedule, with each one's timing and last run.</li>
+      <li><strong>Extensions.</strong> The tool servers the agent can use, each with an on and off switch, plus the BAAM marketplace and custom extensions. See <a href="#extensions">Extensions and skills</a>.</li>
+      <li><strong>Skills.</strong> Instruction sets the agent loads when a task calls for one.</li>
+      <li><strong>Knowledge.</strong> Knowledge bases the agent writes and reads. See <a href="#knowledge">Knowledge bases</a>.</li>
+      <li><strong>Built apps.</strong> Apps the agent built for you. This is the only place to delete one. See <a href="#apps">Built apps</a>.</li>
+    </ul>
+  </li>
+  <li><strong>Recents.</strong> Your recent chats, grouped by day. A running chat shows an indicator. <strong>See all</strong> opens Chat history.</li>
+  <li><strong>Settings.</strong> Pinned at the bottom. See <a href="#app-settings">Settings</a>.</li>
+</ul>
+
+<h2 id="app-chat">Chat and the composer</h2>
+<p>Type a request and press <kbd>Enter</kbd>. <kbd>Shift+Enter</kbd> starts a new line. Type <code>/</code> to pick a command, workflow, skill, knowledge base or extension, or <code>@</code> to mention a file or folder. Paste or drag files and images onto the composer to attach them.</p>
+<p>The composer has three rows.</p>
+<ul>
+  <li><strong>Above the text box.</strong> On the left, the working folder the agent reads and writes in. It is fixed once you send the first message. On the right, the extensions, skills and knowledge bases this chat uses, each with a count. Changes there apply to this chat only.</li>
+  <li><strong>In the box.</strong> Your message, and Send, the arrow at the right. While the agent works and the box is empty, Send becomes <strong>Stop</strong>.</li>
+  <li><strong>Below the text box.</strong> On the left, reasoning effort, which sets how long the model thinks before it answers, then the model this chat runs on (see <a href="#app-models">Switching models</a>). On the right, context shows how full the context window is. Its popover compacts the chat now, or sets when Biorouter compacts it on its own. Cost shows the estimated spend so far; turn it off in <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Appearance</strong>.</li>
+</ul>
+<p>In a narrow pane, reasoning effort, context and cost fold into one <strong>+</strong> button, <strong>Chat tools and settings</strong>. The model stays visible.</p>
+<h3>While the agent works</h3>
+<p>Each tool call is one line in the conversation; choose it to see the arguments and the result. Messages you send meanwhile wait in a queue. <strong>Add now</strong>, or <kbd>Cmd+Enter</kbd>, adds a message to the running turn without stopping it. <strong>Stop &amp; send</strong> stops the turn and sends the message as a new one. <a href="#agentloop">The agent loop</a> explains how a turn runs.</p>
+<p>Shell code blocks in a reply carry a <strong>Run</strong> button that sends the command to the terminal below the conversation.</p>
+<h3>Working with messages</h3>
+<ul>
+  <li><strong>Copy</strong> is on every message.</li>
+  <li><strong>Edit</strong> on your own message offers <strong>Edit in place</strong>, which changes it in this chat, or <strong>Diverge</strong>, which starts a new chat from the edited message.</li>
+  <li><strong>Diverge</strong> on a reply opens a new window holding a new chat with the full history up to that point. The original stays as it was.</li>
+  <li>Select text in a reply, right click, and choose <strong>Ask about it</strong> or <strong>Quote it</strong> to put the passage in the composer as a quotation.</li>
+</ul>
+
+<h2 id="app-models">Switching models</h2>
+<ol class="steps">
+  <li><strong>Open the model chip</strong> Choose the model name under the text box, then <strong>Change model</strong>.</li>
+  <li><strong>Pick a provider and a model</strong> Then choose <strong>Select model</strong>. The next turn uses it; the conversation so far is unchanged.</li>
+</ol>
+<p>The change applies to this chat only. Tick <strong>Also use for new chats</strong> to make it the default too. <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Switch models</strong> sets the model new chats start on, and existing chats keep their own. A private chat accepts only private models. See <a href="#privacy">Private and public</a>.</p>
+
+<h2 id="app-tabs">Tabs and split panes</h2>
+<p>Every chat is a tab. Open one with <kbd>Cmd+T</kbd>, close it with <kbd>Cmd+W</kbd>, and move between tabs with <kbd>Ctrl+Tab</kbd> and <kbd>Ctrl+Shift+Tab</kbd>. Drag a tab to reorder it. Opening a chat that is already open switches to its tab. Drag a tab out of the window to give it a window of its own, or onto another window's tabs to move it there.</p>
+<p>To split, drag a tab to the left, right, top or bottom edge of a pane. Dropping it in the middle of a pane moves it into that pane's tabs instead. A window holds up to six panes. Drag the line between two panes to resize them. Each pane has its own tabs, and each chat keeps its own model, folder and extensions, so you can watch several agents work at once.</p>
+
+<h2 id="app-terminal">The terminal</h2>
+<p>Choose the terminal icon at the top right of a chat (<strong>Open terminal</strong>) to open a terminal below the conversation. It starts in the chat's working folder. Each tab has its own terminal, and a hidden terminal's shell keeps running until you close its tab. <strong>+</strong> adds another terminal; <kbd>Cmd+T</kbd> does the same while the terminal has focus.</p>
+
+<h2 id="app-history">History</h2>
+<p><strong>Chat history</strong> lists every chat, grouped by day. Open it with <strong>See all</strong> under Recents or with <kbd>Cmd+2</kbd>, and search it with <kbd>Cmd+F</kbd>. Choose a chat to reopen it in a tab.</p>
+<p>Each row can export or delete its chat, and a private chat's row offers <strong>Make this chat public</strong>, which asks you to confirm. <strong>Import chat</strong> brings in a chat someone exported. <strong>Show subagent runs</strong> adds the chats that subagents ran. Chats live in a local SQLite file; see <a href="#config">Configuration</a>.</p>
+
+<h2 id="app-settings">Settings</h2>
+<p>Settings has three tabs.</p>
+<ul>
+  <li><strong>Models.</strong> The current model, with <strong>Switch models</strong> and <strong>Configure providers</strong>. Local Model Inventory lists the local models you have and can download, and deletes ones you no longer need. Reset clears the selected provider and model.</li>
+  <li><strong>Chat.</strong> Mode sets how much the agent does without asking: Autonomous, Manual, Smart or Chat only (see <a href="#vaulting">Security</a>). Response styles picks Detailed or Concise answers. Capabilities sets the built-in abilities new chats start with. The tab also holds Memory, Contexts (skills that ship with Biorouter), App SDK, Editor and Project hints (<code>.biorouterhints</code>).</li>
+  <li><strong>App.</strong> Configuration edits the settings file. Privacy holds the private and public protection, which is on by default. Workspace can stop agents from opening tabs on their own. Appearance covers notifications, the menu bar icon (and the Dock icon on macOS), prevent sleep and cost tracking. Palette, Mode and Font size set how the app looks. Usage appears while cost tracking is on. Then come Reset, Help &amp; Feedback and Updates.</li>
+</ul>
+
+<h2 id="app-shortcuts">Keyboard shortcuts</h2>
+<p>On Windows and Linux, use <kbd>Ctrl</kbd> for <kbd>Cmd</kbd> and <kbd>Alt</kbd> for <kbd>Option</kbd>. <kbd>Ctrl+Tab</kbd> and <kbd>Shift+Enter</kbd> are the same everywhere.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Action</th><th>Shortcut on macOS</th></tr></thead>
+  <tbody>
+    <tr><td>New chat tab, or a new terminal in the terminal</td><td><kbd>Cmd+T</kbd></td></tr>
+    <tr><td>Close the tab, or the terminal you are in</td><td><kbd>Cmd+W</kbd></td></tr>
+    <tr><td>Next tab</td><td><kbd>Ctrl+Tab</kbd></td></tr>
+    <tr><td>Previous tab</td><td><kbd>Ctrl+Shift+Tab</kbd></td></tr>
+    <tr><td>New window</td><td><kbd>Cmd+N</kbd></td></tr>
+    <tr><td>Close the window</td><td><kbd>Shift+Cmd+W</kbd></td></tr>
+    <tr><td>Open a folder in a new chat window</td><td><kbd>Cmd+O</kbd></td></tr>
+    <tr><td>Home, Chat history</td><td><kbd>Cmd+1</kbd>,&nbsp;<kbd>Cmd+2</kbd></td></tr>
+    <tr><td>Workflows, Scheduler, Extensions, Skills</td><td><kbd>Cmd+3</kbd>&nbsp;to&nbsp;<kbd>Cmd+6</kbd></td></tr>
+    <tr><td>Hide or show the sidebar</td><td><kbd>Cmd+B</kbd></td></tr>
+    <tr><td>Find</td><td><kbd>Cmd+F</kbd></td></tr>
+    <tr><td>Find next, find previous</td><td><kbd>Cmd+G</kbd>,&nbsp;<kbd>Shift+Cmd+G</kbd></td></tr>
+    <tr><td>New line in the composer</td><td><kbd>Shift+Enter</kbd></td></tr>
+    <tr><td>Add a message to the running turn</td><td><kbd>Cmd+Enter</kbd></td></tr>
+    <tr><td>Bring back a message you sent earlier</td><td><kbd>Cmd+Up</kbd>,&nbsp;<kbd>Cmd+Down</kbd></td></tr>
+    <tr><td>Settings, on macOS only</td><td><kbd>Cmd+,</kbd></td></tr>
+    <tr><td>Bring the Biorouter window forward, from any app</td><td><kbd>Option+Cmd+G</kbd></td></tr>
+    <tr><td>Quick launcher: start a chat from any app</td><td><kbd>Option+Shift+Cmd+G</kbd></td></tr>
+  </tbody>
+</table></div>
+
+<h2 id="app-menus">Menu bar and tray</h2>
+<p>The menu bar repeats the sidebar and adds a few things of its own.</p>
+<ul>
+  <li><strong>Biorouter.</strong> On macOS only: Settings, Check for Updates, Check for Dependencies, Check for Extension Updates.</li>
+  <li><strong>Go.</strong> Home, New Chat, History, Workflows, Scheduler, Extensions, Skills.</li>
+  <li><strong>File.</strong> New Chat, New Window, Open Directory, Recent Directories, Close Tab, Close Window, Focus Biorouter Window.</li>
+  <li><strong>Edit.</strong> The usual editing items and Find.</li>
+  <li><strong>Extensions.</strong> Install a <code>.brxt</code> file, browse BAAM, add a custom extension, check for extension updates.</li>
+  <li><strong>Providers.</strong> Configure Providers, Switch Model, Reset Provider.</li>
+  <li><strong>View.</strong> Light, Dark or System mode, zoom and full screen.</li>
+  <li><strong>Help.</strong> These docs, Report a Bug, Request a Feature.</li>
+  <li><strong>Window.</strong> Always on Top.</li>
+</ul>
+<p><strong>Settings → App → Appearance → Menu bar icon</strong> shows or hides the tray icon (the menu bar icon on macOS). It is on by default. On macOS and Windows, clicking the icon brings the window forward. Its menu holds Home, New Chat, Settings, Extensions, Skills, Check for Updates and Quit.</p>
+</div>

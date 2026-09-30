@@ -1,129 +1,43 @@
-# Biorouter Landing Site
+# Biorouter website
 
-Static landing site for **Biorouter v1.88.1** — a local-first AI routing layer for clinical research developed at the [Baranzini Lab](https://baranzinilab.ucsf.edu/), UCSF.
-
-**Live site:** <https://biorouter.ucsf.edu/>
-
----
+The static site served at <https://biorouter.ucsf.edu/>. It is published from this folder as it is, with no build step, by [`.github/workflows/deploy-landing.yml`](../.github/workflows/deploy-landing.yml) on every push to `main` that touches `landing/`.
 
 ## Pages
 
-| File | Tab | Description |
-| ---- | --- | ----------- |
-| `index.html` | — | Redirects to `intro.html` |
-| `intro.html` | Introduction | Hero section, feature highlights, supported AI providers |
-| `download.html` | Download | OS-aware download card (auto-detects macOS arm64/x64, Windows, Linux), platform table, setup instructions |
-| `docs.html` | Documentation | Sidebar-navigated documentation covering installation, configuration, workflows, federation, and CLI reference |
-| `baam.html` | BAAM Marketplace | Biorouter AI Agent Marketplace — agent cards, install instructions, and community workflows |
-| `about.html` | About | News & announcements, related links, acknowledgments, developer info |
+| File | Page |
+| ---- | ---- |
+| `index.html` | Introduction: the model routing hub, the three principles, a Slack band and six capability tiles |
+| `download.html` | Download: the detected installer, every platform, first steps, the command line and servers |
+| `docs.html` | Documentation assembled from the tracked shell and fourteen fragments in `docs/website/` |
+| `baam.html` | BAAM, the Biorouter AI Agent Marketplace: extensions, skills and workflows |
+| `about.html` | About: the team, collaborators, inspirations and updates |
+| `intro.html`, `skills.html` | Redirects kept for old links (to `index.html` and `baam.html`) |
 
-### Shared assets
+## Shared files
 
-- `shared.css` — design tokens, navbar, buttons, tables, and all shared component styles
-- `icon.png` — Biorouter app icon
-- `assets/ehr-diabetes-recipe.yaml` — downloadable example workflow (EHR Diabetes Demographics Dashboard)
-- `assets/landing-site-content.md` — content requirements tracker
+- `site.css`: every design token (they mirror the desktop app's light Parchment theme) and the shared parts: header with the Slack invite, footer, buttons, text links, section rules, privacy pills, tables, artifact frames.
+- `site.js`: header state, mobile menu, reveal on scroll, copy buttons, the release version (`data-version` slots refreshed from the GitHub releases API), and the artifact registry.
+- `home.css`, `download.css`, `about.css`, `docs.css`, `baam.css`: one stylesheet per page.
+- `art/<name>.js` and `art/<name>.css`: the small animations. Each registers with `BR.art('<name>', mount)` and fills a `<div data-art="<name>">`. `site.js` starts it when it is on screen and stops it when it leaves, and each one draws a still frame when the visitor asks for reduced motion.
+- `icon.svg`, `icon-transparent.svg`, `icon.png`: the BR mark. Do not edit them; `scripts/check-brand-consistency.sh` compares them with the app's copies.
+- `registry.json`: the marketplace catalog, generated from `baam.html`'s static cards. The app compiles it in.
+- `marketplace-search.js`: the BAAM search matcher, shared with a Rust test. Leave its formatting alone.
+- `shared.css`, `theme.js`, `app-mockups.css`, `app-mockups.js`: the previous design's files. No page loads them now; `video/reel` still does, and `scripts/check-consistency.mjs` reads `app-mockups.js`.
 
----
+## Rules the checks enforce
 
-## Design System
+- **BAAM.** `baam.html`'s static cards are the input of `scripts/build-registry.mjs`, which writes `registry.json`, the desktop app's bundled copy and the Rust privacy list. After any card change run `node landing/scripts/build-registry.mjs`; in CI `--check` fails if the three copies differ. The browser tests in `scripts/baam-privacy-facet.test.mjs` and `scripts/baam-search.test.mjs` hold the rendered page to the same contract.
+- **Docs.** Edit the sources in [`docs/website/`](../docs/website/README.md), then run `node landing/scripts/assemble-docs.mjs` from the repository root. Do not hand edit `docs.html`. `scripts/check-docs-privacy.mjs` reads the "Extension agents in the marketplace" table, and `../scripts/check-crew-manual.mjs` reads the Crew page and the browser table. Both match markup byte for byte.
+- **Versions.** `scripts/release.sh` rewrites the version in `index.html`, `download.html` and `docs.html` only, and expects `about.html`'s `news-list` to start with the new release.
 
-- **Theme:** Light warm background (`#ffffff` / `#fcf8ed` cream / `#f8f2df` beige)
-- **Accent:** Coral/orange `#cf6d47` — matches the Biorouter desktop app
-- **Text:** Warm dark `#2a2520`, muted `#7a736c`
-- **Fonts:** [Inter](https://fonts.google.com/specimen/Inter) (body) + [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono) (code) via Google Fonts
-- **Responsive:** Mobile hamburger menu at ≤768px
+## Writing for the site
 
----
+Spell the product Biorouter and the marketplace BAAM. Keep sentences short and plain, with no dashes as punctuation and no marketing words. Do not name model versions outside the docs.
 
-## Hosting
-
-> **This site now lives inside the main Biorouter app repo**, under `landing/`.
-> It was consolidated from the standalone `BaranziniLab/biorouter-landing` repo so
-> the website ships and versions together with the app and is easier for the AI
-> agent to edit. It is published to **GitHub Pages via GitHub Actions**, served on
-> the custom domain `biorouter.ucsf.edu`.
-
-- **Repo:** <https://github.com/BaranziniLab/biorouter> (this folder: `landing/`)
-- **Live URL:** <https://biorouter.ucsf.edu/>
-- **Custom domain:** configured via the `CNAME` file in this folder — do **not** delete it; it tells GitHub Pages which domain owns the site. The deploy workflow uploads it with every build so the domain is re-asserted on each deploy.
-- **Deploy workflow:** [`.github/workflows/deploy-landing.yml`](../.github/workflows/deploy-landing.yml) — uploads this `landing/` folder as the Pages artifact (served as-is, no Jekyll) and deploys it.
-- **Build:** None required — fully static HTML/CSS/JS, no build step.
-
-### One-time Pages setup (already done for the cutover, kept here for reference)
-
-1. Release `biorouter.ucsf.edu` from the old `biorouter-landing` repo: its **Settings → Pages → remove the custom domain** (a domain can be attached to only one Pages site at a time).
-2. In this repo: **Settings → Pages → Source = "GitHub Actions"**.
-
-After that, the workflow runs on its own.
-
-### Deploying updates
-
-Just commit a change under `landing/` to `main` and push the **app** repo:
+## Local preview
 
 ```bash
-git add landing/
-git commit -m "site: your message"
-git push origin main
-```
-
-The `deploy-landing.yml` workflow triggers on any push to `main` that touches
-`landing/**`, rebuilds Pages, and the change goes live within ~1–2 minutes. You
-can also trigger it manually from the Actions tab (`workflow_dispatch`).
-
-### Local preview
-
-Open any HTML file directly in a browser, or use a local server to avoid cross-origin issues with relative paths:
-
-```bash
-# Python
 python3 -m http.server 8080
-
-# Node (npx)
-npx serve .
 ```
 
-Then visit `http://localhost:8080`.
-
----
-
-## Acknowledgements
-
-### The Baranzini Lab — [baranzinilab.ucsf.edu](https://baranzinilab.ucsf.edu/)
-
-- Gianmarco Bellucci
-- Sergio Baranzini
-
-### Bakar Computational Health Sciences Institute (BCHSI) — [bakarinstitute.ucsf.edu](https://bakarinstitute.ucsf.edu/)
-
-- Sharat Israni
-- Marina Sirota
-
-### UCSF Academic Research Services (ARS) — [ars.ucsf.edu](https://ars.ucsf.edu/)
-
-- William Santo
-- Evan Philps
-- Rick Larson
-- Oksana Gologorskaya
-
-### Inspirations
-
-Biorouter's design was inspired by the agents below, and Block's Goose was a major influence.
-
-- **[Goose](https://block.github.io/goose/)**: CLI and desktop agent for full developer workflows (Block), and a major inspiration for Biorouter's design
-- **[Claude Code](https://github.com/anthropics/claude-code)**: Anthropic's agentic coding tool for the terminal and IDE
-- **[Codex CLI](https://github.com/openai/codex)**: OpenAI's open source coding agent that runs in the terminal
-- **[Gemini CLI](https://github.com/google-gemini/gemini-cli)**: Google's open source AI agent for the terminal
-- **[OpenHands](https://github.com/OpenHands/OpenHands)**: Open source platform for autonomous software development agents
-- **[Aider](https://aider.chat/)**: Open source coding agent for the terminal that works with Git
-- **[Cline](https://github.com/cline/cline)**: Open source interactive CLI coding agent
-- **[OpenCode](https://opencode.ai/)**: Open source coding agent that supports multiple sessions and providers
-- **[ForgeCode](https://forgecode.dev/)**: Terminal AI coding assistant for task planning and code generation
-
----
-
-## Related
-
-- **Biorouter app repo:** <https://github.com/BaranziniLab/biorouter>
-- **Baranzini Lab:** <https://baranzinilab.ucsf.edu/>
-- **UCSF Versa:** <https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa>
+Then open <http://localhost:8080/>.

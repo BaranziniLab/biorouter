@@ -1,0 +1,298 @@
+/* Workflows tile. One workflow file, statin-cohort.yaml, written key by key
+   with the schema's real keys (docs/workflows/workflow-schema-reference.md):
+   title, prompt, parameters, extensions, skills and settings. A comment on
+   its first line marks it as an excerpt. Then its parameter is filled in,
+   Start is pressed, and three steps complete in order. The file stays; the
+   run repeats the same way. Everything is scoped under [data-art="workflows"]. */
+
+[data-art="workflows"] .wf {
+  position: absolute; inset: 0;
+  container-type: inline-size;
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+
+/* Size tiers, by the tile's own width (the tile is 4:3, so width also sets
+   the height). Text never drops below 11px. The file is seven lines of at
+   most 32 characters, which fit across every tile at 11px, so the tiers set
+   the chrome and a line height of about 1.4 times the code size. Under 278px
+   (two columns on 600 to 650px pages) the tile is short and the line height
+   steps down from 1.32 to 1.23. 278 to 286 is the three column tile on 980 to 1000px pages and
+   the two column one on 640 to 690px pages; 286 to 316 the 1024 and 1920
+   page; 316 to 340 the 1440 and 768 page; 340 to 370 phones and 834px
+   tablets; wider tiles (single column on 440 to 600px pages) grow the type. */
+[data-art="workflows"] .wf-in {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  padding: 8px;
+  --wf-code: 11px;
+  --wf-lh: 13.5px;
+  --wf-ui: 11px;
+  --wf-head: 20px;
+  --wf-ctl: 20px;
+  --wf-padx: 8px;
+  --wf-gap: 6px;
+  --wf-ico: 14px;
+  --wf-nudge: 0.05em;
+}
+@container (min-width: 262px) {
+  [data-art="workflows"] .wf-in { --wf-lh: 14px; --wf-head: 21px; }
+}
+@container (min-width: 272px) {
+  [data-art="workflows"] .wf-in {
+    padding: 9px 9px 8px;
+    --wf-lh: 14.5px;
+    --wf-head: 22px;
+    --wf-padx: 10px;
+  }
+}
+@container (min-width: 278px) {
+  [data-art="workflows"] .wf-in { --wf-lh: 15px; }
+}
+@container (min-width: 286px) {
+  [data-art="workflows"] .wf-in {
+    padding: 11px 11px 10px;
+    --wf-ui: 11.5px;
+    --wf-nudge: 0.09em;
+    --wf-head: 23px;
+    --wf-ctl: 22px;
+    --wf-padx: 11px;
+    --wf-gap: 7px;
+  }
+}
+@container (min-width: 298px) {
+  [data-art="workflows"] .wf-in { --wf-lh: 15.5px; }
+}
+@container (min-width: 316px) {
+  [data-art="workflows"] .wf-in {
+    padding: 12px 12px 11px;
+    --wf-code: 11.5px;
+    --wf-lh: 16px;
+    --wf-ui: 12px;
+    --wf-nudge: 0.05em;
+    --wf-head: 27px;
+    --wf-ctl: 24px;
+    --wf-padx: 12px;
+    --wf-gap: 9px;
+    --wf-ico: 16px;
+  }
+}
+@container (min-width: 340px) {
+  [data-art="workflows"] .wf-in {
+    padding: 14px 14px 12px;
+    --wf-code: 12px;
+    --wf-lh: 17px;
+    --wf-ui: 12.5px;
+    --wf-head: 30px;
+    --wf-ctl: 26px;
+    --wf-padx: 14px;
+    --wf-gap: 11px;
+  }
+}
+@container (min-width: 370px) {
+  [data-art="workflows"] .wf-in {
+    padding: 15px 15px 13px;
+    --wf-code: 12.5px;
+    --wf-lh: 18px;
+    --wf-head: 32px;
+    --wf-ctl: 28px;
+    --wf-gap: 12px;
+  }
+}
+@container (min-width: 420px) {
+  [data-art="workflows"] .wf-in {
+    padding: 18px 18px 16px;
+    --wf-code: 13px;
+    --wf-lh: 19px;
+    --wf-ui: 13px;
+    --wf-head: 36px;
+    --wf-ctl: 30px;
+    --wf-padx: 16px;
+    --wf-gap: 14px;
+  }
+}
+@container (min-width: 480px) {
+  [data-art="workflows"] .wf-in {
+    padding: 20px 20px 18px;
+    --wf-code: 14px;
+    --wf-lh: 21px;
+    --wf-ui: 13.5px;
+    --wf-head: 40px;
+    --wf-ctl: 32px;
+    --wf-padx: 18px;
+    --wf-gap: 16px;
+  }
+}
+@container (min-width: 520px) {
+  [data-art="workflows"] .wf-in {
+    --wf-code: 14.5px;
+    --wf-lh: 22.5px;
+    --wf-ui: 14px;
+    --wf-head: 42px;
+    --wf-ctl: 34px;
+    --wf-gap: 18px;
+  }
+}
+
+/* ── The file ──────────────────────────────────────────── */
+[data-art="workflows"] .wf-file {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  overflow: hidden;
+  background: var(--paper);
+}
+[data-art="workflows"] .wf-head {
+  flex: none;
+  height: var(--wf-head);
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 var(--wf-padx);
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+[data-art="workflows"] .wf-head svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+[data-art="workflows"] .wf-name { font-size: var(--wf-ui); line-height: 1; color: var(--ink); white-space: nowrap; }
+
+[data-art="workflows"] .wf-body {
+  position: relative;
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: 0 var(--wf-padx);
+  font-family: var(--mono);
+  font-size: var(--wf-code);
+  line-height: var(--wf-lh);
+}
+[data-art="workflows"] .wf-lines { position: relative; }
+[data-art="workflows"] .wf-line {
+  display: block; height: var(--wf-lh);
+  white-space: pre;
+  color: var(--muted);
+  opacity: 0; transform: translateX(-4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+[data-art="workflows"] .wf-line.is-in { opacity: 1; transform: none; }
+[data-art="workflows"] .wf-line .k { color: var(--ink); }
+[data-art="workflows"] .wf-line .p,
+[data-art="workflows"] .wf-line .c { color: var(--faint); }
+
+/* The name inside {{ cohort }} takes a coral underline while its value is
+   typed into the field below: the one parameter, declared, used and filled.
+   Only the word is underlined (it has no descenders), so the rule sits close
+   under it and clear of the next line at every line height. */
+[data-art="workflows"] .wf-tpl {
+  text-decoration: underline transparent;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.14em;
+  transition: text-decoration-color var(--dur-med) var(--ease), color var(--dur-med) var(--ease);
+}
+[data-art="workflows"] .wf-tpl.is-on { color: var(--ink); text-decoration-color: var(--coral-bar); }
+
+/* The writing rail: the app's 2px active-row bar, beside the line being added,
+   centred in the gutter between the card's edge and the code. */
+[data-art="workflows"] .wf-rail {
+  position: absolute; left: calc(var(--wf-padx) / -2 - 1px); top: 0;
+  width: 2px; height: var(--wf-lh);
+  border-radius: 2px;
+  background: var(--coral-bar);
+  opacity: 0;
+  transition: transform var(--dur-med) var(--ease), opacity var(--dur-med) var(--ease);
+}
+[data-art="workflows"] .wf-rail.is-on { opacity: 1; }
+
+/* ── The run ───────────────────────────────────────────── */
+[data-art="workflows"] .wf-run { flex: none; display: flex; flex-direction: column; gap: var(--wf-gap); padding: var(--wf-gap) 0 0; }
+/* One centring rule for every word in the run: at line-height 1, Arial's
+   cap band sits a little above the centre of its box, so each label is set
+   down by --wf-nudge, onto the centre line of its field, button or icon.
+   The amount was measured from the ink at 4x: 0.05em, except at 11.5px,
+   where the baseline rounds higher and 0.09em lands it on the line. */
+[data-art="workflows"] .wf-key,
+[data-art="workflows"] .wf-val,
+[data-art="workflows"] .wf-btn > span,
+[data-art="workflows"] .wf-step > span:not(.wf-ico) { position: relative; top: var(--wf-nudge); }
+[data-art="workflows"] .wf-row { display: flex; align-items: center; gap: 8px; }
+/* The parameter's label is interface text, as in the app's parameter dialog. */
+[data-art="workflows"] .wf-key { font-size: var(--wf-ui); line-height: 1; color: var(--muted); white-space: nowrap; }
+[data-art="workflows"] .wf-field {
+  position: relative;
+  display: inline-flex; align-items: center;
+  height: var(--wf-ctl); width: 76px;
+  padding: 0 9px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-element);
+  background: var(--paper);
+  font-size: var(--wf-ui); line-height: 1; color: var(--ink);
+  transition: border-color var(--dur-fast) var(--ease);
+}
+[data-art="workflows"] .wf-field.is-focus { border-color: var(--coral); }
+[data-art="workflows"] .wf-val { white-space: pre; transition: opacity var(--dur-slow) var(--ease); }
+[data-art="workflows"] .wf-caret {
+  display: block; width: 1px; height: 13px; margin-left: 1px;
+  background: var(--ink);
+  opacity: 0;
+}
+/* The caret stays solid while the value is typed; nothing in the tile blinks. */
+[data-art="workflows"] .wf-field.is-focus .wf-caret { opacity: 1; }
+
+/* Start (the app's parameter dialog says "Start workflow"): the app's 8px
+   rounded square. Idle is the secondary grey; armed is coral with white text;
+   the press is the app's scale(0.98). */
+[data-art="workflows"] .wf-btn {
+  margin-left: auto;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--wf-ctl); padding: 0 11px 0 10px;
+  border-radius: var(--r-element);
+  background: var(--medium); color: var(--ink);
+  font-size: var(--wf-ui); line-height: 1; white-space: nowrap;
+  transition: background var(--dur-med) var(--ease), color var(--dur-med) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="workflows"] .wf-btn svg { width: 10px; height: 10px; flex: none; }
+[data-art="workflows"] .wf-btn.is-armed { background: var(--coral); color: var(--paper); }
+[data-art="workflows"] .wf-btn.is-pressed { transform: scale(0.98); background: var(--coral-hover); }
+
+/* Steps, drawn the way the app's To Do list draws them (ChatSummary.tsx):
+   pending is a Circle, in progress is CircleDotDashed in the accent, complete
+   is a Check. A track joins them and the progress fills it. */
+[data-art="workflows"] .wf-steps { display: flex; align-items: center; gap: 7px; height: var(--wf-ico); }
+[data-art="workflows"] .wf-step { display: inline-flex; align-items: center; gap: 6px; flex: none; font-size: var(--wf-ui); line-height: 1; color: var(--ink); white-space: nowrap; transition: color var(--dur-med) var(--ease); }
+[data-art="workflows"] .wf-ico { position: relative; flex: none; width: var(--wf-ico); height: var(--wf-ico); }
+/* The app swaps these icons outright, and so does the tile: a step that
+   starts or finishes changes icon at once, never through an empty or a
+   doubled frame. Only the reset below fades them. */
+[data-art="workflows"] .wf-ico svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+[data-art="workflows"] .wf-ico .i-pending { color: var(--faint); }
+[data-art="workflows"] .wf-ico .i-active { color: var(--coral); opacity: 0; }
+[data-art="workflows"] .wf-ico .i-done { color: var(--muted); opacity: 0; }
+[data-art="workflows"] .wf-step.is-active .i-pending,
+[data-art="workflows"] .wf-step.is-done .i-pending { opacity: 0; }
+[data-art="workflows"] .wf-step.is-active .i-active { opacity: 1; }
+[data-art="workflows"] .wf-step.is-done .i-done { opacity: 1; }
+[data-art="workflows"] .wf-step.is-done { color: var(--muted); }
+[data-art="workflows"] .wf-link {
+  position: relative; flex: 1 1 auto; min-width: 8px;
+  height: 2px; border-radius: 2px;
+  background: var(--medium);
+  overflow: hidden;
+}
+[data-art="workflows"] .wf-link b {
+  position: absolute; inset: 0;
+  background: var(--coral-bar);
+  transform-origin: 0 50%; transform: scaleX(0);
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-slow) var(--ease);
+}
+[data-art="workflows"] .wf-link.is-filled b { transform: none; }
+
+/* Clearing a finished run: the value and the progress fade, then reset. */
+[data-art="workflows"] .wf.is-clearing .wf-val,
+[data-art="workflows"] .wf.is-clearing .wf-link b { opacity: 0; }
+[data-art="workflows"] .wf.is-clearing .wf-step { color: var(--ink); }
+[data-art="workflows"] .wf.is-clearing .wf-ico svg { transition: opacity var(--dur-med) var(--ease); }
+[data-art="workflows"] .wf.is-clearing .wf-step .i-pending { opacity: 1; }
+[data-art="workflows"] .wf.is-clearing .wf-step .i-done,
+[data-art="workflows"] .wf.is-clearing .wf-step .i-active { opacity: 0; }
+
+/* Instant state changes (reset, reduced motion). */
+[data-art="workflows"] .wf.is-still,
+[data-art="workflows"] .wf.is-still * { transition: none; }

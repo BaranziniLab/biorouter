@@ -1,0 +1,215 @@
+/* Documentation layout and the small set of parts every docs page uses.
+   Plain type, hairline tables, no cards. Diagrams are built from .flow parts
+   so their text stays real text at every width. */
+
+.docs { display: grid; grid-template-columns: 216px minmax(0, 1fr) 188px; gap: 56px; max-width: 1240px; margin: 0 auto; padding: 44px var(--gutter) 120px; align-items: start; }
+@media (max-width: 1180px) { .docs { grid-template-columns: 216px minmax(0, 1fr); } .docs-toc { display: none; } }
+@media (max-width: 880px) { .docs { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 20px; } }
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+.docs-side { position: sticky; top: 84px; max-height: calc(100vh - 100px); overflow-y: auto; padding: 0 4px 24px 0; scrollbar-width: thin; }
+.docs-search { position: relative; margin: 0 0 22px; }
+.docs-search input {
+  width: 100%; height: 36px; padding: 0 10px 0 32px;
+  border: 1px solid var(--line); border-radius: var(--r-element); background: var(--paper);
+  font: inherit; font-size: 14px; color: var(--ink);
+  transition: border-color var(--dur-fast) ease;
+}
+.docs-search input::placeholder { color: var(--faint); }
+.docs-search input:focus { outline: none; border-color: var(--coral); }
+.docs-search svg { position: absolute; left: 10px; top: 10px; width: 16px; height: 16px; color: var(--faint); pointer-events: none; }
+.docs-results { list-style: none; margin: 8px 0 0; padding: 0; display: none; }
+.docs-results.open { display: block; }
+.docs-results a { display: block; padding: 7px 10px; border-radius: var(--r-element); font-size: 13.5px; color: var(--ink); line-height: 1.35; }
+.docs-results a span { display: block; color: var(--faint); font-size: 12px; margin-top: 2px; }
+.docs-results a:hover, .docs-results a.hit { background: var(--sidebar-active); text-decoration: none; }
+.docs-results .none { padding: 7px 10px; color: var(--faint); font-size: 13px; }
+.docs-group { margin: 0 0 20px; }
+.docs-group h2 { font-size: 12.5px; font-weight: 400; color: var(--faint); margin: 0 0 6px; padding: 0 10px; }
+.docs-group ul { list-style: none; margin: 0; padding: 0; }
+.docs-nav-item {
+  position: relative; display: block; width: 100%; text-align: left;
+  padding: 6px 10px; border: 0; background: none; border-radius: var(--r-element);
+  font: inherit; font-size: 14px; line-height: 1.4; color: var(--muted); cursor: pointer;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.docs-nav-item:hover { background: var(--sidebar); color: var(--ink); text-decoration: none; }
+.docs-nav-item.active { color: var(--ink); background: var(--sidebar-active); }
+.docs-nav-item.active::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--coral-bar); }
+.docs-menu-btn { display: none; }
+html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
+@media (max-width: 880px) {
+  .docs-side { position: static; max-height: none; overflow: visible; padding: 0; border-bottom: 1px solid var(--line); margin-bottom: 36px; }
+  .docs-menu-btn { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 44px; padding: 0; border: 0; background: none; font: inherit; font-size: 15px; color: var(--ink); cursor: pointer; }
+  .docs-menu-btn svg { width: 16px; height: 16px; transition: transform var(--dur-med) var(--ease); }
+  .docs-menu-btn[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .docs-side-body { display: none; padding: 8px 0 18px; }
+  .docs-side-body.open { display: block; }
+  html:not(.js) .docs-side-body { display: block; }
+  html:not(.js) .docs-menu-btn { display: none; }
+}
+
+/* ── On this page ────────────────────────────────────────── */
+.docs-toc { position: sticky; top: 92px; font-size: 13px; }
+.docs-toc h2 { font-size: 12.5px; font-weight: 400; color: var(--faint); margin: 0 0 10px; }
+.docs-toc ul { list-style: none; margin: 0; padding: 0; border-left: 1px solid var(--line); }
+.docs-toc a { display: block; padding: 4px 0 4px 12px; margin-left: -1px; border-left: 1px solid transparent; color: var(--muted); line-height: 1.4; }
+.docs-toc a:hover { color: var(--ink); text-decoration: none; }
+.docs-toc a.on { color: var(--ink); border-left-color: var(--coral-bar); }
+
+/* ── Content ─────────────────────────────────────────────── */
+.docs-main { min-width: 0; max-width: 720px; }
+.js .doc-page { display: none; }
+.js .doc-page.active { display: block; }
+.doc-page + .doc-page { margin-top: 96px; }
+.js .doc-page + .doc-page { margin-top: 0; }
+.doc-page h1 { font-size: clamp(32px, 4vw, 44px); font-weight: 400; letter-spacing: -0.045em; line-height: 1.1; margin: 0 0 18px; }
+.doc-lede { font-size: 18px; line-height: 1.65; color: var(--muted); margin: 0 0 44px; }
+.doc-page h2 { position: relative; font-size: 23px; font-weight: 400; letter-spacing: -0.025em; line-height: 1.25; margin: 60px 0 16px; padding-top: 28px; border-top: 1px solid var(--line); }
+.doc-page h2::before { content: ''; position: absolute; left: 0; top: -1px; width: 32px; height: 2px; background: var(--coral-bar); }
+.doc-page h3 { font-size: 17px; font-weight: 400; letter-spacing: -0.01em; margin: 34px 0 10px; color: var(--ink); }
+.doc-page h4 { font-size: 15px; font-weight: 700; margin: 26px 0 8px; }
+.doc-page p, .doc-page li { font-size: 16px; line-height: 1.75; color: var(--ink-2); }
+.doc-page p { margin: 0 0 16px; }
+.doc-page ul, .doc-page ol { margin: 0 0 18px; padding-left: 22px; }
+.doc-page li { margin: 0 0 6px; }
+.doc-page li::marker { color: var(--faint); }
+.doc-page strong { font-weight: 700; color: var(--ink); }
+.doc-page a:not(.btn) { color: var(--ink); text-decoration: underline; text-decoration-color: var(--coral-bar); text-underline-offset: 4px; }
+.doc-page a:not(.btn):hover { color: var(--coral); }
+.doc-page :not(pre) > code { font-size: 0.86em; background: var(--wash); padding: 2px 5px; border-radius: var(--r-inner); color: var(--ink); overflow-wrap: break-word; }
+.doc-page pre { background: var(--wash); border-radius: var(--r-container); padding: 16px 18px; margin: 0 0 20px; overflow-x: auto; font-size: 13px; line-height: 1.7; color: var(--ink); }
+.doc-page pre code { background: none; padding: 0; font-size: inherit; }
+.doc-page kbd { font-size: 12px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: var(--r-inner); padding: 1px 5px; background: var(--paper); }
+
+/* Tables: hairlines, quiet header, scroll on small screens */
+.doc-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 0 24px; }
+.doc-page table { width: 100%; border-collapse: collapse; font-size: 14.5px; line-height: 1.55; }
+.doc-page th { text-align: left; font-weight: 400; font-size: 12.5px; color: var(--muted); padding: 0 16px 9px 0; border-bottom: 1px solid var(--line-2); vertical-align: bottom; }
+.doc-page td { padding: 11px 16px 11px 0; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
+.doc-page tr > :last-child { padding-right: 0; }
+.doc-page td code { font-size: 12.5px; }
+/* Code in a table's first column is a name: keep it whole. */
+.doc-page td:first-child code { white-space: nowrap; }
+.doc-page code.code-token { white-space: nowrap; }
+/* A table wider than the column scrolls sideways; a soft shadow at the
+   scrolling edge says so (the classic scroll-shadow backgrounds). */
+.doc-table-scroll {
+  background:
+    linear-gradient(to right, var(--paper) 30%, rgba(255, 255, 255, 0)),
+    linear-gradient(to left, var(--paper) 30%, rgba(255, 255, 255, 0)) 100% 0,
+    radial-gradient(farthest-side at 0 50%, rgba(42, 37, 32, .14), rgba(42, 37, 32, 0)),
+    radial-gradient(farthest-side at 100% 50%, rgba(42, 37, 32, .14), rgba(42, 37, 32, 0)) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 36px 100%, 36px 100%, 12px 100%, 12px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+@media (max-width: 640px) { .doc-page table { font-size: 14px; } .doc-page td { padding-right: 12px; } }
+@media (max-width: 640px) {
+  .doc-page .doc-options colgroup, .doc-page .doc-options thead { display: none; }
+  .doc-page .doc-options tbody, .doc-page .doc-options tr { display: block; }
+  .doc-page .doc-options tr { padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .doc-page .doc-options td { display: block; padding: 0; border: 0; }
+  .doc-page .doc-options td + td { margin-top: 7px; }
+}
+
+/* A note: a quiet line, not a box */
+.note { border-left: 2px solid var(--coral-bar); padding: 2px 0 2px 16px; margin: 0 0 20px; }
+.note p, .note { color: var(--muted); font-size: 15px; line-height: 1.7; }
+.note p:last-child { margin: 0; }
+.note.warn { border-left-color: var(--danger); }
+.note strong { color: var(--ink); }
+
+/* Numbered steps */
+.steps { list-style: none; counter-reset: step; padding: 0 !important; margin: 0 0 24px; }
+.steps > li { counter-increment: step; position: relative; padding: 0 0 18px 40px; margin: 0; }
+.steps > li::before { content: counter(step); position: absolute; left: 0; top: 1px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--coral-bar); color: var(--coral); font-size: 12.5px; line-height: 22px; text-align: center; font-variant-numeric: tabular-nums; }
+.steps > li > strong:first-child { display: block; font-weight: 400; color: var(--ink); font-size: 16px; margin-bottom: 2px; }
+
+/* Page footer: previous and next */
+.doc-pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 80px; padding-top: 22px; border-top: 1px solid var(--line); }
+.doc-pager a { display: flex; flex-direction: column; gap: 3px; font-size: 15px; color: var(--ink); max-width: 48%; }
+.doc-pager a span { font-size: 12.5px; color: var(--faint); }
+.doc-pager a.next { margin-left: auto; text-align: right; }
+.doc-pager a:hover { text-decoration: none; color: var(--coral); }
+
+/* ── Figures and diagrams ────────────────────────────────── */
+.doc-figure { margin: 28px 0 32px; }
+.doc-figure figcaption { font-size: 13px; color: var(--faint); margin-top: 14px; line-height: 1.5; }
+
+/* .flow: boxes joined by arrows. Wraps to a column below 640px.
+   <div class="flow"><div class="node"><b>Title</b><span>note</span></div><i class="arrow"></i>...</div> */
+.flow { display: flex; align-items: stretch; flex-wrap: nowrap; gap: 0; }
+.flow > .node, .stack > .node, .layers > .node { flex: 1 1 0; min-width: 0; }
+.node {
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+  padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--r-element);
+  background: var(--paper); font-size: 14px; line-height: 1.35; color: var(--ink);
+}
+.node b { font-weight: 400; color: var(--ink); }
+.node span { font-size: 12.5px; color: var(--muted); }
+.node.accent { border-color: var(--coral); }
+.node.accent b { color: var(--coral); }
+.node.quiet { border-style: dashed; color: var(--muted); }
+.node.ground { background: var(--muted-ground); border-color: transparent; }
+.node.private { border-color: var(--navy); }
+.node.private b::after { content: ''; display: inline-block; width: 11px; height: 11px; margin-left: 6px; vertical-align: -1px; background: var(--navy); -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat; }
+.node.refused { border-color: var(--line); color: var(--faint); background: var(--wash); }
+.node.refused b { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--danger); }
+.arrow { position: relative; flex: 0 0 34px; align-self: center; height: 12px; font-style: normal; }
+.arrow::before { content: ''; position: absolute; left: 4px; right: 6px; top: 50%; height: 1px; background: var(--coral-bar); }
+.arrow::after { content: ''; position: absolute; right: 5px; top: 50%; width: 6px; height: 6px; border-top: 1px solid var(--coral-bar); border-right: 1px solid var(--coral-bar); transform: translateY(-50%) rotate(45deg); }
+.arrow.back::after { right: auto; left: 5px; transform: translateY(-50%) rotate(-135deg); }
+.arrow.both::before { left: 6px; }
+.arrow.blocked::before { background: repeating-linear-gradient(90deg, var(--danger) 0 3px, transparent 3px 6px); height: 1px; }
+.arrow.blocked::after { border-color: var(--danger); }
+/* A labelled arrow: <i class="arrow labeled"><span class="arrow-label">calls</span></i> */
+.arrow.labeled { flex-basis: 76px; height: 34px; }
+.arrow.labeled::before, .arrow.labeled::after { top: 72%; }
+.arrow-label { position: absolute; left: 0; right: 0; top: 0; text-align: center; font-size: 12px; line-height: 1.2; color: var(--muted); font-style: normal; white-space: nowrap; }
+
+/* One node fanning out to a stack: <div class="flow"><div class="node">..</div><i class="arrow"></i><div class="stack">nodes</div></div> */
+.stack { display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-width: 0; }
+
+/* Stacked layers with a direction note: <div class="layers"><div class="node">..</div><i class="arrow down"></i>..</div> */
+.layers { display: flex; flex-direction: column; align-items: stretch; }
+.layers > .arrow, .flow.col > .arrow { flex-basis: 26px; height: 26px; width: 12px; align-self: center; }
+.layers > .arrow::before, .flow.col > .arrow::before { left: 50%; right: auto; top: 3px; bottom: 6px; width: 1px; height: auto; }
+.layers > .arrow::after, .flow.col > .arrow::after { left: 50%; right: auto; top: auto; bottom: 5px; transform: translateX(-50%) rotate(135deg); }
+.flow.col { flex-direction: column; }
+.flow.col > .node { flex: none; }
+
+@media (max-width: 640px) {
+  .flow { flex-direction: column; }
+  .flow > .node, .flow > .stack { flex: none; }
+  .flow > .arrow { flex-basis: 26px; height: 26px; width: 12px; align-self: center; }
+  .flow > .arrow::before { left: 50%; right: auto; top: 3px; bottom: 6px; width: 1px; height: auto; }
+  .flow > .arrow::after { left: 50%; right: auto; top: auto; bottom: 5px; transform: translateX(-50%) rotate(135deg); }
+  .flow > .arrow.back::after { top: 5px; bottom: auto; transform: translateX(-50%) rotate(-45deg); }
+  .flow > .arrow.labeled { width: auto; height: 34px; flex-basis: 34px; align-self: stretch; }
+  .flow > .arrow.labeled::before { left: 50%; top: 3px; bottom: 6px; }
+  .flow > .arrow.labeled::after { left: 50%; top: auto; bottom: 5px; }
+  .flow > .arrow.labeled .arrow-label { left: calc(50% + 14px); right: auto; top: 10px; text-align: left; }
+}
+
+/* A two-column comparison (for example private and public) */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1px solid var(--line-2); border-radius: var(--r-container); overflow: hidden; }
+.split > div { padding: 16px 18px; }
+.split > div + div { border-left: 1px solid var(--line-2); }
+.split h4 { margin: 0 0 8px; font-size: 14px; font-weight: 400; }
+.split ul { margin: 0; padding-left: 18px; }
+.split li { font-size: 14px; line-height: 1.6; }
+@media (max-width: 560px) { .split { grid-template-columns: 1fr; } .split > div + div { border-left: 0; border-top: 1px solid var(--line-2); } }
+
+/* A small privacy mark for prose and tables */
+.lock { display: inline-block; width: 12px; height: 12px; vertical-align: -1px; background: currentColor; -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat; }
+
+/* The docs page is wider than the others; its header follows it. */
+.site-header.wide .wrap { max-width: 1240px; }
+
+/* Community note at the foot of the docs sidebar */
+.docs-slack { display: block; margin: 8px 0 0; padding: 14px 10px 0; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+.docs-slack a { display: inline-flex; margin-top: 10px; }
+
+/* Community band at the foot of every docs page */
+.docs-community { margin-top: 64px; }

@@ -1,0 +1,218 @@
+/* Hero artifact: one interface, every model.
+   A composer at the left, the BR mark in the middle, the app's provider
+   catalogue (Local, Institutional, Public) at the right. The person picks a
+   model from the composer's model chip; a coral pulse carries the turn through
+   Biorouter to that row. Geometry is set by art/hub.js; this file holds the
+   look. Every rule is scoped to the artifact. */
+
+.art-hub .hub {
+  position: absolute; inset: 0;
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1.4;
+  -webkit-user-select: none; user-select: none;
+  --hub-row: 26px;
+  --hub-gap: 16px;
+  --hub-fade: 24px;
+  --hub-tail: 0px;
+}
+
+/* Connectors. Thin hairlines; the pulse is the one coral stroke, and the
+   route it took stays lit, with its row, until the next choice. */
+.art-hub .hub-lines { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.art-hub .hub-lines path { fill: none; stroke: var(--line-2); stroke-width: 1; }
+.art-hub .hub-lines .hub-pulse { stroke: var(--coral); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.art-hub .hub-lines .hub-route { stroke: var(--coral-bar); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-med) ease; }
+.art-hub .hub-lines .hub-route.on { opacity: 1; }
+
+/* ── The chat: a transcript that scrolls, composer card, model chip ── */
+/* The box runs down to just above the card; the gap under the last line is
+   padding (--hub-tail), so a message that was just sent rises out of the
+   composer rather than out of an unseen edge. */
+.art-hub .hub-log {
+  position: absolute; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  padding-bottom: var(--hub-tail);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hub-fade));
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hub-fade));
+  transition: opacity var(--dur-med) var(--ease);
+}
+.art-hub .hub-log.leave { opacity: 0; }
+.art-hub .hub-stack { flex: none; display: flex; flex-direction: column; gap: 14px; }
+.art-hub .hub-turn { display: flex; flex-direction: column; gap: 8px; transition: opacity var(--dur-med) var(--ease); }
+.art-hub .hub-turn.enter { opacity: 0; transition: none; }
+.art-hub .hub-user {
+  align-self: flex-end; max-width: 90%;
+  background: var(--medium); border-radius: var(--r-container);
+  padding: 7px 12px; font-size: 13px; line-height: 18px; color: var(--ink);
+}
+.art-hub .hub-reply { font-size: 13px; line-height: 19px; color: var(--ink); margin: 0; }
+.art-hub .hub-reply .w { opacity: 0; transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-reply .w.on { opacity: 1; }
+/* A message that has passed the top edge leaves as one block. */
+.art-hub .hub.live .hub-user, .art-hub .hub.live .hub-reply { transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-stack .gone { opacity: 0; transition-duration: var(--dur-fast); }
+/* The empty chat, before its first message. */
+.art-hub .hub-new {
+  position: absolute; left: 0; right: 0; top: calc((100% - var(--hub-tail)) / 2); margin-top: -9px;
+  text-align: center; font-size: 12px; line-height: 18px; color: var(--muted);
+  opacity: 0; transition: opacity var(--dur-fast) ease;
+}
+.art-hub .hub-new.on { opacity: 1; transition-duration: var(--dur-med); }
+
+.art-hub .hub-card {
+  position: absolute;
+  display: flex; align-items: flex-end; gap: 8px;
+  background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  padding: 10px 10px 10px 14px;
+}
+.art-hub .hub-input {
+  position: relative; flex: 1; min-width: 0;
+  font-size: 13.5px; line-height: 20px; padding: 6px 0;
+  color: var(--ink);
+}
+.art-hub .hub-ph { position: absolute; left: 0; top: 6px; right: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-ph.hide { opacity: 0; transition-duration: var(--dur-fast); }
+.art-hub .hub-ph.off { opacity: 0; transition: none; }
+.art-hub .hub-typed { transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-typed.off { opacity: 0; transition-duration: var(--dur-fast); }
+.art-hub .hub-caret { display: inline-block; width: 1.5px; height: 16px; margin-left: 1px; vertical-align: -3px; background: var(--ink); opacity: 0; }
+.art-hub .hub-caret.on { opacity: 1; }
+.art-hub .hub-send {
+  flex: none; width: 32px; height: 32px; border-radius: var(--r-element);
+  display: grid; place-items: center;
+  background: var(--medium); color: var(--muted);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-fast) var(--ease);
+}
+.art-hub .hub-send svg { width: 16px; height: 16px; }
+.art-hub .hub-send.armed { background: var(--coral); color: #fff; }
+.art-hub .hub-send.press { transform: scale(0.98); }
+
+.art-hub .hub-controls { position: absolute; height: 28px; display: flex; align-items: center; }
+.art-hub .hub-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  height: 28px; padding: 0 7px 0 4px; border-radius: var(--r-element);
+  font-size: 12px; line-height: 16px; white-space: nowrap;
+  color: color-mix(in srgb, var(--ink) 72%, transparent);
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.art-hub .hub-chip.tint { background: var(--medium); color: var(--ink); }
+.art-hub .hub-chip svg { width: 18px; height: 18px; flex: none; }
+/* The chip's model and padlock change by a plain crossfade: the padlock
+   appears or goes, it never slides. */
+.art-hub .hub-chip .model { display: inline-flex; align-items: center; transition: opacity var(--dur-menu) ease; }
+.art-hub .hub-chip .model.out { opacity: 0; transition-duration: var(--dur-fast); }
+.art-hub .hub-chip .model.in { opacity: 0; transition: none; }
+
+/* The chip's menu: a white card with a hairline, three model rows. */
+.art-hub .hub-pick {
+  position: absolute; padding: 3px;
+  background: var(--paper);
+  border: 1px solid var(--line-2); border-radius: var(--r-container);
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-menu) ease, transform var(--dur-menu) var(--ease);
+}
+.art-hub .hub-pick.open { opacity: 1; transform: none; }
+.art-hub .hub-prow {
+  position: relative; display: flex; align-items: center;
+  height: 24px; padding: 0 10px 0 12px;
+  border-radius: var(--r-element);
+  font-size: 12.5px; line-height: 16px; color: var(--ink); white-space: nowrap;
+  transition: background var(--dur-menu) ease;
+}
+.art-hub .hub-prow::before {
+  content: ''; position: absolute; left: 0; top: 50%;
+  width: 2px; height: 16px; margin-top: -8px; border-radius: 2px;
+  background: var(--coral-bar);
+  transform: scaleY(0); transition: transform var(--dur-menu) var(--ease);
+}
+.art-hub .hub-prow.on { background: var(--sidebar-active); }
+.art-hub .hub-prow.on::before { transform: scaleY(1); }
+.art-hub .hub-prow .hub-lock { margin-left: 6px; color: var(--muted); }
+.art-hub .hub-prow .note { display: none; margin-left: 10px; font-size: 11.5px; color: var(--faint); }
+.art-hub .hub-prow.off { color: var(--faint); }
+.art-hub .hub-prow.off .note { display: inline; }
+
+/* The padlock, the app's one mark for private. It appears or goes; it never moves. */
+.art-hub .hub-lock {
+  display: inline-block; flex: none; width: 12px; height: 12px;
+  background: currentColor;
+  -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat;
+}
+.art-hub .hub-chip .hub-lock { margin-left: 6px; }
+.art-hub .hub-chip .hub-lock[hidden] { display: none; }
+
+/* ── The mark ────────────────────────────────────────────────────── */
+.art-hub .hub-mark {
+  position: absolute;
+  display: grid; place-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+}
+.art-hub .hub-mark svg { width: 62%; height: 62%; overflow: visible; }
+.art-hub .hub-mark text { font-family: var(--brand-font); font-weight: 800; }
+.art-hub .hub-mark .navy { fill: var(--navy); }
+.art-hub .hub-mark .coral { fill: var(--coral); }
+
+/* ── The catalogue: Local, Institutional, Public ─────────────────── */
+.art-hub .hub-cat { position: absolute; display: flex; flex-direction: column; gap: var(--hub-gap); }
+.art-hub .hub-group { position: relative; }
+.art-hub .hub-gh {
+  position: relative; display: flex; align-items: center; gap: 8px;
+  height: 20px; padding-left: 12px;
+  font-size: 12.5px; color: var(--muted); white-space: nowrap;
+}
+.art-hub .hub-gh .dot { position: absolute; left: -3px; top: 7px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.art-hub .hub-gh .dot.local { color: var(--local); }
+.art-hub .hub-gh .dot.inst { color: var(--institutional); }
+.art-hub .hub-gh .dot.public { color: var(--public); }
+.art-hub .hub-gh .aside { display: none; font-size: 11.5px; color: var(--faint); }
+.art-hub .hub-cols { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: 10px; }
+.art-hub .hub-group.two .hub-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.art-hub .hub-sl { height: 17px; padding-left: 12px; font-size: 11.5px; line-height: 17px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Rows hug their label, with one common minimum, so every lit row is about
+   the same width. */
+.art-hub .hub-items { display: flex; flex-direction: column; align-items: flex-start; }
+.art-hub .hub-row {
+  position: relative; display: flex; align-items: center;
+  height: var(--hub-row); margin-left: -1px; padding: 0 10px 0 13px;
+  min-width: min(148px, 100%);
+  border-radius: var(--r-element);
+  font-size: 13px; line-height: 16px; color: var(--ink); white-space: nowrap;
+  transition: background var(--dur-menu) ease;
+}
+.art-hub .hub-row::before {
+  content: ''; position: absolute; left: 0; top: 50%;
+  width: 2px; height: 16px; margin-top: -8px; border-radius: 2px;
+  background: var(--coral-bar);
+  transform: scaleY(0); transition: transform var(--dur-med) var(--ease);
+}
+.art-hub .hub-row.on { background: var(--sidebar-active); }
+.art-hub .hub-row.on::before { transform: scaleY(1); }
+.art-hub .hub-row .note { margin-left: 8px; font-size: 12px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+.art-hub .hub-row .hub-lock { margin-left: 7px; color: var(--muted); }
+.art-hub .hub-row .label { flex: none; }
+.art-hub .hub-row.more { color: var(--faint); font-size: 12px; }
+.art-hub .hub-row.more::before { display: none; }
+
+/* Narrow: the groups become compact wrapped lists, each on its own branch.
+   "UCSF" moves beside its group; the Public sublabels stay, one above each
+   line of rows, so "Your subscription" covers both agents. */
+.art-hub .hub.narrow .hub-sl { height: 16px; line-height: 16px; }
+.art-hub .hub.narrow .hub-sl.wo { display: none; }
+.art-hub .hub.narrow .hub-gh .aside { display: inline; }
+.art-hub .hub.narrow .hub-group.two .hub-cols { row-gap: 2px; }
+.art-hub .hub.narrow .hub-items { flex-direction: row; flex-wrap: wrap; gap: 2px 4px; }
+.art-hub .hub.narrow .hub-row { min-width: 0; padding: 0 9px 0 13px; font-size: 12.5px; }
+.art-hub .hub.narrow .hub-row .note { margin-left: 6px; }
+.art-hub .hub.narrow .hub-group.two .hub-cols { grid-template-columns: minmax(0, 1fr); }
+
+.art-hub .hub.tight .hub-gh { height: 18px; }
+.art-hub .hub.tight .hub-gh .dot { top: 6px; }
+.art-hub .hub.tight .hub-sl { height: 15px; line-height: 15px; }
+.art-hub .hub.narrow.tight .hub-group.two .hub-cols { row-gap: 0; }
+
+/* Measuring box: laid out for its size, never painted. */
+.art-hub .hub-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; }
+.art-hub .hub-measure .hub-probe { position: absolute; white-space: nowrap; font-size: 13.5px; }

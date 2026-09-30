@@ -1,0 +1,106 @@
+<div class="doc-page" id="doc-vaulting">
+<h1>Security</h1>
+<p class="doc-lede">Where Biorouter keeps your credentials, which files it refuses to read, and how much the agent may do without asking.</p>
+
+<h2 id="vaulting-secrets">Credentials</h2>
+<p>Provider API keys and other secrets go to your operating system's credential store, not to <code>config.yaml</code>. Biorouter reads the store once per process and keeps the values in memory, so one authorization covers the whole run.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Credential store</th><th>What to expect</th></tr></thead>
+  <tbody>
+    <tr><td><strong>macOS</strong><br>Keychain</td><td>macOS asks for your password the first time a program reads the item. Choose <strong>Always&nbsp;Allow</strong>. The background service (<code>biorouterd</code>) and the command line (<code>biorouter</code>) are separate programs, so each asks once, and a program is never asked about an item it created. The grant survives updates.</td></tr>
+    <tr><td><strong>Windows</strong><br>Credential&nbsp;Manager</td><td>No prompt. Windows protects the entries for your account.</td></tr>
+    <tr><td><strong>Linux</strong><br>Secret&nbsp;Service</td><td>GNOME Keyring or KWallet. No prompt on a desktop session, which opens the store when you log in.</td></tr>
+  </tbody>
+</table></div>
+<p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code class="code-token">BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. Prefer the credential store where there is one.</p>
+<ul>
+  <li><strong>In the current release</strong>, on macOS and Linux the file gets your computer's default permissions, which can let other accounts on the computer read it. Run <code>chmod&nbsp;600 ~/.config/<wbr>biorouter/<wbr>secrets.yaml</code> to make it readable by your account only. Biorouter keeps that setting when it writes the file again.</li>
+  <li><span class="chip">Next release</span> Biorouter creates the file readable by your account only, and tightens an existing file the next time it writes it.</li>
+</ul>
+<p>Either way, anyone who can act as your account, or as root, can still read the file.</p>
+<p>An environment variable named after a key, such as <code>OPENAI_API_KEY</code>, always wins over the stored value.</p>
+
+<h2 id="vaulting-secret-guard">The secret guard</h2>
+<p>A model with a shell can read any file you can. The secret guard refuses a tool call that reads or names a file whose purpose is to hold a credential. It works in every chat, in every permission mode and on every model, and it has no switch.</p>
+<p>It protects these names in any folder:</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Kind</th><th>Names</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Secret files</strong></td><td><code>.env</code>, <code>.env.*</code>, <code>secrets.*</code> (Biorouter's own <code>secrets.yaml</code> included)</td></tr>
+    <tr><td><strong>Keys and certificates</strong></td><td>SSH private keys such as <code>id_rsa</code> and <code>id_ed25519</code>, <code>*.pem</code>, <code>*.p12</code>, <code>*.pfx</code></td></tr>
+    <tr><td><strong>Tool logins</strong></td><td><code>.aws/credentials</code>, <code>.codex/auth.json</code>, <code>.claude/.credentials.json</code></td></tr>
+    <tr><td><strong>More tool logins</strong> <span class="chip">Next release</span></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code style="white-space: nowrap">.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
+  </tbody>
+</table></div>
+<ul>
+  <li><strong>Commands are read as the shell reads them.</strong> <code>~</code>, variables, globs and <code>cd</code> are resolved before the path is judged, so <code>cat ~/.aws/credentials</code> and <code>cd ~/.aws &amp;&amp; head cred*</code> are both refused.</li>
+  <li><strong>A match is refused whether or not the file exists.</strong> A command that only names a protected file, such as <code>echo X=1 &gt; .env</code>, is refused too.</li>
+  <li><strong>Results are checked as well.</strong> When a credential still reaches a tool result, the guard replaces it with a marker such as <code>[REDACTED:aws-secret-access-key]</code> before any model sees it. It recognizes private key blocks, AWS keys, common provider tokens, and values under names such as <code>*_API_KEY</code> or <code>*_TOKEN</code>.</li>
+</ul>
+<p>To open one protected file on purpose, add a negation to <code>.biorouterignore</code>: the project's own file for paths inside the project, or <code>~/.config/biorouter/.biorouterignore</code> for every path. For example, <code>!**/.env.example</code> in the project's file reopens its example env files. Any other pattern you add there keeps those files from the agent too.</p>
+<div class="note"><p>The guard stops mistakes, not a determined attacker. It cannot see a path a program builds while it runs, a recursive read of a parent folder such as <code>grep -r key ~/.aws</code>, or text inside a screenshot.</p></div>
+
+<h2 id="vaulting-app-vault">Secrets for built apps</h2>
+<p>A <a href="#apps">built app</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the app's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the app's <code>.vault/</code> folder, and the app refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported app leaves <code>.vault/</code> behind.</p>
+
+<h2 id="vaulting-modes">Permission modes</h2>
+<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Mode</strong>, with <code>/mode</code> at the classic terminal prompt, or in the settings menu of <code>biorouter configure</code>. It is stored as <code class="code-token">BIOROUTER_MODE</code>.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Mode</th><th>Value</th><th>What the agent does</th></tr></thead>
+  <tbody>
+    <tr><td>Autonomous</td><td><code>auto</code></td><td>Uses tools and edits, creates or deletes files without asking first. This is the default.</td></tr>
+    <tr><td>Manual</td><td><code>approve</code></td><td>Asks before every tool call, unless you chose <strong>Always&nbsp;Allow</strong> for that tool.</td></tr>
+    <tr><td>Smart</td><td><code>smart_approve</code></td><td>Runs calls with low risk and asks before the rest.</td></tr>
+    <tr><td>Chat only</td><td><code>chat</code></td><td>No tools and no extensions. The model only answers.</td></tr>
+  </tbody>
+</table></div>
+
+<h3 id="vaulting-always-asks">What asks in every mode</h3>
+<p>A few actions ask even in Autonomous, and no hook can answer for you:</p>
+<ul>
+  <li>Writing or deleting under a protected system folder, your home folder itself, or a credential store such as <code>~/.ssh</code>.</li>
+  <li>Reading, saving or deleting a global memory, which every chat on the computer shares.</li>
+  <li>Observing or controlling the desktop with Biorouter Copilot.</li>
+</ul>
+<p>An approval never reopens a call that was already refused, whether by your own <strong>Never allow</strong>, by a managed policy or by the block on destructive commands.</p>
+
+<h3 id="vaulting-copilot">Biorouter Copilot asks for each task</h3>
+<p>Turning on Biorouter Copilot in <strong>Settings → Chat → Capabilities</strong> does not give it your desktop. Before its first capture or action for a request, Biorouter asks for approval that names the model and provider, where their data goes, and the computer to control. With a public model, the approval says that screenshots and application text can be sent to that provider. The approval covers that one request and ends when the reply finishes, when you stop it, or when the model changes. Chat only refuses every Copilot tool.</p>
+
+<h2 id="vaulting-managed-policy">Managed policy</h2>
+<p>An administrator can install a policy file that outranks your own settings. It can deny a tool, require approval for it or approve it in advance, and it can add hooks that always run. A deny holds in Autonomous mode too, and the call reports “Blocked by your organization's managed policy.”</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Computer</th><th>Policy file</th></tr></thead>
+  <tbody>
+    <tr><td><strong>macOS</strong></td><td><code>/Library/Application Support/Biorouter/<span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>Linux</strong></td><td><code>/etc/biorouter/<span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>Windows</strong></td><td><code>%ProgramData%\Biorouter\<span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+  </tbody>
+</table></div>
+<pre>
+<code>permissions:
+  deny:
+    - "developer__shell"
+  ask:
+    - "memory__.*"
+  allow:
+    - "developer__text_editor"</code></pre>
+<p>A tool name matches exactly or as an anchored regular expression. Deploy the file with your device management tools, such as Jamf, Ansible or Group Policy.</p>
+<ul>
+  <li>On macOS and Linux the file is read only if it and its folder belong to root or to you, and neither the group nor others can write to them. On Windows the <code>%ProgramData%</code> location is trusted, and ownership is not checked yet.</li>
+  <li>A file that fails the check or does not parse is ignored with a warning, and Biorouter runs as usual.</li>
+  <li><code class="code-token">BIOROUTER_PATH_ROOT</code> moves the file into <code>&lt;root&gt;/managed/</code>.</li>
+</ul>
+
+<h2 id="vaulting-sandbox">Shell sandbox</h2>
+<p>The shell sandbox is off by default. With the environment variable <code class="code-token">BIOROUTER_SHELL_SANDBOX</code> set (it has no effect in <code>config.yaml</code>), each shell command runs in an operating system sandbox that lets it write only to the working folder and the temporary folder, and blocks outbound network where the kernel allows it. <code>biorouter doctor</code> shows which parts your computer gets. The sandbox is Seatbelt on macOS, and Landlock with seccomp on Linux, or bubblewrap where the kernel lacks them. Windows has no shell sandbox yet.</p>
+<ul>
+  <li><code>auto</code> (or <code>1</code>, <code>true</code>, <code>on</code>) uses the best sandbox available. Where there is none, it warns once and runs the command anyway.</li>
+  <li><code>strict</code> refuses to run a command when a full sandbox is not available.</li>
+  <li><code>BIOROUTER_SHELL_SANDBOX_NETWORK=1</code> lets sandboxed commands reach the network.</li>
+</ul>
+<p>Apart from the sandbox, a block that is always on refuses a few commands that cannot be undone, such as <code>rm -rf /</code>, disk wipes and fork bombs, in every mode.</p>
+
+<h2 id="vaulting-patient-data">Patient data</h2>
+<p>These controls decide what the agent may do on your computer. Where your data goes depends on the model. For patient data, use a local or institutional model, and read <a href="#privacy">Private and public</a> for what keeps a private chat away from public models and what it does not cover.</p>
+</div>

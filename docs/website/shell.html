@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs · Biorouter</title>
+<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v{{LATEST_VERSION}}.">
+<meta name="theme-color" content="#ffffff">
+<link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@600;800&display=swap">
+<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="docs.css">
+</head>
+<body>
+<a class="skip" href="#docs-main">Skip to content</a>
+
+<header class="site-header wide">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Biorouter home"><img src="icon-transparent.svg" alt="" width="30" height="30"><span class="word">Biorouter</span></a>
+    <a class="slack-link header-slack" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Slack</span></a>
+    <button class="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="site-nav"><span></span><span></span><span></span></button>
+    <nav class="nav" id="site-nav" aria-label="Site">
+      <a href="./">Introduction</a>
+      <a href="download.html">Download</a>
+      <a href="docs.html" aria-current="page">Docs</a>
+      <a href="baam.html">BAAM</a>
+      <a href="about.html">About</a>
+      <a class="gh" href="https://github.com/BaranziniLab/biorouter">GitHub ↗</a>
+      <a class="slack-link" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join Slack</span></a>
+    </nav>
+  </div>
+</header>
+
+<div class="docs">
+  <aside class="docs-side" aria-label="Documentation">
+    <button class="docs-menu-btn" type="button" aria-expanded="false" aria-controls="docs-side-body"><span id="docs-menu-label">Contents</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></button>
+    <div class="docs-side-body" id="docs-side-body">
+      <div class="docs-search" role="search">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+        <input id="docs-q" type="search" placeholder="Search the docs" aria-label="Search the docs" autocomplete="off">
+        <ul class="docs-results" id="docs-results" aria-live="polite"></ul>
+      </div>
+      <nav id="docs-nav">
+        <div class="docs-group"><h2>Start</h2><ul>
+          <li><a class="docs-nav-item" id="dnav-getstarted" data-page="getstarted" href="#doc-getstarted">Getting started</a></li>
+          <li><a class="docs-nav-item" id="dnav-app" data-page="app" href="#doc-app">The desktop app</a></li>
+          <li><a class="docs-nav-item" id="dnav-cli" data-page="cli" href="#doc-cli">Command line</a></li>
+        </ul></div>
+        <div class="docs-group"><h2>Models and privacy</h2><ul>
+          <li><a class="docs-nav-item" id="dnav-providers" data-page="providers" href="#doc-providers">Models and providers</a></li>
+          <li><a class="docs-nav-item" id="dnav-privacy" data-page="privacy" href="#doc-privacy">Private and public</a></li>
+          <li><a class="docs-nav-item" id="dnav-vaulting" data-page="vaulting" href="#doc-vaulting">Security</a></li>
+        </ul></div>
+        <div class="docs-group"><h2>Build</h2><ul>
+          <li><a class="docs-nav-item" id="dnav-extensions" data-page="extensions" href="#doc-extensions">Extensions and skills</a></li>
+          <li><a class="docs-nav-item" id="dnav-workflows" data-page="workflows" href="#doc-workflows">Workflows and scheduling</a></li>
+          <li><a class="docs-nav-item" id="dnav-knowledge" data-page="knowledge" href="#doc-knowledge">Knowledge bases</a></li>
+          <li><a class="docs-nav-item" id="dnav-apps" data-page="apps" href="#doc-apps">Built apps</a></li>
+          <li><a class="docs-nav-item" id="dnav-crew" data-page="crew" href="#doc-crew">Crew</a></li>
+        </ul></div>
+        <div class="docs-group"><h2>How it works</h2><ul>
+          <li><a class="docs-nav-item" id="dnav-agentloop" data-page="agentloop" href="#doc-agentloop">The agent loop</a></li>
+          <li><a class="docs-nav-item" id="dnav-config" data-page="config" href="#doc-config">Configuration</a></li>
+          <li><a class="docs-nav-item" id="dnav-architecture" data-page="architecture" href="#doc-architecture">Architecture</a></li>
+        </ul></div>
+      </nav>
+      <div class="docs-slack">Ask on Slack.<br><a class="slack-link" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a></div>
+    </div>
+  </aside>
+
+  <main class="docs-main" id="docs-main">
+<!--DOC-PAGES-->
+    <nav class="doc-pager" id="doc-pager" aria-label="Previous and next page"></nav>
+    <section class="community docs-community" aria-labelledby="docs-community-h">
+      <div>
+        <p class="label">Community</p>
+        <h2 id="docs-community-h">Ask on Slack.</h2>
+        <p class="sub" id="docs-community-sub">Researchers and the developers who build Biorouter answer there.</p>
+      </div>
+      <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
+    </section>
+  </main>
+
+  <aside class="docs-toc" aria-label="On this page"><h2>On this page</h2><ul id="docs-toc"></ul></aside>
+</div>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="foot-brand">
+      <a class="brand" href="./"><img src="icon-transparent.svg" alt="" width="26" height="26"><span class="word">Biorouter</span></a>
+      <span>A research environment for biomedical AI, from the Baranzini Lab at UCSF.</span>
+    </div>
+    <div><h3>Product</h3><ul><li><a href="download.html">Download</a></li><li><a href="docs.html">Docs</a></li><li><a href="baam.html">BAAM</a></li><li><a href="https://github.com/BaranziniLab/biorouter/releases">Release notes</a></li></ul></div>
+    <div><h3>Community</h3><ul><li><a href="about.html">About</a></li><li><a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Slack</a></li><li><a href="https://github.com/BaranziniLab/biorouter">GitHub</a></li></ul></div>
+    <div><h3>UCSF</h3><ul><li><a href="https://baranzinilab.ucsf.edu/">Baranzini Lab</a></li><li><a href="https://bakarinstitute.ucsf.edu/">Bakar Institute</a></li><li><a href="https://ars.ucsf.edu/">Academic Research Services</a></li></ul></div>
+    <div class="legal"><span>© 2026 Baranzini Lab, UCSF</span><a href="https://github.com/BaranziniLab/biorouter/blob/main/LICENSE">Apache 2.0</a></div>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+<script>
+(function () {
+  'use strict';
+  var navItems = Array.prototype.slice.call(document.querySelectorAll('.docs-nav-item'));
+  var order = navItems.map(function (b) { return b.getAttribute('data-page'); });
+  var pager = document.getElementById('doc-pager');
+  var toc = document.getElementById('docs-toc');
+  var menuBtn = document.querySelector('.docs-menu-btn');
+  var sideBody = document.getElementById('docs-side-body');
+  var menuLabel = document.getElementById('docs-menu-label');
+  var current = null;
+  var COMMUNITY = {"cli": "Ask about terminal setups and serving Biorouter on a lab server.", "crew": "Ask about Crew and about hosting a workspace for your lab.", "getstarted": "Ask questions, report problems and share what you build with the researchers and developers who use Biorouter.", "workflows": "Ask about workflows and schedules, and share the ones you write with other labs."};
+  var communitySub = document.getElementById('docs-community-sub');
+  var communityDefault = communitySub ? communitySub.textContent : '';
+
+  function slug(t) { return t.toLowerCase().replace(/<[^>]+>/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60); }
+
+  // Give every h2 and h3 an id so any section can be linked: #<page>-<heading>.
+  document.querySelectorAll('.doc-page').forEach(function (page) {
+    var name = page.id.replace(/^doc-/, '');
+    page.querySelectorAll('h2, h3').forEach(function (h) { if (!h.id) h.id = name + '-' + slug(h.textContent); });
+  });
+
+  function titleOf(name) { var b = document.getElementById('dnav-' + name); return b ? b.textContent : name; }
+
+  function buildToc(page) {
+    toc.innerHTML = '';
+    page.querySelectorAll('h2').forEach(function (h) {
+      var li = document.createElement('li');
+      var a = document.createElement('a');
+      a.href = '#' + h.id; a.textContent = h.textContent; a.setAttribute('data-target', h.id);
+      li.appendChild(a); toc.appendChild(li);
+    });
+    toc.parentElement.style.visibility = toc.children.length ? 'visible' : 'hidden';
+  }
+
+  function buildPager(name) {
+    var i = order.indexOf(name);
+    var prev = order[i - 1], next = order[i + 1];
+    pager.innerHTML = (prev ? '<a class="prev" href="#' + prev + '"><span>Previous</span>' + titleOf(prev) + '</a>' : '') +
+                      (next ? '<a class="next" href="#' + next + '"><span>Next</span>' + titleOf(next) + '</a>' : '');
+  }
+
+  function showDoc(name, keepScroll) {
+    var page = document.getElementById('doc-' + name);
+    if (!page) return false;
+    document.querySelectorAll('.doc-page').forEach(function (p) { p.classList.toggle('active', p === page); });
+    navItems.forEach(function (b) {
+      var on = b.getAttribute('data-page') === name;
+      b.classList.toggle('active', on);
+      if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    current = name;
+    if (history.replaceState) history.replaceState(null, '', '#' + name);
+    buildToc(page);
+    buildPager(name);
+    if (menuLabel) menuLabel.textContent = titleOf(name);
+    if (communitySub) communitySub.textContent = COMMUNITY[name] || communityDefault;
+    document.title = titleOf(name) + ' · Biorouter docs';
+    if (!keepScroll) window.scrollTo(0, 0);
+    return true;
+  }
+  window.showDoc = showDoc;
+
+  function openSection(id) {
+    var el = document.getElementById(id);
+    if (!el) return false;
+    var page = el.closest('.doc-page');
+    if (!page) return false;
+    showDoc(page.id.replace(/^doc-/, ''), true);
+    if (history.replaceState) history.replaceState(null, '', '#' + id);
+    requestAnimationFrame(function () { el.scrollIntoView({ block: 'start' }); });
+    return true;
+  }
+
+  function resolveHash() {
+    var h = decodeURIComponent((location.hash || '').slice(1));
+    if (!h) return showDoc(order[0], true);
+    if (document.getElementById('doc-' + h)) return showDoc(h);
+    if (openSection(h)) return;
+    // Old links: #doc-skills and similar
+    var m = h.replace(/^doc-/, '');
+    if (document.getElementById('doc-' + m)) return showDoc(m);
+    showDoc(order[0], true);
+  }
+
+  navItems.forEach(function (b) {
+    b.addEventListener('click', function (e) {
+      e.preventDefault();
+      showDoc(b.getAttribute('data-page'));
+      if (menuBtn && getComputedStyle(menuBtn).display !== 'none') { menuBtn.setAttribute('aria-expanded', 'false'); sideBody.classList.remove('open'); }
+    });
+  });
+
+  // In-page links (#name or #section) switch pages without a reload.
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest('a[href^="#"]');
+    if (!a || a.classList.contains('skip') || a.classList.contains('docs-nav-item')) return;
+    var id = a.getAttribute('href').slice(1);
+    if (!id) return;
+    if (document.getElementById('doc-' + id)) { e.preventDefault(); showDoc(id); }
+    else if (document.getElementById(id) && document.getElementById(id).closest('.doc-page')) { e.preventDefault(); openSection(id); }
+  });
+  window.addEventListener('hashchange', resolveHash);
+
+  if (menuBtn) menuBtn.addEventListener('click', function () {
+    var open = menuBtn.getAttribute('aria-expanded') !== 'true';
+    menuBtn.setAttribute('aria-expanded', String(open));
+    sideBody.classList.toggle('open', open);
+  });
+
+  // Highlight the section in view in "On this page".
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        toc.querySelectorAll('a').forEach(function (a) { a.classList.toggle('on', a.getAttribute('data-target') === en.target.id); });
+      });
+    }, { rootMargin: '-80px 0px -70% 0px' });
+    document.querySelectorAll('.doc-page h2').forEach(function (h) { io.observe(h); });
+  }
+
+  // Search over page titles and section headings, built from the page itself.
+  var index = [];
+  document.querySelectorAll('.doc-page').forEach(function (page) {
+    var name = page.id.replace(/^doc-/, '');
+    var h1 = page.querySelector('h1');
+    index.push({ id: name, label: h1 ? h1.textContent : titleOf(name), page: 'Page', text: (page.textContent || '').toLowerCase() });
+    page.querySelectorAll('h2, h3').forEach(function (h) {
+      var body = '', n = h.nextElementSibling;
+      while (n && !/^H[23]$/.test(n.tagName)) { body += ' ' + n.textContent; n = n.nextElementSibling; }
+      index.push({ id: h.id, label: h.textContent, page: titleOf(name), text: (h.textContent + ' ' + body).toLowerCase() });
+    });
+  });
+  var q = document.getElementById('docs-q');
+  var results = document.getElementById('docs-results');
+  var nav = document.getElementById('docs-nav');
+  function esc(s) { return s.replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function search() {
+    var v = q.value.trim().toLowerCase();
+    if (!v) { results.classList.remove('open'); results.innerHTML = ''; nav.hidden = false; return; }
+    var words = v.split(/\s+/);
+    var hits = index.map(function (e) {
+      var label = e.label.toLowerCase();
+      if (!words.every(function (w) { return e.text.indexOf(w) !== -1 || label.indexOf(w) !== -1; })) return null;
+      var score = words.reduce(function (s, w) { return s + (label.indexOf(w) !== -1 ? 10 : 1); }, 0) + (e.page === 'Page' ? 2 : 0);
+      return { e: e, score: score };
+    }).filter(Boolean).sort(function (a, b) { return b.score - a.score; }).slice(0, 8);
+    results.innerHTML = hits.length ? hits.map(function (h, i) {
+      return '<li><a href="#' + h.e.id + '"' + (i === 0 ? ' class="hit"' : '') + '>' + esc(h.e.label) + '<span>' + esc(h.e.page) + '</span></a></li>';
+    }).join('') : '<li class="none">No matches</li>';
+    results.classList.add('open'); nav.hidden = true;
+  }
+  q.addEventListener('input', search);
+  q.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { var a = results.querySelector('a'); if (a) { e.preventDefault(); a.click(); q.value = ''; search(); } }
+    if (e.key === 'Escape') { q.value = ''; search(); }
+  });
+  results.addEventListener('click', function (e) { if (e.target.closest('a')) { setTimeout(function () { q.value = ''; search(); }, 0); } });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '/' && document.activeElement !== q && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); q.focus(); }
+  });
+
+  resolveHash();
+})();
+</script>
+</body>
+</html>

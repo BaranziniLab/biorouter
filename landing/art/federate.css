@@ -1,0 +1,201 @@
+/* Principle 02: Share the method, not the data. See art/federate.js. */
+.art-federate { container-type: inline-size; }
+.art-federate .fed {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  padding: 0 16px;
+  font-family: var(--font); color: var(--ink);
+}
+.art-federate .fed p { margin: 0; }
+/* Two equal bands hold the sites in the middle of the frame. The lower one
+   carries the closing line, so the sites never shift when it appears. */
+.art-federate .fed::before { content: ''; flex: 1 1 0; min-height: 40px; }
+
+/* Sites: three quiet panels. */
+.art-federate .fed-sites {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); gap: 12px;
+  flex: 1000 1 auto; min-height: 0; max-height: 320px;
+}
+/* The two flexible rows (above the file, and the records' connector) are
+   capped, so a tall panel keeps its content as one compact group and the
+   connector stays short. */
+.art-federate .fed-site {
+  position: relative; min-width: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(14px, 52px) auto auto minmax(16px, 36px) auto;
+  align-content: center;
+  background: var(--muted-ground); border-radius: var(--r-container);
+  padding: 14px 12px 16px;
+}
+.art-federate .fed-head { grid-row: 1; display: flex; align-items: center; gap: 7px; font-size: 13.5px; line-height: 18px; white-space: nowrap; }
+.art-federate .fed-mark { width: 16px; height: 16px; flex: none; overflow: visible; }
+.art-federate .fed-mark text { font-family: var(--brand-font); font-weight: 800; }
+.art-federate .fed-mark .b { fill: var(--navy); }
+.art-federate .fed-mark .r { fill: var(--coral); }
+.art-federate .fed-model { grid-row: 2; display: flex; align-items: center; gap: 5px; min-width: 0; margin-top: 7px; font-size: 12px; line-height: 16px; color: var(--ink-2); white-space: nowrap; }
+.art-federate .fed-brain { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--muted); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.art-federate .fed-mname { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.art-federate .fed-model .fed-lock { width: 12px; height: 12px; }
+
+/* The workflow file: instructions, parameters, extensions. Never records. */
+.art-federate .fed-card {
+  grid-row: 4; position: relative; z-index: 3; min-width: 0;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-element);
+  padding: 9px 10px 10px;
+  opacity: 0; transform: translateY(6px);
+  transition: opacity var(--dur-slow) var(--ease), transform 1150ms var(--ease), border-color var(--dur-med) ease;
+}
+.art-federate .fed-card.is-shown { opacity: 1; transform: none; }
+/* A copy slides out from under the original (which stays). Its value bars
+   travel with it; its words fade in as soon as they are clear of the original's. */
+.art-federate .fed-card.is-moving { border-color: var(--coral); z-index: 2; }
+.art-federate .fed-card.is-launch { transition: none; }
+.art-federate .fed-card .fed-file,
+.art-federate .fed-card .fed-key span { transition: opacity var(--dur-menu) ease; }
+.art-federate .fed-card.is-copying .fed-file,
+.art-federate .fed-card.is-copying .fed-key span { opacity: 0; transition: none; }
+.art-federate .fed-file { font-size: 12px; line-height: 16px; margin: 0 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-federate .fed-key { display: grid; grid-template-columns: 13ch minmax(0, 1fr); column-gap: 7px; align-items: center; font: 11px/15px var(--mono); color: var(--subtle); white-space: nowrap; }
+.art-federate .fed-key i { display: block; height: 4px; border-radius: 2px; background: var(--strong); max-width: 100%; }
+
+/* The local run: its own private session, fed by its own records. The line
+   ends in a check when the run is done; the result stays in the site. */
+.art-federate .fed-run { grid-row: 5; position: relative; margin-top: 10px; padding-bottom: 9px; opacity: 0; transition: opacity var(--dur-menu) ease; }
+.art-federate .fed-run.is-on { opacity: 1; }
+.art-federate .fed-run .privacy.is-private { background: var(--paper); }
+.art-federate .fed-bar { position: absolute; left: 8px; right: 18px; bottom: 0; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
+.art-federate .fed-bar i,
+.art-federate .fed-link i { position: absolute; inset: 0; background: var(--coral-bar); }
+.art-federate .fed-bar i { transform: scaleX(0); transform-origin: left center; transition: transform 1500ms var(--ease), background var(--dur-slow) ease; }
+.art-federate .fed-run.is-running .fed-bar i { transform: none; }
+.art-federate .fed-site:first-child .fed-bar i { transition-duration: 900ms, var(--dur-slow); }
+.art-federate .fed-run.is-done .fed-bar i { background: var(--line-2); }
+.art-federate .fed-check { position: absolute; right: 0; bottom: -5px; width: 12px; height: 12px; fill: none; stroke: var(--muted); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transition: opacity var(--dur-med) ease; }
+.art-federate .fed-run.is-done .fed-check { opacity: 1; }
+
+.art-federate .fed-link { grid-row: 6; position: relative; opacity: 0; transition: opacity var(--dur-med) ease; }
+.art-federate .fed-run.is-on + .fed-link { opacity: 1; }
+.art-federate .fed-link::before { content: ''; position: absolute; left: 8px; width: 2px; top: 0; bottom: 0; background: var(--line-2); }
+.art-federate .fed-link i { left: 8px; width: 2px; right: auto; bottom: 0; transform: scaleY(0); transform-origin: center bottom; transition: transform 420ms var(--ease), background var(--dur-slow) ease; }
+.art-federate .fed-link.is-feeding i { transform: none; }
+.art-federate .fed-link.is-done i { background: var(--line-2); }
+
+/* The records. They never move. */
+.art-federate .fed-rec { grid-row: 7; display: flex; align-items: center; gap: 7px; font-size: 12px; line-height: 16px; color: var(--ink-2); white-space: nowrap; }
+.art-federate .fed-db { width: 18px; height: 22px; flex: none; fill: var(--paper); stroke: var(--muted); stroke-width: 1.2; }
+.art-federate .fed-lock { width: 11px; height: 11px; flex: none; background: var(--ink); -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat; }
+
+/* Routes between sites. At the end, the path the file took turns coral. */
+.art-federate .fed-routes { position: absolute; left: 0; top: 0; z-index: 1; pointer-events: none; overflow: visible; }
+.art-federate .fed-routes path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+/* The shaft is dashed; the head is its own solid chevron, so the dashes never cut it. */
+.art-federate .fed-route-rest,
+.art-federate .fed-route-head { stroke: var(--ghost); stroke-width: 1; opacity: 0; transition: opacity var(--dur-slow) ease, stroke var(--dur-slow) ease, stroke-width var(--dur-slow) ease; }
+.art-federate .fed-route-rest { stroke-dasharray: 2 3; }
+.art-federate .fed-route-live { stroke: var(--coral); stroke-width: 1.5; stroke-dasharray: 1 1; stroke-dashoffset: 1; opacity: 0; transition: stroke-dashoffset 420ms var(--ease), opacity var(--dur-med) ease; }
+.art-federate .is-drawing .fed-route-live { stroke-dashoffset: 0; opacity: 1; }
+.art-federate .is-set .fed-route-rest,
+.art-federate .is-set .fed-route-head { opacity: 1; }
+.art-federate .is-travelled .fed-route-rest,
+.art-federate .is-travelled .fed-route-head { stroke: var(--coral); stroke-width: 1.5; }
+
+.art-federate .fed-end {
+  flex: 1 1 0; min-height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 18px; color: var(--muted); text-align: center;
+  opacity: 0; transition: opacity var(--dur-slow) ease;
+}
+.art-federate .fed-end.is-shown { opacity: 1; }
+
+/* Leaving: everything that happened fades, the sites stay. */
+.art-federate .fed.is-leaving .fed-card,
+.art-federate .fed.is-leaving .fed-run,
+.art-federate .fed.is-leaving .fed-link,
+.art-federate .fed.is-leaving .fed-route-rest,
+.art-federate .fed.is-leaving .fed-route-head,
+.art-federate .fed.is-leaving .fed-end { opacity: 0; }
+.art-federate .fed.no-anim *,
+.art-federate .fed.no-anim { transition: none; }
+
+/* Compact: three columns in a small frame. */
+@container (max-width: 549px) {
+  .art-federate .fed { padding: 0 12px; }
+  .art-federate .fed::before, .art-federate .fed-end { min-height: 36px; }
+  .art-federate .fed-sites { gap: 10px; }
+  .art-federate .fed-site { padding: 12px 10px 14px; }
+  .art-federate .fed-card { padding: 8px 8px 9px; }
+}
+/* Below 520px the three columns leave the value bars only a few pixels, so the
+   file keeps its keys and drops the bars. */
+@container (max-width: 519px) {
+  .art-federate .fed-brain { display: none; }
+  .art-federate .fed-key { grid-template-columns: auto; }
+  .art-federate .fed-key i { display: none; }
+}
+/* The narrowest three column frames (a short, wide frame at 901 to 990px
+   viewports, or a phone held sideways): tighter margins so every row fits. */
+@container (max-width: 479px) {
+  .art-federate .fed { padding: 0 8px; }
+  .art-federate .fed::before, .art-federate .fed-end { min-height: 34px; }
+  .art-federate .fed-sites { gap: 8px; }
+  .art-federate .fed-site { padding: 12px 8px 13px; }
+  .art-federate .fed-rec { gap: 5px; }
+  .art-federate .fed-card { padding: 8px 7px 9px; }
+}
+
+/* Narrow: sites stack; the file sits on the right of each site and travels
+   down, with room for its value bars again. The records' connector keeps the
+   most room it can, and the closing line has air on both sides. Stacking needs
+   a tall frame, which every frame this narrow is (the page gives it
+   min(118vw, 500px)); the short 438px frame at a 901px viewport stays in
+   three columns. */
+@container (max-width: 437px) {
+  .art-federate .fed { padding: 0 12px; }
+  .art-federate .fed::before { min-height: 14px; }
+  .art-federate .fed-end { min-height: 36px; }
+  .art-federate .fed-sites { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: none; }
+  .art-federate .fed-site {
+    grid-template-columns: minmax(0, 1fr) 150px; column-gap: 14px;
+    grid-template-rows: auto auto minmax(4px, 1fr) auto minmax(18px, 3fr) auto;
+    padding: 10px 12px 11px;
+  }
+  .art-federate .fed-head, .art-federate .fed-model, .art-federate .fed-run, .art-federate .fed-link, .art-federate .fed-rec { grid-column: 1; }
+  .art-federate .fed-card { grid-column: 2; grid-row: 1 / -1; align-self: center; padding: 8px 10px 9px; }
+  .art-federate .fed-key { grid-template-columns: 13ch minmax(0, 1fr); column-gap: 7px; }
+  .art-federate .fed-key i { display: block; }
+  .art-federate .fed-rec { gap: 7px; }
+  .art-federate .fed-model { margin-top: 5px; }
+  .art-federate .fed-run { grid-row: 4; margin-top: 0; padding-bottom: 8px; }
+  .art-federate .fed-link { grid-row: 5; }
+  .art-federate .fed-rec { grid-row: 6; }
+  .art-federate .fed-brain { display: block; }
+}
+
+/* Narrow phones: the value bars would be stubs again, so the file keeps only
+   its keys and takes its own width, which leaves the chip room for its icon. */
+@container (max-width: 344px) {
+  .art-federate .fed::before { min-height: 10px; }
+  .art-federate .fed-end { min-height: 36px; }
+  .art-federate .fed-sites { gap: 5px; }
+  .art-federate .fed-site {
+    grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px;
+    grid-template-rows: auto auto minmax(3px, 1fr) auto minmax(14px, 3fr) auto;
+    padding: 9px 12px 9px;
+  }
+  .art-federate .fed-key { grid-template-columns: auto; }
+  .art-federate .fed-key i { display: none; }
+  .art-federate .fed-model { margin-top: 3px; }
+  .art-federate .fed-run { padding-bottom: 7px; }
+}
+
+/* Smallest phones: tighter still. */
+@container (max-width: 299px) {
+  .art-federate .fed { padding: 0 8px; }
+  .art-federate .fed::before { min-height: 8px; }
+  .art-federate .fed-end { min-height: 34px; }
+  .art-federate .fed-site { grid-template-rows: auto auto minmax(2px, 1fr) auto minmax(6px, 3fr) auto; column-gap: 10px; padding: 8px 8px 9px; }
+  .art-federate .fed-rec { gap: 5px; }
+  .art-federate .fed-head { gap: 6px; }
+  .art-federate .fed-model { gap: 5px; }
+  .art-federate .fed-card { padding: 7px 8px 8px; }
+}

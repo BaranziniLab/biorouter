@@ -238,6 +238,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: node landing/scripts/check-consistency.mjs --check
 
+      - name: The documentation matches its tracked sources
+        if: ${{ !cancelled() }}
+        run: node landing/scripts/assemble-docs.mjs --check
+
   # ── The BAAM shelf in a real browser ──────────────────────────────────────
   # The generator job above proves the CATALOG is right. This proves the PAGE
   # is: that the privacy facet matches a card's declared tier rather than a

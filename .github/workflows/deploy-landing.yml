@@ -15,6 +15,7 @@ on:
     branches: [main]
     paths:
       - 'landing/**'
+      - 'docs/website/**'
       - '.github/workflows/deploy-landing.yml'
   workflow_dispatch: {}
 
@@ -57,6 +58,9 @@ jobs:
 
       - name: Check the BAAM private set agrees in all three committed copies
         run: node landing/scripts/check-consistency.mjs --check
+
+      - name: Check the documentation matches its tracked sources
+        run: node landing/scripts/assemble-docs.mjs --check
 
       - name: Check the three registry outputs are what baam.html generates
         run: node landing/scripts/build-registry.mjs --check

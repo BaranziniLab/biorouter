@@ -1,0 +1,138 @@
+<div class="doc-page" id="doc-providers">
+<h1>Models and providers</h1>
+<p class="doc-lede">Biorouter runs local models, models your institution hosts, and public cloud models. Each chat has its own model, and you can change it; a private chat can switch only among private models.</p>
+
+<h2 id="providers-tabs">The three tabs</h2>
+<p>Open <strong>Settings → Models → Configure providers</strong>. Every provider sits on one of three tabs, always in this order. Each tab opens with a heading and a note, quoted here in the app's own words.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Tab</th><th>Holds</th><th>The app's heading and note</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Local</strong></td><td>Llama Server, Ollama</td><td><strong>Private · Local</strong><br>“Private because inference runs on this machine. Nothing leaves it.”</td></tr>
+    <tr><td><strong>Institutional</strong></td><td>UCSF's Versa API Azure and Versa API Bedrock</td><td><strong>Private · Institutional</strong><br>“Private because Biorouter recognizes this institutional gateway endpoint.”</td></tr>
+    <tr><td><strong>Public</strong></td><td>Claude Code and Codex, then the API providers</td><td><strong>Public · Commercial</strong><br>“Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.”</td></tr>
+  </tbody>
+</table></div>
+<p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
+<p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
+<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults on this page are what Biorouter picks when you configure a provider without naming a model. They are the next release's defaults, so the release you have installed may start on an older model of the same family.</p></div>
+
+<h2 id="providers-local">Local</h2>
+<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once; after that, nothing leaves your computer.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Model and CLI name</th><th>Download</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Gemma 4 E4B</strong><br><code>gemma4</code></td><td>9.6 GB</td><td>Default under 64 GiB</td></tr>
+    <tr><td><strong>Gemma 4 E2B</strong><br><code>gemma4-e2b</code></td><td>3.1 GB</td><td>Smallest; good on 16 GiB</td></tr>
+    <tr><td><strong>Gemma 4 12B</strong><br><code>gemma4-12b</code></td><td>7.6 GB</td><td>Default at 64 GiB or more</td></tr>
+    <tr><td><strong>Gemma 4 26B</strong><br><code>gemma4-26b</code></td><td>18 GB</td><td>Mixture of experts; 48 GiB</td></tr>
+    <tr><td><strong>Gemma 4 31B</strong><br><code>gemma4-31b</code></td><td>20 GB</td><td>Largest Gemma 4; 64 GiB</td></tr>
+    <tr><td><strong>Qwen3.6 35B</strong><br><code>qwen3.6</code></td><td>24 GB</td><td>Mixture of experts; 64 GiB</td></tr>
+    <tr><td><strong>Qwen3.6 27B</strong><br><code>qwen3.6-27b</code></td><td>17 GB</td><td>Dense; 48 GiB</td></tr>
+  </tbody>
+</table></div>
+<p>The memory figures are what the GPU can use; on a Mac, that is the unified memory. The two mixture of experts models use about 3B to 4B parameters per token, so they are fast once loaded, but they are large downloads. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
+<pre><code>biorouter models local pull gemma4-12b
+biorouter models local list</code></pre>
+<p>The context window is sized to your memory (128k tokens at 64 GiB or more, 64k at 16 GiB or more, otherwise 32k). Set <code>LLAMACPP_CONTEXT_SIZE</code> to fix it. Thinking is off by default; <code>LLAMACPP_ENABLE_THINKING=true</code> turns it on.</p>
+<p><strong>Ollama</strong> (<code>ollama</code>) uses an <a href="https://ollama.com">Ollama</a> server you already run on this computer. Pull a model (<code>ollama pull qwen3</code>) and select it. Default model: <code>qwen3</code>.</p>
+<div class="note"><p>Local means this computer. If <code>OLLAMA_HOST</code> or <code>LLAMACPP_EXTERNAL_HOST</code> points at another machine, Biorouter treats that provider as public.</p></div>
+
+<h2 id="providers-institutional">Institutional</h2>
+<p>These endpoints are run by UCSF, so prompts and replies stay under UCSF's agreements. Each asks only for your Versa credentials; the endpoint is set for you.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Provider and CLI name</th><th>Default model</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Versa API Azure</strong><br><code>versa_azure</code></td><td><code>gpt-5.5-2026-04-24</code></td></tr>
+    <tr><td><strong>Versa API Bedrock</strong><br><code>versa_bedrock</code></td><td><code>us.anthropic.claude-opus-4-8</code></td></tr>
+  </tbody>
+</table></div>
+<p><strong>Versa API Azure</strong> takes your Versa API key and serves the UCSF ChatGPT models, only those UCSF has deployed. <strong>Versa API Bedrock</strong> takes your Versa access key ID and secret access key and serves the Anthropic models UCSF hosts on Amazon Bedrock.</p>
+<div class="note"><p><strong>UCSF researchers:</strong> use these two. Azure OpenAI and Amazon Bedrock on the Public tab are for your own Azure or AWS account, and they stay public even if you point them at a UCSF address.</p></div>
+<p>Another institution's gateway appears on this tab once Biorouter recognizes its endpoint as private.</p>
+
+<h2 id="providers-agents">Public: AI agents on your subscription</h2>
+<p>The first section of the Public tab, “AI agents · your subscription”, holds <strong>Claude Code</strong> and <strong>Codex</strong>. The app says: “Biorouter drives a vendor CLI already installed and signed in on this machine; turns bill to that plan, not to an API key.” There is no key to paste, and Biorouter never sees the credential.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Agent and CLI name</th><th>Default model</th><th>Plan</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Claude Code</strong><br><code>claude_code</code></td><td><code>claude-opus-5-5</code></td><td>A Claude Pro or Max plan</td></tr>
+    <tr><td><strong>Codex</strong><br><code>codex</code></td><td><code>gpt-6-astra</code></td><td>A ChatGPT plan</td></tr>
+  </tbody>
+</table></div>
+<ol class="steps">
+  <li><strong>Install the tool yourself</strong> Biorouter shows the command for your system but does not run it. The defaults above need <code>claude</code> 2.1.280 or newer and <code>codex-cli</code> 0.153.4 or newer.
+<pre><code># Claude Code on macOS and Linux
+curl -fsSL https://claude.ai/install.sh | bash
+# Claude Code on Windows
+npm install -g @anthropic-ai/claude-code
+# Codex
+npm install -g @openai/codex@latest</code></pre></li>
+  <li><strong>Sign in yourself</strong> Run <code>claude auth login</code> or <code>codex login</code> and sign in with your subscription.</li>
+  <li><strong>Choose it</strong> Pick it in <strong>Switch models</strong>, or choose <strong>Use Claude Code</strong> or <strong>Use Codex</strong> on its row.</li>
+</ol>
+<p>The row shows where the tool stands: <strong>Not installed</strong>, <strong>Installed · not signed in</strong>, <strong>Signed in with an API key</strong> (the provider will not run, because turns would bill per token), <strong>Ready · signed in on your subscription</strong>, or <strong>Status unclear</strong> (choose <strong>Check again</strong>). If Biorouter cannot find the tool, set <code>CLAUDE_CODE_COMMAND</code> or <code>CODEX_COMMAND</code> to its path.</p>
+<p>Biorouter's own tools reach the agent through Biorouter, so they still follow your permission mode and the privacy rules.</p>
+<div class="note warn"><p>Both are public. A consumer plan carries no business associate agreement and no zero data retention agreement, so never use them with patient data.</p></div>
+
+<h2 id="providers-api">Public: API providers</h2>
+<p>Paste a key or complete the provider's sign in, and Biorouter reads its list of models. Anthropic, OpenAI and Google Gemini come first, then the rest by name.</p>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Provider</th><th>Default model</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Anthropic</strong></td><td><code>claude-opus-4-8</code></td></tr>
+    <tr><td><strong>OpenAI</strong></td><td><code>gpt-6-sol</code></td></tr>
+    <tr><td><strong>Google Gemini</strong></td><td><code>gemini-3.1-pro-preview</code></td></tr>
+    <tr><td><strong>Amazon Bedrock</strong></td><td><code>us.anthropic.claude-sonnet-4-6</code></td></tr>
+    <tr><td><strong>AWS SageMaker TGI</strong></td><td><code>sagemaker-tgi-endpoint</code></td></tr>
+    <tr><td><strong>Azure OpenAI</strong></td><td><code>gpt-6-sol-2026-09-22</code></td></tr>
+    <tr><td><strong>Databricks</strong></td><td><code>databricks-claude-sonnet-4-6</code></td></tr>
+    <tr><td><strong>DeepSeek</strong></td><td><code>deepseek-flash</code></td></tr>
+    <tr><td><strong>GCP Vertex AI</strong></td><td><code>gemini-3.8-flash</code></td></tr>
+    <tr><td><strong>GitHub Copilot</strong></td><td><code>gpt-5.3-codex</code></td></tr>
+    <tr><td><strong>Groq</strong></td><td><code>openai/gpt-oss-120b</code></td></tr>
+    <tr><td><strong>Inception</strong></td><td><code>mercury-2.5</code></td></tr>
+    <tr><td><strong>LiteLLM</strong></td><td><code>gpt-4o-mini</code></td></tr>
+    <tr><td><strong>Mistral AI</strong></td><td><code>mistral-medium-3-5</code></td></tr>
+    <tr><td><strong>Moonshot AI (Kimi)</strong></td><td><code>kimi-k3</code></td></tr>
+    <tr><td><strong>OpenRouter</strong></td><td><code>anthropic/claude-sonnet-5</code></td></tr>
+    <tr><td><strong>Snowflake</strong></td><td><code>claude-sonnet-4-6</code></td></tr>
+    <tr><td><strong>Tetrate Agent Router Service</strong></td><td><code>claude-haiku-4-5</code></td></tr>
+    <tr><td><strong>Venice.ai</strong></td><td><code>llama-3.3-70b</code></td></tr>
+    <tr><td><strong>xAI</strong></td><td><code>grok-4.7</code></td></tr>
+    <tr><td><strong>Xiaomi MiMo</strong></td><td><code>mimo-v2.6-flash</code></td></tr>
+    <tr><td><strong>z.ai</strong></td><td><code>glm-5.3</code></td></tr>
+  </tbody>
+</table></div>
+<p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
+<ul>
+  <li><strong>Amazon Bedrock</strong> and <strong>AWS SageMaker TGI</strong> (listed in the app as Amazon SageMaker TGI) use your AWS profile or credentials, including SSO. SageMaker also needs <code>SAGEMAKER_ENDPOINT_NAME</code>.</li>
+  <li><strong>Azure OpenAI</strong> needs your endpoint and deployment name, with a key or your Azure sign in.</li>
+  <li><strong>Databricks</strong> needs the workspace host, with a token or OAuth. <strong>Snowflake</strong> needs the account host and a token.</li>
+  <li><strong>GCP Vertex AI</strong> needs <code>GCP_PROJECT_ID</code> and <code>GCP_LOCATION</code>, with a service account or application default credentials.</li>
+  <li><strong>GitHub Copilot</strong> signs in with a device code; there is no key.</li>
+  <li><strong>LiteLLM</strong> needs your gateway's address and key.</li>
+  <li><strong>Tetrate Agent Router Service</strong> opens a browser sign in, or takes <code>TETRATE_API_KEY</code>.</li>
+</ul>
+<p>The SageMaker TGI and LiteLLM defaults are placeholders: the model is whatever your endpoint or gateway serves. Run <code>biorouter models providers</code> for the list on your computer and <code>biorouter models list &lt;provider&gt;</code> for a provider's models.</p>
+
+<h2 id="providers-custom">Add a custom provider</h2>
+<p>Any endpoint that speaks the OpenAI, Anthropic or Ollama API can be added.</p>
+<ol class="steps">
+  <li><strong>Open the form</strong> On the Public tab, choose <strong>Add custom provider</strong> at the end of the API providers.</li>
+  <li><strong>Describe the endpoint</strong> Pick the Provider Type (OpenAI Compatible, Anthropic Compatible or Ollama Compatible), then enter a Display Name, the API URL, the API Key, and the Available Models as a comma separated list. Tick whether it streams responses.</li>
+  <li><strong>Save</strong> The provider appears on the Public tab and in the model picker from then on.</li>
+</ol>
+<p>Custom providers are listed as public, because Biorouter cannot verify where a custom endpoint points. One exception: an Ollama Compatible provider on this computer (localhost) runs as private, so its chats become private. An OpenAI Compatible or Anthropic Compatible provider stays public even on localhost; ticking <strong>This is a local model (no auth required)</strong> only removes the API key.</p>
+
+<h2 id="providers-switching">Switch models</h2>
+<p><strong>In a chat.</strong> Choose the model chip under the message box, then a provider and model in <strong>Switch models</strong>. The change applies to that chat only. Tick <strong>Also use for new chats</strong> to make it the model new chats start on. A private chat lists public models as unavailable; see <a href="#privacy">Private and public</a>.</p>
+<p><strong>In a terminal.</strong> <code>biorouter models set</code> changes the default provider and model, and the same flags on <code>biorouter session</code> or <code>biorouter run</code> change them for one chat. Name only a provider other than your default, and it runs its own default model:</p>
+<pre><code>biorouter models set --provider ollama --model qwen3
+biorouter session --provider llamacpp --model gemma4
+biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
+<p><strong>In a workflow.</strong> A workflow can name its own model, so everyone who opens it starts on that model if they have that provider set up:</p>
+<pre><code>settings:
+  biorouter_provider: llamacpp
+  biorouter_model: gemma4-12b</code></pre>
+<p><strong>Lead and worker.</strong> Set <code class="code-token">BIOROUTER_LEAD_MODEL</code> (and <code class="code-token">BIOROUTER_LEAD_PROVIDER</code> if it is another provider) to start each chat on a lead model for its first turns, three by default, before your default model takes over. Biorouter goes back to the lead when the worker fails repeatedly. Both models see the whole chat, so the pair counts as private only when both are private.</p>
+</div>

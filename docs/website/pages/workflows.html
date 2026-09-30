@@ -1,0 +1,148 @@
+<div class="doc-page" id="doc-workflows">
+<h1>Workflows and scheduling</h1>
+<p class="doc-lede">A workflow is one file that starts a chat with the same instructions and tools, and optionally the same model, every time. Send it to a colleague to run on their own data, or let the scheduler run it for you.</p>
+
+<h2 id="workflows-file">A workflow file</h2>
+<p>A workflow is written in YAML (recommended) or JSON. It needs a title, a description, and instructions or a prompt (or both). Save this as <code>review.yaml</code>:</p>
+<pre><code>version: "1.0.0"
+title: Weekly cohort review
+description: Counts new enrollments
+instructions: Report counts, not records.
+prompt: Summarize this week's enrollments.</code></pre>
+<p>Running it starts a new chat with those instructions. The desktop app puts the prompt in the text box for you to send; the command line and the scheduler send it for you. Use <code>.yaml</code> rather than <code>.yml</code>: the command line reads only <code>.yaml</code> and <code>.json</code>.</p>
+
+<h2 id="workflows-fields">The fields</h2>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Field</th><th>What it holds</th></tr></thead>
+  <tbody>
+    <tr><td><code>title</code>, <code>description</code></td><td>Required. A short name and one line on what the workflow does.</td></tr>
+    <tr><td><code>instructions</code></td><td>The system instructions for the chat. A workflow needs <code>instructions</code>, <code>prompt</code> or both.</td></tr>
+    <tr><td><code>prompt</code></td><td>The first message.</td></tr>
+    <tr><td><code>parameters</code></td><td>Values filled in at launch and inserted with <code>{{ key }}</code>. See <a href="#workflows-parameters">Parameters</a>.</td></tr>
+    <tr><td><code>extensions</code></td><td>The extensions the chat needs. An <code>env_keys</code> list names the secrets an extension needs, and the command line asks for any that are missing.</td></tr>
+    <tr><td><code>skills</code></td><td>Skills whose instructions are added before the first model call. A skill that is not installed, or is switched off in the chat, stops the run with an error. A bundle name adds every skill in the bundle.</td></tr>
+    <tr><td><code>knowledge_bases</code></td><td><code>visible</code>: the ids of the bases the chat may search. <code>default</code>: the base it writes to.</td></tr>
+    <tr><td><code>settings</code></td><td><code>biorouter_provider</code>, <code>biorouter_model</code> and <code>temperature</code>, for this workflow only.</td></tr>
+    <tr><td><code>activities</code></td><td>Buttons shown when the workflow opens in the desktop app. An entry that starts with <code>message:</code> is shown as a note above them.</td></tr>
+    <tr><td><code>response</code></td><td>A <code>json_schema</code> the final answer must match. The validated JSON is printed as the last line of output.</td></tr>
+    <tr><td><code>retry</code></td><td><code>checks</code> run after the chat finishes (<code>shell</code>, <code>file_exists</code>, <code>output_contains</code>, <code>json_schema</code>), with <code>max_retries</code> and an optional <code>on_failure</code> command. A failed check starts the run again from the beginning.</td></tr>
+    <tr><td><code>sub_workflows</code></td><td>Other workflow files this one can call as tools, each with a <code>name</code>, a <code>path</code> and fixed <code>values</code>. Experimental.</td></tr>
+    <tr><td><code>author</code></td><td><code>contact</code> and <code>metadata</code> about who wrote it.</td></tr>
+    <tr><td><code>version</code></td><td>The file format version. Defaults to <code>"1.0.0"</code>.</td></tr>
+  </tbody>
+</table></div>
+<p>The text fields are templates:</p>
+<ul>
+  <li><code>{{ workflow_dir }}</code> is the folder that holds the file, so a workflow can point at files that travel with it.</li>
+  <li><code>{% extends "base.yaml" %}</code> builds one workflow on another.</li>
+</ul>
+<p>The full reference is <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/workflows/workflow-schema-reference.md">the workflow schema</a>.</p>
+
+<h2 id="workflows-parameters">Parameters</h2>
+<p>Parameters make one workflow serve many studies. Each has a <code>key</code>, an <code>input_type</code>, a <code>requirement</code> and a <code>description</code>. Add these to <code>review.yaml</code> and replace its <code>prompt</code>:</p>
+<pre><code>parameters:
+  - key: study
+    input_type: string
+    requirement: optional
+    default: MS-2041
+    description: Study name
+  - key: format
+    input_type: select
+    requirement: optional
+    default: markdown
+    options: [markdown, csv]
+    description: Output format
+prompt: Summarize enrollments in {{ study }} as {{ format }}.</code></pre>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Requirement</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>required</code></td><td>Must be given at launch. Cannot have a default.</td></tr>
+    <tr><td><code>optional</code></td><td>Must have a <code>default</code>.</td></tr>
+    <tr><td><code>user_prompt</code></td><td>Asked for when no value is given.</td></tr>
+  </tbody>
+</table></div>
+<p>The input types are <code>string</code> (the default), <code>number</code>, <code>boolean</code>, <code>date</code>, <code>select</code>, which needs <code>options</code>, and <code>file</code>, which reads the file at the path given and inserts its contents. A <code>file</code> parameter cannot have a default. Every <code>{{ key }}</code> in the file must match a parameter, and every parameter must be used; Biorouter checks this when it loads the workflow.</p>
+
+<h2 id="workflows-save-run-share">Save, run and share</h2>
+<h3>Save a chat as a workflow</h3>
+<ol class="steps">
+  <li><strong>Open the chat summary</strong> In the chat you want to keep, choose the chat summary button in the chat header, then <strong>Make workflow</strong>.</li>
+  <li><strong>Read the draft</strong> Biorouter drafts the title, instructions and prompt from the conversation and fills in the chat's extensions, skills, knowledge bases and model. Edit what you need.</li>
+  <li><strong>Save</strong> Choose <strong>Create workflow</strong>. The workflow appears under <strong>Workflows</strong> in the sidebar.</li>
+</ol>
+<p>You can also ask in the chat, for example “Turn this chat into a workflow.” The agent shows you the workflow and asks you to approve it before anything is saved. Saved workflows live in <code>~/.config/biorouter/workflows/</code>, where the app and the command line both find them.</p>
+
+<h3>Run a workflow</h3>
+<p>In <strong>Workflows</strong>, choose <strong>Use workflow</strong>, or <strong>Launch workflow</strong>, then <strong>Open in new window</strong>. The first time you run a workflow, Biorouter shows its title, description and instructions; choose <strong>Trust and execute</strong> to go on. If it has parameters, fill them in and choose <strong>Start workflow</strong>. <strong>Add slash command</strong> gives a workflow a shortcut you can type in any chat.</p>
+<pre><code>biorouter run --workflow review.yaml --params study=MS-2107
+biorouter workflow validate review.yaml    # check that it loads
+biorouter workflow install review.yaml     # add it to the library
+biorouter workflow list</code></pre>
+
+<h3>Share a workflow</h3>
+<p>Send the file, or send a link. In <strong>Workflows</strong>, the <strong>Share workflow</strong> menu has <strong>Copy deeplink</strong>, <strong>Copy YAML</strong> and <strong>Export to file</strong>. The person who receives a file adds it with <strong>Import workflow</strong>, or runs it with the <code>biorouter run</code> command above. From a terminal, make a link that fills in parameters for them:</p>
+<pre><code>biorouter workflow deeplink review.yaml --param study=MS-2107</code></pre>
+<p>Opening the link opens Biorouter with the workflow loaded. A link encodes the workflow into a <code>biorouter://workflow</code> address, plus any parameter values you gave it. It does not carry files that sit next to the workflow, so send those with the file.</p>
+
+<h2 id="workflows-share-the-method">Share the method, not the data</h2>
+<p>A workflow carries instructions, not records. The file holds the steps, the parameters and the names of the extensions, skills, knowledge bases and model it needs. Biorouter leaves out API keys, memory and the conversation history; the file holds only the text you write or approve.</p>
+<figure class="doc-figure">
+  <div class="flow">
+    <div class="node"><b>Your lab</b><span>your data, your models, your chat</span></div>
+    <i class="arrow labeled"><span class="arrow-label">review.yaml</span></i>
+    <div class="node"><b>A colleague's lab</b><span>their data, their models, their chat</span></div>
+  </div>
+  <figcaption>Only the workflow travels, as a file or a link. Each lab runs it on its own data. Nothing comes back.</figcaption>
+</figure>
+<ul>
+  <li><strong>Each run is the recipient's own chat.</strong> It starts on their computer, with their extensions, their credentials and their models, under their institution's agreements. It follows the same privacy rules as any other chat: if it uses a private model or a private data extension, it becomes Private. See <a href="#privacy">Private and public</a>.</li>
+  <li><strong>Data is read where it lives.</strong> A <code>file</code> parameter reads a file on the computer of the person running the workflow, when the run starts.</li>
+  <li><strong>Results stay with the recipient.</strong> Nothing flows back to you. They share what they choose to share.</li>
+  <li><strong>Edits do not travel back.</strong> A recipient's changes stay in their copy, and your file is unchanged.</li>
+</ul>
+<div class="note"><p><strong>Read a workflow before you share it.</strong> It holds whatever text is in it. A draft made with <strong>Make workflow</strong> is written from the conversation, so remove any values that came from your data.</p></div>
+
+<h2 id="workflows-scheduling">Scheduling</h2>
+<p>A schedule runs a workflow at set times with nobody watching. Each run is a new chat of its own, saved to history. Schedules run in the background while a Biorouter background service runs, such as the desktop app's or the one <code>biorouter serve</code> starts. They are kept in <code>schedule.json</code> in Biorouter's data folder, so they survive a restart, and every running service follows that file. A run that comes due while one of your chats is running a turn, or while the provider is limiting requests, is skipped and runs at its next time.</p>
+
+<h3>The Scheduler page</h3>
+<ol class="steps">
+  <li><strong>Open Scheduler</strong> Choose <strong>Scheduler</strong> in the sidebar, then <strong>New schedule</strong>. From <strong>Workflows</strong>, the clock button (<strong>Add schedule</strong>) does the same for one workflow.</li>
+  <li><strong>Fill in the schedule</strong> Give it a name, choose the workflow file, and set when it runs.</li>
+  <li><strong>Create it</strong> Choose <strong>Create schedule</strong>.</li>
+</ol>
+<p>Each schedule shows when it runs in words and how its last run went. From its row you can edit, pause, resume or delete it. Its page has <strong>Run now</strong> and lists every chat the schedule has run. Biorouter includes one schedule, Daily Meditation, which updates the Soul knowledge base from your recent chats at 3:00 each night; see <a href="#knowledge">Knowledge bases</a>.</p>
+
+<h3>From a chat: <code>/schedule</code> and <code>/loop</code></h3>
+<pre><code>/schedule @daily Summarize new preprints on remyelination
+/schedule "0 9 * * 1" Draft the weekly lab update
+/loop 10m Check whether the alignment job has finished</code></pre>
+<ul>
+  <li><strong><code>/schedule &lt;when&gt; &lt;prompt&gt;</code></strong> runs a prompt until you remove it. <em>When</em> is an interval (<code>5m</code>, <code>2h</code>, <code>1d</code>), <code>@hourly</code>, <code>@daily</code>, <code>@weekly</code>, <code>@monthly</code>, or a cron expression in quotes. <code>/schedule list</code> shows them all. <code>/schedule remove</code>, <code>run</code>, <code>pause</code>, <code>unpause</code> and <code>sessions</code> take a schedule id.</li>
+  <li><strong><code>/loop &lt;interval&gt; &lt;prompt&gt;</code></strong> is for short polling: <code>30s</code>, <code>5m</code>, <code>2h</code> or <code>1d</code>. A run that is still going when the next is due is skipped, and the loop stops itself after 100 runs. <code>/loop</code> lists loops, and <code>/loop stop &lt;id&gt;</code> or <code>/loop stop all</code> ends them.</li>
+</ul>
+
+<h3 id="workflows-approval">When the agent schedules something</h3>
+<p>You can ask the agent, for example “Run the cohort review every Monday at 8am.” Every change the agent makes to a schedule shows an approval card first: creating one, running it now, pausing or resuming it, deleting it, or stopping a run. The card appears in every permission mode, Autonomous included. It says in words when the job will run, which workflow it runs and how, and the card for a new schedule shows the whole workflow. Only a person can approve it. Listing and reading schedules asks nothing.</p>
+
+<h3>From the command line</h3>
+<pre><code>biorouter schedule add \
+  --schedule-id review-weekly \
+  --cron "0 8 * * 1" \
+  --workflow-source ./review.yaml
+biorouter schedule list
+biorouter schedule run-now --schedule-id review-weekly
+biorouter schedule sessions --schedule-id review-weekly
+biorouter schedule remove --schedule-id review-weekly
+biorouter schedule cron-help    # cron examples</code></pre>
+<p><code class="code-token">--cron</code> takes five fields (minute, hour, day of month, month, day of week), or six with seconds first, in this computer's local time; <code>"0 8 * * 1"</code> is every Monday at 8:00. The schedule keeps its own copy of the workflow as it was when you added it.</p>
+<p>When this terminal cannot reach a Biorouter service, which is always the case next to the desktop app and in an agent's shell, the command writes the schedule file itself, and a running service picks it up within 60 seconds. In that case <code>add</code>, <code>remove</code> and <code>run-now</code> ask you to confirm at the terminal, and refuse when there is no terminal to ask, so an agent's shell cannot add a schedule on its own. When <code class="code-token">BIOROUTER_SERVER__SECRET_KEY</code> and <code class="code-token">BIOROUTER_PORT</code> point at a running service, that service makes the change without asking, or refuses it when the schedule would run on a private model.</p>
+
+<h3>What a scheduled run needs</h3>
+<ul>
+  <li>A <code>prompt</code>, since nobody is there to type the first message.</li>
+  <li>A value for every parameter without asking: use <code>optional</code> parameters with defaults, and no <code>user_prompt</code> ones.</li>
+  <li>The model's credentials, the extensions and the files the workflow uses, all in place on this computer when the run starts. A workflow that works in a chat can still fail on a schedule if it depends on something only you supply there.</li>
+</ul>
+<p>A failed run is recorded on the schedule, and the schedule runs again at its next time.</p>
+</div>

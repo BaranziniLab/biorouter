@@ -1,0 +1,144 @@
+/* Scheduling tile. One job in the Scheduler, the week it waits through, and the
+   chats its runs leave behind. Vocabulary from ui/desktop/src/components/schedule:
+   the Clock row, the status dot plus word, cronstrue's sentence, the "Last run"
+   line with its date in mono, the "Recent chats" section and the CalendarClock
+   glyph of a scheduled run. */
+
+[data-art="schedule"] .sch {
+  position: absolute; inset: 0;
+  container-type: inline-size;
+  display: flex; flex-direction: column; justify-content: space-between;
+  /* schedule.js sets --sch-pad-y to share the free height (see fit()). */
+  padding: var(--sch-pad-y, clamp(14px, 5.4cqi, 20px)) clamp(14px, 5.6cqi, 22px);
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1;
+  --sch-row: clamp(28px, 9.6cqi, 32px);
+  --sch-move: var(--dur-slow);
+  --sch-m: 11px;
+}
+[data-art="schedule"] .sch.sch-still,
+[data-art="schedule"] .sch.sch-still * { transition: none; }
+
+/* ── The job row ───────────────────────────────────────── */
+/* Icon to name is 6px, the app's gap-1.5, in the job row and in every run row, so
+   the names share one left edge. */
+[data-art="schedule"] .sch-job { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 6px; row-gap: 6px; align-items: center; }
+[data-art="schedule"] .sch-ico { width: 16px; height: 16px; color: var(--muted); }
+[data-art="schedule"] .sch-ico svg { width: 16px; height: 16px; display: block; }
+[data-art="schedule"] .sch-line1 { display: flex; align-items: center; gap: 10px; min-width: 0; }
+[data-art="schedule"] .sch-name { font-size: 14px; line-height: 20px; color: var(--ink); white-space: nowrap; }
+[data-art="schedule"] .sch-cron { grid-column: 2; font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap; }
+[data-art="schedule"] .sch-last {
+  grid-column: 2; margin-top: -2px; font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
+}
+/* Mono, as the app sets it. A mono space is a full cell, so "Sep 28" would read
+   as two spaces; word-spacing closes it to an ordinary word space. */
+[data-art="schedule"] .sch-last-date {
+  font-family: var(--mono); font-variant-numeric: tabular-nums; word-spacing: -0.3em;
+  display: inline-block; transition: opacity var(--dur-menu) var(--ease);
+}
+[data-art="schedule"] .sch-last.is-swap .sch-last-date { opacity: 0; }
+
+/* Status: a dot plus a word, never a pill (scheduleStatus.tsx). Only Running moves. */
+[data-art="schedule"] .sch-status { display: grid; font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap; }
+[data-art="schedule"] .sch-state {
+  grid-area: 1 / 1; display: inline-flex; align-items: center; gap: 6px;
+  transition: opacity var(--dur-menu) var(--ease);
+}
+[data-art="schedule"] .sch-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
+[data-art="schedule"] .sch-state.is-running { opacity: 0; }
+[data-art="schedule"] .sch.running .sch-state.is-scheduled { opacity: 0; }
+[data-art="schedule"] .sch.running .sch-state.is-running { opacity: 1; }
+[data-art="schedule"] .sch.running .sch-state.is-running i { animation: schedule-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+@keyframes schedule-pulse { 50% { opacity: 0.5; } }
+
+/* ── The week ──────────────────────────────────────────── */
+[data-art="schedule"] .sch-week { display: flex; flex-direction: column; gap: 9px; }
+/* Day i sits at --x: Monday flush with the left edge, Sunday with the right. */
+[data-art="schedule"] .sch-days { position: relative; height: 14px; }
+[data-art="schedule"] .sch-days span {
+  position: absolute; top: 0; left: calc(var(--sch-m) + (100% - 2 * var(--sch-m)) * var(--i) / 6);
+  transform: translateX(-50%); font-size: 11px; line-height: 14px; color: var(--subtle); white-space: nowrap;
+}
+[data-art="schedule"] .sch-days span.is-on { color: var(--ink); }
+[data-art="schedule"] .sch-track { position: relative; height: 10px; }
+[data-art="schedule"] .sch-rail,
+[data-art="schedule"] .sch-progress {
+  position: absolute; top: 50%; left: var(--sch-m); right: var(--sch-m);
+}
+[data-art="schedule"] .sch-rail { height: 1px; margin-top: -0.5px; background: var(--line-2); }
+[data-art="schedule"] .sch-progress {
+  height: 2px; margin-top: -1px; background: var(--coral-bar);
+  transform-origin: 0 50%; transform: scaleX(0);
+  transition: transform var(--sch-move) var(--ease), opacity var(--dur-med) var(--ease);
+}
+[data-art="schedule"] .sch-dot {
+  position: absolute; top: 50%; left: calc(var(--sch-m) + (100% - 2 * var(--sch-m)) * var(--i) / 6);
+  width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%; background: var(--ghost);
+}
+/* Monday: the day the job is set for. Its ring is coral while it waits, and it
+   fills when the run starts. */
+[data-art="schedule"] .sch-dot.is-on {
+  width: 10px; height: 10px; margin: -5px 0 0 -5px;
+  background: var(--paper); border: 1.5px solid var(--coral-bar);
+  transition: background var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease);
+}
+[data-art="schedule"] .sch.fired .sch-dot.is-on { background: var(--coral-bar); border-color: var(--coral-bar); }
+
+/* ── Recent chats: each run starts a new chat ──────────── */
+[data-art="schedule"] .sch-caps {
+  font-size: 11px; line-height: 16px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 4px;
+}
+/* The list reaches 10px into the padding so a row's icon lines up with the job's
+   clock and the new row's rail sits in the margin, as in the sidebar. */
+[data-art="schedule"] .sch-list { position: relative; height: calc(var(--sch-row) * 2); overflow: hidden; margin-left: -10px; }
+[data-art="schedule"] .sch-run {
+  position: absolute; left: 0; right: 0; top: 0; height: var(--sch-row);
+  display: flex; align-items: center; gap: 6px; padding: 0 0 0 10px;
+  border-radius: var(--r-element);
+  transform: translateY(calc(var(--slot, 0) * var(--sch-row)));
+  transition: transform var(--sch-move) var(--ease), opacity var(--dur-med) var(--ease);
+}
+[data-art="schedule"] .sch-run::after {
+  content: ''; position: absolute; left: 10px; right: 0; bottom: 0; height: 1px; background: var(--line);
+}
+[data-art="schedule"] .sch-run.is-last::after { background: transparent; }
+[data-art="schedule"] .sch-run::before {
+  content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
+  border-radius: 2px; background: var(--coral-bar); opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+[data-art="schedule"] .sch-run.is-new::before { opacity: 1; }
+[data-art="schedule"] .sch-run.is-in { opacity: 0; transform: translateY(-6px); }
+/* The oldest row fades quickly while it moves down out of the list (schedule.js). */
+[data-art="schedule"] .sch-run.is-out { opacity: 0; transition: transform var(--sch-move) var(--ease), opacity var(--dur-fast) var(--ease); }
+[data-art="schedule"] .sch-run svg { width: 16px; height: 16px; flex: none; color: var(--subtle); }
+[data-art="schedule"] .sch-run-name {
+  flex: 1; min-width: 0; font-size: 13px; line-height: 18px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+[data-art="schedule"] .sch-run-date {
+  flex: none; margin-left: 2px; font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted);
+  font-variant-numeric: tabular-nums; word-spacing: -0.3em;
+}
+/* Narrow tiles: schedule.js steps the run name down until it fits whole, and the
+   date steps with it so the name stays the heavier of the two. */
+[data-art="schedule"] .sch.fit-sm .sch-run-name { font-size: 12px; }
+[data-art="schedule"] .sch.fit-xs .sch-run-name,
+[data-art="schedule"] .sch.fit-sm .sch-run-date,
+[data-art="schedule"] .sch.fit-xs .sch-run-date { font-size: 11px; }
+[data-art="schedule"] .sch.fit-xs .sch-run-date { margin-left: 0; }
+[data-art="schedule"] .sch.fit-xs { --sch-row: 26px; padding-left: 13px; padding-right: 13px; }
+/* Content under 270px wide (tiles under about 316px: 1920, 1024 and the 2-column
+   grid just above 600px): tighten the rhythm inside each group. */
+@container (max-width: 270px) {
+  [data-art="schedule"] .sch-job { row-gap: 4px; }
+  [data-art="schedule"] .sch-week { gap: 6px; }
+  [data-art="schedule"] .sch-caps { margin-bottom: 2px; }
+}
+/* Short tiles: schedule.js drops the Last run line when the even share of the free
+   height would fall under 14px. */
+[data-art="schedule"] .sch.fit-short .sch-last { display: none; }
