@@ -495,13 +495,15 @@ if (!existsSync(PLAYWRIGHT)) {
   });
 
   test('both badges are a visible pill in dark as well as light', async () => {
-    // `.tag.private` is the navy ramp: `background: rgba(5,32,73,0.07)`, a 7%
-    // tint that reads as a soft chip on a white card. `landing/theme.js` sets
-    // `.dark` pre-paint and rebinds `--ucsf` to a light steel blue, so the TEXT
-    // survives — but the background is a literal, not a token, and 7% navy over
-    // a #1e1811 card composites to within four counts of the card itself. The
-    // Private badge lost its pill in dark while Public kept one, which is
-    // exactly backwards: private is the tier that has to stand out.
+    // The site is light only (white paper, no theme toggle), so a visitor whose
+    // system asks for dark still gets the light page, and the badges must read
+    // as a pill there too. This used to assert that `.dark` followed the colour
+    // scheme, back when `landing/theme.js` set it pre-paint; a dark shelf is
+    // where the Private badge once lost its pill (a 7% navy literal over a dark
+    // card composites to within four counts of the card) while Public kept one,
+    // which is exactly backwards: private is the tier that has to stand out.
+    // So the pill check still runs under BOTH schemes, against whatever the
+    // page actually paints.
     for (const scheme of ['light', 'dark']) {
       const ctx = await browser.newContext({ colorScheme: scheme, viewport: { width: 1280, height: 900 } });
       const page = await ctx.newPage();
@@ -536,14 +538,13 @@ if (!existsSync(PLAYWRIGHT)) {
           dark: document.documentElement.classList.contains('dark'),
           private: chip('.tag.private'),
           public: chip('.tag.public'),
-          // The institution badge joined the same navy ramp, so it inherits the
-          // same dark-mode failure: a 7% navy literal over the #1e1811 card is
-          // no pill at all. It is only covered because it was added to the dark
-          // override list beside .tag.private, and nothing but this asserts that.
+          // The institution badge wears the same navy wash as the private tier
+          // once did, and nothing but this checks that its pill is visible, so
+          // it is asserted here under both schemes too.
           affiliation: chip('.tag.affiliation'),
         };
       });
-      assert.equal(seen.dark, scheme === 'dark', 'theme.js did not follow the colour scheme');
+      assert.equal(seen.dark, false, `the site is light only, but a ${scheme} colour scheme put .dark on the page`);
       assert.ok(seen.private >= 8, `the Private badge is ${seen.private.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
       assert.ok(seen.public >= 8, `the Public badge is ${seen.public.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
       assert.ok(seen.affiliation >= 8, `the institution badge is ${seen.affiliation.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);

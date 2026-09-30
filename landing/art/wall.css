@@ -1,0 +1,350 @@
+/* Principle 01: Private stays private. See art/wall.js.
+   Two chats stacked, the private one clipped to the wall at --split. Each
+   chat's column is anchored to the wall. The frame's size (container queries
+   on .wall-stage) picks the header, the rhythm, the type and the spelling, so
+   both chats share one geometry. A chat narrower than 210px (queries on
+   .wall-pane) takes the short spelling and the small type, and hides a few
+   parts at the extremes; wall.js decides what else a chat has room for. */
+
+.art-wall {
+  --split: 50%;
+  cursor: ew-resize;
+}
+.art-wall:has(.wall-input:focus-visible) { outline: 2px solid var(--coral-bar); outline-offset: 4px; }
+
+.art-wall .wall-stage {
+  position: absolute; inset: 0;
+  container: wallframe / size;
+  font-family: var(--font); color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+.art-wall .wall-stage p { margin: 0; }
+.art-wall .wall-i { width: 14px; height: 14px; flex: none; }
+
+/* ── Layers and chats ───────────────────────────────────── */
+.art-wall .wall-layer {
+  --wall-po: 18px;     /* outer padding of a chat */
+  --wall-pw: 28px;     /* padding on the wall side, clear of the handle */
+  --wall-hw: 14px;     /* header padding on the wall side */
+  --wall-head: 48px;   /* header band height */
+  --wall-top: 16px;    /* space under the header */
+  --wall-gap: 11px;    /* between messages */
+  --wall-card: 40px;   /* composer card */
+  --wall-pb: 12px;     /* under the chip */
+  --wall-row: 28px;    /* a picker row */
+  position: absolute; inset: 0; background: var(--paper);
+}
+.art-wall .wall-pub { clip-path: inset(0 0 0 var(--split)); }
+.art-wall .wall-priv { clip-path: inset(0 calc(100% - var(--split)) 0 0); }
+.art-wall .wall-pane {
+  position: absolute; top: 0; bottom: 0;
+  container: wallpane / inline-size;
+  display: flex; flex-direction: column;
+}
+.art-wall .wall-priv .wall-pane { left: 0; width: var(--split); }
+.art-wall .wall-pub .wall-pane { left: var(--split); right: 0; }
+
+/* Type. The frame sets it; a narrow chat steps down to the small size. */
+.art-wall .wall-head, .art-wall .wall-body {
+  --wall-t-title: 13px; --wall-l-title: 17px;
+  --wall-t-msg: 13px; --wall-l-user: 18px; --wall-l-bot: 19px; --wall-bub: 7px 11px; --wall-bub-max: 92%;
+  --wall-t-tool: 12.5px; --wall-l-tool: 20px;
+  --wall-t-opt: 12.5px; --wall-t-why: 11.5px; --wall-l-why: 15px;
+  --wall-t-note: 12px; --wall-l-note: 17px;
+}
+
+/* Header band: the badge in the outer corner, the title beside it. */
+.art-wall .wall-head {
+  flex: none; height: var(--wall-head); min-width: 0;
+  display: flex; align-items: center; gap: 9px;
+  border-bottom: 1px solid var(--line);
+  padding: 0 var(--wall-hw) 0 var(--wall-po);
+}
+.art-wall .wall-pub .wall-head { flex-direction: row-reverse; padding: 0 var(--wall-po) 0 var(--wall-hw); }
+.art-wall .wall-badge { flex: none; }
+.art-wall .wall-title { font-size: var(--wall-t-title); line-height: var(--wall-l-title); min-width: 0; text-wrap: balance; }
+.art-wall .wall-pub .wall-title { text-align: right; }
+.art-wall .wall-no-title .wall-title { display: none; }
+.art-wall .wall-lockonly { display: none; color: var(--ink); }
+.art-wall .wall-lockonly .wall-i { width: 13px; height: 13px; }
+
+/* Chat body */
+.art-wall .wall-body {
+  position: relative; flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  padding: var(--wall-top) var(--wall-pw) var(--wall-pb) var(--wall-po);
+}
+.art-wall .wall-pub .wall-body { padding: var(--wall-top) var(--wall-po) var(--wall-pb) var(--wall-pw); }
+.art-wall .wall-msgs { display: flex; flex-direction: column; align-items: flex-start; gap: var(--wall-gap); min-width: 0; }
+.art-wall .wall-user {
+  align-self: flex-end; max-width: var(--wall-bub-max);
+  background: var(--medium); border-radius: var(--r-container);
+  padding: var(--wall-bub); font-size: var(--wall-t-msg); line-height: var(--wall-l-user);
+  text-wrap: pretty;
+}
+/* A tool call is a line: icon, then the words, with the affiliation badge
+   after them, or under them when the chat is narrow. */
+.art-wall .wall-tool {
+  display: flex; align-items: flex-start; gap: 7px; max-width: 100%;
+  font-size: var(--wall-t-tool); line-height: var(--wall-l-tool); color: var(--muted);
+}
+.art-wall .wall-tool > .wall-i { margin-top: calc((var(--wall-l-tool) - 14px) / 2); color: var(--subtle); }
+.art-wall .wall-tx { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; min-width: 0; }
+.art-wall .wall-tt { min-width: 0; text-wrap: balance; }
+.art-wall .wall-aff {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  height: 20px; padding: 0 6px; border-radius: var(--r-inner);
+  background: var(--muted-ground); color: var(--ink); font-size: 11.5px; white-space: nowrap;
+}
+.art-wall .wall-aff .wall-i { width: 11px; height: 11px; color: var(--ink); }
+.art-wall .wall-bot { font-size: var(--wall-t-msg); line-height: var(--wall-l-bot); margin-top: -2px; text-wrap: balance; }
+
+/* What wall.js leaves out when a chat runs out of room: the answer, then the
+   tool row, then the question. */
+.art-wall .wall-drop1 .wall-m-bot,
+.art-wall .wall-drop2 .wall-m-bot, .art-wall .wall-drop2 .wall-m-tool,
+.art-wall .wall-drop3 .wall-msgs > * { display: none; }
+
+/* Composer: the card, then the model chip under it. */
+.art-wall .wall-comp { flex: none; margin-top: auto; }
+.art-wall .wall-card {
+  height: var(--wall-card); display: flex; align-items: center; gap: 8px;
+  padding: 0 5px 0 12px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--r-container);
+}
+.art-wall .wall-ph { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+/* wall.js picks the spelling: the longest that fits. */
+.art-wall .wall-ph > span { display: none; }
+.art-wall .wall-phx-l .wall-phl, .art-wall .wall-phx-m .wall-phm, .art-wall .wall-phx-s .wall-phs { display: inline; }
+.art-wall .wall-phx-0 .wall-ph { visibility: hidden; }
+.art-wall .wall-send {
+  flex: none; margin-left: auto;
+  width: 28px; height: 28px; border-radius: var(--r-element);
+  display: grid; place-items: center;
+  background: var(--medium); color: var(--muted);
+}
+.art-wall .wall-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 24px; margin: 6px 0 0 -6px; padding: 0 7px;
+  border-radius: var(--r-element);
+  font-size: 12px; color: var(--ink-2); white-space: nowrap;
+  transition: background var(--dur-fast) ease;
+}
+.art-wall .wall-chip .wall-brain { width: 14px; height: 14px; color: var(--muted); }
+.art-wall .wall-chip .wall-chiplock { width: 12px; height: 12px; color: var(--ink); }
+.art-wall .wall-chip.is-open { background: var(--medium); }
+
+/* ── Events: wall.js sets their top, clear of the messages and the composer ── */
+.art-wall .wall-evt {
+  position: absolute; top: 0; left: var(--wall-po); right: var(--wall-pw);
+  display: flex; flex-direction: column; align-items: flex-start;
+}
+.art-wall .wall-pub .wall-evt { left: var(--wall-pw); right: var(--wall-po); }
+.art-wall .wall-no-evt .wall-evt { visibility: hidden; }
+
+/* The model picker, as the app draws it in a private chat: the current
+   private model checked, the public one greyed out (SwitchModelModal.tsx).
+   The selection is the one thing that moves: it tries Claude, the reason
+   appears, and it returns to Versa. A compact picker keeps only the Claude
+   row, and the selection appears on it. */
+.art-wall .wall-pop {
+  position: relative; width: min(100%, 250px);
+  padding: 4px; background: var(--paper);
+  border: 1px solid var(--line-2); border-radius: var(--r-container);
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-menu) ease, transform var(--dur-menu) var(--ease);
+}
+.art-wall .wall-pop.is-on { opacity: 1; transform: none; }
+.art-wall .wall-hl {
+  position: absolute; left: 4px; right: 4px; top: 4px; height: var(--wall-row);
+  border-radius: var(--r-element); background: var(--sidebar-active);
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) ease;
+}
+.art-wall .wall-hl::before {
+  content: ''; position: absolute; left: 0; top: 50%; width: 2px; height: 16px; margin-top: -8px;
+  border-radius: 2px; background: var(--coral-bar);
+}
+.art-wall .wall-pop.is-try .wall-hl { transform: translateY(var(--wall-row)); }
+.art-wall .wall-compact .wall-keep { display: none; }
+.art-wall .wall-compact .wall-hl { opacity: 0; }
+.art-wall .wall-compact .wall-pop.is-try .wall-hl { transform: none; opacity: 1; }
+.art-wall .wall-opt {
+  position: relative; height: var(--wall-row); display: flex; align-items: center; gap: 7px;
+  padding: 0 9px; font-size: var(--wall-t-opt); white-space: nowrap;
+}
+.art-wall .wall-opt .wall-i { width: 12px; height: 12px; }
+.art-wall .wall-opt .wall-end { margin-left: auto; }
+.art-wall .wall-opt .wall-gap { width: 12px; flex: none; }
+.art-wall .wall-navy { color: var(--navy); }
+.art-wall .wall-barred .wall-opt { color: var(--faint); }
+.art-wall .wall-quiet { font-size: 12px; }
+.art-wall .wall-why {
+  position: relative;
+  font-size: var(--wall-t-why); line-height: var(--wall-l-why); color: var(--muted);
+  padding: 1px 9px 6px 28px; text-wrap: balance;
+  opacity: 0; transition: opacity var(--dur-med) ease;
+}
+.art-wall .wall-pop.is-why .wall-why { opacity: 1; }
+
+/* A public request travels to the wall and stops dead there. */
+.art-wall .wall-req {
+  position: relative; padding-bottom: 13px;
+  opacity: 0; transition: opacity var(--dur-med) ease;
+}
+.art-wall .wall-req.is-on { opacity: 1; }
+.art-wall .wall-reqrow {
+  display: flex; align-items: flex-start; gap: 7px;
+  font-size: var(--wall-t-tool); line-height: var(--wall-l-tool); color: var(--muted);
+}
+.art-wall .wall-reqrow .wall-i { color: var(--subtle); margin-top: calc((var(--wall-l-tool) - 14px) / 2); }
+.art-wall .wall-req.is-run .wall-reqrow { animation: wall-breathe 2.4s ease-in-out infinite; }
+/* The lane runs from the wall to the end of the request row. */
+.art-wall .wall-lane {
+  position: absolute; left: calc(-1 * var(--wall-pw)); right: 0; bottom: 1px; height: 10px;
+  overflow: hidden;
+}
+.art-wall .wall-ray {
+  position: absolute; inset: 0;
+  transform: translateX(calc(100% + 6px));
+}
+.art-wall .wall-ray::before {
+  content: ''; position: absolute; left: 1px; right: 0; top: 4px; height: 2px;
+  background: var(--coral-bar);
+}
+.art-wall .wall-tip {
+  position: absolute; left: 0; top: 0; width: 6px; height: 10px;
+  fill: none; stroke: var(--coral-bar); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+/* Linear, like the app's travelling segment, so it stops dead at the wall. */
+.art-wall .wall-req.is-go .wall-ray { transform: none; transition: transform 1100ms linear; }
+.art-wall .wall-note {
+  font-size: var(--wall-t-note); line-height: var(--wall-l-note); color: var(--muted); margin-top: 7px;
+  text-wrap: balance;
+  opacity: 0; transition: opacity var(--dur-med) ease;
+}
+.art-wall .wall-note.is-on { opacity: 1; }
+@keyframes wall-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+
+/* The reduced-motion still appears at once, the ray already at the wall. */
+.art-wall.wall-still .wall-stage *,
+.art-wall.wall-still .wall-req.is-go .wall-ray { transition: none; }
+
+/* ── The wall and its handle ─────────────────────────────── */
+.art-wall .wall-line {
+  position: absolute; top: 0; bottom: 0; left: calc(var(--split) - 2px); width: 2px;
+  background: var(--navy); pointer-events: none;
+}
+.art-wall .wall-handle {
+  position: absolute; top: 50%; left: calc(var(--split) - 1px);
+  width: 38px; height: 38px; transform: translate(-50%, -50%);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--paper); border: 1px solid var(--line-2); border-radius: 50%;
+  pointer-events: none;
+}
+.art-wall .wall-handle .wall-chev { width: 11px; height: 11px; color: var(--coral); }
+.art-wall .wall-handle .wall-hlock { width: 13px; height: 13px; color: var(--navy); }
+
+/* The real control covers the whole frame, as in the hshs slider. It is wider
+   than the frame by one thumb, so the thumb's centre is exactly the wall at
+   every value; the thumb is as wide as the handle and as tall as the frame, so
+   a finger that lands on the wall lands on it (iOS Safari drags a range only
+   from its thumb). The overhang is clipped by the frame. */
+.art-wall .wall-input {
+  position: absolute; top: 0; bottom: 0; left: -22px; z-index: 2;
+  width: calc(100% + 44px); height: 100%; margin: 0; padding: 0;
+  opacity: 0; cursor: ew-resize; touch-action: pan-y;
+  -webkit-appearance: none; appearance: none; background: transparent;
+}
+.art-wall .wall-input::-webkit-slider-runnable-track { height: 100%; background: transparent; border: 0; }
+.art-wall .wall-input::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 44px; height: 100%; border: 0; background: transparent; }
+.art-wall .wall-input::-moz-range-track { height: 100%; background: transparent; border: 0; }
+.art-wall .wall-input::-moz-range-thumb { width: 44px; height: 100%; border: 0; border-radius: 0; background: transparent; }
+
+/* ── Frame sizes ────────────────────────────────────────── */
+.art-wall .wall-p, .art-wall .wall-g { display: none; }
+
+/* Narrow frames: the short spelling, small type, tighter margins. */
+@container wallframe (max-width: 480px) {
+  .art-wall .wall-d { display: none; }
+  .art-wall .wall-p { display: inline; }
+  .art-wall .wall-layer { --wall-po: 12px; --wall-pw: 24px; --wall-hw: 10px; --wall-top: 14px; --wall-gap: 10px; --wall-row: 26px; }
+  .art-wall .wall-head, .art-wall .wall-body {
+    --wall-t-title: 12px; --wall-l-title: 15px;
+    --wall-t-msg: 12px; --wall-l-user: 16px; --wall-l-bot: 16px; --wall-bub: 6px 10px; --wall-bub-max: 100%;
+    --wall-t-tool: 11.5px; --wall-t-opt: 12px; --wall-t-note: 11.5px; --wall-l-note: 16px;
+  }
+  .art-wall .wall-head { gap: 8px; }
+  .art-wall .wall-card { padding-left: 10px; gap: 6px; }
+  .art-wall .wall-ph { font-size: 12px; }
+  .art-wall .wall-pop { padding: 3px; }
+  .art-wall .wall-hl { left: 3px; right: 3px; top: 3px; }
+  .art-wall .wall-opt { gap: 5px; padding: 0 7px; }
+  .art-wall .wall-opt .wall-i { width: 11px; height: 11px; }
+  .art-wall .wall-opt .wall-gap { width: 11px; }
+  .art-wall .wall-quiet { font-size: 11.5px; }
+  .art-wall .wall-why { padding: 0 7px 5px 23px; }
+  .art-wall .wall-chip .wall-brain { display: none; }
+  .art-wall .wall-handle { width: 32px; height: 32px; }
+  .art-wall .wall-handle .wall-chev { width: 10px; height: 10px; }
+  .art-wall .wall-handle .wall-hlock { width: 12px; height: 12px; }
+}
+/* Phone frames: a two row header (badge, then up to two lines of title). */
+@container wallframe (max-width: 400px) {
+  .art-wall .wall-layer { --wall-head: 70px; --wall-po: 11px; }
+  .art-wall .wall-head { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; padding-top: 9px; }
+  .art-wall .wall-pub .wall-head { flex-direction: column; align-items: flex-end; padding-top: 9px; }
+}
+/* Short frames: a tighter rhythm. */
+@container wallframe (max-height: 420px) {
+  .art-wall .wall-layer { --wall-top: 12px; --wall-gap: 8px; --wall-card: 36px; --wall-pb: 10px; --wall-row: 26px; }
+  .art-wall .wall-chip { margin-top: 4px; height: 22px; }
+  .art-wall .wall-send { width: 26px; height: 26px; }
+}
+/* Large frames (the stacked tablet layout): larger type, the long words. */
+@container wallframe (min-width: 640px) and (min-height: 460px) {
+  .art-wall .wall-d { display: none; }
+  .art-wall .wall-g { display: inline; }
+  .art-wall .wall-layer { --wall-po: 22px; --wall-pw: 30px; --wall-hw: 16px; --wall-head: 54px; --wall-top: 20px; --wall-gap: 13px; --wall-card: 44px; --wall-pb: 14px; --wall-row: 30px; }
+  .art-wall .wall-head, .art-wall .wall-body {
+    --wall-t-title: 14px; --wall-l-title: 18px;
+    --wall-t-msg: 14px; --wall-l-user: 20px; --wall-l-bot: 20px; --wall-bub: 8px 13px;
+    --wall-t-tool: 13px; --wall-l-tool: 22px;
+    --wall-t-opt: 13px; --wall-t-why: 12px; --wall-l-why: 17px;
+    --wall-t-note: 12.5px; --wall-l-note: 18px;
+  }
+  .art-wall .wall-aff { font-size: 12px; height: 22px; }
+  .art-wall .wall-ph { font-size: 13px; }
+  .art-wall .wall-send { width: 30px; height: 30px; }
+  .art-wall .wall-chip { font-size: 12.5px; margin-top: 7px; }
+  .art-wall .wall-pop { width: min(100%, 300px); }
+}
+
+/* ── A narrow chat, whatever the frame ──────────────────── */
+@container wallpane (max-width: 209px) {
+  .art-wall .wall-d, .art-wall .wall-g { display: none; }
+  .art-wall .wall-p { display: inline; }
+  .art-wall .wall-head, .art-wall .wall-body {
+    --wall-t-title: 12px; --wall-l-title: 15px;
+    --wall-t-msg: 12px; --wall-l-user: 16px; --wall-l-bot: 16px; --wall-bub: 6px 10px; --wall-bub-max: 100%;
+    --wall-t-tool: 11.5px; --wall-l-tool: 20px;
+    --wall-t-opt: 12px; --wall-t-why: 11.5px; --wall-l-why: 15px;
+    --wall-t-note: 11.5px; --wall-l-note: 16px;
+  }
+}
+@container wallpane (max-width: 200px) {
+  .art-wall .wall-opt .wall-check { display: none; }
+}
+@container wallpane (max-width: 190px) {
+  .art-wall .wall-chip .wall-brain { display: none; }
+}
+@container wallpane (max-width: 132px) {
+  .art-wall .wall-priv .wall-chip .wall-cn { display: none; }
+}
+@container wallpane (max-width: 100px) {
+  .art-wall .wall-comp { display: none; }
+  .art-wall .wall-priv .wall-badge { display: none; }
+  .art-wall .wall-lockonly { display: inline-flex; }
+}
+@container wallpane (max-width: 70px) {
+  .art-wall .wall-pub .wall-badge { display: none; }
+}

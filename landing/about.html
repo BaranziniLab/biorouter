@@ -1,787 +1,400 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>UCSF Biorouter About</title>
-  <link rel="icon" href="icon-transparent.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="shared.css" />
-  <script src="theme.js"></script>
-  <style>
-    .about-layout { max-width: 860px; margin: 0 auto; padding: 72px 24px 80px; }
-    .about-layout > h1 { font-size: clamp(28px, 4vw, 40px); font-weight: 700; letter-spacing: -1.2px; margin-bottom: 10px; }
-    .about-layout > .subtitle { font-size: 16px; color: var(--text-2); margin-bottom: 48px; line-height: 1.6; }
-
-    .section-header { margin-bottom: 24px; }
-    .section-header .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
-    .section-header h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }
-
-    /* News — flat sectioned rows */
-    .news-list {
-      display: flex; flex-direction: column;
-      background: var(--bg-2);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      overflow: hidden;
-      margin-bottom: 56px;
-    }
-    .news-row {
-      display: flex; gap: 18px; padding: 20px 22px;
-      border-bottom: 1px solid var(--border);
-      text-decoration: none; color: inherit;
-      transition: background var(--transition);
-    }
-    .news-row:last-child { border-bottom: none; }
-    .news-row[href]:hover { background: var(--bg-3); }
-    .news-date {
-      flex-shrink: 0;
-      width: 56px;
-      text-align: center;
-      padding: 6px 0;
-      color: var(--accent);
-    }
-    .news-date .day { font-size: 20px; font-weight: 700; line-height: 1; }
-    .news-date .mon { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; margin-top: 3px; color: var(--text-3); }
-    .news-body h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 5px; }
-    .news-body p { font-size: 13.5px; color: var(--text-2); line-height: 1.6; margin-bottom: 0; }
-    .news-link { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--accent); margin-top: 8px; font-weight: 600; }
-
-    /* Links — flat tiles */
-    .links-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: 4px;
-      background: var(--border);
-      border-radius: var(--radius-xl);
-      overflow: hidden;
-      margin-bottom: 56px;
-    }
-    .link-row {
-      background: var(--bg-2);
-      padding: 18px 20px;
-      text-decoration: none; color: inherit;
-      display: flex; align-items: center; gap: 14px;
-      transition: background var(--transition);
-    }
-    .link-row:hover { background: var(--bg-3); }
-    .link-row .icon-tile { background: transparent; }
-    .link-row h4 { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
-    .link-row span { font-size: 12px; color: var(--text-3); }
-
-    /* Acknowledgements */
-    .ack-section { margin-bottom: 56px; }
-    .ack-groups { display: flex; flex-direction: column; gap: 24px; margin-top: 10px; }
-    .ack-group h4 {
-      font-size: 11px; font-weight: 700; letter-spacing: 1px;
-      text-transform: uppercase; color: var(--accent);
-      margin-bottom: 12px;
-    }
-    .ack-group a.ack-group-link { font-size: 11px; color: var(--text-3); text-decoration: none; margin-left: 8px; }
-    .ack-group a.ack-group-link:hover { color: var(--accent); }
-    .ack-names { display: flex; flex-wrap: wrap; gap: 6px; }
-    .ack-chip {
-      padding: 6px 14px; border-radius: var(--radius);
-      background: var(--bg-3); color: var(--text);
-      font-size: 13px; font-weight: 500;
-    }
-    .ack-note { font-size: 14px; line-height: 1.5; color: var(--text-2); margin-bottom: 12px; }
-    .ack-oss-list { display: flex; flex-direction: column; gap: 8px; }
-    .ack-oss-item { display: flex; align-items: baseline; gap: 10px; font-size: 14px; line-height: 1.5; }
-    .ack-oss-item a { font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
-    .ack-oss-item a:hover { text-decoration: underline; }
-    .ack-oss-item span { color: var(--text-2); }
-
-    /* Developer */
-    .dev-minimal { padding: 4px 0 8px; }
-    .dev-minimal .dev-name { font-size: 17px; font-weight: 700; margin-bottom: 4px; color: var(--text); }
-    .dev-minimal .dev-role { font-size: 14px; color: var(--text-2); margin-bottom: 14px; }
-    .dev-minimal .dev-links { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
-    .dev-minimal .dev-link {
-      font-size: 13px; color: var(--text-2); text-decoration: none;
-      display: inline-flex; align-items: center; gap: 6px;
-      transition: var(--transition);
-    }
-    .dev-minimal .dev-link:hover { color: var(--accent); }
-
-    @media (max-width: 600px) {
-      .news-row { flex-direction: column; gap: 10px; }
-      .news-date { width: auto; text-align: left; padding: 0; }
-      .news-date .day, .news-date .mon { display: inline; font-size: 13px; }
-    }
-
-    /* Slack invite — top-of-page banner */
-    .slack-cta {
-      display: flex; align-items: center; gap: 22px;
-      background: var(--bg-2);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      padding: 22px 26px 22px 24px;
-      text-decoration: none; color: inherit;
-      margin: 0 0 40px;
-      transition: background var(--transition), transform var(--transition), border-color var(--transition);
-    }
-    .slack-cta:hover { background: var(--bg-3); transform: translateY(-1px); border-color: var(--border-2); }
-    .slack-icon-wrap {
-      flex-shrink: 0; width: 44px; height: 44px;
-      border-radius: var(--radius);
-      background: var(--bg-3);
-      display: flex; align-items: center; justify-content: center;
-      color: var(--accent);
-    }
-    .slack-icon-wrap svg { width: 22px; height: 22px; }
-    .slack-cta-body { flex: 1; min-width: 0; }
-    .slack-cta-eyebrow {
-      font-size: 10.5px; font-weight: 700; letter-spacing: 1.3px;
-      text-transform: uppercase; color: var(--accent);
-      margin-bottom: 4px;
-    }
-    .slack-cta-body h3 {
-      font-size: 16px; font-weight: 700; margin-bottom: 3px;
-      letter-spacing: -0.2px;
-    }
-    .slack-cta-body p {
-      font-size: 13px; color: var(--text-2); margin: 0; line-height: 1.55;
-    }
-    .slack-cta-arrow {
-      flex-shrink: 0;
-      background: var(--accent-soft); color: var(--accent);
-      padding: 9px 16px; border-radius: var(--radius);
-      font-size: 12.5px; font-weight: 700; white-space: nowrap;
-      transition: background var(--transition), color var(--transition);
-    }
-    .slack-cta:hover .slack-cta-arrow { background: var(--accent); color: #fff; }
-
-    @media (max-width: 560px) {
-      .slack-cta { flex-direction: column; align-items: flex-start; gap: 14px; padding: 20px; }
-      .slack-cta-arrow { align-self: stretch; text-align: center; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>About · Biorouter</title>
+<meta name="description" content="Biorouter is built by the Baranzini Lab at UCSF. The team, collaborators, inspirations and release updates.">
+<meta name="theme-color" content="#ffffff">
+<link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@600;800&display=swap">
+<link rel="stylesheet" href="site.css">
+<link rel="stylesheet" href="about.css">
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 
-<nav id="navbar">
-  <a class="nav-brand" href="./">
-    <img src="icon-transparent.svg" class="nav-logo" alt="Biorouter" />
-    <span class="nav-title">UCSF Biorouter</span>
-  </a>
-  <ul class="nav-tabs">
-    <li><a href="./">Introduction</a></li>
-    <li><a href="download.html">Download</a></li>
-    <li><a href="docs.html">Documentation</a></li>
-    <li><a href="baam.html">BAAM</a></li>
-    <li><a href="about.html" class="active">About</a></li>
-  </ul>
-  <div class="nav-right">
-    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch theme">
-      <svg class="icon icon-sm t-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-      <svg class="icon icon-sm t-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-    </button>
-    <a href="https://github.com/BaranziniLab/biorouter" target="_blank" class="nav-gh-btn">
-      <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
-      GitHub
-    </a>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Biorouter home"><img src="icon-transparent.svg" alt="" width="30" height="30"><span class="word">Biorouter</span></a>
+    <a class="slack-link header-slack" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Slack</span></a>
+    <button class="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="site-nav"><span></span><span></span><span></span></button>
+    <nav class="nav" id="site-nav" aria-label="Site">
+      <a href="./">Introduction</a>
+      <a href="download.html">Download</a>
+      <a href="docs.html">Docs</a>
+      <a href="baam.html">BAAM</a>
+      <a href="about.html" aria-current="page">About</a>
+      <a class="gh" href="https://github.com/BaranziniLab/biorouter">GitHub ↗</a>
+      <a class="slack-link" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join Slack</span></a>
+    </nav>
   </div>
-  <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu">
-    <span></span><span></span><span></span>
-  </button>
-</nav>
-<div class="mobile-menu" id="mobile-menu">
-  <a href="./">Introduction</a>
-  <a href="download.html">Download</a>
-  <a href="docs.html">Documentation</a>
-  <a href="baam.html">BAAM</a>
-  <a href="about.html" class="active">About</a>
-</div>
+</header>
 
-<main class="page">
-  <div class="about-layout">
-    <h1>About Biorouter</h1>
-    <p class="subtitle">UCSF Biorouter is an open-source, AI-powered research environment developed at the Baranzini Lab, UCSF.</p>
+<main id="main">
 
-    <!-- Slack invite (top-of-page banner) -->
-    <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A" target="_blank" class="slack-cta">
-      <div class="slack-icon-wrap">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="4" y1="9" x2="20" y2="9"/>
-          <line x1="4" y1="15" x2="20" y2="15"/>
-          <line x1="10" y1="3" x2="8" y2="21"/>
-          <line x1="16" y1="3" x2="14" y2="21"/>
-        </svg>
-      </div>
-      <div class="slack-cta-body">
-        <div class="slack-cta-eyebrow">Community</div>
-        <h3>Join the Biorouter Slack</h3>
-        <p>Open community for issue reporting, feature requests, and discussion. <code style="font-size:11.5px;user-select:all;">join.slack.com/t/ucsfbiorouter</code></p>
-      </div>
-      <span class="slack-cta-arrow">Join the Slack →</span>
-    </a>
-
-    <!-- NEWS -->
-    <div class="section-header">
-      <p class="eyebrow">News</p>
-      <h2>Latest updates</h2>
+  <!-- Intro -->
+  <section class="about-intro wrap">
+    <div class="reveal">
+      <p class="eyebrow">About</p>
+      <h1 class="display">Built at UCSF,<br><span class="soft">open source.</span></h1>
+      <p class="lede">Biorouter is a research environment for biomedical AI, built by the <a class="inline" href="https://baranzinilab.ucsf.edu/">Baranzini Lab</a> at UCSF. Anyone may use, study and change it under the <a class="inline" href="https://github.com/BaranziniLab/biorouter/blob/main/LICENSE">Apache&nbsp;2.0&nbsp;license</a>.</p>
     </div>
+  </section>
+
+  <!-- Community -->
+  <section class="about-community wrap" aria-labelledby="community-h">
+    <div class="community reveal">
+      <div>
+        <p class="label">Community</p>
+        <h2 id="community-h">Join the Biorouter Slack.</h2>
+        <p class="sub">Ask questions, report problems, request features, and talk with the team.</p>
+      </div>
+      <a class="btn btn-accent" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5a1.5 1.5 0 0 1-1.5 1.5H5.5L2.5 14V3.5A1.5 1.5 0 0 1 4 2h8a1.5 1.5 0 0 1 1.5 1.5z"/></svg><span>Join the Slack</span></a>
+    </div>
+  </section>
+
+  <!-- Team -->
+  <section class="about-section wrap" id="team" aria-labelledby="team-h">
+    <div class="rule-line reveal"><h2 id="team-h">Team</h2><p>Who builds Biorouter</p></div>
+    <ul class="team reveal">
+      <li class="person">
+        <span class="avatar hue-1" aria-hidden="true">WG</span>
+        <div class="person-text">
+          <h3>Wanjun Gu</h3>
+          <p>Lead developer, Baranzini&nbsp;Lab, UCSF</p>
+          <p class="person-links"><a class="inline" href="https://github.com/Broccolito">GitHub</a><a class="inline" href="mailto:wanjun.gu@ucsf.edu">wanjun.gu@ucsf.edu</a></p>
+        </div>
+      </li>
+      <li class="person">
+        <span class="avatar hue-4" aria-hidden="true">GB</span>
+        <div class="person-text">
+          <h3>Gianmarco Bellucci</h3>
+          <p>Baranzini&nbsp;Lab, UCSF</p>
+        </div>
+      </li>
+      <li class="person">
+        <span class="avatar hue-6" aria-hidden="true">SB</span>
+        <div class="person-text">
+          <h3>Sergio Baranzini</h3>
+          <p>Baranzini&nbsp;Lab, UCSF</p>
+          <p class="person-links"><a class="inline" href="https://baranzinilab.ucsf.edu/">Lab website</a></p>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- Collaborators -->
+  <section class="about-section wrap" id="collaborators" aria-labelledby="collab-h">
+    <div class="rule-line reveal"><h2 id="collab-h">Collaborators</h2><p>At UCSF</p></div>
+    <div class="collab reveal">
+      <div class="group">
+        <h3><a href="https://bakarinstitute.ucsf.edu/">Bakar Computational Health Sciences Institute&nbsp;<span aria-hidden="true">↗</span></a></h3>
+        <ul>
+          <li>Sharat Israni</li>
+          <li>Marina Sirota</li>
+        </ul>
+      </div>
+      <div class="group wide">
+        <h3><a href="https://ars.ucsf.edu/">UCSF Academic Research Services&nbsp;<span aria-hidden="true">↗</span></a></h3>
+        <ul>
+          <li>William Santo</li>
+          <li>Evan Philps</li>
+          <li>Rick Larson</li>
+          <li>Oksana Gologorskaya</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Inspirations -->
+  <section class="about-section wrap" id="inspirations" aria-labelledby="insp-h">
+    <div class="rule-line reveal"><h2 id="insp-h">Inspirations</h2></div>
+    <p class="insp-note reveal">Biorouter's design was inspired by the agents below, and Block's Goose was a major influence.</p>
+    <ul class="refs reveal">
+      <li><a class="ref-name" href="https://block.github.io/goose/">Goose&nbsp;<span aria-hidden="true">↗</span></a><p>Block's extensible agent, built around MCP.</p></li>
+      <li><a class="ref-name" href="https://github.com/anthropics/claude-code">Claude Code&nbsp;<span aria-hidden="true">↗</span></a><p>Anthropic's agentic coding tool for the terminal.</p></li>
+      <li><a class="ref-name" href="https://github.com/openai/codex">Codex CLI&nbsp;<span aria-hidden="true">↗</span></a><p>OpenAI's coding agent that runs on your computer.</p></li>
+      <li><a class="ref-name" href="https://github.com/google-gemini/gemini-cli">Gemini CLI&nbsp;<span aria-hidden="true">↗</span></a><p>Google's agent for Gemini in the command line.</p></li>
+      <li><a class="ref-name" href="https://github.com/OpenHands/OpenHands">OpenHands&nbsp;<span aria-hidden="true">↗</span></a><p>An open platform for software development agents.</p></li>
+      <li><a class="ref-name" href="https://aider.chat/">Aider&nbsp;<span aria-hidden="true">↗</span></a><p>Pair programming that commits each change to Git.</p></li>
+      <li><a class="ref-name" href="https://github.com/cline/cline">Cline&nbsp;<span aria-hidden="true">↗</span></a><p>An autonomous coding agent inside the editor.</p></li>
+      <li><a class="ref-name" href="https://opencode.ai/">OpenCode&nbsp;<span aria-hidden="true">↗</span></a><p>An open source agent for many model providers.</p></li>
+      <li><a class="ref-name" href="https://forgecode.dev/">ForgeCode&nbsp;<span aria-hidden="true">↗</span></a><p>A terminal assistant that plans, then writes code.</p></li>
+    </ul>
+  </section>
+
+  <!-- Updates. The release pipeline reads this list (scripts/release.sh cmd_landing):
+       keep the class="news-list" container, newest first, and add each new release
+       as a row above the first one, in the same markup. -->
+  <section class="about-section wrap" id="updates" aria-labelledby="updates-h">
+    <div class="rule-line reveal"><h2 id="updates-h">Updates</h2><p>2026, newest first</p></div>
     <div class="news-list">
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">23</div>
-          <div class="mon">Sep</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2" class="news-row">
+        <div class="news-date"><span class="day">23</span><span class="mon">Sep</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.91.2: clearer Copilot controls and chat, improved Windows console handling</h3>
-          <p>Biorouter Copilot status now appears only in conversations that request it and can be dismissed when it is no longer needed. Prompts and slash commands use its current name. Windows desktop and Copilot child processes request hidden console windows, and the packaged Windows helper passed a window visibility check. Quoted selections, drafts that survive tab switches, access to active extensions, and adjustable text sizes make chat easier to use.</p>
-          <div class="news-link">View the release notes &rarr;</div>
+          <h3>Biorouter v1.91.2: clearer Copilot controls and chat</h3>
+          <p>Copilot status appears only in chats that ask for it, and chat gains quoted selections and adjustable text size.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">22</div>
-          <div class="mon">Sep</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1" class="news-row">
+        <div class="news-date"><span class="day">22</span><span class="mon">Sep</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.91.1: Windows sockets stop leaking into child processes, and a steadier macOS extension start</h3>
-          <p>On Windows, every network socket Biorouter opened was inherited by the programs it starts, so a port could stay taken after the app exited and the remote tunnel could not close cleanly. Every listener and connection is now non-inheritable, confirmed on a Windows machine, and a build check keeps it that way. On macOS, an extension started from inline Python could very occasionally be killed before it ran; it now starts the way every other extension does. The test suite also had a run of flaky failures fixed at their causes, so a red build now means something is broken.</p>
-          <div class="news-link">View the release notes &rarr;</div>
+          <h3>Biorouter v1.91.1: steadier Windows sockets and macOS extensions</h3>
+          <p>Windows no longer passes open network sockets to the programs Biorouter starts, and inline Python extensions on macOS no longer fail to start.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">21</div>
-          <div class="mon">Sep</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0" class="news-row">
+        <div class="news-date"><span class="day">21</span><span class="mon">Sep</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.91.0: Biorouter Copilot, a real Windows installer, and web and documents as their own capability</h3>
-          <p>Biorouter can now observe and control the desktop through Biorouter Copilot, a built-in capability backed by a native helper, and nothing is observed or controlled without an approval that names the request, the model the observations go to, and the computer. Web scraping, spreadsheets, documents and PDFs move into their own Web &amp; Documents capability, and the Word, PowerPoint, Excel and PDF contexts load only when a chat needs them. Windows gets its first installer and a long list of fixes, from the console window that flashed on every tool call to how paths and line endings are handled. The attribution for every third-party component the app redistributes is now correct, and the documentation was checked against the code.</p>
-          <div class="news-link">View the release notes &rarr;</div>
+          <h3>Biorouter v1.91.0: Biorouter Copilot and a Windows installer</h3>
+          <p>Biorouter can observe and control the desktop after your approval, and Windows gets its first installer.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">15</div>
-          <div class="mon">Sep</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5" class="news-row">
+        <div class="news-date"><span class="day">15</span><span class="mon">Sep</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.90.5: chats keep their place, responsive previews, scheduled work follows the caller&rsquo;s reach</h3>
-          <p>Closing a tab during a reply no longer leaves its chat stuck running, streamed text keeps repeated tokens at chunk boundaries, and mid-turn steering stays queued until the running turn consumes it. Queued follow-up messages survive a tab switch and send once. The artifact preview adapts between a side panel and a vertical layout in narrow panes, markdown, CSV/TSV, code, logs and notebooks share one paper surface and reading measure, and Reduce Motion turns the transitions off. Schedule writes and the <code>/schedule</code> and <code>/loop</code> commands now use one definition of private work, so a public chat cannot run, pause, resume or remove private work, and a scheduled run rechecks its authority when it starts.</p>
-          <div class="news-link">View the release notes &rarr;</div>
+          <h3>Biorouter v1.90.5: chats keep their place</h3>
+          <p>A chat no longer stays stuck running when its tab closes, and a public chat cannot manage private scheduled work.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">3</div>
-          <div class="mon">Sep</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0" class="news-row">
+        <div class="news-date"><span class="day">3</span><span class="mon">Sep</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.90.0: every tool driven across providers, and a review run before the drive</h3>
-          <p>Two campaigns landed in this minor release. Exercising all 419 tool and mode combinations in the running app found twenty-four issues: a knowledge base could wedge until restart because an abandoned transaction held its write lock, a tool call that asked for approval could hang forever, editing a <code>.docx</code> destroyed the images it already contained, and a Windows path bug made every existing raw file read as absent. A programming review run before the drive closed a set of security defects, among them a schedule id that went straight into a path join and wrote outside the managed directory, an MCP extension that could read the daemon secret out of a proxy frame URL, and a private chat that could write into a new public conversation with no crossing approval.</p>
-          <div class="news-link">View the release notes &rarr;</div>
+          <h3>Biorouter v1.90.0: every tool tested across providers</h3>
+          <p>Running all 419 tool and mode combinations found 24 issues, and a code review closed several security defects.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.89.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">10</div>
-          <div class="mon">Aug</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.89.0" class="news-row">
+        <div class="news-date"><span class="day">10</span><span class="mon">Aug</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.89.0: privacy tiers, Workspace Control, and several knowledge bases per chat</h3>
-          <p>This is the release where the app learns the difference between a model your institution has an agreement with and one it does not, and refuses to send your private work to the wrong one. Every model carries a privacy tier and an institution, and so does every chat, knowledge base and clinical connector. A chat that has touched PHI will not run on a commercial model, and its history will not reach one through recall, ingest, branching or summarisation. Alongside it, <strong>Workspace Control</strong> lets Biorouter work across your conversations instead of only inside one, and turns a delegated subagent into a tab you can read, steer and stop. A chat can use several knowledge bases at once with one marked primary, machine-wide memory is no longer injected into every chat&rsquo;s system prompt, and a message typed while Biorouter is working is no longer thrown away. Built-in skills moved out of the Skills count into their own <strong>Contexts</strong> section.</p>
-          <div class="news-link">View the release notes &rarr;</div>
+          <h3>Biorouter v1.89.0: privacy tiers and Workspace Control</h3>
+          <p>Private chats stay on private models, and the agent can work across your chats.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.5" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">21</div>
-          <div class="mon">Jul</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.5" class="news-row">
+        <div class="news-date"><span class="day">21</span><span class="mon">Jul</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.88.5: Fully-Automatic mode, a hardened permission engine, and desktop polish</h3>
-          <p>Biorouter v1.88.5 introduces <strong>Fully-Automatic mode</strong>, which gives the agent broad autonomy over ordinary file work while still stopping to ask before a small, well-defined set of sensitive system operations (writes under system directories, SSH keys, keychains, launchd and login items, and browser credential stores), so long unattended runs keep moving without a prompt on every edit. The permission engine behind it was hardened: a routine <code>2&gt;/dev/null</code> redirect and other benign character devices are no longer misread as protected-directory writes that stall autonomous agents, sensitive writes hidden inside shell command lines and code bodies are detected, and the text editor's project jail is relaxed in Auto mode without loosening the catastrophic-path denylist. The desktop gains grabbable split dividers, a split cap raised from four to six panes, per-pane terminals that open in the session's own folder, a composer toolbar that collapses behind a plus button when the row is too narrow, chat names that stay in sync across recents, history, tabs, and diverged branches, and drag-to-reorder tabs that track the pointer. Artifact preview now surfaces files created inside code execution, renders images and links in markdown, and no longer opens the wrong same-named folder. Chat reliability improves too: a rapid double-submit no longer appends a duplicate bubble, a transient backend blip degrades to an inline retryable error instead of a fatal session card, and soft interrupt and hard stop are acknowledged immediately. Theme families are now generated from one definition file each, adding a UCSF-teal Alma Mater and a JupyterLab-inspired Roche Limit family, with structured per-tool-result logging for observability. Existing settings, sessions, providers, extensions, skills, workflows, applications, knowledge bases, and usage history remain compatible.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.88.5: a fully automatic mode</h3>
+          <p>The agent works through ordinary file tasks on its own and still asks before sensitive system changes.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">15</div>
-          <div class="mon">Jul</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.1" class="news-row">
+        <div class="news-date"><span class="day">15</span><span class="mon">Jul</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.88.1: selective reset, instant activity, steadier local models</h3>
-          <p>Settings gains a preview-first reset panel for applications, knowledge, skills, extensions, schedules, workflows, and conversation or usage history. Home now opens from bounded activity and recent-session caches, refreshes in the background, and marks the current streak accessibly. Local llama.cpp startup clears stale listeners, accepts string or boolean thinking settings, and gives reasoning models a realistic warm-up budget. Theme packs persist reliably, tooltips stay within their canvas, the shipped desktop dependency graph passes its production security audit with zero known vulnerabilities, and the design, theme, agentic-system, download, CLI, server, and headless documentation is synchronized for v1.88.1.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.88.1: selective reset and steadier local models</h3>
+          <p>Settings can reset one kind of data at a time after a preview, and local models start more reliably.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">14</div>
-          <div class="mon">Jul</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.88.0" class="news-row">
+        <div class="news-date"><span class="day">14</span><span class="mon">Jul</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.88.0: controllable agents, honest usage, faster workspaces</h3>
-          <p>Biorouter v1.88.0 strengthens every surface: agent runs gain budgets, loop and stall detection, reliable cancel and interrupt, persistent goals, structured success checks, checkpoints, scoped permissions, and safer hook execution; desktop and terminal streaming are faster; Knowledge and session history use progressive caches; and Usage Insights now preserves per-model, cache-token, daily, and month-to-date accounting while clearly labeling incomplete costs. The desktop adds direct previews for generated paths, canonical edited-message branches, configurable Capabilities, clearer local-model names, non-interruptive updates, and responsive compact workspaces. Security work adds secret and PII redaction, prompt-injection scanning, OS-level shell isolation, WebSocket and origin hardening, and a shared cross-platform CI/release recipe. Agent Drafter is hardened from a 100-app test drive, GPT-5.6 metadata is included, and desktop, CLI-only, and browser-headless builds ship across macOS, Windows, Debian/Ubuntu, and Fedora/RHEL.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.88.0: controllable agents and honest usage</h3>
+          <p>Agent runs gain budgets, stall detection and a reliable cancel, and usage reports mark incomplete costs.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
       <a href="baam.html" class="news-row">
-        <div class="news-date">
-          <div class="day">2</div>
-          <div class="mon">Jul</div>
-        </div>
+        <div class="news-date"><span class="day">2</span><span class="mon">Jul</span></div>
         <div class="news-body">
-          <h3>BAAM expands with vetted scientific skills and .brxt extensions</h3>
-          <p><strong>Biorouter AI Agent Marketplace</strong> now lists 37 installable <strong>.brxt extensions</strong> and 129 skill packages from BaranziniLab/biorouter-skills, expanding into 544 native skills. The new catalog adds vetted scientific platform integrations for lab notebooks, cloud bioinformatics, imaging, protocol systems, public databases, literature search, clinical variants, protein structure, cheminformatics, molecular modeling, web research, HPC, and workflow runners. It also adds native skills for molecular dynamics, BIDS neuroimaging, clinical AI modeling, computational fluid dynamics, Hugging Face scientific resource discovery, forecasting, Stata workflows, survey weights, psychometrics, systematic review, reproducibility, and research integrity. Users can browse BAAM, install from the in-app <strong>Skills</strong> and <strong>Extensions</strong> tabs, or invoke installed items directly from chat with <code>/sk</code> for skills and <code>/ex</code> for extensions. All registry entries are Apache-2.0, download/install verified, and checked for unsafe mutation, injection, and dangerous execution patterns.</p>
-          <div class="news-link">Browse BAAM →</div>
+          <h3>BAAM expands with scientific skills and .brxt extensions</h3>
+          <p>The marketplace adds vetted extensions and skill packages for lab notebooks, public databases, literature, imaging and protein structure.</p>
+          <span class="news-link">Browse BAAM&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.86.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">25</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.86.1" class="news-row">
+        <div class="news-date"><span class="day">25</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.86.1: reliable session naming, richer Expand window, redesigned permission card</h3>
-          <p>A polish-and-reliability release on top of v1.86.0. Chats now reliably name themselves instead of getting stuck on <strong>New Session</strong>; <strong>Agent Drafter</strong> apps and <strong>Auto Visualiser</strong> figures render fully in the standalone Expand window again; and the tool-permission (human-in-the-loop) prompt is redesigned as one cohesive card with a clear <strong>Allow Once</strong> action. The CLI status line now counts extensions the same way the GUI does, and the App SDK and Agent Drafter copy is tidied up. No breaking changes; existing installs upgrade in place.</p>
+          <h3>Biorouter v1.86.1: reliable chat names</h3>
+          <p>Chats name themselves again, and the permission prompt is one clear card.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.86.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">21</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.86.0" class="news-row">
+        <div class="news-date"><span class="day">21</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.86.0: one-click updates, capabilities, and screen capture</h3>
-          <p>Mac users can now update in place with <strong>Restart &amp; Update</strong>, backed by signed release zips and the updater manifest. Screen-capture tools enumerate multi-monitor setups and feed screenshots into vision-capable models, while foundational built-ins move into a dedicated <strong>Capabilities</strong> settings section that is enabled by default and kept out of per-chat extension menus. The release also adds built-in extension/skill authoring skills, improves agent continuation when providers truncate output, removes a looping todo nudge, and tightens the interactive CLI with wheel scrolling, collapsed old tool output, and visible queued messages.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.86.0: updates in one click</h3>
+          <p>Mac users can update in place with Restart &amp; Update, and core tools move into a Capabilities section in Settings.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.4" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">20</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.4" class="news-row">
+        <div class="news-date"><span class="day">20</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.85.4: Agent Drafter and broader model/tool coverage</h3>
-          <p>A new built-in <strong>Agent Drafter</strong> extension makes AI-agent-enabled artifacts authorable inside Biorouter, with native previews and standalone-agent behavior. ACP gains a WebSocket transport, providers expand with z.ai / GLM and Xiaomi MiMo, and Auto Visualiser adds 24 chart, scientific-plot, diagram, Mermaid, and map renderers. The analyze extension moves to tree-sitter 0.26 with C++, C, R, Julia, and MATLAB support, while the CLI/TUI receives wrapping input, a bottom-pinned bar, live streaming, and richer output rendering.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.85.4: Agent Drafter</h3>
+          <p>A new Agent Drafter extension builds apps with an agent inside them, and Auto Visualiser adds 24 chart and diagram types.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.3" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">19</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.3" class="news-row">
+        <div class="news-date"><span class="day">19</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.85.3: autonomous chat and sturdier local-model UX</h3>
-          <p>Chat now defaults to <strong>Autonomous</strong> tool-calling, with the mode configured centrally in Settings instead of scattered across chat rows. The Llama Server context window now reflects the running model's actual capacity, including memory-tiered defaults and `/props` probing. CLI installation updates the binary that is really first on <code>PATH</code>, the TUI coalesces streaming deltas before rendering, terminal copy/paste works again, and the former <code>soul-writer</code> skill becomes <code>update-soul</code> with cleaner YAML frontmatter handling.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.85.3: autonomous chat</h3>
+          <p>Chat calls tools autonomously by default, and the Llama Server context window matches the running model.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.2" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">15</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.2" class="news-row">
+        <div class="news-date"><span class="day">15</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.85.2: zero-setup local models and a better CLI</h3>
-          <p>The desktop app now bundles and manages <strong>Llama Server</strong>, so local Qwen and Gemma GGUF models can run without a separate llama.cpp install; local providers are ranked first and orphaned server processes are cleaned up automatically. Knowledge bases gain an explorable force-directed graph and conversation ingestion, developer tools can run shell commands in the background and later wait/read/kill them, the CLI renders assistant replies as markdown, and analytics/telemetry instrumentation is removed from the desktop app.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.85.2: local models with no setup</h3>
+          <p>The app bundles and manages Llama Server, so local Qwen and Gemma models run without a separate install.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">11</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.85.0" class="news-row">
+        <div class="news-date"><span class="day">11</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.85.0: CLI parity, hooks, goals, and server packages</h3>
-          <p>The command line becomes a first-class Biorouter surface: a full-screen TUI, slash-command palette, provider/model setup, knowledge commands, and extension/skill/workflow installation ship with every desktop download. New CLI-only Linux packages install <code>biorouter</code> and <code>biorouterd</code> without Electron for servers, HPC nodes, and containers. The release also adds <code>biorouter doctor</code>, a shared prerequisite/setup layer, lifecycle hooks, agent goals, recurring automations, PowerPoint and spreadsheet knowledge ingestion, and smarter asset matching for desktop updates.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.85.0: a complete command line</h3>
+          <p>The command line gains a full screen interface and setup commands, and new Linux packages install it without the desktop app.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.80.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">10</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.80.1" class="news-row">
+        <div class="news-date"><span class="day">10</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.80.1: Knowledge works fully from chat</h3>
-          <p>Knowledge bases created or curated by the agent now appear in the Knowledge tab without an app reload, and pages written from chat rebuild the graph cache so new pages and <code>[[wiki-links]]</code> show up immediately. Imported <code>.brkb</code> archives rewrite colliding manifest IDs to the deduplicated folder ID, avoiding duplicate-base confusion. New <code>kb_export</code> and <code>kb_import</code> tools mean create, ingest, curate, visualize, export, and import flows can all be driven conversationally.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.80.1: knowledge works from chat</h3>
+          <p>Knowledge bases made in chat appear without a reload, and chat can export and import them.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.80.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">4</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.80.0" class="news-row">
+        <div class="news-date"><span class="day">4</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.80.0: Knowledge bases with git history</h3>
-          <p>The new <strong>Knowledge</strong> system lets agents maintain local, markdown-backed knowledge bases under git. It ingests PDFs, HTML, DOCX, CSV, URLs, pasted notes, and folders; classifies source credibility through DOI/arXiv/PMID/ISBN extraction, Crossref, OpenAlex, host patterns, publisher allow-lists, and an agentic fallback; writes linked pages with <code>[[cross-links]]</code>; and exposes a force-directed graph, commit-backed change log, one-click restore, chat-side KB chip, <code>/knowledge</code> command, and portable <code>.brkb</code> archives. Import is hardened against ZIP-slip path traversal.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.80.0: knowledge bases with git history</h3>
+          <p>Agents keep local markdown knowledge bases under git, with source credibility, a graph view and restore in one click.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.76.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">1</div>
-          <div class="mon">Jun</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.76.1" class="news-row">
+        <div class="news-date"><span class="day">1</span><span class="mon">Jun</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.76.1: multimodal image input</h3>
-          <p>Vision-capable models now receive attached image bytes instead of file paths: screenshots can be dragged, pasted, or attached and sent as structured image content. Capability metadata gates the attach controls per provider and per dashboard session across Anthropic, OpenAI, Google Gemini, Amazon Bedrock, and Databricks Claude models. The release also fixes drag-dropped temp-file handling, carries attachments into brand-new sessions, adds Gemini and OpenAI Responses API image formatting, and adds bulk extension/skill toggles plus steadier context-window tooltip behavior.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.76.1: image input</h3>
+          <p>Vision models receive dragged, pasted and attached images directly.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.76.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">30</div>
-          <div class="mon">May</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.76.0" class="news-row">
+        <div class="news-date"><span class="day">30</span><span class="mon">May</span></div>
         <div class="news-body">
           <h3>Biorouter v1.76.0: dashboard fold mode and provider diagnostics</h3>
-          <p>Dashboard windows can now fold into compact cards with hover previews, busy indicators, persisted fold state, and a Fold all / Unfold all toolbar action for dense multi-session layouts. Session insights gain 7-day and 30-day activity/token windows, onboarding is rebuilt as composable provider cards, and failed provider requests are logged before the network call so Versa, Bedrock, Azure, and other endpoint failures leave replayable payloads in the local request logs. The update also adds a release-update banner, editable built-in extension timeouts, token-gauge sync after <code>/compact</code>, and model-picker polish.</p>
-          <div class="news-link">View the release notes →</div>
+          <p>Dashboard windows fold into compact cards, and failed provider requests are logged on your computer for diagnosis.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.75.2" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">13</div>
-          <div class="mon">May</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.75.2" class="news-row">
+        <div class="news-date"><span class="day">13</span><span class="mon">May</span></div>
         <div class="news-body">
           <h3>Biorouter v1.75.2: Versa Bedrock works on first install</h3>
-          <p>Headline fix: a fresh Versa API Bedrock setup with just an Access Key ID and Secret Access Key now succeeds on the first try. <code>AWS_ENDPOINT_URL_BEDROCK</code> is now a first-class config field pre-populated with the UCSF MuleSoft proxy URL, and the Rust provider builds an explicit <code>Credentials</code> object so the AWS SDK no longer falls through to <code>~/.aws/credentials</code>. The misleading <code>AWS_PROFILE</code> default was removed, generic Bedrock / Azure provider cards no longer carry UCSF-specific copy, and the extension installer's <code>uv sync</code> now runs with an augmented PATH.</p>
-          <div class="news-link">View the release notes →</div>
+          <p>A new Versa API Bedrock setup succeeds with only an access key and a secret.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.75.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">13</div>
-          <div class="mon">May</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.75.1" class="news-row">
+        <div class="news-date"><span class="day">13</span><span class="mon">May</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.75.1: session-rename consistency fix</h3>
-          <p>Bug fix patch. Renames (manual via the title pill or automatic via the LLM) now propagate consistently across the history list, the chat-tab title, and any open dashboard window. New <code>sessionNameSync</code> module centralizes the cache and broadcasts changes across views; user-set names are now authoritative and lock against later LLM auto-renames.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.75.1: consistent chat names</h3>
+          <p>A renamed chat shows its new name in history, tabs and dashboard windows.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.75.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">12</div>
-          <div class="mon">May</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.75.0" class="news-row">
+        <div class="news-date"><span class="day">12</span><span class="mon">May</span></div>
         <div class="news-body">
           <h3>Biorouter v1.75.0: Dashboard Mode</h3>
-          <p>New full-window canvas workspace for spawning, arranging, and running multiple chat sessions side-by-side on an infinite pannable surface. Refreshed chat input bar with a real-time context-window indicator, collapsible picker popover, and tighter typography. Reliability hardening: bounded session-results cache, capped SSE retries, normalized <code>shell.openExternal</code> URLs, and tighter paste-image limits.</p>
-          <div class="news-link">View the release notes →</div>
+          <p>A canvas that fills the window runs several chats side by side.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.72.1" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">8</div>
-          <div class="mon">May</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.72.1" class="news-row">
+        <div class="news-date"><span class="day">8</span><span class="mon">May</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.72.1: Skills, .brxt, Workflows rename</h3>
-          <p>First-class Skills system (install from <code>.md</code> or <code>.zip</code>) and the <code>.brxt</code> extension bundle format for one-drag installs with bundled skills, tools, and config. UI redesign with warm cream tones and flat surfaces. Latest models added: GPT-5.4, GPT-5.5, Claude Sonnet 4.6, Claude Opus 4.7. UCSF Versa Azure and AWS Bedrock appear in Provider Configuration. Recipes renamed to <strong>Workflows</strong>. Patch fixes GPT-5.5 reasoning_effort routing and skill disable enforcement.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.72.1: Skills and .brxt</h3>
+          <p>Skills and the .brxt extension bundle arrive, and UCSF Versa appears in provider setup.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.60.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">13</div>
-          <div class="mon">Apr</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.60.0" class="news-row">
+        <div class="news-date"><span class="day">13</span><span class="mon">Apr</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.60.0: provider model refresh</h3>
-          <p>Model updates across providers (Claude Sonnet 4.6, GPT-5.2, Gemini 3), GPT-5.4 support via the OpenAI Responses API, and simpler AWS Bedrock endpoint configuration.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.60.0: model refresh</h3>
+          <p>Model lists are updated across providers, and Amazon Bedrock is easier to set up.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.50.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">13</div>
-          <div class="mon">Apr</div>
-        </div>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.50.0" class="news-row">
+        <div class="news-date"><span class="day">13</span><span class="mon">Apr</span></div>
         <div class="news-body">
-          <h3>Biorouter v1.50.0: Workflows rename across the codebase</h3>
-          <p>Renamed <em>recipe → workflow</em> everywhere with a session-database migration (v7) that rewrites <code>recipe_json</code> columns to <code>workflow_json</code>, fixing the "Error Loading Sessions" upgrade path. Redesigned provider cards with UCSF default values for Azure OpenAI and Amazon Bedrock. Electron upgraded to 39.8.7.</p>
-          <div class="news-link">View the release notes →</div>
+          <h3>Biorouter v1.50.0: Workflows everywhere</h3>
+          <p>Recipes become Workflows across the code, with a migration that keeps existing sessions loading.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://ucsfonline.sharepoint.com/:v:/s/ARS/IQAApkOwTvaMSI0Zk_-IBd5AAbgZsuaRtvxKnsHOdD3mJns?e=HfCQVo&nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJTdHJlYW1XZWJBcHAiLCJyZWZlcnJhbFZpZXciOiJTaGFyZURpYWxvZy1MaW5rIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXcifX0%3D&referrer=Outlook.Web&referrerScenario=email-linkwithembed" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">16</div>
-          <div class="mon">Mar</div>
-        </div>
+      <a href="https://ucsfonline.sharepoint.com/:v:/s/ARS/IQAApkOwTvaMSI0Zk_-IBd5AAbgZsuaRtvxKnsHOdD3mJns?e=HfCQVo&amp;nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJTdHJlYW1XZWJBcHAiLCJyZWZlcnJhbFZpZXciOiJTaGFyZURpYWxvZy1MaW5rIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXcifX0%3D&amp;referrer=Outlook.Web&amp;referrerScenario=email-linkwithembed" class="news-row">
+        <div class="news-date"><span class="day">16</span><span class="mon">Mar</span></div>
         <div class="news-body">
-          <h3>Biorouter office hours recording is available</h3>
-          <p>Research Data Assets Office Hours: <em>UCSF Biorouter Demo, Secure AI-Enabled Research Workflows.</em> The recording walks through installation, usage, and issue reporting. <strong>UCSF affiliates only.</strong></p>
-          <div class="news-link">Watch the recording →</div>
+          <h3>Biorouter office hours recording</h3>
+          <p>A recorded demo of installing Biorouter, using it and reporting issues, for UCSF&nbsp;affiliates&nbsp;only.</p>
+          <span class="news-link">Watch the recording&nbsp;<span aria-hidden="true">→</span></span>
         </div>
       </a>
-      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.20.0" target="_blank" class="news-row">
-        <div class="news-date">
-          <div class="day">21</div>
-          <div class="mon">Jan</div>
-        </div>
-        <div class="news-body">
-          <h3>Biorouter v1.20.0: multi-platform launch</h3>
-          <p>Native installers for macOS Apple Silicon and Intel, Windows x64, and Linux Debian and RPM. Default models updated to Claude Sonnet 4 and GPT-4.1. Refreshed branding, simpler provider onboarding, and a complete documentation suite.</p>
-          <div class="news-link">View the release notes →</div>
-        </div>
-      </a>
-      <div class="news-row" style="cursor:default;">
-        <div class="news-date">
-          <div class="day">2026</div>
-          <div class="mon">Event</div>
-        </div>
+      <a href="https://www.youtube.com/live/_2N_w3DtO-Y?si=N1mWBmG-yRH6FVui&amp;t=9983" class="news-row">
+        <div class="news-date"><span class="day">11</span><span class="mon">Mar</span></div>
         <div class="news-body">
           <h3>Biorouter at UCSF Research AI Day</h3>
-          <p>Biorouter was featured at UCSF Research AI Day, showing agentic workflows for biomedical research, the BAAM marketplace, and federated cross-institution collaboration.</p>
-          <a href="https://www.youtube.com/live/_2N_w3DtO-Y?si=N1mWBmG-yRH6FVui&t=9983" target="_blank" style="display:block; margin-top:14px; position:relative; border-radius:var(--radius-lg); overflow:hidden; text-decoration:none;">
-            <img src="https://img.youtube.com/vi/_2N_w3DtO-Y/hqdefault.jpg" alt="Biorouter at UCSF Research AI Day" style="width:100%; display:block;">
-            <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.35);">
-              <div style="width:60px; height:60px; background:rgba(255,255,255,0.92); border-radius:50%; display:flex; align-items:center; justify-content:center;">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="var(--accent)"><polygon points="8,5 19,12 8,19"/></svg>
-              </div>
-            </div>
-            <div style="position:absolute; bottom:10px; right:12px; background:rgba(0,0,0,0.7); color:#fff; font-size:12px; padding:3px 8px; border-radius:4px;">Starts at 2:46:23</div>
-          </a>
-          <a href="https://www.youtube.com/live/_2N_w3DtO-Y?si=N1mWBmG-yRH6FVui&t=9983" target="_blank" class="news-link" style="margin-top:10px;">Watch on YouTube (starts at 2:46:23) →</a>
+          <p>The recorded talk, from 2:46:23, showed agentic workflows, BAAM and collaboration across institutions.</p>
+          <span class="news-link">Watch on YouTube&nbsp;<span aria-hidden="true">→</span></span>
         </div>
-      </div>
+      </a>
+      <a href="https://github.com/BaranziniLab/biorouter/releases/tag/v1.20.0" class="news-row">
+        <div class="news-date"><span class="day">21</span><span class="mon">Jan</span></div>
+        <div class="news-body">
+          <h3>Biorouter v1.20.0: launch on macOS, Windows and Linux</h3>
+          <p>Native installers arrive with simpler provider setup and a full set of documentation.</p>
+          <span class="news-link">Release notes&nbsp;<span aria-hidden="true">→</span></span>
+        </div>
+      </a>
     </div>
+  </section>
 
-    <!-- LINKS -->
-    <div class="section-header">
-      <p class="eyebrow">Resources</p>
-      <h2>Useful links</h2>
-    </div>
-    <div class="links-grid">
-      <a href="https://github.com/BaranziniLab/biorouter" target="_blank" class="link-row">
-        <div class="icon-tile icon-tile-sm">
-          <svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
-        </div>
-        <div>
-          <h4>GitHub repository</h4>
-          <span>BaranziniLab/biorouter</span>
-        </div>
-      </a>
-      <a href="https://baranzinilab.ucsf.edu/" target="_blank" class="link-row">
-        <div class="icon-tile icon-tile-sm">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M6 18L6 6"/><path d="M10 4v18"/><path d="M18 20a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2H10"/><circle cx="14" cy="14" r="2"/></svg>
-        </div>
-        <div>
-          <h4>The Baranzini Lab</h4>
-          <span>baranzinilab.ucsf.edu</span>
-        </div>
-      </a>
-      <a href="https://bakarinstitute.ucsf.edu/" target="_blank" class="link-row">
-        <div class="icon-tile icon-tile-sm">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V8l7-4 7 4v13"/><path d="M9 9v.01M15 9v.01M9 13v.01M15 13v.01M9 17v.01M15 17v.01"/></svg>
-        </div>
-        <div>
-          <h4>Bakar CHSI</h4>
-          <span>Computational Health Sciences Institute</span>
-        </div>
-      </a>
-      <a href="https://ars.ucsf.edu/" target="_blank" class="link-row">
-        <div class="icon-tile icon-tile-sm">
-          <svg class="icon" viewBox="0 0 24 24"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
-        </div>
-        <div>
-          <h4>UCSF Academic Research Services</h4>
-          <span>ars.ucsf.edu</span>
-        </div>
-      </a>
-      <a href="https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa" target="_blank" class="link-row">
-        <div class="icon-tile icon-tile-sm">
-          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
-        </div>
-        <div>
-          <h4>UCSF Versa</h4>
-          <span>Institutional AI platform</span>
-        </div>
-      </a>
-      <a href="https://ai.ucsf.edu/researchday" target="_blank" class="link-row">
-        <div class="icon-tile icon-tile-sm">
-          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-        </div>
-        <div>
-          <h4>UCSF AI Research Day</h4>
-          <span>ai.ucsf.edu/researchday</span>
-        </div>
-      </a>
-    </div>
+  <!-- Links -->
+  <section class="about-section about-last wrap" id="links" aria-labelledby="links-h">
+    <div class="rule-line reveal"><h2 id="links-h">Links</h2></div>
+    <ul class="refs reveal">
+      <li><a class="ref-name" href="https://github.com/BaranziniLab/biorouter">GitHub&nbsp;<span aria-hidden="true">↗</span></a><p>BaranziniLab/biorouter</p></li>
+      <li><a class="ref-name" href="https://baranzinilab.ucsf.edu/">Baranzini Lab&nbsp;<span aria-hidden="true">↗</span></a><p>baranzinilab.ucsf.edu</p></li>
+      <li><a class="ref-name" href="https://bakarinstitute.ucsf.edu/">Bakar Institute&nbsp;<span aria-hidden="true">↗</span></a><p>Computational Health Sciences Institute</p></li>
+      <li><a class="ref-name" href="https://ars.ucsf.edu/">Academic Research Services&nbsp;<span aria-hidden="true">↗</span></a><p>ars.ucsf.edu</p></li>
+      <li><a class="ref-name" href="https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa">UCSF Versa&nbsp;<span aria-hidden="true">↗</span></a><p>The UCSF institutional AI platform</p></li>
+      <li><a class="ref-name" href="https://ai.ucsf.edu/researchday">UCSF Research AI Day&nbsp;<span aria-hidden="true">↗</span></a><p>ai.ucsf.edu/researchday</p></li>
+    </ul>
+  </section>
 
-    <!-- ACKNOWLEDGEMENTS -->
-    <div class="ack-section">
-      <div class="section-header">
-        <p class="eyebrow">Contributors</p>
-        <h2>Acknowledgements</h2>
-      </div>
-      <div class="ack-groups">
-        <div class="ack-group">
-          <h4>
-            The Baranzini Lab
-            <a href="https://baranzinilab.ucsf.edu/" target="_blank" class="ack-group-link">baranzinilab.ucsf.edu ↗</a>
-          </h4>
-          <div class="ack-names">
-            <span class="ack-chip">Gianmarco Bellucci</span>
-            <span class="ack-chip">Sergio Baranzini</span>
-          </div>
-        </div>
-        <div class="ack-group">
-          <h4>
-            Bakar Computational Health Science Institute (BCHSI)
-            <a href="https://bakarinstitute.ucsf.edu/" target="_blank" class="ack-group-link">bakarinstitute.ucsf.edu ↗</a>
-          </h4>
-          <div class="ack-names">
-            <span class="ack-chip">Sharat Israni</span>
-            <span class="ack-chip">Marina Sirota</span>
-          </div>
-        </div>
-        <div class="ack-group">
-          <h4>
-            UCSF Academic Research Services (ARS)
-            <a href="https://ars.ucsf.edu/" target="_blank" class="ack-group-link">ars.ucsf.edu ↗</a>
-          </h4>
-          <div class="ack-names">
-            <span class="ack-chip">William Santo</span>
-            <span class="ack-chip">Evan Philps</span>
-            <span class="ack-chip">Rick Larson</span>
-            <span class="ack-chip">Oksana Gologorskaya</span>
-          </div>
-        </div>
-        <div class="ack-group">
-          <h4>Inspirations</h4>
-          <p class="ack-note">Biorouter's design was inspired by the agents below, and Block's Goose was a major influence.</p>
-          <div class="ack-oss-list">
-            <div class="ack-oss-item">
-              <a href="https://block.github.io/goose/" target="_blank">Goose</a>
-              <span>CLI and desktop agent for full developer workflows (Block). A major inspiration for Biorouter's design.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://github.com/anthropics/claude-code" target="_blank">Claude Code</a>
-              <span>Anthropic's agentic coding tool for the terminal and IDE.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://github.com/openai/codex" target="_blank">Codex CLI</a>
-              <span>OpenAI's open source coding agent that runs in the terminal.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://github.com/google-gemini/gemini-cli" target="_blank">Gemini CLI</a>
-              <span>Google's open source AI agent for the terminal.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://github.com/OpenHands/OpenHands" target="_blank">OpenHands</a>
-              <span>Open source platform for autonomous software development agents.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://aider.chat/" target="_blank">Aider</a>
-              <span>Open source coding agent for the terminal that works with Git.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://github.com/cline/cline" target="_blank">Cline</a>
-              <span>Open source interactive CLI coding agent.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://opencode.ai/" target="_blank">OpenCode</a>
-              <span>Open source coding agent that supports multiple sessions and providers.</span>
-            </div>
-            <div class="ack-oss-item">
-              <a href="https://forgecode.dev/" target="_blank">ForgeCode</a>
-              <span>Terminal AI coding assistant for task planning and code generation.</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- DEVELOPER -->
-    <div class="section-header">
-      <p class="eyebrow">Developer</p>
-      <h2>About the developer</h2>
-    </div>
-    <div class="dev-minimal">
-      <p class="dev-name">Wanjun Gu</p>
-      <p class="dev-role">Lead developer, Baranzini Lab, UCSF</p>
-      <div class="dev-links">
-        <a href="mailto:wanjun.gu@ucsf.edu" class="dev-link">
-          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-          wanjun.gu@ucsf.edu
-        </a>
-        <a href="https://github.com/Broccolito" target="_blank" class="dev-link">
-          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
-          github.com/Broccolito
-        </a>
-        <a href="https://baranzinilab.ucsf.edu/" target="_blank" class="dev-link">
-          Baranzini Lab
-        </a>
-      </div>
-    </div>
-
-  </div>
 </main>
 
 <footer class="site-footer">
-  <div class="footer-inner">
-    <div class="footer-brand">
-      <a class="footer-logo" href="./"><img src="icon-transparent.svg" alt="Biorouter" /><span>UCSF Biorouter</span></a>
-      <p>An integrated research environment that connects local, institution-hosted, and commercial AI models in one interface, built for biomedical discovery.</p>
-      <div class="footer-social">
-        <a href="https://github.com/BaranziniLab/biorouter" target="_blank" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg></a>
-        <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A" target="_blank" aria-label="Slack"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg></a>
-      </div>
+  <div class="wrap">
+    <div class="foot-brand">
+      <a class="brand" href="./"><img src="icon-transparent.svg" alt="" width="26" height="26"><span class="word">Biorouter</span></a>
+      <span>A research environment for biomedical AI, from the Baranzini Lab at UCSF.</span>
     </div>
-    <nav class="footer-cols" aria-label="Footer">
-      <div class="footer-col">
-        <h4>Product</h4>
-        <a href="./">Introduction</a>
-        <a href="download.html">Download</a>
-        <a href="docs.html">Documentation</a>
-        <a href="baam.html">Marketplace</a>
-      </div>
-      <div class="footer-col">
-        <h4>Resources</h4>
-        <a href="docs.html#getstarted">Getting started</a>
-        <a href="docs.html#cli">Command line</a>
-        <a href="https://github.com/BaranziniLab/biorouter/releases" target="_blank">Release notes</a>
-        <a href="https://github.com/BaranziniLab/biorouter" target="_blank">GitHub</a>
-      </div>
-      <div class="footer-col">
-        <h4>Community</h4>
-        <a href="about.html">About</a>
-        <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A" target="_blank">Slack</a>
-        <a href="https://baranzinilab.ucsf.edu/" target="_blank">Baranzini Lab</a>
-        <a href="https://www.ucsf.edu" target="_blank">UCSF</a>
-      </div>
-    </nav>
-    <div class="footer-news">
-      <h4>Stay in the loop</h4>
-      <p>Releases, questions, and the occasional tip. The community lives on Slack.</p>
-      <a class="footer-slack-btn" href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A" target="_blank">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
-        Join the Slack
-      </a>
-    </div>
-  </div>
-  <div class="footer-bottom">
-    <span>&copy; 2026 UCSF Biorouter &middot; Wanjun Gu, Baranzini Lab, UCSF</span>
-    <div class="footer-bottom-links">
-      <a href="https://github.com/BaranziniLab/biorouter/blob/main/LICENSE" target="_blank">Apache 2.0 License</a>
-      <a href="https://baranzinilab.ucsf.edu/" target="_blank">Baranzini Lab</a>
-      <a href="https://www.ucsf.edu" target="_blank">UCSF</a>
-    </div>
+    <div><h3>Product</h3><ul><li><a href="download.html">Download</a></li><li><a href="docs.html">Docs</a></li><li><a href="baam.html">BAAM</a></li><li><a href="https://github.com/BaranziniLab/biorouter/releases">Release notes</a></li></ul></div>
+    <div><h3>Community</h3><ul><li><a href="about.html">About</a></li><li><a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Slack</a></li><li><a href="https://github.com/BaranziniLab/biorouter">GitHub</a></li></ul></div>
+    <div><h3>UCSF</h3><ul><li><a href="https://baranzinilab.ucsf.edu/">Baranzini Lab</a></li><li><a href="https://bakarinstitute.ucsf.edu/">Bakar Institute</a></li><li><a href="https://ars.ucsf.edu/">Academic Research Services</a></li></ul></div>
+    <div class="legal"><span>© 2026 Baranzini Lab, UCSF</span><a href="https://github.com/BaranziniLab/biorouter/blob/main/LICENSE">Apache 2.0</a></div>
   </div>
 </footer>
 
-<script>
-  function toggleMobileMenu() { document.getElementById('mobile-menu').classList.toggle('open'); }
-  document.addEventListener('click', e => {
-    const m = document.getElementById('mobile-menu');
-    const h = document.querySelector('.hamburger');
-    if (m.classList.contains('open') && !m.contains(e.target) && !h.contains(e.target)) m.classList.remove('open');
-  });
-</script>
+<script src="site.js"></script>
 </body>
 </html>

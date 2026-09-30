@@ -1,0 +1,174 @@
+/* Knowledge bases tile. A paper drops into a BioOKF base, becomes typed pages,
+   and the graph grows from its source. Marks follow the app's graph canvas
+   (ForceGraphCanvas.tsx, nodeMark.ts): circles filled by type, the source as
+   the open ring the canvas draws for a Publication, directed edges as tapered
+   quads in ink at 18%, labels always on. The source's peer reviewed tier is the
+   inspector's 10px four-arc ring beside its words. Coral is the one moving
+   element: each reported_in link while it draws, then the claim and its
+   predicate. */
+
+[data-art="knowledge"] .kn {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  transform-origin: 0 0;
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1;
+  /* The app's light graph fills (styles/themes.generated.ts); no site token holds them. */
+  --kn-molecule: #65cdb3;
+  --kn-disease: #ff8fb2;
+  --kn-gene: #a0b2ff;
+  --kn-pub: #a9bdaf;
+  --kn-peer: #1c619f;
+  --kn-edge: color-mix(in srgb, var(--ink) 18%, transparent);
+  --kn-outline: color-mix(in srgb, var(--ink) 85%, transparent);
+  --kn-name: 12.5px;
+  --kn-name-lh: 15px;
+  --kn-sub-lh: 15px;
+}
+[data-art="knowledge"] .kn.kn-sm { --kn-name: 11.5px; --kn-name-lh: 14px; --kn-sub-lh: 14px; }
+[data-art="knowledge"] .kn.kn-xs { --kn-name: 11px; }
+[data-art="knowledge"] .kn.kn-still,
+[data-art="knowledge"] .kn.kn-still * { transition: none; }
+[data-art="knowledge"] .kn.kn-paused * { animation-play-state: paused; }
+
+/* ── The base's title row ─────────────────────────────── */
+[data-art="knowledge"] .kn-head {
+  position: absolute; left: 16px; top: 16px; height: 20px;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap;
+}
+[data-art="knowledge"] .kn-sm .kn-head { left: 14px; top: 14px; }
+[data-art="knowledge"] .kn-xs .kn-head { left: 12px; top: 12px; }
+[data-art="knowledge"] .kn-head-ico { width: 16px; height: 16px; color: var(--muted); flex: none; }
+[data-art="knowledge"] .kn-base { font-size: 14px; line-height: 20px; color: var(--ink); }
+[data-art="knowledge"] .kn-sm .kn-base { font-size: 13px; }
+[data-art="knowledge"] .kn-chip {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 6px;
+  border-radius: var(--r-inner); background: var(--medium); color: var(--muted);
+  font-size: 11.5px; line-height: 1;
+}
+
+/* ── The dropped paper, as a card ─────────────────────── */
+[data-art="knowledge"] .kn-card {
+  position: absolute;
+  border: 1px solid var(--line); border-radius: var(--r-element);
+  background: var(--paper);
+}
+[data-art="knowledge"] .kn-file { position: absolute; width: 16px; height: 16px; color: var(--muted); }
+[data-art="knowledge"] .kn-card,
+[data-art="knowledge"] .kn-file {
+  opacity: 0; transform: translateY(-12px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-slow) var(--ease);
+}
+[data-art="knowledge"] .kn-card.on,
+[data-art="knowledge"] .kn-file.on { opacity: 1; transform: none; }
+/* Once the source joins the graph the card lets go of it without moving. The
+   file icon goes first and fast, so it never sits on the node coming in. */
+[data-art="knowledge"] .kn.src .kn-card { transform: none; transition: opacity var(--dur-slow) var(--ease); }
+[data-art="knowledge"] .kn.src .kn-file { transform: none; transition: opacity var(--dur-fast) var(--ease); }
+
+/* ── Graph ────────────────────────────────────────────── */
+[data-art="knowledge"] .kn-svg {
+  position: absolute; left: 0; top: 0; overflow: visible;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+/* A reported_in link draws out from the source in coral, the one moving
+   thing, then settles into the graph's ink once its page lands. */
+[data-art="knowledge"] .kn-edge {
+  fill: var(--coral-bar);
+  transform: scaleX(0); transform-origin: 0 0;
+  transition: transform var(--dur-slow) var(--ease), fill var(--dur-slow) var(--ease);
+}
+[data-art="knowledge"] .kn-edge.on { transform: none; }
+[data-art="knowledge"] .kn-edge.set { fill: var(--kn-edge); }
+
+[data-art="knowledge"] .kn-claim {
+  fill: var(--coral);
+  transform: scaleX(0); transform-origin: 0 0;
+  transition: transform var(--dur-slow) var(--ease);
+}
+[data-art="knowledge"] .kn-claim.on { transform: none; }
+
+[data-art="knowledge"] .kn-node {
+  opacity: 0; transform: scale(0.5);
+  transform-box: fill-box; transform-origin: center;
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-slow) var(--ease);
+}
+[data-art="knowledge"] .kn-node.on { opacity: 1; transform: none; }
+[data-art="knowledge"] .kn-dot { stroke: var(--kn-outline); stroke-width: 1; }
+[data-art="knowledge"] .kn-molecule .kn-dot { fill: var(--kn-molecule); }
+[data-art="knowledge"] .kn-disease .kn-dot { fill: var(--kn-disease); }
+[data-art="knowledge"] .kn-gene .kn-dot { fill: var(--kn-gene); }
+/* Publication is in the Provenance & context family: an open ring in its
+   type colour, on the ground, with no ink outline (isHollow in nodeMark.ts). */
+[data-art="knowledge"] .kn-pub .kn-dot { fill: var(--paper); stroke: var(--kn-pub); stroke-width: 1.7; }
+
+/* ── Labels: always on, 6px from the mark ─────────────── */
+[data-art="knowledge"] .kn-lab {
+  position: absolute; display: flex; flex-direction: column; white-space: nowrap;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="knowledge"] .kn-lab.on { opacity: 1; }
+[data-art="knowledge"] .kn-lab.kn-l { align-items: flex-end; text-align: right; }
+[data-art="knowledge"] .kn-name { font-size: var(--kn-name); line-height: var(--kn-name-lh); color: var(--ink); }
+[data-art="knowledge"] .kn-sub { font-size: 11px; line-height: var(--kn-sub-lh); color: var(--muted); }
+/* The source's label drops in with its card. */
+[data-art="knowledge"] .kn-lab.kn-plab {
+  transform: translateY(-12px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-slow) var(--ease);
+}
+[data-art="knowledge"] .kn-lab.kn-plab.on { transform: none; }
+/* Its file line ("PDF · Peer reviewed") gives way to its node type, and the
+   tier moves to a line of its own behind the inspector's credibility ring. */
+[data-art="knowledge"] .kn-swap { display: grid; justify-items: start; }
+/* One after the other, never both at once: the old words leave fast, then the
+   new ones come in. */
+[data-art="knowledge"] .kn-swap > span { grid-area: 1 / 1; transition: opacity var(--dur-fast) var(--ease); }
+[data-art="knowledge"] .kn-swap .kn-b,
+[data-art="knowledge"] .kn.src .kn-swap .kn-a { opacity: 0; }
+[data-art="knowledge"] .kn-tier {
+  display: flex; align-items: center; gap: 4px;
+  opacity: 0; transition: opacity var(--dur-fast) var(--ease);
+}
+[data-art="knowledge"] .kn.src .kn-swap .kn-b,
+[data-art="knowledge"] .kn.src .kn-tier { opacity: 1; transition: opacity var(--dur-med) var(--ease) var(--dur-fast); }
+[data-art="knowledge"] .kn-cred { width: 10px; height: 10px; flex: none; overflow: visible; }
+[data-art="knowledge"] .kn-cred path { fill: none; stroke: var(--kn-peer); stroke-width: 1.6; stroke-linecap: butt; }
+
+[data-art="knowledge"] .kn-pred {
+  position: absolute; transform: translateX(-50%);
+  font-family: var(--mono); font-size: 11px; font-weight: 500; line-height: 12px;
+  color: var(--coral); white-space: nowrap;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="knowledge"] .kn-pred.on { opacity: 1; }
+
+/* ── The digest's status, then the claim's provenance, in one place ── */
+[data-art="knowledge"] .kn-status {
+  position: absolute; display: grid; font-size: 12px; line-height: 14px; color: var(--muted); white-space: nowrap;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="knowledge"] .kn-status.on { opacity: 1; }
+[data-art="knowledge"] .kn-status span { grid-area: 1 / 1; transition: opacity var(--dur-med) var(--ease); }
+[data-art="knowledge"] .kn-status .kn-done { opacity: 0; }
+[data-art="knowledge"] .kn-status.done .kn-run { opacity: 0; }
+[data-art="knowledge"] .kn-status.done .kn-done { opacity: 1; }
+/* While it runs the line breathes, as a running tool call does. */
+[data-art="knowledge"] .kn-status.on:not(.done) .kn-run { animation: knowledge-breathe 2.4s ease-in-out infinite; }
+@keyframes knowledge-breathe { 50% { opacity: 0.7; } }
+
+[data-art="knowledge"] .kn-note {
+  position: absolute;
+  display: grid; grid-template-columns: auto auto; column-gap: 10px; row-gap: 3px; align-items: baseline;
+  white-space: nowrap;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
+}
+[data-art="knowledge"] .kn-note.on { opacity: 1; transform: none; }
+[data-art="knowledge"] .kn-k { font-size: 11.5px; line-height: 14px; color: var(--muted); }
+[data-art="knowledge"] .kn-v { font-family: var(--mono); font-size: 11px; line-height: 14px; color: var(--ink); }
+
+/* End of the loop: the graph fades, the base's title row stays. */
+[data-art="knowledge"] .kn.out .kn-svg,
+[data-art="knowledge"] .kn.out .kn-lab,
+[data-art="knowledge"] .kn.out .kn-pred,
+[data-art="knowledge"] .kn.out .kn-note { opacity: 0; transition: opacity var(--dur-slow) var(--ease); }

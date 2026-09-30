@@ -1,0 +1,305 @@
+/* Biorouter website: shared styles.
+   Every page loads this file. Tokens mirror the desktop app
+   (ui/desktop/src/styles/main.css, Parchment, light). The site is light only:
+   white paper, warm ink, coral accent, UCSF navy. Artifact styles live in
+   art/*.css and use only the tokens below. */
+
+:root {
+  color-scheme: light;
+
+  /* Grounds */
+  --paper: #ffffff;        /* --background-default */
+  --muted-ground: #f4f4f2; /* --background-muted: the app's page ground */
+  --wash: #f5f5f3;         /* --background-well: code, prompts */
+  --medium: #ecece9;       /* --background-medium: hover, user message */
+  --strong: #dcdcd8;       /* --background-strong: switch off, idle dot */
+  --sidebar: #f7f7f5;
+  --sidebar-active: #eaeae6;
+
+  /* Lines */
+  --line: #e4e4e0;         /* --border-subtle, the hairline */
+  --line-2: #d2d2cd;       /* --border-strong */
+  --line-input: #c9c9c3;
+
+  /* Ink */
+  --ink: #2a2520;          /* --text-default, warm ink */
+  --ink-2: #4a443e;
+  --muted: #635c54;        /* --text-muted (6.3:1) */
+  --subtle: #6e6760;       /* --text-subtle (5.4:1) */
+  --faint: #84827c;        /* neutral-500: the soft second line of a headline (3.9:1) */
+  --ghost: #a9a7a1;        /* neutral-400: decoration only, never text */
+
+  /* Brand */
+  --coral: #b85a32;        /* --background-accent / --text-accent */
+  --coral-hover: #a94f2a;
+  --coral-bar: #cf6d47;    /* rails, underlines, dots; never text */
+  --coral-wash: rgba(184, 90, 50, 0.12);
+  --navy: #052049;         /* UCSF navy, the B in the mark */
+  --navy-wash: rgba(5, 32, 73, 0.07);
+
+  /* Provider tabs: Local, Institutional, Public (the ProviderCatalog dots) */
+  --local: #1f7a3d;
+  --institutional: #1e5fbf;
+  --public: #8a5a00;
+
+  --ok: #1f7a3d;
+  --danger: #b3261e;
+
+  /* Type. The app's interface stack is Arial first. Inter is the brand face,
+     used only for the wordmark and the BR mark. */
+  --font: Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --brand-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* Geometry */
+  --measure: 1160px;
+  --gutter: max(20px, 5vw);
+  --r-inner: 4px;          /* chips, badges, inline code */
+  --r-element: 8px;        /* buttons, inputs, rows */
+  --r-container: 12px;     /* cards, composer, popovers */
+  --r-surface: 16px;       /* artifact frames */
+
+  /* Motion (the app's tokens: one curve, no bounce, no glow) */
+  --ease: cubic-bezier(0.24, 1, 0.4, 1);
+  --dur-fast: 125ms;
+  --dur-menu: 175ms;
+  --dur-med: 300ms;
+  --dur-slow: 525ms;
+
+  --shadow-raised: 0 1px 2px rgba(31, 30, 28, .07);
+  --shadow-popover: 0 8px 24px rgba(31, 30, 28, .11), 0 0 1px rgba(31, 30, 28, .16);
+
+  --lock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='11' width='16' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E");
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 84px; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+img, svg, video { display: block; max-width: 100%; }
+a { color: inherit; text-decoration: none; }
+a:hover { text-decoration: underline; text-decoration-color: var(--coral-bar); text-underline-offset: 5px; text-decoration-thickness: 1px; }
+:focus-visible { outline: 2px solid var(--coral-bar); outline-offset: 3px; border-radius: 2px; }
+button { font: inherit; color: inherit; }
+::selection { background: rgba(207, 109, 71, 0.24); }
+p { margin: 0 0 1em; }
+h1, h2, h3, h4 { margin: 0; font-weight: 400; line-height: 1.2; }
+code, kbd, pre, samp { font-family: var(--mono); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.skip { position: absolute; left: 12px; top: -60px; z-index: 300; background: var(--ink); color: #fff; padding: 8px 12px; border-radius: var(--r-element); font-size: 14px; }
+.skip:focus { top: 12px; }
+
+.wrap { max-width: var(--measure); margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter); }
+
+/* ── Header ─────────────────────────────────────────────── */
+.site-header {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(255, 255, 255, 0.9);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  backdrop-filter: saturate(180%) blur(14px);
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur-med) ease;
+}
+.site-header.scrolled { border-bottom-color: var(--line); }
+.site-header .wrap { height: 64px; display: flex; align-items: center; gap: 28px; }
+.brand { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); }
+.brand:hover { text-decoration: none; }
+.brand img { width: 30px; height: 30px; }
+.brand .word { font-family: var(--brand-font); font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
+.brand .word b { font-weight: 600; color: var(--navy); }
+.brand .word i { font-style: normal; color: var(--coral); }
+.nav { display: flex; align-items: center; gap: 28px; margin-left: auto; font-size: 14px; }
+.nav a { color: var(--muted); padding: 6px 0; position: relative; }
+.nav a:hover { color: var(--ink); text-decoration: none; }
+.nav a[aria-current="page"] { color: var(--ink); }
+.nav a[aria-current="page"]::after { content: ''; position: absolute; left: 0; right: 0; bottom: -3px; height: 2px; border-radius: 2px; background: var(--coral-bar); }
+.nav .gh { color: var(--ink); }
+.menu-btn { display: none; margin-left: auto; background: none; border: 0; width: 40px; height: 40px; padding: 0; cursor: pointer; border-radius: var(--r-element); }
+.menu-btn span { display: block; width: 18px; height: 1.5px; background: var(--ink); margin: 4px auto; transition: transform var(--dur-med) var(--ease), opacity var(--dur-fast); }
+.menu-btn[aria-expanded="true"] span:nth-child(1) { transform: translateY(5.5px) rotate(45deg); }
+.menu-btn[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+.menu-btn[aria-expanded="true"] span:nth-child(3) { transform: translateY(-5.5px) rotate(-45deg); }
+
+/* The Slack invite sits in the header on every page. */
+.slack-link {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 32px; padding: 0 12px; border-radius: var(--r-element);
+  border: 1px solid var(--coral); color: var(--coral) !important;
+  font-size: 13.5px; white-space: nowrap;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
+}
+.slack-link:hover { background: var(--coral); color: #fff !important; text-decoration: none; }
+.slack-link svg { width: 14px; height: 14px; flex: none; }
+.nav .slack-link::after { display: none; }
+.header-slack { display: none; }
+
+@media (max-width: 760px) {
+  .menu-btn { display: block; margin-left: 10px; }
+  .header-slack { display: inline-flex; margin-left: auto; }
+  .nav .slack-link { display: none; }
+  .nav {
+    position: fixed; top: 64px; left: 0; right: 0;
+    flex-direction: column; align-items: stretch; gap: 0;
+    background: var(--paper); border-bottom: 1px solid var(--line);
+    padding: 4px var(--gutter) 16px;
+    opacity: 0; visibility: hidden; transform: translateY(-6px);
+    transition: opacity var(--dur-menu) ease, transform var(--dur-med) var(--ease), visibility 0s linear var(--dur-med);
+  }
+  .nav.open { opacity: 1; visibility: visible; transform: none; transition: opacity var(--dur-menu) ease, transform var(--dur-med) var(--ease); }
+  .nav a { font-size: 17px; padding: 14px 0; border-bottom: 1px solid var(--line); color: var(--ink); }
+  .nav a:last-child { border-bottom: 0; }
+  .nav a[aria-current="page"]::after { display: none; }
+  .nav a[aria-current="page"] { color: var(--coral); }
+}
+
+/* ── Type ───────────────────────────────────────────────── */
+.eyebrow { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 24px; }
+.display {
+  font-size: clamp(42px, 6.6vw, 84px);
+  font-weight: 400; letter-spacing: -0.06em; line-height: 1.06;
+  margin: 0;
+}
+.display .soft, .title .soft { color: var(--faint); }
+.title { font-size: clamp(32px, 4.4vw, 54px); font-weight: 400; letter-spacing: -0.05em; line-height: 1.12; margin: 0 0 22px; }
+.subtitle { font-size: clamp(22px, 2.3vw, 27px); font-weight: 400; letter-spacing: -0.035em; line-height: 1.25; margin: 0 0 12px; }
+.lede { font-size: clamp(17px, 1.5vw, 19px); color: var(--ink); line-height: 1.6; max-width: 600px; margin: 28px 0 0; }
+.body-muted { color: var(--muted); font-size: 16px; line-height: 1.75; max-width: 560px; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+.tiny { font-size: 12.5px; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* A section heading line in the hshs style: a hairline, a label, a note. */
+.rule-line {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+  position: relative;
+  border-top: 1px solid var(--line); padding: 22px 0 0; margin: 0 0 44px;
+}
+.rule-line::before { content: ''; position: absolute; left: 0; top: -1px; width: 40px; height: 2px; background: var(--coral-bar); }
+.rule-line h2, .rule-line p { font-size: 14px; font-weight: 400; margin: 0; letter-spacing: 0; line-height: 1.4; }
+.rule-line p { color: var(--muted); text-align: right; }
+
+/* ── Links and buttons ──────────────────────────────────── */
+.text-link {
+  display: inline-flex; align-items: center; gap: 36px;
+  font-size: 15px; color: var(--ink);
+  border-bottom: 1px solid var(--coral-bar); padding-bottom: 9px;
+  transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease;
+}
+.text-link:hover { text-decoration: none; color: var(--coral); border-bottom-color: var(--coral); }
+.text-link span[aria-hidden] { color: var(--coral); }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 42px; padding: 0 18px; border-radius: var(--r-element);
+  font-size: 14.5px; font-weight: 400;
+  border: 1px solid transparent; cursor: pointer;
+  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease, color var(--dur-fast) ease, transform var(--dur-fast) var(--ease);
+  white-space: nowrap;
+}
+.btn:hover { text-decoration: none; }
+.btn:active { transform: scale(0.98); }
+.btn-dark { background: var(--ink); color: #fff; }
+.btn-dark:hover { background: #17130f; }
+.btn-accent { background: var(--coral); color: #fff; }
+.btn-accent:hover { background: var(--coral-hover); }
+.btn-line { background: var(--paper); color: var(--ink); border-color: var(--line-2); }
+.btn-line:hover { border-color: var(--ink); }
+.btn svg { width: 16px; height: 16px; flex: none; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 26px; margin-top: 40px; }
+
+/* ── Sections ───────────────────────────────────────────── */
+.section { padding-top: 120px; }
+@media (max-width: 680px) { .section { padding-top: 80px; } }
+
+/* ── Small parts shared by pages ────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 24px; padding: 0 8px; border-radius: var(--r-inner);
+  font-size: 12px; line-height: 1; color: var(--muted);
+  background: var(--medium); white-space: nowrap;
+}
+/* The app's privacy pill: Private wears the padlock on the muted ground,
+   Public is the quiet word. Privacy never animates. */
+.privacy { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: var(--r-inner); font-size: 12px; line-height: 1; white-space: nowrap; }
+.privacy.is-private { background: var(--muted-ground); color: var(--ink); }
+.privacy.is-private::before { content: ''; width: 11px; height: 11px; background: currentColor; -webkit-mask: var(--lock) center / contain no-repeat; mask: var(--lock) center / contain no-repeat; }
+.privacy.is-public { color: var(--muted); padding: 0 2px; }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+
+pre.code {
+  background: var(--wash); border-radius: var(--r-container);
+  padding: 18px 20px; margin: 0; overflow-x: auto;
+  font-size: 13px; line-height: 1.7; color: var(--ink);
+}
+.copy-row { display: flex; align-items: center; gap: 18px; background: var(--wash); border-radius: var(--r-container); padding: 14px 18px 14px 20px; }
+.copy-row code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font-size: 13.5px; }
+.copy-btn { border: 0; background: none; font-size: 13px; color: var(--muted); cursor: pointer; padding: 6px 0; white-space: nowrap; }
+.copy-btn:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
+
+/* Tables in the Biorouter style: hairlines, no fills, a quiet header. */
+table.plain { width: 100%; border-collapse: collapse; font-size: 14.5px; line-height: 1.55; }
+table.plain th { text-align: left; font-weight: 400; font-size: 12.5px; color: var(--muted); padding: 0 18px 10px 0; border-bottom: 1px solid var(--line-2); white-space: nowrap; }
+table.plain td { padding: 12px 18px 12px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.plain tr > :last-child { padding-right: 0; }
+table.plain code { font-size: 12.5px; background: var(--wash); padding: 2px 5px; border-radius: var(--r-inner); }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+/* ── Artifact frame: every small animation sits on one of these ── */
+.art {
+  position: relative; overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--r-surface);
+  isolation: isolate;
+  color: var(--ink);
+}
+.art.on-ground { background: var(--muted-ground); border-color: transparent; }
+.art-caption { padding-top: 20px; }
+.art-caption .k { font-size: 14px; }
+.art-caption p { color: var(--muted); font-size: 15px; line-height: 1.65; margin: 10px 0 0; max-width: 480px; }
+
+/* ── Footer ─────────────────────────────────────────────── */
+.site-footer { border-top: 1px solid var(--line); }
+.site-footer .wrap { display: grid; grid-template-columns: 1.6fr repeat(3, 1fr); gap: 32px; padding-top: 48px; padding-bottom: 36px; font-size: 13.5px; }
+.site-footer .foot-brand { display: flex; flex-direction: column; gap: 14px; color: var(--muted); max-width: 300px; line-height: 1.6; }
+.site-footer .foot-brand .brand img { width: 26px; height: 26px; }
+.site-footer .foot-brand .brand .word { font-size: 15px; }
+.site-footer h3 { font-size: 12.5px; font-weight: 400; color: var(--faint); margin: 3px 0 14px; }
+.site-footer ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
+.site-footer a { color: var(--ink-2); }
+.site-footer .legal { grid-column: 1 / -1; border-top: 1px solid var(--line); margin-top: 16px; padding-top: 22px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 24px; color: var(--faint); font-size: 12.5px; }
+.site-footer .legal a { color: var(--faint); }
+@media (max-width: 760px) {
+  .site-footer .wrap { grid-template-columns: 1fr 1fr; gap: 28px 20px; }
+  .site-footer .foot-brand { grid-column: 1 / -1; }
+}
+
+/* ── Reveal on scroll ───────────────────────────────────── */
+.js .reveal { opacity: 0; transform: translateY(16px); transition: opacity .8s ease, transform .8s var(--ease); }
+.js .reveal.visible { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .js .reveal { opacity: 1; transform: none; transition: none; }
+}
+
+/* ── Community (Slack) band, shared by pages ───────────────── */
+.community {
+  position: relative;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 20px 40px;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  padding: 30px 0;
+}
+.community::before { content: ''; position: absolute; left: 0; top: -1px; width: 40px; height: 2px; background: var(--coral-bar); }
+.community .label { font-size: 13px; color: var(--coral); margin: 0 0 8px; }
+.community h2 { font-size: clamp(22px, 2.4vw, 28px); letter-spacing: -0.035em; line-height: 1.2; margin: 0; }
+.community p.sub { color: var(--muted); font-size: 15px; margin: 8px 0 0; max-width: 560px; }
+.community .btn { height: 44px; padding: 0 20px; }
+@media (max-width: 640px) { .community { grid-template-columns: 1fr; } .community .btn { justify-self: start; } }

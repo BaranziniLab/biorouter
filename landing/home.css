@@ -1,0 +1,49 @@
+/* Introduction page layout. Artifact internals live in art/*.css. */
+
+/* Hero */
+.hero { padding-top: 88px; }
+.hero-icon { width: 88px; height: 88px; margin: 0 0 18px -9px; }
+.hero-text { max-width: 760px; }
+.hero-meta { margin: 30px 0 0; font-size: 13px; color: var(--faint); }
+.hero-meta a { color: var(--faint); }
+.hero-art { margin: 88px 0 0; }
+.art-hub { width: 100%; height: clamp(360px, 46vw, 470px); }
+@media (max-width: 760px) {
+  .hero { padding-top: 48px; }
+  .hero-icon { width: 72px; height: 72px; margin-left: -7px; }
+  .hero-art { margin-top: 56px; }
+  .art-hub { height: 560px; }
+}
+
+/* Principles */
+.pillar {
+  display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: 56px; align-items: center;
+  padding: 0 0 120px;
+}
+.pillar:last-child { padding-bottom: 0; }
+.pillar-n { font-size: 13px; color: var(--coral); margin: 0 0 18px; font-variant-numeric: tabular-nums; }
+.pillar-text .body-muted { margin: 0 0 30px; }
+.pillar-hint { font-size: 13px; color: var(--faint); margin: 0; }
+.pillar-art .art { aspect-ratio: 7 / 5; }
+@media (max-width: 900px) {
+  .pillar { grid-template-columns: 1fr; gap: 36px; padding-bottom: 88px; }
+  .pillar-art .art { aspect-ratio: auto; height: min(118vw, 500px); }
+}
+
+/* Capabilities */
+.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 44px 28px; }
+.feature { margin: 0; }
+.art-tile { aspect-ratio: 4 / 3; }
+.feature figcaption { padding-top: 18px; }
+.feature h3 { font-size: 16px; font-weight: 400; letter-spacing: -0.01em; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.feature p { color: var(--muted); font-size: 14.5px; line-height: 1.6; margin: 8px 0 0; max-width: 340px; }
+.soon { font-size: 11.5px; color: var(--coral); background: var(--coral-wash); border-radius: var(--r-inner); padding: 3px 7px; line-height: 1; letter-spacing: 0; }
+@media (max-width: 980px) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .features { grid-template-columns: 1fr; gap: 40px; } }
+
+/* Get started */
+.start-body { max-width: 720px; }
+.start-body code { font-size: 14px; background: var(--wash); padding: 2px 6px; border-radius: var(--r-inner); color: var(--ink); }
+.start { padding-bottom: 136px; }
+@media (max-width: 680px) { .start { padding-bottom: 88px; } }

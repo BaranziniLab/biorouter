@@ -1,0 +1,150 @@
+/* About page layout. Tokens and shared parts live in site.css. */
+
+/* The app's avatar hue pairs (ui/desktop/src/styles/main.css, --avatar-hue-N). */
+.team {
+  --av-1-bg: #ffcbc5; --av-1-fg: #752725;
+  --av-4-bg: #bde6bd; --av-4-fg: #11531a;
+  --av-6-bg: #b5dfff; --av-6-fg: #034a6f;
+}
+
+/* Links that sit inside prose: ink, underlined by a 1px coral rule. */
+a.inline {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--coral-bar);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: color var(--dur-fast) ease;
+}
+a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
+
+/* ── Intro ─────────────────────────────────────────────── */
+.about-intro { padding-top: 104px; }
+.about-intro .lede { max-width: 620px; text-wrap: pretty; }
+.about-community { padding-top: 88px; }
+/* The Team rule line closes the band, so the band keeps only its top rule. */
+.about-community .community { border-bottom: 0; padding-bottom: 0; }
+@media (max-width: 760px) {
+  .about-intro { padding-top: 56px; }
+  .about-community { padding-top: 64px; }
+}
+
+/* ── Sections ──────────────────────────────────────────── */
+.about-section { padding-top: 120px; }
+.about-last { padding-bottom: 136px; }
+@media (max-width: 680px) {
+  .about-section { padding-top: 80px; }
+  .about-last { padding-bottom: 88px; }
+}
+
+/* One three column grid carries every list on the page, so the team, the
+   collaborators, the inspirations and the links share the same vertical lines. */
+.team, .collab, .refs {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 28px;
+  list-style: none; margin: 0; padding: 0;
+}
+@media (max-width: 640px) {
+  .team, .collab, .refs { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Team ──────────────────────────────────────────────── */
+.team { row-gap: 40px; }
+.person { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 44px; height: 44px; border-radius: 50%;
+  font-size: 15px; line-height: 1; letter-spacing: 0.02em;
+  background: var(--medium); color: var(--muted);
+  user-select: none;
+}
+.avatar.hue-1 { background: var(--av-1-bg); color: var(--av-1-fg); }
+.avatar.hue-4 { background: var(--av-4-bg); color: var(--av-4-fg); }
+.avatar.hue-6 { background: var(--av-6-bg); color: var(--av-6-fg); }
+.person-text { padding-top: 20px; min-width: 0; }
+.person h3 { font-size: 19px; letter-spacing: -0.02em; line-height: 1.3; margin: 0; }
+.person p { color: var(--muted); font-size: 14.5px; line-height: 1.55; margin: 6px 0 0; text-wrap: pretty; }
+.person .person-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 14px; }
+@media (max-width: 640px) {
+  .team { row-gap: 28px; }
+  .person { flex-direction: row; gap: 16px; }
+  .person-text { padding-top: 1px; }
+  .person h3 { font-size: 17px; }
+}
+
+/* ── Collaborators ─────────────────────────────────────── */
+.collab { row-gap: 40px; }
+.group { display: grid; grid-template-rows: subgrid; grid-row: span 2; row-gap: 0; min-width: 0; }
+.group h3 { font-size: 17px; letter-spacing: -0.015em; line-height: 1.4; margin: 0; max-width: 320px; text-wrap: pretty; }
+.group h3 a { color: var(--ink); }
+.group h3 a span { color: var(--faint); transition: color var(--dur-fast) ease; }
+.group h3 a:hover span, .group h3 a:focus-visible span { color: var(--coral); }
+.group ul { list-style: none; margin: 16px 0 0; padding: 0; align-self: start; }
+.group li { font-size: 15px; line-height: 1.5; padding: 9px 0; border-top: 1px solid var(--line); }
+/* The larger group takes the second and third columns and lays its names out
+   on those two columns, so both groups end on the same line. */
+.group.wide { grid-column: span 2; }
+.group.wide ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; }
+@media (max-width: 640px) {
+  .collab { row-gap: 36px; }
+  .group.wide { grid-column: auto; }
+  .group.wide ul { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Inspirations and links: a quiet list of references ── */
+.insp-note { font-size: 16px; color: var(--muted); line-height: 1.65; max-width: 720px; margin: -12px 0 32px; text-wrap: pretty; }
+.refs li { padding: 18px 0 20px; border-top: 1px solid var(--line); min-width: 0; }
+.refs li:nth-child(-n+3) { border-top: 0; padding-top: 0; }
+@media (max-width: 640px) {
+  .refs li:nth-child(n+2) { border-top: 1px solid var(--line); padding-top: 18px; }
+}
+.ref-name { font-size: 15.5px; color: var(--ink); }
+.ref-name span { color: var(--faint); margin-left: 2px; transition: color var(--dur-fast) ease; }
+.ref-name:hover span, .ref-name:focus-visible span { color: var(--coral); }
+.refs p { color: var(--muted); font-size: 14px; line-height: 1.55; margin: 6px 0 0; text-wrap: pretty; }
+
+/* ── Updates ───────────────────────────────────────────────
+   The rows keep the shape the release pipeline copies:
+   a.news-row > .news-date (.day .mon) + .news-body (h3, p, .news-link).
+   On wide screens .news-body steps out of the way (display: contents) so the
+   row can use the page grid: the date and the link in the first column, the
+   headline and the sentence in the other two. */
+.news-list { display: flex; flex-direction: column; }
+.news-row {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 28px;
+  padding: 20px 0 22px; border-top: 1px solid var(--line);
+  color: var(--ink);
+}
+.news-row:first-child { border-top: 0; padding-top: 0; }
+.news-row:hover { text-decoration: none; }
+.news-body { display: contents; }
+.news-date {
+  grid-column: 1; grid-row: 1 / 3; align-self: start;
+  display: flex; gap: 6px; font-size: 14px; line-height: 1.6; color: var(--muted);
+  font-variant-numeric: tabular-nums; padding-top: 1px;
+}
+.news-body h3 {
+  grid-column: 2 / 4; grid-row: 1;
+  font-size: 16px; letter-spacing: -0.01em; line-height: 1.45; margin: 0; text-wrap: pretty;
+  text-decoration: underline; text-decoration-color: transparent; text-decoration-thickness: 1px; text-underline-offset: 4px;
+  transition: text-decoration-color var(--dur-fast) ease;
+}
+.news-body p { grid-column: 2 / 4; grid-row: 2; color: var(--muted); font-size: 14.5px; line-height: 1.6; margin: 6px 0 0; max-width: 600px; text-wrap: pretty; }
+.news-link {
+  /* Shares the date's cell and sits one line under it, so a headline that
+     wraps never pushes it down. */
+  grid-column: 1; grid-row: 1 / 3; align-self: start; margin-top: 30px;
+  font-size: 13.5px; line-height: 1.6; color: var(--subtle);
+  transition: color var(--dur-fast) ease;
+}
+/* Arrows stay quiet at rest; only the newest row keeps a coral one. */
+.news-row:first-child .news-link span[aria-hidden] { color: var(--coral); }
+.news-row:hover h3, .news-row:focus-visible h3 { text-decoration-color: var(--coral-bar); }
+.news-row:hover .news-link, .news-row:focus-visible .news-link { color: var(--coral); }
+/* Phones: the date and the link share the first line, the text runs full width. */
+@media (max-width: 640px) {
+  .news-row { grid-template-columns: minmax(0, 1fr) auto; gap: 0 16px; padding: 18px 0 20px; }
+  .news-date { grid-column: 1; grid-row: 1; font-size: 13px; margin-bottom: 6px; }
+  .news-link { grid-column: 2; grid-row: 1; margin-top: 0; font-size: 13px; }
+  .news-body h3 { grid-column: 1 / -1; grid-row: 2; }
+  .news-body p { grid-column: 1 / -1; grid-row: 3; }
+}

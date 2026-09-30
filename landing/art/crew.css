@@ -1,0 +1,299 @@
+/* crew: a Crew channel, #methods, seen by the person who asks their agent.
+   The channel header with its neutral "Restricted" badge, a person's post with
+   a shared file card, the agent's post group ("Task: …", then the result), the
+   viewer's task row under it ("Your agent · Working…", then "Done"), and the
+   composer with Ask my agent. Ask my agent opens its pane in the composer's
+   place: Task, the scope line, and "Start my agent and allow posting here".
+   Everything is scoped under [data-art="crew"]. Coral marks only the one
+   active thing: the Start button while the pane is open, then the task row's
+   rail, through Done. */
+
+[data-art="crew"] .crew-stage {
+  position: absolute; inset: 0;
+  container-type: size;
+  display: flex; flex-direction: column;
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1;
+  -webkit-user-select: none; user-select: none;
+
+  --crew-pad: 14px;
+  --crew-av: 24px;
+  --crew-gap: 9px;
+  --crew-head: 36px;
+  --crew-step: 10px;
+  --crew-file: 28px;
+  --crew-ctl: 28px;
+  --crew-card-h: 36px;
+  --crew-sheet-gap: 7px;
+  --crew-fs-body: 12.5px;
+  --crew-lh-body: 18px;
+  --crew-person-bg: #d4d5ff;  /* the app's avatar hue 7 */
+  --crew-person-fg: #41397d;
+}
+[data-art="crew"] .crew-stage.crew-still,
+[data-art="crew"] .crew-stage.crew-still * { transition: none; animation: none; }
+
+/* ── Channel header: # methods, and its classification ────────────────── */
+[data-art="crew"] .crew-head {
+  flex: none;
+  height: var(--crew-head);
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 var(--crew-pad);
+  border-bottom: 1px solid var(--line);
+}
+[data-art="crew"] .crew-chan {
+  display: inline-flex; align-items: center;
+  font-size: 13.5px; line-height: 18px; color: var(--ink); white-space: nowrap;
+}
+[data-art="crew"] .crew-hash { color: var(--faint); margin-right: 3px; }
+[data-art="crew"] .crew-chan svg { width: 13px; height: 13px; margin-left: 4px; color: var(--faint); }
+
+/* Classification is a neutral badge beside the name (ChannelHeader): it says
+   which models may read the channel. No padlock: in Crew the padlock means
+   privacy tier only, and that lives in the sidebar's status row. */
+[data-art="crew"] .crew-class {
+  display: inline-flex; align-items: center;
+  height: 18px; padding: 0 6px;
+  border-radius: var(--r-inner);
+  background: var(--medium);
+  font-size: 11px; line-height: 1; color: var(--muted); white-space: nowrap;
+}
+
+/* ── The log ──────────────────────────────────────────────────────── */
+[data-art="crew"] .crew-log {
+  flex: 1 1 auto; min-height: 0;
+  overflow: hidden;
+  padding: 11px 0 6px;
+}
+[data-art="crew"] .crew-msg {
+  display: grid; grid-template-columns: var(--crew-av) minmax(0, 1fr); column-gap: var(--crew-gap);
+  align-items: start;
+  padding: 0 var(--crew-pad);
+}
+[data-art="crew"] .crew-main { min-width: 0; }
+
+/* Avatars: a person is a circle in their hue, an agent a square tile with the robot. */
+[data-art="crew"] .crew-av {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: var(--crew-av); height: var(--crew-av);
+  font-size: 11px; line-height: 1; font-weight: 700; letter-spacing: 0.01em;
+}
+[data-art="crew"] .crew-av-person { border-radius: 50%; background: var(--crew-person-bg); color: var(--crew-person-fg); }
+[data-art="crew"] .crew-av-agent { border-radius: var(--r-inner); background: var(--medium); color: var(--muted); }
+[data-art="crew"] .crew-av-agent svg { width: 14px; height: 14px; }
+
+[data-art="crew"] .crew-meta {
+  display: flex; align-items: center; gap: 7px;
+  height: 16px; min-width: 0; white-space: nowrap;
+}
+[data-art="crew"] .crew-name { font-size: 12px; line-height: 16px; font-weight: 700; color: var(--ink); }
+[data-art="crew"] .crew-time { font-size: 11px; line-height: 16px; color: var(--faint); font-variant-numeric: tabular-nums; }
+[data-art="crew"] .crew-badge {
+  display: inline-flex; align-items: center;
+  height: 16px; padding: 0 5px;
+  border-radius: var(--r-inner);
+  background: var(--medium);
+  font-size: 11px; line-height: 1; color: var(--muted);
+}
+[data-art="crew"] .crew-body {
+  margin: 2px 0 0;
+  font-size: var(--crew-fs-body); line-height: var(--crew-lh-body); color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* A shared file: the attachment card, a hairline row with the file glyph, name and size. */
+[data-art="crew"] .crew-file {
+  display: inline-flex; align-items: center; gap: 7px;
+  max-width: 100%; height: var(--crew-file);
+  margin-top: 5px; padding: 0 11px 0 9px;
+  border: 1px solid var(--line); border-radius: var(--r-element);
+  background: var(--paper);
+  white-space: nowrap;
+}
+[data-art="crew"] .crew-file svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
+[data-art="crew"] .crew-file-name { font-size: 12px; line-height: 16px; color: var(--ink); }
+[data-art="crew"] .crew-file-size { font-size: 11px; line-height: 16px; color: var(--faint); }
+
+/* Rows that arrive: the height opens first, then the content fades in. */
+[data-art="crew"] .crew-slot {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-slow) var(--ease);
+}
+[data-art="crew"] .crew-slot.is-open { grid-template-rows: 1fr; }
+[data-art="crew"] .crew-slot-in {
+  min-height: 0; overflow: hidden;
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="crew"] .crew-slot.is-shown > .crew-slot-in { opacity: 1; }
+[data-art="crew"] .crew-slot-pad { padding-top: var(--crew-step); }
+/* The result is a continuation of the agent's post group: no second avatar,
+   name or time, only its line under the "Task: …" line. */
+[data-art="crew"] .crew-result-pad { padding-top: 0; }
+[data-art="crew"] .crew-result-pad .crew-body { margin-top: 1px; }
+/* The task row carries 3px of its own padding; take it off the step so the
+   avatars keep one rhythm. It sits under the group, never inside it. */
+[data-art="crew"] .crew-slot-task .crew-slot-pad { padding-top: calc(var(--crew-step) - 3px); }
+
+/* The viewer's task, as a line and not a card (TaskStatusRow). It carries a
+   2px coral rail from the start to the end of the task, and while it runs its
+   status word breathes 1 → 0.7 → 1. */
+[data-art="crew"] .crew-task {
+  position: relative;
+  display: grid; grid-template-columns: var(--crew-av) minmax(0, 1fr); column-gap: var(--crew-gap);
+  align-items: center;
+  margin: 0 calc(var(--crew-pad) - 8px);
+  padding: 3px 8px;
+  border-radius: var(--r-element);
+  background-color: transparent;
+  transition: background-color calc(var(--dur-slow) * 3) var(--ease);
+}
+[data-art="crew"] .is-hl .crew-task { background-color: var(--sidebar-active); transition-duration: 0s; }
+[data-art="crew"] .crew-task::before {
+  content: ''; position: absolute; left: 0; top: 50%;
+  width: 2px; height: 16px; margin-top: -8px;
+  border-radius: 2px;
+  background: var(--coral-bar);
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="crew"] .is-running .crew-task::before,
+[data-art="crew"] .is-done .crew-task::before { opacity: 1; }
+[data-art="crew"] .crew-task-status {
+  margin: 0; min-width: 0;
+  font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap;
+}
+[data-art="crew"] .crew-word { display: inline-grid; vertical-align: top; }
+[data-art="crew"] .crew-word > span { grid-area: 1 / 1; transition: opacity var(--dur-med) var(--ease); }
+[data-art="crew"] .crew-w-done { opacity: 0; color: var(--muted); }
+[data-art="crew"] .is-done .crew-w-run { opacity: 0; }
+[data-art="crew"] .is-done .crew-w-done { opacity: 1; }
+[data-art="crew"] .is-running .crew-w-run { animation: crew-breathe 2.4s var(--ease) infinite; }
+@keyframes crew-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+/* stop(): the breathing word holds still. This must outrank the rule above,
+   whose animation shorthand would otherwise reset the play state. */
+[data-art="crew"] .crew-stage.crew-paused .crew-w-run { animation-play-state: paused; }
+
+/* ── Composer: the chat composer card, with Ask my agent and Send ───────── */
+[data-art="crew"] .crew-compose { flex: none; padding: 0 9px 9px; }
+/* The composer keeps its row's height in the column; the box above it can
+   grow into the pane without moving the log. */
+[data-art="crew"] .crew-compose-in { position: relative; height: var(--crew-card-h); }
+[data-art="crew"] .crew-box {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: var(--crew-card-h);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--paper);
+  overflow: hidden;
+  /* Back to the composer once the pane's contents have gone. */
+  transition: height var(--dur-slow) var(--ease) 50ms;
+}
+[data-art="crew"] .is-pane .crew-box {
+  height: var(--crew-sheet-h, 120px);
+  transition: height var(--dur-slow) var(--ease);
+}
+[data-art="crew"] .crew-card {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  height: calc(var(--crew-card-h) - 2px);
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 4px 0 11px;
+  /* Back as soon as the pane's contents have gone, while the box settles onto it. */
+  transition: opacity var(--dur-med) var(--ease) var(--dur-fast);
+}
+[data-art="crew"] .is-pane .crew-card { opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+[data-art="crew"] .crew-field { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; overflow: hidden; }
+[data-art="crew"] .crew-ph {
+  grid-area: 1 / 1; min-width: 0;
+  font-size: 12px; line-height: 16px; white-space: nowrap;
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+}
+[data-art="crew"] .crew-ask {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 7px;
+  border-radius: var(--r-element);
+  font-size: 12px; line-height: 1; color: var(--ink); white-space: nowrap;
+  transition: background-color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="crew"] .crew-ask svg { width: 14px; height: 14px; flex: none; }
+/* Pressed, as the app's ghost button presses: the medium ground and a
+   slight scale. It never turns coral. */
+[data-art="crew"] .is-asking .crew-ask { background-color: var(--medium); transform: scale(0.98); }
+/* Send stays idle: the message box is empty the whole time. */
+[data-art="crew"] .crew-send {
+  flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  border-radius: var(--r-element);
+  background: var(--medium); color: var(--ink);
+}
+[data-art="crew"] .crew-send svg { width: 14px; height: 14px; }
+
+/* ── Ask my agent, in the composer's place (AgentTaskPane) ─────────────── */
+[data-art="crew"] .crew-sheet {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; flex-direction: column; gap: var(--crew-sheet-gap);
+  padding: 8px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+/* In as soon as the composer's row has gone, while the box opens. */
+[data-art="crew"] .is-pane .crew-sheet { opacity: 1; transition: opacity var(--dur-med) var(--ease) 100ms; }
+[data-art="crew"] .crew-sheet-task { display: flex; align-items: center; gap: 8px; }
+[data-art="crew"] .crew-sheet-label { flex: none; padding-left: 3px; font-size: 12px; line-height: 16px; color: var(--ink); }
+[data-art="crew"] .crew-input {
+  flex: 1 1 auto; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: center;
+  height: var(--crew-ctl); padding: 0 8px;
+  border: 1px solid var(--line-input); border-radius: var(--r-element);
+  background: var(--paper);
+  overflow: hidden;
+}
+[data-art="crew"] .crew-input > span { grid-area: 1 / 1; min-width: 0; font-size: 12px; line-height: 16px; white-space: nowrap; }
+[data-art="crew"] .crew-input-ph { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+[data-art="crew"] .has-draft .crew-input-ph { visibility: hidden; }
+[data-art="crew"] .crew-draft { display: inline-flex; align-items: center; justify-self: start; color: var(--ink); }
+/* Wider than the field: keep the end and the caret in view, as an input does. */
+[data-art="crew"] .crew-over .crew-draft { justify-self: end; }
+[data-art="crew"] .crew-caret { display: none; width: 1px; height: 14px; margin-left: 1px; background: var(--ink); }
+[data-art="crew"] .has-draft .crew-caret { display: block; }
+[data-art="crew"] .crew-scope { margin: 0; padding: 0 3px; font-size: 11px; line-height: 15px; color: var(--muted); text-wrap: balance; }
+[data-art="crew"] .crew-sheet-foot { display: flex; justify-content: flex-end; min-width: 0; }
+/* The pane's default button: the coral fill, a white label, 8px corners. */
+[data-art="crew"] .crew-start {
+  flex: none;
+  display: inline-flex; align-items: center;
+  height: var(--crew-ctl); padding: 0 11px;
+  border-radius: var(--r-element);
+  background: var(--coral); color: var(--paper);
+  font-size: 12px; line-height: 1; white-space: nowrap;
+  transition: background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="crew"] .is-starting .crew-start { background-color: var(--coral-hover); transform: scale(0.98); }
+
+/* ── Fitting ───────────────────────────────────────────────────────── */
+[data-art="crew"] .crew-narrow .crew-ask-label { display: none; }
+[data-art="crew"] .crew-narrow .crew-ask { padding: 0 6px; }
+[data-art="crew"] .crew-tight .crew-start { padding: 0 8px; font-size: 11.5px; }
+[data-art="crew"] .crew-noscope .crew-scope { display: none; }
+
+/* Shorter tiles tighten the rhythm. */
+@container (max-height: 280px) {
+  /* A query cannot restyle its own container, so the tokens go on its children. */
+  [data-art="crew"] .crew-stage > * { --crew-head: 31px; --crew-step: 7px; --crew-file: 24px; --crew-av: 22px; --crew-lh-body: 17px; --crew-card-h: 33px; }
+  [data-art="crew"] .crew-log { padding-top: 8px; padding-bottom: 3px; }
+  [data-art="crew"] .crew-file { margin-top: 3px; }
+  [data-art="crew"] .crew-compose { padding-bottom: 8px; }
+}
+@container (max-height: 222px) {
+  [data-art="crew"] .crew-stage > * { --crew-head: 30px; --crew-step: 6px; --crew-file: 22px; --crew-ctl: 26px; --crew-sheet-gap: 6px; --crew-card-h: 32px; }
+  [data-art="crew"] .crew-log { padding-top: 7px; padding-bottom: 2px; }
+  [data-art="crew"] .crew-task { padding-top: 2px; padding-bottom: 2px; }
+  [data-art="crew"] .crew-slot-task .crew-slot-pad { padding-top: calc(var(--crew-step) - 2px); }
+  [data-art="crew"] .crew-sheet { padding: 7px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-art="crew"] .crew-stage * { transition: none; animation: none; }
+}

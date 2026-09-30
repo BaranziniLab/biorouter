@@ -1,0 +1,176 @@
+/* Skills tile. Every rule is scoped to the artifact. Values follow the app:
+   composer card (12px radius, hairline that turns accent while focused, 32px
+   Send), the slash picker (an 11px count over rows of a 12px name and an 11px
+   description), the reference chip (20px, 4px radius, accent wash, coral
+   glyph) and the To Do list's status icons (16px, hairline connectors), here
+   set as the agent's reply in plain text on the page.
+   The chip's wash stays at the 12% that ResourceRefChip's own comment
+   documents; the Badge primitive now paints 22%, which reads louder than a
+   quiet site wants. */
+
+.art-skills {
+  position: absolute; inset: 0;
+  container-type: size;
+  --pad: clamp(12px, 4.8cqw, 18px);
+  --gap: 12px;        /* between the conversation and the composer */
+  --step-gap: 6px;    /* between the reply's steps */
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+.art-skills svg { display: block; flex: none; }
+
+/* ── The conversation: one column pinned above the composer ── */
+.art-skills .sk-thread {
+  position: absolute; left: var(--pad); right: var(--pad); top: var(--pad);
+  bottom: calc(var(--pad) + 44px + var(--gap)); /* above the 44px composer */
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 10px;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+.art-skills.is-clearing .sk-thread { opacity: 0; }
+
+.art-skills .sk-user {
+  display: flex; justify-content: flex-end;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+.art-skills.show-user .sk-user { opacity: 1; transform: none; }
+.art-skills .sk-bubble {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  background: var(--medium); border-radius: var(--r-container);
+  padding: 6px 7px 6px 11px;
+  font-size: 13px; line-height: 20px; white-space: nowrap;
+}
+
+/* The reference chip, as ResourceRefChip draws it. */
+.art-skills .sk-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 20px; padding: 0 6px; border-radius: var(--r-inner);
+  background: var(--coral-wash);
+  font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap;
+}
+.art-skills .sk-chip-ic { width: 12px; height: 12px; color: var(--coral); }
+.art-skills .sk-chip-x { width: 10px; height: 10px; color: var(--muted); margin-left: 2px; }
+
+/* ── The agent's reply: plain text, left, no card ───────── */
+.art-skills .sk-reply {
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+.art-skills.show-reply .sk-reply { opacity: 1; transform: none; }
+
+.art-skills .sk-count {
+  margin: 0 0 6px;
+  font-size: 12px; line-height: 16px; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+.art-skills .sk-todo {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; gap: var(--step-gap);
+}
+.art-skills .sk-step { position: relative; display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 18px; }
+/* The connector runs from under one icon to the top of the next. */
+.art-skills .sk-step:not(:last-child)::after {
+  content: ''; position: absolute; left: 7.5px; top: 17px; bottom: calc(-1px - var(--step-gap));
+  border-left: 1px solid var(--line);
+}
+.art-skills .sk-step-ic { position: relative; width: 16px; height: 16px; margin-top: 1px; flex: none; }
+.art-skills .sk-step-ic svg { position: absolute; inset: 0; width: 16px; height: 16px; transition: opacity var(--dur-menu) var(--ease); }
+.art-skills .sk-i-pending { color: var(--muted); }
+.art-skills .sk-i-active { color: var(--coral); opacity: 0; }
+.art-skills .sk-i-done { color: var(--muted); opacity: 0; }
+.art-skills .sk-tick { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset var(--dur-slow) var(--ease); }
+.art-skills .sk-step[data-state="active"] .sk-i-pending,
+.art-skills .sk-step[data-state="done"] .sk-i-pending { opacity: 0; }
+.art-skills .sk-step[data-state="active"] .sk-i-active { opacity: 1; }
+.art-skills .sk-step[data-state="done"] .sk-i-done { opacity: 1; }
+.art-skills .sk-step[data-state="done"] .sk-tick { stroke-dashoffset: 0; }
+.art-skills .sk-step-text { min-width: 0; white-space: nowrap; overflow: hidden; color: var(--ink); transition: color var(--dur-med) var(--ease); }
+.art-skills .sk-step[data-state="done"] .sk-step-text { color: var(--muted); }
+
+/* ── The composer ───────────────────────────────────────── */
+.art-skills .sk-composer {
+  position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
+  background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  padding: 5px 5px 5px 12px;
+  transition: border-color var(--dur-menu) ease;
+}
+/* The app's focus edge (--border-accent): the card's own hairline turns
+   accent while the command is typed. */
+.art-skills.is-edge .sk-composer { border-color: var(--coral); }
+
+/* The reference rail: above the prose, inside the card. */
+.art-skills .sk-refs {
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows var(--dur-med) var(--ease), opacity var(--dur-menu) var(--ease);
+}
+.art-skills.has-ref .sk-refs { grid-template-rows: 1fr; opacity: 1; }
+.art-skills .sk-refs-in { min-height: 0; overflow: hidden; }
+.art-skills .sk-refs .sk-chip { margin: 2px 0 5px -5px; }
+
+.art-skills .sk-line { display: flex; align-items: center; gap: 8px; }
+.art-skills .sk-input { position: relative; flex: 1; min-width: 0; height: 20px; font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden; }
+.art-skills .sk-ph { position: absolute; left: 0; top: 0; color: var(--muted); }
+.art-skills.has-text .sk-ph { visibility: hidden; }
+.art-skills .sk-typed { color: var(--ink); }
+.art-skills .sk-caret { display: inline-block; width: 1px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--ink); opacity: 0; }
+.art-skills.is-focus .sk-caret { opacity: 1; }
+
+.art-skills .sk-send {
+  display: grid; place-items: center; flex: none;
+  width: 32px; height: 32px; border-radius: var(--r-element);
+  background: var(--medium); color: var(--faint);
+  transition: background var(--dur-menu) ease, color var(--dur-menu) ease, transform var(--dur-fast) var(--ease);
+}
+.art-skills .sk-send-ic { width: 16px; height: 16px; }
+.art-skills.has-text .sk-send,
+.art-skills.has-ref .sk-send { background: var(--coral); color: var(--paper); }
+.art-skills.is-press .sk-send { transform: scale(0.98); }
+
+/* The slash picker: a popover above the composer. */
+.art-skills .sk-picker {
+  position: absolute; left: -1px; right: -1px; bottom: calc(100% + 8px);
+  background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  padding: 6px;
+  opacity: 0; transform: translateY(6px);
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-med) var(--ease);
+}
+.art-skills.show-picker .sk-picker { opacity: 1; transform: none; }
+.art-skills .sk-found { font-size: 11px; line-height: 12px; color: var(--muted); margin: 0 0 4px; padding: 0 4px; white-space: nowrap; }
+.art-skills .sk-list { position: relative; }
+.art-skills .sk-row {
+  position: relative; z-index: 1;
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 7px 4px 9px;
+}
+.art-skills .sk-row-ic { width: 16px; height: 16px; color: var(--muted); }
+.art-skills .sk-row-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.art-skills .sk-row-name { font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap; overflow: hidden; }
+.art-skills .sk-row-desc { font-size: 11px; line-height: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+/* The selected row, as the app marks it: an inset hairline ring on the strong
+   ground at 70%, moving as the arrow keys would. */
+.art-skills .sk-sel {
+  position: absolute; left: 0; right: 0; top: 0; height: 37px;
+  border-radius: var(--r-inner);
+  background: color-mix(in srgb, var(--strong) 70%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: transform var(--dur-menu) var(--ease);
+}
+
+/* Short tiles (the 289 by 216 tile at 1024): the picker drops its count line
+   so it clears the frame's top, and the reply's steps sit a little closer. The
+   connectors would shrink to specks there, so they are left out. */
+@container (max-height: 225px) {
+  .art-skills .sk-thread { --gap: 10px; }
+  .art-skills .sk-todo { --step-gap: 5px; }
+  .art-skills .sk-found { display: none; }
+  .art-skills .sk-count { margin-bottom: 4px; }
+  .art-skills .sk-step:not(:last-child)::after { display: none; }
+}
+
+/* Resets between loops happen with no transition at all. Kept last. */
+[data-art="skills"] .art-skills.sk-instant,
+[data-art="skills"] .art-skills.sk-instant * { transition: none; }
