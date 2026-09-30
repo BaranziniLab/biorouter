@@ -2098,10 +2098,10 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     var h = decodeURIComponent((location.hash || '').slice(1));
     if (!h) return showDoc(order[0], true);
     if (document.getElementById('doc-' + h)) return showDoc(h);
-    if (openSection(h)) return;
     // Old links: #doc-skills and similar
     var m = h.replace(/^doc-/, '');
     if (document.getElementById('doc-' + m)) return showDoc(m);
+    if (openSection(h)) return;
     showDoc(order[0], true);
   }
 
