@@ -33,7 +33,9 @@ $environmentNames = @('ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'BIOROUTER_DEV
     'BIOROUTER_SERVER__SECRET_KEY', 'BIOROUTER_PATH_ROOT', 'BIOROUTER_DISABLE_KEYRING',
     'LOCALAPPDATA', 'APPDATA', 'HOME', 'USERPROFILE', 'DOTENV_CONFIG_PATH')
 $originalEnvironment = @{}
+$originalEnvironmentPresent = @{}
 foreach ($name in $environmentNames) {
+    $originalEnvironmentPresent[$name] = Test-Path -LiteralPath "Env:$name"
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 $result = [ordered]@{ version = $Version; passed = $false; cleanup = $false;
@@ -166,7 +168,7 @@ try {
             throw 'Normal startup executable version differs from the release'
         }
     }
-    foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $null, 'Process') }
+    foreach ($name in $environmentNames) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
     $env:BIOROUTER_PATH_ROOT = Join-Path $root 'profile'
     $env:BIOROUTER_DISABLE_KEYRING = 'true'
     $env:LOCALAPPDATA = Join-Path $root 'local'
@@ -179,8 +181,14 @@ try {
     $portListener.Stop()
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
+    $result.sharedSelectorProviderAbsent = -not (Test-Path -LiteralPath Env:BIOROUTER_SHARED_DAEMON)
+    $result.dotenvPathProviderAbsent = -not (Test-Path -LiteralPath Env:DOTENV_CONFIG_PATH)
     $result.sharedSelectorAbsent = $null -eq [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
     $result.dotenvPathAbsent = $null -eq [Environment]::GetEnvironmentVariable('DOTENV_CONFIG_PATH', 'Process')
+    if (-not ($result.sharedSelectorProviderAbsent -and $result.dotenvPathProviderAbsent -and
+        $result.sharedSelectorAbsent -and $result.dotenvPathAbsent)) {
+        throw 'Normal fixture retained a shared-daemon or dotenv environment override'
+    }
     $result.ownedWorkingDirectory = $true
     $desktop = Start-Process -FilePath $desktopPath -PassThru -WorkingDirectory $root -ArgumentList @(
         "--user-data-dir=`"$normalUserDataDirectory`"", "--remote-debugging-port=$cdpPort", '--remote-debugging-address=127.0.0.1') `
@@ -280,7 +288,11 @@ try {
         throw
     } finally {
         foreach ($name in $environmentNames) {
-            [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+            if ($originalEnvironmentPresent[$name]) {
+                [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+            } else {
+                Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+            }
         }
         foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter '*.log' -File -Recurse -ErrorAction SilentlyContinue)) {
             if ($log.DirectoryName -eq $root -or $log.DirectoryName -eq (Join-Path $normalUserDataDirectory 'logs')) {

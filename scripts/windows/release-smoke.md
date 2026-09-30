@@ -13,8 +13,9 @@ invokes the normal check independently. The normal check clears the Playwright,
 development profile, external backend, shared-daemon override, server-secret and
 port environment settings, including `DOTENV_CONFIG_PATH`. Electron launches
 from the owned temp directory so checkout `.env` files cannot repopulate them.
-Only absent/present booleans and a shared-selector truthy/falsy/absent category
-are recorded before launch, never environment values. Its only isolation settings are a private explicit
+Only absent/present booleans and a shared-selector absent/empty/falsy/truthy category
+are recorded before launch, never environment values. Exact Env-provider key
+removal and both provider/.NET absence checks enforce the cleared overrides. Its only isolation settings are a private explicit
 `--user-data-dir`, `BIOROUTER_PATH_ROOT`, account directories and keyring-off.
 Chromium's loopback remote debugging port observes the production renderer; it
 does not enable Biorouter's test-driver mode.

@@ -28,7 +28,9 @@ $changedEnvironment = @('LOCALAPPDATA', 'APPDATA', 'SQUIRREL_TEMP', 'BIOROUTER_P
     'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL',
     'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'DOTENV_CONFIG_PATH')
 $originalEnvironment = @{}
+$originalEnvironmentPresent = @{}
 foreach ($name in $changedEnvironment) {
+    $originalEnvironmentPresent[$name] = Test-Path -LiteralPath "Env:$name"
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 $result = [ordered]@{ version = $Version; passed = $false; assets = @(); installed = $installed;
@@ -117,7 +119,7 @@ try {
     $env:BIOROUTER_DISABLE_KEYRING = 'true'
     foreach ($name in @('BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
         'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL')) {
-        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     $defaultInstall = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'biorouter_app'
     if (Test-Path -LiteralPath $defaultInstall) {
@@ -210,16 +212,23 @@ try {
 
     $env:ENABLE_PLAYWRIGHT = 'true'
     $env:PLAYWRIGHT_CDP_PORT = [string](Get-FreePort)
-    [Environment]::SetEnvironmentVariable('BIOROUTER_PORT', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('BIOROUTER_SERVER__SECRET_KEY', $null, 'Process')
+    Remove-Item -LiteralPath Env:BIOROUTER_PORT -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath Env:BIOROUTER_SERVER__SECRET_KEY -ErrorAction SilentlyContinue
     $result.desktopServerSecretPreseedCleared = $true
     $selector = [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
-    $result.desktopSharedSelectorBeforeClear = if ($null -eq $selector) { 'absent' }
+    $result.desktopSharedSelectorBeforeClear = if (-not (Test-Path -LiteralPath Env:BIOROUTER_SHARED_DAEMON)) { 'absent' }
+        elseif ($selector.Length -eq 0) { 'empty' }
         elseif ($selector.Trim().ToLowerInvariant() -in @('0', 'false', 'off', 'no')) { 'falsy' } else { 'truthy' }
-    [Environment]::SetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', $null, 'Process')
-    [Environment]::SetEnvironmentVariable('DOTENV_CONFIG_PATH', $null, 'Process')
+    Remove-Item -LiteralPath Env:BIOROUTER_SHARED_DAEMON -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath Env:DOTENV_CONFIG_PATH -ErrorAction SilentlyContinue
+    $result.desktopSharedSelectorProviderAbsent = -not (Test-Path -LiteralPath Env:BIOROUTER_SHARED_DAEMON)
+    $result.desktopDotenvPathProviderAbsent = -not (Test-Path -LiteralPath Env:DOTENV_CONFIG_PATH)
     $result.desktopSharedSelectorAbsent = $null -eq [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
     $result.desktopDotenvPathAbsent = $null -eq [Environment]::GetEnvironmentVariable('DOTENV_CONFIG_PATH', 'Process')
+    if (-not ($result.desktopSharedSelectorProviderAbsent -and $result.desktopDotenvPathProviderAbsent -and
+        $result.desktopSharedSelectorAbsent -and $result.desktopDotenvPathAbsent)) {
+        throw 'Desktop fixture retained a shared-daemon or dotenv environment override'
+    }
     $result.desktopOwnedWorkingDirectory = $true
     $desktop = Start-OwnedProcess -File (Join-Path $installed 'Biorouter.exe') `
         -Arguments @("--user-data-dir=`"$(Join-Path $root 'electron')`"") -Label 'desktop' -ShowWindow
@@ -306,7 +315,11 @@ try {
         throw
     } finally {
         foreach ($name in $changedEnvironment) {
-            [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+            if ($originalEnvironmentPresent[$name]) {
+                [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
+            } else {
+                Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+            }
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Report) | Out-Null
         foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
