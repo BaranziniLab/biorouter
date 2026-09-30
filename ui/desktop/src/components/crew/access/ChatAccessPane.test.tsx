@@ -991,7 +991,7 @@ describe('chat access: focus when the consent opens', () => {
     );
   }
 
-  const heading = () => document.querySelector<HTMLElement>('aside.crew-pane h2') ?? document.body;
+  const heading = () => document.querySelector<HTMLElement>('aside.crew-pane h2');
 
   /** A grant list that answers only when the test says so. */
   function heldGrants() {
