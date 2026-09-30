@@ -239,6 +239,15 @@ try {
     $desktop.Refresh()
     if ($desktop.HasExited) { throw 'Installed desktop exited after startup' }
     $result.desktop = $true
+    Update-OwnedProcesses
+    foreach ($identity in @($owned.Values | Sort-Object CreationDate -Descending)) {
+        Stop-OwnedProcess -Identity $identity
+    }
+    Start-Sleep -Seconds 2
+    & (Join-Path $PSScriptRoot 'normal-release-smoke.ps1') -AppDirectory $installed `
+        -ZipAppDirectory $ZipAppDirectory -Version $Version -AssetEvidence $AssetEvidence `
+        -Report (Join-Path (Split-Path -Parent $Report) 'normal/windows-normal-smoke.json')
+    $result.normalDesktop = $true
     $result.passed = $true
 } catch {
     $result.error = $_.Exception.Message

@@ -27,12 +27,14 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            "$env:GITHUB_WORKSPACE/scripts/windows/installed-release-smoke.ps1",
-            [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            throw "Installer smoke helper has PowerShell syntax errors"
+          foreach ($helper in @('installed-release-smoke.ps1', 'normal-release-smoke.ps1')) {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              "$env:GITHUB_WORKSPACE/scripts/windows/$helper",
+              [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              throw "$helper has PowerShell syntax errors"
+            }
           }
       - name: Download Windows ZIP and installer from the release
         shell: pwsh
@@ -152,10 +154,9 @@ jobs:
             throw "Packaged MinGit did not match marker '$minGitVersion': $gitVersion"
           }
 
-          $process = Start-Process $desktop -PassThru
-          Start-Sleep -Seconds 15
-          if ($process.HasExited) { throw "Packaged desktop exited during startup" }
-          Stop-Process -Id $process.Id -Force
+          ./scripts/windows/normal-release-smoke.ps1 -AppDirectory $app -ZipAppDirectory $app `
+            -Version $env:VERSION -AssetEvidence artifact/windows-release-assets.json `
+            -Report artifact/normal-zip/windows-normal-smoke.json
           Write-Host "Windows packaged runtime smoke passed for v$env:VERSION"
 
       - uses: actions/upload-artifact@v4
@@ -172,6 +173,7 @@ jobs:
           path: |
             artifact/windows-release-assets.json
             artifact/installed/
+            artifact/normal-zip/
           if-no-files-found: warn
 
       # ⚠ Proven able to fail, and repeatable: dispatch this workflow at a
