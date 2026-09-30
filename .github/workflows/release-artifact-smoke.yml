@@ -18,6 +18,16 @@ on:
         required: false
         type: string
         default: ''
+      linux_package_run:
+        description: Optional Linux GUI packages run for native Crew protocol acceptance
+        required: false
+        type: string
+        default: ''
+      linux_package_source_sha:
+        description: Exact 40-character source commit required with linux_package_run
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -284,3 +294,13 @@ jobs:
           ./scripts/windows/port-release-regression.ps1 -Daemon $daemon -Sleeper $sleeper `
             -Label "packaged v$env:VERSION"
           if ($LASTEXITCODE -ne 0) { throw "the packaged daemon's port test failed" }
+
+  linux-native:
+    if: inputs.linux_package_run != ''
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/crew-native-linux-acceptance.yml
+    with:
+      release_run_id: ${{ inputs.linux_package_run }}
+      source_sha: ${{ inputs.linux_package_source_sha }}

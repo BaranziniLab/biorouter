@@ -1,0 +1,88 @@
+name: Native Crew protocol and SQLite acceptance
+'on':
+  workflow_call:
+    inputs:
+      release_run_id:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Successful Linux GUI packages run containing the exact release broker
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character release source commit
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check protocol harness identity and error assertions
+        run: python3 scripts/test-crew-native-linux-acceptance.py -v
+      - name: Verify release run and artifact digest, extract only its broker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN: ${{ inputs.release_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,re,shutil,urllib.request,zipfile
+          from pathlib import Path
+          repo='BaranziniLab/biorouter'
+          run=os.environ['RELEASE_RUN']; sha=os.environ['SOURCE_SHA']
+          assert re.fullmatch(r'[1-9][0-9]*',run) and re.fullmatch(r'[0-9a-f]{40}',sha)
+          def api(path):
+            request=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+            return urllib.request.urlopen(request,timeout=60)
+          metadata=json.load(api('/actions/runs/'+run))
+          assert metadata['head_sha']==sha and metadata['conclusion']=='success' and metadata['status']=='completed'
+          assert metadata['path']=='.github/workflows/linux-gui-packages.yml'
+          artifacts=json.load(api('/actions/runs/'+run+'/artifacts?per_page=100'))['artifacts']
+          matches=[a for a in artifacts if a['name']=='linux-backend-1.92.0' and not a['expired']]
+          assert len(matches)==1
+          artifact=matches[0]; assert re.fullmatch(r'sha256:[0-9a-f]{64}',artifact['digest'])
+          root=Path(os.environ['RUNNER_TEMP']); archive=root/'exact-release-backend.zip'; digest=hashlib.sha256()
+          total=0
+          with api('/actions/artifacts/'+str(artifact['id'])+'/zip') as remote, archive.open('xb') as out:
+            while data:=remote.read(1048576):
+              total+=len(data); assert total<=4*1024**3
+              digest.update(data);out.write(data)
+          assert total==artifact['size_in_bytes'] and 'sha256:'+digest.hexdigest()==artifact['digest']
+          with zipfile.ZipFile(archive) as z:
+            members=[i for i in z.infolist() if i.filename=='biorouter-crew']
+            assert len(members)==1 and 0<members[0].file_size<128*1024**2
+            with z.open(members[0]) as data, (root/'exact-biorouter-crew').open('xb') as out: shutil.copyfileobj(data,out)
+          (root/'broker-artifact-proof.json').write_text(json.dumps({'sourceSha':sha,'releaseRunId':run,'artifactId':artifact['id'],'artifactSha256':digest.hexdigest(),'brokerSha256':hashlib.sha256((root/'exact-biorouter-crew').read_bytes()).hexdigest()},indent=2)+'\n')
+          PY
+      - name: Run native signed grants, confined SQLite, denial controls and Bob history
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_RUN: ${{ inputs.release_run_id }}
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 /opt/biorouter-native-acceptance-bin
+          sudo install -m 0755 "$RUNNER_TEMP/exact-biorouter-crew" /opt/biorouter-native-acceptance-bin/biorouter-crew
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin python3 "$GITHUB_WORKSPACE/scripts/crew-native-linux-acceptance.py" \
+            --broker /opt/biorouter-native-acceptance-bin/biorouter-crew \
+            --root /opt/biorouter-native-acceptance-fixture \
+            --report "$RUNNER_TEMP/native-crew-acceptance.json" \
+            --source-sha "$SOURCE_SHA" --release-run-id "$RELEASE_RUN"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-crew-protocol-evidence
+          path: |
+            ${{ runner.temp }}/broker-artifact-proof.json
+            ${{ runner.temp }}/native-crew-acceptance.json
+          if-no-files-found: error
+          retention-days: 14

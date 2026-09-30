@@ -28,6 +28,7 @@ $owned = @{}
 $desktop = $null
 $desktopCreated = $null
 $cdpPort = 0
+$script:lastCDPResponseShape = $null
 $environmentNames = @('ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'BIOROUTER_DEV_PROFILE_ROOT',
     'BIOROUTER_DEV_PROFILE_NAME', 'BIOROUTER_DEV_AUTO_CONFIRM_SHARE', 'BIOROUTER_SHARED_DAEMON',
     'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL', 'BIOROUTER_PORT',
@@ -85,8 +86,19 @@ function Invoke-CDP {
                 } while (-not $received.EndOfMessage)
                 $response = [Text.Encoding]::UTF8.GetString($message.ToArray()) | ConvertFrom-Json
             } finally { $message.Dispose() }
-            if ($response.PSObject.Properties.Name -contains 'id' -and $response.id -eq 1) {
-                if ($response.PSObject.Properties.Name -contains 'error') { throw 'Renderer inspector rejected the request' }
+            $properties = @($response.PSObject.Properties | ForEach-Object { $_.Name })
+            $idKind = 'absent'
+            if ($properties -contains 'id') {
+                $idKind = if ($response.id -is [string]) { 'string' }
+                    elseif ($response.id -is [ValueType]) { 'numeric' } else { 'other' }
+            }
+            $script:lastCDPResponseShape = @{ requestedMethod = $Method; objectClass = $response.GetType().FullName;
+                properties = $properties; idKind = $idKind;
+                requestIdMatches = $properties -contains 'id' -and $response.id -eq 1;
+                errorPresent = $properties -contains 'error'; resultPresent = $properties -contains 'result' }
+            if ($script:lastCDPResponseShape.requestIdMatches) {
+                if ($properties -contains 'error') { throw "Renderer inspector rejected $Method" }
+                if ($properties -notcontains 'result') { throw "Renderer inspector $Method response omitted its result" }
                 return $response.result
             }
         }
@@ -214,8 +226,18 @@ try {
             $_.PSObject.Properties.Name -contains 'id' -and $_.PSObject.Properties.Name -contains 'webSocketDebuggerUrl' })) {
             $evaluation = Invoke-CDP -Socket $page.webSocketDebuggerUrl -Method 'Runtime.evaluate' `
                 -Parameters @{ expression = $expression; awaitPromise = $true; returnByValue = $true }
-            if ($evaluation.PSObject.Properties.Name -contains 'exceptionDetails') {
+            $evaluationProperties = @($evaluation.PSObject.Properties | ForEach-Object { $_.Name })
+            $result.lastEvaluationShape = @{ requestedMethod = 'Runtime.evaluate'; objectClass = $evaluation.GetType().FullName;
+                properties = $evaluationProperties; exceptionPresent = $evaluationProperties -contains 'exceptionDetails' }
+            if ($evaluationProperties -contains 'exceptionDetails') {
                 throw 'Normal renderer rejected the authentication or no-secret-prompt acceptance assertions'
+            }
+            if ($evaluationProperties -notcontains 'result') { throw 'Runtime.evaluate payload omitted its RemoteObject result' }
+            $remoteProperties = @($evaluation.result.PSObject.Properties | ForEach-Object { $_.Name })
+            $result.lastEvaluationShape.remoteProperties = $remoteProperties
+            if ($remoteProperties -notcontains 'value') {
+                if ($remoteProperties -contains 'type' -and $evaluation.result.type -eq 'undefined') { continue }
+                throw 'Runtime.evaluate RemoteObject omitted its serialized acceptance value'
             }
             $sample = $evaluation.result.value
             if (-not $sample.ready) { continue }
@@ -264,6 +286,7 @@ try {
     $result.passed = $true
 } catch {
     $result.error = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
+    if ($null -ne $script:lastCDPResponseShape) { $result.lastCDPResponseShape = $script:lastCDPResponseShape }
     try {
         Update-OwnedProcesses
         $result.startupDiagnostics = Get-ReleaseStartupSnapshot -Owned $owned -Desktop $desktop `
