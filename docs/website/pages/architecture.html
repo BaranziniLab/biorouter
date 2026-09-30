@@ -16,7 +16,7 @@
     <div class="stack">
       <div class="node"><b>Extensions</b><span>MCP servers that give the agent its tools</span></div>
       <div class="node ground"><b>Model providers</b><span>Local, Institutional or Public</span></div>
-      <div class="node quiet"><b>Crew broker <span class="chip">Next release</span></b><span><code>biorouter-crew</code> on a lab server, over SSH</span></div>
+      <div class="node quiet"><b>Crew broker</b><span><code>biorouter-crew</code> on a lab server, over SSH</span></div>
     </div>
   </div>
   <figcaption>Model providers and the Crew broker are services <code>biorouterd</code> connects to. They are not extensions.</figcaption>
@@ -29,7 +29,7 @@
 
 <h2 id="architecture-daemon">The background service</h2>
 <p><code>biorouterd</code> serves the agent over local HTTP and WebSocket. The desktop app starts one for all of its windows. Schedules run inside it, so they run while it runs.</p>
-<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit. The shared service starts and connects automatically, without a daemon approval secret. After an update, opening the app replaces the older service; this can interrupt a running task or transfer.</p>
+<p>On macOS and Linux the background service keeps running after you quit the app, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it stops when you quit. The shared service starts and connects automatically, without a daemon approval secret. After an update, opening the app replaces the older service; this can interrupt a running task or transfer.</p>
 <p>The same release adds Crew, which connects the service to a lab workspace. The host runs the workspace with <code>biorouter-crew</code> on a shared Linux server, and each member's service reaches it over SSH through that member's own account on the server. Each member's agent still runs on their own computer, with their own model.</p>
 
 <h2 id="architecture-interfaces">How each interface connects</h2>
@@ -40,7 +40,7 @@
     <tr><td><strong>Browser</strong></td><td><code style="white-space: nowrap">biorouter serve</code> starts <code>biorouterd</code>, which serves the same interface from its own address. See <a href="#cli-serve">Browser access</a>.</td></tr>
     <tr><td><strong>Command line, on its own</strong></td><td>By default, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> start the agent inside the terminal's own process. <code style="white-space: nowrap">session list</code>, <code>export</code>, <code>rename</code> and <code>remove</code> use the chat store directly. Nothing else needs to run.</td></tr>
     <tr><td><strong>Command line, live</strong></td><td><code style="white-space: nowrap">session send</code>, <code>watch</code>, <code>attach</code> and <code>cancel</code> talk to a running <code>biorouterd</code>, because a turn in progress exists only inside the service running it. See <a href="#cli-sessions">Sessions</a>.</td></tr>
-    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code class="code-token">--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
+    <tr><td><strong>Command line, shared</strong></td><td>With <code class="code-token">--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
   </tbody>
 </table></div>
 <div class="note"><p>The app and the command line share one settings file, one credential store and one chat store, so a provider, an extension or a chat set up in one appears in the other. See <a href="#config-files">Where files live</a>.</p></div>
@@ -55,7 +55,7 @@
     <tr><td><strong>Command line</strong></td><td><code>biorouter-cli</code> builds <code>biorouter</code>.</td></tr>
     <tr><td><strong>Bundled extensions</strong></td><td><code>biorouter-mcp</code> holds Developer, Biorouter Copilot, Web &amp; Documents, Memory, Auto Visualiser, Knowledge and Agent Drafter, plus the data, files and compute servers that built apps use.</td></tr>
     <tr><td><strong>Shell sandbox</strong></td><td><code>biorouter-sandbox</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
-    <tr><td><strong>Crew broker</strong> <span class="chip">Next release</span></td><td><code>biorouter-crew</code> builds the <code>biorouter-crew</code> program for Linux.</td></tr>
+    <tr><td><strong>Crew broker</strong></td><td><code>biorouter-crew</code> builds the <code>biorouter-crew</code> program for Linux.</td></tr>
     <tr><td><strong>Editor support</strong></td><td><code>biorouter-acp</code> adds Agent Client Protocol support, so programs such as code editors can drive Biorouter through <code>biorouter acp</code>.</td></tr>
     <tr><td><strong>macOS prompt</strong></td><td><code>biorouter-authprompt</code> shows the macOS authentication prompt that the background service cannot show itself.</td></tr>
     <tr><td><strong>Tests</strong></td><td><code>biorouter-bench</code> holds benchmarks, and <code>biorouter-test</code> holds integration tests.</td></tr>

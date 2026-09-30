@@ -148,7 +148,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
-    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
+    <tr><td><code class="code-token">--shared-daemon</code></td><td>Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
   </tbody>
 </table></div>
 <div class="doc-table-scroll"><table class="ref">
@@ -367,7 +367,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code>term</code></td><td>One chat per terminal window, and <code>@biorouter</code> or <code>@g</code> to ask from the prompt with your recent commands as context. Add <code>eval "$(biorouter term init zsh)"</code> to <code>~/.zshrc</code>; <code>term init</code> also takes <code>bash</code>, <code>fish</code> and <code>powershell</code>.</td></tr>
     <tr><td><code>project</code></td><td>Continue in your last project folder. <code>projects</code> lists recent ones to pick from.</td></tr>
     <tr><td><code>apps</code></td><td>Open an app the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Built apps</a>.</td></tr>
-    <tr><td><code>crew</code> <span class="chip">Next release</span></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
+    <tr><td><code>crew</code></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
     <tr><td><code>mcp</code></td><td>A bundled MCP server over standard input and output, for a host to start: <code>autovisualiser</code>, <code>computercontroller</code>, <code>webdocuments</code>, <code>developer</code> or <code>memory</code>.</td></tr>
     <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code class="code-token">--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>
     <tr><td><code>completion</code></td><td>A completion script for bash, zsh, fish, powershell or elvish.</td></tr>

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Docs · Biorouter</title>
-<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.91.2.">
+<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.92.0.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -73,7 +73,7 @@
   <main class="docs-main" id="docs-main">
 <div class="doc-page" id="doc-getstarted">
 <h1>Getting started</h1>
-<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.91.2</code> on Windows, macOS and Linux.</p>
+<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.92.0</code> on Windows, macOS and Linux.</p>
 
 <h2 id="getstarted-install">Install</h2>
 <p>Download the file for your computer from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/biorouter/releases">GitHub Releases</a>.</p>
@@ -130,7 +130,7 @@
   <li><a href="#privacy">Private and public</a>: how private work is kept away from public models.</li>
   <li><a href="#extensions">Extensions and skills</a>: add tools and data sources from BAAM.</li>
   <li><a href="#workflows">Workflows and scheduling</a>: turn a chat into a recipe a colleague can run on their own data.</li>
-  <li><a href="#crew">Crew</a>: channels, files and agent tasks shared with your lab. Arrives in the next release.</li>
+  <li><a href="#crew">Crew</a>: channels, files and agent tasks shared with your lab.</li>
 </ul>
 
 </div>
@@ -149,7 +149,7 @@
 <ul>
   <li><strong>Home.</strong> A greeting, a heatmap of your recent activity and a composer. Typing there starts a new chat.</li>
   <li><strong>New chat.</strong> An empty chat in a new tab.</li>
-  <li><strong>Crew.</strong> <span class="chip">Next release</span> Your lab's shared workspace: channels, files and agent tasks. See <a href="#crew">Crew</a>.</li>
+  <li><strong>Crew.</strong> Your lab's shared workspace: channels, files and agent tasks. See <a href="#crew">Crew</a>.</li>
   <li><strong>Components.</strong> A group holding the six rows below. It starts collapsed and stays the way you last left it.
     <ul>
       <li><strong>Workflows.</strong> Saved recipes that start a chat with the same instructions, tools and model. See <a href="#workflows">Workflows and scheduling</a>.</li>
@@ -402,7 +402,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 100.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
-    <tr><td><code class="code-token">--shared-daemon</code></td><td><span class="chip">Next release</span> Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
+    <tr><td><code class="code-token">--shared-daemon</code></td><td>Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
   </tbody>
 </table></div>
 <div class="doc-table-scroll"><table class="ref">
@@ -621,7 +621,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code>term</code></td><td>One chat per terminal window, and <code>@biorouter</code> or <code>@g</code> to ask from the prompt with your recent commands as context. Add <code>eval "$(biorouter term init zsh)"</code> to <code>~/.zshrc</code>; <code>term init</code> also takes <code>bash</code>, <code>fish</code> and <code>powershell</code>.</td></tr>
     <tr><td><code>project</code></td><td>Continue in your last project folder. <code>projects</code> lists recent ones to pick from.</td></tr>
     <tr><td><code>apps</code></td><td>Open an app the agent built in your browser: <code>apps list</code>, then <code>apps open ID</code> or <code>apps serve ID</code>. See <a href="#apps">Built apps</a>.</td></tr>
-    <tr><td><code>crew</code> <span class="chip">Next release</span></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
+    <tr><td><code>crew</code></td><td>Crew workspaces from a terminal. See <a href="#crew">Crew</a>.</td></tr>
     <tr><td><code>mcp</code></td><td>A bundled MCP server over standard input and output, for a host to start: <code>autovisualiser</code>, <code>computercontroller</code>, <code>webdocuments</code>, <code>developer</code> or <code>memory</code>.</td></tr>
     <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code class="code-token">--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>
     <tr><td><code>completion</code></td><td>A completion script for bash, zsh, fish, powershell or elvish.</td></tr>
@@ -647,7 +647,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 </table></div>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
 <p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
-<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults on this page are what Biorouter picks when you configure a provider without naming a model. They are the next release's defaults, so the release you have installed may start on an older model of the same family.</p></div>
+<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter v1.92.0 picks when you configure a provider without naming a model. An existing setup keeps its saved main model.</p></div>
 
 <h2 id="providers-local">Local</h2>
 <p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once; after that, nothing leaves your computer.</p>
@@ -900,11 +900,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
   </tbody>
 </table></div>
 <p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code class="code-token">BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. Prefer the credential store where there is one.</p>
-<ul>
-  <li><strong>In the current release</strong>, on macOS and Linux the file gets your computer's default permissions, which can let other accounts on the computer read it. Run <code>chmod&nbsp;600 ~/.config/<wbr>biorouter/<wbr>secrets.yaml</code> to make it readable by your account only. Biorouter keeps that setting when it writes the file again.</li>
-  <li><span class="chip">Next release</span> Biorouter creates the file readable by your account only, and tightens an existing file the next time it writes it.</li>
-</ul>
-<p>Either way, anyone who can act as your account, or as root, can still read the file.</p>
+<p>On macOS and Linux, Biorouter creates <code>secrets.yaml</code> readable and writable only by your account, and tightens an existing file the next time it writes it. Anyone who can act as your account, or as root, can still read the file.</p>
 <p>An environment variable named after a key, such as <code>OPENAI_API_KEY</code>, always wins over the stored value.</p>
 
 <h2 id="vaulting-secret-guard">The secret guard</h2>
@@ -916,7 +912,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>Secret files</strong></td><td><code>.env</code>, <code>.env.*</code>, <code>secrets.*</code> (Biorouter's own <code>secrets.yaml</code> included)</td></tr>
     <tr><td><strong>Keys and certificates</strong></td><td>SSH private keys such as <code>id_rsa</code> and <code>id_ed25519</code>, <code>*.pem</code>, <code>*.p12</code>, <code>*.pfx</code></td></tr>
     <tr><td><strong>Tool logins</strong></td><td><code>.aws/credentials</code>, <code>.codex/auth.json</code>, <code>.claude/.credentials.json</code></td></tr>
-    <tr><td><strong>More tool logins</strong> <span class="chip">Next release</span></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code style="white-space: nowrap">.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
+    <tr><td><strong>More tool logins</strong></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code style="white-space: nowrap">.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
   </tbody>
 </table></div>
 <ul>
@@ -1013,7 +1009,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>Before it starts an extension through <code>npx</code> or <code>uvx</code>, Biorouter looks the package up in the OSV database of known malicious packages and refuses to start one that is listed.</p>
 
 <h2 id="extensions-built-in">Built-in extensions</h2>
-<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.91.2; Crew arrives in the next release. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
+<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.92.0. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
@@ -1030,7 +1026,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>Agent Drafter</strong></td><td>On</td><td>Builds apps that have their own agent, and exports them as projects that run on their own. See <a href="#apps">Built apps</a>.</td></tr>
     <tr><td><strong>Chat Recall</strong></td><td>Off</td><td>Searches your earlier chats and loads a summary of one, so earlier work can continue here. It reads only the chat history on this computer.</td></tr>
     <tr><td><strong>Workspace Control</strong></td><td>On</td><td>Lets the agent work across chats: open, read and steer another chat, and run subagents you can watch in their own tabs. See <a href="#agentloop">The agent loop</a>.</td></tr>
-    <tr><td><strong>Crew</strong></td><td>On</td><td><span class="chip">Next release</span> Lets a chat you connect with <code>/crew</code> read the Crew channels you choose and post updates to them. See <a href="#crew">Crew</a>.</td></tr>
+    <tr><td><strong>Crew</strong></td><td>On</td><td>Lets a chat you connect with <code>/crew</code> read the Crew channels you choose and post updates to them. See <a href="#crew">Crew</a>.</td></tr>
   </tbody>
 </table></div>
 <div class="note warn"><p><strong>Biorouter Copilot operates your real desktop.</strong> The approval names the task, the model and the computer. With a public model, screenshots and text from the apps it looks at are sent to that model's provider. Private and public chats keep separate approvals, but they share one screen, so a switch from a private chat to a public one pauses for you to confirm.</p></div>
@@ -1535,8 +1531,6 @@ biorouter apps serve cohort-explorer</code></pre>
 <div class="doc-page" id="doc-crew">
 <h1>Crew</h1>
 <p class="doc-lede">Crew is where a lab works together in the Biorouter desktop app: channels, shared files, and agent tasks the whole channel can see. One member, the host, runs the workspace on a shared Linux server.</p>
-<!-- crew-next-release: delete this note in the release that ships Crew. -->
-<div class="note"><p><strong>Crew arrives in the next release.</strong> It is merged into Biorouter's main branch but is not in a published release yet, so the app you download today does not have it.</p></div>
 <p>The examples use the workspace <code>chen-lab</code> on the server <code>lab.example.edu</code>, hosted by Alice Chen (<code>@alice</code>), and the member Bob Lee (<code>@bob</code>). A word in braces, such as {team}, is a name Crew fills in. Every dialog, message and command is in the <a href="https://github.com/BaranziniLab/biorouter/tree/main/docs/crew">Crew manual</a> on GitHub.</p>
 
 <figure class="doc-figure">
@@ -1745,8 +1739,7 @@ biorouter crew tasks start methods \
   <li>A local disk for the workspace's state. NFS, CIFS and SMB are refused.</li>
   <li>An ordinary account for the host, and each member's own account on the same machine.</li>
 </ul>
-<!-- crew-next-release: in the release that ships Crew, drop "From the next release on," and start this paragraph at "Take". -->
-<p>From the next release on, take <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm on the <a href="https://github.com/BaranziniLab/biorouter/releases">release page</a> and install it in <code>~/.local/bin</code> in each account. It needs no administrator rights. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the install commands, the full requirements and the upgrade steps.</p>
+<p>Take <code>biorouter-crew</code> from the <code>biorouter-cli</code> deb or rpm on the <a href="https://github.com/BaranziniLab/biorouter/releases">release page</a> and install it in <code>~/.local/bin</code> in each account. It needs no administrator rights. Nothing starts the workspace when the server boots, so after every restart the host runs <code>start</code> again. Crew has no backup tool. SSH encryption alone does not make a deployment HIPAA compliant: your institution decides approval, retention and backup. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/administration.md">Administration</a> has the install commands, the full requirements and the upgrade steps.</p>
 
 </div>
 
@@ -1899,7 +1892,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   <li><strong>A chat</strong> takes its permission mode and the managed policy when its agent starts. Open a new chat to be sure a change applies.</li>
   <li><strong>Environment variables</strong> are read by each program when it starts. A command sees your shell's variables. When the desktop app starts its background service, it passes the environment it was opened from, so an app opened from the Dock or the Start menu does not see a variable set only in a terminal.</li>
   <li><strong>Secrets</strong> are read from the credential store once per process. A key saved in the app is used at once. A key changed by another program is read when Biorouter's background service next starts.</li>
-  <li><span class="chip">Next release</span> On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. To restart it, run <code>biorouter crew daemon stop</code>; an open app starts a new service and reconnects. See <a href="#architecture-daemon">The background service</a>.</li>
+  <li>On macOS and Linux the background service keeps running after you quit the app, until the computer restarts. It keeps the environment and the secrets it started with, so a variable or a key changed by another program reaches it only once the service restarts. To restart it, run <code>biorouter crew daemon stop</code>; an open app starts a new service and reconnects. See <a href="#architecture-daemon">The background service</a>.</li>
 </ul>
 
 <h2 id="config-env">Environment variables</h2>
@@ -1951,7 +1944,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <div class="stack">
       <div class="node"><b>Extensions</b><span>MCP servers that give the agent its tools</span></div>
       <div class="node ground"><b>Model providers</b><span>Local, Institutional or Public</span></div>
-      <div class="node quiet"><b>Crew broker <span class="chip">Next release</span></b><span><code>biorouter-crew</code> on a lab server, over SSH</span></div>
+      <div class="node quiet"><b>Crew broker</b><span><code>biorouter-crew</code> on a lab server, over SSH</span></div>
     </div>
   </div>
   <figcaption>Model providers and the Crew broker are services <code>biorouterd</code> connects to. They are not extensions.</figcaption>
@@ -1964,7 +1957,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 
 <h2 id="architecture-daemon">The background service</h2>
 <p><code>biorouterd</code> serves the agent over local HTTP and WebSocket. The desktop app starts one for all of its windows. Schedules run inside it, so they run while it runs.</p>
-<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit. The shared service starts and connects automatically, without a daemon approval secret. After an update, opening the app replaces the older service; this can interrupt a running task or transfer.</p>
+<p>On macOS and Linux the background service keeps running after you quit the app, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it stops when you quit. The shared service starts and connects automatically, without a daemon approval secret. After an update, opening the app replaces the older service; this can interrupt a running task or transfer.</p>
 <p>The same release adds Crew, which connects the service to a lab workspace. The host runs the workspace with <code>biorouter-crew</code> on a shared Linux server, and each member's service reaches it over SSH through that member's own account on the server. Each member's agent still runs on their own computer, with their own model.</p>
 
 <h2 id="architecture-interfaces">How each interface connects</h2>
@@ -1975,7 +1968,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><strong>Browser</strong></td><td><code style="white-space: nowrap">biorouter serve</code> starts <code>biorouterd</code>, which serves the same interface from its own address. See <a href="#cli-serve">Browser access</a>.</td></tr>
     <tr><td><strong>Command line, on its own</strong></td><td>By default, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> start the agent inside the terminal's own process. <code style="white-space: nowrap">session list</code>, <code>export</code>, <code>rename</code> and <code>remove</code> use the chat store directly. Nothing else needs to run.</td></tr>
     <tr><td><strong>Command line, live</strong></td><td><code style="white-space: nowrap">session send</code>, <code>watch</code>, <code>attach</code> and <code>cancel</code> talk to a running <code>biorouterd</code>, because a turn in progress exists only inside the service running it. See <a href="#cli-sessions">Sessions</a>.</td></tr>
-    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code class="code-token">--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
+    <tr><td><strong>Command line, shared</strong></td><td>With <code class="code-token">--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
   </tbody>
 </table></div>
 <div class="note"><p>The app and the command line share one settings file, one credential store and one chat store, so a provider, an extension or a chat set up in one appears in the other. See <a href="#config-files">Where files live</a>.</p></div>
@@ -1990,7 +1983,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><strong>Command line</strong></td><td><code>biorouter-cli</code> builds <code>biorouter</code>.</td></tr>
     <tr><td><strong>Bundled extensions</strong></td><td><code>biorouter-mcp</code> holds Developer, Biorouter Copilot, Web &amp; Documents, Memory, Auto Visualiser, Knowledge and Agent Drafter, plus the data, files and compute servers that built apps use.</td></tr>
     <tr><td><strong>Shell sandbox</strong></td><td><code>biorouter-sandbox</code>. See <a href="#vaulting-sandbox">Shell sandbox</a>.</td></tr>
-    <tr><td><strong>Crew broker</strong> <span class="chip">Next release</span></td><td><code>biorouter-crew</code> builds the <code>biorouter-crew</code> program for Linux.</td></tr>
+    <tr><td><strong>Crew broker</strong></td><td><code>biorouter-crew</code> builds the <code>biorouter-crew</code> program for Linux.</td></tr>
     <tr><td><strong>Editor support</strong></td><td><code>biorouter-acp</code> adds Agent Client Protocol support, so programs such as code editors can drive Biorouter through <code>biorouter acp</code>.</td></tr>
     <tr><td><strong>macOS prompt</strong></td><td><code>biorouter-authprompt</code> shows the macOS authentication prompt that the background service cannot show itself.</td></tr>
     <tr><td><strong>Tests</strong></td><td><code>biorouter-bench</code> holds benchmarks, and <code>biorouter-test</code> holds integration tests.</td></tr>

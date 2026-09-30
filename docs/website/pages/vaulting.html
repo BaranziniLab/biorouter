@@ -13,11 +13,7 @@
   </tbody>
 </table></div>
 <p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code class="code-token">BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. Prefer the credential store where there is one.</p>
-<ul>
-  <li><strong>In the current release</strong>, on macOS and Linux the file gets your computer's default permissions, which can let other accounts on the computer read it. Run <code>chmod&nbsp;600 ~/.config/<wbr>biorouter/<wbr>secrets.yaml</code> to make it readable by your account only. Biorouter keeps that setting when it writes the file again.</li>
-  <li><span class="chip">Next release</span> Biorouter creates the file readable by your account only, and tightens an existing file the next time it writes it.</li>
-</ul>
-<p>Either way, anyone who can act as your account, or as root, can still read the file.</p>
+<p>On macOS and Linux, Biorouter creates <code>secrets.yaml</code> readable and writable only by your account, and tightens an existing file the next time it writes it. Anyone who can act as your account, or as root, can still read the file.</p>
 <p>An environment variable named after a key, such as <code>OPENAI_API_KEY</code>, always wins over the stored value.</p>
 
 <h2 id="vaulting-secret-guard">The secret guard</h2>
@@ -29,7 +25,7 @@
     <tr><td><strong>Secret files</strong></td><td><code>.env</code>, <code>.env.*</code>, <code>secrets.*</code> (Biorouter's own <code>secrets.yaml</code> included)</td></tr>
     <tr><td><strong>Keys and certificates</strong></td><td>SSH private keys such as <code>id_rsa</code> and <code>id_ed25519</code>, <code>*.pem</code>, <code>*.p12</code>, <code>*.pfx</code></td></tr>
     <tr><td><strong>Tool logins</strong></td><td><code>.aws/credentials</code>, <code>.codex/auth.json</code>, <code>.claude/.credentials.json</code></td></tr>
-    <tr><td><strong>More tool logins</strong> <span class="chip">Next release</span></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code style="white-space: nowrap">.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
+    <tr><td><strong>More tool logins</strong></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code style="white-space: nowrap">.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
   </tbody>
 </table></div>
 <ul>
