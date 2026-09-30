@@ -11,7 +11,10 @@ The installer first runs a distinct renderer/backend check with
 `normal-release-smoke.ps1` against the installed executable. The ZIP path also
 invokes the normal check independently. The normal check clears the Playwright,
 development profile, external backend, shared-daemon override, server-secret and
-port environment settings. Its only isolation settings are a private explicit
+port environment settings, including `DOTENV_CONFIG_PATH`. Electron launches
+from the owned temp directory so checkout `.env` files cannot repopulate them.
+Only absent/present booleans and a shared-selector truthy/falsy/absent category
+are recorded before launch, never environment values. Its only isolation settings are a private explicit
 `--user-data-dir`, `BIOROUTER_PATH_ROOT`, account directories and keyring-off.
 Chromium's loopback remote debugging port observes the production renderer; it
 does not enable Biorouter's test-driver mode.

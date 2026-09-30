@@ -31,7 +31,7 @@ $environmentNames = @('ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'BIOROUTER_DEV
     'BIOROUTER_DEV_PROFILE_NAME', 'BIOROUTER_DEV_AUTO_CONFIRM_SHARE', 'BIOROUTER_SHARED_DAEMON',
     'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL', 'BIOROUTER_PORT',
     'BIOROUTER_SERVER__SECRET_KEY', 'BIOROUTER_PATH_ROOT', 'BIOROUTER_DISABLE_KEYRING',
-    'LOCALAPPDATA', 'APPDATA', 'HOME', 'USERPROFILE')
+    'LOCALAPPDATA', 'APPDATA', 'HOME', 'USERPROFILE', 'DOTENV_CONFIG_PATH')
 $originalEnvironment = @{}
 foreach ($name in $environmentNames) {
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -179,7 +179,10 @@ try {
     $portListener.Stop()
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
-    $desktop = Start-Process -FilePath $desktopPath -PassThru -ArgumentList @(
+    $result.sharedSelectorAbsent = $null -eq [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
+    $result.dotenvPathAbsent = $null -eq [Environment]::GetEnvironmentVariable('DOTENV_CONFIG_PATH', 'Process')
+    $result.ownedWorkingDirectory = $true
+    $desktop = Start-Process -FilePath $desktopPath -PassThru -WorkingDirectory $root -ArgumentList @(
         "--user-data-dir=`"$normalUserDataDirectory`"", "--remote-debugging-port=$cdpPort", '--remote-debugging-address=127.0.0.1') `
         -RedirectStandardOutput (Join-Path $root 'normal.stdout.log') `
         -RedirectStandardError (Join-Path $root 'normal.stderr.log')

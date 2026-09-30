@@ -26,7 +26,7 @@ $daemon = $null
 $changedEnvironment = @('LOCALAPPDATA', 'APPDATA', 'SQUIRREL_TEMP', 'BIOROUTER_PATH_ROOT',
     'BIOROUTER_DISABLE_KEYRING', 'BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
     'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL',
-    'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT')
+    'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'DOTENV_CONFIG_PATH')
 $originalEnvironment = @{}
 foreach ($name in $changedEnvironment) {
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
@@ -54,7 +54,7 @@ function Update-OwnedProcesses {
 
 function Start-OwnedProcess {
     param([string]$File, [string[]]$Arguments, [string]$Label, [switch]$ShowWindow)
-    $options = @{ FilePath = $File; ArgumentList = $Arguments; PassThru = $true;
+    $options = @{ FilePath = $File; ArgumentList = $Arguments; PassThru = $true; WorkingDirectory = $root;
         RedirectStandardOutput = (Join-Path $root "$Label.stdout.log");
         RedirectStandardError = (Join-Path $root "$Label.stderr.log") }
     if (-not $ShowWindow) { $options.WindowStyle = 'Hidden' }
@@ -213,6 +213,14 @@ try {
     [Environment]::SetEnvironmentVariable('BIOROUTER_PORT', $null, 'Process')
     [Environment]::SetEnvironmentVariable('BIOROUTER_SERVER__SECRET_KEY', $null, 'Process')
     $result.desktopServerSecretPreseedCleared = $true
+    $selector = [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
+    $result.desktopSharedSelectorBeforeClear = if ($null -eq $selector) { 'absent' }
+        elseif ($selector.Trim().ToLowerInvariant() -in @('0', 'false', 'off', 'no')) { 'falsy' } else { 'truthy' }
+    [Environment]::SetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('DOTENV_CONFIG_PATH', $null, 'Process')
+    $result.desktopSharedSelectorAbsent = $null -eq [Environment]::GetEnvironmentVariable('BIOROUTER_SHARED_DAEMON', 'Process')
+    $result.desktopDotenvPathAbsent = $null -eq [Environment]::GetEnvironmentVariable('DOTENV_CONFIG_PATH', 'Process')
+    $result.desktopOwnedWorkingDirectory = $true
     $desktop = Start-OwnedProcess -File (Join-Path $installed 'Biorouter.exe') `
         -Arguments @("--user-data-dir=`"$(Join-Path $root 'electron')`"") -Label 'desktop' -ShowWindow
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
