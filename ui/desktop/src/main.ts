@@ -1,3 +1,4 @@
+import { applicationUserDataDirectory } from './applicationDataProfile';
 import { developmentProfileRoot } from './developmentProfile';
 import { createCrewDaemonTerminal } from './crewDaemonTerminal';
 import { closeNativeSecretPrompt, promptNativeSecret } from './nativeSecretPrompt';
@@ -799,8 +800,8 @@ if (process.env.ENABLE_PLAYWRIGHT) {
 // Windows/Linux resolve the handler by executable path rather than bundle id,
 // and Electron's documented dev form (execPath + the app entry point) launches
 // the real app, so registering there is both safe and useful.
-if (process.env.BIOROUTER_DEV_PROFILE_ROOT) {
-  // An isolated development profile must not claim the installed app's URL scheme.
+if (process.env.BIOROUTER_DEV_PROFILE_ROOT || applicationUserDataDirectory) {
+  // An alternate profile must not claim the installed app's URL scheme.
 } else if (process.platform === 'darwin') {
   if (app.isPackaged) {
     app.setAsDefaultProtocolClient('biorouter');
@@ -826,7 +827,11 @@ const WINDOW_OWNING_DEEPLINK_HOSTS = ['bot', 'workflow', 'diverge'];
 // Apply single instance lock on Windows and Linux where it's needed for deep links
 // macOS uses the 'open-url' event instead
 let gotTheLock = true;
-if (process.platform !== 'darwin' || process.env.BIOROUTER_DEV_PROFILE_ROOT) {
+if (
+  process.platform !== 'darwin' ||
+  process.env.BIOROUTER_DEV_PROFILE_ROOT ||
+  applicationUserDataDirectory
+) {
   gotTheLock = app.requestSingleInstanceLock();
 
   if (!gotTheLock) {
