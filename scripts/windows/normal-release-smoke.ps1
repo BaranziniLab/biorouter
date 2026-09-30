@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'release-startup-diagnostics.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'Normal startup acceptance requires a disposable Windows GitHub Actions runner.'
 }
@@ -24,6 +25,8 @@ $normalUserDataDirectory = Join-Path $root 'electron'
 $desktopPath = Join-Path $AppDirectory 'Biorouter.exe'
 $daemonPath = Join-Path $AppDirectory 'resources/bin/biorouterd.exe'
 $owned = @{}
+$desktop = $null
+$cdpPort = 0
 $environmentNames = @('ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'BIOROUTER_DEV_PROFILE_ROOT',
     'BIOROUTER_DEV_PROFILE_NAME', 'BIOROUTER_DEV_AUTO_CONFIRM_SHARE', 'BIOROUTER_SHARED_DAEMON',
     'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL', 'BIOROUTER_PORT',
@@ -246,7 +249,12 @@ try {
     }
     $result.passed = $true
 } catch {
-    $result.error = $_.Exception.Message
+    $result.error = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
+    try {
+        Update-OwnedProcesses
+        $result.startupDiagnostics = Get-ReleaseStartupSnapshot -Owned $owned -Desktop $desktop `
+            -DaemonPath $daemonPath -CDPPort $cdpPort
+    } catch { $result.startupDiagnosticError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message }
     throw
 } finally {
     try {
@@ -273,7 +281,7 @@ try {
         }
         foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter '*.log' -File -Recurse -ErrorAction SilentlyContinue)) {
             if ($log.DirectoryName -eq $root -or $log.DirectoryName -eq (Join-Path $normalUserDataDirectory 'logs')) {
-                Copy-Item -LiteralPath $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
+                Copy-RedactedReleaseLog -Source $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
             }
         }
         try {

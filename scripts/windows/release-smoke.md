@@ -28,8 +28,12 @@ proof is refused, and that read succeeds with the automatically generated proof.
 No provider or remote Crew connection is required. Native owned windows and the
 renderer are checked for a temporary-password or daemon-approval conversation.
 The check requires v1.92.0 or later because older apps do not honor the explicit
-private Electron profile contract. The report, screenshot and application logs are retained; profile data and
-exactly identified owned process descendants are cleaned up.
+private Electron profile contract. The report, screenshot and redacted application logs are retained; profile data and
+exactly identified owned process descendants are cleaned up. Startup failure
+reports capture owned process identities/live state, window count/handle, safe
+file target IDs/URLs and listener owner PIDs before cleanup. They omit process
+arguments, environment, request headers and private key files. Logs redact
+credential-related lines and long hexadecimal values.
 
 Windows intentionally uses an app-owned TCP backend shared across its windows.
 It stops with the app and holds automatic user-action proof in memory.

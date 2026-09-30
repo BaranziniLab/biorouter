@@ -38,7 +38,7 @@ jobs:
         run: |
           $tokens = $null
           $errors = $null
-          foreach ($helper in @('installed-release-smoke.ps1', 'normal-release-smoke.ps1')) {
+          foreach ($helper in @('installed-release-smoke.ps1', 'normal-release-smoke.ps1', 'release-startup-diagnostics.ps1')) {
             [System.Management.Automation.Language.Parser]::ParseFile(
               "$env:GITHUB_WORKSPACE/scripts/windows/$helper",
               [ref]$tokens, [ref]$errors) | Out-Null

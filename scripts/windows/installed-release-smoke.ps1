@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'release-startup-diagnostics.ps1')
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
     throw 'This installer test requires a disposable Windows GitHub Actions runner.'
 }
@@ -20,6 +21,8 @@ $root = Join-Path $env:RUNNER_TEMP ('br-installed-' + [Guid]::NewGuid().ToString
 $local = Join-Path $root 'local'
 $installed = Join-Path $local "biorouter_app/app-$Version"
 $owned = @{}
+$desktop = $null
+$daemon = $null
 $changedEnvironment = @('LOCALAPPDATA', 'APPDATA', 'SQUIRREL_TEMP', 'BIOROUTER_PATH_ROOT',
     'BIOROUTER_DISABLE_KEYRING', 'BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
     'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL',
@@ -208,6 +211,8 @@ try {
     $env:ENABLE_PLAYWRIGHT = 'true'
     $env:PLAYWRIGHT_CDP_PORT = [string](Get-FreePort)
     [Environment]::SetEnvironmentVariable('BIOROUTER_PORT', $null, 'Process')
+    [Environment]::SetEnvironmentVariable('BIOROUTER_SERVER__SECRET_KEY', $null, 'Process')
+    $result.desktopServerSecretPreseedCleared = $true
     $desktop = Start-OwnedProcess -File (Join-Path $installed 'Biorouter.exe') `
         -Arguments @("--user-data-dir=`"$(Join-Path $root 'electron')`"") -Label 'desktop' -ShowWindow
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
@@ -250,7 +255,12 @@ try {
     $result.normalDesktop = $true
     $result.passed = $true
 } catch {
-    $result.error = $_.Exception.Message
+    $result.error = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
+    try {
+        Update-OwnedProcesses
+        $result.startupDiagnostics = Get-ReleaseStartupSnapshot -Owned $owned -Desktop $desktop `
+            -DaemonPath $daemon -CDPPort ([int]$env:PLAYWRIGHT_CDP_PORT)
+    } catch { $result.startupDiagnosticError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message }
     throw
 } finally {
     try {
@@ -292,11 +302,15 @@ try {
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Report) | Out-Null
         foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
-            Copy-Item -LiteralPath $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
+            Copy-RedactedReleaseLog -Source $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
         }
         $setupLog = Join-Path $local 'SquirrelTemp/SquirrelSetup.log'
         if (Test-Path -LiteralPath $setupLog) {
-            Copy-Item -LiteralPath $setupLog -Destination (Join-Path (Split-Path -Parent $Report) 'SquirrelSetup.log')
+            Copy-RedactedReleaseLog -Source $setupLog -Destination (Join-Path (Split-Path -Parent $Report) 'SquirrelSetup.log')
+        }
+        foreach ($log in @(Get-ChildItem -LiteralPath (Join-Path $root 'electron/logs') -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
+            Copy-RedactedReleaseLog -Source $log.FullName `
+                -Destination (Join-Path (Split-Path -Parent $Report) ('desktop-' + $log.Name))
         }
         try {
             if ($result.cleanup -and (Test-Path -LiteralPath $root)) {
