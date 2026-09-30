@@ -325,6 +325,13 @@ try {
             if ($current -and $current.CreationDate -eq $identity.CreationDate -and
                 $current.ExecutablePath -eq $identity.ExecutablePath) { throw 'An owned normal-start process survived cleanup' }
         }
+        if ($desktop) {
+            if (-not $desktop.WaitForExit(10000)) { throw 'Owned desktop exit did not complete' }
+            $result.desktopExitCode = $desktop.ExitCode
+            $desktop.Dispose()
+            $desktop = $null
+            $result.desktopHandleDisposed = $true
+        }
         $result.processCleanup = $true
     } catch {
         $result.passed = $false
@@ -345,9 +352,39 @@ try {
         }
         try {
             if ($result.Contains('processCleanup') -and $result.processCleanup) {
-                if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
-                if (Test-Path -LiteralPath $root) { throw 'Owned normal-start profile remained after removal' }
-                $result.cleanup = $true
+                $cleanupDeadline = [DateTime]::UtcNow.AddSeconds(30)
+                $result.cleanupAttempts = 0
+                while ($true) {
+                    $processes = @(Get-CimInstance Win32_Process)
+                    $retiredPids = @()
+                    foreach ($identity in $owned.Values) {
+                        $samePid = @($processes | Where-Object { $_.ProcessId -eq $identity.ProcessId })
+                        $liveOwned = @($samePid | Where-Object { $_.CreationDate -eq $identity.CreationDate -and
+                            $_.ExecutablePath -eq $identity.ExecutablePath })
+                        if ($liveOwned.Count -gt 0) {
+                            $result.processCleanup = $false
+                            throw 'An exact owned process was still alive before profile removal'
+                        }
+                        if ($samePid.Count -eq 0) { $retiredPids += $identity.ProcessId }
+                    }
+                    $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                        Where-Object { $_.OwningProcess -in $retiredPids })
+                    $result.cleanupPendingListeners = $listeners.Count
+                    if ($listeners.Count -eq 0) {
+                        $result.cleanupAttempts++
+                        try {
+                            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+                            if (Test-Path -LiteralPath $root) { throw 'Owned normal-start profile remained after removal' }
+                            $result.cleanup = $true
+                            break
+                        } catch {
+                            $result.lastCleanupAttemptError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
+                            if ([DateTime]::UtcNow -ge $cleanupDeadline) { throw }
+                        }
+                    }
+                    if ([DateTime]::UtcNow -ge $cleanupDeadline) { throw 'Owned listener did not disappear before profile cleanup deadline' }
+                    Start-Sleep -Seconds 1
+                }
             }
         } catch {
             $result.passed = $false

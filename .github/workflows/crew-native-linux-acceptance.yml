@@ -73,11 +73,12 @@ jobs:
           RELEASE_RUN: ${{ inputs.release_run_id }}
         run: |
           set -euo pipefail
-          sudo install -d -m 0755 /opt/biorouter-native-acceptance-bin
-          sudo install -m 0755 "$RUNNER_TEMP/exact-biorouter-crew" /opt/biorouter-native-acceptance-bin/biorouter-crew
+          test "$(stat -c %u:%g:%a /var/lib)" = 0:0:755
+          sudo install -d -m 0755 /var/lib/biorouter-native-acceptance-bin
+          sudo install -m 0755 "$RUNNER_TEMP/exact-biorouter-crew" /var/lib/biorouter-native-acceptance-bin/biorouter-crew
           sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin python3 "$GITHUB_WORKSPACE/scripts/crew-native-linux-acceptance.py" \
-            --broker /opt/biorouter-native-acceptance-bin/biorouter-crew \
-            --root /opt/biorouter-native-acceptance-fixture \
+            --broker /var/lib/biorouter-native-acceptance-bin/biorouter-crew \
+            --root /var/lib/biorouter-native-acceptance-fixture \
             --report "$RUNNER_TEMP/native-crew-acceptance.json" \
             --source-sha "$SOURCE_SHA" --release-run-id "$RELEASE_RUN"
       - uses: actions/upload-artifact@v4
@@ -87,5 +88,96 @@ jobs:
           path: |
             ${{ runner.temp }}/broker-artifact-proof.json
             ${{ runner.temp }}/native-crew-acceptance.json
+          if-no-files-found: error
+          retention-days: 14
+
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact successful package source and download only its four distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN: ${{ inputs.release_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,importlib.util,json,os,re,stat,urllib.request,zipfile
+          from pathlib import Path,PurePosixPath
+          spec=importlib.util.spec_from_file_location('acceptance',Path('scripts/crew-native-linux-acceptance.py'))
+          acceptance=importlib.util.module_from_spec(spec);spec.loader.exec_module(acceptance)
+          opener=urllib.request.build_opener(acceptance.ArtifactRedirectHandler())
+          run=os.environ['RELEASE_RUN'];sha=os.environ['SOURCE_SHA']
+          assert re.fullmatch(r'[1-9][0-9]*',run) and re.fullmatch(r'[0-9a-f]{40}',sha)
+          def api(path):
+            req=urllib.request.Request('https://api.github.com/repos/BaranziniLab/biorouter'+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
+            return opener.open(req,timeout=60)
+          metadata=json.load(api('/actions/runs/'+run))
+          assert metadata['head_sha']==sha and metadata['conclusion']=='success' and metadata['status']=='completed' and metadata['path']=='.github/workflows/linux-gui-packages.yml'
+          matches=[a for a in json.load(api('/actions/runs/'+run+'/artifacts?per_page=100'))['artifacts'] if a['name']=='linux-packages-1.92.0' and not a['expired']]
+          assert len(matches)==1
+          artifact=matches[0];assert 0<artifact['size_in_bytes']<=2*1024**3 and re.fullmatch(r'sha256:[0-9a-f]{64}',artifact['digest'])
+          root=Path(os.environ['RUNNER_TEMP'])/'native-linux-packages';root.mkdir(mode=0o700)
+          archive=root/'packages.zip';digest=hashlib.sha256();total=0
+          with api('/actions/artifacts/'+str(artifact['id'])+'/zip') as source,archive.open('xb') as out:
+            while block:=source.read(1048576):
+              total+=len(block);assert total<=artifact['size_in_bytes'];digest.update(block);out.write(block)
+          assert total==artifact['size_in_bytes'] and 'sha256:'+digest.hexdigest()==artifact['digest']
+          expected={'biorouter_1.92.0_amd64.deb','Biorouter-1.92.0-1.x86_64.rpm','biorouter-cli_1.92.0_amd64.deb','biorouter-cli-1.92.0-1.x86_64.rpm'}
+          packages={}
+          with zipfile.ZipFile(archive) as z:
+            for name in sorted(expected):
+              members=[m for m in z.infolist() if PurePosixPath(m.filename).name==name]
+              assert len(members)==1
+              member=members[0];path=PurePosixPath(member.filename)
+              assert not path.is_absolute() and '..' not in path.parts and not member.is_dir() and stat.S_IFMT(member.external_attr>>16) in (0,stat.S_IFREG) and 0<member.file_size<=512*1024**2
+              h=hashlib.sha256();size=0
+              with z.open(member) as source,(root/name).open('xb') as out:
+                while block:=source.read(1048576):
+                  size+=len(block);assert size<=member.file_size;h.update(block);out.write(block)
+              assert size==member.file_size
+              packages[name]={'sha256':h.hexdigest(),'size':size}
+          archive.unlink()
+          (root/'packages.sha256').write_text(''.join(value['sha256']+'  '+name+'\n' for name,value in sorted(packages.items())))
+          (root/'source-proof.json').write_text(json.dumps(dict(sourceSha=sha,releaseRunId=run,artifactId=artifact['id'],artifactSha256=digest.hexdigest(),packages=packages),indent=2)+'\n')
+          PY
+      - name: Install and launch exact GUI and CLI DEBs on native Ubuntu
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin bash scripts/smoke-native-linux-packages.sh \
+            deb "$RUNNER_TEMP/native-linux-packages" "$GITHUB_WORKSPACE/scripts/smoke-linux-desktop.sh" | tee "$RUNNER_TEMP/native-linux-packages/deb-smoke.log"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'native-linux-packages';proof=json.loads((root/'source-proof.json').read_text())
+          modes=[line.split('=',1)[1] for line in (root/'deb-smoke.log').read_text().splitlines() if line.startswith('CHROMIUM_SANDBOX_MODE=')];assert len(modes)==1
+          (root/'deb-runtime.json').write_text(json.dumps(dict(**proof,distro='ubuntu-24.04',architecture='native-x86_64',uid=64011,chromiumSandbox=modes[0],status='PASS',checks=['GUI silent shared startup','shared reuse','missing-key replacement','fatal startup shutdown','per-window startup/shutdown','installed CLI/daemon/Crew versions','terminal help']),indent=2)+'\n')
+          PY
+      - name: Install and launch exact GUI and CLI RPMs on native x86 Rocky Linux
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          timeout -k 15 1000 docker run --rm --platform linux/amd64 --cpus 2 --memory 4g --pids-limit 256 \
+            -v "$RUNNER_TEMP/native-linux-packages:/pkg:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/smoke-native-linux-packages.sh:/smoke/packages.sh:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/smoke-linux-desktop.sh:/smoke/desktop.sh:ro" \
+            rockylinux:9 bash /smoke/packages.sh rpm /pkg /smoke/desktop.sh | tee "$RUNNER_TEMP/native-linux-packages/rpm-smoke.log"
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'native-linux-packages';proof=json.loads((root/'source-proof.json').read_text())
+          modes=[line.split('=',1)[1] for line in (root/'rpm-smoke.log').read_text().splitlines() if line.startswith('CHROMIUM_SANDBOX_MODE=')];assert len(modes)==1
+          (root/'rpm-runtime.json').write_text(json.dumps(dict(**proof,distro='rockylinux-9',architecture='native-x86_64-container',uid=64011,chromiumSandbox=modes[0],status='PASS',checks=['GUI silent shared startup','shared reuse','missing-key replacement','fatal startup shutdown','per-window startup/shutdown','installed CLI/daemon/Crew versions','terminal help']),indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-linux-package-runtime-evidence
+          path: |
+            ${{ runner.temp }}/native-linux-packages/source-proof.json
+            ${{ runner.temp }}/native-linux-packages/deb-runtime.json
+            ${{ runner.temp }}/native-linux-packages/rpm-runtime.json
           if-no-files-found: error
           retention-days: 14

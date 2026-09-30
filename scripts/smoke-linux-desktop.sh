@@ -11,6 +11,10 @@ unset LANG LC_ALL
 export DISPLAY=:99
 BIOROUTER_DISABLE_KEYRING=true
 export BIOROUTER_DISABLE_KEYRING
+chromium_args=()
+if [ "$(id -u)" = 0 ] || [ "${BR_SMOKE_DISABLE_CHROMIUM_SANDBOX:-0}" = 1 ]; then
+  chromium_args+=(--no-sandbox)
+fi
 
 say() { printf '[linux-desktop-smoke] %s\n' "$*"; }
 
@@ -128,10 +132,11 @@ launch() {
   shift
   home="/tmp/biorouter-home-$label"
   app_log="/tmp/biorouter-$label.log"
-  mkdir -p "$home"
+  mkdir -p "$home/userData"
+  chmod 700 "$home" "$home/userData"
   rm -f "$home/userData/logs/main.log"
   env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT -u XDG_STATE_HOME HOME="$home" "$@" \
-    "$APP" --no-sandbox --user-data-dir="$home/userData" >"$app_log" 2>&1 &
+    "$APP" "${chromium_args[@]}" --user-data-dir="$home/userData" >"$app_log" 2>&1 &
   app_pid=$!
   started+=("$app_pid")
   runtime_records+=("$home/.local/state/biorouter/daemon/runtime.json")
