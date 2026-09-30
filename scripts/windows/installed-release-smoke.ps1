@@ -246,8 +246,8 @@ try {
                 Where-Object { $_.OwningProcess -in $childPids })
         }
         try {
-            $pages = @(Invoke-RestMethod "http://127.0.0.1:$env:PLAYWRIGHT_CDP_PORT/json/list" -TimeoutSec 2)
-            $renderer = @($pages | Where-Object { $_.type -eq 'page' -and $_.url -like 'file:*' })
+            $pages = @(Get-ReleaseCDPTargets -Port ([int]$env:PLAYWRIGHT_CDP_PORT))
+            $renderer = @($pages | Where-Object { Test-ReleaseFileTarget -Target $_ })
             if ($desktop.MainWindowHandle -ne 0 -and $listeners.Count -gt 0 -and $renderer.Count -gt 0) {
                 $ready = $true
                 $result.desktopDaemonPids = $childPids

@@ -14,11 +14,24 @@ function Copy-RedactedReleaseLog {
     }
 }
 
+function Get-ReleaseCDPTargets {
+    param([int]$Port)
+    $targets = Invoke-RestMethod "http://127.0.0.1:$Port/json/list" -TimeoutSec 2
+    foreach ($target in $targets) { if ($null -ne $target) { $target } }
+}
+
+function Test-ReleaseFileTarget {
+    param($Target)
+    $properties = @($Target.PSObject.Properties.Name)
+    return $properties -contains 'type' -and $properties -contains 'url' -and
+        $Target.type -eq 'page' -and $Target.url -like 'file:*'
+}
+
 function Get-ReleaseStartupSnapshot {
     param([Collections.IDictionary]$Owned, [Diagnostics.Process]$Desktop,
         [string]$DaemonPath, [int]$CDPPort)
     $snapshot = [ordered]@{ processes = @(); daemonChildren = @(); listeners = @();
-        fileTargets = @(); cdpTargetCount = 0; visibleOwnedWindows = $null }
+        fileTargets = @(); targetShapes = @(); cdpTargetCount = 0; visibleOwnedWindows = $null }
     $currentProcesses = @(Get-CimInstance Win32_Process)
     foreach ($identity in $Owned.Values) {
         $live = @($currentProcesses | Where-Object { $_.ProcessId -eq $identity.ProcessId -and
@@ -48,11 +61,21 @@ function Get-ReleaseStartupSnapshot {
         ForEach-Object { @{ address = $_.LocalAddress; port = $_.LocalPort; ownerPid = $_.OwningProcess } })
     if ($CDPPort -gt 0) {
         try {
-            $targets = @(Invoke-RestMethod "http://127.0.0.1:$CDPPort/json/list" -TimeoutSec 2)
+            $targets = @(Get-ReleaseCDPTargets -Port $CDPPort)
             $snapshot.cdpTargetCount = $targets.Count
-            $snapshot.fileTargets = @($targets | Where-Object { $_.type -eq 'page' -and $_.url -like 'file:*' } |
-                ForEach-Object { @{ id = $_.id; type = $_.type;
-                    url = ([Uri]$_.url).GetLeftPart([UriPartial]::Path) } })
+            foreach ($target in $targets) {
+                $properties = @($target.PSObject.Properties.Name)
+                $shape = @{ properties = @($properties | Where-Object { $_ -in @('id', 'type', 'url', 'webSocketDebuggerUrl') }) }
+                if ($properties -contains 'type') { $shape.type = [string]$target.type }
+                if ($properties -contains 'url' -and $target.url -like 'file:*') {
+                    $shape.url = ([Uri]$target.url).GetLeftPart([UriPartial]::Path)
+                }
+                $snapshot.targetShapes += $shape
+                if ((Test-ReleaseFileTarget -Target $target) -and $properties -contains 'id') {
+                    $snapshot.fileTargets += @{ id = $target.id; type = $target.type;
+                        url = ([Uri]$target.url).GetLeftPart([UriPartial]::Path) }
+                }
+            }
         } catch { $snapshot.cdpObservationError = 'CDP target listing was unavailable' }
     }
     return $snapshot

@@ -26,6 +26,7 @@ $desktopPath = Join-Path $AppDirectory 'Biorouter.exe'
 $daemonPath = Join-Path $AppDirectory 'resources/bin/biorouterd.exe'
 $owned = @{}
 $desktop = $null
+$desktopCreated = $null
 $cdpPort = 0
 $environmentNames = @('ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'BIOROUTER_DEV_PROFILE_ROOT',
     'BIOROUTER_DEV_PROFILE_NAME', 'BIOROUTER_DEV_AUTO_CONFIRM_SHARE', 'BIOROUTER_SHARED_DAEMON',
@@ -197,6 +198,7 @@ try {
     $identity = Get-CimInstance Win32_Process -Filter "ProcessId=$($desktop.Id)"
     if (-not $identity -or $identity.ExecutablePath -ne $desktopPath) { throw 'Normal desktop process identity did not match payload' }
     $owned[[string]$desktop.Id] = $identity
+    $desktopCreated = $identity.CreationDate
     $result.desktopPid = $desktop.Id
     $deadline = [DateTime]::UtcNow.AddSeconds(90)
     $ready = $false
@@ -207,8 +209,9 @@ try {
         Assert-NoNativeSecretPrompt
         $desktop.Refresh()
         $pages = @()
-        try { $pages = @(Invoke-RestMethod "http://127.0.0.1:$cdpPort/json/list" -TimeoutSec 2) } catch {}
-        foreach ($page in @($pages | Where-Object { $_.type -eq 'page' -and $_.url -like 'file:*' })) {
+        try { $pages = @(Get-ReleaseCDPTargets -Port $cdpPort) } catch {}
+        foreach ($page in @($pages | Where-Object { (Test-ReleaseFileTarget -Target $_) -and
+            $_.PSObject.Properties.Name -contains 'id' -and $_.PSObject.Properties.Name -contains 'webSocketDebuggerUrl' })) {
             $evaluation = Invoke-CDP -Socket $page.webSocketDebuggerUrl -Method 'Runtime.evaluate' `
                 -Parameters @{ expression = $expression; awaitPromise = $true; returnByValue = $true }
             if ($evaluation.PSObject.Properties.Name -contains 'exceptionDetails') {
@@ -281,10 +284,10 @@ try {
             if ($current -and $current.CreationDate -eq $identity.CreationDate -and
                 $current.ExecutablePath -eq $identity.ExecutablePath) { throw 'An owned normal-start process survived cleanup' }
         }
-        $result.cleanup = $true
+        $result.processCleanup = $true
     } catch {
         $result.passed = $false
-        $result.cleanupError = $_.Exception.Message
+        $result.cleanupError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
         throw
     } finally {
         foreach ($name in $environmentNames) {
@@ -300,7 +303,28 @@ try {
             }
         }
         try {
-            if ($result.cleanup -and (Test-Path -LiteralPath $root)) { Remove-Item -LiteralPath $root -Recurse -Force }
+            if ($result.Contains('processCleanup') -and $result.processCleanup) {
+                if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+                if (Test-Path -LiteralPath $root) { throw 'Owned normal-start profile remained after removal' }
+                $result.cleanup = $true
+            }
+        } catch {
+            $result.passed = $false
+            $result.cleanup = $false
+            $result.cleanupError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message
+            try {
+                Update-OwnedProcesses
+                $result.cleanupDiagnostics = Get-ReleaseStartupSnapshot -Owned $owned -Desktop $desktop `
+                    -DaemonPath $daemonPath -CDPPort $cdpPort
+                if ($null -ne $desktopCreated) {
+                    $result.cleanupPayloadProcesses = @(Get-CimInstance Win32_Process | Where-Object {
+                        $_.ExecutablePath -in @($desktopPath, $daemonPath) -and
+                        $_.CreationDate -ge $desktopCreated } | ForEach-Object {
+                        @{ pid = $_.ProcessId; parentPid = $_.ParentProcessId; created = $_.CreationDate;
+                            executable = $_.ExecutablePath } })
+                }
+            } catch { $result.cleanupDiagnosticError = Protect-ReleaseDiagnosticText -Text $_.Exception.Message }
+            throw
         } finally { $result | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $Report -Encoding utf8 }
     }
 }
