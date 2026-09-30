@@ -347,7 +347,66 @@ fn a_live_listener_on_the_recorded_socket_is_still_refused() {
 mod linux {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::net::UnixListener;
+
+    struct InheritedDescriptors {
+        child: libc::pid_t,
+        release: Option<OwnedFd>,
+    }
+
+    impl InheritedDescriptors {
+        fn new() -> Self {
+            let mut pipe = [0; 2];
+            assert_eq!(
+                unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+                0
+            );
+            let read = unsafe { OwnedFd::from_raw_fd(pipe[0]) };
+            let write = unsafe { OwnedFd::from_raw_fd(pipe[1]) };
+            let child = unsafe { libc::fork() };
+            assert!(child >= 0);
+            if child == 0 {
+                // Only async-signal-safe calls may run between fork and exec in a test runner.
+                unsafe {
+                    libc::close(write.as_raw_fd());
+                    let mut byte = 0u8;
+                    while libc::read(read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) < 0 {
+                        if *libc::__errno_location() != libc::EINTR {
+                            libc::_exit(1);
+                        }
+                    }
+                    libc::_exit(0);
+                }
+            }
+            drop(read);
+            Self {
+                child,
+                release: Some(write),
+            }
+        }
+    }
+
+    impl Drop for InheritedDescriptors {
+        fn drop(&mut self) {
+            drop(self.release.take());
+            let mut status = 0;
+            while unsafe { libc::waitpid(self.child, &mut status, 0) } < 0 {
+                if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_child_between_fork_and_exec_does_not_retain_a_closed_brokers_writer_lock() {
+        let ws = Workspace::new("forked-writer-lock");
+        let workspace_id = ws.broker.workspace().id.clone();
+        let _child = InheritedDescriptors::new();
+        let ws = ws.reopen();
+        assert_eq!(ws.broker.workspace().id, workspace_id);
+    }
 
     /// A fake sibling broker at `runtime_root/basename`: answers every `hello` for
     /// `workspace_id` named `name`.
