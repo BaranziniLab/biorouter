@@ -57,6 +57,9 @@ jobs:
               throw "$helper has PowerShell syntax errors"
             }
           }
+      - name: Verify native CDP async output and response matching
+        shell: pwsh
+        run: ./scripts/windows/cdp-interop.test.ps1
       - name: Download Windows ZIP and installer from the release
         if: inputs.windows_package_run == ''
         shell: pwsh

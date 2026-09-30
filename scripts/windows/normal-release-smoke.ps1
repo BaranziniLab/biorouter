@@ -68,10 +68,10 @@ function Invoke-CDP {
     $websocket = [Net.WebSockets.ClientWebSocket]::new()
     $timeout = [Threading.CancellationTokenSource]::new(10000)
     try {
-        $websocket.ConnectAsync([Uri]$Socket, $timeout.Token).GetAwaiter().GetResult()
+        $connectCompletion = $websocket.ConnectAsync([Uri]$Socket, $timeout.Token).GetAwaiter().GetResult()
         $request = @{ id = 1; method = $Method; params = $Parameters } | ConvertTo-Json -Depth 10 -Compress
         $bytes = [Text.Encoding]::UTF8.GetBytes($request)
-        $websocket.SendAsync([ArraySegment[byte]]::new($bytes),
+        $sendCompletion = $websocket.SendAsync([ArraySegment[byte]]::new($bytes),
             [Net.WebSockets.WebSocketMessageType]::Text, $true, $timeout.Token).GetAwaiter().GetResult()
         $buffer = [byte[]]::new(65536)
         while ($true) {
@@ -99,7 +99,24 @@ function Invoke-CDP {
             if ($script:lastCDPResponseShape.requestIdMatches) {
                 if ($properties -contains 'error') { throw "Renderer inspector rejected $Method" }
                 if ($properties -notcontains 'result') { throw "Renderer inspector $Method response omitted its result" }
-                return $response.result
+                $payload = $response.result
+                $script:lastCDPResponseShape.connectCompletionClass = if ($null -eq $connectCompletion) { 'null' } else { $connectCompletion.GetType().FullName }
+                $script:lastCDPResponseShape.sendCompletionClass = if ($null -eq $sendCompletion) { 'null' } else { $sendCompletion.GetType().FullName }
+                $script:lastCDPResponseShape.resultClass = if ($null -eq $payload) { 'null' } else { $payload.GetType().FullName }
+                $script:lastCDPResponseShape.resultProperties = @()
+                if ($null -ne $payload) {
+                    $payloadProperties = @($payload.PSObject.Properties | ForEach-Object { $_.Name })
+                    $script:lastCDPResponseShape.resultProperties = $payloadProperties
+                    if ($Method -eq 'Runtime.evaluate' -and $payloadProperties -contains 'result') {
+                        $remote = $payload.result
+                        $remoteProperties = @($remote.PSObject.Properties | ForEach-Object { $_.Name })
+                        if ($remoteProperties -contains 'type') {
+                            $script:lastCDPResponseShape.remoteType = if ($remote.type -in @('object', 'function', 'undefined',
+                                'string', 'number', 'boolean', 'symbol', 'bigint')) { $remote.type } else { 'other' }
+                        }
+                    }
+                }
+                return $payload
             }
         }
     } finally {
@@ -226,6 +243,7 @@ try {
             $_.PSObject.Properties.Name -contains 'id' -and $_.PSObject.Properties.Name -contains 'webSocketDebuggerUrl' })) {
             $evaluation = Invoke-CDP -Socket $page.webSocketDebuggerUrl -Method 'Runtime.evaluate' `
                 -Parameters @{ expression = $expression; awaitPromise = $true; returnByValue = $true }
+            $result.lastCDPResponseShape = $script:lastCDPResponseShape
             $evaluationProperties = @($evaluation.PSObject.Properties | ForEach-Object { $_.Name })
             $result.lastEvaluationShape = @{ requestedMethod = 'Runtime.evaluate'; objectClass = $evaluation.GetType().FullName;
                 properties = $evaluationProperties; exceptionPresent = $evaluationProperties -contains 'exceptionDetails' }

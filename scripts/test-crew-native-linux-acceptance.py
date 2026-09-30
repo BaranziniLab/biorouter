@@ -61,5 +61,33 @@ class BridgeTests(unittest.TestCase):
             acceptance.cleanup(alice, bob, Path("/broker"), Path("/state"), {"pid": 123})
 
 
+class ArtifactRedirectTests(unittest.TestCase):
+    def redirect(self, target):
+        request = acceptance.urllib.request.Request(
+            "https://api.github.com/repos/example/actions/artifacts/1/zip",
+            headers={"Authorization": "Bearer synthetic-test-only", "Accept": "application/vnd.github+json"})
+        result = acceptance.ArtifactRedirectHandler().redirect_request(
+            request, None, 302, "Found", {}, target)
+        return request, result
+
+    def test_github_bearer_is_not_forwarded_to_signed_blob(self):
+        original, redirected = self.redirect("https://example.blob.core.windows.net/artifact?sig=synthetic")
+        self.assertFalse(redirected.has_header("Authorization"))
+        self.assertEqual(original.get_header("Authorization"), "Bearer synthetic-test-only")
+        self.assertEqual(redirected.get_header("Accept"), "application/vnd.github+json")
+
+    def test_same_origin_redirect_keeps_api_authorization(self):
+        _, redirected = self.redirect("https://api.github.com:443/repos/example/actions/artifacts/2/zip")
+        self.assertEqual(redirected.get_header("Authorization"), "Bearer synthetic-test-only")
+
+    def test_different_origin_port_removes_authorization(self):
+        _, redirected = self.redirect("https://api.github.com:444/artifact")
+        self.assertFalse(redirected.has_header("Authorization"))
+
+    def test_artifact_redirect_cannot_downgrade_https(self):
+        with self.assertRaisesRegex(RuntimeError, "remain HTTPS"):
+            self.redirect("http://example.blob.core.windows.net/artifact")
+
+
 if __name__ == "__main__":
     unittest.main()

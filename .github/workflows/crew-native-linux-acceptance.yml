@@ -36,14 +36,17 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           python3 - <<'PY'
-          import hashlib,json,os,re,shutil,urllib.request,zipfile
+          import hashlib,importlib.util,json,os,re,shutil,urllib.request,zipfile
           from pathlib import Path
+          spec=importlib.util.spec_from_file_location('acceptance',Path('scripts/crew-native-linux-acceptance.py'))
+          acceptance=importlib.util.module_from_spec(spec);spec.loader.exec_module(acceptance)
+          opener=urllib.request.build_opener(acceptance.ArtifactRedirectHandler())
           repo='BaranziniLab/biorouter'
           run=os.environ['RELEASE_RUN']; sha=os.environ['SOURCE_SHA']
           assert re.fullmatch(r'[1-9][0-9]*',run) and re.fullmatch(r'[0-9a-f]{40}',sha)
           def api(path):
             request=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json'})
-            return urllib.request.urlopen(request,timeout=60)
+            return opener.open(request,timeout=60)
           metadata=json.load(api('/actions/runs/'+run))
           assert metadata['head_sha']==sha and metadata['conclusion']=='success' and metadata['status']=='completed'
           assert metadata['path']=='.github/workflows/linux-gui-packages.yml'

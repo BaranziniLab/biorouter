@@ -11,11 +11,29 @@ import sqlite3
 import subprocess
 import time
 import uuid
+import urllib.parse
+import urllib.request
 
 
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+class ArtifactRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        destination = urllib.parse.urlsplit(new_url)
+        require(destination.scheme == "https", "Artifact redirect must remain HTTPS")
+        redirected = super().redirect_request(request, fp, code, message, headers, new_url)
+        if redirected is None:
+            return None
+        source = urllib.parse.urlsplit(request.full_url)
+        source_origin = (source.scheme, source.hostname, source.port or 443)
+        destination_origin = (destination.scheme, destination.hostname, destination.port or 443)
+        if source_origin != destination_origin:
+            redirected.remove_header("Authorization")
+            redirected.remove_header("Proxy-authorization")
+        return redirected
 
 
 def encoded(value):
