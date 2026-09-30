@@ -47,18 +47,9 @@ const swap = (from, to) => (text) => {
   return text.replace(from, to);
 };
 
-// The dialog titles are the other half of DOCS-6 (ui/desktop/src/main.ts). The
-// mutants below are about the manual, so they run against main.ts with the
-// brand spelled right whatever state that file is in, and the brand mutants
-// then re-break exactly one side.
-const brandFixedMain = (text) =>
-  text
-    .replace(
-      "'Set approval secret for shared BioRouter daemon'",
-      "'Set approval secret for shared Biorouter daemon'"
-    )
-    .replaceAll("'Connect to existing BioRouter daemon'", "'Connect to existing Biorouter daemon'");
-const fixed = overlay({ 'ui/desktop/src/main.ts': brandFixedMain });
+// The dialog titles are the other half of DOCS-6 (ui/desktop/src/main.ts). Only the Crew
+// vault passphrase windows remain, and they already spell the brand right.
+const fixed = overlay({});
 
 const failuresOf = (tree, rule) =>
   checkCrewManual(tree).filter((failure) => failure.startsWith(`${rule}:`));
@@ -96,8 +87,8 @@ test('brand: the audited "BioRouter" quote is refused (DOCS-6)', () => {
   assertCaught(
     {
       'docs/crew/privacy-and-security.md': swap(
-        '"Set approval secret for shared Biorouter daemon"',
-        '"Set approval secret for shared BioRouter daemon"'
+        '"This computer has no keyring service Biorouter can use…"',
+        '"This computer has no keyring service BioRouter can use…"'
       ),
     },
     'brand',
@@ -123,28 +114,16 @@ test('brand: an identifier in inline code is not the brand', () => {
 });
 
 test('dialog-titles: the manual and main.ts cannot disagree in either direction (DOCS-6)', () => {
-  // The app keeps the old spelling while the manual moved: the manual quotes a window nobody sees.
-  assertCaught(
-    {
-      'ui/desktop/src/main.ts': (text) =>
-        text.replace(
-          "'Connect to existing Biorouter daemon'",
-          "'Connect to existing BioRouter daemon'"
-        ),
-    },
-    'dialog-titles',
-    /quotes "Connect to existing Biorouter daemon", but .* titles it "Connect to existing BioRouter daemon"/
-  );
   // The app renames a window and the manual does not follow.
   assertCaught(
     {
       'ui/desktop/src/main.ts': swap(
-        "'Confirm shared daemon approval secret'",
-        "'Confirm your shared daemon approval secret'"
+        "'Confirm Crew vault passphrase'",
+        "'Confirm crew vault passphrase'"
       ),
     },
     'dialog-titles',
-    /does not quote the dialog title "Confirm your shared daemon approval secret"/
+    /quotes "Confirm Crew vault passphrase", but .* titles it "Confirm crew vault passphrase"/
   );
   // The vault windows, titled through a ternary, are read too.
   assertCaught(
@@ -163,7 +142,7 @@ test('dialog-titles: a main.ts the reader cannot parse fails instead of passing'
   assertCaught(
     { 'ui/desktop/src/main.ts': (text) => text.replaceAll('promptNativeSecret(', 'askForSecret(') },
     'dialog-titles',
-    /found 0 daemon approval-secret titles/
+    /found no native secret window titles/
   );
 });
 
@@ -352,7 +331,7 @@ const TROUBLE = 'docs/crew/connections-and-troubleshooting.md';
 const NEEDS_DESKTOP = 'ui/desktop/src/components/crew/CrewNeedsDesktop.tsx';
 const AUTHENTICATION = 'crates/biorouter-server/src/routes/crew_authentication.rs';
 const ROUND_ONE_BROWSER_ACCESS =
-  '| Crew | **Not available.** Every Crew action, even listing saved workspaces, needs the approval secret a person types into the desktop application or `biorouter crew`, and the daemon `biorouter serve` starts never holds one. The Crew routes refuse it with `crew_human_authority_unavailable`, and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal. See the [Crew user manual](../crew/README.md). |';
+  '| Crew | **Not available.** Every Crew action, even listing saved workspaces, needs proof that a person is at this computer, and the daemon `biorouter serve` starts never holds it. The Crew routes refuse it with `crew_human_authority_unavailable`, and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal. See the [Crew user manual](../crew/README.md). |';
 
 test('needs-desktop: the first fix, which named no page a serve browser shows, is refused (DOCS-1)', () => {
   assertCaught(
@@ -362,7 +341,7 @@ test('needs-desktop: the first fix, which named no page a serve browser shows, i
           .split('\n')
           .map((line) =>
             line.startsWith('Crew works only in the desktop app')
-              ? 'Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`: the background service that `biorouter serve` starts never holds the [approval secret](#the-approval-secret) Crew needs, so it refuses every Crew action, even listing your workspaces. Signing in again or restarting does not change that.'
+              ? 'Crew works only in the desktop app and with `biorouter crew`. It does not work in a web browser opened with `biorouter serve`: the background service that `biorouter serve` starts cannot confirm that a person is acting, so it refuses every Crew action, even listing your workspaces. Signing in again or restarting does not change that.'
               : line
           )
           .join('\n'),
@@ -396,7 +375,7 @@ test('needs-desktop: the first fix, which named no page a serve browser shows, i
       'landing/docs.html': (text) =>
         text.replace(
           /<tr><td>Crew<\/td><td>No\b[^\n]*<\/td><\/tr>/,
-          '<tr><td>Crew</td><td>No. Every Crew action needs the approval secret a person types into the desktop app or <code>biorouter crew</code>, and the daemon <code>serve</code> starts never holds one. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal.</td></tr>'
+          '<tr><td>Crew</td><td>No. Every Crew action needs proof that a person is at this computer, and the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal.</td></tr>'
         ),
     },
     'needs-desktop',
@@ -445,7 +424,7 @@ test('needs-desktop: the manual may not send a serve browser to a message it nev
       [TROUBLE]: swap(
         '- "This daemon cannot verify human Crew actions…"\n\nTo replace',
         '- "This daemon cannot verify human Crew actions…"\n\n' +
-          'The last one also appears in every web browser opened with `biorouter serve`. That service never holds the approval secret Crew needs, so Crew never works there, and the steps below do not help. Use the desktop app or `biorouter crew` instead.\n\nTo replace'
+          'The last one also appears in every web browser opened with `biorouter serve`. That service cannot confirm that a person is acting, so Crew never works there, and the steps below do not help. Use the desktop app or `biorouter crew` instead.\n\nTo replace'
       ),
     },
     'needs-desktop',
@@ -1312,7 +1291,7 @@ test('troubleshooting: a server that stopped saving, a restarted background serv
   assertCaught(
     {
       [TROUBLE]: (text) =>
-        text.replace(/^\| "Biorouter’s background service restarted, so Crew.*\n/m, ''),
+        text.replace(/^\| "Biorouter lost its connection to its background service, so Crew.*\n/m, ''),
     },
     'app-sentences',
     /does not quote the background-service note/
