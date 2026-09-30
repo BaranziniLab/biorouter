@@ -8,9 +8,20 @@ on:
         description: Release version without the v prefix
         required: true
         type: string
+      windows_package_run:
+        description: Optional successful Windows GUI packages run ID; blank downloads release assets
+        required: false
+        type: string
+        default: ''
+      package_source_sha:
+        description: Exact 40-character source commit required with windows_package_run
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   windows-runtime:
@@ -37,6 +48,7 @@ jobs:
             }
           }
       - name: Download Windows ZIP and installer from the release
+        if: inputs.windows_package_run == ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,6 +97,71 @@ jobs:
               release_id = $found[0].id; tag = $tag; workflow_source = $env:GITHUB_SHA }
           }
           $evidence | ConvertTo-Json -Depth 4 | Set-Content artifact/windows-release-assets.json
+          Expand-Archive "artifact/Biorouter-win32-x64-$env:VERSION.zip" artifact/unpacked
+
+      - name: Download exact successful Windows package run assets
+        if: inputs.windows_package_run != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PACKAGE_RUN: ${{ inputs.windows_package_run }}
+          PACKAGE_SOURCE_SHA: ${{ inputs.package_source_sha }}
+        run: |
+          if ($env:VERSION -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
+              $env:PACKAGE_RUN -notmatch '^[0-9]+$' -or
+              $env:PACKAGE_SOURCE_SHA -notmatch '^[0-9a-f]{40}$') {
+            throw 'CI package mode requires a stable version, numeric run ID and exact source SHA'
+          }
+          $run = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:PACKAGE_RUN" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read package run metadata' }
+          if ($run.status -cne 'completed' -or $run.conclusion -cne 'success' -or
+              $run.path -cne '.github/workflows/windows-gui-packages.yml' -or
+              $run.head_sha -cne $env:PACKAGE_SOURCE_SHA -or
+              $run.repository.full_name -cne $env:GITHUB_REPOSITORY) {
+            throw 'Package run does not match the successful expected workflow and exact source'
+          }
+          $metadata = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:PACKAGE_RUN/artifacts?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read package artifact metadata' }
+          $matches = @($metadata.artifacts | Where-Object { $_.name -ceq "windows-packages-$env:VERSION" })
+          if ($matches.Count -ne 1 -or $matches[0].expired -or
+              $matches[0].workflow_run.id -ne [long]$env:PACKAGE_RUN -or
+              $matches[0].workflow_run.head_sha -cne $env:PACKAGE_SOURCE_SHA -or
+              $matches[0].digest -notmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'Expected one unexpired versioned package artifact from the exact run and source'
+          }
+          $asset = $matches[0]
+          New-Item -ItemType Directory -Force artifact | Out-Null
+          $archive = [IO.Path]::GetFullPath('artifact/windows-ci-packages.zip')
+          Invoke-WebRequest $asset.archive_download_url -OutFile $archive -Headers @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GH_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $digest = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($asset.digest -cne "sha256:$digest" -or (Get-Item -LiteralPath $archive).Length -ne $asset.size_in_bytes) {
+            throw 'Downloaded CI package archive does not match GitHub artifact digest and size'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath artifact/ci-packages
+          $evidence = @()
+          foreach ($name in @("Biorouter-win32-x64-$env:VERSION.zip", "Biorouter-Setup-$env:VERSION.exe")) {
+            $files = @(Get-ChildItem -LiteralPath artifact/ci-packages -File -Recurse |
+              Where-Object { $_.Name -ceq $name })
+            if ($files.Count -ne 1) { throw "CI package artifact must contain exactly one $name" }
+            $path = [IO.Path]::GetFullPath("artifact/$name")
+            Copy-Item -LiteralPath $files[0].FullName -Destination $path
+            $fileDigest = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            $evidence += @{ name = $name; path = $path; digest = "sha256:$fileDigest";
+              size = (Get-Item -LiteralPath $path).Length; digest_source = 'authenticated CI artifact archive';
+              artifact_id = $asset.id; artifact_digest = $asset.digest; package_run = $run.id;
+              package_source_sha = $run.head_sha; workflow_source = $env:GITHUB_SHA; tag = "v$env:VERSION" }
+          }
+          $evidence | ConvertTo-Json -Depth 5 | Set-Content artifact/windows-release-assets.json
+          @{ version = $env:VERSION; package_run = $run.id; package_run_url = $run.html_url;
+            package_source_sha = $run.head_sha; package_workflow = $run.path; artifact_id = $asset.id;
+            artifact_name = $asset.name; artifact_digest = $asset.digest; archive_sha256 = $digest;
+            archive_size = (Get-Item -LiteralPath $archive).Length; workflow_source = $env:GITHUB_SHA } |
+            ConvertTo-Json -Depth 4 | Set-Content artifact/windows-ci-package-evidence.json
           Expand-Archive "artifact/Biorouter-win32-x64-$env:VERSION.zip" artifact/unpacked
 
       - name: Install Setup.exe and run the installed application
@@ -172,6 +249,7 @@ jobs:
           name: release-windows-installer-runtime
           path: |
             artifact/windows-release-assets.json
+            artifact/windows-ci-package-evidence.json
             artifact/installed/
             artifact/normal-zip/
           if-no-files-found: warn

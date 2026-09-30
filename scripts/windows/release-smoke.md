@@ -45,6 +45,17 @@ contributes to guarded development-only automation; it does not itself select
 the per-window fallback. The existing Playwright installer check and this
 normal startup check are separate evidence.
 
+The workflow can run before draft upload by passing `windows_package_run` and
+`package_source_sha`. This route accepts only a successful completed
+`windows-gui-packages.yml` run at that exact source, the one unexpired
+`windows-packages-<version>` artifact, and a download matching GitHub's outer
+artifact SHA-256 and size. It derives the inner ZIP/Setup hashes only after
+verifying that authenticated archive and records the run/source/archive and
+inner-file evidence separately. Both routes invoke the same installed and
+normal helpers. CI package acceptance does not establish release publication or
+substitute for either fresh original-source draft smoke or the supplemental
+draft-asset normal run.
+
 This supplemental test branch starts at application source
 `c0aed55e9e54f646c52d3dd073a7c5315669aad6`. It changes release acceptance only;
 no application code, version or packaged bytes change. Its workflow source SHA
