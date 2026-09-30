@@ -4,7 +4,8 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   build: {
     rollupOptions: {
-      external: ['node-pty'],
+      // Keep ws's optional native requires inside its own try/catch fallback.
+      external: ['node-pty', 'bufferutil', 'utf-8-validate'],
     },
   },
 });

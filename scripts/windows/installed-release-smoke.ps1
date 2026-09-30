@@ -29,7 +29,7 @@ foreach ($name in $changedEnvironment) {
     $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 $result = [ordered]@{ version = $Version; passed = $false; assets = @(); installed = $installed;
-    files = @(); cli = $false; daemon = $false; desktop = $false; cleanup = $false }
+    files = @(); excludedZipMetadata = @(); cli = $false; daemon = $false; desktop = $false; cleanup = $false }
 
 function Update-OwnedProcesses {
     $processes = @(Get-CimInstance Win32_Process)
@@ -92,7 +92,7 @@ function Stop-OwnedProcess {
 }
 
 try {
-    New-Item -ItemType Directory -Path $local, (Join-Path $root 'roaming') -Force | Out-Null
+    New-Item -ItemType Directory -Path $local, (Join-Path $root 'roaming'), (Join-Path $root 'electron') -Force | Out-Null
     $result.assets = @(Get-Content -LiteralPath $AssetEvidence -Raw | ConvertFrom-Json)
     if ($result.assets.Count -ne 2) { throw 'Expected authenticated ZIP and Setup asset evidence' }
     foreach ($asset in $result.assets) {
@@ -128,10 +128,29 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $installed 'Biorouter.exe'))) {
         throw "Setup did not install app-$Version"
     }
+    $packages = @(Get-ChildItem -LiteralPath (Join-Path $local 'biorouter_app/packages') -File -Filter '*-full.nupkg')
+    if ($packages.Count -ne 1) { throw 'Expected the single full NuGet package installed by Setup' }
+    $packageEntries = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $packageArchive = [IO.Compression.ZipFile]::OpenRead($packages[0].FullName)
+    try {
+        foreach ($entry in $packageArchive.Entries) {
+            $packageEntries.Add($entry.FullName.Replace('\', '/')) | Out-Null
+        }
+    } finally {
+        $packageArchive.Dispose()
+    }
+    $result.installedPackageSha256 = (Get-FileHash -LiteralPath $packages[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     $files = @(Get-ChildItem -LiteralPath $ZipAppDirectory -File -Recurse)
     if ($files.Count -eq 0) { throw 'ZIP reference tree is empty' }
     foreach ($file in $files) {
         $relative = [IO.Path]::GetRelativePath($ZipAppDirectory, $file.FullName)
+        # electron-winstaller's NuSpec omits these top-level metadata files, not runtime payloads.
+        if ($relative -cin @('LICENSES.chromium.html', 'version') -and
+            -not $packageEntries.Contains("lib/net45/$relative")) {
+            $result.excludedZipMetadata += @{ path = $relative; reason = 'Not included by the NuSpec template';
+                sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+            continue
+        }
         $destination = Join-Path $installed $relative
         if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
             throw "Installer omitted ZIP file: $relative"
@@ -198,14 +217,18 @@ try {
         $desktop.Refresh()
         $children = @($owned.Values | Where-Object { $_.ExecutablePath -eq $daemon -and
             $_.ProcessId -ne $daemonProcess.Id -and (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue) })
-        $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-            Where-Object { $_.OwningProcess -in @($children.ProcessId) })
+        $childPids = @($children | ForEach-Object { $_.ProcessId })
+        $listeners = @()
+        if ($childPids.Count -gt 0) {
+            $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $_.OwningProcess -in $childPids })
+        }
         try {
             $pages = @(Invoke-RestMethod "http://127.0.0.1:$env:PLAYWRIGHT_CDP_PORT/json/list" -TimeoutSec 2)
             $renderer = @($pages | Where-Object { $_.type -eq 'page' -and $_.url -like 'file:*' })
             if ($desktop.MainWindowHandle -ne 0 -and $listeners.Count -gt 0 -and $renderer.Count -gt 0) {
                 $ready = $true
-                $result.desktopDaemonPids = @($children.ProcessId)
+                $result.desktopDaemonPids = $childPids
                 break
             }
         } catch {}
@@ -226,13 +249,6 @@ try {
         foreach ($identity in @($owned.Values | Sort-Object CreationDate -Descending)) {
             Stop-OwnedProcess -Identity $identity
         }
-        foreach ($identity in $owned.Values) {
-            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($identity.ProcessId)"
-            if ($current -and $current.CreationDate -eq $identity.CreationDate -and
-                $current.ExecutablePath -eq $identity.ExecutablePath) {
-                throw 'An owned process remained after the installer cleanup'
-            }
-        }
         Start-Sleep -Seconds 2
         $remaining = @(Get-CimInstance Win32_Process | Where-Object {
             $identity = $owned[[string]$_.ProcessId]
@@ -247,6 +263,14 @@ try {
         Update-OwnedProcesses
         foreach ($identity in @($owned.Values | Sort-Object CreationDate -Descending)) {
             Stop-OwnedProcess -Identity $identity
+        }
+        Start-Sleep -Seconds 2
+        foreach ($identity in $owned.Values) {
+            $current = Get-CimInstance Win32_Process -Filter "ProcessId=$($identity.ProcessId)"
+            if ($current -and $current.CreationDate -eq $identity.CreationDate -and
+                $current.ExecutablePath -eq $identity.ExecutablePath) {
+                throw 'An owned process remained after the installer cleanup'
+            }
         }
         $result.cleanup = $true
     } catch {
