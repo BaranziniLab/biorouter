@@ -15,13 +15,26 @@ permissions:
 jobs:
   windows-runtime:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.8'
           cache: false
-      - name: Download Windows artifact from the release
+      - name: Parse the installed application smoke helper
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$env:GITHUB_WORKSPACE/scripts/windows/installed-release-smoke.ps1",
+            [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            throw "Installer smoke helper has PowerShell syntax errors"
+          }
+      - name: Download Windows ZIP and installer from the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -29,8 +42,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifact | Out-Null
           $tag = "v$env:VERSION"
-          $assetName = "Biorouter-win32-x64-$env:VERSION.zip"
           $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not read release metadata" }
           # The draft is what the publish gate asks about, so it wins. A
           # PUBLISHED release of the same tag is accepted too, so this workflow
           # can be re-run after publication — which is how the port-release step
@@ -46,19 +59,45 @@ jobs:
           }
 
           $assets = gh api "repos/$env:GITHUB_REPOSITORY/releases/$($found[0].id)/assets?per_page=100" | ConvertFrom-Json
-          $assetMatches = @($assets | Where-Object { $_.name -eq $assetName })
-          if ($assetMatches.Count -ne 1) {
-            throw "Expected one $assetName asset, found $($assetMatches.Count)"
-          }
-
-          $zip = "artifact/$assetName"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read release assets" }
           $headers = @{
             Accept = "application/octet-stream"
             Authorization = "Bearer $env:GH_TOKEN"
             "X-GitHub-Api-Version" = "2022-11-28"
           }
-          Invoke-WebRequest $assetMatches[0].url -Headers $headers -OutFile $zip
-          Expand-Archive $zip artifact/unpacked
+          $evidence = @()
+          foreach ($assetName in @("Biorouter-win32-x64-$env:VERSION.zip", "Biorouter-Setup-$env:VERSION.exe")) {
+            $assetMatches = @($assets | Where-Object { $_.name -ceq $assetName })
+            if ($assetMatches.Count -ne 1) {
+              throw "Expected one $assetName asset, found $($assetMatches.Count)"
+            }
+            $asset = $assetMatches[0]
+            $path = [IO.Path]::GetFullPath("artifact/$assetName")
+            Invoke-WebRequest $asset.url -Headers $headers -OutFile $path
+            $digest = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset.digest -cne "sha256:$digest" -or (Get-Item $path).Length -ne $asset.size) {
+              throw "Downloaded $assetName does not match GitHub asset provenance"
+            }
+            $evidence += @{ name = $assetName; id = $asset.id; digest = $asset.digest;
+              size = $asset.size; updated_at = $asset.updated_at; path = $path;
+              release_id = $found[0].id; tag = $tag; workflow_source = $env:GITHUB_SHA }
+          }
+          $evidence | ConvertTo-Json -Depth 4 | Set-Content artifact/windows-release-assets.json
+          Expand-Archive "artifact/Biorouter-win32-x64-$env:VERSION.zip" artifact/unpacked
+
+      - name: Install Setup.exe and run the installed application
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $desktopMatches = @(Get-ChildItem -LiteralPath artifact/unpacked -File -Recurse |
+            Where-Object { $_.Name -ceq "Biorouter.exe" })
+          if ($desktopMatches.Count -ne 1) { throw "Expected exactly one ZIP desktop executable" }
+          ./scripts/windows/installed-release-smoke.ps1 `
+            -Setup "artifact/Biorouter-Setup-$env:VERSION.exe" `
+            -ZipAppDirectory $desktopMatches[0].Directory.FullName `
+            -Version $env:VERSION -AssetEvidence artifact/windows-release-assets.json `
+            -Report artifact/installed/windows-installer-smoke.json
 
       - name: Run packaged CLI, daemon, and desktop
         shell: pwsh
@@ -124,6 +163,15 @@ jobs:
         with:
           name: release-windows-copilot-console
           path: artifact/windows-packaged-console.json
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-windows-installer-runtime
+          path: |
+            artifact/windows-release-assets.json
+            artifact/installed/
           if-no-files-found: warn
 
       # ⚠ Proven able to fail, and repeatable: dispatch this workflow at a

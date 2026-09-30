@@ -519,11 +519,26 @@ impl Connection {
         Self::default()
     }
 }
+struct WriterLock {
+    file: File,
+    owner_pid: libc::pid_t,
+}
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        // A forked child can retain the open file description until exec, even with CLOEXEC.
+        // Releasing the owner's lock explicitly prevents that child from delaying a restart.
+        if unsafe { libc::getpid() } == self.owner_pid {
+            unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
+
 pub struct Broker {
     state: State,
     root: PathBuf,
     journal: File,
-    _lock: File,
+    _lock: WriterLock,
     checksum: String,
     /// Set once a journal write or sync failed: the broker then saves nothing more until it is
     /// restarted (fail-stop), and says so in `hello`, `status` and every refused change.
@@ -1265,6 +1280,10 @@ impl Broker {
             unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
             "writer_active: another broker holds this workspace"
         );
+        let lock = WriterLock {
+            file: lock,
+            owner_pid: unsafe { libc::getpid() },
+        };
         let journal = private_file(&root.join("journal.jsonl"), true)?;
         ensure!(
             journal.metadata()?.len() <= 1024 * 1024 * 1024,
@@ -6247,6 +6266,55 @@ mod runtime_tests {
         let path = Path::new("/tmp").join(format!("crt-u-{suffix}"));
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         path
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dropping_an_inherited_writer_lock_does_not_unlock_the_live_parent() {
+        let root = short_root();
+        let path = root.join("writer.lock");
+        let file = private_file(&path, false).unwrap();
+        assert_eq!(
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let lock = WriterLock {
+            file,
+            owner_pid: unsafe { libc::getpid() },
+        };
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            // Drop only the lock/file, whose destructor uses getpid/flock/close; no heap state.
+            drop(lock);
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(child, &mut status, 0) };
+            if waited == child {
+                break;
+            }
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EINTR)
+            );
+        }
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+        let other = private_file(&path, false).unwrap();
+        assert_ne!(
+            unsafe { libc::flock(other.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0,
+            "an inherited child destructor must leave the live parent fenced"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        drop(other);
+        drop(lock);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

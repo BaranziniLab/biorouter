@@ -86,6 +86,36 @@ parameters:
     default: "python3"
     description: "Python interpreter for the office phase; may point to a prepared virtual environment"
 
+  - key: crew_cli_path
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Absolute native CLI path verified by the Crew test harness"
+
+  - key: crew_standalone_checker
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Absolute tracked scripts/smoke-crew-standalone.py path supplied by the test harness"
+
+  - key: crew_standalone_profile_root
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Opaque harness-owned provider-only profile root, prepared outside model tools; no Crew state or other extensions"
+
+  - key: crew_standalone_provider
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Already-approved test provider name supplied by the harness, not inferred by the agent"
+
+  - key: crew_standalone_model
+    input_type: string
+    requirement: optional
+    default: ""
+    description: "Already-approved test model supplied by the harness"
+
 instructions: |
   You are testing yourself - a running BioRouter instance validating its own capabilities through meta-testing.
   This is true first-person integration testing where you use your own tools to test your own functionality.
@@ -532,8 +562,12 @@ prompt: |
   This phase is selected explicitly with `test_phases=crew` (and is included by
   `test_phases=all`). It is a headless Crew contract check. Use
   only phase-owned state rooted under `{{ workspace_dir }}` for model-driven
-  tool actions. The test harness may initialize the already-authorized Versa
-  GPT-5.5 provider from the dedicated synthetic Alice provider host, without
+  shell and file actions. Before the workflow starts, the test harness may prepare
+  an independent provider-only profile from the authorized selective credential
+  projector and supply its opaque root plus approved provider/model and absolute
+  CLI path as the `crew_standalone_*` and `crew_cli_path` parameters. That profile
+  contains no Crew connection, grant, SSH configuration, database or other extension.
+  The agent must not create or inspect it. Use this host in place, without
   copying or exporting its API key, saved user-action key, private key, SSH key,
   keyring entry, saved credential, or profile files into this phase. Keep that
   provider host and all secret-bearing files outside model tools and audit logs.
@@ -541,25 +575,69 @@ prompt: |
   connection, select or mutate a provider, create a team, create a connection,
   send an invitation, or write to a live workspace.
 
-  1. For every model-driven child CLI command, set
+  1. For the help/version and `--no-start` child CLI commands, set
      `BIOROUTER_PATH_ROOT` to a fresh root below `{{ workspace_dir }}` and set
      `BIOROUTER_DISABLE_KEYRING=1`; do not let child commands inherit the
      provider host's profile or secret-bearing environment. Snapshot only
      phase-owned files below that root and phase-owned process/socket resources
-     created by this run. Do not inspect the user's normal home, SSH directory,
+     created by this run. Before launching commands, record the harness PID and
+     baseline PID/PPID/executable names without process environments or secret-bearing
+     arguments. Track exact child PIDs and their descendants during execution.
+     Do not inspect the user's normal home, SSH directory,
      keyring, provider configuration, or resources owned by another task.
-  2. With no Crew grant or bound connection, make exactly one read-only built-in
-     MCP request through `crew__request` from a new standalone, ungranted test
-     conversation before attempting any shell or HTTP command. Use exactly these
-     synthetic arguments, omitting `connection_id` and any `--shared-daemon`
-     or saved-connection discovery:
+  2. Run the tracked deterministic standalone checker supplied by the harness.
+     Do not write a replacement parser, reimplement its process audit, or use the
+     workflow's current conversation as a substitute for the standalone context.
+     {% if crew_cli_path != "" and crew_standalone_checker != "" and crew_standalone_profile_root != "" and crew_standalone_provider != "" and crew_standalone_model != "" %}
+     Execute `python3 {{ crew_standalone_checker }} --cli {{ crew_cli_path }}
+     --profile-root {{ crew_standalone_profile_root }} --provider {{ crew_standalone_provider }}
+     --model {{ crew_standalone_model }} --workdir <fresh absolute directory below {{ workspace_dir }}>`.
+     Pass arguments separately without shell interpolation; the workdir must not
+     exist before the checker runs. Record its exit code and its nonsecret JSON
+     verdict. Require exit 0 and `result=PASS`, `request_count=1`, `exact_arguments=true`,
+     `response_id_matches=true`, `exact_denial=true`, `channel_content_returned=false`,
+     `local_planning_calls<=1`, `cli_exit=0`, `listener_positive_control=true`, `live_listener_samples>0`,
+     `ordinary_run_baseline=true`,
+     `ordinary_bridge_listeners=1`, `unexpected_tcp_listeners=0`,
+     `phase_daemon_or_ssh=false`, `phase_runtime_created=false`,
+     `provider_files_unchanged=true`, and `baseline_processes_untouched=true`.
+     {% else %}
+     The harness did not supply all five handles. Report the standalone assertions
+     NOT OBSERVABLE without inventing a provider, reading the normal profile or
+     copying credentials. Other isolated help/no-start assertions can still run.
+     {% endif %}
+     The checker launches the actual native CLI with `--no-session --with-builtin crew`,
+     the approved provider/model, `--max-turns 2 --quiet --output-format stream-json`,
+     a clean environment and fresh phase-owned HOME/workdir. It uses the opaque
+     provider-only root in place, never exposing or copying its config or secrets.
+     Exactly one synthetic `messages.history` request omits `connection_id`:
      `{"method":"messages.history","params":{"channel_id":"00000000-0000-4000-8000-0000000002e5","limit":1}}`.
-     Require an explicit denial/refusal before any message content is returned.
-     A success, returned content, a grant attempt, or a retry is a failure. Do
-     not call `crew__connections` to discover real saved connections. Do not
-     emulate this MCP call with `curl`, an invented localhost endpoint, a
-     daemon, or any other shell command; only the actual `crew__request` tool
-     result is evidence.
+     It pairs the structured tool request/response by ID and accepts either a direct
+     `crew__request` or the runtime's `code_execution__execute_code` transport with
+     exactly one `crew/request` graph node and matching `biorouter/tool-calls` metadata.
+     At most one preceding local `todo__todo_write` may record a bounded synthetic
+     checklist and return only its exact local item-count summary. No other tool,
+     grant, connection action or Crew retry is permitted. Arguments must match
+     exactly and the only returned Crew content must be the exact
+     no-channel denial, optionally inside the normal outer `tool-output` wrapper:
+     `This chat isn't connected to a Crew channel. To connect it, type /crew in this chat.`
+     The code-execution `Result: ` transport prefix must decode as that exact JSON
+     string or a standard MCP object with only `isError=false` and one exact-denial
+     text content item. Known null optional MCP metadata/structured-content fields
+     add no content; nonempty structured payloads and metadata or other fields fail. Extra Crew/other calls, unmatched responses,
+     message/resource/file payloads or additional text fail. The checker first proves its observer sees a checker-owned loopback
+     listener and closes that control before starting the CLI. It runs a no-Crew
+     ordinary native baseline and samples structured listener rows
+     on exact live child PIDs. It permits only the single CLI-owned IPv4 loopback
+     tool bridge that ordinary `run` also starts, and rejects any additional or
+     nonloopback listener, child daemon/SSH process or new phase runtime/socket.
+     It verifies the provider files are unchanged. Unrelated host processes are outside its ownership.
+     A failed or unavailable checker is FAIL or NOT OBSERVABLE as indicated, never
+     a pass inferred from model prose. The checker keeps private 0600 native traces
+     below its 0700 phase directory for external QA. Do not read or copy those raw
+     traces with model tools; only the fixed nonsecret verdict belongs in the report.
+     Do not discover connections, retry the
+     request, create a grant, invoke a daemon, emulate the refusal or alter a report.
   3. After that single request, resolve the locally installed native binaries
      without building or starting anything. Run `<biorouter> --version`,
      `<biorouter> crew --help`, `<biorouterd> --version`,
@@ -585,6 +663,14 @@ prompt: |
      scrub secrets and provider/profile paths from logs. If an assertion cannot
      be observed without human proof or credentials, mark it NOT OBSERVABLE
      rather than PASS.
+     Attribute processes and listeners using exact tracked phase child PIDs,
+     their parent lineage, and newly created runtime descriptors/socket paths under
+     the fresh phase roots. A pre-existing unrelated daemon is not phase-owned;
+     leave it untouched. Do not match an entire shell command line for the words
+     "biorouterd" or the workspace path: the observer's own command can contain both.
+     Compare before/after snapshots and require no phase-created daemon/runtime
+     descriptor/socket and no tracked child listener. Missing ownership evidence
+     is NOT OBSERVABLE, never a broad match or an assumed pass.
   5. Log the exact commands, exit codes, denial result, and before/after
      mutation audit to `{{ workspace_dir }}/phase2e_crew.md`. Keep all test
      inputs synthetic and remove only artifacts created by this phase when
