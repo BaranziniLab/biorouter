@@ -11,4 +11,4 @@ node landing/scripts/check-docs-privacy.mjs
 
 The assembler writes `landing/docs.html`. Commit both the sources and the generated page. It refuses missing fragments and mismatched page roots.
 
-`{{LATEST_VERSION}}` is filled from the published fallback in `landing/assets/landing-site-content.md`. `scripts/release.sh landing <version>` updates that fallback and the generated page, so reassembly preserves a release update. Release notes marked “Next release” need a content review when those features ship.
+`{{LATEST_VERSION}}` is filled from the published fallback in `landing/assets/landing-site-content.md`. `scripts/release.sh landing <version>` updates that fallback and reassembles the generated page from these sources. Release notes marked “Next release” need a content review when those features ship.
