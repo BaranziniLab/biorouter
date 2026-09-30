@@ -143,6 +143,7 @@
     root.innerHTML =
       '<div class="wall-stage" aria-hidden="true">' + PUBLIC + PRIVATE + WALL + '</div>' +
       '<input class="wall-input" type="range" min="0" max="100" value="50" step="1" ' +
+      'aria-valuemin="' + MIN + '" aria-valuemax="' + MAX + '" ' +
       'aria-label="Move the wall between the private chat and the public chat">';
 
     var q = function (s) { return root.querySelector(s); };
