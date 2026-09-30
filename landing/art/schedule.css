@@ -8,7 +8,8 @@
   position: absolute; inset: 0;
   container-type: inline-size;
   display: flex; flex-direction: column; justify-content: space-between;
-  padding: clamp(14px, 5.4cqi, 20px) clamp(14px, 5.6cqi, 22px);
+  /* schedule.js sets --sch-pad-y to share the free height (see fit()). */
+  padding: var(--sch-pad-y, clamp(14px, 5.4cqi, 20px)) clamp(14px, 5.6cqi, 22px);
   font-family: var(--font);
   color: var(--ink);
   line-height: 1;
@@ -31,8 +32,10 @@
 [data-art="schedule"] .sch-last {
   grid-column: 2; margin-top: -2px; font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
 }
+/* Mono, as the app sets it. A mono space is a full cell, so "Sep 28" would read
+   as two spaces; word-spacing closes it to an ordinary word space. */
 [data-art="schedule"] .sch-last-date {
-  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-family: var(--mono); font-variant-numeric: tabular-nums; word-spacing: -0.3em;
   display: inline-block; transition: opacity var(--dur-menu) var(--ease);
 }
 [data-art="schedule"] .sch-last.is-swap .sch-last-date { opacity: 0; }
@@ -75,10 +78,11 @@
   width: 5px; height: 5px; margin: -2.5px 0 0 -2.5px;
   border-radius: 50%; background: var(--ghost);
 }
-/* Monday: the day the job is set for. It fills when the run starts. */
+/* Monday: the day the job is set for. Its ring is coral while it waits, and it
+   fills when the run starts. */
 [data-art="schedule"] .sch-dot.is-on {
   width: 10px; height: 10px; margin: -5px 0 0 -5px;
-  background: var(--paper); border: 1.5px solid var(--muted);
+  background: var(--paper); border: 1.5px solid var(--coral-bar);
   transition: background var(--dur-med) var(--ease), border-color var(--dur-med) var(--ease);
 }
 [data-art="schedule"] .sch.fired .sch-dot.is-on { background: var(--coral-bar); border-color: var(--coral-bar); }
@@ -109,8 +113,8 @@
 }
 [data-art="schedule"] .sch-run.is-new::before { opacity: 1; }
 [data-art="schedule"] .sch-run.is-in { opacity: 0; transform: translateY(-6px); }
-/* The oldest row fades where it stands before the others move (schedule.js). */
-[data-art="schedule"] .sch-run.is-out { opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+/* The oldest row fades quickly while it moves down out of the list (schedule.js). */
+[data-art="schedule"] .sch-run.is-out { opacity: 0; transition: transform var(--sch-move) var(--ease), opacity var(--dur-fast) var(--ease); }
 [data-art="schedule"] .sch-run svg { width: 16px; height: 16px; flex: none; color: var(--subtle); }
 [data-art="schedule"] .sch-run-name {
   flex: 1; min-width: 0; font-size: 13px; line-height: 18px; color: var(--ink);
@@ -118,7 +122,7 @@
 }
 [data-art="schedule"] .sch-run-date {
   flex: none; margin-left: 2px; font-family: var(--mono); font-size: 12px; line-height: 16px; color: var(--muted);
-  font-variant-numeric: tabular-nums;
+  font-variant-numeric: tabular-nums; word-spacing: -0.3em;
 }
 /* Narrow tiles: schedule.js steps the run name down until it fits whole, and the
    date steps with it so the name stays the heavier of the two. */
@@ -128,13 +132,13 @@
 [data-art="schedule"] .sch.fit-xs .sch-run-date { font-size: 11px; }
 [data-art="schedule"] .sch.fit-xs .sch-run-date { margin-left: 0; }
 [data-art="schedule"] .sch.fit-xs { --sch-row: 26px; padding-left: 13px; padding-right: 13px; }
-/* Below the listed tile sizes (a 2-column grid just above 600px): tighten the rhythm. */
+/* Content under 270px wide (tiles under about 316px: 1920, 1024 and the 2-column
+   grid just above 600px): tighten the rhythm inside each group. */
 @container (max-width: 270px) {
   [data-art="schedule"] .sch-job { row-gap: 4px; }
   [data-art="schedule"] .sch-week { gap: 6px; }
   [data-art="schedule"] .sch-caps { margin-bottom: 2px; }
 }
-/* Short tiles: schedule.js keeps at least 12px between the three groups, first by
-   dropping the Last run line, then by trimming the padding. */
+/* Short tiles: schedule.js drops the Last run line when the even share of the free
+   height would fall under 14px. */
 [data-art="schedule"] .sch.fit-short .sch-last { display: none; }
-[data-art="schedule"] .sch.fit-tight { padding-top: var(--sch-pad-y); padding-bottom: var(--sch-pad-y); }

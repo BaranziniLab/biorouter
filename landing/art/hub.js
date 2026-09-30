@@ -203,7 +203,7 @@
     }
 
     /* ── Layout ───────────────────────────────────────────────── */
-    var geo = null, logGap = 14;
+    var geo = null;
     function box(e) {
       var r = e.getBoundingClientRect(), R = root.getBoundingClientRect();
       return { x: r.left - R.left - root.clientLeft, y: r.top - R.top - root.clientTop, w: r.width, h: r.height };
@@ -220,15 +220,20 @@
     // passed the transcript's top edge fades out as one block, so no half
     // paragraph is ever left at the top. `dy` is how far the stack still sits
     // below its resting place while a scroll runs; units are judged where
-    // they will come to rest, so they fade as the scroll starts.
+    // they will come to rest, so they fade before the scroll moves them.
+    // Returns how many units newly left, so the scroll can wait for them.
     function clipLog(dy) {
       var L = log.getBoundingClientRect(), R = root.getBoundingClientRect();
       var edge = Math.max(L.top - 1, R.top + 2);
       var units = stack.querySelectorAll('.hub-user, .hub-reply');
+      var left = 0;
       for (var i = 0; i < units.length; i++) {
         var r = units[i].getBoundingClientRect();
-        units[i].classList.toggle('gone', r.top - (dy || 0) < edge);
+        var gone = r.top - (dy || 0) < edge;
+        if (gone && !units[i].classList.contains('gone')) left++;
+        units[i].classList.toggle('gone', gone);
       }
+      return left;
     }
 
     function layout() {
@@ -290,6 +295,11 @@
       // The transcript ends far enough above the card that the open menu
       // keeps a clear 14px from the last line of the chat.
       function gapFor(ch) { return Math.max(14, pickH + 5 + 14 - ch); }
+      // The transcript's box runs on down to just above the card, and the
+      // gap below its last line is padding, so a message that was just sent
+      // rises out of the composer instead of being cut by an unseen edge.
+      var EDGE = 8;
+      function setTail(G) { hub.style.setProperty('--hub-tail', Math.max(0, Math.round(G) - EDGE) + 'px'); }
 
       if (!narrow) {
         pad = clamp(Math.round(w * 0.04), 24, 44);
@@ -323,7 +333,8 @@
         cardY = cy - half;
         place(card, chatX, cardY, chatW, cardH);
         place(controls, chatX, cardY + cardH + 4);
-        place(log, chatX, pad, chatW, cardY - G - pad);
+        setTail(G);
+        place(log, chatX, pad, chatW, cardY - EDGE - pad);
         hub.style.setProperty('--hub-fade', '26px');
         markY = cy - markS / 2;
         place(mark, markX, markY, markS, markS);
@@ -381,7 +392,8 @@
         g1 += extra * 0.2; g2 += extra * 0.25;
         // The top fade dims only history, never the current exchange.
         hub.style.setProperty('--hub-fade', (two ? 18 : clamp(Math.floor(logH - tm.one), 4, 18)) + 'px');
-        place(log, chatX, pad, chatW, logH);
+        setTail(G);
+        place(log, chatX, pad, chatW, logH + G - EDGE);
         cardY = pad + logH + G;
         place(card, chatX, cardY, chatW, cardH);
         place(controls, chatX, cardY + cardH + 4);
@@ -391,7 +403,6 @@
         place(cat, catX, markY + markS + g2);
       }
       placePick();
-      logGap = G;
 
       // Connectors, measured from what was placed
       svg.setAttribute('width', w); svg.setAttribute('height', h);
@@ -547,8 +558,9 @@
       }).then(function () { pulsePath.style.opacity = '0'; });
     }
 
-    // The sent message joins the chat; everything above scrolls up, and a
-    // message that will pass the top edge fades out whole as the scroll starts.
+    // The sent message joins the chat and everything above scrolls up. A
+    // message that would pass the top edge fades out whole first (125 ms),
+    // then the scroll runs, so nothing is still showing as it leaves.
     function addTurn(t) {
       var h0 = stack.offsetHeight;
       var nt = makeTurn(t, false);
@@ -556,9 +568,12 @@
       stack.appendChild(nt);
       var d = stack.offsetHeight - h0;
       stack.style.transform = 'translateY(' + d + 'px)';
-      clipLog(d);
-      return { turn: nt, done: tween(340, function (p) {
-        stack.style.transform = p < 1 ? 'translateY(' + f(d * (1 - easeOut(p))) + 'px)' : '';
+      var lead = clipLog(d) ? wait(125) : Promise.resolve();
+      return { turn: nt, done: lead.then(function () {
+        nt.classList.remove('enter');
+        return tween(340, function (p) {
+          stack.style.transform = p < 1 ? 'translateY(' + f(d * (1 - easeOut(p))) + 'px)' : '';
+        });
       }) };
     }
 
@@ -645,7 +660,7 @@
         if (i === 1) send.classList.add('armed');
         await wait(15); if (my !== alive) return;
       }
-      await wait(130); if (my !== alive) return;
+      await wait(110); if (my !== alive) return;
 
       // 3. Send. The composer clears and the message joins the chat.
       send.classList.add('press');
@@ -657,13 +672,10 @@
       await wait(110); if (my !== alive) return;
       typed.textContent = ''; typed.classList.remove('off');
       var added = addTurn(t);
-      added.turn.classList.remove('enter');
-      // The placeholder returns at once, unless the transcript sits so close
-      // above the card that the arriving message would still cross it.
-      var early = logGap >= 24;
-      if (early) ph.classList.remove('off');
+      // The placeholder returns at once: the transcript ends above the card,
+      // so the arriving message never crosses it.
+      ph.classList.remove('off');
       await added.done; if (my !== alive) return;
-      if (!early) ph.classList.remove('off');
 
       // 4. The pulse carries the turn through Biorouter to the chosen model.
       //    Its path stays lit, with the row, until the next choice.
@@ -679,7 +691,7 @@
         ws[j].classList.add('on');
         await wait(32); if (my !== alive) return;
       }
-      await wait(ti === TURNS.length - 1 ? 300 : 220);
+      await wait(220);
     }
 
     async function loop(my) {

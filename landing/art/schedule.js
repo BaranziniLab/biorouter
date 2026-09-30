@@ -15,8 +15,9 @@
   var DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   var VISIBLE = 2;
-  var MIN_GAP = 12; // the least space between the three groups, in px
-  var FADE = 125;   // the oldest row fades in place (--dur-fast) before the list moves
+  var MIN_EVEN = 14; // below this even share of the free height, drop the Last run line
+  var MIN_PAD = 12;  // the least vertical padding, in px
+  var CLEAR = 70;    // ms until the row leaving the top slot has cleared the new row's text
 
   // Lucide paths at the app's 1.5 stroke (components/icons/app-icons.tsx).
   var CLOCK = '<path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/>';
@@ -121,30 +122,36 @@
     }
 
     // Width: the run name is the one long string; step it down rather than cut it.
-    // Height: keep at least MIN_GAP between the job, the week and Recent chats. A
-    // short tile drops the Last run line first (the top chat carries the same
-    // date). If that is not enough, the free height is shared evenly between the
-    // padding and the two gaps, with the padding held between 12 and 20px.
+    // Height: the free height (everything the job, the week and Recent chats do
+    // not fill) goes to the top and bottom padding and the two gaps between the
+    // groups. The padding starts at the CSS value, P.
+    // - A gap narrower than P: share the free height evenly between padding and
+    //   gaps, so the middle is never tighter than the edges. If that even share is
+    //   under MIN_EVEN, drop the Last run line first (the top chat carries the same
+    //   date).
+    // - A gap wider than GMAX (a tall tile): hold the gaps at GMAX and give the
+    //   rest to the padding, so the three groups stay together, centred.
     function free() {
       var h = function (n) { return n.getBoundingClientRect().height; };
       return wrap.clientHeight - h(job) - h(week) - h(chats);
     }
-    function spare() {
-      var cs = getComputedStyle(wrap);
-      return (free() - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) / 2;
-    }
     function fit() {
-      wrap.classList.remove('fit-sm', 'fit-xs', 'fit-short', 'fit-tight');
+      wrap.classList.remove('fit-sm', 'fit-xs', 'fit-short');
+      wrap.style.removeProperty('--sch-pad-y');
       var n = list.querySelector('.sch-run-name');
       if (n) {
         var over = function () { return n.scrollWidth > n.clientWidth + 0.5; };
         if (over()) { wrap.classList.add('fit-sm'); if (over()) wrap.classList.add('fit-xs'); }
       }
-      if (spare() < MIN_GAP) wrap.classList.add('fit-short');
-      if (spare() < MIN_GAP) {
-        wrap.style.setProperty('--sch-pad-y', Math.max(12, Math.min(20, Math.floor(free() / 4))) + 'px');
-        wrap.classList.add('fit-tight');
-      }
+      var P = parseFloat(getComputedStyle(wrap).paddingTop);
+      if (free() / 4 < MIN_EVEN) wrap.classList.add('fit-short');
+      var f = free();
+      var gap = (f - 2 * P) / 2;
+      var gmax = Math.max(28, Math.round(wrap.clientHeight * 0.08));
+      var pad = P;
+      if (gap > gmax) pad = Math.floor((f - 2 * gmax) / 2);
+      else if (gap < P) pad = Math.max(MIN_PAD, Math.min(P, Math.floor(f / 4)));
+      if (pad !== P) wrap.style.setProperty('--sch-pad-y', pad + 'px');
     }
     if ('ResizeObserver' in window) new ResizeObserver(fit).observe(root);
 
@@ -161,7 +168,16 @@
 
     var timers = [];
     var active = false;
-    function at(ms, fn) { timers.push(setTimeout(function () { if (active) fn(); }, ms)); }
+    // Each id leaves the list when its timeout fires, so the list holds only the
+    // timeouts still pending and never grows across loops.
+    function at(ms, fn) {
+      var id = setTimeout(function () {
+        var k = timers.indexOf(id);
+        if (k >= 0) timers.splice(k, 1);
+        if (active) fn();
+      }, ms);
+      timers.push(id);
+    }
     function clear() { timers.forEach(clearTimeout); timers = []; }
 
     function rest() {
@@ -177,23 +193,23 @@
       var n = latest + 1;
       var rows = Array.prototype.slice.call(list.children);
       latest = n;
-      // The oldest row fades where it stands, so no half cut row is ever drawn at
-      // the list's lower edge. Then the rest move down and the new chat comes in.
+      // Every row moves down one slot in the same frame. The oldest leaves through
+      // the list's lower edge while it fades (--dur-fast), so it is almost clear
+      // before it reaches the edge, and the two rows move in step, so they never
+      // cross. The new chat waits CLEAR ms, until the row leaving the top slot is
+      // past its text, then fades in.
+      var fresh = runRow(n);
+      place(fresh, 0);
+      fresh.classList.add('is-in', 'is-new');
       rows.forEach(function (r) {
         r.classList.remove('is-new');
         if (r.__slot + 1 >= VISIBLE) r.classList.add('is-out');
+        place(r, r.__slot + 1);
       });
-      at(FADE, function () {
-        rows.forEach(function (r) { if (!r.classList.contains('is-out')) place(r, r.__slot + 1); });
-        var fresh = runRow(n);
-        place(fresh, 0);
-        fresh.classList.add('is-in', 'is-new');
-        list.insertBefore(fresh, list.firstChild);
-        // It arrives while the row below is still settling, clear of its text.
-        at(120, function () { fresh.classList.remove('is-in'); });
-        at(900, function () {
-          Array.prototype.forEach.call(list.querySelectorAll('.is-out'), function (r) { r.parentNode.removeChild(r); });
-        });
+      list.insertBefore(fresh, list.firstChild);
+      at(CLEAR, function () { fresh.classList.remove('is-in'); });
+      at(900, function () {
+        Array.prototype.forEach.call(list.querySelectorAll('.is-out'), function (r) { r.parentNode.removeChild(r); });
       });
     }
 

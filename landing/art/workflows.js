@@ -8,22 +8,20 @@
   var NS = 'http://www.w3.org/2000/svg';
 
   // Real schema keys (docs/workflows/workflow-schema-reference.md). Each entry
-  // is [className, text]; k = key, p = punctuation, v = value. title and
-  // description are required fields, and the prompt is what starts the run
-  // (without one the agent waits for input). The one parameter is declared
-  // and used, as validate_parameters_in_template requires. The extension is
-  // CDWAgent, a private UCSF data extension, and the provider is Llama Server,
-  // a private Local model, so the extension is allowed to it. With no model
-  // named it runs that provider's own default. The parameter and extension
-  // entries are shortened (input_type, requirement, type and the like are
-  // left out). The longest line is 32 characters, so every line fits every
-  // tile at 11px.
-  // A trailing flag gates a line by tile size (see workflows.css):
-  //   'desc'  the description, hidden only on tiles under 260px, which are
-  //           too short for eight lines
+  // is [className, text]; k = key, p = punctuation, v = value, c = comment.
+  // The prompt is what starts the run (without one the agent waits for
+  // input), and its one parameter is declared and used, as
+  // validate_parameters_in_template requires. The extension is CDWAgent, a
+  // private UCSF data extension, and the provider is Llama Server, a private
+  // Local model, so the extension is allowed to it. With no model named it
+  // runs that provider's own default.
+  // The file is an excerpt, and says so in a comment on its first line: the
+  // required description, and the parameter's and extension's other fields
+  // (input_type, requirement, type and the like) are left out, so the tile
+  // stays seven short lines. The longest line is 32 characters, so every
+  // line fits every tile at 11px.
   var LINES = [
-    [['k', 'title'], ['p', ': '], ['v', 'Statin cohort']],
-    [['k', 'description'], ['p', ': '], ['v', 'LDL by statin use'], 'desc'],
+    [['k', 'title'], ['p', ': '], ['v', 'Statin cohort'], ['c', '  # excerpt']],
     [['k', 'prompt'], ['p', ': '], ['v', 'Plot LDL in {{ '], ['v wf-tpl', 'cohort'], ['v', ' }}']],
     [['k', 'parameters'], ['p', ': [{'], ['k', 'key'], ['p', ': '], ['v', 'cohort'], ['p', '}]']],
     [['k', 'extensions'], ['p', ': [{'], ['k', 'name'], ['p', ': '], ['v', 'cdwagent'], ['p', '}]']],
@@ -92,10 +90,7 @@
     linesBox.appendChild(rail);
     var lines = LINES.map(function (parts) {
       var line = el('span', 'wf-line');
-      parts.forEach(function (p) {
-        if (typeof p === 'string') line.classList.add('wf-' + p);
-        else line.appendChild(el('span', p[0], p[1]));
-      });
+      parts.forEach(function (p) { line.appendChild(el('span', p[0], p[1])); });
       linesBox.appendChild(line);
       return line;
     });
@@ -151,7 +146,7 @@
     root.appendChild(stage);
 
     function cls(node, name, on) { node.classList.toggle(name, !!on); }
-    // The rail follows the line's own box, so hidden lines never leave a gap.
+    // The rail follows the line's own box.
     function setRail(line) { rail.style.transform = 'translateY(' + (line ? line.offsetTop : 0) + 'px)'; }
 
     // Instant resets. `still` suspends transitions for one frame.
@@ -196,19 +191,15 @@
     var LINE_MS = 420;
 
     // Write the file, one key at a time, with the rail beside the new line.
-    // Only the lines this tile size shows are written.
     function write(t0) {
-      var shownLines = lines.filter(function (l) { return l.offsetParent !== null; });
-      shownLines.forEach(function (line, i) {
+      lines.forEach(function (line, i) {
         at(t0 + i * LINE_MS, function () {
           setRail(line);
           if (i === 0) cls(rail, 'is-on', true);
           cls(line, 'is-in', true);
         });
       });
-      // Lines hidden at this size are marked written too, so a resize shows them.
-      lines.forEach(function (l) { if (shownLines.indexOf(l) < 0) cls(l, 'is-in', true); });
-      var end = t0 + (shownLines.length - 1) * LINE_MS + 380;
+      var end = t0 + (lines.length - 1) * LINE_MS + 380;
       at(end, function () { cls(rail, 'is-on', false); });
       return end + 520;
     }
@@ -265,7 +256,7 @@
     }
     function stop() {
       cancel();
-      cls(field, 'is-focus', false); // halts the caret's blink while off screen
+      cls(field, 'is-focus', false);
       cls(tpl, 'is-on', false);
     }
 

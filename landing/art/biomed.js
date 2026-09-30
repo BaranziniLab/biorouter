@@ -9,6 +9,8 @@
    source the call reaches (the target the extension's call tool is given), and
    `tool` records the real read only tool behind it; the results are
    illustrative. The footer counts are read from registry.json at runtime.
+   A tile shows its full name when every full name fits its tile, and the
+   short forms otherwise; the layout decides that once, so tiles never differ.
    PrimeKG is left out on purpose: twelve tiles make a clean grid, its own
    description says it has no graph query engine, and SPOKE covers knowledge
    graphs. */
@@ -26,15 +28,15 @@
       result: 'All 12 DOIs resolve.' },
     { glyph: 'ncbi', name: 'NCBI' },
     { glyph: 'variants', name: 'Clinical variants', short: 'Variants', tool: 'call_clinicalvariantagent_api', what: 'ClinVar',
-      result: 'rs80357914: 2 records, with review status.' },
+      result: 'rs80357914: records with review status.' },
     { glyph: 'cell', name: 'Single cell' },
     { glyph: 'depmap', name: 'DepMap' },
-    { glyph: 'protein', name: 'Protein structure', short: 'Protein' },
+    { glyph: 'protein', name: 'Protein structure', short: 'Structure' },
     { glyph: 'chem', name: 'Chemistry', tool: 'call_chemoinformaticsagent_api', what: 'PubChem',
       result: 'Caffeine: CID 2519, 194.19 g/mol.' },
     { glyph: 'imaging', name: 'Imaging' },
     { glyph: 'opentrons', name: 'Opentrons', tool: 'call_opentronsagent_api', what: 'Health check',
-      result: 'Robot online: name, model and API version.' }
+      result: 'Robot online, health OK.' }
   ];
 
   var FALLBACK = { extensions: 38, skills: 129 };
@@ -46,27 +48,31 @@
 
   function num(v) { return (+v.toFixed(2)).toString(); }
 
-  // The protein structure glyph: a chain that winds into three helical turns,
-  // seen a little from the side, laid on the diagonal and fitted to an 18 unit box.
-  // The pitch is open enough that the turns stay apart at 18px.
-  function helix() {
-    var turns = 3, p = 5, e = 3, R = 7, tail = 1.2, rot = -30 * Math.PI / 180, ext = 18, n = 240;
-    var T = turns * 2 * Math.PI, pts = [], i;
-    for (i = 0; i <= n; i++) {
-      var t = (T * i) / n;
-      pts.push([p * t / (2 * Math.PI) + e * Math.sin(t), R * Math.cos(t)]);
+  // The protein structure glyph: a beta strand as a ribbon diagram draws it, a
+  // flat band that bends twice and ends in an arrowhead. The band runs along
+  // one cubic curve, is 4 units wide, and is fitted to 18 units across.
+  function strand() {
+    var P = [[2.5, 18], [5, 1], [12, 25], [15, 6]], w = 2, a = 4.4, L = 4.4, n = 14;
+    function at(t) { var u = 1 - t; return [0, 1].map(function (k) { return u * u * u * P[0][k] + 3 * u * u * t * P[1][k] + 3 * u * t * t * P[2][k] + t * t * t * P[3][k]; }); }
+    function dir(t) {
+      var u = 1 - t, d = [0, 1].map(function (k) { return 3 * u * u * (P[1][k] - P[0][k]) + 6 * u * t * (P[2][k] - P[1][k]) + 3 * t * t * (P[3][k] - P[2][k]); });
+      var m = Math.hypot(d[0], d[1]); return [d[0] / m, d[1] / m];
     }
-    pts.unshift([pts[0][0] - tail, pts[0][1]]);
-    pts.push([pts[pts.length - 1][0] + tail, pts[pts.length - 1][1]]);
-    var c = Math.cos(rot), s = Math.sin(rot);
-    pts = pts.map(function (q) { return [q[0] * c - q[1] * s, q[0] * s + q[1] * c]; });
+    var left = [], right = [], i;
+    for (i = 0; i <= n; i++) {
+      var p = at(i / n), d = dir(i / n);
+      left.push([p[0] - d[1] * w, p[1] + d[0] * w]);
+      right.unshift([p[0] + d[1] * w, p[1] - d[0] * w]);
+    }
+    var e = at(1), u = dir(1);
+    var pts = left.concat([[e[0] - u[1] * a, e[1] + u[0] * a], [e[0] + u[0] * L, e[1] + u[1] * L], [e[0] + u[1] * a, e[1] - u[0] * a]], right);
     var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     pts.forEach(function (q) {
       minX = Math.min(minX, q[0]); maxX = Math.max(maxX, q[0]);
       minY = Math.min(minY, q[1]); maxY = Math.max(maxY, q[1]);
     });
-    var k = ext / Math.max(maxX - minX, maxY - minY), cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-    return '<path d="M' + pts.map(function (q) { return num(12 + (q[0] - cx) * k) + ' ' + num(12 + (q[1] - cy) * k); }).join('L') + '"/>';
+    var k = 18 / Math.max(maxX - minX, maxY - minY), cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    return '<path d="M' + pts.map(function (q) { return num(12 + (q[0] - cx) * k) + ' ' + num(12 + (q[1] - cy) * k); }).join('L') + 'Z"/>';
   }
 
   function spoke() {
@@ -90,7 +96,7 @@
     variants: '<path d="M3 19.5h18"/><path d="M8 19.5V10M16 19.5v-5"/><circle cx="8" cy="7.5" r="2.5"/><circle cx="16" cy="12" r="2.5"/>',
     cell: '<circle cx="12" cy="12" r="8.75"/><circle cx="13" cy="10.75" r="3"/><circle cx="7.9" cy="14.9" r="0.9"/><circle cx="15.9" cy="16.6" r="0.9"/>',
     depmap: '<path d="M3.5 20.5h17"/><path d="M6.5 20.5V5.5M10.5 20.5V9.5M14.5 20.5V13M18.5 20.5V16"/>',
-    protein: helix(),
+    protein: strand(),
     // A benzene ring (alternating double bonds) with one substituent.
     chem: '<path d="M10.9 3.8L18.69 8.3L18.69 17.3L10.9 21.8L3.11 17.3L3.11 8.3z"/><path d="M16.36 10.66L16.36 14.94M10.03 18.6L6.32 16.45M6.32 9.15L10.03 7"/><path d="M18.69 8.3l2.94-1.7"/>',
     imaging: '<path d="M3.5 8V5.5a2 2 0 0 1 2-2H8M16 3.5h2.5a2 2 0 0 1 2 2V8M20.5 16v2.5a2 2 0 0 1-2 2H16M8 20.5H5.5a2 2 0 0 1-2-2V16"/><circle cx="12" cy="12" r="4.5"/><circle cx="13.6" cy="10.6" r="1.3"/>',
@@ -115,7 +121,8 @@
     return n;
   }
 
-  // The BAAM affiliation badge: a padlock and "UCSF data", navy on its wash.
+  // The BAAM affiliation badge: a navy padlock (and "UCSF data" in wide tiles)
+  // on white with a hairline, the same in a tile and in the footer legend.
   // In a tile the words drop out when the tile is small; the footer then says them.
   function ucsfBadge(inTile) {
     var b = el('span', 'bm-badge');
@@ -207,6 +214,16 @@
 
     function later(fn, ms) { clearTimeout(timer); timer = setTimeout(fn, ms); }
 
+    // Full names when all of them fit their tiles, else every short form.
+    function fitNames() {
+      wrap.classList.remove('is-short');
+      var over = shorts.some(function (s) {
+        var full = s.previousSibling;
+        return full.getBoundingClientRect().width > s.parentNode.clientWidth - 1;
+      });
+      wrap.classList.toggle('is-short', over);
+    }
+
     // The name the tile shows right now, so the row and the tile agree.
     function visibleName(i) {
       var s = shorts[i];
@@ -221,6 +238,7 @@
     // One decision per layout: if any row, in either state, would not fit with
     // its source, every row drops the source, so neighbours never differ.
     function measure() {
+      fitNames();
       compact = false;
       for (var k = 0; k < order.length && !compact; k++) {
         for (var v = 0; v < 2 && !compact; v++) {

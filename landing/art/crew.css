@@ -1,12 +1,14 @@
 /* crew: a Crew channel, #methods, seen by the person who asks their agent.
    The channel header with its neutral "Restricted" badge, a person's post with
-   a shared file card, the agent's post group ("Task: …", then the result), the
-   viewer's task row under it ("Your agent · Working…", then "Done"), and the
-   composer with Ask my agent. Ask my agent opens its pane in the composer's
-   place: Task, the scope line, and "Start my agent and allow posting here".
+   a shared file card, the agent's post group ("Task: …", then the result and
+   Crew's Source line), the viewer's task row under it ("Your agent ·
+   Starting…", "Working…", then "Done"), and the composer with Ask my agent.
+   Ask my agent covers the channel below its header, as the app's pane does in
+   a narrow window: a title row with ×, Task, Model with its "Private · UCSF"
+   mark, and a footer with the scope line and Start.
    Everything is scoped under [data-art="crew"]. Coral marks only the one
-   active thing: the Start button while the pane is open, then the task row's
-   rail, through Done. */
+   active thing: Start while the pane is open, then the task row's rail while
+   the task runs. */
 
 [data-art="crew"] .crew-stage {
   position: absolute; inset: 0;
@@ -25,14 +27,15 @@
   --crew-file: 28px;
   --crew-ctl: 28px;
   --crew-card-h: 36px;
-  --crew-sheet-gap: 7px;
   --crew-fs-body: 12.5px;
   --crew-lh-body: 18px;
+  --crew-lh-source: 15px;
+  --crew-pane-x: 12px;
+  --crew-pane-top: 32px;
+  --crew-pane-gap: 8px;
   --crew-person-bg: #d4d5ff;  /* the app's avatar hue 7 */
   --crew-person-fg: #41397d;
 }
-[data-art="crew"] .crew-stage.crew-still,
-[data-art="crew"] .crew-stage.crew-still * { transition: none; animation: none; }
 
 /* ── Channel header: # methods, and its classification ────────────────── */
 [data-art="crew"] .crew-head {
@@ -51,7 +54,7 @@
 
 /* Classification is a neutral badge beside the name (ChannelHeader): it says
    which models may read the channel. No padlock: in Crew the padlock means
-   privacy tier only, and that lives in the sidebar's status row. */
+   privacy tier only. */
 [data-art="crew"] .crew-class {
   display: inline-flex; align-items: center;
   height: 18px; padding: 0 6px;
@@ -88,7 +91,7 @@
   height: 16px; min-width: 0; white-space: nowrap;
 }
 [data-art="crew"] .crew-name { font-size: 12px; line-height: 16px; font-weight: 700; color: var(--ink); }
-[data-art="crew"] .crew-time { font-size: 11px; line-height: 16px; color: var(--faint); font-variant-numeric: tabular-nums; }
+[data-art="crew"] .crew-time { font-size: 11px; line-height: 16px; color: var(--muted); font-variant-numeric: tabular-nums; }
 [data-art="crew"] .crew-badge {
   display: inline-flex; align-items: center;
   height: 16px; padding: 0 5px;
@@ -99,6 +102,12 @@
 [data-art="crew"] .crew-body {
   margin: 2px 0 0;
   font-size: var(--crew-fs-body); line-height: var(--crew-lh-body); color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Crew's own last line on a result: the file the run read, and who shared it. */
+[data-art="crew"] .crew-source {
+  margin: 1px 0 0;
+  font-size: 11px; line-height: var(--crew-lh-source); color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
@@ -113,7 +122,7 @@
 }
 [data-art="crew"] .crew-file svg { width: 14px; height: 14px; flex: none; color: var(--muted); }
 [data-art="crew"] .crew-file-name { font-size: 12px; line-height: 16px; color: var(--ink); }
-[data-art="crew"] .crew-file-size { font-size: 11px; line-height: 16px; color: var(--faint); }
+[data-art="crew"] .crew-file-size { font-size: 11px; line-height: 16px; color: var(--muted); }
 
 /* Rows that arrive: the height opens first, then the content fades in. */
 [data-art="crew"] .crew-slot {
@@ -129,16 +138,16 @@
 [data-art="crew"] .crew-slot.is-shown > .crew-slot-in { opacity: 1; }
 [data-art="crew"] .crew-slot-pad { padding-top: var(--crew-step); }
 /* The result is a continuation of the agent's post group: no second avatar,
-   name or time, only its line under the "Task: …" line. */
+   name or time, only its lines under the "Task: …" line. */
 [data-art="crew"] .crew-result-pad { padding-top: 0; }
 [data-art="crew"] .crew-result-pad .crew-body { margin-top: 1px; }
 /* The task row carries 3px of its own padding; take it off the step so the
    avatars keep one rhythm. It sits under the group, never inside it. */
 [data-art="crew"] .crew-slot-task .crew-slot-pad { padding-top: calc(var(--crew-step) - 3px); }
 
-/* The viewer's task, as a line and not a card (TaskStatusRow). It carries a
-   2px coral rail from the start to the end of the task, and while it runs its
-   status word breathes 1 → 0.7 → 1. */
+/* The viewer's task, as a line and not a card (TaskStatusRow). While the task
+   runs it carries a 2px coral rail, and its status word breathes
+   1 → 0.7 → 1. At Done the rail fades with the running state. */
 [data-art="crew"] .crew-task {
   position: relative;
   display: grid; grid-template-columns: var(--crew-av) minmax(0, 1fr); column-gap: var(--crew-gap);
@@ -149,6 +158,7 @@
   background-color: transparent;
   transition: background-color calc(var(--dur-slow) * 3) var(--ease);
 }
+/* The one-shot wash that points at the row as it arrives. */
 [data-art="crew"] .is-hl .crew-task { background-color: var(--sidebar-active); transition-duration: 0s; }
 [data-art="crew"] .crew-task::before {
   content: ''; position: absolute; left: 0; top: 50%;
@@ -156,52 +166,42 @@
   border-radius: 2px;
   background: var(--coral-bar);
   opacity: 0;
-  transition: opacity var(--dur-med) var(--ease);
+  transition: opacity var(--dur-slow) var(--ease);
 }
-[data-art="crew"] .is-running .crew-task::before,
-[data-art="crew"] .is-done .crew-task::before { opacity: 1; }
+[data-art="crew"] .is-task .crew-task::before { opacity: 1; transition-duration: var(--dur-med); }
 [data-art="crew"] .crew-task-status {
   margin: 0; min-width: 0;
   font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap;
 }
+/* One slot, three words: the outer span cross-fades, the inner one breathes,
+   so the two never fight over one opacity. */
 [data-art="crew"] .crew-word { display: inline-grid; vertical-align: top; }
-[data-art="crew"] .crew-word > span { grid-area: 1 / 1; transition: opacity var(--dur-med) var(--ease); }
-[data-art="crew"] .crew-w-done { opacity: 0; color: var(--muted); }
+/* The old word goes first, then the new one comes in: they never share the
+   slot at once. */
+[data-art="crew"] .crew-w { grid-area: 1 / 1; opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+[data-art="crew"] .crew-w-start { opacity: 1; }
+[data-art="crew"] .crew-w-done { color: var(--muted); }
+[data-art="crew"] .is-working .crew-w-start,
+[data-art="crew"] .is-done .crew-w-start { opacity: 0; }
+[data-art="crew"] .is-working .crew-w-run,
+[data-art="crew"] .is-done .crew-w-done { opacity: 1; transition: opacity var(--dur-med) var(--ease) var(--dur-fast); }
 [data-art="crew"] .is-done .crew-w-run { opacity: 0; }
-[data-art="crew"] .is-done .crew-w-done { opacity: 1; }
-[data-art="crew"] .is-running .crew-w-run { animation: crew-breathe 2.4s var(--ease) infinite; }
+[data-art="crew"] .crew-br { display: inline-block; }
+[data-art="crew"] .is-task .crew-br { animation: crew-breathe 2.4s var(--ease) infinite; }
 @keyframes crew-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
-/* stop(): the breathing word holds still. This must outrank the rule above,
-   whose animation shorthand would otherwise reset the play state. */
-[data-art="crew"] .crew-stage.crew-paused .crew-w-run { animation-play-state: paused; }
+/* stop(): the breathing word holds still. This outranks the rule above, whose
+   animation shorthand would otherwise reset the play state. */
+[data-art="crew"] .crew-stage.crew-paused .crew-br { animation-play-state: paused; }
 
 /* ── Composer: the chat composer card, with Ask my agent and Send ───────── */
 [data-art="crew"] .crew-compose { flex: none; padding: 0 9px 9px; }
-/* The composer keeps its row's height in the column; the box above it can
-   grow into the pane without moving the log. */
-[data-art="crew"] .crew-compose-in { position: relative; height: var(--crew-card-h); }
-[data-art="crew"] .crew-box {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: var(--crew-card-h);
-  border: 1px solid var(--line); border-radius: var(--r-container);
-  background: var(--paper);
-  overflow: hidden;
-  /* Back to the composer once the pane's contents have gone. */
-  transition: height var(--dur-slow) var(--ease) 50ms;
-}
-[data-art="crew"] .is-pane .crew-box {
-  height: var(--crew-sheet-h, 120px);
-  transition: height var(--dur-slow) var(--ease);
-}
 [data-art="crew"] .crew-card {
-  position: absolute; left: 0; right: 0; bottom: 0;
-  height: calc(var(--crew-card-h) - 2px);
+  height: var(--crew-card-h);
   display: flex; align-items: center; gap: 4px;
   padding: 0 4px 0 11px;
-  /* Back as soon as the pane's contents have gone, while the box settles onto it. */
-  transition: opacity var(--dur-med) var(--ease) var(--dur-fast);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  background: var(--paper);
 }
-[data-art="crew"] .is-pane .crew-card { opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
 [data-art="crew"] .crew-field { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; overflow: hidden; }
 [data-art="crew"] .crew-ph {
   grid-area: 1 / 1; min-width: 0;
@@ -211,7 +211,7 @@
 [data-art="crew"] .crew-ask {
   flex: none;
   display: inline-flex; align-items: center; gap: 5px;
-  height: 26px; padding: 0 7px;
+  height: calc(var(--crew-card-h) - 10px); padding: 0 7px;
   border-radius: var(--r-element);
   font-size: 12px; line-height: 1; color: var(--ink); white-space: nowrap;
   transition: background-color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
@@ -224,28 +224,82 @@
 [data-art="crew"] .crew-send {
   flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px;
+  width: calc(var(--crew-card-h) - 10px); height: calc(var(--crew-card-h) - 10px);
   border-radius: var(--r-element);
   background: var(--medium); color: var(--ink);
 }
 [data-art="crew"] .crew-send svg { width: 14px; height: 14px; }
 
-/* ── Ask my agent, in the composer's place (AgentTaskPane) ─────────────── */
-[data-art="crew"] .crew-sheet {
+/* Covered, the channel's log and composer are hidden, as the app hides the
+   channel body under a covering pane. They hide once the pane's ground has
+   covered them, and come back once its contents have gone. */
+[data-art="crew"] .crew-log,
+[data-art="crew"] .crew-compose { transition: visibility 0s linear var(--dur-fast); }
+[data-art="crew"] .is-pane-in .crew-log,
+[data-art="crew"] .is-pane-in .crew-compose { visibility: hidden; transition-delay: 0s; }
+
+/* ── Ask my agent, covering the channel (DetailsPane + AgentTaskPane) ───── */
+[data-art="crew"] .crew-pane {
   position: absolute; left: 0; right: 0; bottom: 0;
-  display: flex; flex-direction: column; gap: var(--crew-sheet-gap);
-  padding: 8px;
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease);
+  top: var(--crew-head);
+  display: flex; flex-direction: column;
+  background: var(--paper);
+  opacity: 0; visibility: hidden;
+  transition: opacity var(--dur-menu) var(--ease), visibility 0s linear var(--dur-menu);
 }
-/* In as soon as the composer's row has gone, while the box opens. */
-[data-art="crew"] .is-pane .crew-sheet { opacity: 1; transition: opacity var(--dur-med) var(--ease) 100ms; }
-[data-art="crew"] .crew-sheet-task { display: flex; align-items: center; gap: 8px; }
-[data-art="crew"] .crew-sheet-label { flex: none; padding-left: 3px; font-size: 12px; line-height: 16px; color: var(--ink); }
+[data-art="crew"] .is-pane .crew-pane {
+  opacity: 1; visibility: visible;
+  transition: opacity var(--dur-menu) var(--ease), visibility 0s;
+}
+/* Its contents come in 8px from the right, and leave with a fade only. */
+[data-art="crew"] .crew-fade {
+  opacity: 0; transform: translateX(8px);
+  transition: opacity var(--dur-fast) var(--ease), transform 0s linear var(--dur-fast);
+}
+[data-art="crew"] .is-pane-in .crew-fade {
+  opacity: 1; transform: none;
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+
+/* The title row: covering, the pane's header is a row under the channel
+   header, on the sidebar ground, with the title and its ×. */
+[data-art="crew"] .crew-pane-top {
+  flex: none;
+  height: var(--crew-pane-top);
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+[data-art="crew"] .crew-pane-row {
+  height: 100%;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 7px 0 var(--crew-pane-x);
+}
+[data-art="crew"] .crew-pane-title { font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap; }
+[data-art="crew"] .crew-pane-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; color: var(--muted);
+}
+[data-art="crew"] .crew-pane-x svg { width: 16px; height: 16px; }
+
+/* Task and Model, their labels in one column so the field and the mark share
+   one left edge. */
+/* Task is the app's multi-line field: where the tile has room it grows toward
+   two lines' height, its text at the top; where it has none it is one line. */
+[data-art="crew"] .crew-pane-body {
+  flex: 1 1 auto; min-height: 0;
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-rows: minmax(var(--crew-ctl), 60px) auto;
+  column-gap: 10px; row-gap: var(--crew-pane-gap);
+  align-items: center; align-content: start;
+  padding: 10px var(--crew-pane-x) 10px;
+}
+[data-art="crew"] .crew-pane-label { font-size: 12px; line-height: 16px; color: var(--ink); white-space: nowrap; }
+/* Task's label sits on the field's first line. */
+[data-art="crew"] .crew-pane-label:first-child { align-self: start; padding-top: calc((var(--crew-ctl) - 16px) / 2); }
 [data-art="crew"] .crew-input {
-  flex: 1 1 auto; min-width: 0;
-  display: grid; grid-template-columns: minmax(0, 1fr); align-items: center;
-  height: var(--crew-ctl); padding: 0 8px;
+  min-width: 0; align-self: stretch;
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; align-content: start;
+  padding: calc((var(--crew-ctl) - 18px) / 2) 8px 0;
   border: 1px solid var(--line-input); border-radius: var(--r-element);
   background: var(--paper);
   overflow: hidden;
@@ -258,8 +312,17 @@
 [data-art="crew"] .crew-over .crew-draft { justify-self: end; }
 [data-art="crew"] .crew-caret { display: none; width: 1px; height: 14px; margin-left: 1px; background: var(--ink); }
 [data-art="crew"] .has-draft .crew-caret { display: block; }
-[data-art="crew"] .crew-scope { margin: 0; padding: 0 3px; font-size: 11px; line-height: 15px; color: var(--muted); text-wrap: balance; }
-[data-art="crew"] .crew-sheet-foot { display: flex; justify-content: flex-end; min-width: 0; }
+/* The model's tier, as the pane's Model row marks it: one static chip. */
+[data-art="crew"] .crew-tier { display: flex; min-width: 0; }
+
+/* The footer: what the agent may do, then Start. It never scrolls away. */
+[data-art="crew"] .crew-pane-foot { flex: none; border-top: 1px solid var(--line); }
+[data-art="crew"] .crew-pane-foot-in {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 8px var(--crew-pane-x) 9px;
+}
+[data-art="crew"] .crew-scope { margin: 0; font-size: 11px; line-height: 15px; color: var(--muted); text-wrap: balance; }
+[data-art="crew"] .crew-start-row { display: flex; justify-content: flex-end; min-width: 0; }
 /* The pane's default button: the coral fill, a white label, 8px corners. */
 [data-art="crew"] .crew-start {
   flex: none;
@@ -281,19 +344,40 @@
 /* Shorter tiles tighten the rhythm. */
 @container (max-height: 280px) {
   /* A query cannot restyle its own container, so the tokens go on its children. */
-  [data-art="crew"] .crew-stage > * { --crew-head: 31px; --crew-step: 7px; --crew-file: 24px; --crew-av: 22px; --crew-lh-body: 17px; --crew-card-h: 33px; }
+  [data-art="crew"] .crew-stage > * {
+    --crew-head: 31px; --crew-step: 7px; --crew-file: 24px; --crew-av: 22px; --crew-lh-body: 17px;
+    --crew-card-h: 33px; --crew-pane-top: 30px;
+  }
   [data-art="crew"] .crew-log { padding-top: 8px; padding-bottom: 3px; }
   [data-art="crew"] .crew-file { margin-top: 3px; }
   [data-art="crew"] .crew-compose { padding-bottom: 8px; }
 }
-@container (max-height: 222px) {
-  [data-art="crew"] .crew-stage > * { --crew-head: 30px; --crew-step: 6px; --crew-file: 22px; --crew-ctl: 26px; --crew-sheet-gap: 6px; --crew-card-h: 32px; }
-  [data-art="crew"] .crew-log { padding-top: 7px; padding-bottom: 2px; }
+@container (max-height: 232px) {
+  [data-art="crew"] .crew-stage > * {
+    --crew-head: 28px; --crew-step: 5px; --crew-file: 22px; --crew-ctl: 26px; --crew-lh-body: 16px;
+    --crew-lh-source: 14px; --crew-card-h: 31px; --crew-pane-top: 28px; --crew-pane-gap: 6px;
+  }
+  [data-art="crew"] .crew-log { padding-top: 5px; padding-bottom: 2px; }
+  /* The 16px lines carry their own air; the margins between them go. */
+  [data-art="crew"] .crew-body,
+  [data-art="crew"] .crew-result-pad .crew-body,
+  [data-art="crew"] .crew-source { margin-top: 0; }
   [data-art="crew"] .crew-task { padding-top: 2px; padding-bottom: 2px; }
   [data-art="crew"] .crew-slot-task .crew-slot-pad { padding-top: calc(var(--crew-step) - 2px); }
-  [data-art="crew"] .crew-sheet { padding: 7px; }
+  [data-art="crew"] .crew-compose { padding-bottom: 6px; }
+  [data-art="crew"] .crew-pane-body { padding-top: 8px; padding-bottom: 8px; }
+  [data-art="crew"] .crew-pane-foot-in { gap: 6px; padding-top: 7px; padding-bottom: 7px; }
 }
 
+/* ── Holding still ─────────────────────────────────────────────────── */
+/* Last in the file on purpose: at equal specificity these win over every
+   transition and animation above (base() snaps back with it, and it is the
+   reduced-motion still). */
+[data-art="crew"] .crew-stage.crew-still,
+[data-art="crew"] .crew-stage.crew-still *,
+[data-art="crew"] .crew-stage.crew-still *::before { transition: none; animation: none; }
 @media (prefers-reduced-motion: reduce) {
-  [data-art="crew"] .crew-stage * { transition: none; animation: none; }
+  [data-art="crew"] .crew-stage *,
+  [data-art="crew"] .crew-stage *::before,
+  [data-art="crew"] .crew-stage .crew-br { transition: none; animation: none; }
 }

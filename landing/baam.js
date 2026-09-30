@@ -745,6 +745,14 @@
     return `<ul class="${cls}">${items.map(t => `<li>${escapeHtml(t)}</li>`).join('')}</ul>`;
   }
 
+  // The one place the page says how a secret is entered. It shows only on a
+  // row whose requirements name a secret (a key, token, password or
+  // passcode), and the requirements text itself never repeats it.
+  const SECRET_NOTE = '<p class="fine">Biorouter asks for these values in its own dialog when you install it, and keeps the secret ones in your system\'s credential store. Never paste a secret into a chat.</p>';
+  function needsSecret(d) {
+    return !!(d && d.needs && /secret|PASSWORD|PASSCODE|_KEY\b|TOKEN/.test(d.needs));
+  }
+
   function extDetailHtml(card) {
     const id = extIdOf(card);
     const d = detailsFor(id);
@@ -756,8 +764,9 @@
     const rows = [];
     if (d && d.what) rows.push(row('What it does', `<p>${escapeHtml(d.what)}</p>`));
     if (card.dataset.privacy === 'private') {
-      const inst = (card.dataset.affiliation || '').split(/\s+/).filter(Boolean).length ? 'UCSF' : 'your institution';
-      rows.push(row('Privacy', `<p>Private. Public models cannot use it. When it answers in a chat, that chat becomes private and stays private, and models hosted outside ${inst} are refused there.</p>`));
+      // A local model always qualifies (privacy/affiliation.rs compatible()),
+      // so the refusal is named by tier, never as "hosted outside UCSF".
+      rows.push(row('Privacy', '<p>Private. Public models cannot use it. When it answers in a chat, that chat becomes private and stays private, and public models are refused there from then on.</p>'));
     }
     if (d && d.asks && d.asks.length) rows.push(row('Try asking', list(d.asks, 'asks')));
     if (d && d.tools && d.tools.length) {
@@ -774,8 +783,7 @@
       <li><span class="k">In the app</span><span>Open Extensions, choose Browse extensions, then Add beside ${name}.</span></li>
       <li><span class="k">From a file</span><span>Download <a href="${escapeHtml(href)}">${file}</a>. In Extensions, choose Add extension and drop the file in.</span></li>
       <li><span class="k">At a terminal</span><span><code>biorouter extension install ./${file}</code></span></li>
-    </ul>
-    <p class="fine">If it needs a key or a password, Biorouter asks in its own dialog and keeps the value in your system's credential store. Never paste one into a chat.</p>`));
+    </ul>${needsSecret(d) ? SECRET_NOTE : ''}`));
     const links = [];
     if (gh) links.push(`<a class="text-link" href="${escapeHtml(gh.getAttribute('href'))}" target="_blank" rel="noopener">Source on GitHub <span aria-hidden="true">↗</span></a>`);
     ((d && d.links) || []).forEach(l => links.push(`<a class="text-link" href="${escapeHtml(l.href)}" target="_blank" rel="noopener">${escapeHtml(l.label)} <span aria-hidden="true">↗</span></a>`));

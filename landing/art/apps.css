@@ -87,9 +87,10 @@
   border-radius: 2px 2px 0 0;
 }
 /* Series fills: a pale body under a 2px cap, like the app's rails. */
-[data-art="apps"] .apps-g .t,
+[data-art="apps"] .apps-g .t { background: var(--medium); box-shadow: inset 0 2px 0 var(--ghost); }
+/* Female is its own neutral, darker cap than the first chart's totals. */
 [data-art="apps"] .apps-g .f,
-[data-art="apps"] .apps-legend .f { background: var(--medium); box-shadow: inset 0 2px 0 var(--ghost); }
+[data-art="apps"] .apps-legend .f { background: var(--sidebar-active); box-shadow: inset 0 2px 0 var(--subtle); }
 [data-art="apps"] .apps-g .m,
 [data-art="apps"] .apps-legend .m { background: var(--coral-wash); box-shadow: inset 0 2px 0 var(--coral-bar); }
 
@@ -212,9 +213,8 @@
 [data-art="apps"] .apps-row.is-running { animation: apps-breathe 2.4s ease-in-out infinite; }
 [data-art="apps"] .apps-stage.is-paused .apps-row { animation-play-state: paused; }
 
-/* Loop start and end: the tool row is hidden, so the frame is only the empty region. */
-[data-art="apps"] .apps-stage.is-quiet .apps-strip > *,
-[data-art="apps"] .apps-stage.is-out .apps-strip > * { opacity: 0; transition-duration: var(--dur-med); }
+/* A fresh start: the tool row is hidden for a moment, then fades in. */
+[data-art="apps"] .apps-stage.is-quiet .apps-strip > * { opacity: 0; transition-duration: var(--dur-med); }
 
 @keyframes apps-breathe {
   0%, 100% { opacity: 1; }

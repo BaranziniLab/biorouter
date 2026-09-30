@@ -2,9 +2,13 @@
    A grid of BAAM connectors, one tool call row, a count line. The tiles are
    quiet panels on the muted ground with no outline, so the only line in the
    grid is the active connector's coral hairline, and its glyph the only other
-   coral. */
+   coral.
+   The mount's height is set by the page (aspect-ratio 7/5 beside the text, a
+   fixed height when stacked), so it is a size container and the layout answers
+   to both sides: three columns only in a portrait box, tighter spacing in a
+   short one, and rows that stop growing in a tall one. */
 
-.art-biomed { container-type: inline-size; }
+.art-biomed { container-type: size; }
 
 .art-biomed .bm {
   position: absolute; inset: 0;
@@ -16,10 +20,11 @@
 
 /* ── Connectors ─────────────────────────────────────────── */
 .art-biomed .bm-grid {
-  flex: 1 1 auto; min-height: 0;
+  flex: 0 1 auto; min-height: 0;
+  margin-bottom: 22px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-template-rows: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(0, 96px));
   gap: 12px;
 }
 .art-biomed .bm-tile {
@@ -35,19 +40,21 @@
 .art-biomed .bm-glyph { display: block; flex: none; width: 22px; height: 22px; color: var(--muted); transition: color var(--dur-fast) var(--ease); }
 .art-biomed .bm-glyph-svg { width: 100%; height: 100%; overflow: visible; }
 .art-biomed .bm-glyph-svg * { vector-effect: non-scaling-stroke; stroke-width: 1.5px; }
-.art-biomed .bm-name { display: block; max-width: 100%; font-size: 13px; line-height: 1.25; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-biomed .bm-name { display: block; flex: none; max-width: 100%; font-size: 13px; line-height: 1.25; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .art-biomed .bm-short { display: none; }
+.art-biomed .bm.is-short .bm-full { display: none; }
+.art-biomed .bm.is-short .bm-short { display: inline; }
 
-/* UCSF data: the BAAM affiliation badge, navy on its wash. Never animates.
-   Small tiles keep the padlock alone and the footer names it. */
+/* UCSF data: the BAAM affiliation badge, a navy padlock on white with a
+   hairline, the same in a tile and in the legend. Never animates. Small tiles
+   keep the padlock alone and the footer names it. */
 .art-biomed .bm-badge {
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   flex: none; height: 18px; min-width: 18px; padding: 0 4px;
-  border-radius: var(--r-inner);
-  background: var(--navy-wash); color: var(--navy);
+  border: 1px solid var(--line); border-radius: var(--r-inner);
+  background: var(--paper); color: var(--navy);
   font-size: 11px; line-height: 1; white-space: nowrap;
 }
-.art-biomed .bm-tile .bm-badge { background: var(--paper); }
 .art-biomed .bm-lock { width: 10px; height: 10px; flex: none; }
 .art-biomed .bm-badge-word { display: none; }
 
@@ -57,7 +64,10 @@
 .art-biomed .bm-tile.is-active .bm-glyph { color: var(--coral); transition-duration: var(--dur-slow); }
 
 /* ── The tool call, a line not a card ───────────────────── */
-.art-biomed .bm-call { flex: none; margin-top: 22px; }
+/* In a tall box the rows stop at their cap and the spare height is shared
+   above and below the call, so the grid, the call and the count line stay
+   evenly spaced. */
+.art-biomed .bm-call { flex: none; margin: auto 0; }
 .art-biomed .bm-row {
   display: flex; align-items: center; gap: 8px;
   height: 24px; min-width: 0;
@@ -105,40 +115,60 @@
 /* ── Medium: the 1024 column ───────────────────────────── */
 @container (max-width: 600px) {
   .art-biomed .bm { padding: 22px 22px 18px; }
-  .art-biomed .bm-grid { gap: 10px; }
+  .art-biomed .bm-grid { gap: 10px; margin-bottom: 18px; }
   .art-biomed .bm-tile { padding: 11px 11px 10px; }
   .art-biomed .bm-glyph { width: 20px; height: 20px; }
   .art-biomed .bm-name { font-size: 12.5px; }
-  .art-biomed .bm-full { display: none; }
-  .art-biomed .bm-short { display: inline; }
-  .art-biomed .bm-call { margin-top: 18px; }
   .art-biomed .bm-row, .art-biomed .bm-result { font-size: 13.5px; }
   .art-biomed .bm-foot { margin-top: 14px; }
 }
 
-/* ── Narrow: phones, three columns of four ──────────────── */
-@container (max-width: 440px) {
+/* ── Short: the 1024 column and the band down to 901, where the box is
+   under 373px tall. Tighter spacing, so each name keeps its line. ── */
+@container (max-height: 372px) {
+  .art-biomed .bm { padding: 16px 20px 12px; }
+  .art-biomed .bm-grid { gap: 8px; margin-bottom: 12px; }
+  .art-biomed .bm-tile { padding: 9px 10px 8px; }
+  .art-biomed .bm-glyph { width: 18px; height: 18px; }
+  .art-biomed .bm-row, .art-biomed .bm-result { font-size: 13px; }
+  .art-biomed .bm-result { margin-top: 4px; line-height: 19px; min-height: 19px; }
+  .art-biomed .bm-foot { margin-top: 8px; }
+}
+
+/* ── Narrow: phones, three columns of four (a portrait box only) ── */
+@container (max-width: 440px) and (orientation: portrait) {
   .art-biomed .bm { padding: 16px 16px 14px; }
-  .art-biomed .bm-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .art-biomed .bm-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 88px)); gap: 8px; margin-bottom: 16px; }
   .art-biomed .bm-tile { padding: 9px 9px 8px; border-radius: var(--r-element); }
   .art-biomed .bm-glyph { width: 18px; height: 18px; }
   .art-biomed .bm-name { font-size: 12px; }
   .art-biomed .bm-badge { height: 17px; min-width: 17px; }
-  .art-biomed .bm-call { margin-top: 16px; }
   .art-biomed .bm-row { font-size: 13px; gap: 7px; }
   .art-biomed .bm-result { font-size: 13px; margin-top: 4px; line-height: 19px; min-height: 19px; }
   .art-biomed .bm-foot { margin-top: 12px; font-size: 11.5px; }
 }
 
-/* ── Smallest phones (320): the result may take two lines, and the counts
-   drop "in BAAM" so the UCSF data legend still fits beside them ── */
+/* ── Smallest phones (320 to 350): the counts drop "in BAAM" so the UCSF
+   data legend still fits beside them; at 320 the result may take two lines ── */
+@container (max-width: 312px) {
+  .art-biomed .bm-in { display: none; }
+}
 @container (max-width: 300px) {
-  .art-biomed .bm-grid { gap: 6px; }
+  .art-biomed .bm-grid { gap: 6px; margin-bottom: 12px; }
   .art-biomed .bm-tile { padding: 8px 8px 7px; }
-  .art-biomed .bm-call { margin-top: 12px; }
+  .art-biomed .bm-glyph { width: 16px; height: 16px; }
   .art-biomed .bm-result { white-space: normal; min-height: 38px; }
   .art-biomed .bm-foot { margin-top: 8px; }
-  .art-biomed .bm-in { display: none; }
+}
+
+/* ── Below 320 (down to 300): smaller names, glyphs and badges ── */
+@container (max-width: 272px) {
+  .art-biomed .bm-grid { gap: 5px; }
+  .art-biomed .bm-tile { padding: 7px 7px 6px; }
+  .art-biomed .bm-glyph { width: 15px; height: 15px; }
+  .art-biomed .bm-badge { height: 15px; min-width: 15px; padding: 0 3px; }
+  .art-biomed .bm-lock { width: 9px; height: 9px; }
+  .art-biomed .bm-name { font-size: 11px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

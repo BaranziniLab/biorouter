@@ -22,8 +22,6 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
 .about-intro { padding-top: 104px; }
 .about-intro .lede { max-width: 620px; text-wrap: pretty; }
 .about-community { padding-top: 88px; }
-/* The Team rule line closes the band, so the band keeps only its top rule. */
-.about-community .community { border-bottom: 0; padding-bottom: 0; }
 @media (max-width: 760px) {
   .about-intro { padding-top: 56px; }
   .about-community { padding-top: 64px; }
@@ -80,14 +78,10 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
 .group h3 a:hover span, .group h3 a:focus-visible span { color: var(--coral); }
 .group ul { list-style: none; margin: 16px 0 0; padding: 0; align-self: start; }
 .group li { font-size: 15px; line-height: 1.5; padding: 9px 0; border-top: 1px solid var(--line); }
-/* The larger group takes the second and third columns and lays its names out
-   on those two columns, so both groups end on the same line. */
-.group.wide { grid-column: span 2; }
-.group.wide ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; }
+/* Each group keeps one column of the page grid, its names listed under its
+   own heading; the third column stays empty. */
 @media (max-width: 640px) {
   .collab { row-gap: 36px; }
-  .group.wide { grid-column: auto; }
-  .group.wide ul { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ── Inspirations and links: a quiet list of references ── */
@@ -100,6 +94,8 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
 .ref-name { font-size: 15.5px; color: var(--ink); }
 .ref-name span { color: var(--faint); margin-left: 2px; transition: color var(--dur-fast) ease; }
 .ref-name:hover span, .ref-name:focus-visible span { color: var(--coral); }
+/* The descriptions are short enough to sit on one line from 1024px up; where
+   a narrow column must wrap them, pretty keeps a lone word off the last line. */
 .refs p { color: var(--muted); font-size: 14px; line-height: 1.55; margin: 6px 0 0; text-wrap: pretty; }
 
 /* ── Updates ───────────────────────────────────────────────
@@ -128,6 +124,8 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
   text-decoration: underline; text-decoration-color: transparent; text-decoration-thickness: 1px; text-underline-offset: 4px;
   transition: text-decoration-color var(--dur-fast) ease;
 }
+/* pretty keeps a lone word off the last line (measured: without it, four to
+   six rows end on one word at every width). */
 .news-body p { grid-column: 2 / 4; grid-row: 2; color: var(--muted); font-size: 14.5px; line-height: 1.6; margin: 6px 0 0; max-width: 600px; text-wrap: pretty; }
 .news-link {
   /* Shares the date's cell and sits one line under it, so a headline that

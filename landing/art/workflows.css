@@ -1,9 +1,9 @@
 /* Workflows tile. One workflow file, statin-cohort.yaml, written key by key
    with the schema's real keys (docs/workflows/workflow-schema-reference.md):
-   title, description, prompt, parameters, extensions, skills and settings.
-   Then its parameter is filled in, Start is pressed, and three steps complete
-   in order. The file stays; the run repeats the same way. Everything is
-   scoped under [data-art="workflows"]. */
+   title, prompt, parameters, extensions, skills and settings. A comment on
+   its first line marks it as an excerpt. Then its parameter is filled in,
+   Start is pressed, and three steps complete in order. The file stays; the
+   run repeats the same way. Everything is scoped under [data-art="workflows"]. */
 
 [data-art="workflows"] .wf {
   position: absolute; inset: 0;
@@ -14,57 +14,64 @@
 }
 
 /* Size tiers, by the tile's own width (the tile is 4:3, so width also sets
-   the height). Text never drops below 11px. The file is eight lines of at
-   most 32 characters, which fit across every tile at 11px, so the tiers only
-   trade chrome and line height for vertical room.
-   Under 260px (two columns on 600 to 615px pages) the tile is too short for
-   eight lines and the description is left out. 260 to 286 is the three
-   column tile on 980 to 1000px pages and the two column one on 615 to 690px
-   pages; 286 to 316 the 1024 and 1920 page; 316 to 340 the 1440 and 768
-   page; 340 to 400 phones and 834px tablets; wider tiles (single column on
-   440 to 600px pages) open the line height so the code stays centred
-   without empty paper. */
+   the height). Text never drops below 11px. The file is seven lines of at
+   most 32 characters, which fit across every tile at 11px, so the tiers set
+   the chrome and a line height of about 1.4 times the code size. Under 278px
+   (two columns on 600 to 650px pages) the tile is short and the line height
+   steps down from 1.32 to 1.23. 278 to 286 is the three column tile on 980 to 1000px pages and
+   the two column one on 640 to 690px pages; 286 to 316 the 1024 and 1920
+   page; 316 to 340 the 1440 and 768 page; 340 to 370 phones and 834px
+   tablets; wider tiles (single column on 440 to 600px pages) grow the type. */
 [data-art="workflows"] .wf-in {
   position: absolute; inset: 0;
   display: flex; flex-direction: column;
   padding: 8px;
   --wf-code: 11px;
-  --wf-lh: 12px;
+  --wf-lh: 13.5px;
   --wf-ui: 11px;
-  --wf-head: 22px;
+  --wf-head: 20px;
   --wf-ctl: 20px;
   --wf-padx: 8px;
   --wf-gap: 6px;
   --wf-ico: 14px;
+  --wf-nudge: 0.05em;
 }
-[data-art="workflows"] .wf-line.wf-desc { display: none; }
-@container (min-width: 260px) {
-  [data-art="workflows"] .wf-line.wf-desc { display: block; }
+@container (min-width: 262px) {
+  [data-art="workflows"] .wf-in { --wf-lh: 14px; --wf-head: 21px; }
 }
 @container (min-width: 272px) {
-  [data-art="workflows"] .wf-in { --wf-lh: 12.5px; }
+  [data-art="workflows"] .wf-in {
+    padding: 9px 9px 8px;
+    --wf-lh: 14.5px;
+    --wf-head: 22px;
+    --wf-padx: 10px;
+  }
+}
+@container (min-width: 278px) {
+  [data-art="workflows"] .wf-in { --wf-lh: 15px; }
 }
 @container (min-width: 286px) {
   [data-art="workflows"] .wf-in {
-    padding: 10px 10px 9px;
-    --wf-lh: 12.5px;
+    padding: 11px 11px 10px;
     --wf-ui: 11.5px;
-    --wf-head: 25px;
+    --wf-nudge: 0.09em;
+    --wf-head: 23px;
     --wf-ctl: 22px;
     --wf-padx: 11px;
-    --wf-gap: 8px;
+    --wf-gap: 7px;
   }
 }
 @container (min-width: 298px) {
-  [data-art="workflows"] .wf-in { --wf-lh: 13px; }
+  [data-art="workflows"] .wf-in { --wf-lh: 15.5px; }
 }
 @container (min-width: 316px) {
   [data-art="workflows"] .wf-in {
     padding: 12px 12px 11px;
     --wf-code: 11.5px;
-    --wf-lh: 13.5px;
+    --wf-lh: 16px;
     --wf-ui: 12px;
-    --wf-head: 28px;
+    --wf-nudge: 0.05em;
+    --wf-head: 27px;
     --wf-ctl: 24px;
     --wf-padx: 12px;
     --wf-gap: 9px;
@@ -75,7 +82,7 @@
   [data-art="workflows"] .wf-in {
     padding: 14px 14px 12px;
     --wf-code: 12px;
-    --wf-lh: 15px;
+    --wf-lh: 17px;
     --wf-ui: 12.5px;
     --wf-head: 30px;
     --wf-ctl: 26px;
@@ -84,24 +91,19 @@
   }
 }
 @container (min-width: 370px) {
-  [data-art="workflows"] .wf-in { --wf-lh: 16.5px; }
-}
-@container (min-width: 400px) {
   [data-art="workflows"] .wf-in {
-    padding: 16px 16px 14px;
-    --wf-lh: 17px;
-    --wf-head: 34px;
+    padding: 15px 15px 13px;
+    --wf-code: 12.5px;
+    --wf-lh: 18px;
+    --wf-head: 32px;
     --wf-ctl: 28px;
-    --wf-gap: 13px;
+    --wf-gap: 12px;
   }
 }
 @container (min-width: 420px) {
-  [data-art="workflows"] .wf-in { --wf-lh: 18.5px; }
-}
-@container (min-width: 440px) {
   [data-art="workflows"] .wf-in {
     padding: 18px 18px 16px;
-    --wf-code: 12.5px;
+    --wf-code: 13px;
     --wf-lh: 19px;
     --wf-ui: 13px;
     --wf-head: 36px;
@@ -113,7 +115,7 @@
 @container (min-width: 480px) {
   [data-art="workflows"] .wf-in {
     padding: 20px 20px 18px;
-    --wf-code: 13px;
+    --wf-code: 14px;
     --wf-lh: 21px;
     --wf-ui: 13.5px;
     --wf-head: 40px;
@@ -124,13 +126,13 @@
 }
 @container (min-width: 520px) {
   [data-art="workflows"] .wf-in {
-    --wf-code: 13.5px;
-    --wf-lh: 23px;
+    --wf-code: 14.5px;
+    --wf-lh: 22.5px;
     --wf-ui: 14px;
+    --wf-head: 42px;
+    --wf-ctl: 34px;
+    --wf-gap: 18px;
   }
-}
-@container (min-width: 530px) {
-  [data-art="workflows"] .wf-in { --wf-lh: 24.5px; }
 }
 
 /* ── The file ──────────────────────────────────────────── */
@@ -172,7 +174,8 @@
 }
 [data-art="workflows"] .wf-line.is-in { opacity: 1; transform: none; }
 [data-art="workflows"] .wf-line .k { color: var(--ink); }
-[data-art="workflows"] .wf-line .p { color: var(--faint); }
+[data-art="workflows"] .wf-line .p,
+[data-art="workflows"] .wf-line .c { color: var(--faint); }
 
 /* The name inside {{ cohort }} takes a coral underline while its value is
    typed into the field below: the one parameter, declared, used and filled.
@@ -200,6 +203,15 @@
 
 /* ── The run ───────────────────────────────────────────── */
 [data-art="workflows"] .wf-run { flex: none; display: flex; flex-direction: column; gap: var(--wf-gap); padding: var(--wf-gap) 0 0; }
+/* One centring rule for every word in the run: at line-height 1, Arial's
+   cap band sits a little above the centre of its box, so each label is set
+   down by --wf-nudge, onto the centre line of its field, button or icon.
+   The amount was measured from the ink at 4x: 0.05em, except at 11.5px,
+   where the baseline rounds higher and 0.09em lands it on the line. */
+[data-art="workflows"] .wf-key,
+[data-art="workflows"] .wf-val,
+[data-art="workflows"] .wf-btn > span,
+[data-art="workflows"] .wf-step > span:not(.wf-ico) { position: relative; top: var(--wf-nudge); }
 [data-art="workflows"] .wf-row { display: flex; align-items: center; gap: 8px; }
 /* The parameter's label is interface text, as in the app's parameter dialog. */
 [data-art="workflows"] .wf-key { font-size: var(--wf-ui); line-height: 1; color: var(--muted); white-space: nowrap; }
@@ -221,8 +233,8 @@
   background: var(--ink);
   opacity: 0;
 }
-[data-art="workflows"] .wf-field.is-focus .wf-caret { animation: workflows-caret 1s steps(1) infinite; }
-@keyframes workflows-caret { 0% { opacity: 1; } 50% { opacity: 0; } }
+/* The caret stays solid while the value is typed; nothing in the tile blinks. */
+[data-art="workflows"] .wf-field.is-focus .wf-caret { opacity: 1; }
 
 /* Start (the app's parameter dialog says "Start workflow"): the app's 8px
    rounded square. Idle is the secondary grey; armed is coral with white text;
@@ -237,9 +249,6 @@
   transition: background var(--dur-med) var(--ease), color var(--dur-med) var(--ease), transform var(--dur-fast) var(--ease);
 }
 [data-art="workflows"] .wf-btn svg { width: 10px; height: 10px; flex: none; }
-/* Arial's box sits a little high for a word with no descenders; this sets
-   the label's ink on the button's centre line, level with the triangle. */
-[data-art="workflows"] .wf-btn span { position: relative; top: 0.07em; }
 [data-art="workflows"] .wf-btn.is-armed { background: var(--coral); color: var(--paper); }
 [data-art="workflows"] .wf-btn.is-pressed { transform: scale(0.98); background: var(--coral-hover); }
 

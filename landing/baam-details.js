@@ -12,7 +12,7 @@ window.BAAM_DETAILS = {
       'For OMOP person_id 12345, pull lab trends from the CDW.'
     ],
     tools: ['build_cohort', 'query', 'search_note_concepts', 'search_diagnoses_by_code', 'crossmap_patient', 'get_database_overview'],
-    needs: 'UCSF network or VPN access, and read permission on the CDW. Your UCSF login as CLINICAL_RECORDS_USERNAME (CAMPUS\\username) and CLINICAL_RECORDS_PASSWORD, entered in Biorouter\'s own dialog and never in a chat. uv and Python 3.11 or later.',
+    needs: 'UCSF network or VPN access, and read permission on the CDW. Your UCSF login as CLINICAL_RECORDS_USERNAME (CAMPUS\\username) and CLINICAL_RECORDS_PASSWORD. uv and Python 3.11 or later.',
     sources: [
       'UCSF Epic Caboodle CDW, de-identified (database CDW_NEW, schema deid_uf)',
       'cTAKES note concepts (note_concepts, note_concepts_sdoh)',
@@ -30,7 +30,7 @@ window.BAAM_DETAILS = {
       'List the OMOP tables and describe the columns of the measurement table.'
     ],
     tools: ['query_ucsf_omop', 'search_concepts', 'find_measurement', 'get_omop_schema', 'list_ucsf_omop_tables'],
-    needs: 'UCSF network or VPN access, and read permission on OMOP_DEID. Your UCSF network login as CLINICAL_RECORDS_USERNAME and CLINICAL_RECORDS_PASSWORD, which Biorouter keeps in your system\'s credential store. uv and Python 3.11 or later.',
+    needs: 'UCSF network or VPN access, and read permission on OMOP_DEID. Your UCSF network login as CLINICAL_RECORDS_USERNAME and CLINICAL_RECORDS_PASSWORD. uv and Python 3.11 or later.',
     sources: [
       'UCSF OMOP_DEID (OMOP CDM v5.4 on Microsoft SQL Server, schema omop)',
       'OMOP standard vocabularies (the concept tables)'
@@ -99,7 +99,7 @@ window.BAAM_DETAILS = {
       'Summarize this notebook entry export and keep its IDs and timestamps.'
     ],
     tools: ['call_benchlingagent_api', 'get_benchlingagent_request_plan', 'get_benchlingagent_status', 'summarize_benchlingagent_resource'],
-    needs: 'BENCHLING_API_KEY (secret) and BENCHLING_TENANT (the subdomain, for example mylab for https://mylab.benchling.com), entered in Biorouter\'s own dialog when you install it. A Benchling account whose key can reach the data. It needs uv.',
+    needs: 'BENCHLING_API_KEY (secret) and BENCHLING_TENANT (the subdomain, for example mylab for https://mylab.benchling.com). A Benchling account whose key can reach the data. It needs uv.',
     sources: ['Benchling REST API v2 on your tenant', 'Benchling JSON exports you hand to summarize_benchlingagent_resource']
   },
   dnanexusagent: {

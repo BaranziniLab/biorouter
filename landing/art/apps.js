@@ -109,7 +109,8 @@
     ask.appendChild(field);
     var actions = el('div', 'apps-actions');
     actions.appendChild(el('span', 'apps-btn apps-skip', 'Skip'));
-    var go = el('span', 'apps-btn apps-go', 'Redraw');
+    // The submit label is the agent's choice (submit_label); Skip is the SDK's own.
+    var go = el('span', 'apps-btn apps-go', 'Yes');
     actions.appendChild(go);
     ask.appendChild(actions);
     page.appendChild(ask);
@@ -190,13 +191,15 @@
       stage.classList.remove('apps-instant');
     }
 
-    // First frame: the empty region, the tool row hidden until it fades in.
-    function reset() {
+    // First frame: the empty region and the first tool call. On a fresh start
+    // the row is hidden and fades in; on a loop it is already showing (the last
+    // step swaps it in), so the strip is never an empty band.
+    function reset(looped) {
       jump(function () {
         STATES.forEach(off);
         rowwrap.classList.remove('is-swap');
         setRow('Working on', 'ui_chart', true);
-        on('is-quiet');
+        if (!looped) on('is-quiet');
         aim('rest');
       });
     }
@@ -232,20 +235,22 @@
       [200, function () { off('is-quiet'); }],
       [900, function () { on('is-chart'); }],
       [1300, function () { on('is-grown'); }],
-      [2500, function () { swapRow('Ran', 'ui_chart', false); }],
-      [3400, function () { swapRow('Working on', 'ui_ask', true); }],
-      [3800, function () { on('is-ask'); }],
-      [4600, function () { on('is-point'); }],
-      [4750, function () { aim('go'); }],
-      [5500, function () { on('is-down'); on('is-press'); }],
-      [5650, function () { off('is-down'); }],
-      [6150, function () { off('is-ask'); off('is-point'); }],
-      [6500, function () { swapRow('Ran', 'ui_ask', false); off('is-press'); aim('rest'); }],
-      [7200, function () { swapRow('Working on', 'ui_chart', true); }],
-      [7500, function () { on('is-clear'); }],
-      [7800, function () { on('is-split'); }],
-      [9400, function () { swapRow('Ran', 'ui_chart', false); }],
-      [11700, function () { on('is-out'); }],
+      [2100, function () { swapRow('Ran', 'ui_chart', false); }],
+      [3500, function () { swapRow('Working on', 'ui_ask', true); }],
+      [3900, function () { on('is-ask'); }],
+      [4700, function () { on('is-point'); }],
+      [4850, function () { aim('go'); }],
+      [5600, function () { on('is-down'); on('is-press'); }],
+      [5750, function () { off('is-down'); }],
+      [6250, function () { off('is-ask'); off('is-point'); }],
+      [6600, function () { swapRow('Ran', 'ui_ask', false); off('is-press'); aim('rest'); }],
+      [7300, function () { swapRow('Working on', 'ui_chart', true); }],
+      [7600, function () { on('is-clear'); }],
+      [7900, function () { on('is-split'); }],
+      [9500, function () { swapRow('Ran', 'ui_chart', false); }],
+      [11800, function () { on('is-out'); }],
+      // The next loop's first call starts over the empty region.
+      [12550, function () { swapRow('Working on', 'ui_chart', true); }],
       [12900, null]
     ];
 
@@ -256,13 +261,13 @@
       while (idx < STEPS.length && STEPS[idx][0] <= now + 4) {
         var fn = STEPS[idx][1];
         idx++;
-        if (!fn) { begin(); return; }
+        if (!fn) { begin(true); return; }
         fn();
       }
       if (idx < STEPS.length) timer = setTimeout(tick, Math.max(0, STEPS[idx][0] - (performance.now() - t0)));
     }
-    function begin() {
-      reset();
+    function begin(looped) {
+      reset(looped);
       idx = 0;
       t0 = performance.now();
       timer = setTimeout(tick, STEPS[0][0]);

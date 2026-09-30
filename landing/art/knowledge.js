@@ -19,10 +19,11 @@
 
   var SVGNS = 'http://www.w3.org/2000/svg';
 
-  // The paper and the three pages its digest writes. The paper is a file
-  // ("PDF") while it is dropped, and a Publication once it joins the graph.
+  // The paper and the three pages its digest writes. While it is staged the
+  // paper is a file ("PDF"), as a staged row shows only its label; once the
+  // digest classifies it, it is a Publication with a credibility tier.
   var NODES = [
-    { id: 'p', name: 'Hauser 2017', sub: 'PDF · Peer reviewed', type: 'Publication', tier: 'Peer reviewed', side: 'r', kind: 'pub' },
+    { id: 'p', name: 'Hauser 2017', sub: 'PDF', type: 'Publication', tier: 'Peer reviewed', side: 'r', kind: 'pub' },
     { id: 'o', name: 'Ocrelizumab', sub: 'Molecule', side: 'l', kind: 'molecule' },
     { id: 'd', name: 'Multiple sclerosis', sub: 'Disease', side: 'r', kind: 'disease' },
     { id: 'g', name: 'MS4A1', sub: 'Gene', side: 'l', kind: 'gene' }
@@ -33,8 +34,8 @@
   var T = {
     card: 350,      // the paper drops into the base
     status: 1250,   // Digesting…
-    source: 2000,   // the file lets go, and the card becomes the source node
-    srcNode: 2125,  //   (the node comes in once the file icon has gone)
+    source: 2000,   // the card, its file icon and its "PDF" line fade out together
+    srcNode: 2175,  //   then, once they are all but gone, the node, "Publication" and the tier (--dur-menu later)
     page0: 2750,    // each page: its reported_in edge draws in coral, then its node lands
     pageStep: 800,
     nodeLag: 300,
@@ -133,12 +134,14 @@
       o.g.appendChild(o.c);
       gNodes.appendChild(o.g);
       o.lab = el('div', 'kn-lab kn-' + n.side + (n.id === 'p' ? ' kn-plab' : ''));
-      o.lab.appendChild(el('span', 'kn-name', n.name));
+      o.nm = el('span', 'kn-name', n.name);
+      o.lab.appendChild(o.nm);
       if (n.type) {
         // The file's line gives way to its node type; its tier moves to a line
         // of its own, behind the ring the inspector draws beside it.
         var swap = el('span', 'kn-sub kn-swap');
-        swap.appendChild(el('span', 'kn-a', n.sub));
+        o.fileLine = el('span', 'kn-a', n.sub);
+        swap.appendChild(o.fileLine);
         swap.appendChild(el('span', 'kn-b', n.type));
         o.lab.appendChild(swap);
         var tier = el('span', 'kn-sub kn-tier');
@@ -179,9 +182,10 @@
     function layout() {
       var Wr = root.clientWidth, Hr = root.clientHeight;
       if (!Wr || !Hr) return;
-      // A large frame (the one column grid) shows the same picture scaled up,
-      // not the same marks spread thin.
-      var s = Wr > 380 ? Math.min(Wr / 340, Hr / 255) : 1;
+      // A large frame (the one column grid) scales the picture up a little, so
+      // its text stays below the tile's own caption, and spreads the rest of
+      // the frame across the layout, which is measured.
+      var s = Wr > 380 ? Math.min(1.1, Math.max(1, Math.min(Wr / 340, Hr / 255))) : 1;
       var W = Wr / s, H = Hr / s;
       wrap.style.width = W + 'px'; wrap.style.height = H + 'px';
       wrap.style.transform = s === 1 ? '' : 'scale(' + s.toFixed(4) + ')';
@@ -198,12 +202,15 @@
       var noteH = note.offsetHeight || 31;
       var noteGap = sm ? 12 : 16, minM = sm ? 16 : 20;
 
-      // Snap a row to the middle of a device pixel row, so the horizontal
-      // edges on it render as even lines rather than stepped bands. The
-      // browser paints an inline SVG at a pixel snapped offset, so local
-      // coordinates are enough.
-      var dpr = window.devicePixelRatio || 1;
-      function snap(v) { return (Math.floor(v * dpr) + 0.5) / dpr; }
+      // Snap a row onto the device pixel grid, so a horizontal edge on it
+      // renders as an even line rather than stepped bands: to the middle of a
+      // device pixel for the top row, and to a boundary for the claim's row,
+      // whose 2px line then covers whole device pixels. The browser paints an
+      // inline SVG at a pixel snapped offset, so local coordinates (times the
+      // scale) are enough.
+      var k = (window.devicePixelRatio || 1) * s;
+      function snap(v) { return (Math.floor(v * k) + 0.5) / k; }
+      function snapEdge(v) { return Math.round(v * k) / k; }
 
       var x = {}, y = {};
       x.o = pad + w.o + gap + r.o;
@@ -218,13 +225,13 @@
       var bottomM = Math.max(minM, spare * 0.4);
       var top = snap(headB + (spare - bottomM) + nameH / 2);
       y.p = y.g = top;
-      y.o = y.d = top + rowGap;
+      y.o = y.d = snapEdge(top + rowGap);
       // The source sits above the disease, close enough that its edge to the
       // disease passes its own label on the way down: at the bottom of the
       // tier's ring (the label's lowest, leftmost mark) the edge is still
-      // `clearX` left of the label.
-      var clearX = 6, ringBottom = nameH / 2 + 1.5 * subH + 5;
-      var minP = x.d - rowGap * (r.p + gap - clearX) / ringBottom;
+      // `clearX` left of the label, a visible gap at every width.
+      var clearX = 10, ringBottom = nameH / 2 + 1.5 * subH + 5;
+      var minP = x.d - (y.o - y.p) * (r.p + gap - clearX) / ringBottom;
       // Where there is room it also moves right far enough for the gene to sit
       // straight above the molecule.
       var maxP = W - pad - w.p - gap - r.p;
@@ -255,20 +262,22 @@
         }
       });
 
-      // The claim: Ocrelizumab treats Multiple sclerosis. Drawn from its
-      // subject, so the quad starts thick (1.25) and runs down to 0.75; its row
-      // is snapped, so both ends land on whole device pixels.
+      // The claim: Ocrelizumab treats Multiple sclerosis, drawn out from its
+      // subject. It is a constant 2px, on a row snapped to a device pixel
+      // boundary, because any taper along a horizontal line renders as steps.
       var sx = x.o + r.o + outlineOut + 1.5, len2 = (x.d - r.d - outlineOut - 1.5) - sx;
       gClaim.setAttribute('transform', 'translate(' + sx.toFixed(2) + ' ' + y.o + ')');
-      claim.setAttribute('points', '0,-1.25 ' + len2.toFixed(2) + ',-0.75 ' + len2.toFixed(2) + ',0.75 0,1.25');
+      claim.setAttribute('points', '0,-1 ' + len2.toFixed(2) + ',-1 ' + len2.toFixed(2) + ',1 0,1');
 
       pred.style.left = predX + 'px';
       pred.style.top = predTop + 'px';
 
-      // The card wraps the file icon and the label's first two lines.
+      // The card wraps the file icon and the label's two staged lines (its
+      // name and "PDF"), not the lines the source gains later.
       var cl = x.p - 17, ct = y.p - nameH / 2 - 9;
+      var cardText = Math.max(N.p.nm.offsetWidth, N.p.fileLine.offsetWidth);
       card.style.left = cl + 'px'; card.style.top = ct + 'px';
-      card.style.width = (r.p + gap + w.p + 17 + 11) + 'px';
+      card.style.width = (r.p + gap + cardText + 17 + 12) + 'px';
       card.style.height = (nameH / 2 + below + 18) + 'px';
       file.style.left = (x.p - 8) + 'px'; file.style.top = (y.p - 8) + 'px';
 

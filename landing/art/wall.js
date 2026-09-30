@@ -20,18 +20,21 @@
    answer and the tool row are left out, in that order. That reference is
    measured once per frame size, so a drag can only take things away at the
    extremes, never add them. A chat narrower than 210px takes the short
-   spellings (wall.css). If the visitor leaves the wall where an event has no
-   room, the wall eases back to the middle before the next pass. */
+   spellings (wall.css); one whose question still runs too tall takes the
+   tiny spelling, and a title that does not fit takes its short form. If the
+   visitor leaves the wall where an event has no room, the wall eases back
+   to the middle before the next pass. */
 (function () {
   'use strict';
   if (!window.BR || !BR.art) return;
 
   var MIN = 12, MAX = 88;
-  var THUMB = 44;     // px; the range thumb's width (wall.css), centred on the wall
   var SLOP = 8;       // px; a touch moves the wall only once it travels this far sideways
   var EVT_MIN = 96;   // px; an event needs a column at least this wide
   var GAP = 10;       // px; clear space kept between messages, events and the composer
-  var Q_LINES = 4;    // a question that needs more lines than this steps aside
+  var Q_SPELL = 3;    // a question that needs more lines than this takes a shorter spelling
+  var Q_LINES = 4;    // and one that still needs more than this steps aside
+  var T_LINES = 2;    // a tool row that needs more lines than this steps aside
   var PH = ['l', 'm', 's', '0'];  // placeholder spellings, longest first; 0 hides it
 
   var PATHS = {
@@ -49,9 +52,15 @@
   function icon(name, cls) {
     return '<svg class="wall-i ' + (cls || '') + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + PATHS[name] + '</svg>';
   }
-  // One line in three spellings: desktop, short, large (wall.css picks).
-  function say(d, p, g) {
-    return '<span class="wall-d">' + d + '</span><span class="wall-p">' + (p || d) + '</span><span class="wall-g">' + (g || d) + '</span>';
+  // One line in four spellings: desktop, short, large and tiny. The frame
+  // picks among the first three (wall.css); a chat too narrow for its
+  // question takes the short one, then the tiny one (wall.js).
+  function say(d, p, g, n) {
+    return '<span class="wall-d">' + d + '</span><span class="wall-p">' + (p || d) + '</span><span class="wall-g">' + (g || d) + '</span><span class="wall-n">' + (n || p || d) + '</span>';
+  }
+  // A title and its short form.
+  function title(long, short) {
+    return '<span class="wall-title"><span class="wall-tl">' + long + '</span><span class="wall-ts">' + short + '</span></span>';
   }
 
   function composer(model, lock) {
@@ -66,11 +75,11 @@
       '<div class="wall-head">' +
         '<span class="privacy is-private wall-badge">Private</span>' +
         '<span class="wall-lockonly">' + icon('lock') + '</span>' +
-        '<span class="wall-title"><span>Statin exposure, T2D cohort</span></span>' +
+        title('Statin exposure, T2D cohort', 'Statin exposure') +
       '</div>' +
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
-          '<p class="wall-user wall-m-user">' + say('How many patients with type 2 diabetes take a statin?', 'How many T2D patients take a statin?') + '</p>' +
+          '<p class="wall-user wall-m-user">' + say('How many patients with type 2 diabetes take a statin?', 'How many T2D patients take a statin?', 0, 'T2D patients on a statin?') + '</p>' +
           '<p class="wall-tool wall-m-tool">' + icon('wrench') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran CDWAgent', 'Ran CDWAgent', 'Ran CDWAgent · build cohort') + '</span><span class="wall-aff">' + icon('bank') + 'UCSF data</span></span></p>' +
           '<p class="wall-bot wall-m-bot">412 patients match.</p>' +
         '</div>' +
@@ -80,7 +89,7 @@
             '<p class="wall-opt wall-keep">' + icon('lock', 'wall-navy') + '<span>Versa API Azure</span>' + icon('check', 'wall-end wall-check') + '</p>' +
             '<div class="wall-barred">' +
               '<p class="wall-opt"><span class="wall-gap"></span><span>Claude</span><span class="wall-quiet wall-end">Public</span></p>' +
-              '<p class="wall-why">' + say('Only private models may run in a private chat.', 0, 'Unavailable: this is a private chat, so only private models may run in it.') + '</p>' +
+              '<div class="wall-why"><p>' + say('Only private models may run in a private chat.', 0, 'Unavailable: this is a private chat, so only private models may run in it.') + '</p></div>' +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -92,11 +101,11 @@
     '<div class="wall-layer wall-pub"><div class="wall-pane">' +
       '<div class="wall-head">' +
         '<span class="privacy is-public wall-badge">Public</span>' +
-        '<span class="wall-title"><span>Statin literature scan</span></span>' +
+        title('Statin literature scan', 'Literature scan') +
       '</div>' +
       '<div class="wall-body">' +
         '<div class="wall-msgs">' +
-          '<p class="wall-user wall-m-user">' + say('Find recent trials on statins and cognition.', 'Find trials on statins and cognition.') + '</p>' +
+          '<p class="wall-user wall-m-user">' + say('Find recent trials on statins and cognition.', 'Find trials on statins and cognition.', 0, 'Statins and cognition?') + '</p>' +
           '<p class="wall-tool wall-m-tool">' + icon('search') + '<span class="wall-tx"><span class="wall-tt">' + say('Ran LiteratureAgent', 'Ran PubMed search', 'Ran LiteratureAgent · PubMed search') + '</span></span></p>' +
           '<p class="wall-bot wall-m-bot">23 trials since 2020.</p>' +
         '</div>' +
@@ -141,6 +150,7 @@
     var input = q('.wall-input');
     var chip = q('.wall-priv .wall-chip');
     var pop = q('.wall-pop');
+    var why = q('.wall-why');
     var req = q('.wall-req');
     var note = q('.wall-note');
     var lane = q('.wall-lane');
@@ -155,6 +165,7 @@
         body: pane.querySelector('.wall-body'),
         msgs: pane.querySelector('.wall-msgs'),
         user: pane.querySelector('.wall-m-user'),
+        tool: pane.querySelector('.wall-m-tool'),
         evt: pane.querySelector('.wall-evt'),
         rows: pane.querySelectorAll('.wall-opt, .wall-reqrow'),
         comp: pane.querySelector('.wall-comp'),
@@ -162,8 +173,8 @@
         // The reference arrangement (see the note at the top), and geometry
         // that only changes with the frame's size; both set by reference().
         refEvt: 'full', refDrops: 0, refPh: 0,
-        padL: 0, padR: 0, headH: 0, headOuter: 0, padB: 0, phI: 0,
-        phLevel: -1, drops: -1
+        headH: 0, headOuter: 0, padB: 0, phI: 0,
+        phLevel: -1, drops: -1, lv: -1
       };
     }
     var panes = [paneParts('priv'), paneParts('pub')];
@@ -186,6 +197,19 @@
     }
     function setPh(P, i) { setClass(P, 'wall-phx-', PH[i], 'phLevel'); P.phI = i; }
     function setDrops(P, d) { setClass(P, 'wall-drop', d, 'drops'); }
+    function setLevel(P, v) { setClass(P, 'wall-sp', v, 'lv'); }
+    function tallTool(P) {
+      return shown(P.tool) && P.tool.offsetHeight > (T_LINES + 0.5) * parseFloat(getComputedStyle(P.tool).lineHeight);
+    }
+    // A title fits in at most two lines, clear of the header band's edges by
+    // 6px, inside the header's padding (a narrow chat's is smaller: wall.css).
+    function titleFits(P) {
+      var t = P.title, tt = t.offsetTop, tb = tt + t.offsetHeight;
+      if (lines(t) > 2 || tt < 6 || tb > P.headH - 6 || overflows(t)) return false;
+      var hs = getComputedStyle(P.head);
+      return t.offsetLeft >= parseFloat(hs.paddingLeft) - 0.5 &&
+        t.offsetLeft + t.offsetWidth <= P.head.clientWidth - parseFloat(hs.paddingRight) + 0.5;
+    }
     function msgsOverflow(P) {
       var w = P.msgs.clientWidth, kids = P.msgs.children;
       for (var i = 0; i < kids.length; i++) {
@@ -198,13 +222,11 @@
     function fitPane(P) {
       var cl = P.pane.classList;
 
-      // Title: at most two lines, clear of the header band's edges by 6px.
-      cl.remove('wall-no-title');
-      var t = P.title;
-      if (shown(t)) {
-        var tt = t.offsetTop, tb = tt + t.offsetHeight;
-        if (lines(t) > 2 || tt < 6 || tb > P.headH - 6 || overflows(t) ||
-            t.offsetLeft < P.padL - 0.5 || t.offsetLeft + t.offsetWidth > P.pane.clientWidth - P.padR + 0.5) cl.add('wall-no-title');
+      // Title: the long one, else the short one, else none.
+      cl.remove('wall-no-title', 'wall-title-s');
+      if (shown(P.title) && !titleFits(P)) {
+        cl.add('wall-title-s');
+        if (!titleFits(P)) cl.add('wall-no-title');
       }
 
       // Placeholder: the reference spelling, or a shorter one where it does not fit.
@@ -213,12 +235,18 @@
       while (i < PH.length - 1 && shown(P.ph) && overflows(P.ph)) setPh(P, ++i);
 
       // Messages: the reference drops, and more only where this width needs
-      // them (the answer, then the tool row, then the question). A question
-      // too narrow to read takes the rest with it.
+      // them (the answer, then the tool row, then the question). A narrow
+      // chat first takes shorter words: the short spelling, then the tiny
+      // one. A tool row still too tall steps aside with the answer; a
+      // question still too tall takes the rest with it.
       var compOn = shown(P.comp);
       var limit = compOn ? P.comp.offsetTop - GAP : P.body.clientHeight - P.padB;
       var d = P.refDrops;
       setDrops(P, d);
+      var lv = 0;
+      setLevel(P, 0);
+      while (lv < 2 && ((shown(P.user) && lines(P.user) > Q_SPELL) || tallTool(P))) setLevel(P, ++lv);
+      if (d < 2 && tallTool(P)) setDrops(P, d = 2);
       if (shown(P.user) && lines(P.user) > Q_LINES) setDrops(P, d = 3);
       while (d < 3 && (bottomOf(P.msgs) > limit || msgsOverflow(P))) setDrops(P, ++d);
 
@@ -242,13 +270,16 @@
       var hy = H / 2 - P.headOuter;
       var top;
       if (P.side === 'priv') {
-        // The picker rises from the model chip, above the composer.
+        // The picker rises from the model chip, above the composer, and grows
+        // upward when the reason opens (wall.css), so it is measured open.
+        var shut = why.scrollHeight - why.clientHeight;
+        h += shut;
         top = limit - h;
-        evt.style.top = Math.round(top) + 'px';
+        evt.style.bottom = Math.round(P.body.clientHeight - limit) + 'px';
         if (top < msgEnd + GAP) return false;
         var x0 = evt.offsetLeft, x1 = x0 + pop.offsetWidth, rad = 12;
         var dx = Math.max(x0 + rad - hx, 0, hx - (x1 - rad));
-        var dy = Math.max(top + rad - hy, 0, hy - (top + pop.offsetHeight - rad));
+        var dy = Math.max(top + rad - hy, 0, hy - (top + pop.offsetHeight + shut - rad));
         return Math.sqrt(dx * dx + dy * dy) - rad - hr >= 4;
       }
       // The request is the next row of its own transcript. Its ray ends at the
@@ -278,8 +309,7 @@
       hr = handle.offsetWidth / 2;
       var keep = split;
       panes.forEach(function (P) {
-        var hs = getComputedStyle(P.head), bs = getComputedStyle(P.body);
-        P.padL = parseFloat(hs.paddingLeft); P.padR = parseFloat(hs.paddingRight);
+        var bs = getComputedStyle(P.body);
         P.headH = P.head.clientHeight; P.headOuter = P.head.offsetHeight;
         P.padB = parseFloat(bs.paddingBottom);
       });
@@ -390,19 +420,25 @@
       var r = stage.getBoundingClientRect();
       if (r.width) setSplit((x - r.left) / r.width * 100);
     }
-    input.addEventListener('input', function () { setSplit(+input.value); touched(); });
+    // Chromium's range jumps to a finger the moment it lands on the track,
+    // before anyone knows whether the finger is scrolling the page. While a
+    // touch is still undecided (tp, below) that jump is undone, so the wall
+    // stays where it was.
+    input.addEventListener('input', function () {
+      if (tp && !tp.drag) { input.value = String(Math.round(split)); return; }
+      setSplit(+input.value); touched();
+    });
     input.addEventListener('keydown', function (e) { if (/^(Arrow|Page|Home|End)/.test(e.key)) touched(); });
     // Mouse and pen: the range itself follows the pointer.
-    // Touch: the range's thumb is as wide as the handle and sits under it
-    // (wall.css), so a finger on the wall drags it natively, iOS Safari
-    // included. A finger anywhere else is watched first: a swipe that goes
+    // Touch: a finger is watched first, wherever it lands. A swipe that goes
     // up or down is the page scrolling (the browser takes it and cancels the
-    // pointer), and only one that goes sideways moves the wall. A tap moves
-    // the wall to the finger.
+    // pointer) and leaves the wall alone; only one that goes sideways moves
+    // the wall. A tap moves the wall to the finger. The range's thumb is as
+    // wide as the handle and sits under it (wall.css), so where the browser
+    // drags a range only from its thumb (iOS Safari), a finger on the wall
+    // still drags it.
     input.addEventListener('pointerdown', function (e) {
       if (e.pointerType !== 'touch') { touched(); return; }
-      var r = stage.getBoundingClientRect();
-      if (Math.abs(e.clientX - (r.left + split / 100 * r.width)) <= THUMB / 2) return;
       tp = { id: e.pointerId, x: e.clientX, y: e.clientY, drag: false };
     });
     input.addEventListener('pointermove', function (e) {
@@ -418,9 +454,15 @@
     input.addEventListener('pointerup', function (e) {
       if (!tp || e.pointerId !== tp.id) return;
       var p = tp; tp = null;
-      if (!p.drag && Math.abs(e.clientX - p.x) < SLOP && Math.abs(e.clientY - p.y) < SLOP) { touched(); fromX(e.clientX); }
+      if (p.drag) return;
+      if (Math.abs(e.clientX - p.x) < SLOP && Math.abs(e.clientY - p.y) < SLOP) { touched(); fromX(e.clientX); }
+      else input.value = String(Math.round(split));
     });
-    input.addEventListener('pointercancel', function (e) { if (tp && e.pointerId === tp.id) tp = null; });
+    input.addEventListener('pointercancel', function (e) {
+      if (!tp || e.pointerId !== tp.id) return;
+      tp = null;
+      input.value = String(Math.round(split));
+    });
 
     if (reduced) {
       // One still: the refused model on the left, the stopped request on the right.

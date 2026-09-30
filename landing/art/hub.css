@@ -14,6 +14,7 @@
   --hub-row: 26px;
   --hub-gap: 16px;
   --hub-fade: 24px;
+  --hub-tail: 0px;
 }
 
 /* Connectors. Thin hairlines; the pulse is the one coral stroke, and the
@@ -25,9 +26,13 @@
 .art-hub .hub-lines .hub-route.on { opacity: 1; }
 
 /* ── The chat: a transcript that scrolls, composer card, model chip ── */
+/* The box runs down to just above the card; the gap under the last line is
+   padding (--hub-tail), so a message that was just sent rises out of the
+   composer rather than out of an unseen edge. */
 .art-hub .hub-log {
   position: absolute; overflow: hidden;
   display: flex; flex-direction: column; justify-content: flex-end;
+  padding-bottom: var(--hub-tail);
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hub-fade));
   mask-image: linear-gradient(to bottom, transparent 0, #000 var(--hub-fade));
   transition: opacity var(--dur-med) var(--ease);
@@ -46,10 +51,10 @@
 .art-hub .hub-reply .w.on { opacity: 1; }
 /* A message that has passed the top edge leaves as one block. */
 .art-hub .hub.live .hub-user, .art-hub .hub.live .hub-reply { transition: opacity var(--dur-menu) ease; }
-.art-hub .hub-stack .gone { opacity: 0; }
+.art-hub .hub-stack .gone { opacity: 0; transition-duration: var(--dur-fast); }
 /* The empty chat, before its first message. */
 .art-hub .hub-new {
-  position: absolute; left: 0; right: 0; top: 50%; margin-top: -9px;
+  position: absolute; left: 0; right: 0; top: calc((100% - var(--hub-tail)) / 2); margin-top: -9px;
   text-align: center; font-size: 12px; line-height: 18px; color: var(--muted);
   opacity: 0; transition: opacity var(--dur-fast) ease;
 }

@@ -73,7 +73,7 @@
   <main class="docs-main" id="docs-main">
 <div class="doc-page" id="doc-getstarted">
 <h1>Getting started</h1>
-<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code>biorouter v1.91.2</code>.</p>
+<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.91.2</code> on Windows, macOS and Linux.</p>
 
 <h2 id="getstarted-install">Install</h2>
 <p>Download the file for your computer from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/biorouter/releases">GitHub Releases</a>.</p>
@@ -86,26 +86,25 @@
 <pre><code>sudo dnf install ./Biorouter-*.rpm</code></pre></li>
   <li><strong>Linux server.</strong> The <code>biorouter-cli</code> packages, one <code>.deb</code> and one <code>.rpm</code>, install the command line, the background service and the browser interface with no desktop app. Install one the same way. See <a href="#cli">Command line</a>.</li>
 </ul>
-<p>The app checks for new releases and tells you when one is ready. <strong>Settings → App → Updates</strong> shows where it stands.</p>
+<p>The app checks for new releases and tells you when one is ready. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Updates</strong> shows where it stands.</p>
 <div class="note"><p>When it starts, the app checks for Git, Python, uv and npm, which some extensions use, and offers to install any that are missing. The app itself runs without them. Local models on Linux need Debian 12, Ubuntu 22.04 or newer.</p></div>
 
-<h2 id="getstarted-cli">Put the command line on your PATH</h2>
+<h2 id="getstarted-cli">Install the command line</h2>
 <p>The desktop app includes the <code>biorouter</code> command line tool, which shares your settings and chats with the app. When the command is not on your PATH, the app offers to install it as it starts. On Windows and on the Linux desktop packages, use that prompt. On macOS you can also run the bundled copy once from a terminal:</p>
-<pre><code>cd /Applications/Biorouter.app/Contents
-Resources/bin/biorouter setup-path
-cd -</code></pre>
+<pre><code>/Applications/Biorouter.app/Contents/Resources/bin/biorouter \
+  setup-path</code></pre>
 <p><code>setup-path</code>, which the app's prompt also runs, links the command into a folder on your PATH, such as <code>/usr/local/bin</code> or <code>~/.local/bin</code>. On Windows it copies it to <code>%LOCALAPPDATA%\Biorouter\bin</code>. If the folder is not on your PATH yet, it prints the line to add. Open a new terminal and run <code>biorouter info</code> to check.</p>
 <p>After an update, the app offers to update the command when the copy on your PATH is older. The Linux server packages install <code>biorouter</code> to <code>/usr/bin</code> and need no setup.</p>
 
 <h2 id="getstarted-model">Connect a model</h2>
-<p>Biorouter asks you to choose a model the first time it opens. To add or change one later, open <strong>Settings → Models → Configure providers</strong>. Providers sit on three tabs.</p>
+<p>Biorouter asks you to choose a model the first time it opens. To add or change one later, open <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Configure providers</strong>. Providers sit on three tabs.</p>
 <ul>
-  <li><strong>Local.</strong> Llama Server needs nothing installed. The first time Biorouter opens, its row lists models: pick one and choose <strong>Download &amp; run</strong>. The model downloads once; after that it runs on this computer, so your messages never go to a model host. Later, <strong>Settings → Models → Local Model Inventory</strong> downloads more. Ollama needs <a href="https://ollama.com">Ollama</a> running on this computer with a model pulled.</li>
+  <li><strong>Local.</strong> Llama Server needs nothing installed. The first time Biorouter opens, its row lists models: pick one and choose <strong>Download &amp; run</strong>. The model downloads once; after that it runs on this computer, so your messages never go to a model host. Later, <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Local Model Inventory</strong> downloads more. Ollama needs <a href="https://ollama.com">Ollama</a> running on this computer with a model pulled.</li>
   <li><strong>Institutional.</strong> For UCSF. Versa API Azure asks for your Versa API key. Versa API Bedrock asks for your Versa access key ID and secret access key. The endpoints are set for you.</li>
   <li><strong>Public.</strong> Claude Code and Codex use the vendor's command line tool, installed and signed in to your own plan; Biorouter never sees the credential. Anthropic, OpenAI and Google Gemini need an API key from that provider. The others ask for that provider's own key or account credentials.</li>
 </ul>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them when you save. From a terminal, run <code>biorouter configure</code> and choose <strong>Configure Providers</strong>. <a href="#providers">Models and providers</a> lists every provider and its default model, and <a href="#vaulting">Security</a> explains where credentials are kept.</p>
-<p>Llama Server, Ollama running on this computer, and the two Versa providers are private. Ollama on another machine, and every other provider, is public. For patient data, use a private model. Once a chat uses a private model it stays private, and Biorouter refuses to switch it to a public model. <strong>Make this chat public</strong> in Chat history is the only way to change that. See <a href="#privacy">Private and public</a>.</p>
+<p>Llama Server, Ollama running on this computer, and the two Versa providers are private. Ollama on another machine, and every other provider, is public. For patient data, use a private model. Once a chat uses a private model or a private data extension, it stays private, and Biorouter refuses to switch it to a public model. To change that, choose <strong>Make this chat public</strong> in Chat history, or run <code>biorouter session declassify</code>. See <a href="#privacy">Private and public</a>.</p>
 <div class="note"><p><strong>UCSF researchers:</strong> use the two Versa providers on the Institutional tab. Azure OpenAI and Amazon Bedrock on the Public tab stay public even if you point them at a UCSF endpoint, because Biorouter cannot check where they send data.</p></div>
 
 <h2 id="getstarted-first-chat">Start a chat</h2>
@@ -143,7 +142,7 @@ cd -</code></pre>
 <h2 id="app-window">The window</h2>
 <p>The sidebar runs down the left. The rest of the window shows the page you opened. In a chat, tabs run across the top, the conversation fills the middle and the composer sits at the bottom.</p>
 <p>Files, figures and apps the agent makes open in a side panel on the right. In the conversation each one is a card; choose it to open it in the panel. In a live chat the panel opens on the newest one by itself. A terminal can open below the conversation.</p>
-<p>Drag the sidebar's edge to resize it, or press <kbd>Cmd+B</kbd> to hide and show it. Shortcuts on this page are shown for macOS. On Windows and Linux, use <kbd>Ctrl</kbd> for <kbd>Cmd</kbd>; <a href="#app-shortcuts">Keyboard shortcuts</a> lists the exceptions.</p>
+<p>Drag the sidebar's edge to resize it, or press <kbd>Cmd+B</kbd> to hide and show it. Shortcuts on this page are shown for macOS; see <a href="#app-shortcuts">Keyboard shortcuts</a>.</p>
 
 <h2 id="app-sidebar">The sidebar</h2>
 <p>From top to bottom:</p>
@@ -170,8 +169,8 @@ cd -</code></pre>
 <p>The composer has three rows.</p>
 <ul>
   <li><strong>Above the text box.</strong> On the left, the working folder the agent reads and writes in. It is fixed once you send the first message. On the right, the extensions, skills and knowledge bases this chat uses, each with a count. Changes there apply to this chat only.</li>
-  <li><strong>In the box.</strong> Your message, and Send, the arrow at the right. While the agent works, Send becomes <strong>Stop</strong>.</li>
-  <li><strong>Below the text box.</strong> On the left, reasoning effort, which sets how long the model thinks before it answers, then the model this chat runs on (see <a href="#app-models">Switching models</a>). On the right, context shows how full the context window is. Its popover compacts the chat now, or sets when Biorouter compacts it on its own. Cost shows the estimated spend so far; turn it off in <strong>Settings → App → Appearance</strong>.</li>
+  <li><strong>In the box.</strong> Your message, and Send, the arrow at the right. While the agent works and the box is empty, Send becomes <strong>Stop</strong>.</li>
+  <li><strong>Below the text box.</strong> On the left, reasoning effort, which sets how long the model thinks before it answers, then the model this chat runs on (see <a href="#app-models">Switching models</a>). On the right, context shows how full the context window is. Its popover compacts the chat now, or sets when Biorouter compacts it on its own. Cost shows the estimated spend so far; turn it off in <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Appearance</strong>.</li>
 </ul>
 <p>In a narrow pane, reasoning effort, context and cost fold into one <strong>+</strong> button, <strong>Chat tools and settings</strong>. The model stays visible.</p>
 <h3>While the agent works</h3>
@@ -190,7 +189,7 @@ cd -</code></pre>
   <li><strong>Open the model chip</strong> Choose the model name under the text box, then <strong>Change model</strong>.</li>
   <li><strong>Pick a provider and a model</strong> Then choose <strong>Select model</strong>. The next turn uses it; the conversation so far is unchanged.</li>
 </ol>
-<p>The change applies to this chat only. Tick <strong>Also use for new chats</strong> to make it the default too. <strong>Settings → Models → Switch models</strong> sets the model new chats start on, and existing chats keep their own. A private chat accepts only private models. See <a href="#privacy">Private and public</a>.</p>
+<p>The change applies to this chat only. Tick <strong>Also use for new chats</strong> to make it the default too. <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Switch models</strong> sets the model new chats start on, and existing chats keep their own. A private chat accepts only private models. See <a href="#privacy">Private and public</a>.</p>
 
 <h2 id="app-tabs">Tabs and split panes</h2>
 <p>Every chat is a tab. Open one with <kbd>Cmd+T</kbd>, close it with <kbd>Cmd+W</kbd>, and move between tabs with <kbd>Ctrl+Tab</kbd> and <kbd>Ctrl+Shift+Tab</kbd>. Drag a tab to reorder it. Opening a chat that is already open switches to its tab. Drag a tab out of the window to give it a window of its own, or onto another window's tabs to move it there.</p>
@@ -212,43 +211,45 @@ cd -</code></pre>
 </ul>
 
 <h2 id="app-shortcuts">Keyboard shortcuts</h2>
-<p>On Windows and Linux, use <kbd>Ctrl</kbd> for <kbd>Cmd</kbd> and <kbd>Alt</kbd> for <kbd>Option</kbd>. <kbd>Ctrl+Tab</kbd> and <kbd>Shift+Enter</kbd> are the same everywhere, and Settings has no shortcut on Windows or Linux.</p>
-<table>
+<p>On Windows and Linux, use <kbd>Ctrl</kbd> for <kbd>Cmd</kbd> and <kbd>Alt</kbd> for <kbd>Option</kbd>. <kbd>Ctrl+Tab</kbd> and <kbd>Shift+Enter</kbd> are the same everywhere.</p>
+<div class="doc-table-scroll"><table>
   <thead><tr><th>Action</th><th>Shortcut on macOS</th></tr></thead>
   <tbody>
-    <tr><td>New chat tab, or a new terminal when the terminal has focus</td><td><kbd>Cmd+T</kbd></td></tr>
-    <tr><td>Close the tab</td><td><kbd>Cmd+W</kbd></td></tr>
-    <tr><td>Next or previous tab</td><td><kbd>Ctrl+Tab</kbd>, <kbd>Ctrl+Shift+Tab</kbd></td></tr>
+    <tr><td>New chat tab, or a new terminal in the terminal</td><td><kbd>Cmd+T</kbd></td></tr>
+    <tr><td>Close the tab, or the terminal you are in</td><td><kbd>Cmd+W</kbd></td></tr>
+    <tr><td>Next tab</td><td><kbd>Ctrl+Tab</kbd></td></tr>
+    <tr><td>Previous tab</td><td><kbd>Ctrl+Shift+Tab</kbd></td></tr>
     <tr><td>New window</td><td><kbd>Cmd+N</kbd></td></tr>
     <tr><td>Close the window</td><td><kbd>Shift+Cmd+W</kbd></td></tr>
     <tr><td>Open a folder in a new chat window</td><td><kbd>Cmd+O</kbd></td></tr>
-    <tr><td>Home, Chat history</td><td><kbd>Cmd+1</kbd>, <kbd>Cmd+2</kbd></td></tr>
-    <tr><td>Workflows, Scheduler, Extensions, Skills</td><td><kbd>Cmd+3</kbd> to <kbd>Cmd+6</kbd></td></tr>
+    <tr><td>Home, Chat history</td><td><kbd>Cmd+1</kbd>,&nbsp;<kbd>Cmd+2</kbd></td></tr>
+    <tr><td>Workflows, Scheduler, Extensions, Skills</td><td><kbd>Cmd+3</kbd>&nbsp;to&nbsp;<kbd>Cmd+6</kbd></td></tr>
     <tr><td>Hide or show the sidebar</td><td><kbd>Cmd+B</kbd></td></tr>
-    <tr><td>Find, find next, find previous</td><td><kbd>Cmd+F</kbd>, <kbd>Cmd+G</kbd>, <kbd>Shift+Cmd+G</kbd></td></tr>
+    <tr><td>Find</td><td><kbd>Cmd+F</kbd></td></tr>
+    <tr><td>Find next, find previous</td><td><kbd>Cmd+G</kbd>,&nbsp;<kbd>Shift+Cmd+G</kbd></td></tr>
     <tr><td>New line in the composer</td><td><kbd>Shift+Enter</kbd></td></tr>
     <tr><td>Add a message to the running turn</td><td><kbd>Cmd+Enter</kbd></td></tr>
-    <tr><td>Bring back a message you sent earlier</td><td><kbd>Cmd+Up</kbd>, <kbd>Cmd+Down</kbd></td></tr>
+    <tr><td>Bring back a message you sent earlier</td><td><kbd>Cmd+Up</kbd>,&nbsp;<kbd>Cmd+Down</kbd></td></tr>
     <tr><td>Settings, on macOS only</td><td><kbd>Cmd+,</kbd></td></tr>
     <tr><td>Bring the Biorouter window forward, from any app</td><td><kbd>Option+Cmd+G</kbd></td></tr>
     <tr><td>Quick launcher: start a chat from any app</td><td><kbd>Option+Shift+Cmd+G</kbd></td></tr>
   </tbody>
-</table>
+</table></div>
 
 <h2 id="app-menus">Menu bar and tray</h2>
 <p>The menu bar repeats the sidebar and adds a few things of its own.</p>
 <ul>
+  <li><strong>Biorouter.</strong> On macOS only: Settings, Check for Updates, Check for Dependencies, Check for Extension Updates.</li>
   <li><strong>Go.</strong> Home, New Chat, History, Workflows, Scheduler, Extensions, Skills.</li>
   <li><strong>File.</strong> New Chat, New Window, Open Directory, Recent Directories, Close Tab, Close Window, Focus Biorouter Window.</li>
   <li><strong>Edit.</strong> The usual editing items and Find.</li>
   <li><strong>Extensions.</strong> Install a <code>.brxt</code> file, browse BAAM, add a custom extension, check for extension updates.</li>
   <li><strong>Providers.</strong> Configure Providers, Switch Model, Reset Provider.</li>
   <li><strong>View.</strong> Light, Dark or System mode, zoom and full screen.</li>
-  <li><strong>Window.</strong> Always on Top.</li>
   <li><strong>Help.</strong> These docs, Report a Bug, Request a Feature.</li>
-  <li><strong>Biorouter.</strong> On macOS only: Settings, Check for Updates, Check for Dependencies, Check for Extension Updates.</li>
+  <li><strong>Window.</strong> Always on Top.</li>
 </ul>
-<p>The tray icon (the menu bar icon on macOS) shows while <strong>Settings → App → Appearance → Menu bar icon</strong> is on, which it is by default. On macOS and Windows, clicking it brings the window forward. Its menu holds Home, New Chat, Settings, Extensions, Skills, Check for Updates and Quit.</p>
+<p><strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Appearance&nbsp;→&nbsp;Menu bar icon</strong> shows or hides the tray icon (the menu bar icon on macOS). It is on by default. On macOS and Windows, clicking the icon brings the window forward. Its menu holds Home, New Chat, Settings, Extensions, Skills, Check for Updates and Quit.</p>
 </div>
 
 <div class="doc-page" id="doc-cli">
@@ -636,27 +637,30 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 
 <h2 id="providers-tabs">The three tabs</h2>
 <p>Open <strong>Settings → Models → Configure providers</strong>. Every provider sits on one of three tabs, always in this order. Each tab opens with a heading and a note, quoted here in the app's own words.</p>
-<ul>
-  <li><strong>Local</strong> holds Llama Server and Ollama. Private · Local: “Private because inference runs on this machine. Nothing leaves it.”</li>
-  <li><strong>Institutional</strong> holds UCSF's Versa API Azure and Versa API Bedrock. Private · Institutional: “Private because Biorouter recognizes this institutional gateway endpoint.”</li>
-  <li><strong>Public</strong> holds Claude Code and Codex, then the API providers. Public · Commercial: “Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.”</li>
-</ul>
+<div class="doc-table-scroll"><table>
+  <thead><tr><th>Tab</th><th>Holds</th><th>The app's heading and note</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Local</strong></td><td>Llama Server, Ollama</td><td><strong>Private · Local</strong><br>“Private because inference runs on this machine. Nothing leaves it.”</td></tr>
+    <tr><td><strong>Institutional</strong></td><td>UCSF's Versa API Azure and Versa API Bedrock</td><td><strong>Private · Institutional</strong><br>“Private because Biorouter recognizes this institutional gateway endpoint.”</td></tr>
+    <tr><td><strong>Public</strong></td><td>Claude Code and Codex, then the API providers</td><td><strong>Public · Commercial</strong><br>“Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.”</td></tr>
+  </tbody>
+</table></div>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
-<p>A chat on a private model becomes a private chat. <a href="#privacy">Private and public</a> explains what that changes.</p>
-<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults on this page are what Biorouter picks when you configure a provider without naming a model. Defaults change as providers release new models, so your installed version may pick a different one.</p></div>
+<p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
+<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults on this page are what Biorouter picks when you configure a provider without naming a model. They are the next release's defaults, so the release you have installed may start on an older model of the same family.</p></div>
 
 <h2 id="providers-local">Local</h2>
 <p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once; after that, nothing leaves your computer.</p>
 <div class="doc-table-scroll"><table>
-  <thead><tr><th>Model</th><th>Name in the CLI</th><th>Download</th><th>Notes</th></tr></thead>
+  <thead><tr><th>Model and CLI name</th><th>Download</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td><strong>Gemma 4 E4B</strong></td><td><code>gemma4</code></td><td>9.6 GB</td><td>Default under 64 GiB</td></tr>
-    <tr><td><strong>Gemma 4 E2B</strong></td><td><code>gemma4-e2b</code></td><td>3.1 GB</td><td>Smallest; good on 16 GiB</td></tr>
-    <tr><td><strong>Gemma 4 12B</strong></td><td><code>gemma4-12b</code></td><td>7.6 GB</td><td>Default at 64 GiB or more</td></tr>
-    <tr><td><strong>Gemma 4 26B</strong></td><td><code>gemma4-26b</code></td><td>18 GB</td><td>Mixture of experts; 48 GiB</td></tr>
-    <tr><td><strong>Gemma 4 31B</strong></td><td><code>gemma4-31b</code></td><td>20 GB</td><td>Largest Gemma 4; 64 GiB</td></tr>
-    <tr><td><strong>Qwen3.6 35B</strong></td><td><code>qwen3.6</code></td><td>24 GB</td><td>Mixture of experts; 64 GiB</td></tr>
-    <tr><td><strong>Qwen3.6 27B</strong></td><td><code>qwen3.6-27b</code></td><td>17 GB</td><td>Dense; 48 GiB</td></tr>
+    <tr><td><strong>Gemma 4 E4B</strong><br><code>gemma4</code></td><td>9.6 GB</td><td>Default under 64 GiB</td></tr>
+    <tr><td><strong>Gemma 4 E2B</strong><br><code>gemma4-e2b</code></td><td>3.1 GB</td><td>Smallest; good on 16 GiB</td></tr>
+    <tr><td><strong>Gemma 4 12B</strong><br><code>gemma4-12b</code></td><td>7.6 GB</td><td>Default at 64 GiB or more</td></tr>
+    <tr><td><strong>Gemma 4 26B</strong><br><code>gemma4-26b</code></td><td>18 GB</td><td>Mixture of experts; 48 GiB</td></tr>
+    <tr><td><strong>Gemma 4 31B</strong><br><code>gemma4-31b</code></td><td>20 GB</td><td>Largest Gemma 4; 64 GiB</td></tr>
+    <tr><td><strong>Qwen3.6 35B</strong><br><code>qwen3.6</code></td><td>24 GB</td><td>Mixture of experts; 64 GiB</td></tr>
+    <tr><td><strong>Qwen3.6 27B</strong><br><code>qwen3.6-27b</code></td><td>17 GB</td><td>Dense; 48 GiB</td></tr>
   </tbody>
 </table></div>
 <p>The memory figures are what the GPU can use; on a Mac, that is the unified memory. The two mixture of experts models use about 3B to 4B parameters per token, so they are fast once loaded, but they are large downloads. Any other model works too: give a Hugging Face spec such as <code>owner/repo:Q4_K_M</code> as the model name. To download a model before you need it:</p>
@@ -669,10 +673,10 @@ biorouter models local list</code></pre>
 <h2 id="providers-institutional">Institutional</h2>
 <p>These endpoints are run by UCSF, so prompts and replies stay under UCSF's agreements. Each asks only for your Versa credentials; the endpoint is set for you.</p>
 <div class="doc-table-scroll"><table>
-  <thead><tr><th>Provider</th><th>Name in the CLI</th><th>Default model</th></tr></thead>
+  <thead><tr><th>Provider and CLI name</th><th>Default model</th></tr></thead>
   <tbody>
-    <tr><td><strong>Versa API Azure</strong></td><td><code>versa_azure</code></td><td><code>gpt-5.5-2026-04-24</code></td></tr>
-    <tr><td><strong>Versa API Bedrock</strong></td><td><code>versa_bedrock</code></td><td><code>us.anthropic.claude-opus-4-8</code></td></tr>
+    <tr><td><strong>Versa API Azure</strong><br><code>versa_azure</code></td><td><code>gpt-5.5-2026-04-24</code></td></tr>
+    <tr><td><strong>Versa API Bedrock</strong><br><code>versa_bedrock</code></td><td><code>us.anthropic.claude-opus-4-8</code></td></tr>
   </tbody>
 </table></div>
 <p><strong>Versa API Azure</strong> takes your Versa API key and serves the UCSF ChatGPT models, only those UCSF has deployed. <strong>Versa API Bedrock</strong> takes your Versa access key ID and secret access key and serves the Anthropic models UCSF hosts on Amazon Bedrock.</p>
@@ -682,10 +686,10 @@ biorouter models local list</code></pre>
 <h2 id="providers-agents">Public: AI agents on your subscription</h2>
 <p>The first section of the Public tab, “AI agents · your subscription”, holds <strong>Claude Code</strong> and <strong>Codex</strong>. The app says: “Biorouter drives a vendor CLI already installed and signed in on this machine; turns bill to that plan, not to an API key.” There is no key to paste, and Biorouter never sees the credential.</p>
 <div class="doc-table-scroll"><table>
-  <thead><tr><th>Agent</th><th>Name in the CLI</th><th>Default model</th><th>Plan</th></tr></thead>
+  <thead><tr><th>Agent and CLI name</th><th>Default model</th><th>Plan</th></tr></thead>
   <tbody>
-    <tr><td><strong>Claude Code</strong></td><td><code>claude_code</code></td><td><code>claude-opus-5-5</code></td><td>A Claude Pro or Max plan</td></tr>
-    <tr><td><strong>Codex</strong></td><td><code>codex</code></td><td><code>gpt-6-astra</code></td><td>A ChatGPT plan</td></tr>
+    <tr><td><strong>Claude Code</strong><br><code>claude_code</code></td><td><code>claude-opus-5-5</code></td><td>A Claude Pro or Max plan</td></tr>
+    <tr><td><strong>Codex</strong><br><code>codex</code></td><td><code>gpt-6-astra</code></td><td>A ChatGPT plan</td></tr>
   </tbody>
 </table></div>
 <ol class="steps">
@@ -734,7 +738,7 @@ npm install -g @openai/codex@latest</code></pre></li>
 </table></div>
 <p>Most take one API key. Its setting is named after the provider, and an environment variable of the same name works too: <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>, <code>DEEPSEEK_API_KEY</code>, <code>GROQ_API_KEY</code>, <code>INCEPTION_API_KEY</code>, <code>MISTRAL_API_KEY</code>, <code>MOONSHOT_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>VENICE_API_KEY</code>, <code>XAI_API_KEY</code>, <code>XIAOMI_MIMO_API_KEY</code> and <code>ZAI_API_KEY</code>. The others sign in differently:</p>
 <ul>
-  <li><strong>Amazon Bedrock</strong> and <strong>AWS SageMaker TGI</strong> use your AWS profile or credentials, including SSO. SageMaker also needs <code>SAGEMAKER_ENDPOINT_NAME</code>.</li>
+  <li><strong>Amazon Bedrock</strong> and <strong>AWS SageMaker TGI</strong> (listed in the app as Amazon SageMaker TGI) use your AWS profile or credentials, including SSO. SageMaker also needs <code>SAGEMAKER_ENDPOINT_NAME</code>.</li>
   <li><strong>Azure OpenAI</strong> needs your endpoint and deployment name, with a key or your Azure sign in.</li>
   <li><strong>Databricks</strong> needs the workspace host, with a token or OAuth. <strong>Snowflake</strong> needs the account host and a token.</li>
   <li><strong>GCP Vertex AI</strong> needs <code>GCP_PROJECT_ID</code> and <code>GCP_LOCATION</code>, with a service account or application default credentials.</li>
@@ -742,7 +746,7 @@ npm install -g @openai/codex@latest</code></pre></li>
   <li><strong>LiteLLM</strong> needs your gateway's address and key.</li>
   <li><strong>Tetrate Agent Router Service</strong> opens a browser sign in, or takes <code>TETRATE_API_KEY</code>.</li>
 </ul>
-<p>The AWS SageMaker TGI and LiteLLM defaults are placeholders: the model is whatever your endpoint or gateway serves. Run <code>biorouter models providers</code> for the list on your computer and <code>biorouter models list &lt;provider&gt;</code> for a provider's models.</p>
+<p>The SageMaker TGI and LiteLLM defaults are placeholders: the model is whatever your endpoint or gateway serves. Run <code>biorouter models providers</code> for the list on your computer and <code>biorouter models list &lt;provider&gt;</code> for a provider's models.</p>
 
 <h2 id="providers-custom">Add a custom provider</h2>
 <p>Any endpoint that speaks the OpenAI, Anthropic or Ollama API can be added.</p>
@@ -751,7 +755,7 @@ npm install -g @openai/codex@latest</code></pre></li>
   <li><strong>Describe the endpoint</strong> Pick the Provider Type (OpenAI Compatible, Anthropic Compatible or Ollama Compatible), then enter a Display Name, the API URL, the API Key, and the Available Models as a comma separated list. Tick whether it streams responses.</li>
   <li><strong>Save</strong> The provider appears on the Public tab and in the model picker from then on.</li>
 </ol>
-<p>Custom providers are listed as public, because Biorouter cannot verify where a custom endpoint points. An Ollama Compatible provider on this computer (localhost) still runs as private, so its chats become private.</p>
+<p>Custom providers are listed as public, because Biorouter cannot verify where a custom endpoint points. One exception: an Ollama Compatible provider on this computer (localhost) runs as private, so its chats become private. An OpenAI Compatible or Anthropic Compatible provider stays public even on localhost; ticking <strong>This is a local model (no auth required)</strong> only removes the API key.</p>
 
 <h2 id="providers-switching">Switch models</h2>
 <p><strong>In a chat.</strong> Choose the model chip under the message box, then a provider and model in <strong>Switch models</strong>. The change applies to that chat only. Tick <strong>Also use for new chats</strong> to make it the model new chats start on. A private chat lists public models as unavailable; see <a href="#privacy">Private and public</a>.</p>
@@ -849,7 +853,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <div class="note warn"><p>Approving is not a compliance decision. Biorouter cannot know whether a BAA, DUA or IRB approval covers the flow. Your compliance office answers that.</p></div>
 
 <h2 id="privacy-knowledge">Knowledge bases</h2>
-<p>A knowledge base takes the tier of the most sensitive chat that has written to it. A public model cannot read a private base. Merging two bases gives the more sensitive tier of the two.</p>
+<p>A knowledge base takes the tier of the most sensitive chat that has written to it. Merging two bases gives the more sensitive tier of the two.</p>
 <p>To change a base's tier, open it in the <strong>Knowledge</strong> view. <strong>Make private</strong> takes one click. <strong>Make public</strong> asks you to type the base's ID and tells you how many pages and raw sources every model will then be able to read, including anything a private chat wrote. Content that has already been read cannot be recalled.</p>
 
 <h2 id="privacy-make-public">Make a chat public</h2>
@@ -867,7 +871,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 
 <h2 id="privacy-switch">Turning the protection off</h2>
 <p><strong>Settings → App → Privacy</strong> has one switch, <strong>Privacy tiers</strong>, which is on by default. Turning it off asks you to type <code>DISABLE PRIVACY TIERS</code>, choose <strong>Turn off privacy tiers</strong>, then pass your computer's own password prompt. Turning it back on takes one click.</p>
-<p>While it is off, nothing separates private chats, extensions and knowledge bases from public models, and a chat that uses a private model or private data is no longer marked private. Turning it back on protects what was already marked, but it cannot mark what happened in between.</p>
+<p>While it is off, nothing separates private chats, extensions and knowledge bases from public models, and a chat that uses a private model or private data while it is off is not marked private. Turning it back on protects what was already marked, but it cannot mark what happened in between.</p>
 <p>The switch is kept in its own file beside <code>config.yaml</code>, not in it. An agent with a shell could still edit that file, which Biorouter cannot prevent, so it announces the off state instead: a note reading “Privacy tiers are off.” sits above every message box until you turn it back on. If the file was changed outside the app, the note says so.</p>
 
 <h2 id="privacy-limits">What this does not protect</h2>
@@ -895,7 +899,12 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>Linux</strong><br>Secret&nbsp;Service</td><td>GNOME Keyring or KWallet. No prompt on a desktop session, which opens the store when you log in.</td></tr>
   </tbody>
 </table></div>
-<p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code>BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. On macOS and Linux the file is readable by your account only, but anyone who can act as your account, or as root, can still read it. Prefer the credential store where there is one.</p>
+<p>Where no credential store answers, as on a Linux server, over SSH or in WSL, Biorouter keeps secrets in <code>secrets.yaml</code> beside <code>config.yaml</code> instead. Set the environment variable <code>BIOROUTER_DISABLE_KEYRING</code> to any value to choose that file on purpose. Prefer the credential store where there is one.</p>
+<ul>
+  <li><strong>In the current release</strong>, on macOS and Linux the file gets your computer's default permissions, which can let other accounts on the computer read it. Run <code>chmod&nbsp;600 ~/.config/<wbr>biorouter/<wbr>secrets.yaml</code> to make it readable by your account only. Biorouter keeps that setting when it writes the file again.</li>
+  <li><span class="chip">Next release</span> Biorouter creates the file readable by your account only, and tightens an existing file the next time it writes it.</li>
+</ul>
+<p>Either way, anyone who can act as your account, or as root, can still read the file.</p>
 <p>An environment variable named after a key, such as <code>OPENAI_API_KEY</code>, always wins over the stored value.</p>
 
 <h2 id="vaulting-secret-guard">The secret guard</h2>
@@ -907,7 +916,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>Secret files</strong></td><td><code>.env</code>, <code>.env.*</code>, <code>secrets.*</code> (Biorouter's own <code>secrets.yaml</code> included)</td></tr>
     <tr><td><strong>Keys and certificates</strong></td><td>SSH private keys such as <code>id_rsa</code> and <code>id_ed25519</code>, <code>*.pem</code>, <code>*.p12</code>, <code>*.pfx</code></td></tr>
     <tr><td><strong>Tool logins</strong></td><td><code>.aws/credentials</code>, <code>.codex/auth.json</code>, <code>.claude/.credentials.json</code></td></tr>
-    <tr><td><strong>More tool logins</strong> <span class="chip">Next release</span></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code>.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
+    <tr><td><strong>More tool logins</strong> <span class="chip">Next release</span></td><td><code>.netrc</code>, <code>_netrc</code>, <code>.pgpass</code>, <code style="white-space: nowrap">.git-credentials</code>, <code>.docker/config.json</code>, <code>.kube/config</code>, <code>.config/gh/hosts.yml</code></td></tr>
   </tbody>
 </table></div>
 <ul>
@@ -922,7 +931,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>A <a href="#apps">built app</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the app's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the app's <code>.vault/</code> folder, and the app refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported app leaves <code>.vault/</code> behind.</p>
 
 <h2 id="vaulting-modes">Permission modes</h2>
-<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Mode</strong>, with <code>/mode</code> at the classic terminal prompt, or under <strong>Biorouter settings → Biorouter mode</strong> in <code>biorouter configure</code>. It is stored as <code>BIOROUTER_MODE</code>.</p>
+<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Mode</strong>, with <code>/mode</code> at the classic terminal prompt, or in the settings menu of <code>biorouter configure</code>. It is stored as <code>BIOROUTER_MODE</code>.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Mode</th><th>Value</th><th>What the agent does</th></tr></thead>
   <tbody>
@@ -943,16 +952,16 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>An approval never reopens a call that was already refused, whether by your own <strong>Never allow</strong>, by a managed policy or by the block on destructive commands.</p>
 
 <h3 id="vaulting-copilot">Biorouter Copilot asks for each task</h3>
-<p>Turning on Biorouter Copilot in <strong>Settings → Chat → Capabilities</strong> does not give it your desktop. Before its first capture or action for a request, Biorouter asks for approval that names the task, the model and provider, and the computer to control. With a public model, the approval says that screenshots and application text can be sent to that provider. It covers the whole request and ends when the reply finishes, when you stop it, or when the model changes. Chat only refuses every Copilot tool.</p>
+<p>Turning on Biorouter Copilot in <strong>Settings → Chat → Capabilities</strong> does not give it your desktop. Before its first capture or action for a request, Biorouter asks for approval that names the model and provider, where their data goes, and the computer to control. With a public model, the approval says that screenshots and application text can be sent to that provider. The approval covers that one request and ends when the reply finishes, when you stop it, or when the model changes. Chat only refuses every Copilot tool.</p>
 
 <h2 id="vaulting-managed-policy">Managed policy</h2>
 <p>An administrator can install a policy file that outranks your own settings. It can deny a tool, require approval for it or approve it in advance, and it can add hooks that always run. A deny holds in Autonomous mode too, and the call reports “Blocked by your organization's managed policy.”</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Computer</th><th>Policy file</th></tr></thead>
   <tbody>
-    <tr><td><strong>macOS</strong></td><td><code>/Library/<wbr>Application Support/<wbr>Biorouter/<wbr>managed-policy.yaml</code></td></tr>
-    <tr><td><strong>Linux</strong></td><td><code>/etc/<wbr>biorouter/<wbr>managed-policy.yaml</code></td></tr>
-    <tr><td><strong>Windows</strong></td><td><code>%ProgramData%\<wbr>Biorouter\<wbr>managed-policy.yaml</code></td></tr>
+    <tr><td><strong>macOS</strong></td><td><code>/Library/<wbr>Application Support/<wbr>Biorouter/<wbr><span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>Linux</strong></td><td><code>/etc/<wbr>biorouter/<wbr><span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
+    <tr><td><strong>Windows</strong></td><td><code>%ProgramData%\<wbr>Biorouter\<wbr><span style="white-space: nowrap">managed-policy.yaml</span></code></td></tr>
   </tbody>
 </table></div>
 <pre>
@@ -985,7 +994,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 
 <div class="doc-page" id="doc-extensions">
 <h1>Extensions and skills</h1>
-<p class="doc-lede">Extensions give the agent tools for a clinical database, a knowledge graph, Word and Excel files or a website. Skills give it methods: written instructions for doing one kind of task the same way every time. You can install both from BAAM, the Biorouter AI Agent Marketplace.</p>
+<p class="doc-lede">Extensions give the agent tools for a clinical database, a knowledge graph, Word and Excel files or a website; skills give it written methods for doing one kind of task the same way every time. Both install from BAAM, the Biorouter AI Agent Marketplace.</p>
 
 <h2 id="extensions-what">What an extension is</h2>
 <p>An extension is a server that speaks the <a href="https://modelcontextprotocol.io">Model Context Protocol</a> (MCP), an open standard. It offers tools the agent can call, and it can also offer resources to read and prompts to start from. Any MCP server that runs as a command on this computer, or over streamable HTTP, can be added. The older SSE transport is not supported.</p>
@@ -1004,7 +1013,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>Before it starts an extension through <code>npx</code> or <code>uvx</code>, Biorouter looks the package up in the OSV database of known malicious packages and refuses to start one that is listed.</p>
 
 <h2 id="extensions-built-in">Built-in extensions</h2>
-<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.91.2. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
+<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.91.2; Crew arrives in the next release. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
@@ -1030,12 +1039,15 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <h3>From BAAM</h3>
 <ol class="steps">
   <li><strong>Open the marketplace</strong> Choose <strong>Extensions</strong> in the sidebar, then <strong>Browse extensions</strong>.</li>
-  <li><strong>Choose <strong>Add</strong></strong> Biorouter downloads the extension and shows its name, publisher, version, privacy tier and what it contains. Nothing is installed yet.</li>
+  <li><strong>Choose Add</strong> Biorouter downloads the extension and shows its name, publisher, version, privacy tier and what it contains. Nothing is installed yet.</li>
   <li><strong>Enter any credentials, then install</strong> If the extension needs a key, passcode or login, the next step asks for it. Values it marks as secret are kept with your model keys; see <a href="#vaulting">Security</a>. Choose <strong>Install extension</strong> to finish.</li>
 </ol>
 <div class="note"><p>Never paste a credential into a chat. A credential typed there is not used to set anything up, and every model that reads the chat would see it.</p></div>
 <p>You can also download a <code>.brxt</code> file from <a href="baam.html">BAAM</a> and drop it on <strong>Extensions → Add extension</strong>. In a terminal, the first command below installs one and asks for its credentials, hiding what you type for any value marked secret. The second asks for them again later.</p>
-<pre><code>biorouter extension install \<br>  ./spokeagent.brxt<br><br>biorouter extension configure spokeagent</code></pre>
+<pre><code>biorouter extension install \
+  ./cdwagent.brxt
+
+biorouter extension configure cdwagent</code></pre>
 <p>The agent can install one for you. When a task needs a tool you do not have, the Extension Manager finds it on BAAM and asks you to approve that exact package before anything downloads. A chat on a public model cannot install a private extension this way.</p>
 
 <h3>A custom extension</h3>
@@ -1044,10 +1056,32 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
   <li><strong>Standard IO (STDIO)</strong> is a program Biorouter starts on this computer, usually an MCP server run with <code>npx</code> or <code>uvx</code>. Enter the command with its arguments, and any environment variables it needs.</li>
   <li><strong>Streamable HTTP</strong> is a server that already runs somewhere else. Enter its endpoint URL, and any request headers.</li>
 </ul>
+<p>An extension you add by hand, and any extension that is not on BAAM, is Public: any model can call it, including one hosted outside your institution.</p>
 <p>For a STDIO extension, the app stores the value of each environment variable with your other credentials and writes only its name to <code>config.yaml</code>. In a terminal, <code>biorouter configure</code> and then <strong>Add Extension</strong> does the same. To try a server for one terminal session only:</p>
-<pre><code>biorouter session \<br>  --with-extension "uvx mcp-server-git"<br><br>biorouter session \<br>  --with-streamable-http-extension \<br>  https://mcp.example.org/mcp</code></pre>
+<pre><code>biorouter session \
+  --with-extension "uvx mcp-server-git"
+
+biorouter session \
+  --with-streamable-http-extension \
+  https://mcp.example.org/mcp</code></pre>
 <p>In <code>~/.config/biorouter/config.yaml</code> the two kinds look like this:</p>
-<pre><code>extensions:<br>  filesystem:<br>    name: filesystem<br>    description: Files in my data folder<br>    type: stdio<br>    cmd: npx<br>    args:<br>      - "-y"<br>      - "@modelcontextprotocol/server-filesystem"<br>      - /Users/me/data<br>    enabled: true<br>  lab-server:<br>    name: lab-server<br>    description: Our lab's MCP server<br>    type: streamable_http<br>    uri: https://mcp.example.org/mcp<br>    enabled: true</code></pre>
+<pre><code>extensions:
+  git:
+    name: git
+    description: My analysis code
+    type: stdio
+    cmd: uvx
+    args:
+      - mcp-server-git
+      - --repository
+      - /Users/me/analysis
+    enabled: true
+  lab-server:
+    name: lab-server
+    description: Our lab's MCP server
+    type: streamable_http
+    uri: https://mcp.example.org/mcp
+    enabled: true</code></pre>
 
 <h2 id="extensions-switches">Turn extensions on and off</h2>
 <div class="doc-table-scroll"><table>
@@ -1055,16 +1089,16 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
   <tbody>
     <tr><td>The switch beside an extension on the <strong>Extensions</strong> page</td><td>Whether new chats start with it.</td></tr>
     <tr><td><strong>Settings → Chat → Capabilities</strong></td><td>Which built-in extensions new chats start with. Crew is the exception: its switch is on the Extensions page.</td></tr>
-    <tr><td>The extensions button under the text box, <strong>Manage extensions</strong></td><td>This chat only. The choice is saved with the chat.</td></tr>
+    <tr><td>The extensions button under the text box, <strong>Manage extensions</strong></td><td>This chat only. The choice is saved with the chat. The built-in extensions under Capabilities are not in this list.</td></tr>
     <tr><td>The Extension Manager, when the agent attaches one</td><td>This chat only, until it ends.</td></tr>
     <tr><td><code>biorouter configure</code>, then <strong>Toggle Extensions</strong></td><td>Whether new chats start with it, from a terminal.</td></tr>
   </tbody>
 </table></div>
-<p>A change to what new chats start with leaves chats already open as they were. In a chat on a public model, a private extension stays in the list, greyed out, with the note “Unavailable in this chat (public model)”. Hovering it explains that a private extension needs a private model.</p>
+<p>A change to what new chats start with leaves chats already open as they were. In a chat on a public model, a private extension stays in the <strong>Manage extensions</strong> list, greyed out, with the note “Unavailable in this chat (public model)”. Hovering it explains that a private extension needs a private model.</p>
 
 <h2>Extension agents in the marketplace</h2>
-<p>BAAM lists extensions for biomedical data, lab systems, literature and everyday research tools. Each installs as a <code>.brxt</code> bundle. Six of them are below.</p>
-<p>The Privacy column is the extension's tier, the same one BAAM shows on its card. A private extension reaches data your institution governs. The first time one answers in a chat, the chat becomes private and stays private, and a chat on a public model cannot use its tools. The tier comes from the BAAM registry built into Biorouter, not from the extension, so an extension cannot declare itself public. See <a href="#privacy">Private and public</a>.</p>
+<p>BAAM lists extensions for biomedical data, lab systems, literature and everyday research tools. Each installs as a <code>.brxt</code> bundle, and six of them are below.</p>
+<p>The Privacy column is the extension's tier, the same one BAAM shows on its card. An extension is private only when BAAM lists it as private; today that is CDWAgent and UCSFOMOPAgent. The first time one answers in a chat, the chat becomes private and stays private, and a chat on a public model cannot use its tools. The tier comes from the BAAM registry, not from the extension, so an extension cannot choose its own tier. See <a href="#privacy">Private and public</a>.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Agent</th><th>Privacy</th><th>What it connects</th><th>Credentials</th></tr></thead>
   <tbody>
@@ -1076,11 +1110,18 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
     <tr><td><strong>BiorOffice</strong></td><td>Public</td><td>Word, Excel and PowerPoint files, created and edited from a chat, with four office skills.</td><td>None. Microsoft Office is not needed.</td></tr>
   </tbody>
 </table></div>
-<p>The rest, with a search, are on <a href="baam.html">BAAM</a>.</p>
+<p>The rest are listed on <a href="baam.html">BAAM</a>, where you can search them.</p>
 
 <h2 id="skills">Skills</h2>
 <p>A skill is a folder holding a <code>SKILL.md</code> file: a short header with a name and a description, then plain instructions. It adds a method rather than a tool, such as a quality control checklist, a lab's plotting style or the steps for using an API. The folder can also hold scripts and templates the agent reads when it uses the skill.</p>
-<pre><code>---<br>name: rnaseq-qc<br>description: RNA-seq quality checks.<br>---<br><br>1. Drop samples under 10M mapped reads.<br>2. Plot a PCA and flag outliers.<br>3. Report what was dropped and why.</code></pre>
+<pre><code>---
+name: rnaseq-qc
+description: RNA-seq quality checks.
+---
+
+1. Drop samples under 10M mapped reads.
+2. Plot a PCA and flag outliers.
+3. Report what was dropped and why.</code></pre>
 <p>The agent reads each skill's description and loads the whole skill when a request matches it. To pick one yourself, type <code>/skill:</code> in the composer and choose it from the list. A skill is known by the <code>name</code> in its header, not by its folder's name.</p>
 
 <h3>Install a skill</h3>
@@ -1118,15 +1159,15 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 
 <div class="doc-page" id="doc-workflows">
 <h1>Workflows and scheduling</h1>
-<p class="doc-lede">A workflow is one file that starts a chat with the same instructions, tools and model every time. Send it to a colleague to run on their own data, or let the scheduler run it for you.</p>
+<p class="doc-lede">A workflow is one file that starts a chat with the same instructions and tools, and optionally the same model, every time. Send it to a colleague to run on their own data, or let the scheduler run it for you.</p>
 
 <h2 id="workflows-file">A workflow file</h2>
-<p>A workflow is written in YAML (recommended) or JSON. It needs a title, a description, and instructions, a prompt or both. Save this as <code>review.yaml</code>:</p>
+<p>A workflow is written in YAML (recommended) or JSON. It needs a title, a description, and instructions or a prompt (or both). Save this as <code>review.yaml</code>:</p>
 <pre><code>version: "1.0.0"
 title: Weekly cohort review
-description: Counts new enrollments and flags missing baseline labs
-instructions: Report counts and summaries, never individual records.
-prompt: Summarize this week's enrollments and missing baseline labs.</code></pre>
+description: Counts new enrollments
+instructions: Report counts, not records.
+prompt: Summarize this week's enrollments.</code></pre>
 <p>Running it starts a new chat with those instructions. The desktop app puts the prompt in the text box for you to send; the command line and the scheduler send it for you. Use <code>.yaml</code> rather than <code>.yml</code>: the command line reads only <code>.yaml</code> and <code>.json</code>.</p>
 
 <h2 id="workflows-fields">The fields</h2>
@@ -1149,7 +1190,12 @@ prompt: Summarize this week's enrollments and missing baseline labs.</code></pre
     <tr><td><code>version</code></td><td>The file format version. Defaults to <code>"1.0.0"</code>.</td></tr>
   </tbody>
 </table></div>
-<p>The text fields are templates. <code>{{ workflow_dir }}</code> is the folder that holds the file, so a workflow can point at files that travel with it, and <code>{% extends "base.yaml" %}</code> builds one workflow on another. The full reference is <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/workflows/workflow-schema-reference.md">the workflow schema</a>.</p>
+<p>The text fields are templates:</p>
+<ul>
+  <li><code>{{ workflow_dir }}</code> is the folder that holds the file, so a workflow can point at files that travel with it.</li>
+  <li><code>{% extends "base.yaml" %}</code> builds one workflow on another.</li>
+</ul>
+<p>The full reference is <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/workflows/workflow-schema-reference.md">the workflow schema</a>.</p>
 
 <h2 id="workflows-parameters">Parameters</h2>
 <p>Parameters make one workflow serve many studies. Each has a <code>key</code>, an <code>input_type</code>, a <code>requirement</code> and a <code>description</code>. Add these to <code>review.yaml</code> and replace its <code>prompt</code>:</p>
@@ -1193,30 +1239,30 @@ biorouter workflow install review.yaml     # add it to the library
 biorouter workflow list</code></pre>
 
 <h3>Share a workflow</h3>
-<p>Send the file, or send a link. In <strong>Workflows</strong>, the <strong>Share workflow</strong> menu has <strong>Copy deeplink</strong>, <strong>Copy YAML</strong> and <strong>Export to file</strong>. The person who receives a file adds it with <strong>Import workflow</strong>, or runs it with <code>biorouter run --workflow</code>. From a terminal, make a link that fills in parameters for them:</p>
+<p>Send the file, or send a link. In <strong>Workflows</strong>, the <strong>Share workflow</strong> menu has <strong>Copy deeplink</strong>, <strong>Copy YAML</strong> and <strong>Export to file</strong>. The person who receives a file adds it with <strong>Import workflow</strong>, or runs it with the <code>biorouter run</code> command above. From a terminal, make a link that fills in parameters for them:</p>
 <pre><code>biorouter workflow deeplink review.yaml --param study=MS-2107</code></pre>
 <p>Opening the link opens Biorouter with the workflow loaded. A link encodes the workflow into a <code>biorouter://workflow</code> address, plus any parameter values you gave it. It does not carry files that sit next to the workflow, so send those with the file.</p>
 
 <h2 id="workflows-share-the-method">Share the method, not the data</h2>
-<p>A workflow carries instructions, not records. The file holds the steps, the parameters and the names of the extensions, skills, knowledge bases and model it needs. It holds no credentials: a saved workflow leaves out API keys and memory. It holds no conversation history, and no rows from anyone's data.</p>
+<p>A workflow carries instructions, not records. The file holds the steps, the parameters and the names of the extensions, skills, knowledge bases and model it needs. Biorouter leaves out API keys, memory and the conversation history; the file holds only the text you write or approve.</p>
 <figure class="doc-figure">
   <div class="flow">
     <div class="node"><b>Your lab</b><span>your data, your models, your chat</span></div>
     <i class="arrow labeled"><span class="arrow-label">review.yaml</span></i>
     <div class="node"><b>A colleague's lab</b><span>their data, their models, their chat</span></div>
   </div>
-  <figcaption>Only the workflow travels, as a file or a link. Each lab runs it on its own data, and nothing is sent back.</figcaption>
+  <figcaption>Only the workflow travels, as a file or a link. Each lab runs it on its own data. Nothing comes back.</figcaption>
 </figure>
 <ul>
   <li><strong>Each run is the recipient's own chat.</strong> It starts on their computer, with their extensions, their credentials and their models, under their institution's agreements. It follows the same privacy rules as any other chat: if it uses a private model or a private data extension, it becomes Private. See <a href="#privacy">Private and public</a>.</li>
-  <li><strong>Data is read where it lives.</strong> A <code>file</code> parameter reads the file the person running the workflow names, on their computer, when the run starts.</li>
+  <li><strong>Data is read where it lives.</strong> A <code>file</code> parameter reads a file on the computer of the person running the workflow, when the run starts.</li>
   <li><strong>Results stay with the recipient.</strong> Nothing flows back to you. They share what they choose to share.</li>
   <li><strong>Edits do not travel back.</strong> A recipient's changes stay in their copy, and your file is unchanged.</li>
 </ul>
 <div class="note"><p><strong>Read a workflow before you share it.</strong> It holds whatever text is in it. A draft made with <strong>Make workflow</strong> is written from the conversation, so remove any values that came from your data.</p></div>
 
 <h2 id="workflows-scheduling">Scheduling</h2>
-<p>A schedule runs a workflow at set times with nobody watching. Each run is a new chat of its own, saved to history. Schedules run in the background while Biorouter's background service runs: the desktop app's service, or the one <code>biorouter serve</code> starts. They are kept in <code>schedule.json</code> in Biorouter's data folder, so they survive a restart, and every running service follows that file. A run that comes due while one of your chats is running a turn, or while the provider is limiting requests, is skipped and runs at its next time.</p>
+<p>A schedule runs a workflow at set times with nobody watching. Each run is a new chat of its own, saved to history. Schedules run in the background while a Biorouter background service runs, such as the desktop app's or the one <code>biorouter serve</code> starts. They are kept in <code>schedule.json</code> in Biorouter's data folder, so they survive a restart, and every running service follows that file. A run that comes due while one of your chats is running a turn, or while the provider is limiting requests, is skipped and runs at its next time.</p>
 
 <h3>The Scheduler page</h3>
 <ol class="steps">
@@ -1231,7 +1277,7 @@ biorouter workflow list</code></pre>
 /schedule "0 9 * * 1" Draft the weekly lab update
 /loop 10m Check whether the alignment job has finished</code></pre>
 <ul>
-  <li><strong><code>/schedule &lt;when&gt; &lt;prompt&gt;</code></strong> runs a prompt until you remove it. <em>When</em> is an interval (<code>5m</code>, <code>2h</code>, <code>1d</code>), <code>@hourly</code>, <code>@daily</code>, <code>@weekly</code>, <code>@monthly</code>, or a cron expression in quotes. <code>/schedule list</code> shows them all, and <code>/schedule remove</code>, <code>run</code>, <code>pause</code>, <code>unpause</code> and <code>sessions</code> take a schedule id.</li>
+  <li><strong><code>/schedule &lt;when&gt; &lt;prompt&gt;</code></strong> runs a prompt until you remove it. <em>When</em> is an interval (<code>5m</code>, <code>2h</code>, <code>1d</code>), <code>@hourly</code>, <code>@daily</code>, <code>@weekly</code>, <code>@monthly</code>, or a cron expression in quotes. <code>/schedule list</code> shows them all. <code>/schedule remove</code>, <code>run</code>, <code>pause</code>, <code>unpause</code> and <code>sessions</code> take a schedule id.</li>
   <li><strong><code>/loop &lt;interval&gt; &lt;prompt&gt;</code></strong> is for short polling: <code>30s</code>, <code>5m</code>, <code>2h</code> or <code>1d</code>. A run that is still going when the next is due is skipped, and the loop stops itself after 100 runs. <code>/loop</code> lists loops, and <code>/loop stop &lt;id&gt;</code> or <code>/loop stop all</code> ends them.</li>
 </ul>
 
@@ -1239,14 +1285,17 @@ biorouter workflow list</code></pre>
 <p>You can ask the agent, for example “Run the cohort review every Monday at 8am.” Every change the agent makes to a schedule shows an approval card first: creating one, running it now, pausing or resuming it, deleting it, or stopping a run. The card appears in every permission mode, Autonomous included. It says in words when the job will run, which workflow it runs and how, and the card for a new schedule shows the whole workflow. Only a person can approve it. Listing and reading schedules asks nothing.</p>
 
 <h3>From the command line</h3>
-<pre><code>biorouter schedule add --schedule-id review-weekly \
-  --cron "0 8 * * 1" --workflow-source ./review.yaml
+<pre><code>biorouter schedule add \
+  --schedule-id review-weekly \
+  --cron "0 8 * * 1" \
+  --workflow-source ./review.yaml
 biorouter schedule list
 biorouter schedule run-now --schedule-id review-weekly
 biorouter schedule sessions --schedule-id review-weekly
-biorouter schedule remove --schedule-id review-weekly</code></pre>
-<p><code>--cron</code> takes five fields (minute, hour, day of month, month, day of week), or six with seconds first, in this computer's local time; <code>"0 8 * * 1"</code> is every Monday at 8:00. <code>biorouter schedule cron-help</code> prints examples. The schedule keeps its own copy of the workflow as it was when you added it.</p>
-<p>When this terminal cannot reach a Biorouter service, which is always the case next to the desktop app and in an agent's shell, the command writes the schedule file itself, and a running service picks it up within 60 seconds. In that case <code>add</code>, <code>remove</code> and <code>run-now</code> ask you to confirm at the terminal, and refuse when there is no terminal to ask, so an agent's shell cannot add a schedule on its own. When <code>BIOROUTER_SERVER__SECRET_KEY</code> and <code>BIOROUTER_PORT</code> point at a running service, that service makes the change and nothing is asked.</p>
+biorouter schedule remove --schedule-id review-weekly
+biorouter schedule cron-help    # cron examples</code></pre>
+<p><code>--cron</code> takes five fields (minute, hour, day of month, month, day of week), or six with seconds first, in this computer's local time; <code>"0 8 * * 1"</code> is every Monday at 8:00. The schedule keeps its own copy of the workflow as it was when you added it.</p>
+<p>When this terminal cannot reach a Biorouter service, which is always the case next to the desktop app and in an agent's shell, the command writes the schedule file itself, and a running service picks it up within 60 seconds. In that case <code>add</code>, <code>remove</code> and <code>run-now</code> ask you to confirm at the terminal, and refuse when there is no terminal to ask, so an agent's shell cannot add a schedule on its own. When <code>BIOROUTER_SERVER__SECRET_KEY</code> and <code>BIOROUTER_PORT</code> point at a running service, that service makes the change without asking, or refuses it when the schedule would run on a private model.</p>
 
 <h3>What a scheduled run needs</h3>
 <ul>
@@ -1287,7 +1336,7 @@ biorouter schedule remove --schedule-id review-weekly</code></pre>
     <tr><td><strong>Curated biomedical</strong></td><td>BioOKF</td><td>Biomedical literature, or a base another institution will read. The vocabulary is checked, and every link names its evidence.</td></tr>
   </tbody>
 </table></div>
-<p>The format is fixed when the base is created. The dialog says so: “You cannot change a knowledge base's format yet.” A base from an older version keeps working and is marked Legacy. <code>biorouter knowledge create</code> makes an OKF base; to make a BioOKF base, use the app or ask the agent.</p>
+<p>The format is fixed when the base is created. The dialog says so: “You cannot change a knowledge base's format yet.” A base from an older version keeps working and is marked Legacy. <code style="white-space: nowrap">biorouter knowledge create</code> makes an OKF base; to make a BioOKF base, use the app or ask the agent.</p>
 
 <h3 id="knowledge-biookf">The BioOKF vocabulary</h3>
 <p>BioOKF v0.5 is a strict biomedical profile of the Open Knowledge Format (OKF v0.2). A page's type is one of 28: 20 biomedical entity types, such as Gene, Variant, Disease and CellType, and 8 provenance and context types, such as Publication, Study and Dataset. A typed link uses one of 35 predicates: 24 positive predicates such as <code>causes</code> and <code>treats</code>, and 11 negations such as <code>not_treats</code>. Every link names its evidence: a knowledge level, an agent type and a primary source page. A value outside the vocabulary is flagged with the closest legal one.</p>
@@ -1371,15 +1420,15 @@ biorouter schedule remove --schedule-id review-weekly</code></pre>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Operation</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><strong>Ingest</strong></td><td>Digests one source into linked pages, as one commit. Run it with <strong>Digest staged sources</strong>, from a chat, or with <code>knowledge ingest</code>.</td></tr>
-    <tr><td><strong>Query</strong></td><td>Searches the base and writes an answer that cites its pages. <code>knowledge query --save</code> also files the answer as a page.</td></tr>
-    <tr><td><strong>Lint</strong></td><td>Reads every page and reports orphans, contradictions, missing pages, stale sources and anything that breaks the format's rules. In a BioOKF base that includes the vocabulary, the evidence on each link, and sources that are retracted or too weak for the claims on them. <strong>Check for problems</strong> and a chat only report; <code>knowledge lint --fix</code> lets the agent repair what it finds.</td></tr>
+    <tr><td><strong>Ingest</strong></td><td>Digests one source into linked pages, as one commit. Run it with <strong>Digest staged sources</strong>, from a chat, or with <code style="white-space: nowrap">knowledge ingest</code>.</td></tr>
+    <tr><td><strong>Query</strong></td><td>Searches the base and writes an answer that cites its pages. <code style="white-space: nowrap">knowledge query --save</code> also files the answer as a page.</td></tr>
+    <tr><td><strong>Lint</strong></td><td>Reads every page and reports orphans, contradictions, missing pages, stale sources and anything that breaks the format's rules. In a BioOKF base that includes the vocabulary, the evidence on each link, and sources that are retracted or too weak for the claims on them. <strong>Check for problems</strong> and a chat only report; <code style="white-space: nowrap">knowledge lint --fix</code> lets the agent repair what it finds.</td></tr>
   </tbody>
 </table></div>
 
 <h2 id="knowledge-soul">Soul</h2>
 <p><strong>Soul</strong> (id <code>soul</code>) ships with Biorouter and starts empty. It collects lasting facts about you: how you approach research questions, the tools and commands you use, and the name, role and preferences you mention.</p>
-<p>A schedule named <strong>Daily Meditation</strong> keeps it current. Every day at 3:00 AM, while Biorouter's background service is running, it runs the Meditation workflow, which uses the <code>update-soul</code> skill to read up to three recent chats and add what matters. It skips scheduled runs and small talk, and makes no change when there is nothing new. You can see and pause it in Scheduler.</p>
+<p>A schedule named <strong>Daily Meditation</strong> keeps it current. Every day at 3:00 AM, while Biorouter's background service is running, it runs the Meditation workflow, which uses the <code style="white-space: nowrap">update-soul</code> skill to read up to three recent chats and add what matters. It skips scheduled runs and small talk, and makes no change when there is nothing new. You can see and pause it in Scheduler.</p>
 <p>The agent cannot delete Soul, and if you delete it Biorouter creates it again. <strong>Settings → App → Reset → Knowledge &amp; memory</strong> deletes every base, creates an empty Soul and clears saved memory.</p>
 
 <h2 id="knowledge-privacy">Private and public bases</h2>
@@ -1393,7 +1442,7 @@ biorouter knowledge active --set ms-genetics
 biorouter knowledge ingest --file ./paper.pdf
 biorouter knowledge query "What predicts relapse?" --save
 biorouter knowledge lint</code></pre>
-<p>Once <code>active --set</code> has made a base the primary, commands without <code>--kb</code> use it. <code>kb</code> is a short name for <code>knowledge</code>. Every flag is in the <a href="#cli-ref-knowledge">command line reference</a>.</p>
+<p>Once <code style="white-space: nowrap">active --set</code> has made a base the primary, commands without <code>--kb</code> use it. <code>kb</code> is a short name for <code>knowledge</code>. Every flag is in the <a href="#cli-ref-knowledge">command line reference</a>.</p>
 </div>
 
 <div class="doc-page" id="doc-apps">
@@ -1426,7 +1475,8 @@ biorouter knowledge lint</code></pre>
 
 <h2 id="apps-regions">Regions</h2>
 <p>An app marks the places the agent may write with a region attribute:</p>
-<pre><code>&lt;section data-br-region="results"&gt;&lt;/section&gt;</code></pre>
+<pre><code>&lt;section data-br-region="results"&gt;
+&lt;/section&gt;</code></pre>
 <p>The agent finds regions with <code>ui_describe</code> and writes to <code>@region:results</code>. It can also target <code>@panel:ID</code>, <code>@main</code>, <code>@chat</code> or a CSS selector such as <code>#out</code>. Panels need no region: every app has a dock for them. Up to 12 panels stay open by default, and the oldest closes when a new one opens.</p>
 
 <h2 id="apps-ask">Questions that wait</h2>
@@ -1446,7 +1496,7 @@ biorouter knowledge lint</code></pre>
     <tr><td><code>chat</code></td><td>A plain conversation panel, picked only when the description asks for a chat or an assistant.</td></tr>
   </tbody>
 </table></div>
-<p>An app starts with Biorouter's look. Six theme packs are available: <code>biorouter</code>, <code>clinical</code>, <code>lab-notebook</code>, <code>terminal</code>, <code>journal</code> and <code>midnight</code>.</p>
+<p>An app starts with Biorouter's look. Six theme packs are available: <code>biorouter</code>, <code>clinical</code>, <code style="white-space: nowrap">lab-notebook</code>, <code>terminal</code>, <code>journal</code> and <code>midnight</code>.</p>
 
 <h2 id="apps-build">Build and export an app</h2>
 <ol class="steps">
@@ -1461,13 +1511,13 @@ biorouter knowledge lint</code></pre>
   <li><strong>Launcher (app + scripts)</strong> writes the app and its launch scripts. It uses the knowledge bases, skills, extensions and models already on the computer that runs it.</li>
   <li><strong>Full (bundle server-side content)</strong> also packs the app's knowledge base (as a <code>.brkb</code> file) and the skills you tick, and optionally <code>biorouterd</code> itself. BAAM extensions you tick are listed in <code>export.json</code>, at the top of the folder, for the recipient to install. On the first run the launcher lists the skills and knowledge base and asks first. If you agree, it installs the skills and copies the knowledge base to <code>~/.config/biorouter/knowledge-imports/</code>, for you to bring in with <strong>Import from .brkb</strong> in Knowledge.</li>
 </ul>
-<p>The folder runs without a build step or Node.js. On macOS open <code>run.command</code>, on Linux run <code>bash run.sh</code>, and on Windows open <code>run.bat</code>. The launcher uses the <code>biorouterd</code> bundled in a Full export, or the one Biorouter installed on the computer. If there is none, it stops and says so; install Biorouter, or set <code>BIOROUTERD_BIN</code> to its path. It starts <code>biorouterd</code> in the background when it needs to and opens the app in the browser. An export carries no API keys, so the app uses the models configured by whoever runs it. The app's vault is never exported.</p>
+<p>The folder runs without a build step or Node.js. On macOS open <code>run.command</code>, on Linux run <code style="white-space: nowrap">bash run.sh</code>, and on Windows open <code>run.bat</code>. The launcher uses the <code>biorouterd</code> bundled in a Full export, or the one Biorouter installed on the computer. If there is none, it stops and says so; install Biorouter, or set <code>BIOROUTERD_BIN</code> to its path. It starts <code>biorouterd</code> in the background when it needs to and opens the app in the browser. An export carries no API keys, so the app uses the models configured by whoever runs it. The app's vault is never exported.</p>
 
 <h2 id="apps-security">Security model</h2>
 <p>Biorouter treats an app's page as untrusted.</p>
 <ul>
   <li><strong>The socket.</strong> Each app has its own socket token, held in memory for one run of the background service and never written to disk. The socket accepts only the app page's own origin.</li>
-  <li><strong>What the page sends.</strong> Action arguments, signals and widget submissions reach the agent wrapped in <code>&lt;app-data&gt;</code>, which the agent is told to treat as data, not instructions.</li>
+  <li><strong>What the page sends.</strong> Action arguments, signals and widget submissions reach the agent wrapped in <code style="white-space: nowrap">&lt;app-data&gt;</code>, which the agent is told to treat as data, not instructions.</li>
   <li><strong>What the agent writes.</strong> State bindings set text and a short list of attributes, never code. <code>ui_html</code> is off unless the app allows it, and Biorouter cleans the HTML even then.</li>
   <li><strong>Capabilities.</strong> Control of the page is on by default, since it reaches only the app's own page. Files, data sources, compute and the vault are off until the manifest grants them. A signal that starts a turn by itself is off, and only you can turn it on; the agent cannot.</li>
   <li><strong>Knowledge.</strong> An app reads only the knowledge bases its manifest names, and writes only where it is granted write access.</li>
@@ -1491,7 +1541,7 @@ biorouter apps serve cohort-explorer</code></pre>
 
 <figure class="doc-figure">
   <div class="flow">
-    <div class="node"><b>Your computer</b><span>The app, its background service and your agent, which uses your chosen model</span></div>
+    <div class="node ground"><b>Your computer</b><span>The app, its background service and your agent</span></div>
     <i class="arrow labeled"><span class="arrow-label">SSH</span></i>
     <div class="node ground"><b>Your server account</b><span>biorouter-crew runs here under your login</span></div>
     <i class="arrow labeled"><span class="arrow-label">Unix socket</span></i>
@@ -1505,7 +1555,7 @@ biorouter apps serve cohort-explorer</code></pre>
   <li>Open it from <strong>Crew</strong> in the sidebar, below <strong>New chat</strong>.</li>
   <li>A workspace holds teams, and a team holds channels. You see only the channels you are in. There are no direct messages.</li>
   <li>Only the host invites people, lets them in and removes them. A channel owner, at first its creator, manages each channel.</li>
-  <li>Privacy is <strong>Private</strong> or <strong>Public</strong>. It decides which AI models may read the workspace, not which people see it. Each channel is labeled "Restricted", which only private models may read, or "Public-safe".</li>
+  <li>Privacy is <strong>Private</strong> or <strong>Public</strong>. It decides which AI models may read the workspace, not which people see it. Each channel is labeled "Restricted" or "Public-safe". Only a local model or one approved for the workspace's institution may read a Restricted channel.</li>
   <li>The desktop app and the <code>biorouter crew</code> commands share one background service on your computer, so both show the same workspaces.</li>
 </ul>
 
@@ -1563,7 +1613,7 @@ biorouter apps serve cohort-explorer</code></pre>
 <p>After the server restarts, the host starts the workspace again, as <a href="#crew-administrators">Server setup</a> says. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/hosting-a-workspace.md">Hosting a workspace</a>.</p>
 
 <h2 id="crew-teams-channels-people">Teams, channels and people</h2>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <thead><tr><th>Task</th><th>Who can do it</th></tr></thead>
   <tbody>
     <tr><td>Create a team, or a channel in your team</td><td>Anyone in the workspace</td></tr>
@@ -1588,11 +1638,11 @@ biorouter apps serve cohort-explorer</code></pre>
   <li><strong>Wait for the upload</strong> Wait until the line "Press Send to share it." appears.</li>
   <li><strong>Send it</strong> Press Send. The file appears in the channel as a card with its name and size.</li>
 </ol>
-<div class="note warn"><p><strong>The file leaves your computer as soon as you confirm it.</strong> A finished upload cannot be deleted, even if you then remove it from your message. The × on a file still uploading is <strong>Cancel upload</strong>. The part already sent stays on the server for up to a day.</p></div>
+<div class="note warn"><p><strong>The file leaves your computer as soon as you confirm it.</strong> A finished upload cannot be deleted, even if you remove it from your message. The × on a file still uploading is <strong>Cancel upload</strong>. If you cancel, the part already sent stays on the server for up to a day.</p></div>
 <p>Crew refuses folders and credential files, such as <code>.env</code> or <code>id_rsa</code>. For a large file already on the server, choose the paperclip, then <strong>Share a server path…</strong>, and type the full path. Crew shares only the path, and others open the file only if their own server account may read it. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/messages-and-files.md">Messages and files</a>.</p>
 
 <h2 id="crew-privacy">Privacy and institutions</h2>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <thead><tr><th>Setting</th><th>Who changes it</th><th>Values</th></tr></thead>
   <tbody>
     <tr><td>Your connection</td><td>You</td><td>"Private" or "Public"</td></tr>
@@ -1614,7 +1664,7 @@ biorouter apps serve cohort-explorer</code></pre>
 
 <h2 id="crew-agents">Agents in a channel</h2>
 <p>An agent can work in a channel in two ways. Both run on your computer with your model, post as your agent where everyone in the channel sees it, and have access for one hour at most.</p>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <thead><tr><th><span class="sr-only">Detail</span></th><th>Ask my agent</th><th>A chat connected with /crew</th></tr></thead>
   <tbody>
     <tr><td>Kind</td><td>One task. The agent posts its result and its access ends.</td><td>An ordinary Biorouter chat that you keep talking to.</td></tr>
@@ -1623,7 +1673,7 @@ biorouter apps serve cohort-explorer</code></pre>
     <tr><td>Stop it</td><td>Choose <strong>Stop</strong> on its row</td><td>Choose <strong>Revoke access</strong> in the chat</td></tr>
   </tbody>
 </table></div>
-<p>Access ends for every agent in the workspace when someone is added to a team or channel, or removed from a channel or the workspace, when a channel is archived or offered to a new owner, and when the workspace's privacy or institution changes. A change to your own connection's settings ends your own agents' access. Renaming a team, a channel or the workspace does not.</p>
+<p>Access ends for every agent in the workspace when someone is added to a team or channel, or removed from a channel or the workspace, when a channel is archived or offered to a new owner, and when the workspace's privacy or institution changes. A change to your own connection's privacy, settings or institution ends your own chats' access. Renaming a team, a channel or the workspace does not.</p>
 
 <h3 id="crew-ask-my-agent">Ask my agent</h3>
 <ol class="steps">
@@ -1645,7 +1695,7 @@ biorouter apps serve cohort-explorer</code></pre>
 <p>The chat can read its channels and their files, and post in its one channel. It cannot use other Biorouter tools, such as the shell or files on your computer, and these limits stay after its access ends. The first access fixes the chat's workspace, channel and model for good. To end access, choose <strong>Revoke access</strong>, then <strong>Revoke</strong>. Deleting a chat does not revoke its access.</p>
 
 <h3 id="crew-models">Which models may read</h3>
-<div class="doc-table-scroll"><table style="min-width: 0">
+<div class="doc-table-scroll"><table>
   <thead><tr><th>Model</th><th style="white-space: nowrap">Protected content</th><th>Other content</th></tr></thead>
   <tbody>
     <tr><td>Local, such as Llama Server or Ollama, or approved for the workspace's institution</td><td>Allowed</td><td>Allowed</td></tr>
@@ -1669,14 +1719,18 @@ biorouter apps serve cohort-explorer</code></pre>
   <li><code>--output-format json</code> prints JSON, errors included, with a <code>code</code> to match on. Exit status is <code>0</code> for success, <code>1</code> for a failure or refusal, and <code>2</code> for a wrong command line or a command that needed a terminal.</li>
 </ul>
 <pre><code># Join a workspace
-biorouter crew connections join-invitation ./invitation.txt
+biorouter crew connections \
+  join-invitation ./lab.txt
 biorouter crew auth
 biorouter crew join
 
 # Post, then start an agent task
-biorouter crew send methods --text 'Plate reader data is in.'
-biorouter crew tasks start methods --text "Summarize this week" \
-  --provider PROVIDER --model MODEL --allow-posting</code></pre>
+biorouter crew send methods \
+  --text 'Plate reader data is in.'
+biorouter crew tasks start methods \
+  --text "Summarize this week" \
+  --provider PROVIDER --model MODEL \
+  --allow-posting</code></pre>
 <p><code>privacy set-personal public</code> and <code>privacy set-workspace public</code> ask you to type the workspace name first, as the desktop app does. In a script, add <code>--confirm WORKSPACE</code>. More in <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/crew/command-line.md">Command line</a>.</p>
 
 <h2 id="crew-troubleshooting">When something goes wrong</h2>
@@ -1704,8 +1758,8 @@ biorouter crew tasks start methods --text "Summarize this week" \
     <div class="node"><b>Build context</b><span>instructions, tools, history</span></div>
     <i class="arrow"></i>
     <div class="node"><b>Model</b><span>answers, or asks for a tool</span></div>
-    <i class="arrow back labeled"><span class="arrow-label">result</span></i>
     <i class="arrow labeled"><span class="arrow-label">tool call</span></i>
+    <i class="arrow back labeled"><span class="arrow-label">result</span></i>
     <div class="node"><b>Run a tool</b><span>after the permission gate</span></div>
   </div>
   <figcaption>The loop ends when the model answers without asking for a tool and no check sends it back. A simple question needs one model call and no tools.</figcaption>
@@ -1714,23 +1768,23 @@ biorouter crew tasks start methods --text "Summarize this week" \
   <thead><tr><th>Stage</th><th>What happens</th></tr></thead>
   <tbody>
     <tr><td><strong>Receive</strong></td><td>One turn runs in a chat at a time. A message you send while it runs waits in a queue; see <a href="#agentloop-steering">Steering a running turn</a>. Commands such as <code>/goal</code> and <code>/schedule</code> are handled before the model is called.</td></tr>
-    <tr><td><strong>Build&nbsp;context</strong></td><td>The system instructions (base instructions, permission mode, date, guidance from each extension, any workflow instructions), the tool list, the skills in use, up to five passages from a knowledge base you referenced with <code>/kb:</code>, a map of the working folder of about 2,000 tokens, and the conversation so far. At 80% of the model's context window, older turns are summarized for the model; your history is kept in full.</td></tr>
+    <tr><td><strong>Build&nbsp;context</strong></td><td>The system instructions (base instructions, permission mode, date, guidance from each extension, any workflow instructions), the tool list, the skills in use, up to five passages from a knowledge base you referenced with <code>/kb:</code>, a map of the working folder of up to about 2,000 tokens, and the conversation so far. At 80% of the model's context window, older turns are summarized for the model; your history is kept in full.</td></tr>
     <tr><td><strong>Call&nbsp;the&nbsp;model</strong></td><td>The reply streams back as text, tool calls, token counts and a reason for stopping. A reply cut off at the length limit is continued up to 12 times.</td></tr>
-    <tr><td><strong>Permission&nbsp;gate</strong></td><td>Each tool call is checked by the administrator's managed policy, the command policy, your permission mode and any hooks. The strictest answer wins: deny, then ask, then allow. A few destructive commands are refused in every mode. The modes are on the <a href="#vaulting">Security</a> page. Up to 8 tool calls run at once; writes to the same file run one at a time.</td></tr>
+    <tr><td><strong>Permission&nbsp;gate</strong></td><td>Each tool call is checked by the administrator's managed policy, the command policy, your permission mode and any hooks. Deny is checked before ask, and ask before allow; an administrator's deny or ask always wins. A few destructive commands are refused in every mode. The modes are on the <a href="#vaulting">Security</a> page. Up to 8 tool calls run at once; writes to the same file run one at a time.</td></tr>
     <tr><td><strong>Run&nbsp;and&nbsp;return</strong></td><td>The result goes back to the model. A large result is saved to a file, and the model gets a preview. Private keys and stored credentials in a result are withheld. An error goes back as an error the model can act on, not as the end of the turn.</td></tr>
     <tr><td><strong>Finish</strong></td><td>When the model answers without a tool call, the active checks run: a workflow's <code>response</code> schema, Stop hooks and a <code>/goal</code>. A failed check sends the turn back to work. A Stop hook can do this 5 times, and a <code>/goal</code> is dropped at the limits in <a href="#agentloop-goal">Goals</a>. A workflow's <code>retry</code> checks run after the chat finishes, and a failure starts the run again from the beginning. The whole turn is saved to the chat.</td></tr>
   </tbody>
 </table></div>
 
 <h2 id="agentloop-limits">Loop limits</h2>
-<p>Several checks watch a long turn for repetition and runaway cost. Each warns the model first and stops the turn only when the warning does not help.</p>
+<p>Several checks watch a long turn for repetition and runaway cost. Most warn the model first.</p>
 <ul>
-  <li><strong>Exact repeats.</strong> The same call with the same arguments: a warning at 3, and the turn stops at 5.</li>
+  <li><strong>Exact repeats.</strong> The same call with the same arguments: a warning at 3, and the fifth identical call is refused.</li>
   <li><strong>Near repeats.</strong> Nearly the same call, or two calls taking turns: a warning at 4.</li>
   <li><strong>Repeated failure.</strong> The same failure from the same tool: a nudge at 3, then “change approach or ask the user” at 5. After 6, the next call to that tool is refused.</li>
   <li><strong>Failures in a row.</strong> Failed calls to any tool: a nudge at 3. At 6, the model is told to change route or hand the work back to you.</li>
   <li><strong>Stalls.</strong> A check for a stall after 30 actions in one turn, then every 10. A confirmed stall gets a short grace period to answer, then the turn stops.</li>
-  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. <code>BIOROUTER_MAX_TURNS</code> or <code>biorouter run --max-turns</code> changes the turn limit. A message you add to the turn resets the count.</li>
+  <li><strong>Work without your input.</strong> The turn stops at 100 turns or 200 tool calls and names the limit. Quick reasoning effort halves both, and Deep doubles them. Set <code>BIOROUTER_MAX_TURNS</code> or <code>BIOROUTER_MAX_TOOL_CALLS</code> to change them; the command line also takes a turn limit for one run (see <a href="#cli-ref-session">Command line</a>). A message you add to the turn resets both counts.</li>
   <li><strong>Reply budget.</strong> A limit on the time, tokens or cost of one reply. Off by default. Set <code>BIOROUTER_REPLY_BUDGET_SECONDS</code>, <code>BIOROUTER_REPLY_BUDGET_TOKENS</code> or <code>BIOROUTER_REPLY_BUDGET_USD</code> for a warning, a request to wrap up, then a stop.</li>
 </ul>
 
@@ -1752,7 +1806,7 @@ biorouter crew tasks start methods --text "Summarize this week" \
 </ol>
 
 <h3>Workspace Control</h3>
-<p>Workspace Control lets the agent work across your chats. It is on by default; turn it off for new chats in <strong>Settings → Chat → Capabilities</strong>, or with <code>biorouter configure</code>, <strong>Toggle Extensions</strong>, <code>workspace</code>. The agent can:</p>
+<p>Workspace Control lets the agent work across your chats. It is on by default. To turn it off for new chats, use <strong>Settings → Chat → Capabilities</strong> in the app, or run <code>biorouter configure</code> in a terminal and choose <strong>Toggle Extensions</strong>, then <code>workspace</code>. The agent can:</p>
 <ul>
   <li>open a new chat in a tab, a split pane or a new window. New tabs open in the background and start in your working folder.</li>
   <li>list what is running, and read another chat as a summary, a transcript, its tool calls or a subagent's starting instructions. A public chat cannot read a private one.</li>
@@ -1813,7 +1867,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><strong>Settings</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>config.yaml</code></td></tr>
     <tr><td><strong>Tool rules</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>permission.yaml</code>: always allow, ask or never allow, for single tools</td></tr>
     <tr><td><strong>Secrets</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>secrets.yaml</code>, only without a credential store</td></tr>
-    <tr><td><strong>Privacy switch</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>privacy-tiers.json</code>: whether private and public protection is on</td></tr>
+    <tr><td><strong>Privacy switch</strong></td><td><code>~/.config/<wbr>biorouter/<wbr><span style="white-space: nowrap">privacy-tiers.json</span></code>: whether private and public protection is on</td></tr>
     <tr><td><strong>Workflows</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>workflows/</code></td></tr>
     <tr><td><strong>Skills</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>skills/</code></td></tr>
     <tr><td><strong>Installed extensions</strong></td><td><code>~/.config/<wbr>biorouter/<wbr>extensions/</code></td></tr>
@@ -1835,7 +1889,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   <li><strong><code>config.yaml</code></strong>.</li>
   <li><strong>Defaults.</strong></li>
 </ol>
-<p>For example, <code>BIOROUTER_MODE=chat biorouter</code> starts a terminal chat in Chat only mode and leaves the file alone. Only five settings can come from both a variable and the file; they are listed first under <a href="#config-env">Environment variables</a>.</p>
+<p>For example, <code>BIOROUTER_MODE=chat biorouter</code> starts a terminal chat in Chat only mode and leaves the file alone. Most settings in <code>config.yaml</code>, such as those in the first table under <a href="#config-env">Environment variables</a>, can also be set as a variable of the same name. The variables in the second table work only from the environment.</p>
 
 <h2 id="config-reload">When a change takes effect</h2>
 <ul>
@@ -1847,7 +1901,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 </ul>
 
 <h2 id="config-env">Environment variables</h2>
-<p>Five settings can be written in <code>config.yaml</code> or set as a variable. The variable wins.</p>
+<p>These settings can be written in <code>config.yaml</code> or set as a variable. The variable wins.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
   <tbody>
@@ -1858,7 +1912,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
     <tr><td><code>BIOROUTER_<wbr>AUTO_COMPACT_<wbr>THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
   </tbody>
 </table></div>
-<p>The rest work only as environment variables. Written in <code>config.yaml</code>, they have no effect.</p>
+<p>These work only as environment variables. Written in <code>config.yaml</code>, they have no effect.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
   <tbody>
@@ -1908,7 +1962,7 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
 
 <h2 id="architecture-daemon">The background service</h2>
 <p><code>biorouterd</code> serves the agent over local HTTP and WebSocket. The desktop app starts one for all of its windows. Schedules run inside it, so they run while it runs.</p>
-<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts, and the app asks for your approval secret each time you open it; see <a href="#crew">Crew</a>. On Windows it still stops when you quit.</p>
+<p>In the current release the service stops when you quit the app. From the next release, on macOS and Linux it keeps running after you quit, until the computer restarts; see <a href="#crew">Crew</a>. On Windows it still stops when you quit.</p>
 <p>The same release adds Crew, which connects the service to a lab workspace. The host runs the workspace with <code>biorouter-crew</code> on a shared Linux server, and each member's service reaches it over SSH through that member's own account on the server. Each member's agent still runs on their own computer, with their own model.</p>
 
 <h2 id="architecture-interfaces">How each interface connects</h2>
@@ -1916,10 +1970,10 @@ BIOROUTER_MAX_TURNS: 100</code></pre>
   <thead><tr><th>Interface</th><th>How it reaches the agent</th></tr></thead>
   <tbody>
     <tr><td><strong>Desktop app</strong></td><td>The app's main process starts <code>biorouterd</code>, and each window talks to it over HTTP and WebSocket, through a client generated from the service's OpenAPI description.</td></tr>
-    <tr><td><strong>Browser</strong></td><td><code>biorouter serve</code> starts <code>biorouterd</code>, which serves the same interface from its own address. See <a href="#cli-serve">Browser access</a>.</td></tr>
-    <tr><td><strong>Command line, on its own</strong></td><td>By default, <code>biorouter session</code> and <code>biorouter run</code> start the agent inside the terminal's own process. <code>session list</code>, <code>export</code>, <code>rename</code> and <code>remove</code> read the chat store directly. Nothing else needs to run.</td></tr>
-    <tr><td><strong>Command line, live</strong></td><td><code>session send</code>, <code>watch</code>, <code>attach</code> and <code>cancel</code> talk to a running <code>biorouterd</code>, because a turn in progress exists only inside the service running it. See <a href="#cli-sessions">Sessions</a>.</td></tr>
-    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code>--shared-daemon</code>, <code>biorouter session</code> and <code>biorouter run</code> use the same background service as the desktop app, as <code>biorouter crew</code> does.</td></tr>
+    <tr><td><strong>Browser</strong></td><td><code style="white-space: nowrap">biorouter serve</code> starts <code>biorouterd</code>, which serves the same interface from its own address. See <a href="#cli-serve">Browser access</a>.</td></tr>
+    <tr><td><strong>Command line, on its own</strong></td><td>By default, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> start the agent inside the terminal's own process. <code style="white-space: nowrap">session list</code>, <code>export</code>, <code>rename</code> and <code>remove</code> use the chat store directly. Nothing else needs to run.</td></tr>
+    <tr><td><strong>Command line, live</strong></td><td><code style="white-space: nowrap">session send</code>, <code>watch</code>, <code>attach</code> and <code>cancel</code> talk to a running <code>biorouterd</code>, because a turn in progress exists only inside the service running it. See <a href="#cli-sessions">Sessions</a>.</td></tr>
+    <tr><td><strong>Command line, shared</strong> <span class="chip">Next release</span></td><td>With <code>--shared-daemon</code>, <code style="white-space: nowrap">biorouter session</code> and <code style="white-space: nowrap">biorouter run</code> use the same background service as the desktop app, as <code style="white-space: nowrap">biorouter crew</code> does.</td></tr>
   </tbody>
 </table></div>
 <div class="note"><p>The app and the command line share one settings file, one credential store and one chat store, so a provider, an extension or a chat set up in one appears in the other. See <a href="#config-files">Where files live</a>.</p></div>

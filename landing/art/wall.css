@@ -65,6 +65,9 @@
 .art-wall .wall-title { font-size: var(--wall-t-title); line-height: var(--wall-l-title); min-width: 0; text-wrap: balance; }
 .art-wall .wall-pub .wall-title { text-align: right; }
 .art-wall .wall-no-title .wall-title { display: none; }
+/* The short title, where wall.js finds the long one does not fit. */
+.art-wall .wall-ts, .art-wall .wall-title-s .wall-tl { display: none; }
+.art-wall .wall-title-s .wall-ts { display: inline; }
 .art-wall .wall-lockonly { display: none; color: var(--ink); }
 .art-wall .wall-lockonly .wall-i { width: 13px; height: 13px; }
 
@@ -140,6 +143,8 @@
   display: flex; flex-direction: column; align-items: flex-start;
 }
 .art-wall .wall-pub .wall-evt { left: var(--wall-pw); right: var(--wall-po); }
+/* The picker hangs from the composer (wall.js sets its bottom). */
+.art-wall .wall-priv .wall-evt { top: auto; bottom: 0; }
 .art-wall .wall-no-evt .wall-evt { visibility: hidden; }
 
 /* The model picker, as the app draws it in a private chat: the current
@@ -178,11 +183,17 @@
 .art-wall .wall-navy { color: var(--navy); }
 .art-wall .wall-barred .wall-opt { color: var(--faint); }
 .art-wall .wall-quiet { font-size: 12px; }
+/* The reason opens under the barred row once the selection lands on it: the
+   picker grows upward by its height and the words fade in. */
+.art-wall .wall-barred { display: grid; grid-template-rows: auto 0fr; transition: grid-template-rows var(--dur-med) var(--ease); }
+.art-wall .wall-pop.is-why .wall-barred { grid-template-rows: auto 1fr; }
 .art-wall .wall-why {
-  position: relative;
+  min-height: 0; overflow: hidden;
+  opacity: 0; transition: opacity var(--dur-med) ease;
+}
+.art-wall .wall-why > p {
   font-size: var(--wall-t-why); line-height: var(--wall-l-why); color: var(--muted);
   padding: 1px 9px 6px 28px; text-wrap: balance;
-  opacity: 0; transition: opacity var(--dur-med) ease;
 }
 .art-wall .wall-pop.is-why .wall-why { opacity: 1; }
 
@@ -261,7 +272,7 @@
 .art-wall .wall-input::-moz-range-thumb { width: 44px; height: 100%; border: 0; border-radius: 0; background: transparent; }
 
 /* ── Frame sizes ────────────────────────────────────────── */
-.art-wall .wall-p, .art-wall .wall-g { display: none; }
+.art-wall .wall-p, .art-wall .wall-g, .art-wall .wall-n { display: none; }
 
 /* Narrow frames: the short spelling, small type, tighter margins. */
 @container wallframe (max-width: 480px) {
@@ -282,17 +293,19 @@
   .art-wall .wall-opt .wall-i { width: 11px; height: 11px; }
   .art-wall .wall-opt .wall-gap { width: 11px; }
   .art-wall .wall-quiet { font-size: 11.5px; }
-  .art-wall .wall-why { padding: 0 7px 5px 23px; }
+  .art-wall .wall-why > p { padding: 0 7px 5px 23px; }
   .art-wall .wall-chip .wall-brain { display: none; }
   .art-wall .wall-handle { width: 32px; height: 32px; }
   .art-wall .wall-handle .wall-chev { width: 10px; height: 10px; }
   .art-wall .wall-handle .wall-hlock { width: 12px; height: 12px; }
 }
-/* Phone frames: a two row header (badge, then up to two lines of title). */
+/* Phone frames: a two row header (badge, then up to two lines of title,
+   8px clear of the header rule). */
 @container wallframe (max-width: 400px) {
-  .art-wall .wall-layer { --wall-head: 70px; --wall-po: 11px; }
-  .art-wall .wall-head { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 4px; padding-top: 9px; }
-  .art-wall .wall-pub .wall-head { flex-direction: column; align-items: flex-end; padding-top: 9px; }
+  .art-wall .wall-layer { --wall-head: 70px; --wall-po: 11px; --wall-pw: 22px; }
+  .art-wall .wall-tool, .art-wall .wall-reqrow { gap: 6px; }
+  .art-wall .wall-head { flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 3px; padding-top: 8px; }
+  .art-wall .wall-pub .wall-head { flex-direction: column; align-items: flex-end; padding-top: 8px; }
 }
 /* Short frames: a tighter rhythm. */
 @container wallframe (max-height: 420px) {
@@ -320,6 +333,11 @@
 }
 
 /* ── A narrow chat, whatever the frame ──────────────────── */
+/* wall.js steps a chat whose question or tool row runs too tall down to the
+   short spelling (sp1), then the tiny one (sp2). */
+.art-wall .wall-sp1 .wall-d, .art-wall .wall-sp1 .wall-g,
+.art-wall .wall-sp2 .wall-d, .art-wall .wall-sp2 .wall-g, .art-wall .wall-sp2 .wall-p { display: none; }
+.art-wall .wall-sp1 .wall-p, .art-wall .wall-sp2 .wall-n { display: inline; }
 @container wallpane (max-width: 209px) {
   .art-wall .wall-d, .art-wall .wall-g { display: none; }
   .art-wall .wall-p { display: inline; }
@@ -330,6 +348,11 @@
     --wall-t-opt: 12px; --wall-t-why: 11.5px; --wall-l-why: 15px;
     --wall-t-note: 11.5px; --wall-l-note: 16px;
   }
+}
+/* A narrow chat's header gives the title a little more room (a row header
+   only: column-gap does nothing in the phone's column header). */
+@container wallpane (max-width: 180px) {
+  .art-wall .wall-head { --wall-hw: 9px; column-gap: 6px; }
 }
 @container wallpane (max-width: 200px) {
   .art-wall .wall-opt .wall-check { display: none; }

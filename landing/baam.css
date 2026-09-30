@@ -15,6 +15,9 @@
    "workflows." alone on the last line of a phone. */
 .baam-hero .display .soft { display: block; text-wrap: balance; }
 .baam-hero .lede { color: var(--muted); max-width: 640px; }
+/* Slack near the top as well as in the band at the foot of the page. */
+.baam-slack { margin: 26px 0 0; }
+.baam-slack .text-link { gap: 28px; }
 @media (max-width: 760px) { .baam-hero { padding-top: 48px; } }
 
 /* ── Search and shelf tabs ──────────────────────────────── */
@@ -146,9 +149,10 @@
   background: var(--paper);
   border-top: 1px solid var(--line);
   box-shadow: 0 1px 0 var(--line);
-  cursor: pointer;
   min-width: 0;
 }
+/* Only baam.js opens a row, so only a page running it shows the pointer. */
+.js .ext-card, .js .skill-card, .js .wf-card { cursor: pointer; }
 .ext-card-header, .ext-footer, .skill-card-header, .skill-footer, .wf-card-header { display: contents; }
 .feat-eyebrow { display: none; }
 
@@ -339,6 +343,9 @@
 
 /* ── Contribute ─────────────────────────────────────────── */
 .contrib { margin: 0; padding: 0; list-style: none; }
+/* The head sits on the first row's hairline, like the catalog's group heads,
+   so the section opens on one line with its coral lead. */
+.contribute .group-head { padding-top: 0; }
 .contrib li { border-bottom: 1px solid var(--line); }
 .contrib li:first-child { border-top: 1px solid var(--line); }
 .contrib a {
@@ -350,12 +357,11 @@
 .contrib .k { font-size: 16px; letter-spacing: -0.01em; }
 .contrib .k small { display: block; margin-top: 4px; font-size: 14px; color: var(--muted); letter-spacing: 0; }
 .contrib code { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-.contrib .note { font-size: 13px; color: var(--muted); }
-.contrib .arrow { color: var(--coral); text-align: right; }
+.contrib .arrow { grid-column: 3; color: var(--coral); text-align: right; }
 .contribute { padding-bottom: 136px; }
 @media (max-width: 680px) {
   .contrib a { grid-template-columns: minmax(0, 1fr) 20px; }
-  .contrib code, .contrib .note { grid-column: 1; grid-row: 2; }
+  .contrib code { grid-column: 1; grid-row: 2; }
   .contrib .arrow { grid-column: 2; grid-row: 1; }
   .contribute { padding-bottom: 88px; }
 }
