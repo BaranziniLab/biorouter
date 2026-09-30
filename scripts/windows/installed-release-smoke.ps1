@@ -217,14 +217,18 @@ try {
         $desktop.Refresh()
         $children = @($owned.Values | Where-Object { $_.ExecutablePath -eq $daemon -and
             $_.ProcessId -ne $daemonProcess.Id -and (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue) })
-        $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-            Where-Object { $_.OwningProcess -in @($children.ProcessId) })
+        $childPids = @($children | ForEach-Object { $_.ProcessId })
+        $listeners = @()
+        if ($childPids.Count -gt 0) {
+            $listeners = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $_.OwningProcess -in $childPids })
+        }
         try {
             $pages = @(Invoke-RestMethod "http://127.0.0.1:$env:PLAYWRIGHT_CDP_PORT/json/list" -TimeoutSec 2)
             $renderer = @($pages | Where-Object { $_.type -eq 'page' -and $_.url -like 'file:*' })
             if ($desktop.MainWindowHandle -ne 0 -and $listeners.Count -gt 0 -and $renderer.Count -gt 0) {
                 $ready = $true
-                $result.desktopDaemonPids = @($children.ProcessId)
+                $result.desktopDaemonPids = $childPids
                 break
             }
         } catch {}
