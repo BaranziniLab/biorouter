@@ -20,7 +20,7 @@ $AppDirectory = (Resolve-Path -LiteralPath $AppDirectory).Path
 $ZipAppDirectory = (Resolve-Path -LiteralPath $ZipAppDirectory).Path
 $Report = [IO.Path]::GetFullPath($Report)
 $root = Join-Path $env:RUNNER_TEMP ('br-normal-' + [Guid]::NewGuid().ToString('N'))
-$profile = Join-Path $root 'electron'
+$normalUserDataDirectory = Join-Path $root 'electron'
 $desktopPath = Join-Path $AppDirectory 'Biorouter.exe'
 $daemonPath = Join-Path $AppDirectory 'resources/bin/biorouterd.exe'
 $owned = @{}
@@ -137,7 +137,7 @@ $expression = @'
 '@
 
 try {
-    New-Item -ItemType Directory -Force -Path $profile, (Join-Path $root 'local'), (Join-Path $root 'roaming'),
+    New-Item -ItemType Directory -Force -Path $normalUserDataDirectory, (Join-Path $root 'local'), (Join-Path $root 'roaming'),
         (Join-Path $root 'home'), (Split-Path -Parent $Report) | Out-Null
     $result.assets = @(Get-Content -LiteralPath $AssetEvidence -Raw | ConvertFrom-Json)
     if ($result.assets.Count -ne 2) { throw 'Expected authenticated ZIP and Setup asset evidence' }
@@ -177,7 +177,7 @@ try {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
     $desktop = Start-Process -FilePath $desktopPath -PassThru -ArgumentList @(
-        "--user-data-dir=`"$profile`"", "--remote-debugging-port=$cdpPort", '--remote-debugging-address=127.0.0.1') `
+        "--user-data-dir=`"$normalUserDataDirectory`"", "--remote-debugging-port=$cdpPort", '--remote-debugging-address=127.0.0.1') `
         -RedirectStandardOutput (Join-Path $root 'normal.stdout.log') `
         -RedirectStandardError (Join-Path $root 'normal.stderr.log')
     $identity = Get-CimInstance Win32_Process -Filter "ProcessId=$($desktop.Id)"
@@ -272,7 +272,7 @@ try {
             [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name], 'Process')
         }
         foreach ($log in @(Get-ChildItem -LiteralPath $root -Filter '*.log' -File -Recurse -ErrorAction SilentlyContinue)) {
-            if ($log.DirectoryName -eq $root -or $log.DirectoryName -eq (Join-Path $profile 'logs')) {
+            if ($log.DirectoryName -eq $root -or $log.DirectoryName -eq (Join-Path $normalUserDataDirectory 'logs')) {
                 Copy-Item -LiteralPath $log.FullName -Destination (Join-Path (Split-Path -Parent $Report) $log.Name)
             }
         }

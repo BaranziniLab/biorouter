@@ -123,14 +123,14 @@ jobs:
           }
           $metadata = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:PACKAGE_RUN/artifacts?per_page=100" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Could not read package artifact metadata' }
-          $matches = @($metadata.artifacts | Where-Object { $_.name -ceq "windows-packages-$env:VERSION" })
-          if ($matches.Count -ne 1 -or $matches[0].expired -or
-              $matches[0].workflow_run.id -ne [long]$env:PACKAGE_RUN -or
-              $matches[0].workflow_run.head_sha -cne $env:PACKAGE_SOURCE_SHA -or
-              $matches[0].digest -notmatch '^sha256:[0-9a-f]{64}$') {
+          $artifactMatches = @($metadata.artifacts | Where-Object { $_.name -ceq "windows-packages-$env:VERSION" })
+          if ($artifactMatches.Count -ne 1 -or $artifactMatches[0].expired -or
+              $artifactMatches[0].workflow_run.id -ne [long]$env:PACKAGE_RUN -or
+              $artifactMatches[0].workflow_run.head_sha -cne $env:PACKAGE_SOURCE_SHA -or
+              -not [regex]::IsMatch($artifactMatches[0].digest, '^sha256:[0-9a-f]{64}$')) {
             throw 'Expected one unexpired versioned package artifact from the exact run and source'
           }
-          $asset = $matches[0]
+          $asset = $artifactMatches[0]
           New-Item -ItemType Directory -Force artifact | Out-Null
           $archive = [IO.Path]::GetFullPath('artifact/windows-ci-packages.zip')
           Invoke-WebRequest $asset.archive_download_url -OutFile $archive -Headers @{
