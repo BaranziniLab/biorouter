@@ -1,14 +1,14 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
+> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then **Configure providers**.
 
 **UCSF users:** For institution-managed access, start with **Versa API Azure** (`versa_azure`, the UCSF ChatGPT models) or **Versa API Bedrock** (`versa_bedrock`, the UCSF-hosted Anthropic models). The generic **Azure OpenAI** and **Amazon Bedrock** providers are the commercial ones, not the UCSF institutional ones. For fully local inference, use **Llama Server** or **Ollama**.
 
-> **Note.** The model lists on this page are hand-maintained snapshots, last checked against the code on 2026-09-25, and they drift. The authoritative values are the `*_DEFAULT_MODEL` and `*_KNOWN_MODELS` constants in `crates/biorouter/src/providers/`, and the bundled JSON files in `crates/biorouter/src/providers/declarative/` for DeepSeek, Groq, Inception, Mistral AI and Moonshot AI. Treat the live model picker, which fetches from the provider, as authoritative.
+> **Note.** The model lists on this page are hand-maintained snapshots, last checked against the code on 2026-09-25 (the two Versa lists on 2026-10-05), and they drift. The authoritative values are the `*_DEFAULT_MODEL` and `*_KNOWN_MODELS` constants in `crates/biorouter/src/providers/`, and the bundled JSON files in `crates/biorouter/src/providers/declarative/` for DeepSeek, Groq, Inception, Mistral AI and Moonshot AI. Treat the live model picker, which fetches from the provider, as authoritative.
 
 The **default model** is the one Biorouter uses when you configure a provider without naming a model. The desktop model picker preselects the first model in a provider's list when you switch to that provider, and that is not always the default named here.
 
@@ -83,12 +83,15 @@ Default model: `gpt-5.5-2026-04-24`
 Available models:
 
 - `gpt-5.5-2026-04-24`
+- GPT-5.6: `gpt-5.6-sol-2026-07-09`, `gpt-5.6-terra-2026-07-09`, `gpt-5.6-luna-2026-07-09`
 - `gpt-5.4-mini-2026-03-17`, `gpt-5.4-nano-2026-03-17`
 - `gpt-5.2-2025-12-11`
 - `gpt-5-2025-08-07`, `gpt-5-mini-2025-08-07`, `gpt-5-nano-2025-08-07`
 - `gpt-4o-2024-11-20`
 
-Each model maps to a UCSF deployment, so this provider does not accept a model outside the list. UCSF has not deployed GPT-6 or GPT-5.6 yet (checked 2026-09-25). A chat already bound to `o4-mini-2025-04-16`, `gpt-4.1-2025-04-14` or `gpt-4.1-mini-2025-04-14` keeps working until Azure retires the model (2026-11-19 for `o4-mini`, 2027-04-14 for the two GPT-4.1 models), but those models are no longer offered.
+Each model maps to a UCSF deployment, so this provider does not accept a model outside the list. The three GPT-5.6 models became available at UCSF on 2026-10-01, with a 1,050,000-token context window. Biorouter sends them to the Responses API, because on Chat Completions they cannot use tools and reasoning in the same request. The other models stay on Chat Completions. UCSF has not deployed GPT-6 (checked 2026-10-05).
+
+A chat already bound to `o4-mini-2025-04-16`, `gpt-4.1-2025-04-14` or `gpt-4.1-mini-2025-04-14` keeps working until Azure retires the model (2026-11-19 for `o4-mini`, 2027-04-14 for the two GPT-4.1 models), but those models are no longer offered. UCSF names `gpt-5.6-terra-2026-07-09` as the replacement for `o4-mini`.
 
 #### Versa API Bedrock
 
@@ -98,15 +101,17 @@ Provider id `versa_bedrock`. The UCSF-hosted Anthropic models, served through Am
 
 Default model: `us.anthropic.claude-opus-4-8`
 
-Available models include:
+Available models:
 
-- `us.anthropic.claude-opus-4-8`
-- `us.anthropic.claude-opus-4-6-v1`, `us.anthropic.claude-sonnet-4-6`
-- `us.anthropic.claude-opus-4-5-20251101-v1:0`
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
-- `us.anthropic.claude-opus-5-5`, `us.anthropic.claude-opus-5`, `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-opus-4-8` (Claude Opus 4.8)
+- `us.anthropic.claude-sonnet-5` (Claude Sonnet 5)
+- `us.anthropic.claude-opus-4-6-v1` (Claude Opus 4.6), `us.anthropic.claude-sonnet-4-6` (Claude Sonnet 4.6)
+- `us.anthropic.claude-opus-4-5-20251101-v1:0` (Claude Opus 4.5)
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Claude Haiku 4.5)
 
-The last three are AWS's own ids, but none of them has completed a request through the UCSF gateway yet, so whether UCSF's account can use them is unconfirmed. They are listed last so the picker never preselects one. Claude Fable models are not offered, because Bedrock serves them only to accounts whose data retention mode is `aws_review`.
+Each of these answered a request through the UCSF gateway on 2026-10-05.
+
+UCSF does not offer Claude Opus 5.5, Opus 5, Opus 4.7, Sonnet 5.5, Sonnet 4.5, Sonnet 4, Fable 5.1 or Fable 5 through Versa. Bedrock refuses requests for them from the UCSF account, so they are not listed. A chat still set to one of them stops with a message that names the models above; your access key pair is not the problem. Claude Fable models would stay off the list even if UCSF enabled them, because Bedrock serves Fable only to accounts whose data retention mode is `aws_review`. Claude Opus 4.1 still answers, but Amazon has marked it legacy and ends it on 2027-01-08, so it is not offered either. Claude Opus 4 and the Claude 3 models are retired on Bedrock.
 
 ### Commercial providers
 
