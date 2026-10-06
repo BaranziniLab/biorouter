@@ -10,6 +10,10 @@ use super::base::{
 };
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
+use super::formats::openai_responses::{
+    create_responses_request, get_responses_usage, responses_api_to_message, stream_responses_api,
+    ResponsesApiResponse,
+};
 use super::provider_binding::{
     model_without_restore_marker, ProviderRestoreBinding, SecretFreeEndpoint,
     VersaAzureCredentialSource,
@@ -35,8 +39,24 @@ pub const VERSA_AZURE_ENDPOINT: &str = "https://unified-api.ucsf.edu/general";
 /// A request now posts to the deployment [`VERSA_AZURE_DEPLOYMENTS`] maps its
 /// own model to.
 pub const VERSA_AZURE_DEFAULT_MODEL: &str = "gpt-5.5-2026-04-24";
+/// The `api-version` of the Chat Completions route. The Responses route
+/// ([`VERSA_AZURE_RESPONSES_PATH`]) takes none.
 pub const VERSA_AZURE_API_VERSION: &str = "2025-01-01-preview";
 pub const VERSA_AZURE_DOC_URL: &str = "http://biorouter.ucsf.edu/docs";
+
+/// Azure OpenAI's v1 Responses route at the UCSF gateway, relative to the
+/// endpoint: the route a request for a model [`takes_the_responses_route`]
+/// posts to, on the same host, with the same `api-key` header.
+///
+/// The same route the public `azure_openai` provider takes, with the same
+/// shape: no `api-version` query, and the DEPLOYMENT name as the body's
+/// `model`, because the path names no deployment. Measured 2026-10-05 against
+/// all three gpt-5.6 deployments: a POST here carrying a function tool,
+/// `reasoning.effort` and `store: false` answered 200 with a `function_call`,
+/// blocking and streamed, echoing the deployment name as `model` and
+/// reporting usage on the terminal `response.completed` event. The dated form
+/// (`openai/responses?api-version=`) answered 404 on 2026-09-25.
+const VERSA_AZURE_RESPONSES_PATH: &str = "openai/v1/responses";
 
 /// Every model this provider offers, paired with the Azure deployment that
 /// serves it at the UCSF gateway. `metadata()` advertises exactly these models,
@@ -64,25 +84,51 @@ pub const VERSA_AZURE_DOC_URL: &str = "http://biorouter.ucsf.edu/docs";
 ///     `gpt-5.6-{sol,terra,luna}-2026-07-09`, `gpt-6-{astra,sol,luna}`,
 ///     `gpt-5.6-{sol,terra,luna}` — under api-versions 2025-01-01-preview,
 ///     2025-04-01-preview and 2026-06-01-preview. So did `gpt-5.4-2026-03-05`
-///     and `gpt-5.1-2025-11-13`. UCSF has not deployed GPT-6 or GPT-5.6 yet;
-///     re-probe before adding one, because a mapped model the gateway does not
-///     serve fails every turn.
+///     and `gpt-5.1-2025-11-13`. Neither family was deployed then.
+///   * 2026-10-05, after UCSF announced the three GPT-5.6 deployments
+///     (2026-10-01): `gpt-5.6-sol-2026-07-09`, `gpt-5.6-terra-2026-07-09` and
+///     `gpt-5.6-luna-2026-07-09` answered 200, each echoing its own name, and
+///     are offered from this date. Each refused a 1,060,000-token prompt with
+///     "Input tokens exceed the configured limit of 922000 tokens": the
+///     1,050,000 window `MODEL_CONTEXT_WINDOWS` already carries, less 128k for
+///     output. The eight rows offered until then and the three retiring ones
+///     answered 200 again. Every GPT-6 name still answered 404
+///     `DeploymentNotFound` (`gpt-6-sol-2026-09-22`, `gpt-6-luna-2026-09-22`,
+///     `gpt-6-astra-2026-09-03`), as did the bare `gpt-5.6` and `gpt-5.6-sol`,
+///     `gpt-5.4-2026-03-05`, `gpt-5.1-2025-11-13`, `gpt-4.1-nano-2025-04-14`
+///     and `o3-2025-04-16`; `gpt-4o-mini-2024-07-18` answered 400
+///     `BadRequestForDependentService`.
 ///
-/// ⚠ Adding a GPT-6 or GPT-5.6 deployment takes more than a row here. This
-/// provider posts every request to Chat Completions, where neither family can
-/// combine function tools with reasoning — every tool-bearing turn would be
-/// refused. Both need the Responses route the public `azure_openai` provider
-/// takes for them (`POST openai/v1/responses`, the deployment as `model`), and
-/// the gateway serves that route: measured 2026-09-25, it answered 200 for
-/// `gpt-5.5-2026-04-24`, while the dated `openai/responses?api-version=` form
-/// answered 404.
+/// Re-probe before adding a row: a mapped model the gateway does not serve
+/// fails every turn.
+///
+/// ⚠ A GPT-5.6 or GPT-6 row is served from a different ROUTE, not only a
+/// different deployment. On Chat Completions neither family can combine
+/// function tools with reasoning: measured 2026-10-05, a gpt-5.6 deployment
+/// sent function tools and `reasoning_effort` answered 400 "Function tools
+/// with reasoning_effort are not supported for this model in
+/// /v1/chat/completions. To use function tools, use /v1/responses or set
+/// reasoning_effort to 'none'", on the dated and the v1 chat route alike, and
+/// BioRouter sends tools on nearly every turn. So a request for either family
+/// posts to [`VERSA_AZURE_RESPONSES_PATH`] instead (see
+/// [`takes_the_responses_route`]); every other row stays on Chat Completions,
+/// which the gateway serves correctly for them.
 ///
 /// The authoritative list lives on the login-gated UCSF wiki ("Models,
 /// deployments, and API endpoints in UCSF Versa"). o1-2024-12-17 and
 /// o3-mini-2025-01-31 were removed earlier (Deprecated on Azure, now retiring
-/// 2026-11-19) and still answered on 2026-09-11; they stay removed.
+/// 2026-11-19) and still answered on 2026-10-05; they stay removed.
 pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
     ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
+    // GPT-5.6, version 2026-07-09: deployed at UCSF 2026-10-01. Responses route.
+    ("gpt-5.6-sol-2026-07-09", "gpt-5.6-sol-2026-07-09"),
+    ("gpt-5.6-terra-2026-07-09", "gpt-5.6-terra-2026-07-09"),
+    // Before `agents/moim.rs` opened every `<info-msg>` block with its
+    // preamble, luna often answered that block instead of the task after a
+    // tool call (2026-10-05: 5 of 17 CLI runs gave the shell result, the rest
+    // were empty or "Ready."/"Noted."; Chat Completions did no better). The
+    // preamble's doc comment has the measurement that brought it to 35 of 36.
+    ("gpt-5.6-luna-2026-07-09", "gpt-5.6-luna-2026-07-09"),
     ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini-2026-03-17"),
     ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano-2026-03-17"),
     ("gpt-5.2-2025-12-11", "gpt-5.2-2025-12-11"),
@@ -96,7 +142,7 @@ pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
 /// model to lifecycle "Deprecated" — no new deployments, existing ones served
 /// until the retirement date given here (Microsoft Learn, "Model retirement
 /// schedule", updated 2026-09-23). All three answered 200 at the gateway on
-/// 2026-09-25.
+/// 2026-09-25 and again on 2026-10-05.
 ///
 /// ⚠ Deleting a row here instead would break every chat already bound to it:
 /// the provider refuses a model with no deployment before sending anything
@@ -118,7 +164,8 @@ pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
 ///
 /// `(model, deployment, retires on)`, the date as `YYYY-MM-DD`.
 pub const VERSA_AZURE_RETIRING_DEPLOYMENTS: &[(&str, &str, &str)] = &[
-    // Replacement named by Azure: gpt-5.6-terra (not yet deployed at UCSF).
+    // Replacement named by Azure and by UCSF's 2026-10-01 notice:
+    // gpt-5.6-terra, deployed at UCSF since 2026-10-01 and offered above.
     ("o4-mini-2025-04-16", "o4-mini-2025-04-16", "2026-11-19"),
     // No replacement named yet.
     ("gpt-4.1-2025-04-14", "gpt-4.1-2025-04-14", "2027-04-14"),
@@ -287,9 +334,58 @@ fn versa_gateway_credential_refusal(status: reqwest::StatusCode, body: &str) -> 
     }
 }
 
+/// Whether a request for `model` posts to [`VERSA_AZURE_RESPONSES_PATH`]
+/// rather than to its deployment's Chat Completions path: GPT-5.6 and GPT-6,
+/// the two families that cannot combine function tools with reasoning on Chat
+/// Completions (see the ⚠ note on [`VERSA_AZURE_DEPLOYMENTS`]).
+///
+/// Decided by the model the REQUEST names, as the deployment is: a chat's fast
+/// model can be on the other route than the chat's own. With a deployment
+/// override in force it is still the model that decides, because the override
+/// says where a request goes, not what serves it.
+///
+/// ⚠ Not `formats::openai::model_uses_responses_api`, which the public
+/// `azure_openai` provider routes by: that also matches gpt-5.4, gpt-5.5 and
+/// o4-mini, which this gateway serves correctly over Chat Completions
+/// (measured with function tools and reasoning effort, 2026-09-25), and moving
+/// them would change the route of every chat already bound to the default.
+/// GPT-6 is here although no GPT-6 deployment exists at the gateway yet
+/// (2026-10-05), so the day one is added it takes the route it needs.
+fn takes_the_responses_route(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("gpt-5.6") || model.starts_with("gpt-6")
+}
+
+/// Which wire format a request is sent and answered in. The decoder must match
+/// the route: a Responses stream is typed `response.*` events, not Chat
+/// Completions chunks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    ChatCompletions,
+    Responses,
+}
+
+impl Route {
+    fn for_model(model: &str) -> Self {
+        if takes_the_responses_route(model) {
+            Route::Responses
+        } else {
+            Route::ChatCompletions
+        }
+    }
+}
+
+/// One request, ready to post: the route it takes, the path, and the body.
+#[derive(Debug)]
+struct PreparedRequest {
+    route: Route,
+    path: String,
+    payload: Value,
+}
+
 fn versa_azure_model_supports_vision(name: &str) -> bool {
     // `gpt-6` too, although no GPT-6 deployment exists at the gateway yet
-    // (2026-09-25): Azure lists text + image input for all three GPT-6 models,
+    // (2026-10-05): Azure lists text + image input for all three GPT-6 models,
     // so the day one is added it is advertised correctly.
     !name.contains("codex")
         && (name.starts_with("gpt-6")
@@ -588,8 +684,10 @@ impl VersaAzureProvider {
         }
     }
 
-    /// The single source of truth for the Azure deployment path, shared by the
-    /// blocking and streaming paths so they cannot drift.
+    /// The Chat Completions path of `model`'s deployment, whatever route a
+    /// request for it takes: the credential probe posts here for every model.
+    /// Requests get their path from [`Self::prepare_request`], which builds
+    /// this same path from the same deployment for a Chat Completions model.
     fn chat_completions_path(&self, model: &str) -> Result<String, ProviderError> {
         Ok(build_chat_completions_path(
             self.deployment_for(model)?,
@@ -602,29 +700,75 @@ impl VersaAzureProvider {
         handle_response_openai_compat(response).await
     }
 
-    /// The exact request body `stream()` posts. Extracted so a test can assert
-    /// on the payload the *provider* builds rather than on `create_request`'s
+    /// The route, path and body of one request for `model_config`, shared by
+    /// the blocking and streaming paths so they cannot drift.
+    ///
+    /// The deployment is resolved FIRST, before the payload exists, on both
+    /// routes: a model no deployment serves is refused here, so nothing is
+    /// logged and nothing is sent.
+    fn prepare_request(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        messages: &[Message],
+        tools: &[Tool],
+        for_streaming: bool,
+    ) -> Result<PreparedRequest, ProviderError> {
+        let deployment = self.deployment_for(&model_config.model_name)?;
+        match Route::for_model(&model_config.model_name) {
+            Route::Responses => {
+                let mut payload = create_responses_request(model_config, system, messages, tools)?;
+                // ⚠ The DEPLOYMENT, not the model name: the v1 route has no
+                // deployment in its path, so this field is the only thing that
+                // tells Azure which deployment to run. With an override in
+                // force it is the override, exactly as on Chat Completions.
+                payload["model"] = Value::String(deployment.to_string());
+                if for_streaming {
+                    // Responses reports usage on its terminal
+                    // `response.completed` event unasked; there is no
+                    // `stream_options` to set.
+                    payload["stream"] = Value::Bool(true);
+                }
+                Ok(PreparedRequest {
+                    route: Route::Responses,
+                    path: VERSA_AZURE_RESPONSES_PATH.to_string(),
+                    payload,
+                })
+            }
+            Route::ChatCompletions => {
+                // `for_streaming = true` sets both `stream: true` and
+                // `stream_options: {"include_usage": true}`, which is what makes
+                // Azure OpenAI emit a final usage-bearing chunk. Without it,
+                // usage/cost tracking silently reports zeros on this path.
+                let payload = create_request(
+                    model_config,
+                    system,
+                    messages,
+                    tools,
+                    &ImageFormat::OpenAi,
+                    for_streaming,
+                )?;
+                Ok(PreparedRequest {
+                    route: Route::ChatCompletions,
+                    path: build_chat_completions_path(deployment, &self.api_version),
+                    payload,
+                })
+            }
+        }
+    }
+
+    /// The exact request `stream()` posts. Extracted so a test can assert on
+    /// the payload the *provider* builds rather than on `create_request`'s
     /// output — the `for_streaming = true` argument below is the whole change,
     /// and a test that calls `create_request` directly re-supplies that
     /// argument itself and so cannot detect it being flipped here.
-    fn build_stream_payload(
+    fn build_stream_request(
         &self,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
-    ) -> Result<Value> {
-        // `for_streaming = true` sets both `stream: true` and
-        // `stream_options: {"include_usage": true}`, which is what makes Azure
-        // OpenAI emit a final usage-bearing chunk. Without it, usage/cost
-        // tracking silently reports zeros on this path.
-        create_request(
-            &self.model,
-            system,
-            messages,
-            tools,
-            &ImageFormat::OpenAi,
-            true,
-        )
+    ) -> Result<PreparedRequest, ProviderError> {
+        self.prepare_request(&self.model, system, messages, tools, true)
     }
 }
 
@@ -742,16 +886,14 @@ impl Provider for VersaAzureProvider {
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         // First, before the payload exists: a model no deployment serves is
-        // refused here, so nothing is logged and nothing is sent.
-        let path = self.chat_completions_path(&model_config.model_name)?;
-        let payload = create_request(
-            model_config,
-            system,
-            messages,
-            tools,
-            &ImageFormat::OpenAi,
-            false,
-        )?;
+        // refused inside `prepare_request`, so nothing is logged and nothing is
+        // sent. The route follows the model THIS request names, which for
+        // `complete_fast` is the fast model, not the chat's.
+        let PreparedRequest {
+            route,
+            path,
+            payload,
+        } = self.prepare_request(model_config, system, messages, tools, false)?;
         let mut log = RequestLog::start(model_config, &payload)?;
         let response = self
             .with_retry(|| async {
@@ -763,12 +905,29 @@ impl Provider for VersaAzureProvider {
                 let _ = log.provider_error(e);
             })?;
 
-        let message = response_to_message(&response)?;
-        let usage = response.get("usage").map(get_usage).unwrap_or_else(|| {
-            tracing::debug!("Failed to get usage data");
-            Usage::default()
-        });
-        let response_model = get_model(&response);
+        let (message, usage, response_model) = match route {
+            Route::Responses => {
+                let responses_api_response: ResponsesApiResponse =
+                    serde_json::from_value(response.clone()).map_err(|e| {
+                        ProviderError::ExecutionError(format!(
+                            "Failed to parse responses API response: {}",
+                            e
+                        ))
+                    })?;
+                (
+                    responses_api_to_message(&responses_api_response)?,
+                    get_responses_usage(&responses_api_response),
+                    responses_api_response.model.clone(),
+                )
+            }
+            Route::ChatCompletions => {
+                let usage = response.get("usage").map(get_usage).unwrap_or_else(|| {
+                    tracing::debug!("Failed to get usage data");
+                    Usage::default()
+                });
+                (response_to_message(&response)?, usage, get_model(&response))
+            }
+        };
         log.write(&response, Some(&usage))?;
         Ok((message, ProviderUsage::new(response_model, usage)))
     }
@@ -790,6 +949,13 @@ impl Provider for VersaAzureProvider {
     /// the model: nothing is generated and nothing is billed. Measured against
     /// the UCSF gateway on 2026-09-28: a wrong key got 401 `Invalid client id or
     /// secret` in 0.2 s, the real key got 400 `empty_array` in 0.6 s.
+    ///
+    /// It stays on the Chat Completions path for a model that otherwise takes
+    /// the Responses route: the gateway judges the key before the route, and
+    /// the deployment still rejects the empty request unrun. Measured
+    /// 2026-10-05 on `gpt-5.6-sol-2026-07-09` and `gpt-5.6-luna-2026-07-09`: a
+    /// wrong key got 401 `Invalid client id or secret` in 0.2 s, the real key
+    /// 400 `empty_array` in 0.8 s.
     async fn check_credentials(&self) -> Result<(), ProviderError> {
         // The route of the model this instance was built for, or of the default
         // model when that one has no deployment: the key is the gateway's
@@ -819,8 +985,11 @@ impl Provider for VersaAzureProvider {
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
         // Same order as `complete_with_model`: refuse before anything is built.
-        let path = self.chat_completions_path(&self.model.model_name)?;
-        let payload = self.build_stream_payload(system, messages, tools)?;
+        let PreparedRequest {
+            route,
+            path,
+            payload,
+        } = self.build_stream_request(system, messages, tools)?;
         let mut log = RequestLog::start(&self.model, &payload)?;
 
         let response = self
@@ -833,7 +1002,11 @@ impl Provider for VersaAzureProvider {
                 let _ = log.provider_error(e);
             })?;
 
-        stream_openai_compat(response, log)
+        // The decoder must match the route.
+        match route {
+            Route::Responses => Ok(stream_responses_api(response, log)),
+            Route::ChatCompletions => stream_openai_compat(response, log),
+        }
     }
 }
 
@@ -1027,9 +1200,15 @@ mod tests {
     #[test]
     fn provider_stream_payload_opts_into_streaming_with_usage() {
         let provider = test_provider();
-        let payload = provider
-            .build_stream_payload("sys", &[], &[])
+        let request = provider
+            .build_stream_request("sys", &[], &[])
             .expect("streaming payload builds");
+        assert_eq!(request.route, Route::ChatCompletions);
+        assert_eq!(
+            request.path,
+            "openai/deployments/gpt-5.5-2026-04-24/chat/completions?api-version=2025-01-01-preview"
+        );
+        let payload = request.payload;
 
         assert_eq!(
             payload["stream"],
@@ -1041,6 +1220,41 @@ mod tests {
             serde_json::json!(true),
             "Azure needs stream_options.include_usage or usage/cost tracking breaks"
         );
+    }
+
+    /// A gpt-5.6 chat streams a Responses body to the v1 route, naming its
+    /// deployment as `model`. Built by the provider, for the same reason as the
+    /// test above: a test that called `create_responses_request` itself could
+    /// not see the provider forgetting `stream` or the deployment.
+    #[test]
+    fn a_gpt_5_6_stream_request_is_a_responses_body_addressed_to_its_deployment() {
+        for (model, deployment) in [
+            ("gpt-5.6-sol-2026-07-09", "gpt-5.6-sol-2026-07-09"),
+            ("gpt-5.6-terra-2026-07-09", "gpt-5.6-terra-2026-07-09"),
+            ("gpt-5.6-luna-2026-07-09", "gpt-5.6-luna-2026-07-09"),
+        ] {
+            let mut provider = test_provider();
+            provider.model = ModelConfig::new_or_fail(model);
+            let request = provider
+                .build_stream_request("sys", &[], &[])
+                .expect("streaming payload builds");
+
+            assert_eq!(request.route, Route::Responses, "{model}");
+            assert_eq!(request.path, "openai/v1/responses", "{model}");
+            let payload = request.payload;
+            assert_eq!(payload["model"], deployment, "{model}");
+            assert_eq!(payload["stream"], serde_json::json!(true), "{model}");
+            assert_eq!(payload["store"], serde_json::json!(false), "{model}");
+            assert!(payload["input"].is_array(), "{model}");
+            assert!(
+                payload.get("messages").is_none(),
+                "{model}: a Chat Completions body"
+            );
+            assert!(
+                payload.get("stream_options").is_none(),
+                "{model}: Responses has no stream_options; usage arrives on response.completed"
+            );
+        }
     }
 
     /// `stream()` and `complete()` must post to the same deployment path, and
@@ -1128,14 +1342,14 @@ mod tests {
         for alias in ["gpt-5.5", "gpt-4.1", "gpt-4o"] {
             assert_eq!(deployment_for_model(alias), None, "{alias}");
         }
-        // Nothing GPT-6 or GPT-5.6 is deployed (measured 2026-09-25: all 404).
+        // Nothing GPT-6 is deployed, and GPT-5.6 only under its dated names
+        // (measured 2026-10-05: all of these 404 `DeploymentNotFound`).
         for absent in [
             "gpt-6-sol-2026-09-22",
             "gpt-6-luna-2026-09-22",
             "gpt-6-astra-2026-09-03",
-            "gpt-5.6-sol-2026-07-09",
-            "gpt-5.6-terra-2026-07-09",
-            "gpt-5.6-luna-2026-07-09",
+            "gpt-5.6",
+            "gpt-5.6-sol",
         ] {
             assert_eq!(deployment_for_model(absent), None, "{absent}");
         }
@@ -1256,6 +1470,10 @@ mod tests {
             "o4-mini-2025-04-16",
             "gpt-4.1-2025-04-14",
             "gpt-4.1-mini-2025-04-14",
+            // Offered from 2026-10-05.
+            "gpt-5.6-sol-2026-07-09",
+            "gpt-5.6-terra-2026-07-09",
+            "gpt-5.6-luna-2026-07-09",
         ] {
             assert_eq!(
                 explicit_override(Some(shipped)),
@@ -1265,36 +1483,150 @@ mod tests {
         }
     }
 
-    /// The ⚠ note on `VERSA_AZURE_DEPLOYMENTS`, enforced: GPT-6 and GPT-5.6
-    /// refuse function tools combined with `reasoning_effort` on Chat
-    /// Completions, and this provider posts only to
-    /// `openai/deployments/{d}/chat/completions`. A row for either family would
-    /// fail every tool-bearing turn, however it answers a one-shot probe — and
-    /// the routing tests' mock accepts any body, so they cannot catch it.
-    ///
-    /// Keyed on the two prefixes, not on `formats::openai::model_uses_responses_api`:
-    /// that also matches gpt-5.4 and gpt-5.5, which this gateway serves
-    /// correctly over Chat Completions (both answered 200 on 2026-09-25).
-    #[test]
-    fn no_gpt_6_or_gpt_5_6_row_while_the_provider_speaks_only_chat_completions() {
-        let rows = VERSA_AZURE_DEPLOYMENTS
+    /// Every catalog row, offered and retiring, as `(model, deployment)`.
+    fn every_row() -> impl Iterator<Item = (&'static str, &'static str)> {
+        VERSA_AZURE_DEPLOYMENTS
             .iter()
             .map(|(model, deployment)| (*model, *deployment))
             .chain(
                 VERSA_AZURE_RETIRING_DEPLOYMENTS
                     .iter()
                     .map(|(model, deployment, _)| (*model, *deployment)),
+            )
+    }
+
+    /// The ⚠ note on `VERSA_AZURE_DEPLOYMENTS`, enforced: GPT-6 and GPT-5.6
+    /// refuse function tools combined with `reasoning_effort` on Chat
+    /// Completions (measured 2026-10-05 on gpt-5.6), so every row of either
+    /// family must take the Responses route, and every other row must stay on
+    /// the Chat Completions route the gateway serves it correctly over. The
+    /// routing tests' mock accepts any body, so only this can catch a row on
+    /// the wrong route.
+    ///
+    /// The route is decided by the MODEL, so a row whose deployment belongs to
+    /// a Responses family must have a model of that family too, or its
+    /// requests would reach that deployment over Chat Completions.
+    #[test]
+    fn every_row_takes_the_route_its_family_needs() {
+        for (model, deployment) in every_row() {
+            let family_needs_responses = {
+                let name = model.to_ascii_lowercase();
+                name.starts_with("gpt-6") || name.starts_with("gpt-5.6")
+            };
+            let expected = if family_needs_responses {
+                Route::Responses
+            } else {
+                Route::ChatCompletions
+            };
+            assert_eq!(Route::for_model(model), expected, "{model}");
+            assert_eq!(
+                Route::for_model(deployment),
+                expected,
+                "{model} posts to deployment `{deployment}`, which needs the other route"
             );
-        for (model, deployment) in rows {
-            for name in [model, deployment] {
-                let name = name.to_ascii_lowercase();
-                assert!(
-                    !name.starts_with("gpt-6") && !name.starts_with("gpt-5.6"),
-                    "`{name}` needs the Responses route (`POST openai/v1/responses`, the \
-                     deployment as `model`; see the ⚠ note on VERSA_AZURE_DEPLOYMENTS). \
-                     Teach VersaAzureProvider that route before adding the row."
-                );
-            }
+        }
+    }
+
+    /// The same rule, written out row by row, so a catalog change has to name
+    /// the route it gives each model. Unlike `azure_openai`, gpt-5.5, gpt-5.4
+    /// and o4-mini stay on Chat Completions: `model_uses_responses_api` routes
+    /// them to Responses, and this provider deliberately does not ask it.
+    #[test]
+    fn each_catalog_model_takes_the_route_pinned_here() {
+        let responses = [
+            "gpt-5.6-sol-2026-07-09",
+            "gpt-5.6-terra-2026-07-09",
+            "gpt-5.6-luna-2026-07-09",
+        ];
+        let chat_completions = [
+            "gpt-5.5-2026-04-24",
+            "gpt-5.4-mini-2026-03-17",
+            "gpt-5.4-nano-2026-03-17",
+            "gpt-5.2-2025-12-11",
+            "gpt-5-2025-08-07",
+            "gpt-5-mini-2025-08-07",
+            "gpt-5-nano-2025-08-07",
+            "gpt-4o-2024-11-20",
+            "o4-mini-2025-04-16",
+            "gpt-4.1-2025-04-14",
+            "gpt-4.1-mini-2025-04-14",
+        ];
+        for (model, _) in every_row() {
+            assert!(
+                responses.contains(&model) || chat_completions.contains(&model),
+                "{model} is in the catalog but its route is not pinned here"
+            );
+        }
+        for model in responses {
+            assert!(deployment_for_model(model).is_some(), "{model}");
+            assert_eq!(Route::for_model(model), Route::Responses, "{model}");
+        }
+        for model in chat_completions {
+            assert!(every_row().any(|(name, _)| name == model), "{model}");
+            assert_eq!(Route::for_model(model), Route::ChatCompletions, "{model}");
+        }
+        // The divergence from the public provider's predicate is deliberate.
+        for model in [
+            "gpt-5.5-2026-04-24",
+            "gpt-5.4-mini-2026-03-17",
+            "o4-mini-2025-04-16",
+        ] {
+            assert!(
+                crate::providers::formats::openai::model_uses_responses_api(model),
+                "{model}: if the shared predicate stops matching, this pin proves nothing"
+            );
+            assert_eq!(Route::for_model(model), Route::ChatCompletions, "{model}");
+        }
+        // A GPT-6 deployment, the day one exists, takes the route it needs.
+        for model in [
+            "gpt-6-sol-2026-09-22",
+            "gpt-6-luna-2026-09-22",
+            "GPT-6-astra",
+        ] {
+            assert_eq!(Route::for_model(model), Route::Responses, "{model}");
+        }
+    }
+
+    /// The new rows are offered with their measured window, images, and a
+    /// price, so a gpt-5.6 chat shows its gauge and its cost.
+    #[test]
+    fn the_gpt_5_6_rows_are_sized_and_priced() {
+        // metadata() sizes each model through ModelConfig::context_limit(),
+        // which honours BIOROUTER_CONTEXT_LIMIT; other tests in this binary set
+        // it process-wide under env_lock, so a window assertion must hold it.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        let metadata = VersaAzureProvider::metadata();
+        for (model, input, output) in [
+            ("gpt-5.6-sol-2026-07-09", 4.0, 20.0),
+            ("gpt-5.6-terra-2026-07-09", 2.0, 12.0),
+            ("gpt-5.6-luna-2026-07-09", 0.20, 1.20),
+        ] {
+            let info = metadata
+                .known_models
+                .iter()
+                .find(|info| info.name == model)
+                .unwrap_or_else(|| panic!("{model} is not offered"));
+            assert_eq!(info.context_limit, 1_050_000, "{model}");
+            assert_eq!(
+                info.supports_vision,
+                Some(true),
+                "{model} takes image input"
+            );
+            let pricing = crate::providers::pricing::provider_model_pricing("versa_azure", model)
+                .unwrap_or_else(|| panic!("versa_azure/{model} must be priced"));
+            assert!(
+                (pricing.input_token_cost - input / 1_000_000.0).abs() < 1e-15,
+                "{model} input {}",
+                pricing.input_token_cost
+            );
+            assert!(
+                (pricing.output_token_cost - output / 1_000_000.0).abs() < 1e-15,
+                "{model} output {}",
+                pricing.output_token_cost
+            );
         }
     }
 
@@ -1522,12 +1854,15 @@ mod routing_tests {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
-    /// The offered catalog as measured on 2026-09-25 (see
+    /// The offered catalog as measured on 2026-10-05 (see
     /// `VERSA_AZURE_DEPLOYMENTS`), written out rather than read back from the
     /// constant, so changing the catalog is a deliberate edit here as well —
     /// re-probe the gateway first.
     pub(super) const MEASURED: &[(&str, &str)] = &[
         ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
+        ("gpt-5.6-sol-2026-07-09", "gpt-5.6-sol-2026-07-09"),
+        ("gpt-5.6-terra-2026-07-09", "gpt-5.6-terra-2026-07-09"),
+        ("gpt-5.6-luna-2026-07-09", "gpt-5.6-luna-2026-07-09"),
         ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini-2026-03-17"),
         ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano-2026-03-17"),
         ("gpt-5.2-2025-12-11", "gpt-5.2-2025-12-11"),
@@ -1537,8 +1872,9 @@ mod routing_tests {
         ("gpt-4o-2024-11-20", "gpt-4o-2024-11-20"),
     ];
 
-    /// The deployments that answered on 2026-09-25 but are Deprecated on Azure
-    /// (see `VERSA_AZURE_RETIRING_DEPLOYMENTS`), with their retirement dates.
+    /// The deployments that answered on 2026-09-25 and 2026-10-05 but are
+    /// Deprecated on Azure (see `VERSA_AZURE_RETIRING_DEPLOYMENTS`), with their
+    /// retirement dates.
     pub(super) const MEASURED_RETIRING: &[(&str, &str, &str)] = &[
         ("o4-mini-2025-04-16", "o4-mini-2025-04-16", "2026-11-19"),
         ("gpt-4.1-2025-04-14", "gpt-4.1-2025-04-14", "2027-04-14"),
@@ -1552,13 +1888,22 @@ mod routing_tests {
     /// The QA run's own probe: a deployment that does not exist.
     const UNMAPPED: &str = "gpt-4.1-bogus-qa-probe";
 
-    /// A stand-in gateway. It answers every completion with the deployment named
-    /// in the request path as `model` — which is what the real one does
-    /// (measured), and what `token_events.model_id` ends up recording.
+    /// Where the Responses route lands on the stand-in.
+    const RESPONSES_PATH: &str = "/openai/v1/responses";
+
+    /// A stand-in gateway. It answers every completion with the deployment the
+    /// request named as `model` (in the path on Chat Completions, in the body
+    /// on Responses), which is what the real one does (measured on both routes,
+    /// the second on 2026-10-05), and what `token_events.model_id` ends up
+    /// recording.
     async fn gateway() -> MockServer {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(|request: &Request| {
+                if request.url.path() == RESPONSES_PATH {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+                    return responses_answer(&body);
+                }
                 let deployment = request.url.path().split('/').nth(3).unwrap_or_default();
                 ResponseTemplate::new(200).set_body_json(serde_json::json!({
                     "id": "chatcmpl-routing-test",
@@ -1576,6 +1921,112 @@ mod routing_tests {
             .mount(&server)
             .await;
         server
+    }
+
+    /// The gateway's answer on the Responses route, in the shape measured on
+    /// 2026-10-05: the body's `model` echoed back, a `function_call` when tools
+    /// were offered (what all three gpt-5.6 deployments returned for a
+    /// tool-bearing prompt), and usage on the response. When streamed, usage
+    /// is on the terminal `response.completed` event.
+    fn responses_answer(body: &Value) -> ResponseTemplate {
+        let output = match body["tools"][0]["name"].as_str() {
+            Some(tool) => serde_json::json!([{
+                "type": "function_call",
+                "id": "fc_routing_test",
+                "call_id": "call_routing_test",
+                "status": "completed",
+                "name": tool,
+                "arguments": "{\"id\":\"42\"}"
+            }]),
+            None => serde_json::json!([{
+                "type": "message",
+                "id": "msg_routing_test",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "ready"}]
+            }]),
+        };
+        let response = serde_json::json!({
+            "id": "resp_routing_test",
+            "object": "response",
+            "created_at": 1,
+            "status": "completed",
+            "model": body["model"],
+            "output": output,
+            "usage": {"input_tokens": 7, "output_tokens": 2, "total_tokens": 9}
+        });
+        if body["stream"] != true {
+            return ResponseTemplate::new(200).set_body_json(response);
+        }
+        let frames = [
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_routing_test",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "ready"
+            }),
+            serde_json::json!({
+                "type": "response.completed",
+                "sequence_number": 2,
+                "response": {
+                    "id": "resp_routing_test",
+                    "object": "response",
+                    "created_at": 1,
+                    "status": "completed",
+                    "model": body["model"],
+                    "output": [{
+                        "type": "message",
+                        "id": "msg_routing_test",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ready"}]
+                    }],
+                    "usage": {"input_tokens": 7, "output_tokens": 2, "total_tokens": 9}
+                }
+            }),
+        ];
+        let sse: String = frames
+            .iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect();
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_string(sse)
+    }
+
+    /// Where each request went: its path on Chat Completions, and on Responses,
+    /// whose path names no deployment, the path and the deployment its body
+    /// named. One list pins both routes.
+    async fn requested_routes(server: &MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|request| {
+                let path = request.url.path();
+                if path == RESPONSES_PATH {
+                    let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
+                    format!(
+                        "{path} model={}",
+                        body["model"].as_str().unwrap_or_default()
+                    )
+                } else {
+                    path.to_string()
+                }
+            })
+            .collect()
+    }
+
+    /// What [`requested_routes`] records for a request for `model` posted to
+    /// `deployment`.
+    fn route_to(model: &str, deployment: &str) -> String {
+        match Route::for_model(model) {
+            Route::Responses => format!("{RESPONSES_PATH} model={deployment}"),
+            Route::ChatCompletions => path_of(deployment),
+        }
     }
 
     async fn requested_paths(server: &MockServer) -> Vec<String> {
@@ -1689,8 +2140,15 @@ mod routing_tests {
                 "the chat named {model}; another deployment answered"
             );
         }
-        let expected: Vec<String> = MEASURED.iter().map(|(_, d)| path_of(d)).collect();
-        assert_eq!(requested_paths(&server).await, expected);
+        let expected: Vec<String> = MEASURED.iter().map(|(m, d)| route_to(m, d)).collect();
+        assert_eq!(requested_routes(&server).await, expected);
+        // Both routes are in the catalog, so the line above pins each of them.
+        assert!(expected
+            .iter()
+            .any(|route| route.starts_with(RESPONSES_PATH)));
+        assert!(expected
+            .iter()
+            .any(|route| !route.starts_with(RESPONSES_PATH)));
     }
 
     /// A chat bound to a retiring model — live or reopened from its session row
@@ -1752,6 +2210,331 @@ mod routing_tests {
         assert_eq!(
             requested_paths(&server).await,
             vec![path_of("gpt-5.4-mini-2026-03-17")]
+        );
+    }
+
+    fn lookup_tool() -> Tool {
+        Tool::new(
+            "lookup_record",
+            "Look up a record",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    }
+
+    async fn last_request(server: &MockServer) -> Request {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .pop()
+            .expect("the stand-in saw a request")
+    }
+
+    fn body_of(request: &Request) -> Value {
+        serde_json::from_slice(&request.body).unwrap()
+    }
+
+    fn text_of(message: &Message) -> String {
+        message
+            .content
+            .iter()
+            .filter_map(|content| content.as_text())
+            .collect()
+    }
+
+    /// The combination Chat Completions refuses for gpt-5.6 (function tools
+    /// with reasoning effort, measured 400 on 2026-10-05) goes to the v1
+    /// Responses route instead: no `api-version`, the deployment as `model`,
+    /// the same `api-key` header, and the tool call decoded from the answer.
+    #[tokio::test]
+    async fn a_gpt_5_6_model_posts_to_v1_responses_with_its_deployment_as_model() {
+        use crate::agents::effort::ReasoningEffort;
+
+        let responses_rows: Vec<_> = MEASURED
+            .iter()
+            .filter(|(model, _)| Route::for_model(model) == Route::Responses)
+            .collect();
+        assert_eq!(responses_rows.len(), 3, "sol, terra and luna");
+        for (model, deployment) in responses_rows {
+            let server = gateway().await;
+            let mut provider = aimed_at(bound(model, config("", "")).await, &server);
+            provider.model = provider
+                .model
+                .clone()
+                .with_temperature(Some(0.4))
+                .with_max_tokens(Some(4096))
+                .with_reasoning_effort(Some(ReasoningEffort::Deep));
+
+            let (message, usage) = provider
+                .complete("system", &prompt(), &[lookup_tool()])
+                .await
+                .unwrap_or_else(|e| panic!("{model}: {e}"));
+            let call = message
+                .content
+                .iter()
+                .find_map(|content| match content {
+                    crate::conversation::message::MessageContent::ToolRequest(request) => {
+                        request.tool_call.as_ref().ok()
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{model}: the function call was lost"));
+            assert_eq!(call.name, "lookup_record", "{model}");
+            assert_eq!(usage.model, *deployment, "{model}");
+            assert_eq!(usage.usage.total_tokens, Some(9), "{model}");
+
+            let request = last_request(&server).await;
+            assert_eq!(request.url.path(), RESPONSES_PATH, "{model}");
+            assert_eq!(
+                request.url.query(),
+                None,
+                "{model}: the v1 route takes no api-version"
+            );
+            assert_eq!(
+                request
+                    .headers
+                    .get("api-key")
+                    .and_then(|value| value.to_str().ok()),
+                Some("test-key"),
+                "{model}"
+            );
+            let sent = body_of(&request);
+            assert_eq!(
+                sent["model"], *deployment,
+                "{model}: the v1 route names the deployment in the body"
+            );
+            assert!(sent.get("messages").is_none(), "{model}");
+            assert!(sent["input"].is_array(), "{model}");
+            assert_eq!(sent["store"], false, "{model}");
+            assert_eq!(sent["tools"][0]["type"], "function", "{model}");
+            assert_eq!(sent["tools"][0]["name"], "lookup_record", "{model}");
+            assert_eq!(sent["reasoning"]["effort"], "high", "{model}");
+            assert_eq!(sent["max_output_tokens"], 4096, "{model}");
+            assert!(
+                sent.get("temperature").is_none(),
+                "{model}: a reasoning model refuses temperature"
+            );
+            assert!(sent.get("reasoning_effort").is_none(), "{model}");
+            assert!(sent.get("stream").is_none(), "{model}");
+        }
+    }
+
+    /// The same turn on gpt-5.5 and gpt-5.4-mini stays on Chat Completions
+    /// (their deployment's path, the `api-version`, a top-level
+    /// `reasoning_effort`), because the gateway serves them correctly there.
+    #[tokio::test]
+    async fn gpt_5_5_and_gpt_5_4_stay_on_chat_completions_with_tools_and_effort() {
+        use crate::agents::effort::ReasoningEffort;
+
+        for model in ["gpt-5.5-2026-04-24", "gpt-5.4-mini-2026-03-17"] {
+            let server = gateway().await;
+            let mut provider = aimed_at(bound(model, config("", "")).await, &server);
+            provider.model = provider
+                .model
+                .clone()
+                .with_reasoning_effort(Some(ReasoningEffort::Deep));
+            provider
+                .complete("system", &prompt(), &[lookup_tool()])
+                .await
+                .unwrap_or_else(|e| panic!("{model}: {e}"));
+
+            let request = last_request(&server).await;
+            assert_eq!(request.url.path(), path_of(model));
+            assert_eq!(
+                request.url.query(),
+                Some("api-version=2025-01-01-preview"),
+                "{model}"
+            );
+            let sent = body_of(&request);
+            assert!(sent["messages"].is_array(), "{model}");
+            assert!(sent.get("input").is_none(), "{model}");
+            assert_eq!(sent["tools"][0]["function"]["name"], "lookup_record");
+            assert_eq!(sent["reasoning_effort"], "high", "{model}");
+        }
+    }
+
+    /// Streamed, a gpt-5.6 turn posts to v1 Responses and is decoded as a
+    /// Responses stream: its text arrives, and the usage comes from the
+    /// terminal `response.completed` event, since Responses has no
+    /// `stream_options` to ask for it with.
+    #[tokio::test]
+    async fn a_gpt_5_6_model_streams_from_v1_responses() {
+        use futures::TryStreamExt;
+
+        let server = gateway().await;
+        let provider = aimed_at(
+            bound("gpt-5.6-terra-2026-07-09", config("", "")).await,
+            &server,
+        );
+        let items = provider
+            .stream("system", &prompt(), &[lookup_tool()])
+            .await
+            .expect("the Responses route streams")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("the stream decodes as Responses events");
+        let streamed: String = items
+            .iter()
+            .filter_map(|(message, _, _)| message.as_ref())
+            .map(text_of)
+            .collect();
+        assert!(streamed.contains("ready"), "streamed {streamed:?}");
+        let usage = items
+            .iter()
+            .find_map(|(_, usage, _)| usage.as_ref())
+            .expect("response.completed carries the usage");
+        assert_eq!(usage.usage.total_tokens, Some(9));
+        assert_eq!(usage.model, "gpt-5.6-terra-2026-07-09");
+
+        let request = last_request(&server).await;
+        assert_eq!(request.url.path(), RESPONSES_PATH);
+        assert_eq!(request.url.query(), None);
+        let sent = body_of(&request);
+        assert_eq!(sent["model"], "gpt-5.6-terra-2026-07-09");
+        assert_eq!(sent["stream"], true);
+        assert!(sent.get("stream_options").is_none());
+        assert_eq!(sent["tools"][0]["name"], "lookup_record");
+    }
+
+    /// The route follows the model a REQUEST names, as the deployment does:
+    /// `complete_fast` hands the fast model to `complete_with_model`, and a
+    /// chat's fast model can be on the other route than the chat's own. Both
+    /// directions.
+    #[tokio::test]
+    async fn the_fast_model_takes_its_own_route() {
+        let server = gateway().await;
+        let chat_completions_chat =
+            aimed_at(bound("gpt-5.5-2026-04-24", config("", "")).await, &server);
+        let (_, usage) = chat_completions_chat
+            .complete_with_model(
+                &ModelConfig::new_or_fail("gpt-5.6-luna-2026-07-09"),
+                "system",
+                &prompt(),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(usage.model, "gpt-5.6-luna-2026-07-09");
+
+        let responses_chat = aimed_at(
+            bound("gpt-5.6-sol-2026-07-09", config("", "")).await,
+            &server,
+        );
+        let (_, usage) = responses_chat
+            .complete_with_model(
+                &ModelConfig::new_or_fail("gpt-5.4-mini-2026-03-17"),
+                "system",
+                &prompt(),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(usage.model, "gpt-5.4-mini-2026-03-17");
+
+        assert_eq!(
+            requested_routes(&server).await,
+            vec![
+                format!("{RESPONSES_PATH} model=gpt-5.6-luna-2026-07-09"),
+                path_of("gpt-5.4-mini-2026-03-17"),
+            ]
+        );
+        let versions = requested_api_versions(&server).await;
+        assert_eq!(
+            versions,
+            vec![VERSA_AZURE_API_VERSION],
+            "only the Chat Completions request carries an api-version"
+        );
+    }
+
+    /// A Responses-family model the catalog does not map is refused exactly as
+    /// any other: before the payload is built, on every path, with nothing
+    /// sent. The bare `gpt-5.6` and the GPT-6 ids are `DeploymentNotFound` at
+    /// the gateway (measured 2026-10-05).
+    #[tokio::test]
+    async fn an_unmapped_responses_family_model_is_refused_before_anything_is_sent() {
+        let server = gateway().await;
+        for unmapped in ["gpt-5.6", "gpt-5.6-sol", "gpt-6-sol-2026-09-22"] {
+            let provider = aimed_at(bound(unmapped, config("", "")).await, &server);
+            let completed = answered_by(&provider)
+                .await
+                .expect_err("a model no deployment serves was answered");
+            let streamed = match provider.stream("system", &prompt(), &[]).await {
+                Ok(_) => panic!("{unmapped}: a model no deployment serves was streamed"),
+                Err(error) => error,
+            };
+            let fast = aimed_at(bound("gpt-5.5-2026-04-24", config("", "")).await, &server)
+                .complete_with_model(
+                    &ModelConfig::new_or_fail(unmapped),
+                    "system",
+                    &prompt(),
+                    &[],
+                )
+                .await
+                .expect_err("a fast model no deployment serves was answered");
+            for error in [&completed, &streamed, &fast] {
+                let text = error.to_string();
+                assert!(
+                    text.contains(&format!("no Versa deployment for model `{unmapped}`")),
+                    "{text}"
+                );
+                assert_eq!(error.kind(), ProviderErrorKind::ModelUnavailable, "{text}");
+            }
+        }
+        assert!(
+            requested_paths(&server).await.is_empty(),
+            "a refused turn reached the gateway"
+        );
+    }
+
+    /// An override in force serves a gpt-5.6 model too, and on the route the
+    /// MODEL needs: v1 Responses, with the override as the body's `model`. A
+    /// Chat Completions model under the same override posts to the override's
+    /// Chat Completions path. Live and reopened, blocking and streamed.
+    #[tokio::test]
+    async fn an_override_in_force_carries_a_gpt_5_6_request_on_the_responses_route() {
+        use futures::TryStreamExt;
+
+        let server = gateway().await;
+        let custom = "ucsf-preview-deployment";
+        let live = aimed_at(
+            bound("gpt-5.6-sol-2026-07-09", config(custom, "")).await,
+            &server,
+        );
+        assert_eq!(answered_by(&live).await.unwrap(), custom);
+        live.stream("system", &prompt(), &[])
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(live.restore_binding()).unwrap()["deployment"],
+            custom
+        );
+        let reopened = aimed_at(restored("gpt-5.6-sol-2026-07-09", custom).await, &server);
+        assert_eq!(answered_by(&reopened).await.unwrap(), custom);
+        let chat_completions = aimed_at(
+            bound("gpt-4o-2024-11-20", config(custom, "")).await,
+            &server,
+        );
+        assert_eq!(answered_by(&chat_completions).await.unwrap(), custom);
+
+        let responses = format!("{RESPONSES_PATH} model={custom}");
+        assert_eq!(
+            requested_routes(&server).await,
+            vec![
+                responses.clone(),
+                responses.clone(),
+                responses,
+                path_of(custom)
+            ]
         );
     }
 
@@ -1928,6 +2711,73 @@ mod routing_tests {
         assert!(!text.contains("Stream decode error"));
         assert!(!text.contains("SECRET_PROVIDER_PAYLOAD"));
         assert!(stream.next().await.is_none());
+    }
+
+    /// A gpt-5.6 chat that outgrows the window must compact, as a gpt-5.5 chat
+    /// does. On the Responses route the gateway says so inside a 200 stream
+    /// (frames as measured 2026-10-05 with a 1,060,000-token prompt to
+    /// gpt-5.6-luna, long bodies trimmed), and the reply loop's compaction arm
+    /// matches `ContextLengthExceeded` and nothing else. Decoded generically,
+    /// the turn stopped with the provider's error object dumped into it.
+    #[tokio::test]
+    async fn a_gpt_5_6_stream_over_the_window_is_a_context_length_error() {
+        use futures::StreamExt;
+
+        const SAID: &str = "Your input exceeds the context window of this model. Please \
+                            adjust your input and try again.";
+        let frames = [
+            serde_json::json!({"type": "response.created", "sequence_number": 0, "response": {
+                "id": "resp_overflow", "object": "response", "created_at": 1,
+                "status": "in_progress", "model": "gpt-5.6-luna-2026-07-09", "output": []}}),
+            serde_json::json!({"type": "response.in_progress", "sequence_number": 1, "response": {
+                "id": "resp_overflow", "object": "response", "created_at": 1,
+                "status": "in_progress", "model": "gpt-5.6-luna-2026-07-09", "output": []}}),
+            serde_json::json!({"type": "error", "sequence_number": 2, "error": {
+                "type": "invalid_request_error", "code": "context_length_exceeded",
+                "message": SAID, "param": "input"}}),
+            serde_json::json!({"type": "response.failed", "sequence_number": 3, "response": {
+                "id": "resp_overflow", "object": "response", "created_at": 1,
+                "status": "failed", "model": "gpt-5.6-luna-2026-07-09", "output": [],
+                "error": {"code": "context_length_exceeded", "message": SAID}}}),
+        ];
+        let sse: String = frames
+            .iter()
+            .map(|frame| {
+                format!(
+                    "event: {}\ndata: {frame}\n\n",
+                    frame["type"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = aimed_at(
+            bound("gpt-5.6-luna-2026-07-09", config("", "")).await,
+            &server,
+        );
+        let mut stream = provider
+            .stream("system", &prompt(), &[])
+            .await
+            .expect("the gateway answered 200");
+        let error = stream
+            .next()
+            .await
+            .expect("the stream yields its failure")
+            .expect_err("the stream failed");
+        assert_eq!(
+            error,
+            ProviderError::ContextLengthExceeded(SAID.to_string())
+        );
+        assert!(stream.next().await.is_none());
+        assert_eq!(last_request(&server).await.url.path(), RESPONSES_PATH);
     }
 
     /// The QA probe itself. Refused readably, and NOTHING reaches the gateway —
@@ -2199,20 +3049,59 @@ mod routing_tests {
         status: u16,
         body: serde_json::Value,
     ) -> (Result<(), ProviderError>, Vec<Request>) {
+        probed_as(VERSA_AZURE_DEFAULT_MODEL, status, body).await
+    }
+
+    /// [`probed`], for an instance bound to `model`.
+    async fn probed_as(
+        model: &str,
+        status: u16,
+        body: serde_json::Value,
+    ) -> (Result<(), ProviderError>, Vec<Request>) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(status).set_body_json(body))
             .mount(&server)
             .await;
-        let provider = aimed_at(
-            bound(VERSA_AZURE_DEFAULT_MODEL, config("", "")).await,
-            &server,
-        );
+        let provider = aimed_at(bound(model, config("", "")).await, &server);
         let outcome = provider.check_credentials().await;
         (
             outcome,
             server.received_requests().await.unwrap_or_default(),
         )
+    }
+
+    /// A gpt-5.6 instance's credential check stays on its deployment's Chat
+    /// Completions path, although its turns take the Responses route: the
+    /// gateway answered there exactly as for gpt-5.5 (measured 2026-10-05: a
+    /// wrong key 401 `Invalid client id or secret`, the real key 400
+    /// `empty_array`), so the probe still tells one key from the other and
+    /// still generates nothing.
+    #[tokio::test]
+    async fn a_gpt_5_6_instance_probes_its_key_on_the_chat_completions_path() {
+        let model = "gpt-5.6-sol-2026-07-09";
+        let (outcome, requests) = probed_as(
+            model,
+            401,
+            serde_json::json!({"error": "Invalid client id or secret"}),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(ProviderError::Authentication(ref reason)) if reason == "Invalid client id or secret"),
+            "{outcome:?}"
+        );
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), path_of(model));
+        let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(sent, serde_json::json!({"messages": []}));
+
+        let (outcome, _) = probed_as(
+            model,
+            400,
+            serde_json::json!({"error": {"message": "Invalid 'messages': empty array.", "code": "empty_array"}}),
+        )
+        .await;
+        assert!(outcome.is_ok(), "{outcome:?}");
     }
 
     #[tokio::test]

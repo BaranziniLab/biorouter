@@ -3,7 +3,9 @@
 //! matching VERSA_AZURE_DEPLOYMENT_NAME, VERSA_AZURE_ENDPOINT, and a NEW
 //! BIOROUTER_VERSA_GPT_PROBE_OUTPUT directly under /tmp. CASE defaults to todo;
 //! BIOROUTER_VERSA_GPT_PROBE_CASE=python_sqlite requests a medium file instead.
-//! gpt-5.6 is an unverified requested deployment, not a claim of availability.
+//! The gpt-5.6 models are UCSF's dated deployments (answered 2026-10-05) and
+//! stream over the Responses route, so they exercise that decoder; gpt-5.5
+//! streams over Chat Completions. The bare `gpt-5.6` is not a deployment.
 
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
@@ -31,7 +33,9 @@ fn approved_model(model: &str, deployment: &str) -> ProbeResult<&'static str> {
         return Err("model_deployment_mismatch");
     }
     match model {
-        "gpt-5.6" => Ok("gpt-5.6"),
+        "gpt-5.6-sol-2026-07-09" => Ok("gpt-5.6-sol-2026-07-09"),
+        "gpt-5.6-terra-2026-07-09" => Ok("gpt-5.6-terra-2026-07-09"),
+        "gpt-5.6-luna-2026-07-09" => Ok("gpt-5.6-luna-2026-07-09"),
         "gpt-5.5-2026-04-24" => Ok("gpt-5.5-2026-04-24"),
         _ => Err("unsupported_probe_model"),
     }
@@ -64,7 +68,9 @@ fn safe_tag(value: Option<&str>) -> &'static str {
         Some("incomplete_stream") => "incomplete_stream",
         Some("todo__todo_write") => "todo__todo_write",
         Some("developer__text_editor") => "developer__text_editor",
-        Some("gpt-5.6") => "gpt-5.6",
+        Some("gpt-5.6-sol-2026-07-09") => "gpt-5.6-sol-2026-07-09",
+        Some("gpt-5.6-terra-2026-07-09") => "gpt-5.6-terra-2026-07-09",
+        Some("gpt-5.6-luna-2026-07-09") => "gpt-5.6-luna-2026-07-09",
         Some("gpt-5.5") => "gpt-5.5",
         Some("gpt-5.5-2026-04-24") => "gpt-5.5-2026-04-24",
         None => "missing",
@@ -246,8 +252,17 @@ async fn manual_versa_gpt_stream_probe() {
 
 #[test]
 fn offline_probe_validation_rejects_route_and_model_drift() {
-    assert!(approved_model("gpt-5.6", "gpt-5.6").is_ok());
-    assert!(approved_model("gpt-5.6", "gpt-5.5-2026-04-24").is_err());
+    for deployed in [
+        "gpt-5.6-sol-2026-07-09",
+        "gpt-5.6-terra-2026-07-09",
+        "gpt-5.6-luna-2026-07-09",
+        "gpt-5.5-2026-04-24",
+    ] {
+        assert!(approved_model(deployed, deployed).is_ok(), "{deployed}");
+    }
+    // The bare alias is DeploymentNotFound at the gateway (2026-10-05).
+    assert!(approved_model("gpt-5.6", "gpt-5.6").is_err());
+    assert!(approved_model("gpt-5.6-sol-2026-07-09", "gpt-5.5-2026-04-24").is_err());
     assert!(approved_model("other", "other").is_err());
     assert!(approved_endpoint("https://unified-api.ucsf.edu/general").is_ok());
     for endpoint in [
