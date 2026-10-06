@@ -233,7 +233,12 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         // Claude, natively and on Bedrock. Bedrock also serves non-Anthropic
         // models (Titan, Llama, …); `claude_family_pricing` returns None for
         // those, leaving them correctly unpriced.
-        "anthropic" | "claude" | "bedrock" | "aws_bedrock" | "aws-bedrock" => {
+        //
+        // `versa_bedrock` is the same Bedrock ids through UCSF's gateway. Until
+        // 2026-10-05 it fell through to the canonical catalog, which cannot
+        // map a dated Bedrock id, so the Opus 4.5 and Haiku 4.5 it offers were
+        // unpriced and the rest carried no cache rates.
+        "anthropic" | "claude" | "bedrock" | "aws_bedrock" | "aws-bedrock" | "versa_bedrock" => {
             claude_family_pricing(model)
         }
         _ => None,

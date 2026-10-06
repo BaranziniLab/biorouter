@@ -33,8 +33,63 @@ use super::formats::bedrock::{
 /// T3-SH-8: the place named is where the row really is. "Settings > Models >
 /// Versa API Bedrock" named a page that does not exist; the row is in the
 /// provider catalog, which Settings > Models opens with Configure providers.
-pub(crate) fn versa_rejected_key(error: ProviderError, said: Option<String>) -> ProviderError {
+///
+/// A 403 that refuses the MODEL is not about the pair, and is said as that.
+/// AWS answers a working pair asking for a model UCSF's account may not invoke
+/// with a typed `AccessDeniedException`, which classifies as `Authentication`
+/// like a bad pair does. Measured 2026-10-05 for Opus 5.5, Opus 5, Sonnet 5.5,
+/// Opus 4.7 and Fable 5.1 ("User: arn:aws:iam::…:user/managed-service-account-
+/// mulesoft-ai is not authorized to perform: bedrock:InvokeModel on resource:
+/// …inference-profile/us.anthropic.…"). Read as a rejected pair, a chat still
+/// bound to Opus 5.5 after it left the list told the user to replace a key
+/// pair that works. It is a `RequestFailed` whose words classify as
+/// `ModelUnavailable`, the same shape `versa_azure` gives a model with no
+/// deployment, so the turn stops on the first try and names the models that do
+/// answer.
+///
+/// ⚠ The same refusal for a model ON the list is a different sentence. Saying
+/// "does not serve `X` ... Available: X, ..." would contradict itself, and the
+/// cause is then UCSF's account losing a permission it had (on 2026-09-25 every
+/// id, the default included, was refused for a while), which switching models
+/// may not fix. So it says the model is normally served, offers only the
+/// others, and names UCSF's support address (versa@ucsf.edu, from UCSF's
+/// 2026-10-01 announcement).
+pub(crate) fn versa_refusal(
+    error: ProviderError,
+    said: Option<String>,
+    model: &str,
+) -> ProviderError {
     match error {
+        ProviderError::Authentication(detail)
+            if !said
+                .as_deref()
+                .is_some_and(super::names_a_rejected_credential)
+                && (refuses_the_model(&detail)
+                    || said.as_deref().is_some_and(refuses_the_model)) =>
+        {
+            let others = VERSA_BEDROCK_KNOWN_MODELS
+                .iter()
+                .filter(|offered| **offered != model)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            if VERSA_BEDROCK_KNOWN_MODELS.contains(&model) {
+                ProviderError::RequestFailed(format!(
+                    "Versa API Bedrock normally serves model `{model}`, but UCSF's gateway \
+                     account was refused it just now (model not found among the models \
+                     UCSF's account may use right now, so nothing ran). Your key pair works. \
+                     Try another model ({others}); if the refusal persists, contact \
+                     versa@ucsf.edu."
+                ))
+            } else {
+                ProviderError::RequestFailed(format!(
+                    "Versa API Bedrock does not serve model `{model}`: UCSF's gateway account \
+                     is not authorized to invoke it (model not found among the models UCSF's \
+                     account may use, so nothing ran). Your key pair works. Available: \
+                     {others}. Choose one of those models."
+                ))
+            }
+        }
         ProviderError::Authentication(_) => ProviderError::Authentication(format!(
             "Versa rejected this key pair ({}). Replace it in Settings > Models > Configure \
              providers > Institutional > Versa API Bedrock.",
@@ -42,6 +97,17 @@ pub(crate) fn versa_rejected_key(error: ProviderError, said: Option<String>) -> 
         )),
         other => other,
     }
+}
+
+/// Whether a Bedrock refusal is about the model rather than the caller: AWS's
+/// IAM sentence for an identity that may not invoke one model or inference
+/// profile (`bedrock:InvokeModel` for Converse,
+/// `bedrock:InvokeModelWithResponseStream` for ConverseStream), and its
+/// sentence for a model the account has not been given access to.
+fn refuses_the_model(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    lowered.contains("not authorized to perform: bedrock:invoke")
+        || lowered.contains("don't have access to the model")
 }
 
 /// T3-SH-3 — the model id [`VersaBedrockProvider::check_credentials`] asks for:
@@ -59,12 +125,14 @@ use super::provider_binding::{
 };
 
 pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
-// Opus 4.8: the newest id verified end-to-end through the UCSF MuleSoft proxy
-// (a converse round-trip on 2026-07-26). Same price and window as the Opus 4.6
-// default it replaced (1M context, $5.50/$27.50 us geo), so a new user's first
-// chat cannot get worse. It must also stay FIRST in the list below: the UI
-// auto-selects `known_models[0]` when a user switches providers, not this
-// constant (SwitchModelModal `findFirstAvailableModel`).
+// Opus 4.8: verified end-to-end through the UCSF MuleSoft proxy (a converse
+// round-trip on 2026-07-26, and again on 2026-10-05). Same price and window as
+// the Opus 4.6 default it replaced (1M context, $5.50/$27.50 us geo), so a new
+// user's first chat cannot get worse. Kept as the default when Sonnet 5 was
+// verified on 2026-10-05: that was a decision to leave the default alone, not
+// a claim that no newer model answers. It must also stay FIRST in the list
+// below: the UI auto-selects `known_models[0]` when a user switches providers,
+// not this constant (SwitchModelModal `findFirstAvailableModel`).
 pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 // Model IDs follow the AWS Bedrock format documented at
 // https://platform.claude.com/docs/en/about-claude/models/overview, prefixed
@@ -73,18 +141,48 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 // comes back for a wrong spelling — so the id shape is whatever AWS publishes;
 // the only open question for a new id is UCSF's entitlement.
 //
-// The verified entries come first, newest → oldest; the entries not yet
-// verified through the proxy come last, so none of them is ever the model the
-// UI picks for a user. Users can type any other ID via the "Enter a model not
-// listed..." option once UCSF enables it.
+// Every entry below answered a real Converse round-trip through the UCSF proxy
+// on 2026-10-05, newest first within each generation. Users can type any other
+// ID via the "Enter a model not listed..." option once UCSF enables it.
+//
+// Measured on 2026-10-05 and deliberately NOT listed:
+//   * Refused by UCSF's IAM policy: AWS answered `AccessDeniedException`
+//     ("User: arn:aws:iam::…:user/managed-service-account-mulesoft-ai is not
+//     authorized to perform: bedrock:InvokeModel on resource:
+//     …inference-profile/us.anthropic.…") for Opus 5.5
+//     (`us.anthropic.claude-opus-5-5`), Opus 5 (`-opus-5`), Opus 4.7
+//     (`-opus-4-7`), Fable 5.1 and Fable 5 (`-fable-5-1`, `-fable-5`), Sonnet
+//     5.5 (`-sonnet-5-5`), Sonnet 4.5 (`-sonnet-4-5-20250929-v1:0`) and Sonnet
+//     4 (`-sonnet-4-20250514-v1:0`), and for every `global.` and in-region
+//     `anthropic.` profile. The key pair works; the account may not invoke
+//     them. Opus 5.5 and Opus 5 were listed here, unverified, from 2026-09-25
+//     until this measurement removed them. `versa_refusal` turns that 403
+//     into a model refusal, not a rejected key pair, for a chat still bound
+//     to one of them.
+//   * Fable, every version, stays off this list even if a later probe finds
+//     UCSF's account may invoke it: Bedrock serves Fable only to accounts
+//     whose data-retention mode is `aws_review` (see `bedrock.rs`), which an
+//     institutional PHI account should not use. That reason predates the IAM
+//     refusal above and outlives it; a test pins the whole family out.
+//   * Opus 4.1 (`-opus-4-1-20250805-v1:0`) answers, but Bedrock lists it as
+//     Legacy (public extended access at a higher price from 2026-10-08, end of
+//     life 2027-01-08; docs.aws.amazon.com/bedrock/latest/userguide/
+//     model-lifecycle-legacy.html), so it is not offered: the policy this
+//     list already applied to Sonnet 4 once Bedrock marked it Legacy.
+//   * Opus 4 (`-opus-4-20250514-v1:0`) and every Claude 3.x id: AWS answered
+//     `ResourceNotFoundException`, "reached the end of its life".
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     // Claude 4.8 (1M context). Added 2026-07 (issue #29). Verified live
     // through the MuleSoft proxy on 2026-07-26: the short un-suffixed form
     // below answered a real converse round-trip, while the `-v1` spelling
     // (which opus-4-6 uses) was rejected with "The provided model
     // identifier is invalid" — 4.8 and 4.6 genuinely differ in id shape on
-    // this account.
+    // this account. Still the default (see above).
     "us.anthropic.claude-opus-4-8",
+    // Sonnet 5 (1M context, $2/$10). First answered through the proxy on
+    // 2026-10-05. Adaptive-only, so `formats::bedrock` sends it no
+    // temperature, and it takes the Claude 64K default output allowance.
+    "us.anthropic.claude-sonnet-5",
     // Claude 4.6 (1M context)
     "us.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-sonnet-4-6",
@@ -92,29 +190,6 @@ pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
     // Haiku 4.5 (200K context)
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    // Sonnet 4 removed: Anthropic retires claude-sonnet-4-20250514 on
-    // June 15, 2026 (Bedrock marked it Legacy in April 2026).
-    //
-    // NOT YET VERIFIED THROUGH THE UCSF PROXY. These are AWS's exact us-geo
-    // ids (AWS model cards, 2026-09-25; all 1M context), but whether UCSF's
-    // account may invoke them is unknown: on 2026-09-25 the Versa Bedrock keys
-    // available on the maintainer's machine got HTTP 403 for EVERY id,
-    // including the previously verified opus-4-8 and opus-4-6-v1, so
-    // entitlement could not be checked. A second key pair from the same
-    // machine, tried through this provider and through the AWS CLI, got the
-    // gateway's "The request signature we calculated does not match the
-    // signature you provided. Check your Mule client id and signing method."
-    // for every id — a credential rejection, so it says nothing about any
-    // model. Move an entry above this note once a real round-trip succeeds.
-    // Opus 5.5's reasoning is stripped from replayed history by
-    // `to_bedrock_messages` (preserved thinking).
-    //
-    // Fable 5 / 5.1 are deliberately absent: Bedrock requires the account's
-    // data-retention mode to be `aws_review` for them, which an institutional
-    // PHI account is unlikely to have chosen.
-    "us.anthropic.claude-opus-5-5",
-    "us.anthropic.claude-opus-5",
-    "us.anthropic.claude-sonnet-5",
 ];
 
 // UCSF MuleSoft Bedrock proxy. UCSF-issued access keys are signed against this
@@ -392,7 +467,7 @@ impl VersaBedrockProvider {
 
         let response = request.send().await.map_err(|err| {
             let said = gateway_message(&err);
-            versa_rejected_key(classify_bedrock_converse_error(err), said)
+            versa_refusal(classify_bedrock_converse_error(err), said, model_name)
         })?;
 
         let finish_reason = map_bedrock_stop_reason(&response.stop_reason);
@@ -433,7 +508,11 @@ impl VersaBedrockProvider {
 
         request.send().await.map_err(|err| {
             let said = gateway_message(&err);
-            versa_rejected_key(classify_bedrock_converse_stream_error(err), said)
+            versa_refusal(
+                classify_bedrock_converse_stream_error(err),
+                said,
+                &model_config.model_name,
+            )
         })
     }
 }
@@ -700,9 +779,10 @@ mod tests {
     /// replace the pair; every other failure is left as it was classified.
     #[test]
     fn a_refused_key_pair_says_whose_refusal_and_where_to_fix_it() {
-        let refused = versa_rejected_key(
+        let refused = versa_refusal(
             ProviderError::Authentication("Bedrock endpoint returned HTTP 403".to_string()),
             Some("Invalid Client Id".to_string()),
+            VERSA_BEDROCK_DEFAULT_MODEL,
         );
         assert_eq!(
             refused.to_string(),
@@ -713,11 +793,167 @@ mod tests {
             )
             .to_string()
         );
-        let throttled = versa_rejected_key(
+        let throttled = versa_refusal(
             ProviderError::ServerError("HTTP 503".to_string()),
             Some("busy".to_string()),
+            VERSA_BEDROCK_DEFAULT_MODEL,
         );
         assert!(matches!(throttled, ProviderError::ServerError(_)));
+    }
+
+    /// AWS's sentence for a working pair asking for a model UCSF's account may
+    /// not invoke, as the gateway returned it on 2026-10-05 (account id elided).
+    const MODEL_REFUSED: &str = "User: arn:aws:iam::000000000000:user/\
+         managed-service-account-mulesoft-ai is not authorized to perform: \
+         bedrock:InvokeModel on resource: arn:aws:bedrock:us-west-2:000000000000:\
+         inference-profile/us.anthropic.claude-opus-5-5";
+
+    /// The refusal a chat still bound to a model that left the list gets: the
+    /// model is named, the pair is said to work, the offered models are listed,
+    /// and the turn stops rather than retrying something that cannot succeed.
+    fn assert_refuses_the_model(error: &ProviderError, model: &str) {
+        let text = error.to_string();
+        assert!(matches!(error, ProviderError::RequestFailed(_)), "{text}");
+        assert!(
+            text.contains(&format!("does not serve model `{model}`")),
+            "{text}"
+        );
+        assert!(text.contains("Your key pair works"), "{text}");
+        assert!(!text.contains("Replace it"), "{text}");
+        for offered in VERSA_BEDROCK_KNOWN_MODELS {
+            assert!(
+                text.contains(offered),
+                "the refusal must offer {offered}: {text}"
+            );
+        }
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::ModelUnavailable,
+            "{text}"
+        );
+        assert!(!crate::providers::retry::should_retry(error), "{text}");
+        assert!(
+            !crate::agents::mistakes::is_recoverable(error),
+            "a retry can never succeed, so the turn must stop on the first one: {text}"
+        );
+    }
+
+    #[test]
+    fn a_model_the_account_may_not_invoke_is_not_a_rejected_key_pair() {
+        let model = "us.anthropic.claude-opus-5-5";
+        // The sentence reaches `versa_refusal` either as the gateway's own
+        // words or inside the typed exception the classifier formatted.
+        for (detail, said) in [
+            (
+                "Failed to call Bedrock".to_string(),
+                Some(MODEL_REFUSED.to_string()),
+            ),
+            (format!("Failed to call Bedrock: {MODEL_REFUSED}"), None),
+            (
+                "Failed to call Bedrock".to_string(),
+                Some("You don't have access to the model with the specified model ID.".into()),
+            ),
+        ] {
+            let refused = versa_refusal(ProviderError::Authentication(detail), said, model);
+            assert_refuses_the_model(&refused, model);
+        }
+
+        // A sentence that names the credential still wins: a bad pair is a bad
+        // pair whatever else the detail carries.
+        let bad_pair = versa_refusal(
+            ProviderError::Authentication(format!("Failed to call Bedrock: {MODEL_REFUSED}")),
+            Some("Invalid Client Id".to_string()),
+            model,
+        );
+        assert!(
+            matches!(&bad_pair, ProviderError::Authentication(text) if text.contains("Replace it")),
+            "{bad_pair:?}"
+        );
+    }
+
+    /// The same refusal for a model the list offers must not tell the user the
+    /// model is not served and then offer it: it says the model is normally
+    /// served, offers only the others, and names UCSF's support address. It
+    /// still stops the turn on the first try.
+    #[test]
+    fn a_refused_listed_model_is_not_offered_back_as_available() {
+        for model in VERSA_BEDROCK_KNOWN_MODELS {
+            let refused = versa_refusal(
+                ProviderError::Authentication("Failed to call Bedrock".to_string()),
+                Some(MODEL_REFUSED.replace("us.anthropic.claude-opus-5-5", model)),
+                model,
+            );
+            let text = refused.to_string();
+            assert!(matches!(refused, ProviderError::RequestFailed(_)), "{text}");
+            assert!(
+                text.contains(&format!("normally serves model `{model}`")),
+                "{text}"
+            );
+            assert!(!text.contains("does not serve"), "{text}");
+            assert!(text.contains("Your key pair works"), "{text}");
+            assert!(text.contains("versa@ucsf.edu"), "{text}");
+            assert_eq!(
+                text.matches(*model).count(),
+                1,
+                "{model} is named once, as the refused model, never as an alternative: {text}"
+            );
+            for other in VERSA_BEDROCK_KNOWN_MODELS.iter().filter(|o| *o != model) {
+                assert!(
+                    text.contains(other),
+                    "the refusal must offer {other}: {text}"
+                );
+            }
+            assert_eq!(
+                refused.kind(),
+                crate::providers::errors::ProviderErrorKind::ModelUnavailable,
+                "{text}"
+            );
+            assert!(!crate::providers::retry::should_retry(&refused), "{text}");
+            assert!(!crate::agents::mistakes::is_recoverable(&refused), "{text}");
+        }
+    }
+
+    /// The same refusal on the real wire: a typed `AccessDeniedException`, as
+    /// AWS returned it through the proxy, on both the blocking and the
+    /// streaming request.
+    #[tokio::test]
+    async fn a_typed_access_denied_for_the_model_reaches_the_user_as_a_model_refusal() {
+        let model = "us.anthropic.claude-opus-5-5";
+        let refusal = || {
+            axum::http::Response::builder()
+                .status(403)
+                .header("content-type", "application/json")
+                .header("x-amzn-errortype", "AccessDeniedException")
+                .body(aws_smithy_types::body::SdkBody::from(
+                    serde_json::json!({ "message": MODEL_REFUSED }).to_string(),
+                ))
+                .unwrap()
+        };
+        let config = ModelConfig::new_or_fail(model);
+        let prompt = [Message::user().with_text("hello")];
+
+        let (http, _captured) = capture_request(Some(refusal()));
+        let provider = provider_at("https://versa-bedrock.invalid")
+            .await
+            .with_http_client(http);
+        let completed = provider
+            .converse(&config, "system", &prompt, &[])
+            .await
+            .expect_err("the gateway refused the model");
+        assert_refuses_the_model(&completed, model);
+
+        let (http, _captured) = capture_request(Some(refusal()));
+        let provider = provider_at("https://versa-bedrock.invalid")
+            .await
+            .with_http_client(http);
+        let streamed = match provider
+            .converse_stream(&config, "system", &prompt, &[])
+            .await
+        {
+            Ok(_) => panic!("the gateway refused the model"),
+            Err(error) => error,
+        };
+        assert_refuses_the_model(&streamed, model);
     }
 
     /// A provider wired the way `from_env` builds one, minus the credential and
@@ -928,24 +1164,52 @@ mod tests {
     }
 
     /// The UI auto-selects `known_models[0]` on a provider switch, so the
-    /// default and the first entry must agree — and must be the verified id,
-    /// never one of the entries still waiting on a proxy round-trip.
+    /// default and the first entry must agree. The list is exactly the ids that
+    /// answered through the UCSF proxy on 2026-10-05, and none that UCSF's
+    /// account refused or that Bedrock retired.
     #[test]
-    fn the_default_is_the_first_and_verified_entry() {
+    fn the_offered_list_is_exactly_what_the_ucsf_proxy_answered() {
         assert_eq!(VERSA_BEDROCK_DEFAULT_MODEL, "us.anthropic.claude-opus-4-8");
         assert_eq!(VERSA_BEDROCK_KNOWN_MODELS[0], VERSA_BEDROCK_DEFAULT_MODEL);
-
-        let unverified = [
+        assert_eq!(
+            VERSA_BEDROCK_KNOWN_MODELS,
+            [
+                "us.anthropic.claude-opus-4-8",
+                "us.anthropic.claude-sonnet-5",
+                "us.anthropic.claude-opus-4-6-v1",
+                "us.anthropic.claude-sonnet-4-6",
+                "us.anthropic.claude-opus-4-5-20251101-v1:0",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            ]
+        );
+        for refused in [
+            // AccessDeniedException from UCSF's IAM policy (2026-10-05).
             "us.anthropic.claude-opus-5-5",
             "us.anthropic.claude-opus-5",
-            "us.anthropic.claude-sonnet-5",
-        ];
-        let tail =
-            &VERSA_BEDROCK_KNOWN_MODELS[VERSA_BEDROCK_KNOWN_MODELS.len() - unverified.len()..];
-        assert_eq!(
-            tail, unverified,
-            "unverified ids stay at the end of the list"
+            "us.anthropic.claude-opus-4-7",
+            "us.anthropic.claude-fable-5-1",
+            "us.anthropic.claude-fable-5",
+            "us.anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            // Answers, but Bedrock Legacy with an end of life of 2027-01-08.
+            "us.anthropic.claude-opus-4-1-20250805-v1:0",
+            // End of life on Bedrock.
+            "us.anthropic.claude-opus-4-20250514-v1:0",
+        ] {
+            assert!(
+                !VERSA_BEDROCK_KNOWN_MODELS.contains(&refused),
+                "{refused} is not served to UCSF's account"
+            );
+        }
+        assert!(
+            !VERSA_BEDROCK_KNOWN_MODELS
+                .iter()
+                .any(|model| model.contains("claude-3")),
+            "every Claude 3.x id is end of life on Bedrock"
         );
+        // Family-wide, not per id: a Fable id AWS publishes later, or one UCSF
+        // enables, is still one that needs `aws_review` retention.
         assert!(
             !VERSA_BEDROCK_KNOWN_MODELS
                 .iter()
@@ -954,9 +1218,62 @@ mod tests {
         );
     }
 
+    /// Every offered id sizes and prices as itself: its own context-window row
+    /// and a price. Opus 4.5 and Haiku 4.5 were unpriced here until 2026-10-05,
+    /// when `versa_bedrock` joined the public card on the first-party Claude
+    /// table in `pricing.rs`. Sonnet 5 is checked by value, because it is the
+    /// entry this list gained and the cheapest 1M model on it.
+    #[test]
+    fn every_offered_model_has_its_own_window_and_a_price() {
+        // context_limit() and metadata() honour BIOROUTER_CONTEXT_LIMIT, which
+        // other tests in this binary set process-wide under env_lock, so the
+        // window assertions below must hold it (as versa_azure's do).
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        for model in VERSA_BEDROCK_KNOWN_MODELS {
+            assert!(
+                ModelConfig::has_declared_context_window(model),
+                "{model} borrows its context window from a pattern"
+            );
+            assert!(
+                crate::providers::pricing::provider_model_pricing("versa_bedrock", model).is_some(),
+                "{model} is unpriced on versa_bedrock"
+            );
+        }
+
+        let sonnet_5 = "us.anthropic.claude-sonnet-5";
+        assert_eq!(
+            ModelConfig::new_or_fail(sonnet_5).context_limit(),
+            1_000_000
+        );
+        let info = VersaBedrockProvider::metadata()
+            .known_models
+            .into_iter()
+            .find(|info| info.name == sonnet_5)
+            .expect("Sonnet 5 is offered");
+        assert_eq!(info.context_limit, 1_000_000);
+        assert_eq!(info.supports_vision, Some(true));
+        let price = crate::providers::pricing::provider_model_pricing("versa_bedrock", sonnet_5)
+            .expect("Sonnet 5 is priced");
+        assert!(
+            (price.input_token_cost * 1_000_000.0 - 2.0).abs() < 1e-9,
+            "{price:?}"
+        );
+        assert!(
+            (price.output_token_cost * 1_000_000.0 - 10.0).abs() < 1e-9,
+            "{price:?}"
+        );
+    }
+
     /// A Converse request for a preserved-thinking model carries no replayed
     /// reasoning, on the real wire, while the same history for Opus 4.8 keeps
     /// it — the stripping is keyed on the model and nothing else.
+    ///
+    /// Opus 5.5 is no longer offered here (UCSF's account is refused it,
+    /// 2026-10-05), but a typed-in or previously bound id still reaches this
+    /// request builder, and the builder is the one the public card shares.
     #[tokio::test]
     async fn converse_strips_replayed_reasoning_only_for_preserved_thinking_models() {
         let history = [
