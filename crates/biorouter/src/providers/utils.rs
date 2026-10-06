@@ -99,7 +99,10 @@ pub fn filter_extensions_from_system_prompt(system: &str) -> String {
     }
 }
 
-fn check_context_length_exceeded(text: &str) -> bool {
+/// Whether a provider's error sentence says the prompt is over the window.
+/// Shared with the Responses stream decoder, which reads the same sentence out
+/// of a 200 stream (`formats::openai_responses::context_overflow`).
+pub(crate) fn check_context_length_exceeded(text: &str) -> bool {
     let check_phrases = [
         "context_length_exceeded",
         "maximum context length",

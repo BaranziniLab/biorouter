@@ -212,8 +212,20 @@ pub enum ResponsesStreamEvent {
         #[serde(default, deserialize_with = "lenient_response_metadata")]
         response: Option<ResponseMetadata>,
     },
+    /// ⚠ The failure is under `response.error`, not a top-level `error`, in the
+    /// frame Azure sends (measured 2026-10-05 through the UCSF gateway, for an
+    /// over-window prompt) and in OpenAI's documented shape. Both fields are
+    /// optional so either shape reaches the error arm in `apply_stream_event`
+    /// instead of failing to parse.
     #[serde(rename = "response.failed")]
-    ResponseFailed { sequence_number: i32, error: Value },
+    ResponseFailed {
+        #[serde(default)]
+        sequence_number: i32,
+        #[serde(default)]
+        error: Option<Value>,
+        #[serde(default)]
+        response: Option<Value>,
+    },
     #[serde(rename = "response.function_call_arguments.delta")]
     FunctionCallArgumentsDelta {
         sequence_number: i32,
@@ -1192,6 +1204,32 @@ fn final_stream_content(
     content
 }
 
+/// The typed error for a streamed failure that says the prompt is over the
+/// model's window, or `None` for any other failure.
+///
+/// ⚠ The Responses API reports an over-window prompt INSIDE a 200 stream, not
+/// as an HTTP 400. Measured 2026-10-05 through the UCSF gateway with a
+/// 1,060,000-token prompt to `gpt-5.6-luna-2026-07-09`: HTTP 200,
+/// `response.created`, `response.in_progress`, then an `error` frame with code
+/// `context_length_exceeded`, then a `response.failed` carrying the same code
+/// under `response.error`. Chat Completions and a blocking Responses request
+/// answer HTTP 400, which `map_http_error_to_provider_error` already types.
+/// Decoded as a generic failure, the streamed one skipped the reply loop's
+/// compaction arm, which matches `ProviderError::ContextLengthExceeded` and
+/// nothing else, so a chat that outgrew the window stopped instead of
+/// compacting.
+fn context_overflow(error: &Value) -> Option<crate::providers::errors::ProviderError> {
+    let message = error.get("message").and_then(Value::as_str);
+    let says_overflow = error.get("code").and_then(Value::as_str)
+        == Some("context_length_exceeded")
+        || message.is_some_and(crate::providers::utils::check_context_length_exceeded);
+    says_overflow.then(|| {
+        crate::providers::errors::ProviderError::ContextLengthExceeded(
+            message.unwrap_or("context_length_exceeded").to_string(),
+        )
+    })
+}
+
 /// Apply one decoded event to the stream state.
 ///
 /// ⚠ `response.output_text.delta` is deliberately not handled here. It is the
@@ -1289,11 +1327,22 @@ fn apply_stream_event(
             // Arguments are complete, will be in the OutputItemDone event
         }
 
-        ResponsesStreamEvent::ResponseFailed { error, .. } => {
+        ResponsesStreamEvent::ResponseFailed {
+            error, response, ..
+        } => {
+            let error = error
+                .or_else(|| response.and_then(|response| response.get("error").cloned()))
+                .unwrap_or(Value::Null);
+            if let Some(overflow) = context_overflow(&error) {
+                return Err(overflow.into());
+            }
             return Err(anyhow!("Responses API failed: {:?}", error));
         }
 
         ResponsesStreamEvent::Error { error } => {
+            if let Some(overflow) = context_overflow(&error) {
+                return Err(overflow.into());
+            }
             return Err(anyhow!("Responses API error: {:?}", error));
         }
 
@@ -1396,7 +1445,14 @@ pub fn stream_responses_api(
         let message_stream = responses_api_to_streaming_message(framed);
         tokio::pin!(message_stream);
         while let Some(message) = message_stream.next().await {
-            let (message, usage, pending) = message.map_err(|e| ProviderError::RequestFailed(format!("Stream decode error: {}", e)))?;
+            // A failure the decoder already typed (an over-window prompt, see
+            // `context_overflow`) keeps its type, as in `stream_openai_compat`;
+            // anything else is a decode error, as before.
+            let (message, usage, pending) = message.map_err(|error| {
+                error.downcast::<ProviderError>().unwrap_or_else(|error|
+                    ProviderError::RequestFailed(format!("Stream decode error: {}", error))
+                )
+            })?;
             log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
             yield (message, usage, pending);
         }
@@ -1407,6 +1463,7 @@ pub fn stream_responses_api(
 mod tests {
     use super::*;
     use crate::agents::effort::ReasoningEffort;
+    use crate::providers::errors::ProviderError;
     use futures::StreamExt;
     use rmcp::object;
     use tokio::pin;
@@ -2302,6 +2359,84 @@ data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down
                 .is_some_and(|e| e.contains("Responses API error")),
             "an error frame must still fail, got {error:?}"
         );
+    }
+
+    /// The first error a stream of `lines` ends in, as the decoder raised it.
+    async fn first_error(lines: &str) -> anyhow::Error {
+        let response_stream = tokio_stream::iter(
+            lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| Ok(line.to_string()))
+                .collect::<Vec<_>>(),
+        );
+        let messages = responses_api_to_streaming_message(response_stream);
+        pin!(messages);
+        while let Some(result) = messages.next().await {
+            if let Err(error) = result {
+                return error;
+            }
+        }
+        panic!("the stream ended without an error");
+    }
+
+    /// An over-window prompt on a streamed Responses request, in the frames the
+    /// UCSF gateway sent on 2026-10-05 (ids and the long `response` bodies
+    /// trimmed). It must reach the reply loop as `ContextLengthExceeded`, the
+    /// one variant its compaction arm matches, whichever of the two failure
+    /// frames a producer sends.
+    #[tokio::test]
+    async fn an_over_window_prompt_in_a_stream_is_a_context_length_error() {
+        let measured = r#"
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_overflow","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.6-luna-2026-07-09","output":[]}}
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_overflow","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.6-luna-2026-07-09","output":[]}}
+event: error
+data: {"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again.","param":"input"},"sequence_number":2}
+event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_overflow","object":"response","created_at":1,"status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."},"model":"gpt-5.6-luna-2026-07-09","output":[]},"sequence_number":3}
+"#;
+        // The same failure as the `response.failed` frame alone, with the code
+        // under `response.error` and no top-level `error`.
+        let failed_frame_only = r#"
+data: {"type":"response.failed","response":{"id":"resp_overflow","object":"response","created_at":1,"status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."},"model":"gpt-5.6-luna-2026-07-09","output":[]},"sequence_number":3}
+"#;
+        for lines in [measured, failed_frame_only] {
+            let error = first_error(lines)
+                .await
+                .downcast::<ProviderError>()
+                .expect("an overflow is decoded as a typed provider error");
+            assert_eq!(
+                error,
+                ProviderError::ContextLengthExceeded(
+                    "Your input exceeds the context window of this model. Please adjust your \
+                     input and try again."
+                        .to_string()
+                )
+            );
+        }
+    }
+
+    /// The control: any other failure, in either frame shape, still fails the
+    /// stream as it did, and is NOT read as an overflow (which would send the
+    /// reply loop compacting a conversation that is not too long).
+    #[tokio::test]
+    async fn other_stream_failures_are_not_context_length_errors() {
+        for (lines, expected) in [
+            (
+                r#"data: {"type":"response.failed","sequence_number":1,"response":{"id":"r","status":"failed","error":{"code":"server_error","message":"boom"}}}"#,
+                "Responses API failed",
+            ),
+            (
+                r#"data: {"type":"error","error":{"code":"rate_limit_exceeded","message":"slow down"}}"#,
+                "Responses API error",
+            ),
+        ] {
+            let error = first_error(lines).await;
+            assert!(error.to_string().contains(expected), "{error}");
+            assert!(error.downcast_ref::<ProviderError>().is_none(), "{error}");
+        }
     }
 
     /// Control 4. The unknown arm must not have eaten a tag that carries real
