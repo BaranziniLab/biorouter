@@ -526,6 +526,12 @@ fn live_provider_tests_require_explicit_opt_in() {
         "test_bedrock_provider_sonnet_5",
         "test_versa_bedrock_provider",
         "test_versa_bedrock_provider_sonnet_4_6",
+        "test_versa_bedrock_provider_sonnet_5",
+        "test_versa_bedrock_refuses_models_ucsf_does_not_serve",
+        "test_versa_azure_every_offered_model",
+        "test_versa_azure_reasoning_effort_tool_loops",
+        "test_versa_bedrock_every_offered_model",
+        "test_versa_removed_models_are_refused",
         "test_databricks_provider",
         "test_ollama_provider",
         "test_anthropic_provider",
@@ -881,6 +887,74 @@ async fn test_versa_bedrock_provider_sonnet_4_6() -> Result<()> {
     .await
 }
 
+/// Sonnet 5 over the Versa proxy: the id `VERSA_BEDROCK_KNOWN_MODELS` gained on
+/// 2026-10-05, when it first answered through UCSF's gateway, and the only
+/// Claude 5 model UCSF's account may invoke. Pinned literally, like the test
+/// above, so a change to the list cannot quietly stop covering it.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_sonnet_5() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (sonnet-5)",
+        "versa_bedrock",
+        "us.anthropic.claude-sonnet-5",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
+/// The other half of the 2026-10-05 measurement: Opus 5.5 and Opus 5 left
+/// `VERSA_BEDROCK_KNOWN_MODELS` because UCSF's account is refused them
+/// (`AccessDeniedException`), and a chat still bound to one must hear that the
+/// MODEL was refused, not that its working key pair was. If this starts
+/// failing because a model answered, UCSF has enabled it: add it to the list.
+#[tokio::test]
+#[ignore = "live Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_refuses_models_ucsf_does_not_serve() -> Result<()> {
+    use biorouter::providers::errors::ProviderErrorKind;
+
+    let _lock = ENV_LOCK.lock().unwrap();
+    load_env();
+    for credential in [
+        Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+        Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+    ] {
+        anyhow::ensure!(
+            credential.is_present(),
+            "{} is not configured; this live test fails rather than skipping",
+            credential.key()
+        );
+    }
+    drop(_lock);
+
+    for model in ["us.anthropic.claude-opus-5-5", "us.anthropic.claude-opus-5"] {
+        let provider = create_with_named_model("versa_bedrock", model).await?;
+        let error = match provider
+            .complete(
+                "You are a test.",
+                &[Message::user().with_text("Reply with the single word OK.")],
+                &[],
+            )
+            .await
+        {
+            Ok(_) => anyhow::bail!("{model} answered through Versa: UCSF now serves it"),
+            Err(error) => error,
+        };
+        let text = error.to_string();
+        anyhow::ensure!(
+            error.kind() == ProviderErrorKind::ModelUnavailable
+                && text.contains(&format!("does not serve model `{model}`"))
+                && text.contains("Your key pair works"),
+            "{model}: expected a model refusal, got {text}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "live Databricks call; run an exact named test with --ignored --exact"]
 async fn test_databricks_provider() -> Result<()> {
@@ -992,6 +1066,563 @@ async fn test_xiaomi_mimo_provider() -> Result<()> {
         None,
     )
     .await
+}
+
+// ===========================================================================
+// Live Versa catalog sweep
+//
+// Every model the two Versa providers OFFER, driven through BioRouter's own
+// provider code rather than curl. `run_live_suite` above covers the blocking
+// path only, and only for the models a test names; these cover each row of
+// `VERSA_AZURE_DEPLOYMENTS` and `VERSA_BEDROCK_KNOWN_MODELS` on both paths,
+// with a full tool loop: the model calls the tool, the result goes back, and
+// the model answers from it. A loop is what breaks when a replayed
+// `function_call` / `function_call_output` (Responses) or `toolUse` /
+// `toolResult` (Converse) is malformed, and a single tool-call turn never
+// replays anything.
+//
+// Each sweep runs every model and reports one row per model before failing,
+// so one refused model does not hide the state of the others.
+//
+// First run 2026-10-05: all 11 Versa Azure rows and all 6 Versa Bedrock rows
+// passed every check, the three gpt-5.6 rows on the Responses route under
+// Deep and Quick effort as well (the gateway echoed `reasoning.effort` high
+// and low back, and Quick's temperature was not sent).
+//
+//     cargo test -p biorouter --test providers versa_ -- --ignored --test-threads=1 --nocapture
+// ===========================================================================
+
+const VERSA_AZURE_CREDENTIALS: &[Credential] = &[Credential::EnvOrSecret("VERSA_AZURE_API_KEY")];
+const VERSA_BEDROCK_CREDENTIALS: &[Credential] = &[
+    Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+    Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+];
+
+/// Fail, never skip, when a sweep's credentials are absent: like
+/// [`run_live_suite`], reaching an `#[ignore]`d test means it was asked for.
+fn require_versa_credentials(required: &[Credential]) -> Result<()> {
+    let _lock = ENV_LOCK.lock().unwrap();
+    load_env();
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|credential| !credential.is_present())
+        .map(Credential::key)
+        .collect();
+    anyhow::ensure!(
+        missing.is_empty(),
+        "not configured: {}; this live test fails rather than skipping",
+        missing.join(", ")
+    );
+    Ok(())
+}
+
+/// What the tool returns and the final answer must repeat. A model that
+/// answers without reading the tool output cannot guess it.
+const STATION_CODE: &str = "KX-4417";
+const LOOP_SYSTEM: &str =
+    "You are a terse assistant. Use the get_weather tool for any weather question.";
+
+fn station_tool() -> Tool {
+    Tool::new(
+        "get_weather",
+        "Get the current weather report for a city, including its reporting station code",
+        object!({
+            "type": "object",
+            "required": ["location"],
+            "properties": {
+                "location": { "type": "string", "description": "City name" }
+            }
+        }),
+    )
+}
+
+fn station_question() -> Message {
+    Message::user().with_text(
+        "Call get_weather for San Francisco, then reply with only the reporting station code it returns.",
+    )
+}
+
+fn station_report(id: &str) -> Message {
+    Message::user().with_tool_response(
+        id,
+        Ok(rmcp::model::CallToolResult {
+            content: vec![Content::text(format!(
+                "San Francisco: 57F, clear. Reporting station code: {STATION_CODE}."
+            ))],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        }),
+    )
+}
+
+/// One provider turn: the assistant messages it produced and its usage.
+struct LiveTurn {
+    messages: Vec<Message>,
+    usage: Option<biorouter::providers::base::ProviderUsage>,
+}
+
+impl LiveTurn {
+    fn text(&self) -> String {
+        self.messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(MessageContent::as_text)
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn weather_call_id(&self) -> Option<String> {
+        self.messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(MessageContent::as_tool_request)
+            .find(|request| {
+                request
+                    .tool_call
+                    .as_ref()
+                    .is_ok_and(|call| call.name == "get_weather")
+            })
+            .map(|request| request.id.clone())
+    }
+
+    /// (input, output) tokens. Input counts the cache buckets too, which are
+    /// disjoint from `input_tokens` by `Usage`'s invariant.
+    fn tokens(&self) -> (i64, i64) {
+        let Some(usage) = &self.usage else {
+            return (0, 0);
+        };
+        let u = &usage.usage;
+        let input = [
+            u.input_tokens,
+            u.cache_read_input_tokens,
+            u.cache_creation_input_tokens,
+        ]
+        .iter()
+        .map(|n| i64::from(n.unwrap_or(0)))
+        .sum();
+        (input, i64::from(u.output_tokens.unwrap_or(0)))
+    }
+
+    fn served_by(&self) -> String {
+        self.usage
+            .as_ref()
+            .map(|usage| usage.model.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CallPath {
+    Blocking,
+    Streaming,
+}
+
+/// Drain a stream the way the agent loop records it: chunks that share an id
+/// fold into one message (`Conversation::push`), and the last usage snapshot
+/// wins.
+async fn stream_turn(
+    provider: &dyn Provider,
+    system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+) -> Result<LiveTurn, ProviderError> {
+    use futures::StreamExt;
+
+    let mut stream = provider.stream(system, messages, tools).await?;
+    let mut folded = biorouter::conversation::Conversation::empty();
+    let mut usage = None;
+    while let Some(item) = stream.next().await {
+        let (message, chunk_usage, _pending) = item?;
+        if let Some(message) = message {
+            folded.push(message);
+        }
+        if let Some(chunk_usage) = chunk_usage {
+            usage = Some(chunk_usage);
+        }
+    }
+    Ok(LiveTurn {
+        messages: folded.into_messages(),
+        usage,
+    })
+}
+
+/// One turn on `path`. With `model` set, the blocking path goes through
+/// `complete_with_model` with that config (the fast-model route); otherwise
+/// through `complete`, which uses the provider's own config.
+async fn live_turn(
+    provider: &dyn Provider,
+    path: CallPath,
+    model: Option<&biorouter::model::ModelConfig>,
+    system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+) -> Result<LiveTurn, ProviderError> {
+    match path {
+        CallPath::Streaming => stream_turn(provider, system, messages, tools).await,
+        CallPath::Blocking => {
+            let (message, usage) = match model {
+                Some(model) => {
+                    provider
+                        .complete_with_model(model, system, messages, tools)
+                        .await?
+                }
+                None => provider.complete(system, messages, tools).await?,
+            };
+            Ok(LiveTurn {
+                messages: vec![message],
+                usage: Some(usage),
+            })
+        }
+    }
+}
+
+/// A plain text turn: non-empty text and non-zero usage.
+async fn check_text_turn(provider: &dyn Provider, path: CallPath) -> Result<String> {
+    let turn = live_turn(
+        provider,
+        path,
+        None,
+        "You are a terse assistant.",
+        &[Message::user().with_text("Reply with the single word: pong")],
+        &[],
+    )
+    .await?;
+    let (input, output) = turn.tokens();
+    anyhow::ensure!(
+        !turn.text().trim().is_empty(),
+        "{path:?} text turn returned no text"
+    );
+    anyhow::ensure!(
+        input > 0 && output > 0,
+        "{path:?} text turn reported usage in={input} out={output}"
+    );
+    Ok(format!(
+        "{path:?} text {:?} (in={input} out={output} model={})",
+        turn.text().trim().chars().take(20).collect::<String>(),
+        turn.served_by()
+    ))
+}
+
+/// The two-step tool loop: the model must call `get_weather`, and after the
+/// result is replayed it must answer with [`STATION_CODE`]. Both steps must
+/// report non-zero usage. `model` routes the blocking path through
+/// `complete_with_model`.
+async fn check_tool_loop(
+    provider: &dyn Provider,
+    path: CallPath,
+    model: Option<&biorouter::model::ModelConfig>,
+) -> Result<String> {
+    let tools = [station_tool()];
+    let question = station_question();
+    let first = live_turn(
+        provider,
+        path,
+        model,
+        LOOP_SYSTEM,
+        std::slice::from_ref(&question),
+        &tools,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{path:?} tool step 1: {e}"))?;
+    let call_id = first.weather_call_id().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{path:?} tool step 1: no get_weather call; text was {:?}",
+            first.text()
+        )
+    })?;
+    let (in1, out1) = first.tokens();
+    anyhow::ensure!(
+        in1 > 0 && out1 > 0,
+        "{path:?} tool step 1 reported usage in={in1} out={out1}"
+    );
+
+    let mut history = vec![question];
+    history.extend(first.messages.iter().cloned());
+    history.push(station_report(&call_id));
+    let second = live_turn(provider, path, model, LOOP_SYSTEM, &history, &tools)
+        .await
+        .map_err(|e| anyhow::anyhow!("{path:?} tool step 2 (result replayed): {e}"))?;
+    let (in2, out2) = second.tokens();
+    anyhow::ensure!(
+        second.text().contains(STATION_CODE),
+        "{path:?} tool step 2 did not repeat the tool's station code; text was {:?}",
+        second.text()
+    );
+    anyhow::ensure!(
+        in2 > 0 && out2 > 0,
+        "{path:?} tool step 2 reported usage in={in2} out={out2}"
+    );
+    Ok(format!(
+        "{path:?} tool loop ok (step1 in={in1} out={out1}; step2 in={in2} out={out2} answer={:?} model={})",
+        second.text().trim().chars().take(30).collect::<String>(),
+        second.served_by()
+    ))
+}
+
+/// Run `check` for every model, print one row each, and fail at the end if
+/// any row failed.
+async fn sweep<F, Fut>(label: &str, models: &[&str], check: F) -> Result<()>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<String>>>,
+{
+    let mut failed = Vec::new();
+    println!("\n===== {label} =====");
+    for model in models {
+        let started = std::time::Instant::now();
+        match check(model.to_string()).await {
+            Ok(rows) => {
+                for row in rows {
+                    println!("PASS {model}: {row}");
+                }
+                println!("     {model}: {:.1}s", started.elapsed().as_secs_f64());
+            }
+            Err(e) => {
+                println!("FAIL {model}: {e:#}");
+                failed.push(model.to_string());
+            }
+        }
+    }
+    anyhow::ensure!(failed.is_empty(), "{label}: failed for {failed:?}");
+    Ok(())
+}
+
+/// Every offered Versa Azure model: a streamed text turn, and the tool loop on
+/// both the streaming and the blocking path, at the default effort.
+#[tokio::test]
+#[ignore = "live billed Versa Azure calls; run deliberately with --ignored"]
+async fn test_versa_azure_every_offered_model() -> Result<()> {
+    use biorouter::providers::versa_azure::VERSA_AZURE_DEPLOYMENTS;
+
+    require_versa_credentials(VERSA_AZURE_CREDENTIALS)?;
+    let models: Vec<&str> = VERSA_AZURE_DEPLOYMENTS.iter().map(|(m, _)| *m).collect();
+    sweep(
+        "versa_azure: every offered model",
+        &models,
+        |model| async move {
+            let provider = create_with_named_model("versa_azure", &model).await?;
+            Ok(vec![
+                check_text_turn(provider.as_ref(), CallPath::Streaming).await?,
+                check_tool_loop(provider.as_ref(), CallPath::Streaming, None).await?,
+                check_tool_loop(provider.as_ref(), CallPath::Blocking, None).await?,
+            ])
+        },
+    )
+    .await
+}
+
+/// The Responses route under a reasoning effort, set the way a turn sets it:
+/// `ReasoningEffort::apply_to_model` on the model config, then the provider
+/// rebuilt from it (`Agent::provider_with_effort`). Deep sends
+/// `reasoning.effort: high`; Quick sends `low` AND fills in temperature 0,
+/// which a reasoning model refuses, so Quick also proves the builder drops it.
+/// gpt-5.5 is the Chat Completions control: same efforts, `reasoning_effort`
+/// with tools on the route it stays on.
+///
+/// Also the fast-model path: a gpt-5.5 provider sending a gpt-5.6 request
+/// through `complete_with_model` must take the Responses route for it.
+#[tokio::test]
+#[ignore = "live billed Versa Azure calls; run deliberately with --ignored"]
+async fn test_versa_azure_reasoning_effort_tool_loops() -> Result<()> {
+    use biorouter::agents::effort::ReasoningEffort;
+    use biorouter::model::ModelConfig;
+
+    require_versa_credentials(VERSA_AZURE_CREDENTIALS)?;
+    let models = [
+        "gpt-5.6-sol-2026-07-09",
+        "gpt-5.6-terra-2026-07-09",
+        "gpt-5.6-luna-2026-07-09",
+        "gpt-5.5-2026-04-24",
+    ];
+    sweep(
+        "versa_azure: reasoning effort + tool loops",
+        &models,
+        |model| async move {
+            let mut rows = Vec::new();
+            for effort in [ReasoningEffort::Deep, ReasoningEffort::Quick] {
+                let config = effort.apply_to_model(ModelConfig::new(&model)?);
+                let provider = biorouter::providers::create("versa_azure", config).await?;
+                for path in [CallPath::Blocking, CallPath::Streaming] {
+                    let row = check_tool_loop(provider.as_ref(), path, None)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("effort {}: {e:#}", effort.as_str()))?;
+                    rows.push(format!("effort={} {row}", effort.as_str()));
+                }
+            }
+            if model.starts_with("gpt-5.6") {
+                let chat = create_with_named_model("versa_azure", "gpt-5.5-2026-04-24").await?;
+                let fast = ReasoningEffort::Deep.apply_to_model(ModelConfig::new(&model)?);
+                let row = check_tool_loop(chat.as_ref(), CallPath::Blocking, Some(&fast))
+                    .await
+                    .map_err(|e| anyhow::anyhow!("fast-model path: {e:#}"))?;
+                rows.push(format!("via gpt-5.5 complete_with_model effort=deep {row}"));
+            }
+            Ok(rows)
+        },
+    )
+    .await
+}
+
+/// Every offered Versa Bedrock model: a streamed text turn, and the tool loop
+/// on both paths.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock calls; run deliberately with --ignored"]
+async fn test_versa_bedrock_every_offered_model() -> Result<()> {
+    use biorouter::providers::versa_bedrock::VERSA_BEDROCK_KNOWN_MODELS;
+
+    require_versa_credentials(VERSA_BEDROCK_CREDENTIALS)?;
+    sweep(
+        "versa_bedrock: every offered model",
+        VERSA_BEDROCK_KNOWN_MODELS,
+        |model| async move {
+            let provider = create_with_named_model("versa_bedrock", &model).await?;
+            Ok(vec![
+                check_text_turn(provider.as_ref(), CallPath::Streaming).await?,
+                check_tool_loop(provider.as_ref(), CallPath::Streaming, None).await?,
+                check_tool_loop(provider.as_ref(), CallPath::Blocking, None).await?,
+            ])
+        },
+    )
+    .await
+}
+
+/// The models taken OUT of the two catalogs, through BioRouter:
+///   * Versa Bedrock: `us.anthropic.claude-opus-5-5` is sent, AWS refuses it
+///     (`AccessDeniedException`), and the user hears a model refusal naming
+///     the offered models, on both paths, promptly (not retried).
+///   * Versa Azure: `gpt-6-sol-2026-09-22` has no deployment, so it is refused
+///     locally on every path. Proven against a mock gateway that records every
+///     request: nothing reaches it, while a catalog model sent the same way
+///     does (the instrument works).
+#[tokio::test]
+#[ignore = "live Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_removed_models_are_refused() -> Result<()> {
+    require_versa_credentials(VERSA_BEDROCK_CREDENTIALS)?;
+    let prompt = [Message::user().with_text("Reply with the single word OK.")];
+
+    // Bedrock: sent, refused by AWS, surfaced as a model refusal.
+    let removed = "us.anthropic.claude-opus-5-5";
+    let provider = create_with_named_model("versa_bedrock", removed).await?;
+    for path in [CallPath::Blocking, CallPath::Streaming] {
+        let started = std::time::Instant::now();
+        let error = match live_turn(
+            provider.as_ref(),
+            path,
+            None,
+            "You are a test.",
+            &prompt,
+            &[],
+        )
+        .await
+        {
+            Ok(_) => anyhow::bail!("{removed} answered on {path:?}: UCSF now serves it"),
+            Err(error) => error,
+        };
+        let elapsed = started.elapsed();
+        let text = error.to_string();
+        println!(
+            "versa_bedrock {removed} {path:?}: {:?} after {:.1}s: {text}",
+            error.kind(),
+            elapsed.as_secs_f64()
+        );
+        anyhow::ensure!(
+            text.contains(&format!("does not serve model `{removed}`"))
+                && text.contains("Your key pair works")
+                && text.contains(VERSA_BEDROCK_DEFAULT_MODEL),
+            "{path:?}: expected a model refusal naming the offered models, got {text}"
+        );
+        anyhow::ensure!(
+            elapsed < std::time::Duration::from_secs(30),
+            "{path:?}: the refusal took {elapsed:?}; it should not be retried"
+        );
+    }
+
+    // Azure: refused before anything is sent. The instance is pointed at a
+    // local TCP listener that counts connections (the endpoint must be https,
+    // and nothing here speaks TLS, so any request that leaves fails at the
+    // handshake, after it has been counted), with a placeholder key so the
+    // real one never goes there.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&connections);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            if stream.is_ok() {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+    let previous: Vec<(&str, Option<String>)> = ["VERSA_AZURE_ENDPOINT", "VERSA_AZURE_API_KEY"]
+        .into_iter()
+        .map(|key| (key, std::env::var(key).ok()))
+        .collect();
+    std::env::set_var("VERSA_AZURE_ENDPOINT", format!("https://127.0.0.1:{port}"));
+    std::env::set_var("VERSA_AZURE_API_KEY", "local-listener-placeholder");
+    let outcome = async {
+        let unmapped = "gpt-6-sol-2026-09-22";
+        let provider = create_with_named_model("versa_azure", unmapped).await?;
+        let tools = [station_tool()];
+        for path in [CallPath::Blocking, CallPath::Streaming] {
+            let error = match live_turn(provider.as_ref(), path, None, "t", &prompt, &tools).await {
+                Ok(_) => anyhow::bail!("{unmapped} was answered on {path:?}"),
+                Err(error) => error,
+            };
+            let text = error.to_string();
+            println!("versa_azure {unmapped} {path:?}: {:?}: {text}", error.kind());
+            anyhow::ensure!(
+                text.contains(&format!("no Versa deployment for model `{unmapped}`"))
+                    && text.contains("nothing was sent"),
+                "{path:?}: expected the local refusal, got {text}"
+            );
+        }
+        // The fast-model path, from a chat on a catalog model.
+        let chat = create_with_named_model("versa_azure", "gpt-5.5-2026-04-24").await?;
+        let fast = biorouter::model::ModelConfig::new(unmapped)?;
+        let error = chat
+            .complete_with_model(&fast, "t", &prompt, &tools)
+            .await
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("{unmapped} was answered as a fast model"))?;
+        println!("versa_azure {unmapped} as a gpt-5.5 chat's fast model: {error}");
+        anyhow::ensure!(
+            error.to_string().contains("nothing was sent"),
+            "fast-model path: {error}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let refused = connections.load(Ordering::SeqCst);
+        anyhow::ensure!(
+            refused == 0,
+            "{refused} connection(s) were opened for {unmapped}"
+        );
+        // The instrument: a catalog model sent the same way DOES connect.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            chat.complete("t", &prompt, &[]),
+        )
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let control = connections.load(Ordering::SeqCst);
+        anyhow::ensure!(
+            control > 0,
+            "the control request never connected, so the listener's silence proves nothing"
+        );
+        println!(
+            "versa_azure {unmapped}: 0 connections opened on 3 paths; control gpt-5.5 opened {control}"
+        );
+        Ok(())
+    }
+    .await;
+    for (key, value) in previous {
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+    }
+    outcome
 }
 
 #[ctor::dtor]
