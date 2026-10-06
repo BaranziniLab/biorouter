@@ -59,6 +59,29 @@ fn strip_existing_moim(messages: &mut Vec<Message>) {
     });
 }
 
+/// The first line of every injected block: what the block is, said to the model.
+///
+/// After a tool result the block is the newest user turn the model sees, and a
+/// bare `<info-msg>` there reads as something to answer. Measured 2026-10-05 on
+/// Versa `gpt-5.6-luna-2026-07-09`, replaying one captured agent turn (a shell
+/// call whose output the user asked for): without this line 1 of 12 replies gave
+/// the output, the rest were empty or "Understood."; with it, 35 of 36 did.
+/// gpt-5.6-sol, gpt-5.6-terra, gpt-5.5 and gpt-5.4-mini answered 12 of 12 either
+/// way. It is plain text inside the user-role block, so it grants the block no
+/// authority it did not already have.
+const MOIM_PREAMBLE: &str = "Automatic context from Biorouter, not a message from the user. \
+                             Do not reply to it; continue the user's task.";
+
+/// Put [`MOIM_PREAMBLE`] first in the block, directly after the opening tag and
+/// ahead of any reminder, so the size cap (which keeps the head) never removes it.
+fn with_preamble(moim: String) -> String {
+    moim.replacen(
+        MOIM_OPEN_TAG,
+        &format!("{MOIM_OPEN_TAG}\n{MOIM_PREAMBLE}"),
+        1,
+    )
+}
+
 /// Put `reminder` at the head of the block, directly after the opening tag.
 ///
 /// The head, not the tail, because [`cap_moim_block`] keeps the head: a
@@ -100,7 +123,10 @@ pub async fn inject_moim(
         .collect_moim(session_id, working_dir, cancel)
         .await
     {
-        let moim = cap_moim_block(with_reminder(moim, reminder), max_moim_tokens());
+        let moim = cap_moim_block(
+            with_preamble(with_reminder(moim, reminder)),
+            max_moim_tokens(),
+        );
         let mut messages = conversation.messages().clone();
         // Drop any stale MOIM from a prior loop iteration first, so a long
         // multi-tool turn never accumulates several near-identical (and
@@ -407,7 +433,7 @@ mod tests {
             .to_string();
         assert!(
             block.starts_with(&format!(
-                "{MOIM_OPEN_TAG}\nPlanning required: write the checklist first."
+                "{MOIM_OPEN_TAG}\n{MOIM_PREAMBLE}\nPlanning required: write the checklist first."
             )),
             "{block}"
         );
@@ -416,13 +442,54 @@ mod tests {
             "{MOIM_OPEN_TAG}\nIt is currently now\n{}\n{MOIM_CLOSE_TAG}",
             "x".repeat(40_000)
         );
-        let capped = cap_moim_block(with_reminder(huge, Some("KEEP ME")), 100);
+        let capped = cap_moim_block(with_preamble(with_reminder(huge, Some("KEEP ME"))), 100);
         assert!(capped.contains("KEEP ME"), "{capped}");
+        assert!(capped.contains(MOIM_PREAMBLE), "{capped}");
         assert!(is_moim_block(&capped));
 
         // No reminder, or a blank one, leaves the block exactly as it was.
         assert_eq!(with_reminder(sample_moim(), None), sample_moim());
         assert_eq!(with_reminder(sample_moim(), Some("  ")), sample_moim());
+    }
+
+    /// Without a reminder the preamble is the block's first line, and a block that
+    /// carries it is still one `strip_existing_moim` recognises and replaces.
+    #[tokio::test]
+    async fn every_block_opens_with_the_preamble() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("Hello"),
+            Message::assistant().with_text("Hi"),
+            Message::user().with_text(with_preamble(sample_moim())),
+        ]);
+        let (result, injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &PathBuf::from("/test/dir"),
+            &SharedNormalizer::new(),
+            None,
+            None,
+        )
+        .await;
+        assert!(injected);
+        assert_eq!(count_info_msgs(&result), 1, "the old block was replaced");
+        let block = result
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| c.as_text())
+            .find(|t| t.contains(MOIM_OPEN_TAG))
+            .expect("the block")
+            .to_string();
+        assert!(
+            block.starts_with(&format!(
+                "{MOIM_OPEN_TAG}\n{MOIM_PREAMBLE}\nIt is currently"
+            )),
+            "{block}"
+        );
+        assert_eq!(block.matches(MOIM_PREAMBLE).count(), 1, "{block}");
     }
 
     /// BR-2: a cap of 0 disables MOIM truncation.
