@@ -144,6 +144,7 @@ for (const page of [index, download, docs, about, content]) {
 }
 
 const providerChecks = [
+  ['crates/biorouter/src/providers/versa_azure.rs', /VERSA_AZURE_DEFAULT_MODEL: &str = "([^"]+)"/, 'Versa Azure'],
   ['crates/biorouter/src/providers/versa_bedrock.rs', /VERSA_BEDROCK_DEFAULT_MODEL: &str = "([^"]+)"/, 'Versa Bedrock'],
   ['crates/biorouter/src/providers/openai.rs', /OPEN_AI_DEFAULT_MODEL: &str = "([^"]+)"/, 'OpenAI'],
   ['crates/biorouter/src/providers/anthropic.rs', /ANTHROPIC_DEFAULT_MODEL: &str = "([^"]+)"/, 'Anthropic'],
@@ -157,7 +158,7 @@ const providerChecks = [
 for (const [path, re, name] of providerChecks) {
   const value = capture(source(path), re, name);
   includes(docs, value, `docs should include ${name} default ${value}`);
-  if (['OpenAI', 'Ollama', 'Versa Bedrock'].includes(name)) {
+  if (['OpenAI', 'Ollama', 'Versa Azure', 'Versa Bedrock'].includes(name)) {
     includes(mockups, value, `mockups should include ${name} default ${value}`);
   }
 }
