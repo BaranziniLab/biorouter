@@ -38,7 +38,26 @@ pub const VERSA_AZURE_ENDPOINT: &str = "https://unified-api.ucsf.edu/general";
 /// cost basis while `gpt-5.5` kept answering (2026-09-10 QA run, finding F1).
 /// A request now posts to the deployment [`VERSA_AZURE_DEPLOYMENTS`] maps its
 /// own model to.
-pub const VERSA_AZURE_DEFAULT_MODEL: &str = "gpt-5.5-2026-04-24";
+///
+/// GPT-5.6 Sol after 1.92.1 (changed 2026-10-07); `gpt-5.5-2026-04-24` was the
+/// default through 1.92.1 and is still offered. Sol is the top tier of GPT-5.6,
+/// the newest family UCSF deploys, and it was measured before it was made the
+/// default. On 2026-10-05 it answered blocking and streamed tool loops on the
+/// Responses route at reasoning effort Deep and Quick; its 922,000-token input
+/// limit matches the 1,050,000 window `MODEL_CONTEXT_WINDOWS` carries;
+/// `check_credentials`' Chat Completions probe on its deployment answered 401
+/// for a wrong key and 400 `empty_array` for a right one; and 6 of 6 CLI agent
+/// loops, plus 3 of 3 with the packaged 1.92.1 binary, gave the right final
+/// answer. So a new chat's first turn takes the Responses route (see
+/// [`takes_the_responses_route`]).
+///
+/// ⚠ It must stay the FIRST row of [`VERSA_AZURE_DEPLOYMENTS`]: the desktop
+/// picker auto-selects `known_models[0]` when a user switches provider
+/// (SwitchModelModal `findFirstAvailableModel`), not this constant, so a
+/// default anywhere else would give a new Versa configuration one model and a
+/// provider switch another. `the_default_is_gpt_5_6_sol_and_offered_first`
+/// pins it.
+pub const VERSA_AZURE_DEFAULT_MODEL: &str = "gpt-5.6-sol-2026-07-09";
 /// The `api-version` of the Chat Completions route. The Responses route
 /// ([`VERSA_AZURE_RESPONSES_PATH`]) takes none.
 pub const VERSA_AZURE_API_VERSION: &str = "2025-01-01-preview";
@@ -118,9 +137,15 @@ const VERSA_AZURE_RESPONSES_PATH: &str = "openai/v1/responses";
 /// deployments, and API endpoints in UCSF Versa"). o1-2024-12-17 and
 /// o3-mini-2025-01-31 were removed earlier (Deprecated on Azure, now retiring
 /// 2026-11-19) and still answered on 2026-10-05; they stay removed.
+///
+/// The ORDER is what the pickers show, and the first row is what the desktop
+/// selects on a provider switch: [`VERSA_AZURE_DEFAULT_MODEL`] first, then the
+/// rest of GPT-5.6, then gpt-5.5 (the default through 1.92.1), then the older
+/// rows newest first.
 pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
-    ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
     // GPT-5.6, version 2026-07-09: deployed at UCSF 2026-10-01. Responses route.
+    // Sol is the default model and must stay the first row (see
+    // `VERSA_AZURE_DEFAULT_MODEL`).
     ("gpt-5.6-sol-2026-07-09", "gpt-5.6-sol-2026-07-09"),
     ("gpt-5.6-terra-2026-07-09", "gpt-5.6-terra-2026-07-09"),
     // Before `agents/moim.rs` opened every `<info-msg>` block with its
@@ -129,6 +154,8 @@ pub const VERSA_AZURE_DEPLOYMENTS: &[(&str, &str)] = &[
     // were empty or "Ready."/"Noted."; Chat Completions did no better). The
     // preamble's doc comment has the measurement that brought it to 35 of 36.
     ("gpt-5.6-luna-2026-07-09", "gpt-5.6-luna-2026-07-09"),
+    // The default model through 1.92.1. Chat Completions route.
+    ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
     ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini-2026-03-17"),
     ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano-2026-03-17"),
     ("gpt-5.2-2025-12-11", "gpt-5.2-2025-12-11"),
@@ -240,10 +267,14 @@ const NO_DEPLOYMENT_ROUTE: &str =
 /// ⚠ A value that names a CATALOG deployment is not an override, and the fix
 /// turns on it:
 ///
-///   * Nobody chose it. The onboarding card upserts `VERSA_AZURE_DEPLOYMENT_NAME`
-///     with the shipped default on every connect. Honouring it would pin every
-///     onboarded install to one model — F1 again, in exactly the installs the
-///     QA sandbox did not have.
+///   * Nobody chose it. From 2026-09-03 to 2026-09-11 the onboarding card
+///     upserted `VERSA_AZURE_DEPLOYMENT_NAME` with gpt-5.5-2026-04-24, the
+///     shipped default then, on every connect; it writes no deployment now,
+///     but the installs it onboarded still carry that value. Honouring it
+///     would pin every one of them to gpt-5.5 — F1 again, in exactly the
+///     installs the QA sandbox did not have. So gpt-5.5 must stay a
+///     non-override even after it leaves the catalog
+///     (`only_a_deployment_the_catalog_does_not_know_is_an_override` pins it).
 ///   * It is what every stored binding says. Before this change `deployment`
 ///     was the fixed default whatever the model, and a subagent's model override
 ///     still rewrites the binding's model without touching its route
@@ -348,7 +379,8 @@ fn versa_gateway_credential_refusal(status: reqwest::StatusCode, body: &str) -> 
 /// `azure_openai` provider routes by: that also matches gpt-5.4, gpt-5.5 and
 /// o4-mini, which this gateway serves correctly over Chat Completions
 /// (measured with function tools and reasoning effort, 2026-09-25), and moving
-/// them would change the route of every chat already bound to the default.
+/// them would change the route of every chat already bound to gpt-5.5, the
+/// default through 1.92.1.
 /// GPT-6 is here although no GPT-6 deployment exists at the gateway yet
 /// (2026-10-05), so the day one is added it takes the route it needs.
 fn takes_the_responses_route(model: &str) -> bool {
@@ -507,7 +539,8 @@ impl VersaAzureProvider {
         // There is no shipped default deployment any more: the model picks it.
         // What the configuration names is a CANDIDATE override, and
         // `explicit_override` decides whether it is one — which is what keeps
-        // the default the onboarding card persists from pinning every model.
+        // the gpt-5.5-2026-04-24 the onboarding card persisted (2026-09-03 to
+        // 2026-09-11; it writes no deployment now) from pinning every model.
         //
         // ⚠ Versa's OWN key, and no fallback. `AZURE_OPENAI_DEPLOYMENT_NAME`
         // used to be read after it, and it is not Versa's to read: it is the
@@ -959,7 +992,9 @@ impl Provider for VersaAzureProvider {
     async fn check_credentials(&self) -> Result<(), ProviderError> {
         // The route of the model this instance was built for, or of the default
         // model when that one has no deployment: the key is the gateway's
-        // question, not the deployment's.
+        // question, not the deployment's. Either way it is the deployment's
+        // Chat Completions path, the default's included: gpt-5.6-sol's answered
+        // the probe like gpt-5.5's (measured 2026-10-05, above).
         let path = self
             .chat_completions_path(&self.model.model_name)
             .or_else(|_| self.chat_completions_path(VERSA_AZURE_DEFAULT_MODEL))?;
@@ -1029,11 +1064,21 @@ mod tests {
     use crate::providers::api_client::AuthMethod;
     use crate::providers::formats::openai::create_request;
 
+    /// A catalog model on the Chat Completions route, named outright. The
+    /// payload, path and probe tests below exercise that route, and they used
+    /// to reach it through `VERSA_AZURE_DEFAULT_MODEL`; since the default
+    /// became gpt-5.6-sol, which takes the Responses route, following the
+    /// constant would have moved them off the route they exist to test.
+    /// gpt-5.5 was the default through 1.92.1, so it is also the model most
+    /// existing chats are bound to.
+    pub(super) const CHAT_COMPLETIONS_MODEL: &str = "gpt-5.5-2026-04-24";
+
     /// A provider wired exactly like `from_env` builds one, minus the global
     /// config lookup. The point is that the assertions below run against a real
     /// `VersaAzureProvider`, so they gate `stream()`'s own code rather than
     /// re-asserting what `create_request` does when the test hands it the same
-    /// arguments.
+    /// arguments. Bound to [`CHAT_COMPLETIONS_MODEL`]; a test that needs
+    /// another model sets `model` on the result.
     fn test_provider() -> VersaAzureProvider {
         let api_client = ApiClient::new(
             VERSA_AZURE_ENDPOINT.to_string(),
@@ -1048,7 +1093,7 @@ mod tests {
             api_client,
             deployment_override: None,
             api_version: VERSA_AZURE_API_VERSION.to_string(),
-            model: ModelConfig::new_or_fail(VERSA_AZURE_DEFAULT_MODEL),
+            model: ModelConfig::new_or_fail(CHAT_COMPLETIONS_MODEL),
             name: "versa_azure".to_string(),
             resolved_endpoint: VERSA_AZURE_ENDPOINT.to_string(),
             credential_source: VersaAzureCredentialSource::ApiKey,
@@ -1139,7 +1184,7 @@ mod tests {
         assert_eq!(encoded["endpoint"], VERSA_AZURE_ENDPOINT);
         assert_eq!(
             encoded["deployment"],
-            deployment_for_model(VERSA_AZURE_DEFAULT_MODEL).unwrap()
+            deployment_for_model(CHAT_COMPLETIONS_MODEL).unwrap()
         );
         assert_eq!(encoded["api_version"], VERSA_AZURE_API_VERSION);
         assert_eq!(encoded["credential_source"], "api_key");
@@ -1302,7 +1347,7 @@ mod tests {
     /// response when `stream_options.include_usage` is set.
     #[test]
     fn streaming_payload_sets_stream_and_usage_options() {
-        let model = ModelConfig::new_or_fail(VERSA_AZURE_DEFAULT_MODEL);
+        let model = ModelConfig::new_or_fail(CHAT_COMPLETIONS_MODEL);
         let payload = create_request(&model, "sys", &[], &[], &ImageFormat::OpenAi, true)
             .expect("streaming request should build");
 
@@ -1316,7 +1361,7 @@ mod tests {
 
     #[test]
     fn non_streaming_payload_does_not_set_stream() {
-        let model = ModelConfig::new_or_fail(VERSA_AZURE_DEFAULT_MODEL);
+        let model = ModelConfig::new_or_fail(CHAT_COMPLETIONS_MODEL);
         let payload = create_request(&model, "sys", &[], &[], &ImageFormat::OpenAi, false)
             .expect("request should build");
 
@@ -1353,6 +1398,67 @@ mod tests {
         ] {
             assert_eq!(deployment_for_model(absent), None, "{absent}");
         }
+    }
+
+    /// The default is gpt-5.6-sol, and it is the first row offered: the desktop
+    /// picker selects `known_models[0]` on a provider switch, not the default,
+    /// so the two must agree. The first four rows are the GPT-5.6 tiers, then
+    /// gpt-5.5, the default through 1.92.1.
+    #[test]
+    fn the_default_is_gpt_5_6_sol_and_offered_first() {
+        assert_eq!(VERSA_AZURE_DEFAULT_MODEL, "gpt-5.6-sol-2026-07-09");
+        assert_eq!(VERSA_AZURE_DEPLOYMENTS[0].0, VERSA_AZURE_DEFAULT_MODEL);
+        let first_four: Vec<&str> = VERSA_AZURE_DEPLOYMENTS
+            .iter()
+            .take(4)
+            .map(|(model, _)| *model)
+            .collect();
+        assert_eq!(
+            first_four,
+            [
+                "gpt-5.6-sol-2026-07-09",
+                "gpt-5.6-terra-2026-07-09",
+                "gpt-5.6-luna-2026-07-09",
+                "gpt-5.5-2026-04-24",
+            ]
+        );
+
+        // What the pickers read is `metadata()`, so check it there too.
+        let metadata = VersaAzureProvider::metadata();
+        assert_eq!(metadata.default_model, VERSA_AZURE_DEFAULT_MODEL);
+        assert_eq!(
+            metadata.known_models[0].name, metadata.default_model,
+            "the desktop would select another model than the default on a provider switch"
+        );
+
+        // A fresh chat on the default takes the Responses route, posting to its
+        // own deployment.
+        assert_eq!(
+            deployment_for_model(VERSA_AZURE_DEFAULT_MODEL),
+            Some("gpt-5.6-sol-2026-07-09")
+        );
+        assert_eq!(
+            Route::for_model(VERSA_AZURE_DEFAULT_MODEL),
+            Route::Responses
+        );
+    }
+
+    /// The default model's own streaming request, built by the provider: a
+    /// Responses body on the v1 route naming sol's deployment. The Chat
+    /// Completions twin of this test is
+    /// `provider_stream_payload_opts_into_streaming_with_usage`.
+    #[test]
+    fn the_default_models_stream_request_takes_the_responses_route() {
+        let mut provider = test_provider();
+        provider.model = ModelConfig::new_or_fail(VERSA_AZURE_DEFAULT_MODEL);
+        let request = provider
+            .build_stream_request("sys", &[], &[])
+            .expect("streaming payload builds");
+        assert_eq!(request.route, Route::Responses);
+        assert_eq!(request.path, VERSA_AZURE_RESPONSES_PATH);
+        assert_eq!(request.payload["model"], "gpt-5.6-sol-2026-07-09");
+        assert_eq!(request.payload["stream"], serde_json::json!(true));
+        assert!(request.payload.get("stream_options").is_none());
     }
 
     /// A model may not be both offered and retiring — it would be advertised
@@ -1650,7 +1756,7 @@ mod tests {
         assert!(!is_catalog_deployment(NO_DEPLOYMENT_ROUTE));
 
         // Every default a setup surface ever persisted must stay a non-override:
-        // the onboarding card writes gpt-5.5 into `VERSA_AZURE_DEPLOYMENT_NAME`,
+        // the onboarding card wrote gpt-5.5 into `VERSA_AZURE_DEPLOYMENT_NAME`,
         // and a session row written by a build that still read the legacy
         // `AZURE_OPENAI_DEPLOYMENT_NAME` stored that key's default as its route.
         // Today each is a catalog deployment, which is the only reason it is
@@ -1659,8 +1765,13 @@ mod tests {
         // trim, keep recognising the value (a retired-defaults list beside the
         // catalog) rather than editing it out of this test.
         for shipped_default in [
-            "gpt-5.2-2025-12-11", // provider default 2026-05-07 .. 2026-07-02
-            "gpt-5.5-2026-04-24", // provider default since; the onboarding card's
+            // Provider default 2026-05-07 .. 2026-07-02.
+            "gpt-5.2-2025-12-11",
+            // Provider default 2026-07-02 .. 1.92.1, and the onboarding card's.
+            "gpt-5.5-2026-04-24",
+            // Provider default after 1.92.1. No setup form writes a deployment
+            // any more, but every chat bound to it stores it as its route.
+            "gpt-5.6-sol-2026-07-09",
         ] {
             assert_eq!(
                 explicit_override(Some(shipped_default)),
@@ -1858,11 +1969,13 @@ mod routing_tests {
     /// `VERSA_AZURE_DEPLOYMENTS`), written out rather than read back from the
     /// constant, so changing the catalog is a deliberate edit here as well —
     /// re-probe the gateway first.
+    ///
+    /// In the offered order, which is part of the snapshot: the default first.
     pub(super) const MEASURED: &[(&str, &str)] = &[
-        ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
         ("gpt-5.6-sol-2026-07-09", "gpt-5.6-sol-2026-07-09"),
         ("gpt-5.6-terra-2026-07-09", "gpt-5.6-terra-2026-07-09"),
         ("gpt-5.6-luna-2026-07-09", "gpt-5.6-luna-2026-07-09"),
+        ("gpt-5.5-2026-04-24", "gpt-5.5-2026-04-24"),
         ("gpt-5.4-mini-2026-03-17", "gpt-5.4-mini-2026-03-17"),
         ("gpt-5.4-nano-2026-03-17", "gpt-5.4-nano-2026-03-17"),
         ("gpt-5.2-2025-12-11", "gpt-5.2-2025-12-11"),
@@ -2827,10 +2940,11 @@ mod routing_tests {
         );
     }
 
-    /// The onboarding card upserts `VERSA_AZURE_DEPLOYMENT_NAME` with the
-    /// shipped default on every connect, and until 2026-09-03 the setup form
-    /// wrote the legacy key with the default of its day. Neither was a choice,
-    /// so neither may pin the chat to one model.
+    /// From 2026-09-03 to 2026-09-11 the onboarding card upserted
+    /// `VERSA_AZURE_DEPLOYMENT_NAME` with gpt-5.5-2026-04-24, the shipped
+    /// default then, on every connect (it writes no deployment now), and until
+    /// 2026-09-03 the setup form wrote the legacy key with the default of its
+    /// day. Neither was a choice, so neither may pin the chat to one model.
     #[tokio::test]
     async fn a_persisted_default_deployment_does_not_pin_the_model() {
         let server = gateway().await;
@@ -3026,8 +3140,12 @@ mod routing_tests {
             advertised, measured,
             "the advertised catalog changed; re-probe the gateway and update MEASURED"
         );
-        assert_eq!(metadata.default_model, "gpt-5.5-2026-04-24");
-        assert!(measured.contains(&metadata.default_model.as_str()));
+        assert_eq!(metadata.default_model, "gpt-5.6-sol-2026-07-09");
+        assert_eq!(
+            measured.first(),
+            Some(&metadata.default_model.as_str()),
+            "the default must be the first model offered"
+        );
         assert!(
             !metadata.allows_unlisted_models,
             "\"Enter a model not listed...\" would offer a model that can only be refused"
@@ -3044,12 +3162,15 @@ mod routing_tests {
     }
 
     /// T3-SH-3. A stand-in gateway answering the credential probe the way the
-    /// UCSF one was measured to (2026-09-28), and what it received.
+    /// UCSF one was measured to (2026-09-28), and what it received, for an
+    /// instance bound to a Chat Completions model
+    /// ([`super::tests::CHAT_COMPLETIONS_MODEL`], the model those measurements
+    /// were taken on). The default model's probe has its own tests below.
     async fn probed(
         status: u16,
         body: serde_json::Value,
     ) -> (Result<(), ProviderError>, Vec<Request>) {
-        probed_as(VERSA_AZURE_DEFAULT_MODEL, status, body).await
+        probed_as(super::tests::CHAT_COMPLETIONS_MODEL, status, body).await
     }
 
     /// [`probed`], for an instance bound to `model`.
@@ -3104,6 +3225,41 @@ mod routing_tests {
         assert!(outcome.is_ok(), "{outcome:?}");
     }
 
+    /// The probe a new Versa configuration sends, and the fallback for an
+    /// instance whose own model has no deployment: the DEFAULT model's
+    /// deployment, on its Chat Completions path, whatever route the default's
+    /// turns take. Follows the constant, so it holds for whichever model is
+    /// the default; the measurement behind it for gpt-5.6-sol is on
+    /// `a_gpt_5_6_instance_probes_its_key_on_the_chat_completions_path`.
+    #[tokio::test]
+    async fn the_default_and_an_unmapped_model_probe_the_defaults_chat_completions_path() {
+        let refused = || serde_json::json!({"error": "Invalid client id or secret"});
+        for model in [VERSA_AZURE_DEFAULT_MODEL, UNMAPPED] {
+            let (outcome, requests) = probed_as(model, 401, refused()).await;
+            assert!(
+                matches!(outcome, Err(ProviderError::Authentication(_))),
+                "{model}: {outcome:?}"
+            );
+            assert_eq!(requests.len(), 1, "{model}");
+            assert_eq!(
+                requests[0].url.path(),
+                path_of(deployment_for_model(VERSA_AZURE_DEFAULT_MODEL).unwrap()),
+                "{model}"
+            );
+            assert_ne!(requests[0].url.path(), RESPONSES_PATH, "{model}");
+            assert_eq!(
+                requests[0]
+                    .url
+                    .query_pairs()
+                    .find(|(name, _)| name == "api-version")
+                    .map(|(_, version)| version.into_owned())
+                    .as_deref(),
+                Some(VERSA_AZURE_API_VERSION),
+                "{model}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_key_the_gateway_does_not_know_is_refused_in_its_words() {
         let (outcome, requests) = probed(
@@ -3120,7 +3276,10 @@ mod routing_tests {
         // One request, to the model's own deployment, asking for nothing to be
         // generated: an empty message list, which Azure rejects unrun.
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].url.path(), path_of(VERSA_AZURE_DEFAULT_MODEL));
+        assert_eq!(
+            requests[0].url.path(),
+            path_of(super::tests::CHAT_COMPLETIONS_MODEL)
+        );
         let sent: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
         assert_eq!(sent, serde_json::json!({"messages": []}));
     }
