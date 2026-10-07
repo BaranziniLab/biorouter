@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Docs · Biorouter</title>
-<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.92.0.">
+<meta name="description" content="Biorouter documentation: install, models, private and public chats, extensions, skills, workflows, knowledge bases, built apps, Crew and the command line. Documents biorouter v1.92.1.">
 <meta name="theme-color" content="#ffffff">
 <link rel="icon" href="icon-transparent.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -73,7 +73,7 @@
   <main class="docs-main" id="docs-main">
 <div class="doc-page" id="doc-getstarted">
 <h1>Getting started</h1>
-<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.92.0</code> on Windows, macOS and Linux.</p>
+<p class="doc-lede">Install the app, connect a model and start a chat. These docs describe <code style="white-space: nowrap">biorouter v1.92.1</code> on Windows, macOS and Linux.</p>
 
 <h2 id="getstarted-install">Install</h2>
 <p>Download the file for your computer from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/biorouter/releases">GitHub Releases</a>.</p>
@@ -647,7 +647,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 </table></div>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
 <p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
-<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter v1.92.0 picks when you configure a provider without naming a model. An existing setup keeps its saved main model.</p></div>
+<div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter v1.92.1 picks when you configure a provider without naming a model. An existing setup keeps its saved main model.</p></div>
 
 <h2 id="providers-local">Local</h2>
 <p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once; after that, nothing leaves your computer.</p>
@@ -1009,7 +1009,7 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <p>Before it starts an extension through <code>npx</code> or <code>uvx</code>, Biorouter looks the package up in the OSV database of known malicious packages and refuses to start one that is listed.</p>
 
 <h2 id="extensions-built-in">Built-in extensions</h2>
-<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.92.0. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
+<p>These ship with Biorouter, so there is nothing to install. Defaults are those of biorouter v1.92.1. <a href="#extensions-switches">Turn extensions on and off</a> says where each one is switched.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Extension</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
