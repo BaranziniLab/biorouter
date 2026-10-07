@@ -63,11 +63,11 @@ html:not(.js) .docs-search, html:not(.js) .docs-toc { display: none; }
 .js .doc-page.active { display: block; }
 .doc-page + .doc-page { margin-top: 96px; }
 .js .doc-page + .doc-page { margin-top: 0; }
-.doc-page h1 { font-size: clamp(32px, 4vw, 44px); font-weight: 400; letter-spacing: -0.045em; line-height: 1.1; margin: 0 0 18px; }
+.doc-page h1 { font-size: clamp(32px, 4vw, 44px); font-weight: 400; letter-spacing: var(--tracking); line-height: 1.1; margin: 0 0 18px; }
 .doc-lede { font-size: 18px; line-height: 1.65; color: var(--muted); margin: 0 0 44px; }
-.doc-page h2 { position: relative; font-size: 23px; font-weight: 400; letter-spacing: -0.025em; line-height: 1.25; margin: 60px 0 16px; padding-top: 28px; border-top: 1px solid var(--line); }
+.doc-page h2 { position: relative; font-size: 23px; font-weight: 400; letter-spacing: var(--tracking); line-height: 1.25; margin: 60px 0 16px; padding-top: 28px; border-top: 1px solid var(--line); }
 .doc-page h2::before { content: ''; position: absolute; left: 0; top: -1px; width: 32px; height: 2px; background: var(--coral-bar); }
-.doc-page h3 { font-size: 17px; font-weight: 400; letter-spacing: -0.01em; margin: 34px 0 10px; color: var(--ink); }
+.doc-page h3 { font-size: 17px; font-weight: 400; letter-spacing: var(--tracking); margin: 34px 0 10px; color: var(--ink); }
 .doc-page h4 { font-size: 15px; font-weight: 700; margin: 26px 0 8px; }
 .doc-page p, .doc-page li { font-size: 16px; line-height: 1.75; color: var(--ink-2); }
 .doc-page p { margin: 0 0 16px; }

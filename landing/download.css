@@ -132,7 +132,7 @@
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 48px;
 }
 .dl-steps .n { font-size: 13px; color: var(--coral); margin: 0 0 16px; font-variant-numeric: tabular-nums; }
-.dl-steps h3 { font-size: 21px; letter-spacing: -0.03em; line-height: 1.25; margin: 0 0 10px; }
+.dl-steps h3 { font-size: 21px; letter-spacing: var(--tracking); line-height: 1.25; margin: 0 0 10px; }
 .dl-steps p:not(.n) { color: var(--muted); font-size: 15px; line-height: 1.65; margin: 0; max-width: 360px; }
 .dl-steps .text-link { margin-top: 22px; font-size: 14px; }
 @media (max-width: 860px) {
@@ -184,7 +184,7 @@
 
 /* ── Requirements ───────────────────────────────────────── */
 .dl-req { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px 48px; }
-.dl-req h3 { font-size: 16px; letter-spacing: -0.01em; margin: 0 0 8px; }
+.dl-req h3 { font-size: 16px; letter-spacing: var(--tracking); margin: 0 0 8px; }
 .dl-req p { color: var(--muted); font-size: 14.5px; line-height: 1.65; margin: 0; max-width: 340px; }
 @media (max-width: 760px) { .dl-req { grid-template-columns: 1fr; gap: 26px; } }
 
