@@ -1,7 +1,7 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
+> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then **Configure providers**.
@@ -78,18 +78,20 @@ To use: install [Ollama](https://ollama.com), pull a model (`ollama pull qwen3`)
 
 Provider id `versa_azure`. The UCSF ChatGPT models, served from UCSF's Azure tenant. Only the API key is asked for; the endpoint and the deployment for each model are preconfigured.
 
-Default model: `gpt-5.5-2026-04-24`
+Default model: `gpt-5.6-sol-2026-07-09`
 
-Available models:
+Available models, in the order the model picker lists them:
 
-- `gpt-5.5-2026-04-24`
 - GPT-5.6: `gpt-5.6-sol-2026-07-09`, `gpt-5.6-terra-2026-07-09`, `gpt-5.6-luna-2026-07-09`
+- `gpt-5.5-2026-04-24`
 - `gpt-5.4-mini-2026-03-17`, `gpt-5.4-nano-2026-03-17`
 - `gpt-5.2-2025-12-11`
 - `gpt-5-2025-08-07`, `gpt-5-mini-2025-08-07`, `gpt-5-nano-2025-08-07`
 - `gpt-4o-2024-11-20`
 
 Each model maps to a UCSF deployment, so this provider does not accept a model outside the list. The three GPT-5.6 models became available at UCSF on 2026-10-01, with a 1,050,000-token context window. Biorouter sends them to the Responses API, because on Chat Completions they cannot use tools and reasoning in the same request. The other models stay on Chat Completions. UCSF has not deployed GPT-6 (checked 2026-10-05).
+
+`gpt-5.6-sol-2026-07-09` is the default after Biorouter 1.92.1. Up to 1.92.1 the default was `gpt-5.5-2026-04-24`, which is still offered. An existing configuration keeps the model it names, and a chat keeps the model it is bound to. The default is what a new setup of this provider starts on, and what the model picker selects when you switch to this provider.
 
 A chat already bound to `o4-mini-2025-04-16`, `gpt-4.1-2025-04-14` or `gpt-4.1-mini-2025-04-14` keeps working until Azure retires the model (2026-11-19 for `o4-mini`, 2027-04-14 for the two GPT-4.1 models), but those models are no longer offered. UCSF names `gpt-5.6-terra-2026-07-09` as the replacement for `o4-mini`.
 
