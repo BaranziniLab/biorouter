@@ -46,10 +46,13 @@
   --danger: #b3261e;
 
   /* Type. The app's interface stack is Arial first. Inter is the brand face,
-     used only for the wordmark and the BR mark. */
+     used only for the wordmark and the BR mark, as in the app (brandFont.ts).
+     Headings take the app's display/title tracking, never tighter: Arial
+     squeezed past -0.01em stops reading as the app's face. */
   --font: Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --brand-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Helvetica Neue', Arial, sans-serif;
   --mono: ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --tracking: -0.01em;
 
   /* Geometry */
   --measure: 1160px;
@@ -113,7 +116,7 @@ code, kbd, pre, samp { font-family: var(--mono); }
 .brand { display: inline-flex; align-items: center; gap: 9px; color: var(--ink); }
 .brand:hover { text-decoration: none; }
 .brand img { width: 30px; height: 30px; }
-.brand .word { font-family: var(--brand-font); font-weight: 600; font-size: 17px; letter-spacing: -0.01em; }
+.brand .word { font-family: var(--brand-font); font-weight: 600; font-size: 17px; letter-spacing: 0; }
 .brand .word b { font-weight: 600; color: var(--navy); }
 .brand .word i { font-style: normal; color: var(--coral); }
 .nav { display: flex; align-items: center; gap: clamp(14px, 1.9vw, 28px); margin-left: auto; font-size: 14px; white-space: nowrap; }
@@ -170,13 +173,13 @@ code, kbd, pre, samp { font-family: var(--mono); }
 /* ── Type ───────────────────────────────────────────────── */
 .eyebrow { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 24px; }
 .display {
-  font-size: clamp(42px, 6.6vw, 84px);
-  font-weight: 400; letter-spacing: -0.06em; line-height: 1.06;
+  font-size: clamp(36px, 6.6vw, 80px);
+  font-weight: 400; letter-spacing: var(--tracking); line-height: 1.06;
   margin: 0;
 }
 .display .soft, .title .soft { color: var(--faint); }
-.title { font-size: clamp(32px, 4.4vw, 54px); font-weight: 400; letter-spacing: -0.05em; line-height: 1.12; margin: 0 0 22px; }
-.subtitle { font-size: clamp(22px, 2.3vw, 27px); font-weight: 400; letter-spacing: -0.035em; line-height: 1.25; margin: 0 0 12px; }
+.title { font-size: clamp(32px, 3.8vw, 43px); font-weight: 400; letter-spacing: var(--tracking); line-height: 1.12; margin: 0 0 22px; }
+.subtitle { font-size: clamp(22px, 2.3vw, 27px); font-weight: 400; letter-spacing: var(--tracking); line-height: 1.25; margin: 0 0 12px; }
 .lede { font-size: clamp(17px, 1.5vw, 19px); color: var(--ink); line-height: 1.6; max-width: 600px; margin: 28px 0 0; }
 .body-muted { color: var(--muted); font-size: 16px; line-height: 1.75; max-width: 560px; }
 .muted { color: var(--muted); }
@@ -306,7 +309,7 @@ table.plain code { font-size: 12.5px; background: var(--wash); padding: 2px 5px;
 }
 .community::before { content: ''; position: absolute; left: 0; top: -1px; width: 40px; height: 2px; background: var(--coral-bar); }
 .community .label { font-size: 13px; color: var(--coral); margin: 0 0 8px; }
-.community h2 { font-size: clamp(22px, 2.4vw, 28px); letter-spacing: -0.035em; line-height: 1.2; margin: 0; }
+.community h2 { font-size: clamp(22px, 2.4vw, 28px); letter-spacing: var(--tracking); line-height: 1.2; margin: 0; }
 .community p.sub { color: var(--muted); font-size: 15px; margin: 8px 0 0; max-width: 560px; }
 .community .btn { height: 44px; padding: 0 20px; }
 @media (max-width: 640px) { .community { grid-template-columns: 1fr; } .community .btn { justify-self: start; } }

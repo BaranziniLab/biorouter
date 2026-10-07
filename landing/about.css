@@ -59,7 +59,7 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
 .avatar.hue-4 { background: var(--av-4-bg); color: var(--av-4-fg); }
 .avatar.hue-6 { background: var(--av-6-bg); color: var(--av-6-fg); }
 .person-text { padding-top: 20px; min-width: 0; }
-.person h3 { font-size: 19px; letter-spacing: -0.02em; line-height: 1.3; margin: 0; }
+.person h3 { font-size: 19px; letter-spacing: var(--tracking); line-height: 1.3; margin: 0; }
 .person p { color: var(--muted); font-size: 14.5px; line-height: 1.55; margin: 6px 0 0; text-wrap: pretty; }
 .person .person-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 14px; }
 @media (max-width: 640px) {
@@ -72,7 +72,7 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
 /* ── Collaborators ─────────────────────────────────────── */
 .collab { row-gap: 40px; }
 .group { display: grid; grid-template-rows: subgrid; grid-row: span 2; row-gap: 0; min-width: 0; }
-.group h3 { font-size: 17px; letter-spacing: -0.015em; line-height: 1.4; margin: 0; max-width: 320px; text-wrap: pretty; }
+.group h3 { font-size: 17px; letter-spacing: var(--tracking); line-height: 1.4; margin: 0; max-width: 320px; text-wrap: pretty; }
 .group h3 a { color: var(--ink); }
 .group h3 a span { color: var(--faint); transition: color var(--dur-fast) ease; }
 .group h3 a:hover span, .group h3 a:focus-visible span { color: var(--coral); }
@@ -120,7 +120,7 @@ a.inline:hover { color: var(--coral); text-decoration-color: var(--coral); }
 }
 .news-body h3 {
   grid-column: 2 / 4; grid-row: 1;
-  font-size: 16px; letter-spacing: -0.01em; line-height: 1.45; margin: 0; text-wrap: pretty;
+  font-size: 16px; letter-spacing: var(--tracking); line-height: 1.45; margin: 0; text-wrap: pretty;
   text-decoration: underline; text-decoration-color: transparent; text-decoration-thickness: 1px; text-underline-offset: 4px;
   transition: text-decoration-color var(--dur-fast) ease;
 }
