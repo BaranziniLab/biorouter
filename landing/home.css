@@ -24,7 +24,7 @@
 .pillar:last-child { padding-bottom: 0; }
 .pillar-n { font-size: 13px; color: var(--coral); margin: 0 0 18px; font-variant-numeric: tabular-nums; }
 .pillar-text .body-muted { margin: 0 0 30px; }
-.pillar-hint { font-size: 13px; color: var(--faint); margin: 0; }
+.pillar-text .body-muted:last-child { margin-bottom: 0; }
 .pillar-art .art { aspect-ratio: 7 / 5; }
 @media (max-width: 900px) {
   .pillar { grid-template-columns: 1fr; gap: 36px; padding-bottom: 88px; }
