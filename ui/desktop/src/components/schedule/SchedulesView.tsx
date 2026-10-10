@@ -56,16 +56,16 @@ const errorText = (error: unknown, fallback: string) =>
   error instanceof Error && error.message ? error.message : fallback;
 
 /**
- * The cron as words, with the expression itself one hover away (spec 3.10: "the full cron goes
- * in the tooltip of the cron phrase").
- */
-/**
  * What a row click must ignore: a click on one of the row's own controls (the name's button,
  * Built-in's help, Pause, `⋯`) is that control's.
  */
 const ROW_CONTROL_SELECTOR =
   'button, a[href], input, [role="menuitem"], [tabindex]:not([tabindex="-1"])';
 
+/**
+ * The cron as words, with the expression itself one hover away (spec 3.10: "the full cron goes
+ * in the tooltip of the cron phrase").
+ */
 function CronPhrase({ cron }: { cron: string }) {
   return (
     <Tooltip>

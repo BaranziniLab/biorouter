@@ -43,7 +43,6 @@ export const scheduleCopy = {
   view: (name: string) => `View schedule ${name}`,
   pause: 'Pause',
   resume: 'Resume',
-  stop: 'Stop',
   pauseNamed: (name: string) => `Pause ${name}`,
   resumeNamed: (name: string) => `Resume ${name}`,
   stopNamed: (name: string) => `Stop ${name}`,
@@ -59,8 +58,6 @@ export const scheduleCopy = {
   cancel: 'Cancel',
 
   // Toasts: one line, sentence case, names not ids. Errors keep their reason as the message.
-  paused: (name: string) => `Paused ${name}`,
-  resumed: (name: string) => `Resumed ${name}`,
   couldNotPause: (name: string) => `Couldn’t pause ${name}`,
   couldNotResume: (name: string) => `Couldn’t resume ${name}`,
   runStarted: 'Run started',

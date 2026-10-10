@@ -5,12 +5,6 @@ import { StatusDot, type StatusDotTone } from '../ui/status-dot';
 import { scheduleCopy } from './copy';
 
 /**
- * The cron expression as a sentence, with the expression itself as the
- * fallback. One definition, because the list row and the detail header both
- * print it and a schedule that reads "At 03:00 AM" on one screen and
- * `0 0 3 * * *` on the other is two answers to one question.
- */
-/**
  * The daemon answers "run now" with this sentinel instead of a session id when the run was
  * stopped before it started. It is a wire value, not copy, so it lives here and never in a
  * toast expression (where the spelling sweep would read it as text).
@@ -21,6 +15,12 @@ const RUN_STOPPED_SENTINEL = 'CANCELLED';
 export const runStoppedWhileStarting = (sessionId: string): boolean =>
   sessionId === RUN_STOPPED_SENTINEL;
 
+/**
+ * The cron expression as a sentence, with the expression itself as the
+ * fallback. One definition, because the list row and the detail header both
+ * print it and a schedule that reads "At 03:00 AM" on one screen and
+ * `0 0 3 * * *` on the other is two answers to one question.
+ */
 export function readableCronOf(cron: string): string {
   try {
     return cronstrue.toString(cron);

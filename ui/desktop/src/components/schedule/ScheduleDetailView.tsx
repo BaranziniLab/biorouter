@@ -454,7 +454,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
   if (!scheduleId || notFound) {
     return (
       <MainPanelLayout removeTopPadding>
-        <PageHeader title={copy.notFoundTitle} onBack={onNavigateBack} backLabel={copy.back} />
+        <PageHeader title={scheduleCopy.title} onBack={onNavigateBack} backLabel={copy.back} />
         <ReadableContent size="chat" className="px-6 pt-2">
           <EmptyState
             compact

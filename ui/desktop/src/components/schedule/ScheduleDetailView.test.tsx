@@ -370,3 +370,24 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     expect(screen.queryByText(/This schedule is running/)).not.toBeInTheDocument();
   });
 });
+
+describe('a schedule that is gone', () => {
+  it('says so in an empty state, with the band naming the place and two ways back', async () => {
+    mocks.listSchedules.mockResolvedValue([]);
+    const onNavigateBack = vi.fn();
+    renderDetails(onNavigateBack);
+
+    // The empty state names the problem; the band names where the person is, so the same words
+    // are not said twice a few pixels apart.
+    expect(await screen.findByText(scheduleCopy.detail.notFoundTitle)).toBeInTheDocument();
+    expect(screen.getAllByText(scheduleCopy.detail.notFoundTitle)).toHaveLength(1);
+    expect(screen.getByRole('heading', { level: 1, name: scheduleCopy.title })).toBeInTheDocument();
+    expect(screen.getByText(scheduleCopy.detail.notFoundDescription)).toBeInTheDocument();
+
+    // Two ways back: the band's arrow, and the empty state's link.
+    const ways = screen.getAllByRole('button', { name: scheduleCopy.detail.back });
+    expect(ways).toHaveLength(2);
+    fireEvent.click(ways[1]);
+    expect(onNavigateBack).toHaveBeenCalled();
+  });
+});

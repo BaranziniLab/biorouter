@@ -373,6 +373,7 @@ export function ApplicationItem({
             <IconAction
               icon={Play}
               label={copy.launchNamed(app.title)}
+              tooltip={copy.launch}
               onSelect={onLaunch}
               disabled={isLaunching}
             />

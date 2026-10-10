@@ -57,20 +57,23 @@ export default function NotFoundView() {
 
   return (
     <MainPanelLayout removeTopPadding>
-      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* The band is fixed, like every other view's; only the body scrolls. */}
         <PageHeader title={copy.title} info={copy.info} />
-        <ReadableContent size="chat" className="px-6 pt-2 pb-6">
-          <EmptyState
-            icon={CircleHelp}
-            title={copy.emptyTitle}
-            description={copy.emptyDescription(echoPath(location.pathname))}
-            actions={
-              <Button variant="link" onClick={() => navigate('/')}>
-                {copy.goHome}
-              </Button>
-            }
-          />
-        </ReadableContent>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ReadableContent size="chat" className="px-6 pt-2 pb-6">
+            <EmptyState
+              icon={CircleHelp}
+              title={copy.emptyTitle}
+              description={copy.emptyDescription(echoPath(location.pathname))}
+              actions={
+                <Button variant="link" onClick={() => navigate('/')}>
+                  {copy.goHome}
+                </Button>
+              }
+            />
+          </ReadableContent>
+        </div>
       </div>
     </MainPanelLayout>
   );
