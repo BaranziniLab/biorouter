@@ -96,7 +96,7 @@ export default function HeadersSection({
         </h3>
         <InfoTip label={COPY.headersTitle} help={COPY.headersHelp} />
       </div>
-      <div className="br-ext-kv br-ext-kv--headers">
+      <div className="br-ext-kv">
         {/* Existing headers */}
         {headers.map((header, index) => (
           <React.Fragment key={index}>
@@ -116,6 +116,9 @@ export default function HeadersSection({
               aria-invalid={isFieldInvalid(index, 'value') || undefined}
               className={cn('w-full', isFieldInvalid(index, 'value') && bad)}
             />
+            {/* The same four columns as the environment variables, so the two groups share one
+                rhythm: a header has nothing to edit in place, so that column is empty. */}
+            <span aria-hidden="true" />
             <IconAction
               icon={X}
               label={COPY.removeEntry(header.key)}

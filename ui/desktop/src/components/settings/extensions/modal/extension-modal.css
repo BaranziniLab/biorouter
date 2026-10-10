@@ -69,7 +69,8 @@
   align-items: center;
 }
 
-/* key | value | edit | remove, with the new-entry row's Add spanning the last two. */
+/* key | value | edit | remove, with the new-entry row's Add spanning the last two. Environment
+   variables and request headers share it, so the two groups line up. */
 .br-ext-kv {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--control-md) var(--control-md);
@@ -77,16 +78,8 @@
   gap: 8px;
 }
 
-.br-ext-kv--headers {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) var(--control-md);
-}
-
 .br-ext-kv-add {
   grid-column: span 2;
-}
-
-.br-ext-kv--headers .br-ext-kv-add {
-  grid-column: span 1;
 }
 
 /* The saved-credentials list inside its dialog. */
