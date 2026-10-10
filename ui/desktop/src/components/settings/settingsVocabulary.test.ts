@@ -309,4 +309,37 @@ describe('the settings vocabulary', () => {
   it('draws no native radio', () => {
     expect(offenders(/type=["']radio["']/)).toEqual([]);
   });
+
+  /**
+   * V9. A row carries no description paragraph (rule 12, owner message 5: hover-and-show help
+   * instead of text up front). The explanation is `SettingRow`'s `help`, an InfoTip the control
+   * hears through `aria-describedby`; a visible line under a label is only a transient `status`.
+   * The fingerprint is the old row recipe's `<p className="mt-0.5 max-w-md text-supporting …">`.
+   *
+   * ⚠ The allow-list is a list of files still to convert, not an amnesty: each owner deletes its
+   * line in the commit that moves its rows onto `SettingRow`. The PrivacyPanel's locked blocks
+   * (rule 9) are not on it because none of them is a row description.
+   */
+  it('puts no description paragraph in a row', () => {
+    const NOT_YET_CONVERTED = new Set([
+      // Unmounted (spec §3.13 leaves it); it renders for nobody.
+      'settings/app/ExternalBackendSection.tsx',
+      // WS-SETTINGS-B: rows move onto SettingRow (spec §3.14).
+      'settings/capabilities/CapabilitiesSection.tsx',
+      'settings/contexts/ContextsSection.tsx',
+      'settings/brsdk/BrsdkSection.tsx',
+      // WS-SETTINGS-M: the Danger zone row (spec §3.13, Models tab).
+      'settings/reset_provider/ResetProviderSection.tsx',
+    ]);
+    const paragraphs: string[] = [];
+    for (const { rel, text } of FILES) {
+      if (NOT_YET_CONVERTED.has(rel)) continue;
+      for (const tag of openingTags(text, 'p')) {
+        if (/\bmax-w-md\b/.test(tag) && /\btext-supporting\b/.test(tag)) {
+          paragraphs.push(`${rel}: ${tag.replace(/\s+/g, ' ').trim()}`);
+        }
+      }
+    }
+    expect(paragraphs).toEqual([]);
+  });
 });
