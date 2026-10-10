@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSummary } from '../../api';
 import useSidebarSessions, {
   appendSessionPage,
+  SIDEBAR_SESSION_LOAD_ALL_CAP,
   SIDEBAR_SESSION_PAGE_SIZE,
 } from './useSidebarSessions';
 import { notifySessionListChanged } from '../../utils/sessionListCache';
+import { announceSessionName } from '../../utils/sessionNameSync';
 
 const mocks = vi.hoisted(() => ({
   listSidebarSessions: vi.fn(),
@@ -401,5 +403,146 @@ describe('loadAll pages through every chat', () => {
       headers: { 'X-User-Action': 'test-proof' },
       throwOnError: true,
     });
+  });
+});
+
+/**
+ * Vision V1-H2. Published page by page, a name-sorted view reshuffled its top
+ * rows with every arrival, under the pointer, for the minute and a half 2,000
+ * chats took. The pages are read into a buffer now and the list changes once,
+ * when the last one lands, carrying whatever happened to those rows meanwhile.
+ */
+describe('loadAll shows the whole list at once', () => {
+  const page = (from: number, count: number) =>
+    Array.from({ length: count }, (_, index) => makeSummary(from + index));
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+      resolve = done;
+    });
+    return { promise, resolve };
+  }
+
+  it('keeps the first page on screen until the last page has landed', async () => {
+    const second = deferred<unknown>();
+    const third = deferred<unknown>();
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({ data: { sessions: page(0, 50), has_more: true, next_cursor: 'c2' } })
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2));
+    expect(result.current.sessions).toHaveLength(50);
+    expect(result.current.isLoadingAll).toBe(true);
+
+    await act(async () => {
+      second.resolve({ data: { sessions: page(50, 50), has_more: true, next_cursor: 'c3' } });
+    });
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3));
+    // The second page is read, not shown: the rows on screen have not moved.
+    expect(result.current.sessions).toHaveLength(50);
+    expect(result.current.isLoadingAll).toBe(true);
+
+    await act(async () => {
+      third.resolve({ data: { sessions: page(100, 7), has_more: false, next_cursor: null } });
+    });
+    await waitFor(() => expect(result.current.sessions).toHaveLength(107));
+    expect(result.current.isLoadingAll).toBe(false);
+    expect(result.current.sessions.map((session) => session.id)).toEqual(
+      page(0, 107).map((session) => session.id)
+    );
+  });
+
+  it('carries a rename and a removal that land while the pages are being read', async () => {
+    const second = deferred<unknown>();
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({ data: { sessions: page(0, 2), has_more: true, next_cursor: 'c2' } })
+      .mockReturnValueOnce(second.promise)
+      .mockResolvedValueOnce({
+        data: { sessions: page(4, 2), has_more: false, next_cursor: null },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      second.resolve({ data: { sessions: page(2, 2), has_more: true, next_cursor: 'c3' } });
+    });
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3));
+
+    // Both rows of the second page are read and not yet shown when these land.
+    act(() => {
+      announceSessionName({
+        sessionId: 'session-2',
+        name: 'Renamed mid-read',
+        userSetName: true,
+        origin: 'user',
+      });
+      notifySessionListChanged({ removed: 'session-3' });
+    });
+
+    await waitFor(() => expect(result.current.isLoadingAll).toBe(false));
+    expect(result.current.sessions.map((session) => session.id)).toEqual([
+      'session-0',
+      'session-1',
+      'session-2',
+      'session-4',
+      'session-5',
+    ]);
+    expect(result.current.sessions[2].name).toBe('Renamed mid-read');
+  });
+
+  it('runs a head refresh asked for mid-read once the read is done', async () => {
+    const second = deferred<unknown>();
+    mocks.listSidebarSessions
+      .mockResolvedValueOnce({ data: { sessions: page(0, 2), has_more: true, next_cursor: 'c2' } })
+      .mockReturnValueOnce(second.promise)
+      .mockResolvedValueOnce({
+        data: { sessions: [makeSummary(99), ...page(0, 2)], has_more: false, next_cursor: null },
+      });
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2));
+
+    // A new chat elsewhere: the refresh is debounced 250ms and finds the read running.
+    act(() => notifySessionListChanged());
+    await act(() => new Promise((resolve) => setTimeout(resolve, 300)));
+    expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      second.resolve({ data: { sessions: page(2, 2), has_more: false, next_cursor: null } });
+    });
+    await waitFor(() => expect(mocks.listSidebarSessions).toHaveBeenCalledTimes(3));
+    expect(mocks.listSidebarSessions).toHaveBeenLastCalledWith({
+      query: { limit: 50 },
+      headers: { 'X-User-Action': 'test-proof' },
+      throwOnError: true,
+    });
+    await waitFor(() =>
+      expect(result.current.sessions.map((session) => session.id)).toContain('session-99')
+    );
+  });
+
+  it('stops at the cap exactly, asking the last page for only the rows left (V1-L9)', async () => {
+    let served = 0;
+    mocks.listSidebarSessions.mockImplementation(
+      async ({ query }: { query: { limit: number; cursor?: string } }) => {
+        // The head is a short page, so pages of 50 would land 20 rows past the cap.
+        const count = query.cursor ? query.limit : 30;
+        const sessions = page(served, count);
+        served += count;
+        return { data: { sessions, has_more: true, next_cursor: `c${served}` } };
+      }
+    );
+
+    const { result } = renderHook(() => useSidebarSessions({ loadAll: true }));
+    await waitFor(() => expect(result.current.isLoadingAll).toBe(false), { timeout: 5_000 });
+    expect(result.current.sessions).toHaveLength(SIDEBAR_SESSION_LOAD_ALL_CAP);
+    const limits = mocks.listSidebarSessions.mock.calls.map(
+      ([request]) => (request as { query: { limit: number } }).query.limit
+    );
+    expect(limits[limits.length - 1]).toBe(20);
+    expect(limits.slice(1, -1).every((limit) => limit === 50)).toBe(true);
   });
 });

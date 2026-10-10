@@ -376,3 +376,73 @@ describe('chatHoverDetail', () => {
     expect(chatHoverDetail(session, '/Users/me', now)).toBe('~/lab/cohort · 3m ago · 3 messages');
   });
 });
+
+/**
+ * Vision V1-H2, the list's half. A non-default view's full read lands all at once, and it can
+ * land while the pointer is over the list: the hold covers it as it covers a live re-sort, so
+ * rows that sort above the ones under the pointer wait until it leaves.
+ */
+describe('a full read that lands under the pointer', () => {
+  const named = (index: number, name: string) => ({ ...makeSession(index), name });
+  const order = () =>
+    Array.from(document.querySelectorAll('[data-row^="chat:"]')).map((row) =>
+      row.getAttribute('data-row')
+    );
+
+  it('waits for the pointer to leave before the rows above it arrive', () => {
+    const byName = { groupBy: 'none', sortBy: 'name' } as const;
+    const firstPage = [named(0, 'Cohort'), named(1, 'Dose')];
+    const props = {
+      runningSessionIds: new Set<string>(),
+      hasMore: true,
+      isLoadingMore: true,
+      onLoadMore: vi.fn(),
+      onOpen: vi.fn(),
+      onViewAll: vi.fn(),
+      view: byName,
+      onViewChange: vi.fn(),
+    };
+    const { rerender } = render(
+      <SidebarProvider>
+        <RecentChats {...props} sessions={firstPage} isLoadingAll />
+      </SidebarProvider>
+    );
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
+
+    const list = screen.getByTestId('recent-chat-scroll');
+    fireEvent.pointerEnter(list);
+    // Still reading: a rename that would sort Dose above Cohort waits too. The hold used to
+    // stand down for the whole read, which is when the rows moved most.
+    const renamed = [firstPage[0], named(1, 'Aardvark')];
+    rerender(
+      <SidebarProvider>
+        <RecentChats {...props} sessions={renamed} isLoadingAll />
+      </SidebarProvider>
+    );
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1']);
+
+    rerender(
+      <SidebarProvider>
+        <RecentChats
+          {...props}
+          hasMore={false}
+          isLoadingMore={false}
+          isLoadingAll={false}
+          sessions={[...renamed, named(2, 'Atlas'), named(3, 'Biopsy'), named(4, 'Survey')]}
+        />
+      </SidebarProvider>
+    );
+    // Atlas and Biopsy sort above the rows under the pointer, so they wait; Survey sorts
+    // below every held row and shifts nothing, so it may join.
+    expect(order()).toEqual(['chat:session-0', 'chat:session-1', 'chat:session-4']);
+
+    fireEvent.pointerLeave(list);
+    expect(order()).toEqual([
+      'chat:session-1',
+      'chat:session-2',
+      'chat:session-3',
+      'chat:session-0',
+      'chat:session-4',
+    ]);
+  });
+});

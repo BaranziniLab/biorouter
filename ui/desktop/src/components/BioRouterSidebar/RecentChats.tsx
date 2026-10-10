@@ -532,10 +532,12 @@ export default function RecentChats({
   const focusAfterEdit = useRef<string | null>(null);
 
   // Principle 9: while the pointer is over the list (or a row is being renamed)
-  // the rows hold still; the live order applies when it leaves.
+  // the rows hold still; the live order applies when it leaves. That includes
+  // the moment a non-default view's full read lands (vision V1-H2): the list it
+  // replaces is the one under the pointer.
   const [pointerInside, setPointerInside] = useState(false);
   const [held, setHeld] = useState<HeldArrangement | null>(null);
-  const holding = (pointerInside || editing !== null) && !isLoadingAll;
+  const holding = pointerInside || editing !== null;
   useEffect(() => {
     if (!holding) setHeld(null);
   }, [holding]);

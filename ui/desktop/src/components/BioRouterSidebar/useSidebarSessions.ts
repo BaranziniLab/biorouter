@@ -22,6 +22,12 @@ export interface SidebarSessionsOptions {
    * groups by folder, must hold the whole list before it arranges it: over the
    * first 10 rows it would be wrong in a way nobody could see. Pages are read one
    * after another at the server's maximum, up to {@link SIDEBAR_SESSION_LOAD_ALL_CAP}.
+   *
+   * ⚠ The pages are read into a buffer and shown ONCE, when the last has landed
+   * (vision V1-H2). Published page by page, a name-sorted list reshuffled its top
+   * rows with every arrival, under the pointer, for as long as the read took, and
+   * each arrival re-rendered every row already held, which is most of why it took
+   * a minute and a half for 2,000 chats.
    */
   loadAll?: boolean;
 }
@@ -67,6 +73,18 @@ export default function useSidebarSessions(
   const hasMoreRef = useRef(true);
   const hasLoadedRef = useRef(false);
   const loadingRef = useRef(false);
+  const mountedRef = useRef(true);
+  // `loadAll`'s reader. `pendingAllRef` holds the rows it has read and not yet
+  // shown (null when no read is running), and the subscriptions below patch it
+  // exactly as they patch the shown list, so a rename, a removal or a privacy
+  // change that lands mid-read is not undone when the buffer is shown. A head
+  // refresh asked for mid-read cannot run beside it (one request at a time) and
+  // must not be lost, so it waits in `refreshQueuedRef` and runs after.
+  const loadAllRef = useRef(loadAll);
+  loadAllRef.current = loadAll;
+  const drainingRef = useRef(false);
+  const pendingAllRef = useRef<SessionSummary[] | null>(null);
+  const refreshQueuedRef = useRef(false);
   // Row reads delivered while a page request was in flight, settled against
   // that page's answer. See `settleRowsReadDuringFetch`: without it, a head
   // refresh issued before a turn raised a chat and answered after the raise was
@@ -77,8 +95,19 @@ export default function useSidebarSessions(
   const pageSizeRef = useRef(loadAll ? SIDEBAR_SESSION_FULL_PAGE_SIZE : SIDEBAR_SESSION_PAGE_SIZE);
   pageSizeRef.current = loadAll ? SIDEBAR_SESSION_FULL_PAGE_SIZE : SIDEBAR_SESSION_PAGE_SIZE;
 
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const loadPage = useCallback(async (reset: boolean) => {
-    if (loadingRef.current || (!reset && !hasMoreRef.current)) return;
+    if (loadingRef.current) {
+      if (reset && drainingRef.current) refreshQueuedRef.current = true;
+      return;
+    }
+    if (!reset && !hasMoreRef.current) return;
 
     const cursor = reset ? null : nextCursorRef.current;
     loadingRef.current = true;
@@ -140,9 +169,12 @@ export default function useSidebarSessions(
     };
 
     const unsubscribeNames = subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
-      const renamedSessions = sessionsRef.current.map((session) =>
-        session.id === sessionId ? { ...session, name, user_set_name: userSetName } : session
-      );
+      const rename = (rows: SessionSummary[]) =>
+        rows.map((session) =>
+          session.id === sessionId ? { ...session, name, user_set_name: userSetName } : session
+        );
+      if (pendingAllRef.current) pendingAllRef.current = rename(pendingAllRef.current);
+      const renamedSessions = rename(sessionsRef.current);
       sessionsRef.current = renamedSessions;
       setSessions(renamedSessions);
     });
@@ -169,6 +201,9 @@ export default function useSidebarSessions(
     // does not have to exist for the comparison to put the next page in the
     // right place, including when the deleted row is that very one.
     const unsubscribeRemoved = subscribeSessionRemoved((sessionId) => {
+      if (pendingAllRef.current) {
+        pendingAllRef.current = pendingAllRef.current.filter((session) => session.id !== sessionId);
+      }
       const remaining = sessionsRef.current.filter((session) => session.id !== sessionId);
       if (remaining.length === sessionsRef.current.length) return;
       sessionsRef.current = remaining;
@@ -186,6 +221,13 @@ export default function useSidebarSessions(
     const unsubscribeRows = subscribeSessionRowChanges((facts) => {
       const { sessionId, privacy_tier } = facts;
       if (loadingRef.current) rowsReadDuringLoadRef.current.set(sessionId, facts);
+      if (pendingAllRef.current) {
+        pendingAllRef.current = pendingAllRef.current.map((session) =>
+          session.id === sessionId && session.privacy_tier !== privacy_tier
+            ? { ...session, privacy_tier }
+            : session
+        );
+      }
       let changed = false;
       const next = sessionsRef.current.map((session) => {
         if (session.id !== sessionId || session.privacy_tier === privacy_tier) return session;
@@ -216,13 +258,71 @@ export default function useSidebarSessions(
   }, [loadPage]);
 
   // `loadAll`: one page after another until the server has no more or the cap
-  // is reached. Sequential by construction: the next page is asked for only
-  // once the previous one has landed and `isLoading` has dropped.
+  // is reached, read into a buffer and shown once (see `loadAll`). Sequential by
+  // construction: a page's cursor names the last row of the page before it. A
+  // page never asks for more rows than the cap leaves room for, so the read
+  // stops at the cap rather than a page past it (V1-L9).
+  const drainAllPages = useCallback(async () => {
+    if (loadingRef.current || !hasMoreRef.current) return;
+    loadingRef.current = true;
+    drainingRef.current = true;
+    rowsReadDuringLoadRef.current.clear();
+    pendingAllRef.current = [];
+    setIsLoading(true);
+
+    let cursor = nextCursorRef.current;
+    let more: boolean = hasMoreRef.current;
+    try {
+      while (more && loadAllRef.current && mountedRef.current) {
+        const read = sessionsRef.current.length + (pendingAllRef.current?.length ?? 0);
+        const room = SIDEBAR_SESSION_LOAD_ALL_CAP - read;
+        if (room <= 0) break;
+        // With the user's proof on every page, as `loadPage` sends it.
+        const response = await listSidebarSessions<true>({
+          query: {
+            limit: Math.min(SIDEBAR_SESSION_FULL_PAGE_SIZE, room),
+            ...(cursor ? { cursor } : {}),
+          },
+          headers: await userActionHeaders(),
+          throwOnError: true,
+        });
+        const page = response.data;
+        pendingAllRef.current = appendSessionPage(
+          pendingAllRef.current ?? [],
+          settleRowsReadDuringFetch(page.sessions, rowsReadDuringLoadRef.current, false)
+        );
+        cursor = page.next_cursor ?? null;
+        more = page.has_more;
+      }
+    } catch {
+      // As `loadPage` does: a failed page ends the list where it is.
+      more = false;
+    } finally {
+      const fetched = pendingAllRef.current ?? [];
+      pendingAllRef.current = null;
+      loadingRef.current = false;
+      drainingRef.current = false;
+      if (mountedRef.current) {
+        const merged = appendSessionPage(sessionsRef.current, fetched);
+        sessionsRef.current = merged;
+        nextCursorRef.current = cursor;
+        hasMoreRef.current = more;
+        setSessions(merged);
+        setHasMore(more);
+        setIsLoading(false);
+        if (refreshQueuedRef.current) {
+          refreshQueuedRef.current = false;
+          void loadPage(true);
+        }
+      }
+    }
+  }, [loadPage]);
+
   const wantsMoreForAll = loadAll && hasMore && sessions.length < SIDEBAR_SESSION_LOAD_ALL_CAP;
   useEffect(() => {
     if (!wantsMoreForAll || isLoading) return;
-    void loadPage(false);
-  }, [wantsMoreForAll, isLoading, loadPage, sessions.length]);
+    void drainAllPages();
+  }, [wantsMoreForAll, isLoading, drainAllPages]);
 
   return {
     sessions,
