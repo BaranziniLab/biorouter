@@ -283,33 +283,47 @@ export default function BioRouterMessage({
           </div>
         )}
 
-        {hasToolConfirmation && (
-          <ToolCallConfirmation
-            sessionId={sessionId}
-            isCancelledMessage={false}
-            isClicked={false}
-            actionRequiredContent={toolConfirmationContent}
-          />
-        )}
+        {/* The cards that ask the person to act. They are blocks of the turn,
+            so they sit 8px under anything above them in this message. */}
+        {(hasToolConfirmation ||
+          (hasElicitation && submitElicitationResponse) ||
+          secretRequestContent) && (
+          <div
+            className={cn(
+              'flex flex-col gap-2',
+              // The thinking row brings its own 8px (`mb-2`).
+              (displayText || toolRequests.length > 0) && 'mt-2'
+            )}
+          >
+            {hasToolConfirmation && (
+              <ToolCallConfirmation
+                sessionId={sessionId}
+                isCancelledMessage={false}
+                isClicked={false}
+                actionRequiredContent={toolConfirmationContent}
+              />
+            )}
 
-        {hasElicitation && submitElicitationResponse && (
-          <ElicitationRequest
-            isCancelledMessage={false}
-            isClicked={false}
-            actionRequiredContent={elicitationContent}
-            onSubmit={submitElicitationResponse}
-          />
-        )}
+            {hasElicitation && submitElicitationResponse && (
+              <ElicitationRequest
+                isCancelledMessage={false}
+                isClicked={false}
+                actionRequiredContent={elicitationContent}
+                onSubmit={submitElicitationResponse}
+              />
+            )}
 
-        {/* Issue #117. Unlike every other card here it takes NO submit
-            callback: it answers the daemon directly, because routing a
-            credential back through the composer would put it in the
-            transcript. */}
-        {secretRequestContent && (
-          <SecretRequestCard
-            isCancelledMessage={false}
-            actionRequiredContent={secretRequestContent}
-          />
+            {/* Issue #117. Unlike every other card here it takes NO submit
+              callback: it answers the daemon directly, because routing a
+              credential back through the composer would put it in the
+              transcript. */}
+            {secretRequestContent && (
+              <SecretRequestCard
+                isCancelledMessage={false}
+                actionRequiredContent={secretRequestContent}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
