@@ -228,6 +228,7 @@ surface keeps its icon (WCAG 1.4.1 requires it regardless).
 
 `--sidebar: #F7F7F5` · `--sidebar-hover: #EFEFEC` · `--sidebar-active: #EAEAE6` · `--sidebar-border: #E7E7E3`
 **`--sidebar-icon: #D95B08`** — this is where "bright orange for the icons" lands (3.59:1 on the sidebar; dark mode uses the pure anchor `#EE6C1A` at 5.81:1).
+**Revised 2026-10-10:** nav icons now wear the label ink (`#1F1E1C` light, `#EDEDEA` dark, = `--sidebar-foreground`), as in the other two families. The 2026-10 redesign holds the accent for the active rail, the lock badge, buttons, links and the heat ramp (principle 7, vision finding V1-M3), so the orange in ask 3 lives there now.
 Aliases (`--sidebar-foreground`, `-primary`, `-primary-foreground`, `-accent`, `-accent-foreground`, `-ring`) are `var()` refs, copied verbatim from the sibling families.
 
 ### 4.8 Heatmap

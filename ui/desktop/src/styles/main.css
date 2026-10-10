@@ -1151,7 +1151,7 @@
   --heat-4: #0e5258;
   --sidebar: #f7f7f5;
   --sidebar-foreground: #052049;
-  --sidebar-icon: #14828c;
+  --sidebar-icon: #052049;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
@@ -1230,7 +1230,7 @@
   --heat-4: #60d0da;
   --sidebar: #171716;
   --sidebar-foreground: #f2f3f4;
-  --sidebar-icon: #60d0da;
+  --sidebar-icon: #f2f3f4;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;
@@ -1341,7 +1341,7 @@
   --heat-4: #c4560e;
   --sidebar: #f7f7f5;
   --sidebar-foreground: #1f1e1c;
-  --sidebar-icon: #d95b08;
+  --sidebar-icon: #1f1e1c;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
@@ -1420,7 +1420,7 @@
   --heat-4: #ee6c1a;
   --sidebar: #171716;
   --sidebar-foreground: #ededea;
-  --sidebar-icon: #ee6c1a;
+  --sidebar-icon: #ededea;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;

@@ -85,7 +85,10 @@ export default {
       'heat-4': '#0e5258',
       sidebar: '#f7f7f5',
       'sidebar-foreground': '#052049',
-      'sidebar-icon': '#14828c',
+      // Nav icons wear the label ink, as in Parchment and Roche Limit: the
+      // accent is held for the active rail and the lock badge (redesign
+      // principle 7). Teal icons were accent outside that list (V1-M3).
+      'sidebar-icon': '#052049',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
@@ -263,7 +266,7 @@ export default {
       'heat-4': '#60d0da',
       sidebar: '#171716',
       'sidebar-foreground': '#f2f3f4',
-      'sidebar-icon': '#60d0da',
+      'sidebar-icon': '#f2f3f4', // the label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',
