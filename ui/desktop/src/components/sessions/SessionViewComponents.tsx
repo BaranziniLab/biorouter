@@ -1,6 +1,5 @@
 import React from 'react';
 import { MessageSquare, AlertCircle, LoaderCircle } from '../icons/app-icons';
-import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import MarkdownContent from '../MarkdownContent';
@@ -20,6 +19,15 @@ import { Message } from '../../api';
 import { EmptyState } from '../ui/empty-state';
 import type { ArtifactSource } from '../artifacts/artifactTypes';
 import { filePathLookupBeforeMessage } from '../artifacts/artifactFileProvenance';
+import {
+  BIOROUTER,
+  CHAT_LOAD_ERROR_TITLE,
+  LOADING_CHAT,
+  NO_MESSAGES,
+  NO_MESSAGES_TITLE,
+  TRY_AGAIN,
+  YOU,
+} from './copy';
 
 /**
  * Get tool responses map from messages
@@ -87,175 +95,161 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
     // `data-preview-transcript`: the box rung 2 measures as a replay's transcript,
     // so the page header above it counts as the conversation's chrome.
     <ScrollArea className="h-full w-full" data-preview-transcript="">
-      <div className="p-4">
-        <div className="flex flex-col space-y-4">
-          <div className="space-y-4 mb-6">
-            {isLoading ? (
-              <div className="flex justify-center items-center py-12">
-                <LoaderCircle className="h-6 w-6 animate-spin text-text-muted" aria-hidden="true" />
-              </div>
-            ) : error ? (
-              // §4.5 — the shared surface, not a fourth hand-rolled error column.
-              <EmptyState
-                icon={AlertCircle}
-                title="Couldn't load this chat"
-                description={error}
-                actions={
-                  <Button onClick={onRetry} variant="outline">
-                    Try again
-                  </Button>
-                }
-              />
-            ) : messages?.length > 0 ? (
-              messages
-                .map((message, index) => {
-                  const textContent = getTextContent(message);
-                  // Extract image paths from the message
-                  const imagePaths = extractImagePaths(textContent);
-
-                  // Remove image paths from text for display
-                  const displayText =
-                    imagePaths.length > 0
-                      ? removeImagePathsFromText(textContent, imagePaths)
-                      : textContent;
-
-                  // Issue #65 — this is the one surface that renders a user
-                  // message through `MarkdownContent`, and react-markdown runs
-                  // here without `rehype-raw`, so it DROPS unknown HTML rather
-                  // than showing it. A `<biorouter-ref …>` therefore vanished
-                  // without a trace: worse than raw markup, because a reader
-                  // reviewing the session could not tell a skill was attached.
-                  // The prose keeps its markdown; the references are drawn as
-                  // read-only chips beside it.
-                  const { body: proseText, refs: messageRefs } = splitComposerText(displayText);
-                  const knownFilePaths = filePathLookupBeforeMessage(
-                    messages,
-                    index,
-                    sessionId,
-                    workingDir
-                  );
-
-                  // Get tool requests from the message
-                  const toolRequests = message.content
-                    .filter((c) => c.type === 'toolRequest')
-                    .map((c) => c as ToolRequestMessageContent);
-
-                  // Get tool responses map using the helper function
-                  const toolResponsesMap = getToolResponsesMap(messages, index, toolRequests);
-
-                  // Skip pure tool response messages for cleaner display
-                  const isOnlyToolResponse =
-                    message.content.length > 0 &&
-                    message.content.every((c) => c.type === 'toolResponse');
-
-                  if (message.role === 'user' && isOnlyToolResponse) {
-                    return null;
-                  }
-
-                  return (
-                    /* ⚠ `bg-background-default`, not `bg-bgSecondary`. That
-                       name is defined NOWHERE — no token, no `@theme` mirror —
-                       so it generated nothing and the user card had a border
-                       over the page ground while the assistant card beside it
-                       had a real fill. Same failure mode as
-                       `border-borderStandard` and `text-iconStandard`: a class
-                       that reads as intent and paints nothing. This is the
-                       ground the live chat gives the same message. */
-                    <Card
-                      key={index}
-                      className={`p-4 ${
-                        message.role === 'user'
-                          ? 'bg-background-default border border-border-subtle'
-                          : 'bg-background-medium'
-                      }`}
-                    >
-                      <div className="flex justify-between items-center mb-2 gap-2">
-                        {/* BR-71 §5: provenance is structural, so it has to
-                            travel with the transcript into this view too — a
-                            shared chat is the one that leaves the machine,
-                            and "You" on a message another agent injected is a
-                            misattribution to the human. */}
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-label text-text-default">
-                            {message.role === 'user' ? 'You' : 'Biorouter'}
-                          </span>
-                          <ProvenanceChip provenance={message.metadata?.provenance ?? undefined} />
-                        </div>
-                        <span className="text-supporting text-text-muted shrink-0">
-                          {formatMessageTimestamp(message.created)}
-                        </span>
-                      </div>
-
-                      <div className="flex flex-col w-full">
-                        {/* Text content */}
-                        {proseText && (
-                          <div
-                            className={`${toolRequests.length > 0 || imagePaths.length > 0 || messageRefs.length > 0 ? 'mb-4' : ''}`}
-                          >
-                            <MarkdownContent
-                              content={proseText}
-                              onOpenArtifact={onOpenArtifact}
-                              workingDir={workingDir}
-                              knownFilePaths={knownFilePaths}
-                            />
-                          </div>
-                        )}
-
-                        {messageRefs.length > 0 && (
-                          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                            {messageRefs.map((ref) => (
-                              <ResourceRefChip key={`${ref.kind}:${ref.value}`} refSpan={ref} />
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Render images if any */}
-                        {imagePaths.length > 0 && (
-                          <div className="flex flex-wrap gap-2 mt-2 mb-2">
-                            {imagePaths.map((imagePath, imageIndex) => (
-                              <ImagePreview
-                                key={imageIndex}
-                                src={imagePath}
-                                alt={`Image ${imageIndex + 1}`}
-                              />
-                            ))}
-                          </div>
-                        )}
-
-                        {/* Tool requests and responses */}
-                        {toolRequests.length > 0 && (
-                          <div className="biorouter-message-tool bg-background-default border border-border-subtle rounded-b-2xl px-4 pt-4 pb-2 mt-1">
-                            {toolRequests.map((toolRequest) => (
-                              <ToolCallWithResponse
-                                // In the session history page, if no tool response found for given request, it means the tool call
-                                // is broken or cancelled.
-                                isCancelledMessage={
-                                  toolResponsesMap.get(toolRequest.id) == undefined
-                                }
-                                key={toolRequest.id}
-                                toolRequest={toolRequest}
-                                toolResponse={toolResponsesMap.get(toolRequest.id)}
-                                onOpenArtifact={onOpenArtifact}
-                                workingDir={workingDir}
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </Card>
-                  );
-                })
-                .filter(Boolean) // Filter out null entries
-            ) : (
-              <EmptyState
-                icon={MessageSquare}
-                title="No messages in this chat"
-                description="This chat was created but nothing was ever said in it."
-                compact
-              />
-            )}
+      <div className="flex flex-col gap-6 pt-4 pb-24">
+        {isLoading ? (
+          <div className="flex justify-center items-center py-12">
+            <LoaderCircle className="h-4 w-4 animate-spin text-text-muted" aria-hidden="true" />
+            <span className="sr-only">{LOADING_CHAT}</span>
           </div>
-        </div>
+        ) : error ? (
+          // §4.5 — the shared surface, not a fourth hand-rolled error column.
+          <EmptyState
+            icon={AlertCircle}
+            title={CHAT_LOAD_ERROR_TITLE}
+            description={error}
+            actions={
+              <Button onClick={onRetry} variant="secondary">
+                {TRY_AGAIN}
+              </Button>
+            }
+          />
+        ) : messages?.length > 0 ? (
+          messages
+            .map((message, index) => {
+              const textContent = getTextContent(message);
+              // Extract image paths from the message
+              const imagePaths = extractImagePaths(textContent);
+
+              // Remove image paths from text for display
+              const displayText =
+                imagePaths.length > 0
+                  ? removeImagePathsFromText(textContent, imagePaths)
+                  : textContent;
+
+              // Issue #65 — this is the one surface that renders a user
+              // message through `MarkdownContent`, and react-markdown runs
+              // here without `rehype-raw`, so it DROPS unknown HTML rather
+              // than showing it. A `<biorouter-ref …>` therefore vanished
+              // without a trace: worse than raw markup, because a reader
+              // reviewing the session could not tell a skill was attached.
+              // The prose keeps its markdown; the references are drawn as
+              // read-only chips beside it.
+              const { body: proseText, refs: messageRefs } = splitComposerText(displayText);
+              const knownFilePaths = filePathLookupBeforeMessage(
+                messages,
+                index,
+                sessionId,
+                workingDir
+              );
+
+              // Get tool requests from the message
+              const toolRequests = message.content
+                .filter((c) => c.type === 'toolRequest')
+                .map((c) => c as ToolRequestMessageContent);
+
+              // Get tool responses map using the helper function
+              const toolResponsesMap = getToolResponsesMap(messages, index, toolRequests);
+
+              // Skip pure tool response messages for cleaner display
+              const isOnlyToolResponse =
+                message.content.length > 0 &&
+                message.content.every((c) => c.type === 'toolResponse');
+
+              if (message.role === 'user' && isOnlyToolResponse) {
+                return null;
+              }
+
+              const isUser = message.role === 'user';
+
+              return (
+                /* A message is a row of the document, not a card (principle 4):
+                   an author line, then the content. The user's words sit on the
+                   same `--background-medium` fill the live chat gives them, so
+                   the turn boundary reads the same here as in the chat it came
+                   from; the assistant's prose sits on the page. */
+                <article key={index} data-role={message.role} className="flex flex-col gap-1.5">
+                  <header className="flex items-center gap-2 min-w-0">
+                    {/* BR-71 §5: provenance is structural, so it has to travel
+                        with the transcript into this view too. A shared chat is
+                        the one that leaves the machine, and "You" on a message
+                        another agent injected is a misattribution to the human. */}
+                    <span className="text-label text-text-default">{isUser ? YOU : BIOROUTER}</span>
+                    <ProvenanceChip provenance={message.metadata?.provenance ?? undefined} />
+                    <span className="ml-auto shrink-0 text-supporting text-text-muted tabular-nums">
+                      {formatMessageTimestamp(message.created)}
+                    </span>
+                  </header>
+
+                  <div
+                    className={
+                      isUser
+                        ? 'flex flex-col gap-2 rounded-container bg-background-medium px-3.5 py-2.5'
+                        : 'flex flex-col gap-2'
+                    }
+                  >
+                    {proseText && (
+                      <MarkdownContent
+                        content={proseText}
+                        onOpenArtifact={onOpenArtifact}
+                        workingDir={workingDir}
+                        knownFilePaths={knownFilePaths}
+                      />
+                    )}
+
+                    {messageRefs.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {messageRefs.map((ref) => (
+                          <ResourceRefChip key={`${ref.kind}:${ref.value}`} refSpan={ref} />
+                        ))}
+                      </div>
+                    )}
+
+                    {imagePaths.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {imagePaths.map((imagePath, imageIndex) => (
+                          <ImagePreview
+                            key={imageIndex}
+                            src={imagePath}
+                            alt={`Image ${imageIndex + 1}`}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Tool rows sit straight in the message: no box around
+                        them, because each row draws its own line (WS-TOOLS'
+                        TranscriptRow) and a box inside a box is what principle 4
+                        rules out. No entrance animation either: a saved
+                        transcript mounts at rest. */}
+                    {toolRequests.length > 0 && (
+                      <div className="flex flex-col gap-1">
+                        {toolRequests.map((toolRequest) => (
+                          <ToolCallWithResponse
+                            // In a saved transcript a request with no response
+                            // was broken or cancelled.
+                            isCancelledMessage={toolResponsesMap.get(toolRequest.id) == undefined}
+                            key={toolRequest.id}
+                            toolRequest={toolRequest}
+                            toolResponse={toolResponsesMap.get(toolRequest.id)}
+                            onOpenArtifact={onOpenArtifact}
+                            workingDir={workingDir}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </article>
+              );
+            })
+            .filter(Boolean) // Filter out null entries
+        ) : (
+          <EmptyState
+            icon={MessageSquare}
+            title={NO_MESSAGES_TITLE}
+            description={NO_MESSAGES}
+            compact
+          />
+        )}
       </div>
     </ScrollArea>
   );
