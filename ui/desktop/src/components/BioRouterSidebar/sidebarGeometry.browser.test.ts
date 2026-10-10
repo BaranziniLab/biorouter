@@ -117,6 +117,21 @@ function page(css: string, width: number): string {
     ) +
     chatRow('chat2', 'Volcano plot') +
     chatRow('chat3', 'Crew · #general') +
+    // A row being renamed: the same 28px box, the glyph, then the 24px input.
+    '<li class="br-chat-row-item"><div class="br-nav-row br-chat-row" data-editing="true" id="editing">' +
+    '<svg class="br-chat-kind-icon" id="editing-glyph" viewBox="0 0 16 16"></svg>' +
+    '<input class="br-chat-row-rename-input" id="editing-input" value="Volcano plot">' +
+    '<span class="br-chat-row-trailing"></span></div></li>' +
+    '</ul></section>' +
+    // A folder group's header (Group by Folder): chevron, folder glyph, name.
+    '<section class="br-sidebar-group"><div class="br-sidebar-folder" id="folder">' +
+    '<button type="button" class="br-sidebar-folder-toggle" id="folder-toggle" aria-expanded="true">' +
+    '<svg class="br-nav-chevron" id="folder-chevron" viewBox="0 0 16 16"></svg>' +
+    '<svg class="br-nav-row-icon" id="folder-icon" viewBox="0 0 16 16"></svg>' +
+    '<span class="br-nav-row-label" id="folder-label">project</span></button>' +
+    '<div class="br-sidebar-actions"><button type="button" style="width:24px;height:24px"></button></div>' +
+    '</div><ul class="br-nav-list">' +
+    chatRow('chat4', 'Figure 3 draft') +
     '</ul></section></div></div></div>' +
     '<div class="br-sidebar-footer" id="footer"><ul class="br-nav-list">' +
     navRow('settings', 'Settings') +
@@ -292,6 +307,57 @@ describe('the app sidebar in a real layout engine', () => {
       await tab.close();
     });
   }
+
+  /**
+   * Rename edits the title in place with no layout shift (spec 3.4 acceptance):
+   * the editing row keeps the 28px box and the 30px pitch, the input is 24px
+   * tall and centred in it, and the typed text starts on the label column at
+   * x=40 (the input's -4px margin cancels its 4px padding).
+   */
+  it('renames in place with no layout shift', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(288);
+    const b = await boxes(tab, ['chat3', 'editing', 'editing-glyph', 'editing-input']);
+    near(b.editing.height, 28, 'editing row height');
+    near(b.editing.top - b.chat3.top, 30, 'pitch into the editing row');
+    near(b['editing-glyph'].left, 16, 'editing glyph x');
+    near(b['editing-input'].height, 24, 'input height');
+    near(b['editing-input'].top - b.editing.top, 2, 'input centred in the row');
+    const textX = await tab.evaluate(() => {
+      const input = document.getElementById('editing-input')!;
+      return input.getBoundingClientRect().left + parseFloat(getComputedStyle(input).paddingLeft);
+    });
+    near(textX, 40, 'typed text x');
+    const fontSize = await tab.evaluate(
+      () => getComputedStyle(document.getElementById('editing-input')!).fontSize
+    );
+    expect(fontSize).toBe('13px');
+    await tab.close();
+  });
+
+  /** A folder group's header (Group by Folder) is a 28px row on the same columns. */
+  it('draws a folder header as a 28px row: chevron at x=16, folder glyph at x=40', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(288);
+    const b = await boxes(tab, [
+      'folder',
+      'folder-chevron',
+      'folder-icon',
+      'folder-label',
+      'chat4',
+      'chat4-glyph',
+    ]);
+    near(b.folder.height, 28, 'folder header height');
+    near(b.folder.left, 8, 'folder header left');
+    near(b.folder.right, 280, 'folder header right');
+    near(b['folder-chevron'].left, 16, 'chevron x');
+    near(b['folder-icon'].left, 40, 'folder glyph x');
+    near(b['folder-label'].left, 64, 'folder name x');
+    // Its first chat sits 2px under it, on the shared columns.
+    near(b.chat4.top - b.folder.bottom, 2, 'header to first row');
+    near(b['chat4-glyph'].left, 16, 'folder chat glyph x');
+    await tab.close();
+  });
 
   it('marks the current row with the 2px accent rail inset 7px', async (ctx) => {
     if (!browser) return ctx.skip();
