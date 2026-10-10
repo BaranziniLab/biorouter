@@ -2,6 +2,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { Graph, GraphNode } from '../../../api/types.gen';
+import { knowledgeCopy } from '../copy';
 import { GraphFacetStrip } from './GraphFacetStrip';
 import { EMPTY_FACETS } from './graphFacets';
 import type { FacetState } from './graphFacets';
@@ -82,6 +83,19 @@ describe('GraphFacetStrip', () => {
     expect(strip.className).toContain('h-chrome');
     expect(strip.querySelectorAll('[title]')).toHaveLength(0);
     expect(screen.getByText(/Showing 2 of 6/).className).not.toContain('font-mono');
+  });
+
+  /**
+   * Below the 1400px step Clear is the bare icon (its label and the "Showing N of M" readout wait
+   * for the room the Legend gives back), so the Tooltip is where the count lives. It must read
+   * the sentence the copy file writes, with parentheses and no dash.
+   */
+  it('says how many pass in Clear’s Tooltip', async () => {
+    renderStrip(typed, true);
+    await userEvent.hover(screen.getByRole('button', { name: knowledgeCopy.graph.clearFilters }));
+    const tip = await screen.findByRole('tooltip', {}, { timeout: 3000 });
+    expect(tip).toHaveTextContent(knowledgeCopy.graph.clearFiltersHint(2, 6));
+    expect(tip).toHaveTextContent('Clear filters (showing 2 of 6)');
   });
 
   /**
