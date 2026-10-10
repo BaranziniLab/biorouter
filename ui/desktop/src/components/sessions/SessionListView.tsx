@@ -187,6 +187,11 @@ const HISTORY_LOADING_GROUPS = [5, 4];
 const HISTORY_LOADING_TITLE_WIDTHS = ['w-3/4', 'w-2/3', 'w-4/5', 'w-1/2'];
 const INITIAL_VISIBLE_SESSIONS = 16;
 const VISIBLE_SESSION_BATCH = 20;
+/**
+ * How long a warm open waits for the fresh page before it shows the skeleton:
+ * Crew's skeleton delay, so a fast answer lands with no skeleton flash at all.
+ */
+export const HISTORY_SKELETON_DELAY_MS = 150;
 /** Filtering is local and cheap; the delay only keeps a fast typist's list from flickering. */
 const FILTER_DEBOUNCE_MS = 150;
 
@@ -563,10 +568,18 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const initialSessions = useRef(getCachedSessionList()).current;
   const navigate = useNavigate();
   const { diverge } = useDiverge();
+  // ⚠ The cached list is NOT painted on open. It is only as fresh as the last
+  // membership change, and opening a chat in a tab moves its `updated_at`
+  // without one, so a cached paint showed yesterday's order and the first fresh
+  // page then re-sorted it in front of the reader: three chats jumped into Today
+  // and the row under the pointer changed (vision V1-M8, principle 9). Every
+  // open waits for its first fresh page and appears at rest. A warm open shows
+  // nothing for `HISTORY_SKELETON_DELAY_MS`, then the skeleton; a cold one shows
+  // the skeleton at once; the cache is the fallback if the fetch fails.
   const [sessions, setSessions] = useState<Session[]>(initialSessions ?? []);
-  const [isLoading, setIsLoading] = useState(initialSessions === null);
+  const [isLoading, setIsLoading] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(initialSessions === null);
-  const [showContent, setShowContent] = useState(initialSessions !== null);
+  const [showContent, setShowContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [visibleSessionCount, setVisibleSessionCount] = useState(INITIAL_VISIBLE_SESSIONS);
@@ -711,9 +724,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     }
     try {
       const refreshedSessions = await refreshSessionList(showSubagents);
+      // The fresh rows and the end of loading commit TOGETHER: an urgent
+      // `setIsLoading(false)` beside a transition would reveal the stale rows
+      // for the frames before the transition lands.
       startTransition(() => {
         setSessions(refreshedSessions);
         setError(null);
+        setIsLoading(false);
       });
     } catch (err) {
       console.error('Failed to load sessions:', err);
@@ -721,8 +738,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
         setError(HISTORY_LOAD_ERROR);
         setSessions([]);
       }
-    } finally {
-      if (!hasCachedSessions) setIsLoading(false);
+      // With a cached list the reader gets it rather than an error.
+      setIsLoading(false);
     }
   }, [showSubagents]);
 
@@ -754,6 +771,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     // setStates an unmounted tree (on CI it fired after jsdom was gone).
     return () => clearTimeout(revealTimer);
   }, [isLoading, showContent]);
+
+  // A warm open whose fresh page is slow shows the skeleton after the delay.
+  useEffect(() => {
+    if (!isLoading || showSkeleton || showContent) return undefined;
+    const skeletonTimer = setTimeout(() => setShowSkeleton(true), HISTORY_SKELETON_DELAY_MS);
+    return () => clearTimeout(skeletonTimer);
+  }, [isLoading, showSkeleton, showContent]);
 
   const handleRename = useCallback((session: Session) => setRenameTarget(session), []);
   const handleDelete = useCallback((session: Session) => setDeleteTarget(session), []);
@@ -967,18 +991,21 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
               {/* Loading layer, shaped like the rows that replace it. */}
               <div
                 data-history-layer="loading"
-                className={`br-history-layer absolute inset-x-6 top-2 ${isLoading || showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
+                className={`br-history-layer absolute inset-x-6 top-2 ${showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
               >
-                {(isLoading || showSkeleton) && <HistoryLoading />}
+                {showSkeleton && <HistoryLoading />}
               </div>
 
               {/* Content layer: always rendered, revealed once. The pointer's
                   presence holds the order (principle 9, `historyHold.ts`); a
                   menu or tooltip portalled out of a row still counts as inside,
-                  because React's enter and leave follow the component tree. */}
+                  because React's enter and leave follow the component tree.
+                  While hidden it takes no pointer: the rows under it are the
+                  cached ones, so a click must not open a chat nobody can see,
+                  and a hold must not capture an order nobody saw. */}
               <div
                 data-history-layer="content"
-                className={`br-history-layer relative ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
+                className={`br-history-layer relative ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
                 onPointerEnter={() => {
                   captureHold();
                   setPointerInside(true);
