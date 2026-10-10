@@ -664,4 +664,76 @@ describe('the shared controls in a real layout engine (spec 5.7)', () => {
       await tab.close();
     }
   });
+  it('opens an InfoTip on hover after 200ms, on Tab at once, closes on Escape and when the pointer leaves', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const content = () => tab.locator('[data-slot="info-tip-content"]');
+      const glyph = () => tab.locator('[data-testid="tip"]');
+
+      // The words are in the page before anything opens, and the trigger points at them.
+      const wiring = await tab.evaluate(() => {
+        const tip = document.querySelector('[data-testid="tip"]')!;
+        const described = document.getElementById(tip.getAttribute('aria-describedby')!);
+        return {
+          name: tip.getAttribute('aria-label'),
+          text: described?.textContent,
+          hidden: described ? getComputedStyle(described).clip : null,
+        };
+      });
+      expect(wiring.name).toBe('About Prevent sleep');
+      expect(wiring.text).toBe('The screen can still lock.');
+
+      // Hover: shut at 100ms, open by 350ms.
+      await glyph().hover();
+      await tab.waitForTimeout(100);
+      expect(await content().count(), 'not before 200ms').toBe(0);
+      await tab.waitForTimeout(250);
+      expect(await content().count(), 'after 200ms').toBe(1);
+
+      // Above its trigger with an 8px gap, aligned to the trigger's start.
+      const place = await tab.evaluate(() => {
+        const box = document.querySelector('[data-testid="tip"]')!.getBoundingClientRect();
+        const tip = document
+          .querySelector('[data-slot="info-tip-content"]')!
+          .getBoundingClientRect();
+        return { gap: box.top - tip.bottom, startDelta: tip.left - box.left };
+      });
+      near(place.gap, 8, 'gap above the trigger');
+      expect(Math.abs(place.startDelta), 'start-aligned').toBeLessThanOrEqual(1);
+
+      // Crossing onto the tip keeps it open; leaving closes it.
+      const box = await content().boundingBox();
+      await tab.mouse.move(box!.x + 4, box!.y + 4);
+      await tab.waitForTimeout(250);
+      expect(await content().count(), 'the pointer is on the tip').toBe(1);
+      await tab.mouse.move(700, 800);
+      await tab.waitForTimeout(250);
+      expect(await content().count(), 'the pointer left').toBe(0);
+
+      // Tab opens it at once; Escape closes it.
+      for (let i = 0; i < 40; i++) {
+        await tab.keyboard.press('Tab');
+        const onTip = await tab.evaluate(
+          () => document.activeElement?.getAttribute('data-testid') === 'tip'
+        );
+        if (onTip) break;
+      }
+      await tab.waitForTimeout(30);
+      expect(await content().count(), 'opens on Tab with no delay').toBe(1);
+      await tab.keyboard.press('Escape');
+      await tab.waitForTimeout(60);
+      expect(await content().count(), 'Escape closes it').toBe(0);
+
+      // A click toggles it, and a program's focus() does not open it.
+      await glyph().click();
+      await tab.waitForTimeout(60);
+      expect(await content().count(), 'a click opens it').toBe(1);
+      await glyph().click();
+      await tab.waitForTimeout(60);
+      expect(await content().count(), 'a second click closes it').toBe(0);
+    } finally {
+      await tab.close();
+    }
+  });
 });
