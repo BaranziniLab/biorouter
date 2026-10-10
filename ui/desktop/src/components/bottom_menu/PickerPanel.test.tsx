@@ -2,6 +2,7 @@ import * as React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import BuiltInBadge from '../ui/BuiltInBadge';
 import { PickerPanel, PickerRow } from './PickerPanel';
 import { TOOLS_COPY } from './copy';
 
@@ -194,6 +195,48 @@ describe('the picker shell', () => {
     await user.keyboard('{Enter}');
     expect(onToggled).not.toHaveBeenCalled();
     expect(screen.getAllByRole('option', { selected: true })).toHaveLength(2);
+  });
+
+  it('shows the row’s description when the pointer rests on its badge, not only on its name', async () => {
+    const user = userEvent.setup();
+    render(
+      <PickerPanel
+        listLabel="Extensions"
+        searchPlaceholder="Search extensions…"
+        query=""
+        onQueryChange={() => {}}
+        scopeLabel="This chat"
+        scopeHelp="Help."
+        emptyText="None"
+      >
+        <PickerRow
+          name="developer"
+          checked
+          onToggle={() => {}}
+          badge={<BuiltInBadge />}
+          description="Part of Biorouter. It can be turned off but not deleted."
+        />
+      </PickerPanel>
+    );
+    // Inside a row the badge is plain (the row is the control), so the sentence
+    // it carries elsewhere rides on the row.
+    await user.hover(screen.getByText('Built-in'));
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(
+      'Part of Biorouter. It can be turned off but not deleted.'
+    );
+  });
+
+  it('dims a refused row’s name and switch and leaves its reason at full strength', () => {
+    render(<Harness initial={ROWS} />);
+    const refused = screen.getByRole('option', { name: /gamma/ });
+    // The rule itself is authored CSS (pickers.css) and measured in Chromium
+    // (pickersGeometry.browser.test.tsx); here, that the hooks it keys on exist.
+    expect(refused).toHaveAttribute('aria-disabled', 'true');
+    expect(refused.querySelector('.br-picker-row__title')).not.toBeNull();
+    expect(refused.querySelector('.br-picker-row__switch')).not.toBeNull();
+    expect(refused.querySelector('.br-picker-row__note')).toHaveTextContent(
+      'Unavailable in this chat (public model)'
+    );
   });
 
   it('says so when a search matches nothing', () => {

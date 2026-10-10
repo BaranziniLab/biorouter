@@ -131,7 +131,7 @@ export interface PickerRowProps {
   meta?: string;
   /** A visible second line, for a refusal or a lock: never tooltip-only. */
   note?: string;
-  /** What the row is, on hover of its name. Never `title=`, which would rename the row. */
+  /** What the row is, on hover of its name line. Never `title=`, which would rename the row. */
   description?: string;
   'data-testid'?: string;
 }
@@ -149,7 +149,17 @@ export function PickerRow({
   description,
   'data-testid': testId,
 }: PickerRowProps) {
-  const nameNode = <span className="br-picker-row__name">{name}</span>;
+  // The name, its badge and its count are one line, and the line is what the
+  // description hangs from: a pointer resting on the "Built-in" badge gets the
+  // row's tooltip too (the badge cannot hold a help glyph of its own inside a
+  // row that is itself the control).
+  const title = (
+    <span className="br-picker-row__title">
+      <span className="br-picker-row__name">{name}</span>
+      {badge}
+      {meta && <span className="br-picker-row__meta">{meta}</span>}
+    </span>
+  );
   const picture = React.useRef<HTMLButtonElement>(null);
   return (
     <CommandItem
@@ -171,20 +181,16 @@ export function PickerRow({
       className="br-picker-row"
     >
       <span className="br-picker-row__text">
-        <span className="br-picker-row__title">
-          {description ? (
-            <Tooltip>
-              <TooltipTrigger asChild>{nameNode}</TooltipTrigger>
-              <TooltipContent side="right" className="max-w-[280px]">
-                {description}
-              </TooltipContent>
-            </Tooltip>
-          ) : (
-            nameNode
-          )}
-          {badge}
-          {meta && <span className="br-picker-row__meta">{meta}</span>}
-        </span>
+        {description ? (
+          <Tooltip>
+            <TooltipTrigger asChild>{title}</TooltipTrigger>
+            <TooltipContent side="right" className="max-w-[280px]">
+              {description}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          title
+        )}
         {note && <span className="br-picker-row__note">{note}</span>}
       </span>
       <span className="br-picker-row__switch" aria-hidden="true">

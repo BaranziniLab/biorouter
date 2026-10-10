@@ -186,6 +186,22 @@
   pointer-events: none;
 }
 
+/*
+ * A refused or locked row dims what is unavailable (the name, the badge, the
+ * switch) and not the reason it is. The menu recipe dims a disabled row's whole
+ * box to 50%, and the second line is a refusal the person must be able to read
+ * (principle 2: refusals stay visible): at 50% a 12px muted line measures about
+ * 2:1. Unlayered, so it beats the `opacity-50` utility the row brings.
+ */
+.br-picker-row[aria-disabled='true'] {
+  opacity: 1;
+}
+
+.br-picker-row[aria-disabled='true'] .br-picker-row__title,
+.br-picker-row[aria-disabled='true'] .br-picker-row__switch {
+  opacity: 0.5;
+}
+
 /* The footer line under the card: 12px muted, readouts on the right. */
 .br-footline {
   display: flex;

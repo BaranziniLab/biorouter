@@ -140,10 +140,13 @@ export function KnowledgePanel({
             // One verb pair per popup (#82): the row says VISIBILITY, or the
             // switch reads as the enable/disable toggle the other two lists use.
             label={KNOWLEDGE_COPY.rowLabel(base.name, hidden)}
-            badge={
-              isBuiltinKnowledgeBase(base.id) ? (
-                <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
-              ) : undefined
+            badge={isBuiltinKnowledgeBase(base.id) ? <BuiltInBadge /> : undefined}
+            // The badge is plain inside a row (the row is the control), so the
+            // sentence it used to carry as a title rides on the row's description.
+            description={
+              isBuiltinKnowledgeBase(base.id)
+                ? BUILTIN_RECREATED_TITLE.replace(/\s*\n\s*/g, ' ')
+                : undefined
             }
           />
         );

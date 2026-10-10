@@ -131,6 +131,19 @@ describe('BottomMenuKnowledgeSelection', () => {
     expect(screen.getByText('brainstorm')).toBeInTheDocument();
   });
 
+  it('keeps the built-in sentence on the Soul row, since its badge is plain inside a row', async () => {
+    render(<BottomMenuKnowledgeSelection />);
+    fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));
+    const soul = await screen.findByRole('option', { name: /^Soul/ });
+    expect(soul).toHaveTextContent('Built-in');
+    expect(soul).toHaveAccessibleDescription(
+      'Ships with Biorouter. Recreated automatically if deleted.'
+    );
+    expect(screen.getByRole('option', { name: /^brainstorm/ })).not.toHaveAttribute(
+      'aria-description'
+    );
+  });
+
   it('toggles a base with one write when its row is chosen', () => {
     render(<BottomMenuKnowledgeSelection />);
     fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));

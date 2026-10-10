@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import BuiltInBadge from '../ui/BuiltInBadge';
+import { uiCopy } from '../ui/copy';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
 import { isCapabilityExtension } from '../settings/capabilities/capabilities';
 import { toastService } from '../../toasts';
@@ -563,7 +564,7 @@ export function ExtensionsPanel({
               ? EXTENSIONS_COPY.pairingRefusedReason
               : lockedByCrew
                 ? undefined
-                : ext.description || undefined
+                : ext.description || (isBuiltInExtension(ext) ? uiCopy.builtInHelp : undefined)
           }
         />
       ))}

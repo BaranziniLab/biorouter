@@ -8,6 +8,7 @@ import {
 import { rankCatalogEntries } from '../skills/searchCatalog';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
+import { uiCopy } from '../ui/copy';
 import { SKILLS_COPY, TOOLS_COPY } from './copy';
 import { PickerPanel, PickerRow } from './PickerPanel';
 
@@ -180,7 +181,8 @@ function SkillRow({
         onToggle={() => onToggle(entry)}
         badge={skill.builtin ? <BuiltInBadge /> : undefined}
         meta={from}
-        description={skill.description || undefined}
+        // A shipped skill with no description still explains its badge.
+        description={skill.description || (skill.builtin ? uiCopy.builtInHelp : undefined)}
       />
     );
   }

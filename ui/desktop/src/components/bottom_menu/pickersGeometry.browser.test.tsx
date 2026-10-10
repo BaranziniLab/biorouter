@@ -97,6 +97,9 @@ const BASE_FOCUS = `@layer base {
   }
 }`;
 
+/** The one Tailwind utility the dimming rule has to beat, in its own cascade layer. */
+const UTILITIES = `@layer utilities { .opacity-50 { opacity: 0.5; } }`;
+
 const LONG_MODEL = 'gpt-5.6-sol-with-a-name-long-enough-to-need-an-ellipsis-on-any-composer';
 
 const ENTRY = `
@@ -209,7 +212,7 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
-    css = PREFLIGHT + BASE_FOCUS + readTokens() + primitiveBlocks() + PICKERS_CSS;
+    css = PREFLIGHT + BASE_FOCUS + UTILITIES + readTokens() + primitiveBlocks() + PICKERS_CSS;
   }, 120_000);
 
   afterAll(async () => {
@@ -301,6 +304,14 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
         }
         const note = row('row-note').querySelector('.br-picker-row__note')!;
         out.noteSize = getComputedStyle(note).fontSize;
+        const opacity = (el: Element | null) => getComputedStyle(el!).opacity;
+        const refused = row('row-note');
+        out.refused = {
+          row: opacity(refused),
+          note: opacity(note),
+          name: opacity(refused.querySelector('.br-picker-row__title')),
+          switch: opacity(refused.querySelector('.br-picker-row__switch')),
+        };
         return JSON.parse(JSON.stringify(out));
       });
       for (const id of ['row-on', 'row-off'] as const) {
@@ -314,6 +325,8 @@ describe('the composer pickers in a real layout engine (spec 3.7, 5.7)', () => {
       // A refusal is a visible second line (never tooltip-only), so that row grows.
       expect(m['row-note'].height).toBeGreaterThan(32);
       expect(m.noteSize).toBe('12px');
+      // ...and it is read at full strength: the row dims what is unavailable, not why.
+      expect(m.refused).toEqual({ row: '1', note: '1', name: '0.5', switch: '0.5' });
     } finally {
       await tab.close();
     }
