@@ -9,7 +9,7 @@ vi.mock('../MarkdownContent', () => ({
 
 const details = {
   title: 'Cohort summary',
-  description: 'Summarises a cohort.',
+  description: 'Summarizes a cohort.',
   instructions: 'Read the table.',
 };
 
@@ -86,7 +86,7 @@ describe('WorkflowWarningModal', () => {
       />
     );
     expect(screen.getByText('Cohort summary')).toBeInTheDocument();
-    expect(screen.getByText('Summarises a cohort.')).toBeInTheDocument();
+    expect(screen.getByText('Summarizes a cohort.')).toBeInTheDocument();
     expect(screen.getByTestId('markdown')).toHaveTextContent('Read the table.');
   });
 });
