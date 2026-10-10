@@ -8,7 +8,6 @@ import {
   Activity as _Activity,
   AlertCircle as _AlertCircle,
   AlertTriangle as _AlertTriangle,
-  AlignLeft as _AlignLeft,
   AppWindow as _AppWindow,
   AppWindowMac as _AppWindowMac,
   Archive as _Archive,
@@ -17,7 +16,6 @@ import {
   ArrowRight as _ArrowRight,
   ArrowUp as _ArrowUp,
   BookMarked as _BookMarked,
-  BookOpen as _BookOpen,
   Bookmark as _Bookmark,
   BookmarkPlus as _BookmarkPlus,
   Bot as _Bot,
@@ -45,7 +43,6 @@ import {
   Database as _Database,
   Download as _Download,
   Edit as _Edit,
-  Edit2 as _Edit2,
   ExternalLink as _ExternalLink,
   Eye as _Eye,
   EyeOff as _EyeOff,
@@ -62,7 +59,6 @@ import {
   Flag as _Flag,
   FlaskConical as _FlaskConical,
   Folder as _Folder,
-  FolderDot as _FolderDot,
   FolderInput as _FolderInput,
   FolderKey as _FolderKey,
   FolderOpen as _FolderOpen,
@@ -144,7 +140,6 @@ import {
   Workflow as _Workflow,
   Wrench as _Wrench,
   X as _X,
-  Zap as _Zap,
   type LucideIcon,
   type LucideProps,
 } from 'lucide-react';
@@ -175,7 +170,6 @@ export const AlertCircle = light(_AlertCircle);
 export const Info = light(_Info);
 export const AlertTriangle = light(_AlertTriangle);
 // The session-review mark the cohesion spec draws (three descending rules).
-export const AlignLeft = light(_AlignLeft);
 export const AppWindow = light(_AppWindow);
 export const AppWindowMac = light(_AppWindowMac);
 export const Archive = light(_Archive);
@@ -186,7 +180,6 @@ export const ArrowLeft = light(_ArrowLeft);
 export const ArrowRight = light(_ArrowRight);
 export const ArrowUp = light(_ArrowUp);
 export const BookMarked = light(_BookMarked);
-export const BookOpen = light(_BookOpen);
 export const Bookmark = light(_Bookmark);
 export const BookmarkPlus = light(_BookmarkPlus);
 export const Bot = light(_Bot);
@@ -222,7 +215,6 @@ export const Copy = light(_Copy);
 export const Database = light(_Database);
 export const Download = light(_Download);
 export const Edit = light(_Edit);
-export const Edit2 = light(_Edit2);
 export const ExternalLink = light(_ExternalLink);
 export const Eye = light(_Eye);
 export const EyeOff = light(_EyeOff);
@@ -240,7 +232,6 @@ export const FileX = light(_FileX);
 export const Fingerprint = light(_Fingerprint);
 export const FlaskConical = light(_FlaskConical);
 export const Folder = light(_Folder);
-export const FolderDot = light(_FolderDot);
 export const FolderInput = light(_FolderInput);
 export const FolderKey = light(_FolderKey);
 export const FolderOpen = light(_FolderOpen);
@@ -385,7 +376,7 @@ export const Square = light(_StopCircle);
 export const StopCircle = Square;
 export const StopSquare = light(_Square);
 /** A slash command (the mention popover's built-in commands, a workflow's
- * command). Not `Terminal` (a shell) and not `Zap`. */
+ * command). Not `Terminal`, which means a shell. */
 export const SquareSlash = light(_SquareSlash);
 /** **New chat**: the compose mark Codex and ChatGPT use. It frees `Plus` to
  * mean add. Crew keeps importing `Plus` for its own add actions, so the glyph
@@ -399,8 +390,8 @@ export const TextQuote = light(_TextQuote);
 export const Tornado = light(_Tornado);
 export const Trash2 = light(_Trash2);
 export const Upload = light(_Upload);
-/** Invite or add a person. Deliberately not `Plus`, which means *new session*
- * (DR-53: one glyph, one meaning). */
+/** Invite or add a person. Deliberately not the bare `Plus` (add an item):
+ * a person is not a row in a list (DR-53: one glyph, one meaning). */
 export const UserPlus = light(_UserPlus);
 export const Users = light(_Users);
 export const Video = light(_Video);
@@ -409,7 +400,6 @@ export const Pipeline = light(_Workflow);
 export const Wrench = light(_Wrench);
 export const X = light(_X);
 export const XIcon = X;
-export const Zap = light(_Zap);
 
 // ---------------------------------------------------------------------------
 // Custom icons: hand-drawn glyphs that lucide-react does not have.
