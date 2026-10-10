@@ -5,7 +5,10 @@ import { checkCandidateCredentials } from '../settings/providers/modal/subcompon
 import { Button } from '../ui/button';
 import { ArrowRight } from '../icons/ArrowRight';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
+import { Note } from '../ui/note';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { SegmentedControl } from '../ui/segmented-control';
+import { Spinner } from '../ui/spinner';
 
 interface InstitutionalSetupCardProps {
   onSuccess: (provider: string) => void;
@@ -57,10 +60,10 @@ const TABS: { id: VersaFlavor; label: string }[] = [
 export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = ['versa_azure', 'versa_bedrock'];
 
 const inputClass =
-  'w-full h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
+  'w-full h-9 px-3 text-body border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
 
 const advancedInputClass =
-  'w-full h-8 px-3 text-xs border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-strong';
+  'w-full h-8 px-3 text-supporting border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-strong';
 
 export default function InstitutionalSetupCard({
   onSuccess,
@@ -146,35 +149,22 @@ export default function InstitutionalSetupCard({
       title="UCSF-hosted models"
       description="Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates."
     >
-      {/* Tab toggle */}
-      <div
-        role="tablist"
-        aria-label="UCSF-hosted provider"
-        className="mb-4 grid w-full grid-cols-2 rounded-md bg-background-medium p-0.5 sm:inline-grid sm:w-auto"
-      >
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => {
-              setFlavor(tab.id);
-              setError(null);
-            }}
-            role="tab"
-            aria-selected={flavor === tab.id}
-            className={`h-7 min-w-0 truncate rounded px-2 text-xs transition-colors duration-150 sm:px-3 ${flavor === tab.id ? 'bg-background-default text-text-default' : 'text-text-muted hover:text-text-default'}`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      {/* Which gateway: one value of two, so the shared segmented control, not a tablist. */}
+      <div className="mb-4">
+        <SegmentedControl
+          aria-label="UCSF-hosted provider"
+          options={TABS.map((tab) => ({ value: tab.id, label: tab.label }))}
+          value={flavor}
+          onValueChange={(next) => {
+            setFlavor(next);
+            setError(null);
+          }}
+        />
       </div>
 
       {flavor === 'azure' ? (
         <div>
-          <label
-            htmlFor="versa-azure-api-key"
-            className="mb-1.5 block text-xs font-medium text-text-default"
-          >
+          <label htmlFor="versa-azure-api-key" className="mb-1.5 block text-chip text-text-default">
             API Key
           </label>
           <input
@@ -195,7 +185,7 @@ export default function InstitutionalSetupCard({
           <div>
             <label
               htmlFor="versa-bedrock-access-key"
-              className="mb-1.5 block text-xs font-medium text-text-default"
+              className="mb-1.5 block text-chip text-text-default"
             >
               Access Key ID
             </label>
@@ -212,7 +202,7 @@ export default function InstitutionalSetupCard({
           <div>
             <label
               htmlFor="versa-bedrock-secret-key"
-              className="mb-1.5 block text-xs font-medium text-text-default"
+              className="mb-1.5 block text-chip text-text-default"
             >
               Secret Access Key
             </label>
@@ -233,7 +223,7 @@ export default function InstitutionalSetupCard({
       )}
 
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-3">
-        <CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-text-muted hover:text-text-default transition-colors duration-150">
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-supporting text-text-muted hover:text-text-default transition-colors duration-150">
           <span>{advancedOpen ? '▾' : '▸'}</span>
           <span>
             Advanced ({flavor === 'azure' ? 'endpoint, API version' : 'endpoint, region'})
@@ -243,7 +233,7 @@ export default function InstitutionalSetupCard({
           {flavor === 'azure' ? (
             <>
               <div>
-                <label className="block text-[11px] text-text-muted mb-1">
+                <label className="block text-supporting text-text-muted mb-1">
                   VERSA_AZURE_ENDPOINT
                 </label>
                 <input
@@ -255,7 +245,7 @@ export default function InstitutionalSetupCard({
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-text-muted mb-1">
+                <label className="block text-supporting text-text-muted mb-1">
                   VERSA_AZURE_API_VERSION
                 </label>
                 <input
@@ -270,7 +260,7 @@ export default function InstitutionalSetupCard({
           ) : (
             <>
               <div>
-                <label className="block text-[11px] text-text-muted mb-1">
+                <label className="block text-supporting text-text-muted mb-1">
                   VERSA_BEDROCK_ENDPOINT
                 </label>
                 <input
@@ -282,7 +272,7 @@ export default function InstitutionalSetupCard({
                 />
               </div>
               <div>
-                <label className="block text-[11px] text-text-muted mb-1">
+                <label className="block text-supporting text-text-muted mb-1">
                   VERSA_BEDROCK_REGION
                 </label>
                 <input
@@ -301,7 +291,7 @@ export default function InstitutionalSetupCard({
       <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
         <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 w-full px-4 sm:w-auto">
           {isLoading ? (
-            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+            <Spinner />
           ) : (
             <>
               Connect to {flavor === 'azure' ? 'Versa Azure OpenAI' : 'Versa Bedrock'}
@@ -312,9 +302,9 @@ export default function InstitutionalSetupCard({
       </div>
 
       {error && (
-        <div className="mt-3 text-xs p-2.5 rounded-md bg-background-danger/10 text-text-danger border border-border-danger/40">
+        <Note tone="danger" role="alert" className="mt-3">
           {error}
-        </div>
+        </Note>
       )}
     </OnboardingCardShell>
   );

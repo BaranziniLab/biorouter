@@ -32,6 +32,7 @@ export {
   CODING_AGENT_TERMINAL_HEIGHT_PX,
   CODING_AGENT_TERMINAL_RESERVE_PX,
 } from './codingAgentControls';
+import { Spinner } from '../ui/spinner';
 
 export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCardProps) {
   const controls = useCodingAgents(onSuccess);
@@ -45,7 +46,7 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
         data-testid={`coding-agent-row-${agent.providerId}`}
       >
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <p className="text-sm font-medium text-text-default">{agent.displayName}</p>
+          <p className="text-label text-text-default">{agent.displayName}</p>
           <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
         </div>
         <CodingAgentProvenance agent={agent} />
@@ -60,17 +61,17 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
       className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
     >
       <OnboardingSectionLabel category="commercial" label="Commercial · Existing subscription" />
-      <h2 id="coding-agent-setup-title" className="mt-2 text-base font-medium text-text-default">
+      <h2 id="coding-agent-setup-title" className="mt-2 text-label text-text-default">
         Bring your own subscription
       </h2>
-      <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
+      <p className="text-body text-text-muted mt-1 mb-5">
         Already pay for a coding-agent plan? Biorouter drives the vendor&apos;s own CLI, already
         installed and signed in on this machine, so turns bill to that plan instead of an API key.
       </p>
 
       {controls.isChecking ? (
-        <div className="flex items-center gap-2 text-xs text-text-muted">
-          <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        <div className="flex items-center gap-2 text-supporting text-text-muted">
+          <Spinner size={14} />
           <span>Checking for installed coding agents…</span>
         </div>
       ) : controls.loadError && !controls.agents ? (

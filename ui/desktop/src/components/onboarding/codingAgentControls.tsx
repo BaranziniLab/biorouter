@@ -98,7 +98,7 @@ const PILL_DOT: Record<PillTone, string> = {
 
 export function StatusPill({ tone, children }: { tone: PillTone; children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+    <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
       <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${PILL_DOT[tone]}`} />
       {children}
     </span>
@@ -157,7 +157,7 @@ export function CommandBlock({ command }: { command: string }) {
 
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-background-muted p-2">
-      <code className="min-w-0 flex-1 break-all font-mono text-[11px] leading-relaxed text-text-default">
+      <code className="min-w-0 flex-1 break-all font-mono text-supporting text-text-default">
         {command}
       </code>
       <Button
@@ -406,7 +406,7 @@ function RecheckButton({
   return (
     <Button
       type="button"
-      variant="outline"
+      variant="secondary"
       size="lg"
       shape="pill"
       onClick={() => void controls.refresh(false)}
@@ -445,12 +445,12 @@ export function CodingAgentBody({
     case 'not_installed':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             Install {agent.displayName} on the computer running Biorouter, then choose Check again.
             Copy this command into a terminal to install it.
           </p>
           <CommandBlock command={agent.installHint} />
-          <p className="text-[11px] text-text-muted">
+          <p className="text-supporting text-text-muted">
             Already installed somewhere unusual (nvm, volta, bun, asdf)? Set{' '}
             <code className="font-mono">{AGENT_COMMAND_CONFIG[agent.kind].key}</code> to its full
             path in Settings instead.
@@ -470,12 +470,12 @@ export function CodingAgentBody({
     case 'signed_out':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             {agent.displayName} is installed. Sign in with your subscription in a terminal, then
             return here and choose I&apos;ve signed in.
           </p>
           <CommandBlock command={agent.loginCommand} />
-          <p className="text-[11px] text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             Biorouter deliberately does not perform the sign-in: the credential stays between you
             and the vendor, and never passes through Biorouter.
           </p>
@@ -493,16 +493,14 @@ export function CodingAgentBody({
     case 'signed_in_with_api_key':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             The CLI works — it is just signed in with an API key, so a run would bill per token.
             This provider exists specifically to use your own plan, and it removes API credentials
             from the environment it starts, so it cannot run this way.
           </p>
-          <p className="text-xs text-text-muted leading-relaxed">
-            Either sign in with your subscription:
-          </p>
+          <p className="text-supporting text-text-muted">Either sign in with your subscription:</p>
           <CommandBlock command={agent.loginCommand} />
-          <p className="text-[11px] text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             …or keep the API key and use the metered{' '}
             <span className="text-text-default">{METERED_SIBLING[agent.kind]}</span> provider
             instead, under API providers.
@@ -522,13 +520,13 @@ export function CodingAgentBody({
       return (
         <div className="space-y-2">
           {(plan || account) && (
-            <p className="text-[11px] text-text-muted break-words">
+            <p className="text-supporting text-text-muted break-words">
               {[plan ? `Plan: ${plan}` : null, account ? `Account: ${account}` : null]
                 .filter(Boolean)
                 .join(' · ')}
             </p>
           )}
-          <p className="text-xs text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             Turns run through your own subscription, so there is nothing metered to configure here.
           </p>
           <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
@@ -565,11 +563,11 @@ export function CodingAgentBody({
     case 'indeterminate':
       return (
         <div className="space-y-2">
-          <p className="text-xs text-text-muted leading-relaxed">
+          <p className="text-supporting text-text-muted">
             Biorouter could not tell whether this CLI is usable, so it is not guessing at the fix.
           </p>
           <p
-            className="break-words text-sm leading-relaxed text-text-default"
+            className="break-words text-body text-text-default"
             data-testid={`coding-agent-detail-${agent.providerId}`}
           >
             {agent.auth.detail}
@@ -588,7 +586,7 @@ export function CodingAgentBody({
 export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailability }) {
   if (!agent.version && !agent.path) return null;
   return (
-    <p className="min-w-0 break-all font-mono text-[11px] text-text-muted">
+    <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
       {[agent.version, agent.path].filter(Boolean).join(' · ')}
     </p>
   );
@@ -606,14 +604,14 @@ export function CodingAgentLoadError({
     <div className="space-y-3">
       <StatusPill tone="warning">Could not check</StatusPill>
       <p
-        className="break-words text-xs text-text-muted leading-relaxed"
+        className="break-words text-supporting text-text-muted"
         data-testid="coding-agent-load-error"
       >
         {message}
       </p>
       <Button
         type="button"
-        variant="outline"
+        variant="secondary"
         size="lg"
         shape="pill"
         onClick={() => void controls.refresh(false)}

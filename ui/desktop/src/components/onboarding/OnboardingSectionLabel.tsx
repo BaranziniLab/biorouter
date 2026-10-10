@@ -13,7 +13,7 @@ export default function OnboardingSectionLabel({ category, label }: OnboardingSe
   return (
     <div className="flex items-center gap-2 mb-1">
       <span className={`w-1.5 h-1.5 rounded-full ${DOT_CLASSES[category]}`} aria-hidden />
-      <p className="text-xs font-medium uppercase tracking-wider text-text-muted">{label}</p>
+      <p className="text-caps text-text-muted">{label}</p>
     </div>
   );
 }

@@ -48,10 +48,10 @@ export default function OnboardingCardShell({
       className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
     >
       <OnboardingSectionLabel category={category} label={label} />
-      <h2 id={titleId} className="mt-2 text-base font-medium text-text-default">
+      <h2 id={titleId} className="mt-2 text-label text-text-default">
         {title}
       </h2>
-      <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">{description}</p>
+      <p className="text-body text-text-muted mt-1 mb-5">{description}</p>
       {children}
     </section>
   );

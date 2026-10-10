@@ -46,7 +46,7 @@ async function connectVersaAzure(advanced: { endpoint?: string; apiVersion?: str
 async function connectVersaBedrock() {
   const onSuccess = vi.fn();
   render(<InstitutionalSetupCard onSuccess={onSuccess} />);
-  fireEvent.click(screen.getByRole('tab', { name: /Bedrock/i }));
+  fireEvent.click(screen.getByRole('radio', { name: /Bedrock/i }));
   fireEvent.change(screen.getByLabelText(/Access Key ID/i), { target: { value: 'an-id' } });
   fireEvent.change(screen.getByLabelText(/Secret Access Key/i), { target: { value: 'a-secret' } });
   fireEvent.click(screen.getByRole('button', { name: /Connect to Versa Bedrock/i }));

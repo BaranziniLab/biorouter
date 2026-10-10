@@ -13,6 +13,7 @@ import {
   type PullProgress,
 } from '../../utils/ollamaDetection';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { Spinner } from '../ui/spinner';
 
 interface OllamaInlineCardProps {
   onSuccess: () => void;
@@ -108,7 +109,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
   };
 
   const detectedPill = (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+    <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
       <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
       Ollama running · {getPreferredModel()}
       {modelStatus === 'available'
@@ -120,7 +121,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
   );
 
   const notDetectedPill = (
-    <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+    <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
       <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
       Ollama not detected
     </span>
@@ -136,8 +137,8 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
       description="Run open-source models on your own machine. Free, private, offline."
     >
       {isChecking ? (
-        <div className="flex items-center gap-2 text-xs text-text-muted">
-          <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        <div className="flex items-center gap-2 text-supporting text-text-muted">
+          <Spinner size={14} />
           <span>Checking for Ollama…</span>
         </div>
       ) : ollamaDetected ? (
@@ -145,16 +146,18 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
           <div>{detectedPill}</div>
 
           {modelStatus === 'checking' && (
-            <div className="flex items-center gap-2 text-xs text-text-muted">
-              <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+            <div className="flex items-center gap-2 text-supporting text-text-muted">
+              <Spinner size={14} />
               <span>Checking for model…</span>
             </div>
           )}
 
           {modelStatus === 'downloading' && downloadProgress && (
             <div className="rounded-md border border-border-subtle bg-background-default p-3">
-              <p className="text-xs text-text-default">Downloading {getPreferredModel()}…</p>
-              <p className="text-[11px] text-text-muted mt-1">{downloadProgress.status}</p>
+              <p className="text-supporting text-text-default">
+                Downloading {getPreferredModel()}…
+              </p>
+              <p className="text-supporting text-text-muted mt-1">{downloadProgress.status}</p>
               {/* Ollama's pull stream reports `total`/`completed` only once the
                   manifest resolves — before that (and during the verify/extract
                   phases) there is no denominator. That is exactly the
@@ -169,7 +172,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
                     tone="success"
                     value={(downloadProgress.completed / downloadProgress.total) * 100}
                   />
-                  <p className="text-[11px] text-text-muted mt-1">
+                  <p className="text-supporting text-text-muted mt-1">
                     {Math.round((downloadProgress.completed / downloadProgress.total) * 100)}%
                   </p>
                 </>
@@ -188,7 +191,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
             {modelStatus === 'not-available' && (
               <Button
                 onClick={handleDownloadModel}
-                variant="outline"
+                variant="secondary"
                 className="h-9 w-full px-4 sm:w-auto"
               >
                 Download {getPreferredModel()} (~11GB)
@@ -210,8 +213,8 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
           <div>{notDetectedPill}</div>
           <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
             {isPolling ? (
-              <div className="flex items-center gap-2 text-xs text-text-muted">
-                <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+              <div className="flex items-center gap-2 text-supporting text-text-muted">
+                <Spinner size={14} />
                 <span>Waiting for Ollama to start…</span>
               </div>
             ) : (
@@ -220,7 +223,7 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={handleInstallClick}
-                className="inline-flex h-9 w-full items-center justify-center rounded-md bg-background-medium px-4 text-sm text-text-default transition-colors hover:bg-background-strong sm:w-auto"
+                className="inline-flex h-9 w-full items-center justify-center rounded-md bg-background-medium px-4 text-body text-text-default transition-colors hover:bg-background-strong sm:w-auto"
               >
                 Install Ollama
               </a>

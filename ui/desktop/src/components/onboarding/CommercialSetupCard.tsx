@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
 import { ArrowRight } from '../icons/ArrowRight';
+import { Note } from '../ui/note';
+import { AlertTriangle, Check } from '../icons/app-icons';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
+import { Spinner } from '../ui/spinner';
 
 interface CommercialSetupCardProps {
   onSuccess: (setup: DetectedProviderSetup) => void | Promise<void>;
@@ -192,7 +195,7 @@ export default function CommercialSetupCard({
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste your API key here…"
-          className="h-9 min-w-0 rounded-md border border-border-subtle bg-background-default px-3 text-sm text-text-default transition-colors duration-150 placeholder:text-text-muted focus:border-border-strong"
+          className="h-9 min-w-0 rounded-md border border-border-subtle bg-background-default px-3 text-body text-text-default transition-colors duration-150 placeholder:text-text-muted focus:border-border-strong"
           disabled={isLoading}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) testApiKey();
@@ -204,45 +207,33 @@ export default function CommercialSetupCard({
           aria-label="Detect provider"
           className="h-9 px-3"
         >
-          {isLoading ? (
-            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <ArrowRight className="w-4 h-4" />
-          )}
+          {isLoading ? <Spinner /> : <ArrowRight className="w-4 h-4" />}
         </Button>
       </div>
 
       {isLoading && (
-        <div className="flex items-center gap-2 mt-3 text-xs text-text-muted">
-          <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+        <div className="flex items-center gap-2 mt-3 text-supporting text-text-muted">
+          <Spinner size={14} />
           <span>Detecting provider and validating key…</span>
         </div>
       )}
 
       {result && (
-        <div className="mt-3 text-sm p-3 rounded-md bg-background-success/10 text-text-success border border-border-success/40 flex items-center gap-2">
-          <span className="flex-shrink-0">✓</span>
-          <div className="flex-1 min-w-0">
-            <div className="font-medium">Detected {result.provider}</div>
-            <div className="text-text-success text-xs mt-0.5">
-              {result.model} · {result.totalModels} models available
-            </div>
+        <Note tone="success" role="status" icon={Check} className="mt-3">
+          <div className="text-label">Detected {result.provider}</div>
+          <div className="mt-0.5">
+            {result.model} · {result.totalModels} models available
           </div>
-        </div>
+        </Note>
       )}
 
       {errorReason && (
         <div className="mt-3 space-y-2">
-          <div className="text-sm p-3 rounded-md bg-background-danger/10 text-text-danger border border-border-danger/40 flex items-center gap-2">
-            <span className="flex-shrink-0">✕</span>
-            <div className="flex-1">
-              <div className="font-medium">{messageForReason(errorReason).title}</div>
-              <div className="text-text-danger text-xs mt-0.5">
-                {messageForReason(errorReason).detail}
-              </div>
-            </div>
-          </div>
-          <ul className="text-xs text-text-muted space-y-1 pl-1">
+          <Note tone="danger" role="alert" icon={AlertTriangle}>
+            <div className="text-label">{messageForReason(errorReason).title}</div>
+            <div className="mt-0.5">{messageForReason(errorReason).detail}</div>
+          </Note>
+          <ul className="text-supporting text-text-muted space-y-1 pl-1">
             <li>· Supported providers: {supportedLabel}</li>
             <li>· Verify the key is active and has sufficient credits</li>
             <li>· For local models, use the Local tab</li>

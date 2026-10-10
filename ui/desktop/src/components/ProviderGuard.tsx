@@ -162,7 +162,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (isChecking) {
     return (
-      <div className="h-screen w-full bg-background-muted flex items-center justify-center">
+      <div className="h-screen w-full bg-background-canvas flex items-center justify-center">
         {/* 84px, not Tailwind's h-20 (80px), to match the pre-React boot
             splash's `.br-mark` exactly. This loader is what the splash hands
             off to, so a 4px difference read as the logo resizing mid-boot.
@@ -203,24 +203,22 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           type="button"
           onClick={() => void handleSkip()}
           data-testid={`onboarding-skip-${placement}`}
-          className="text-sm text-text-muted transition-colors duration-150 hover:text-text-default"
+          className="text-body text-text-muted transition-colors duration-150 hover:text-text-default"
         >
           Explore Biorouter first →
         </button>
       );
 
     return (
-      <div className="flex h-screen w-full flex-col overflow-hidden bg-background-muted">
+      <div className="flex h-screen w-full flex-col overflow-hidden bg-background-canvas">
         {/* Flat page header, on the same reading column as the panels below. */}
         <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-6 sm:pb-6 sm:pt-10">
           <div className="mx-auto max-w-measure-chat">
             <div className="mb-4 sm:mb-5 biorouter-icon-animation origin-bottom-left">
               <BioRouterWordmark className="h-9 w-auto" />
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-text-default">
-              Welcome to Biorouter
-            </h1>
-            <p className="text-sm text-text-muted mt-1.5 leading-relaxed">
+            <h1 className="text-title text-text-default">Welcome to Biorouter</h1>
+            <p className="text-body text-text-muted mt-1.5">
               {hostManaged
                 ? `Biorouter is being served to this browser by ${HOST_SERVE_COMMAND}. One more step is needed on that machine before you can start a chat.`
                 : 'An integrated research environment that connects local, institution-hosted, and commercial AI models in one interface, built for biomedical discovery.'}
@@ -230,7 +228,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                 {skipAction('header')}
                 <button
                   type="button"
-                  className="text-sm text-text-default"
+                  className="text-body text-text-default"
                   onClick={() => navigate('/crew')}
                 >
                   Open Crew →
@@ -241,7 +239,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         </div>
 
         {/* Scrollable body */}
-        <div className="flex-1 min-h-0 overflow-y-auto bg-background-muted">
+        <div className="flex-1 min-h-0 overflow-y-auto bg-background-canvas">
           <div className="mx-auto max-w-measure-chat px-5 py-6 sm:px-6">
             {hostManaged ? (
               <HostManagedModelPanel />

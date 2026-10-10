@@ -4,8 +4,11 @@ import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
 import { llamacppEnsure, llamacppWarmup, type LlamaCppModel } from '../../api';
 import { llamaServerStore, useLlamaServer } from '../settings/models/llamaServerStore';
+import { Note } from '../ui/note';
+import { AlertTriangle } from '../icons/app-icons';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { Spinner } from '../ui/spinner';
 
 interface LlamaServerInlineCardProps {
   onSuccess: () => void;
@@ -315,7 +318,7 @@ export default function LlamaServerInlineCard({
     if (isChecking || !sidecar) return null;
     if (binaryMissing) {
       return (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+        <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
           <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
           llama-server binary not found
         </span>
@@ -323,7 +326,7 @@ export default function LlamaServerInlineCard({
     }
     if (isReadyForSelected) {
       return (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+        <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
           <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
           Running · {sidecar.model} ready
         </span>
@@ -331,14 +334,14 @@ export default function LlamaServerInlineCard({
     }
     if (isRunningForSelected) {
       return (
-        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+        <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
           <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
           Running · warm-up needed
         </span>
       );
     }
     return (
-      <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+      <span className="inline-flex items-center gap-1.5 text-supporting text-text-muted">
         <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
         Built in · no install needed
       </span>
@@ -356,14 +359,14 @@ export default function LlamaServerInlineCard({
         description="Pick a built-in local model and start chatting in minutes. Free, private, offline, nothing else to install."
       >
         {isChecking ? (
-          <div className="flex items-center gap-2 text-xs text-text-muted">
-            <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+          <div className="flex items-center gap-2 text-supporting text-text-muted">
+            <Spinner size={14} />
             <span>Checking Llama Server…</span>
           </div>
         ) : binaryMissing ? (
           <div className="space-y-3">
             <div>{statusPill}</div>
-            <p className="text-xs text-text-muted">
+            <p className="text-supporting text-text-muted">
               The bundled llama-server binary is missing (development build?). Install llama.cpp
               (e.g. <code>brew install llama.cpp</code>) or set <code>BIOROUTER_LLAMACPP_BIN</code>.
             </p>
@@ -375,7 +378,7 @@ export default function LlamaServerInlineCard({
             <div className="min-w-0">
               <label
                 htmlFor="llamacpp-model-select"
-                className="mb-1.5 block text-xs font-medium text-text-default"
+                className="mb-1.5 block text-chip text-text-default"
               >
                 Model
               </label>
@@ -385,7 +388,7 @@ export default function LlamaServerInlineCard({
                 onChange={(e) => setSelectedModel(e.target.value)}
                 disabled={isStarting || isConnecting}
                 data-testid="llamacpp-model-select"
-                className="block h-9 w-full min-w-0 max-w-full rounded-md border border-border-subtle bg-background-default px-2 text-sm text-text-default transition-colors duration-150 focus:border-border-strong"
+                className="block h-9 w-full min-w-0 max-w-full rounded-md border border-border-subtle bg-background-default px-2 text-body text-text-default transition-colors duration-150 focus:border-border-strong"
               >
                 {catalog.map((m) => (
                   <option key={m.name} value={m.name}>
@@ -398,52 +401,54 @@ export default function LlamaServerInlineCard({
             </div>
             {selectedEntry && (
               <div className="min-w-0 space-y-1.5 rounded-lg border border-border-subtle bg-background-muted p-3">
-                <p className="break-words text-[11px] text-text-muted">
+                <p className="break-words text-supporting text-text-muted">
                   {selectedEntry.description}
                 </p>
                 <p
-                  className="break-words text-[11px] text-text-muted"
+                  className="break-words text-supporting text-text-muted"
                   data-testid="llamacpp-size-speed"
                 >
                   {selectedEntry.download_size} download · {selectedEntry.speed_hint}
                 </p>
-                <p className="break-words text-[11px] text-text-muted">
+                <p className="break-words text-supporting text-text-muted">
                   {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
                 </p>
                 {fallbackDownloadLabel(selectedEntry) && (
-                  <p className="break-all text-[11px] text-text-muted">
+                  <p className="break-all text-supporting text-text-muted">
                     Llama Server fallback: {fallbackDownloadLabel(selectedEntry)} ·{' '}
                     {selectedEntry.hf_spec}
                   </p>
                 )}
-                <p className="break-all text-[11px] text-text-muted">
+                <p className="break-all text-supporting text-text-muted">
                   {selectedEntry.ollama_name
                     ? `Ollama model: ${selectedEntry.ollama_name}`
                     : `Fallback model: ${selectedEntry.hf_spec}`}
                 </p>
                 {selectedEntry.model_path && (
-                  <p className="truncate font-mono text-[11px] text-text-muted">
+                  <p className="truncate font-mono text-supporting text-text-muted">
                     {selectedEntry.model_path}
                   </p>
                 )}
                 {system?.model_cache_dir && (
-                  <p className="truncate font-mono text-[11px] text-text-muted">
+                  <p className="truncate font-mono text-supporting text-text-muted">
                     Store: {system.model_cache_dir}
                   </p>
                 )}
                 {selectedEntry.suitability_message && (
-                  <p className="break-words text-[11px] text-text-muted">
+                  <p className="break-words text-supporting text-text-muted">
                     {selectedEntry.suitability_message}
                   </p>
                 )}
               </div>
             )}
             {resourceWarnings.length > 0 && (
-              <div className="space-y-1 rounded-md border border-border-warning bg-background-warning/10 p-2 text-[11px] text-text-default">
-                {resourceWarnings.map((warning) => (
-                  <p key={warning}>{warning}</p>
-                ))}
-              </div>
+              <Note tone="warning" role="status" icon={AlertTriangle}>
+                <div className="space-y-1">
+                  {resourceWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              </Note>
             )}
 
             {operation && (
@@ -451,8 +456,8 @@ export default function LlamaServerInlineCard({
                 className="rounded-md border border-border-subtle bg-background-default p-3"
                 data-testid="llamacpp-progress"
               >
-                <div className="flex items-center gap-2 text-xs text-text-default">
-                  <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                <div className="flex items-center gap-2 text-supporting text-text-default">
+                  <Spinner size={14} />
                   <span>
                     {sidecar?.state === 'ready' && sidecar.model === operation.model
                       ? `Running warm-up prompt for ${operation.model}...`
@@ -462,7 +467,7 @@ export default function LlamaServerInlineCard({
                   </span>
                 </div>
                 {(operation.message ?? sidecar?.detail) && (
-                  <p className="text-[11px] text-text-muted mt-1 font-mono truncate">
+                  <p className="text-supporting text-text-muted mt-1 font-mono truncate">
                     {operation.message ?? sidecar?.detail}
                   </p>
                 )}
