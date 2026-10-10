@@ -291,10 +291,22 @@ export const STRUCTURAL_TOKENS = [
   'motion-fast',
   'motion-base',
   'motion-slow',
+  'dur-fast-min',
+  'dur-fast',
+  'dur-fast-max',
+  'dur-med-min',
+  'dur-med',
+  'dur-slow',
   'ease-out',
-  'ease-in',
+  'ease-spring',
   'row-height',
   'row-height-nav',
+  // The control edge and the Switch's off track (redesign spec 2.3) are neutrals,
+  // shared by all three families and declared once per mode in the base blocks.
+  // `check-contrast.mjs` resolves them as hex there, and `themeNeutrals.test.ts`
+  // fails if a family block restates either.
+  'border-control',
+  'control-track-off',
   'z-base',
   'z-sticky',
   'z-dropdown',
