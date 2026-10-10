@@ -631,6 +631,40 @@ later showed the copy byte-identical to the finished binary, and re-signing
 alone fixed it. Two plausible causes for one symptom is how a real fix gets
 attributed to the wrong action and stops being applied.
 
+## Opening a preview while the window grows (2026-10-10)
+
+When a narrow chat opens an artifact, the panel asks the OS window to grow so the
+preview fits beside the conversation (`useArtifactPanel`, `requestFit`; the main
+process half is `window:ensure-content-width` in `main.ts`). The open used to
+**wait** for that grow before presenting the panel. Measured in Electron on macOS
+(a 760px window growing to 1072px, the WS-PREVIEW harness in panel mode with
+`?grow=1`, sampled every animation frame):
+
+| Variant | IPC returns | Panel first painted | Layout during the grow |
+|---|---|---|---|
+| Await the grow, then present | 343ms | 367ms after the click | none; the window grew empty |
+| Present now, grow alongside (shipped) | 347ms | 24ms after the click | side from the first frame |
+
+The IPC takes the whole OS animation because `setContentSize(…, animate)` does
+not return until macOS has finished resizing the window. So awaiting it held the
+panel back for a third of a second while the window widened with nothing in it.
+
+The concurrent open has one trap, and the shipped code closes it: in the narrow
+window the split box is under the 800px seam, so rung 2 would place a stacked
+sheet and then move it to the side a few frames later as the edge passed 800.
+While a grow is in flight, rung 2 decides on the width the box is growing **to**
+(`growingPaneRef`), and measures for real once the grow settles. If the window
+could not grow after all (a full screen, a narrow display), that measurement
+puts the panel where the real width says. In the recording the panel sits at the
+right edge from the first frame and is uncovered as the edge moves out; nothing
+crosses between layouts. The conversation glide skips this open
+(`windowGrowing`), because the window moves under the conversation anyway.
+
+Under Reduce Motion the main process grows the window without animating
+(`windowResizeMayAnimate`), so the IPC returns at once and the two variants
+differ by one frame. If the concurrent open ever reads as busy, the fallback is
+an instant grow, not a return to waiting.
+
 ## Related documentation
 
 - [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) — the
@@ -641,3 +675,5 @@ attributed to the wrong action and stops being applied.
   frontend tests that pass while the code they cover is broken.
 - [Theme system architecture](../design/theming/theme-system-architecture.md) — where
   the design tokens, including the measures, are defined and generated.
+- [Artifact display surfaces](artifact-display-surfaces.md) — the preview panel this
+  window grow seats.

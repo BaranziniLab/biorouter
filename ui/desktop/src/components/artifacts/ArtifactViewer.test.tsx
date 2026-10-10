@@ -1774,6 +1774,41 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(strip).not.toHaveTextContent('/work/');
     expect(strip.querySelector('[title="/work/analysis.R"]')).toHaveTextContent('analysis.R');
     expect(screen.getAllByTestId('artifact-status-strip')).toHaveLength(1);
+    // Text sits on the reading column, so the name starts on its left edge.
+    expect(strip).toHaveClass('br-preview-measure-strip');
+  });
+
+  // An image uses the panel's width, so its bar keeps to the gutter rather than
+  // the reading column; the bar states its pixel size and file size.
+  it('keeps an image bar on the gutter and states its size', async () => {
+    installElectronMock();
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+      kind: 'image',
+      title: 'figure.png',
+      path: '/tmp/figure.png',
+      mimeType: 'image/png',
+      size: 2048,
+      found: true,
+      dataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'figure.png', path: '/tmp/figure.png' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
+    const strip = screen.getByTestId('artifact-status-strip');
+    expect(strip).toHaveClass('br-preview-bar--gutter');
+    expect(strip).not.toHaveClass('br-preview-measure-strip');
+    expect(within(strip).getByTestId('artifact-strip-count')).toHaveTextContent('2.0 KB');
+    expect(within(strip).getByRole('radio', { name: PREVIEW_COPY.fit })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
   });
 
   it('sits the preview directly on the panel ground: panel → strip → content', async () => {

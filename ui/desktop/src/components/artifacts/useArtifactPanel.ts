@@ -332,19 +332,45 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
     };
   }, []);
 
-  /** Grow the OS window if the panel needs it. Resolves true when it asked to. */
-  const ensureFits = useCallback(async (): Promise<boolean> => {
-    const targetWidth = artifactPanelTargetContentWidth({
-      isMobile,
-      allowWindowResize,
-      windowWidth: window.innerWidth,
-      splitPaneWidth: splitPaneRef.current?.clientWidth ?? window.innerWidth,
-    });
-    if (!targetWidth || !window.electron.ensureWindowContentWidth) return false;
+  /**
+   * WHILE THE WINDOW GROWS, rung 2 decides on the width the split box is growing
+   * TO, not the width it has this frame. The panel opens in the same frame as the
+   * request (spec 3.8, "Window grow"), so it must not be laid out as a stacked
+   * sheet in the narrow window and then cross to the side a few frames later as
+   * the OS animates the edge outwards. Cleared, and the box re-measured for real,
+   * when the grow settles (the IPC resolves once the OS has resized the window).
+   */
+  const growingPaneRef = useRef<number | null>(null);
 
-    await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
-    return true;
-  }, [isMobile, allowWindowResize]);
+  /**
+   * Ask the OS window to grow if the panel needs it, WITHOUT waiting for it.
+   * Returns whether it asked. Awaiting it held the panel back for the whole OS
+   * animation (343ms measured on macOS, where the resize is synchronous in the
+   * main process) and the window grew with nothing in it.
+   */
+  const requestFit = useCallback(
+    (onSettled: () => void): boolean => {
+      const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+      const targetWidth = artifactPanelTargetContentWidth({
+        isMobile,
+        allowWindowResize,
+        windowWidth: window.innerWidth,
+        splitPaneWidth,
+      });
+      if (!targetWidth || !window.electron.ensureWindowContentWidth) return false;
+      const growingTo = splitPaneWidth + Math.max(0, targetWidth - window.innerWidth);
+      growingPaneRef.current = growingTo;
+      void window.electron
+        .ensureWindowContentWidth(targetWidth)
+        .catch(() => undefined)
+        .then(() => {
+          if (growingPaneRef.current === growingTo) growingPaneRef.current = null;
+          onSettled();
+        });
+      return true;
+    },
+    [isMobile, allowWindowResize]
+  );
 
   // The mode the last measurement settled on, so an action can name the layout
   // it is about to produce before React has committed it.
@@ -354,7 +380,13 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
   const measureGeometry = useCallback((): PreviewPaneGeometry | null => {
     const split = splitPaneRef.current;
     if (!split) return null;
-    const next = measurePreviewPaneGeometry(split);
+    const measured = measurePreviewPaneGeometry(split);
+    // Decide on the width the box is growing to while the window grows.
+    const growingTo = growingPaneRef.current;
+    const next =
+      growingTo !== null && growingTo > measured.paneWidth
+        ? { ...measured, paneWidth: growingTo }
+        : measured;
     previewModeRef.current = previewPanelMode({
       paneWidth: next.paneWidth,
       previous: previewModeRef.current,
@@ -396,14 +428,18 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
         setStackRatio(null);
         setFolded(false);
         setContentHeight(null);
-        windowGrowing = await ensureFits();
+        // In the same frame as the request: the window grows while the panel
+        // enters, and the box is re-measured for real once the grow settles.
+        windowGrowing = requestFit(() => {
+          if (presentedArtifactRef.current) measureGeometry();
+        });
       }
       if (request !== openRequestRef.current) return;
 
       // Prime rung 2 BEFORE the panel exists: the observer below only starts once
       // an artifact is presented, so without this the first frame would paint the
-      // panel in whichever shape the last artifact left behind. Measured after
-      // ensureFits, which may have grown the OS window.
+      // panel in whichever shape the last artifact left behind. While the window
+      // grows, this decides on the width it is growing to (`growingPaneRef`).
       const measuredPane = measureGeometry();
       if (!presentedArtifact && enabledRef.current) {
         const layout = previewModeRef.current;
@@ -434,7 +470,7 @@ export function useArtifactPanel(options: UseArtifactPanelOptions): ArtifactPane
         setIsOpen(true);
       });
     },
-    [ensureFits, measureGeometry, presentedArtifact]
+    [requestFit, measureGeometry, presentedArtifact]
   );
 
   const closePanel = useCallback(() => {

@@ -230,7 +230,13 @@ Object.defineProperty(window, 'electron', {
       return true;
     },
     getTempImage: async () => null,
-    ensureWindowContentWidth: async () => undefined,
+    // The OS window grows only in Electron. A measuring main process may expose
+    // `__harnessGrow` through its preload (contextBridge); a plain browser has
+    // none and the grow resolves at once.
+    ensureWindowContentWidth: async (width: number) =>
+      (window as unknown as { __harnessGrow?: (w: number) => Promise<unknown> }).__harnessGrow?.(
+        width
+      ),
     // The live page is a native view in the app; here it is a placeholder that
     // answers like one, so "Open here", the toolbar and its states can be swept.
     embeddedBrowser: {
@@ -346,7 +352,8 @@ function PanelHarness() {
   const presentedChangeRef = useRef<((change: ArtifactPanelPresentedChange) => void) | null>(null);
   const panel = useArtifactPanel({
     isMobile: false,
-    allowWindowResize: false,
+    // `?grow=1` lets the panel ask for a wider window, as the live chat does.
+    allowWindowResize: new URLSearchParams(window.location.search).get('grow') === '1',
     onPresentedChange: (change) => presentedChangeRef.current?.(change),
   });
   const glide = useColumnGlide(panel.splitPaneRef);

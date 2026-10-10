@@ -325,6 +325,25 @@ type PreviewState =
 
 const LOADING_PREVIEW: LoadingPreview = { kind: 'loading' };
 
+const DOCUMENT_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'pptx']);
+
+/**
+ * Whether the bar's name sits on the paper's reading column. Text (prose, code,
+ * a table, a notebook) is set in that column; a figure, an image, a document, a
+ * folder or a refusal uses the panel's width, so its bar keeps to the gutter.
+ * Before the content has loaded, the file's extension decides, so the name does
+ * not move when the content arrives.
+ */
+function barOnReadingColumn(artifact: ArtifactSource, preview: PreviewState): boolean {
+  if (artifact.kind !== 'file') return false;
+  if (preview.kind === 'file') {
+    return preview.preview.kind === 'text' || preview.preview.kind === 'html';
+  }
+  if (preview.kind !== 'loading') return false;
+  const extension = extensionFromPath(artifact.path);
+  return !isImageExtension(extension) && !DOCUMENT_EXTENSIONS.has(extension);
+}
+
 /** A live page paints a native view that cannot fade, so it never crossfades. */
 function isLivePagePreview(preview: PreviewState, browsing: boolean) {
   return preview.kind === 'externalUrl' && (preview.managedApp || browsing);
@@ -1819,13 +1838,19 @@ export default function ArtifactViewer({
 
         <PreviewBarScope>
           {/* The one bar (spec 3.8), from the artifact's own name before its
-              content loads, so a switch never takes it away. `br-preview-measure-
-              strip` puts its first glyph on the reading column's left edge. */}
+              content loads, so a switch never takes it away. Over text it starts
+              on the reading column's left edge, the edge the prose, the code and
+              a table share; over a figure, an image, a document or a folder,
+              which use the panel's whole width, it keeps to the gutter. */}
           {!livePage && (
             <PreviewBar
               name={activeArtifact.title}
               path={artifactHoverTitle(activeArtifact)}
-              className="br-preview-measure-strip"
+              className={
+                barOnReadingColumn(activeArtifact, visiblePreview)
+                  ? 'br-preview-measure-strip'
+                  : 'br-preview-bar--gutter'
+              }
             />
           )}
           <QuotedTextSelection source={quoteSource} selection={sessionId ? quotedSelection : ''}>

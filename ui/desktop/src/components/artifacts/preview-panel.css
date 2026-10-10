@@ -146,6 +146,12 @@
   padding-inline: max(clamp(16px, 4.5%, 32px), calc((100% - var(--measure-chat)) / 2));
 }
 
+/* Over content that uses the panel's whole width (a figure, an image, a
+   document, a folder) the name keeps to the gutter instead of the column. */
+.br-preview-bar.br-preview-bar--gutter {
+  padding-inline: clamp(16px, 4.5%, 32px);
+}
+
 /* A live page's toolbar (WebPagePreview) is the bar for that kind: the same
    row, holding the page's navigation and its address. */
 .br-preview-bar--browser {
