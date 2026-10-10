@@ -326,7 +326,7 @@ to the scaffolding. Levels 1–4 are the family's.
 
 | Level | Light | Dark | |
 |---|---|---|---|
-| 0 (idle) | `#EEEEEA` | `#1E1D1B` | shared |
+| 0 (idle) | `#EEEEEA` | `#32312E` | shared (dark was `#1E1D1B` until 2026-10-10: 1.02:1 on the card, now 1.33:1) |
 | 1 | `#B4E2E8` (C5) | `#0E5258` | teal ramp |
 | 2 | `#60D0DA` (C4) | `#14828C` | teal ramp |
 | 3 | `#16A0AC` (C3) | `#16A0AC` | teal ramp |

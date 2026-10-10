@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import almaMater from '../../themes/alma-mater.theme.mjs';
@@ -116,5 +118,48 @@ describe.each(['light', 'dark'] as const)('%s: the neutral scaffolding is shared
     const darkOnly = new Set(['text-inverse', 'text-on-status']);
     const stale = [...PER_FAMILY].filter((key) => !known.has(key) && !darkOnly.has(key));
     expect(stale).toEqual([]);
+  });
+});
+
+/**
+ * The control edge and the switch's off track are NEUTRALS (redesign spec 2.3),
+ * so they are declared exactly twice, in the hand-authored base `:root` and
+ * `.dark` blocks, and never in a family block or in the generated region.
+ *
+ * Two reasons this is asserted rather than assumed. A family that restated
+ * `--border-control` would pass every per-family contrast assertion (it would
+ * still clear 3:1 on its own ground) while quietly giving that family a control
+ * edge the others do not have, which is the exact drift this file exists to
+ * stop. And `check-contrast.mjs` resolves these two as hex literals, so a
+ * `color-mix(...)` rewrite would turn an assertion into UNRESOLVED rather than
+ * into a quiet pass: the guard here keeps the declaration where the checker
+ * reads it.
+ */
+describe('the control edge and the off track are shared neutrals', () => {
+  const raw = readFileSync(join(__dirname, 'main.css'), 'utf8');
+  // Comments are blanked to spaces of the same length, so a prose mention of a
+  // token cannot count as a declaration and every offset still matches `raw`.
+  const css = raw.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\n]/g, ' '));
+  const generatedStart = raw.indexOf('THEMES:GENERATED:FAMILIES:START');
+  const generatedEnd = raw.indexOf('THEMES:GENERATED:FAMILIES:END');
+
+  it.each(['border-control', 'control-track-off'])(
+    '--%s is declared as a hex once for light and once for dark, outside the family blocks',
+    (token) => {
+      const declarations = [...css.matchAll(new RegExp(`(^|[\\s;{])--${token}:\\s*([^;]+);`, 'g'))];
+      expect(declarations.map((d) => d[2].trim())).toHaveLength(2);
+      for (const declaration of declarations) {
+        expect(declaration[2].trim()).toMatch(/^#[0-9a-f]{6}$/i);
+        const at = declaration.index ?? 0;
+        expect(at < generatedStart || at > generatedEnd, `--${token} sits inside a family`).toBe(
+          true
+        );
+      }
+    }
+  );
+
+  it('keeps the markers it measures against', () => {
+    expect(generatedStart).toBeGreaterThan(0);
+    expect(generatedEnd).toBeGreaterThan(generatedStart);
   });
 });

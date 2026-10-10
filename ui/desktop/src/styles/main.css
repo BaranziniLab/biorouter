@@ -1043,8 +1043,10 @@
      zero day invisible. 1.33:1 on `--background-card`, held at 1.3 by
      `check-contrast.mjs`. Each family file sets the same value. */
   --heat-0: #32312e;
+  /* Parchment's first step moved up with it: #4a3524 measured 1.13:1 on the lifted zero
+     (1.46:1 on the old one), so a quiet day and no day read as one. 1.32:1 now. */
+  --heat-1: #573e2a;
   /* @ws WS-TOKENS end: dark heat-0 */
-  --heat-1: #4a3524;
   --heat-2: #7a4d2e;
   --heat-3: #b0653a;
   --heat-4: #e8895f;

@@ -229,7 +229,7 @@ export default {
       'background-focus': '#35342f',
       'border-focus': '#9c9a93',
       'heat-0': '#32312e', // one step up from #1e1d1b: zero days read on the dark card (redesign 2.3)
-      'heat-1': '#4a3524',
+      'heat-1': '#573e2a', // was #4a3524: 1.13:1 against the lifted heat-0 (was 1.46 against #1e1d1b); a step above it again
       'heat-2': '#7a4d2e',
       'heat-3': '#b0653a',
       'heat-4': '#e8895f',

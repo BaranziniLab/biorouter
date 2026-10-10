@@ -375,7 +375,13 @@ olive-yellow in light (white ink) and bright yellow in dark (dark ink).
 
 `--sidebar: #171716` (darker than the card, like Alma dark) · `--sidebar-hover: #232320` · `--sidebar-active: #2E2E2A` · `--sidebar-border: #2A2A27`
 
-Heat: `--heat-0: #1E1D1B` · `--heat-1: #4A2A0E` · `--heat-2: #7A4413` · `--heat-3: #B45F18` · `--heat-4: #EE6C1A`
+Heat: `--heat-0: #32312E` · `--heat-1: #5C3410` · `--heat-2: #7A4413` · `--heat-3: #B45F18` · `--heat-4: #EE6C1A`
+
+> **Changed 2026-10-10 (Codex simplicity redesign).** Dark `--heat-0` was `#1E1D1B` and `--heat-1`
+> was `#4A2A0E`. An idle day at `#1E1D1B` measured 1.02:1 on the dark card `#1B1B19` (1.10:1 on the canvas
+> `#131312`), so a quiet week disappeared; `#32312E` measures 1.33:1 (`check-contrast.mjs` holds it at 1.3 in dark).
+> `--heat-1` moved one step so the first active step stays above the lifted zero (1.21:1).
+> Level 0 is shared by all three families, so the same `#32312E` sits in Parchment and Alma Mater.
 
 ```css
 --shadow-default:  0px 1px 3px 0px rgba(0,0,0,0.25), 0px 0px 1px 0px rgba(0,0,0,0.35);

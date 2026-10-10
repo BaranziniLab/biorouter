@@ -568,8 +568,10 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // the same ratio is a far smaller visible step in dark than in light. Raising
   // light to 1.3 would retune the light ramp, which the spec keeps unchanged.
   // The first step must also stay a step above zero, or lifting heat-0 would
-  // merge it with heat-1 (Roche Limit dark measured 1.01:1 until its heat-1
-  // moved up one step).
+  // merge it with heat-1: Roche Limit dark measured 1.01:1 and Parchment dark
+  // 1.13:1 (down from 1.46) until each family's heat-1 moved up a step. Dark is
+  // held to 1.2, a step the eye separates on a dark ground; light keeps its
+  // original ramp and the 1.1 collapse floor.
   assert(
     `${theme}: heatmap zero day on the card`,
     '--heat-0',
@@ -577,7 +579,13 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     theme.endsWith(':dark') ? 1.3 : 1.1,
     scope
   );
-  assert(`${theme}: heatmap first step off the zero day`, '--heat-1', '--heat-0', 1.1, scope);
+  assert(
+    `${theme}: heatmap first step off the zero day`,
+    '--heat-1',
+    '--heat-0',
+    theme.endsWith(':dark') ? 1.2 : 1.1,
+    scope
+  );
   // The lock badge on a private chat's glyph is the family accent
   // (`.br-icon-lock-badge`, ink `--text-accent`) and it carries the privacy
   // state, so it owes 3:1 on every row it can sit on: the resting sidebar, the
