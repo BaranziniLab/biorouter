@@ -12,7 +12,7 @@ Every screen in the app draws its controls from `ui/desktop/src/components/ui/`,
 |---|---|---|
 | A change that applies now | `Switch` | 32 by 20, a 16px knob inset 2px in both states, on the right of its row. Named by the row's visible label, never "Toggle …". |
 | Picking items, or an option sent with a form | `Checkbox` | A 16px box in a 24px hit target, the label 8px to its right. |
-| 2 to 4 short values that need no explanation | `SegmentedControl` | A radiogroup. One thumb slides under the choice and never uses the accent. |
+| 2 to 4 short values that need no explanation | `SegmentedControl` | A radiogroup. One thumb slides under the choice and never uses the accent. The thumb is a step lighter than its track in both modes (`--background-default` in light, `--background-strong` in dark, where the default ground is darker than the track and the choice would read as a hole). |
 | 4 or more values, or values that each need a line | `Select` or a menu | The chosen row carries a trailing 16px check. |
 | Sections of a page | `Tabs` | One underline that travels under the active tab. |
 | An explanation | `InfoTip` | See below. |
@@ -33,6 +33,8 @@ The words are always in the page: a visually hidden node holds them and the glyp
 A setting row is 40px at minimum with the label, an optional InfoTip, an optional status line and one control. Whatever the control's height (a 20px switch, a 28px select, a 32px field), a one-line row stays 40px: the control reaches into the row's padding with a negative margin.
 
 The divider is a straight line drawn with `::after` and inset by the row radius. A bottom border on a rounded box curls up at both ends, and forced colours show it plainly.
+
+A row washes and firms its line for keyboard focus only: `:focus-visible` on the row, or `:has(:focus-visible)` inside it. It was `:focus-within`, which is true for a switch the person has just clicked, so the row stayed washed and its line dark until focus moved. A click on a switch leaves nothing; Tab, an arrow key and a click into a text field still show the treatment. A row's `disabled` disables its control and dims only the row's words, because the control already dims itself to 50% and the two together put a locked switch at 25%.
 
 `RowActions` shows its buttons when the row is hovered, holds focus, or has its menu open, and always under `(hover: none)`. Only opacity changes, so the buttons stay in the tab order. The optional `meta` (a relative time) shares the buttons' grid cell and fades out as they fade in. It must keep `pointer-events: none`: below opacity 1 it becomes a stacking context that paints above the opacity-1 buttons, and the invisible time ate the click on the `⋯` button.
 
@@ -60,6 +62,7 @@ Focus is a surface shift plus an inset 2px edge, never a ring. Three rules keep 
 
 - A tooltip (`Tooltip`, `AppTooltipLayer`, `InfoTip`) opens on focus only when Tab moved the focus, so a dialog or menu handing focus back never pops it.
 - A menu skips its focus return after a pointer pick, as above.
+- A list or settings row takes its wash and firmed line from `:focus-visible`, never from `:focus-within` (see Rows and row actions).
 - `DialogContent` and `SheetContent` give focus back to the control that opened them. Radix returns focus to a dialog's own `Trigger` and to nothing else, so a dialog opened from state left focus on the page body after Escape. The opener is read in `onOpenAutoFocus`, because the wrapper is mounted while the dialog is still closed. A caller's own `onCloseAutoFocus` runs first and wins when it cancels the event (Crew's dialogs do), and an opener that is gone is left alone. Whether the returned focus shows a ring is the browser's call from how the person closed it: a click on Cancel shows none, Escape does.
 
 ## Fields and the cascade
@@ -74,7 +77,7 @@ jsdom lays nothing out and runs no Tailwind, so a component test can only read c
 
 - `ui/controlsGeometry.browser.test.tsx` bundles the real components with esbuild, styles them with the authored blocks of `main.css`, and measures the switch, the menu row, the segmented thumb, the InfoTip, the tabs, the setting rows and the `⋯` hit target. Several cases strip the rule they guard from the stylesheet and expect the defect, so the instrument is proved.
 - `styles/crewParity.test.ts` holds each promoted recipe to its Crew original, with the differences the redesign made on purpose written down.
-- `ui/controlsSourceGuard.test.ts` fails on a hand-rolled checkbox, radio or switch, an `@radix-ui/themes` import, a `title=` on a menu item and the retired Switch `variant` outside `ui/`. A file waiting on its owner is listed in `PENDING`, and the list only shrinks.
+- `ui/controlsSourceGuard.test.ts` fails on a hand-rolled checkbox, radio or switch, an `@radix-ui/themes` import, a `title=` on a menu item and a Switch `variant` outside `ui/`. The `variant` prop itself is gone, so the type checker refuses it too. A file waiting on its owner is listed in `PENDING`, and the list only shrinks; it is empty now.
 
 To look at the components under the whole stylesheet, compile `main.css` with Vite (`server.transformRequest('/src/styles/main.css?direct')` on a middleware-mode server that loads `vite.renderer.config.mts`), bundle a small page of components with esbuild, and drive it with Playwright's Chromium using real mouse and keyboard input. `element.click()` and `focus()` from a script do not reproduce focus rings, which depend on how the focus arrived.
 
