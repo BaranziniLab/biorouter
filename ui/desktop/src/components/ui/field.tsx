@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { cn } from '../../utils';
+import { InfoTip, useInfoTipId } from './info-tip';
 
 /**
  * Field: the one form-field recipe (spec 2.6), copied from Crew's `dialogs/fields.tsx`.
@@ -25,6 +26,11 @@ export interface FieldProps {
   /** The control's id; the label points at it and the helper is `fieldHelpId(id)`. */
   id: string;
   label: React.ReactNode;
+  /**
+   * Help behind an InfoTip beside the label (its sibling, never inside the `<label>`), also
+   * linked to the control by `aria-describedby`. Plain text, two sentences at most.
+   */
+  info?: string;
   /** One muted line under the control. Replaced by `error` while there is one. */
   helper?: React.ReactNode;
   /** The field's validation message (danger ink). */
@@ -35,14 +41,25 @@ export interface FieldProps {
   className?: string;
 }
 
-export function Field({ id, label, helper, error, required, children, className }: FieldProps) {
+export function Field({
+  id,
+  label,
+  info,
+  helper,
+  error,
+  required,
+  children,
+  className,
+}: FieldProps) {
   const note = error ?? helper;
   const helpId = note ? fieldHelpId(id) : undefined;
+  const generatedInfoId = useInfoTipId();
+  const infoId = info ? generatedInfoId : undefined;
   const control = React.isValidElement<Record<string, unknown>>(children)
     ? React.cloneElement(children, {
         id: (children.props.id as string | undefined) ?? id,
         'aria-describedby':
-          [children.props['aria-describedby'] as string | undefined, helpId]
+          [children.props['aria-describedby'] as string | undefined, infoId, helpId]
             .filter(Boolean)
             .join(' ') || undefined,
         'aria-invalid': children.props['aria-invalid'] ?? (error ? true : undefined),
@@ -51,9 +68,18 @@ export function Field({ id, label, helper, error, required, children, className 
     : children;
   return (
     <div className={cn('br-field flex min-w-0 flex-col gap-1.5', className)} data-slot="field">
-      <label id={fieldLabelId(id)} htmlFor={id} className="text-label text-text-default">
-        {label}
-      </label>
+      {info ? (
+        <div className="flex min-w-0 items-center">
+          <label id={fieldLabelId(id)} htmlFor={id} className="text-label text-text-default">
+            {label}
+          </label>
+          <InfoTip label={typeof label === 'string' ? label : id} help={info} id={infoId} />
+        </div>
+      ) : (
+        <label id={fieldLabelId(id)} htmlFor={id} className="text-label text-text-default">
+          {label}
+        </label>
+      )}
       {control}
       {note ? (
         <p

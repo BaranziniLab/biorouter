@@ -78,8 +78,10 @@ export type RowActionSize = 'xs' | 'sm' | 'default';
 
 export interface IconActionProps {
   icon: RowActionIcon;
-  /** The action's name: the button's accessible name and its tooltip. */
+  /** The action's name: the button's accessible name, and its tooltip unless `tooltip` is set. */
   label: string;
+  /** A shorter tooltip than the name ("Pause" for "Pause nightly-cohort"). */
+  tooltip?: string;
   onSelect: () => void;
   disabled?: boolean;
   /** 24, 28 or 32px; 32 (`default`) in 40px content rows. */
@@ -90,7 +92,7 @@ export interface IconActionProps {
 
 /** A ghost, round icon button named by its tooltip: the row's one primary action. */
 export const IconAction = React.forwardRef<HTMLButtonElement, IconActionProps>(function IconAction(
-  { icon: Icon, label, onSelect, disabled, size = 'default', testId, className },
+  { icon: Icon, label, tooltip, onSelect, disabled, size = 'default', testId, className },
   ref
 ) {
   return (
@@ -116,7 +118,7 @@ export const IconAction = React.forwardRef<HTMLButtonElement, IconActionProps>(f
           <Icon aria-hidden />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      <TooltipContent>{tooltip ?? label}</TooltipContent>
     </Tooltip>
   );
 });

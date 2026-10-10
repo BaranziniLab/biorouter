@@ -49,7 +49,7 @@ button { margin: 0; border: 0; font: inherit; background: none; }`;
 
 /**
  * The Tailwind utilities that move a box, at `main.css`'s values (spacing 4px; text-label 14/20
- * 500; text-secondary 13/18; text-supporting 12/16; text-caps 11/16 500 0.08em;
+ * 500; text-secondary 13/18; text-supporting 12/16; text-caps 12/16 500 0.04em;
  * control-compact 24px).
  */
 const UTILITIES: Record<string, string> = {
@@ -73,7 +73,7 @@ const UTILITIES: Record<string, string> = {
   'text-secondary': 'font-size: 13px; line-height: 18px; font-weight: 400',
   'text-supporting': 'font-size: 12px; line-height: 16px; font-weight: 400',
   'text-caps':
-    'font-size: 11px; line-height: 16px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase',
+    'font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase',
   'sr-only':
     'position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0',
 };

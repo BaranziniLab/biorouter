@@ -389,7 +389,8 @@ describe('a tab panel takes no focus fill either', () => {
  * The same fill, on a region that has NO role to exempt — the third instance,
  * measured but deliberately left by #185 because its `:not()` keys on roles.
  *
- * The chat summary's To Do list (`components/ChatSummary.tsx`) is an `<ol>`
+ * The chat summary's scrolling body (`components/ChatSummary.tsx`, the
+ * `data-summary-body` div that holds the To do list and the statistics) is
  * given `tabIndex={0}` so a keyboard user can scroll it. That makes it a
  * REGION by #185's argument — entered, not operated — and the `[tabindex]`
  * arm reaches it exactly as it reached the panel. Measured on the real popover
@@ -428,14 +429,17 @@ describe('a scroll region with no role opts out of the focus fill by class', () 
    * keeps NO role — the plausible wrong fix is `role="region"`, which would
    * silence the fill and take the rows' list semantics with it.
    */
-  it('is carried by the To Do list, which stays a list', () => {
-    const tag = CHAT_SUMMARY.match(/<ol\s[^>]*aria-label="To Do tasks"[^>]*>/);
-    expect(tag, 'the To Do list is no longer recognisable').toBeTruthy();
+  it('is carried by the summary body, and the To do list inside it stays a list', () => {
+    const tag = CHAT_SUMMARY.match(/<div\s[^>]*data-summary-body=""[^>]*>/);
+    expect(tag, 'the summary body is no longer recognisable').toBeTruthy();
     expect(tag![0]).toContain('tabIndex={0}');
     expect(tag![0]).toMatch(/className="[^"]*\bbiorouter-focus-region\b/);
     expect(tag![0]).not.toMatch(/\brole=/);
     // A selector hook, never a utility that has to be generated.
     expect(tag![0]).not.toContain('focus-visible:');
+    const list = CHAT_SUMMARY.match(/<ol\s[^>]*aria-label=\{summaryCopy\.todoListLabel\}[^>]*>/);
+    expect(list, 'the To do list is no longer recognisable').toBeTruthy();
+    expect(list![0]).not.toMatch(/\brole=/);
   });
 
   /**

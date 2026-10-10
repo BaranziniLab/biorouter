@@ -257,15 +257,15 @@ export default function JsonSchemaForm({
         );
       })}
 
-      <div className="flex gap-2 mt-2">
-        <Button type="submit" disabled={disabled}>
-          {submitLabel}
-        </Button>
+      <div className="flex justify-end gap-2">
         {onCancel && (
-          <Button type="button" variant="outline" onClick={onCancel} disabled={disabled}>
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={disabled}>
             {cancelLabel}
           </Button>
         )}
+        <Button type="submit" size="sm" disabled={disabled}>
+          {submitLabel}
+        </Button>
       </div>
     </form>
   );

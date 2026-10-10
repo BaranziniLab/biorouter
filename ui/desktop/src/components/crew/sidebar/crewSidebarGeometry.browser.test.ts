@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { stageSkeleton } from '../integration/stageSkeleton';
+import { DUR } from '../../../styles/motion';
 
 const crewDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const STYLESHEETS = [
@@ -45,11 +46,11 @@ const TOKENS = `:root {
   --biorouter-titlebar-control-reserve: 172px;
   --border-subtle: rgb(200, 200, 200);
   --sidebar-border: rgb(200, 200, 200);
-  --dur-fast: 120ms;
-  --dur-fast-min: 80ms;
-  --dur-fast-max: 175ms;
-  --dur-med: 300ms;
-  --dur-slow: 525ms;
+  --dur-fast: ${DUR.fast}ms;
+  --dur-fast-min: ${DUR.fastMin}ms;
+  --dur-fast-max: ${DUR.fastMax}ms;
+  --dur-med: ${DUR.med}ms;
+  --dur-slow: ${DUR.slow}ms;
   --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
 }
 body { margin: 0; font: 14px/20px sans-serif; }

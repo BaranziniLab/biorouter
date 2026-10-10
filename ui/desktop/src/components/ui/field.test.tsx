@@ -40,3 +40,20 @@ describe('Textarea', () => {
     expect(area).toHaveClass('br-textarea', 'rounded-element', 'text-body');
   });
 });
+
+describe('Field info', () => {
+  it('puts an InfoTip beside the label, never inside it, and describes the control with it', () => {
+    render(
+      <Field id="wf-model" label="Model" info="Runs use this model." helper="Required.">
+        <Input />
+      </Field>
+    );
+    const label = screen.getByText('Model');
+    expect(label.tagName).toBe('LABEL');
+    expect(label.querySelector('.br-info-tip')).toBeNull();
+    expect(screen.getByRole('button', { name: 'About Model' })).toBeInTheDocument();
+    const input = screen.getByRole('textbox', { name: 'Model' });
+    expect(input.getAttribute('aria-describedby')?.split(' ')).toHaveLength(2);
+    expect(input).toHaveAccessibleDescription('Runs use this model. Required.');
+  });
+});

@@ -5,7 +5,8 @@
 // ⚠ **A padlock, and the SAME padlock the chat list draws.** This was a shield
 // in the pill and a filled dot in the dense form, which meant the app marked
 // Private with three unrelated figures at once: a padlocked speech bubble on a
-// private conversation (`chatKind.ts` → `MessageSquareLock`), a shield on a
+// private chat (now the lock badge every private chat glyph wears,
+// `withPrivateBadge` in `icons/app-icons.tsx`), a shield on a
 // private extension, and an anonymous dot on a private model. They are one
 // concept — the issue-#56 tier that decides where a transcript may go — so they
 // are now one mark, and the two forms below differ only in whether the word

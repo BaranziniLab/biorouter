@@ -112,3 +112,13 @@ describe('the reveal rules', () => {
     );
   });
 });
+
+describe('IconAction tooltip', () => {
+  it('can keep the long name for screen readers and a short tooltip', async () => {
+    const user = userEvent.setup();
+    render(<IconAction icon={Play} label="Run Daily summary" tooltip="Run" onSelect={() => {}} />);
+    const button = screen.getByRole('button', { name: 'Run Daily summary' });
+    await user.hover(button);
+    expect(await screen.findByRole('tooltip', {}, { timeout: 2000 })).toHaveTextContent('Run');
+  });
+});
