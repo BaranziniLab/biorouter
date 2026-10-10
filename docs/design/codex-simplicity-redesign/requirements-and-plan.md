@@ -54,7 +54,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 |----|-------------|
 | R-19 | Audit every icon. Redraw or replace icons so each is simple, clear and representative, and use the same icon for the same concept everywhere. |
 | R-20 | Conversations of different kinds have different icons: private and public, Crew, scheduled, sub agent, branch, app, terminal. Private and public differ by shape, not only by color. |
-| R-21 | Each tool call in the transcript shows an icon that represents that tool: running a command, reading a file, using the knowledge base, using Crew, using the other components. The wrench remains only as the last fallback. |
+| R-21 | Each tool call in the transcript shows an icon that represents that tool: running a command, reading a file, using the knowledge base, using Crew, using the other components. Only built in extensions and tools get their own icons; every external extension (for example SPOKEAgent) uses the one generic extension icon. The wrench remains only as the last fallback. |
 
 ### Website, verification and records
 
