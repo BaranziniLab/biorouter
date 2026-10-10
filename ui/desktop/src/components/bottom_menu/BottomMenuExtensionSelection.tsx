@@ -1,8 +1,5 @@
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Puzzle } from '../icons/app-icons';
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
 import { isCapabilityExtension } from '../settings/capabilities/capabilities';
@@ -13,7 +10,6 @@ import {
 } from '../settings/extensions/subcomponents/ExtensionList';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
-import type { SessionClassification } from '../../api/types.gen';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
 import { isCrewExtensionName, useChatCrewAccessState } from '../crew/access/chatCrewAccess';
@@ -27,19 +23,6 @@ import {
 } from '../../utils/sessionToolEvents';
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { PickerPanel, PickerRow } from './PickerPanel';
-
-interface BottomMenuExtensionSelectionProps {
-  sessionId: string | null;
-  /**
-   * The focused chat's privacy tier (issue #56, §14.5).
-   *
-   * ⚠ **Not what the pairing is judged on — see `pairingTier` in the hook.**
-   * The chat's classification and the bound model's tier are different axes, and
-   * feeding this one to `extensionPairingRefused` reported a Private UCSF model
-   * as public in every chat that had not yet run a turn.
-   */
-  privacyTier?: SessionClassification;
-}
 
 /** What the extensions list needs from its picker state (see `useExtensionPicker`). */
 export interface ExtensionPicker {
@@ -585,45 +568,5 @@ export function ExtensionsPanel({
         />
       ))}
     </PickerPanel>
-  );
-}
-
-/**
- * ⚠ Transitional: the composer's old standalone extensions chip. The app no
- * longer renders it (`ToolsChip` replaced it, spec 3.7); its one importer is
- * `crew/access/crewExtensionLock.test.tsx`, which WS-PRIMITIVES moves onto
- * `useExtensionPicker` + `ExtensionsPanel` (request WS-PICKERS-1). Delete it
- * then.
- */
-export function BottomMenuExtensionSelection({ sessionId }: BottomMenuExtensionSelectionProps) {
-  const [open, setOpen] = useState(false);
-  const picker = useExtensionPicker(sessionId, { open, onOpenRequest: () => setOpen(true) });
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) picker.setQuery('');
-      }}
-    >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="br-picker-chip"
-              aria-label={`Manage extensions (${picker.activeCount} added)`}
-            >
-              <Puzzle className="br-picker-chip__chevron" aria-hidden="true" />
-              <span className="br-picker-chip__count">{picker.activeCount}</span>
-            </button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top">{EXTENSIONS_COPY.listLabel}</TooltipContent>
-      </Tooltip>
-      <PopoverContent side="top" align="center" className="br-picker-popover">
-        <ExtensionsPanel picker={picker} />
-      </PopoverContent>
-    </Popover>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -21,6 +21,61 @@ import { join } from 'node:path';
 const DIR = join(__dirname, '..', 'components', 'bottom_menu');
 
 const popups = readdirSync(DIR).filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx'));
+
+/**
+ * The transcript is the other place a hand-rolled size and a re-pinned face
+ * crept in (spec 3.1 item 5, WS-TOKENS-1), so the same two rules read it too:
+ * the message, markdown, activity and tool-call files, plus every component in
+ * `subagent/` and `transcript/`.
+ */
+const COMPONENTS = join(__dirname, '..', 'components');
+const TRANSCRIPT = [
+  'BioRouterMessage',
+  'UserMessage',
+  'MessageMeta',
+  'MessageCopyLink',
+  'MessageDivergeLink',
+  'ProgressiveMessageList',
+  'ProvenanceChip',
+  'SessionNamePill',
+  'InlineImage',
+  'ImagePreview',
+  'WorkflowHeader',
+  'MarkdownContent',
+  'TurnActivityIndicator',
+  'LoadingBioRouter',
+  'ToolCallWithResponse',
+  'PendingToolCallCard',
+  'ToolCallStatusIndicator',
+  'ToolContentPreview',
+  'ToolCallArguments',
+  'ToolCallPreview',
+  'ToolCallConfirmation',
+  'ElicitationRequest',
+  'SecretRequestCard',
+  'MCPUIResourceRenderer',
+].map((name) => `${name}.tsx`);
+const folderComponents = (folder: string) =>
+  existsSync(join(COMPONENTS, folder))
+    ? readdirSync(join(COMPONENTS, folder))
+        .filter((f) => f.endsWith('.tsx') && !/\.(test|browser)\./.test(f))
+        .map((f) => `${folder}/${f}`)
+    : [];
+
+const sources: { label: string; path: string }[] = [
+  ...popups.map((f) => ({ label: `bottom_menu/${f}`, path: join(DIR, f) })),
+  ...[...TRANSCRIPT, ...folderComponents('subagent'), ...folderComponents('transcript')].map(
+    (f) => ({ label: f, path: join(COMPONENTS, f) })
+  ),
+];
+
+/**
+ * ⚠ A ratchet, not an exemption: the count may fall and must not rise, and the
+ * entry goes when it reaches 0. `MarkdownContent.tsx` re-pins `font-sans` on the
+ * `.biorouter-markdown` wrapper (WS-TRANSCRIPT's file; request WS-PICKERS-1 in
+ * its inbox asks for it to go).
+ */
+const FONT_SANS_PENDING: Record<string, number> = { 'MarkdownContent.tsx': 1 };
 
 /**
  * The source with every comment form removed.
@@ -51,19 +106,28 @@ describe('composer popup typography', () => {
     expect(popups.length).toBeGreaterThan(3);
   });
 
-  it.each(popups)('%s uses the type scale, not raw pixel sizes', (file) => {
+  it('reads every transcript file it names, so a rename cannot empty the list', () => {
+    expect(TRANSCRIPT.filter((f) => !existsSync(join(COMPONENTS, f)))).toEqual([]);
+    expect(folderComponents('subagent').length).toBeGreaterThan(0);
+  });
+
+  it.each(sources)('$label uses the type scale, not raw pixel sizes', ({ label, path }) => {
     // Strip comments so a note explaining the rule cannot trip it — this repo
     // has now three times shipped a guard that matched prose.
-    const code = codeOnly(readFileSync(join(DIR, file), 'utf8'));
+    const code = codeOnly(readFileSync(path, 'utf8'));
 
     const raw = code.match(/text-\[\d+px\]/g);
-    expect(raw, `${file} pins a raw font size; use a token from main.css:103-170`).toBeNull();
+    expect(raw, `${label} pins a raw font size; use a token from main.css:103-170`).toBeNull();
   });
 
-  it.each(popups)('%s does not re-pin font-sans, which the body already sets', (file) => {
-    const code = codeOnly(readFileSync(join(DIR, file), 'utf8'));
-    expect(code.includes('font-sans')).toBe(false);
-  });
+  it.each(sources)(
+    '$label does not re-pin font-sans, which the body already sets',
+    ({ label, path }) => {
+      const code = codeOnly(readFileSync(path, 'utf8'));
+      const uses = code.match(/font-sans/g)?.length ?? 0;
+      expect(uses, `${label} re-pins font-sans`).toBeLessThanOrEqual(FONT_SANS_PENDING[label] ?? 0);
+    }
+  );
 
   /**
    * Spec 3.7 acceptance: "No mono anywhere in the composer." Mono is for
