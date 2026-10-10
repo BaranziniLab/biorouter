@@ -68,6 +68,18 @@ export function PreviewBarScope({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Wrap a layer that is on its way out (a tab switch keeps the outgoing tab's DOM
+ * for one 125ms fade). Its `PreviewBarMeta` and `PreviewBarActions` portal into
+ * the bar, which is OUTSIDE the layer, so without this the bar would show the
+ * outgoing tab's count, Copy and view switch beside the incoming tab's for those
+ * frames (measured: two Copy buttons and two switches at once). Inside this
+ * wrapper they render nothing: the bar belongs to the tab being shown.
+ */
+export function PreviewBarDetached({ children }: { children: ReactNode }) {
+  return <PreviewBarScopeContext.Provider value={null}>{children}</PreviewBarScopeContext.Provider>;
+}
+
 /** The content's metadata (`300 lines`, `500 of 620 rows`), shown in the bar. */
 export function PreviewBarMeta({ children }: { children: ReactNode }) {
   const scope = useContext(PreviewBarScopeContext);

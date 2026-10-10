@@ -2683,6 +2683,32 @@ describe('ArtifactViewer — rung 3: the ▾ overflow menu', () => {
     }
   });
 
+  it('marks the shown preview in the ▾ with a trailing check, not a heavier weight', async () => {
+    installElectronMock();
+    const restore = stubTabListMetrics(900, 300);
+    try {
+      const { rerender } = render(viewer(file('chart-a.html')));
+      rerender(viewer(file('chart-b.html')));
+      rerender(viewer(file('summary.md')));
+
+      fireEvent.pointerDown(await screen.findByTestId('artifact-tab-overflow-trigger'));
+      const items = await screen.findAllByTestId(/^artifact-tab-overflow-item-/);
+      expect(items).toHaveLength(3);
+      const current = items.filter((item) => item.getAttribute('aria-current') === 'true');
+      // Arial draws 500 as 400, so a weight is no mark at all: one row carries the
+      // check (spec 2.6), the chat strip's overflow marks its current tab the same way.
+      expect(current).toHaveLength(1);
+      expect(current[0]).toHaveTextContent('summary.md');
+      expect(within(current[0]).getByRole('img', { name: PREVIEW_COPY.currentTab })).toBeTruthy();
+      expect(current[0].className).not.toMatch(/font-medium/);
+      for (const other of items.filter((item) => item !== current[0])) {
+        expect(within(other).queryByRole('img')).toBeNull();
+      }
+    } finally {
+      restore();
+    }
+  });
+
   it('stays away while the tabs fit', async () => {
     installElectronMock();
     const restore = stubTabListMetrics(300, 300);

@@ -73,6 +73,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Button, buttonVariants } from '../ui/button';
@@ -82,6 +83,7 @@ import { PREVIEW_COPY } from './copy';
 import {
   PreviewBar,
   PreviewBarActions,
+  PreviewBarDetached,
   PreviewBarMeta,
   PreviewBarScope,
   PreviewIconButton,
@@ -1227,6 +1229,18 @@ export default function ArtifactViewer({
     };
   }, [activeArtifact, activeSourceKey, fileRefreshRevision, refreshScope]);
 
+  // A closed tab keeps no preview: the cache is for tabs that can still be
+  // switched back to, and a file's bytes (a PDF, a deck) are not small. Scopes are
+  // the same string `refreshScope` builds for each tab.
+  useEffect(() => {
+    const open = new Set(
+      tabState.tabs.map((tab) => JSON.stringify([sessionId, artifactSourceKey(tab.artifact)]))
+    );
+    for (const scope of previewCacheRef.current.keys()) {
+      if (!open.has(scope)) previewCacheRef.current.delete(scope);
+    }
+  }, [sessionId, tabState.tabs]);
+
   useEffect(() => {
     if (activeArtifact?.kind !== 'file') return;
     const trackDirty = (event: MessageEvent) => {
@@ -1499,6 +1513,8 @@ export default function ArtifactViewer({
       : PREVIEW_COPY.showInFolder;
   const annotateUnavailable = annotateBrowserReason();
   const canQuote = Boolean(sessionId) && hasSelectedText(quotedSelection);
+  const quoteSelectionToChat = () =>
+    attachSelectedText(quoteSource, quotedSelection, previewBodyRef.current ?? undefined);
   const showMoreMenu = Boolean(sessionId) || activeArtifact.kind === 'file';
 
   const renderLayer = (
@@ -1507,16 +1523,8 @@ export default function ArtifactViewer({
     layerPreview: PreviewState,
     layerArtifact: ArtifactSource,
     animate: boolean
-  ) => (
-    <div
-      key={key}
-      className="br-preview-layer"
-      data-preview-layer={role}
-      data-enter={role === 'current' && animate ? '' : undefined}
-      aria-hidden={role === 'outgoing' ? true : undefined}
-      // `inert` keeps a fading layer out of the tab order and the pointer's way.
-      {...(role === 'outgoing' ? { inert: true } : {})}
-    >
+  ) => {
+    const body = (
       <ArtifactPreviewBody
         preview={layerPreview}
         artifact={layerArtifact}
@@ -1534,8 +1542,26 @@ export default function ArtifactViewer({
         }
         refreshRevision={refreshRevision}
       />
-    </div>
-  );
+    );
+    return (
+      <div
+        key={key}
+        className="br-preview-layer"
+        data-preview-layer={role}
+        data-enter={role === 'current' && animate ? '' : undefined}
+        aria-hidden={role === 'outgoing' ? true : undefined}
+        // `inert` keeps a fading layer out of the tab order and the pointer's way.
+        {...(role === 'outgoing' ? { inert: true } : {})}
+      >
+        {role === 'outgoing' ? (
+          // The bar is the incoming tab's: a fading layer puts nothing into it.
+          <PreviewBarDetached>{body}</PreviewBarDetached>
+        ) : (
+          body
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -1633,6 +1659,10 @@ export default function ArtifactViewer({
                     aria-controls={previewContentId}
                     onPointerDown={(event) => beginTabPointerDrag(event, tab.id)}
                     onClick={() => activateTabFromPointer(tab)}
+                    // The path is the tooltip (`title`), and the app's tooltip layer
+                    // would copy a `title` into the aria-label of a control that has
+                    // none, naming every tab by its full path. The name is the file.
+                    aria-label={tab.artifact.title}
                     title={artifactHoverTitle(tab.artifact)}
                     className="flex h-full min-w-0 flex-1 cursor-grab items-center gap-1.5 text-left active:cursor-grabbing"
                   >
@@ -1679,15 +1709,28 @@ export default function ArtifactViewer({
               <DropdownMenuContent align="end" className="max-h-[60vh] w-56 overflow-y-auto">
                 {tabState.tabs.map((tab) => {
                   const TabIcon = iconForArtifact(tab.artifact);
+                  const isCurrent = tab.id === tabState.activeTabId;
                   return (
                     <DropdownMenuItem
                       key={tab.id}
                       data-testid={`artifact-tab-overflow-item-${tab.id}`}
+                      aria-current={isCurrent ? 'true' : undefined}
                       onSelect={() => activateTab(tab)}
-                      className={cn('gap-2', tab.id === tabState.activeTabId && 'font-medium')}
+                      className="gap-2"
                     >
                       <TabIcon className="h-4 w-4 flex-none" aria-hidden="true" />
                       <span className="min-w-0 flex-1 truncate">{tab.artifact.title}</span>
+                      {isCurrent && (
+                        // The menus' one selection mark is a trailing check (spec 2.6);
+                        // a heavier weight is not one, because Arial draws 500 as 400.
+                        <span className={MENU_ROW_TRAILING_CLASS_NAME}>
+                          <Check
+                            role="img"
+                            className="size-4 text-text-default"
+                            aria-label={PREVIEW_COPY.currentTab}
+                          />
+                        </span>
+                      )}
                     </DropdownMenuItem>
                   );
                 })}
@@ -1705,13 +1748,7 @@ export default function ArtifactViewer({
                 data-testid="artifact-quote"
                 // Keep the selection: a press on a button would collapse it first.
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() =>
-                  attachSelectedText(
-                    quoteSource,
-                    quotedSelection,
-                    previewBodyRef.current ?? undefined
-                  )
-                }
+                onClick={quoteSelectionToChat}
               >
                 <TextQuote className="h-4 w-4" aria-hidden="true" />
               </PreviewIconButton>
@@ -1775,6 +1812,17 @@ export default function ArtifactViewer({
                   <TooltipContent side="bottom">{PREVIEW_COPY.moreActions}</TooltipContent>
                 </Tooltip>
                 <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
+                  {canQuote && (
+                    // The same action as the header's Quote icon, kept in the menu
+                    // for a reader who reaches the selection from the keyboard. Only
+                    // while a selection exists: an item that can do nothing is noise.
+                    <DropdownMenuItem
+                      data-testid="artifact-quote-menu-item"
+                      onSelect={quoteSelectionToChat}
+                    >
+                      {PREVIEW_COPY.quoteSelection}
+                    </DropdownMenuItem>
+                  )}
                   {sessionId && (
                     // Annotation is available on EVERY preview kind, not just one:
                     // a researcher reads a generated report and needs to point at

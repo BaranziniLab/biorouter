@@ -9,6 +9,7 @@ export const PREVIEW_COPY = {
   // The tab strip and its actions.
   tabList: 'Open artifact previews',
   overflow: 'Show all previews',
+  currentTab: 'Current tab',
   closeTab: (title: string) => `Close ${title}`,
   openExternally: 'Open externally',
   closePanel: 'Close preview panel',
