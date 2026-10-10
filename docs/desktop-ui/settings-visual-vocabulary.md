@@ -88,6 +88,12 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   validation message.
 - **One control per row.** A second control is a second row. Two related buttons (Feedback's
   "Report a bug" and "Request a feature") sit in one `role="group"` that the row names.
+- **A row never arrives late.** What the platform or storage already knows
+  (`window.electron.platform`, a `localStorage` key) is read in the `useState` initializer,
+  inside a `try`, never in an effect: an effect lands a frame after the first paint, so a row
+  (Show in Dock) appears and pushes every row below it down, or a segmented thumb slides
+  across on every visit. What only the daemon can answer (`read`) loads asynchronously, and
+  the primitives hide the arrival (the Switch's `data-motion-still`, a Skeleton).
 - No `min-h-*`, no `py-2`, no `py-3`, no `items-start`, no per-row measure fork. A hand-built
   row (a checkbox list inside a dialog, a row that is itself a button) uses the same
   `biorouter-settings-row` class with `px-3 py-2.5`.
@@ -118,9 +124,11 @@ one-row Workspace and Editor sections are rows of General and Display now).
 **Deep links scroll to a section `id`.** `components/settings/settingsSections.ts` names every
 section a link can land on (`SETTINGS_SECTION_IDS`) and the keys callers already pass
 (`update`, `models`, `modes`, `styles`, `tools`, `app`, `chat`, `privacy`); `SettingsView`
-selects the tab, scrolls the section into view (smoothly only without reduced motion) and
-gives it the `.br-highlight` wash. A section another workstream renders puts the id on its own
-root. Never rename or drop a deep-link key: four files outside Settings pass them.
+selects the tab (a different tab starts at the top of the one scroller), scrolls the section
+into view (smoothly only without reduced motion) and gives the section's first row the
+`.br-highlight` wash, the control the link names; a section that holds no row is washed whole.
+The wash ends with its own `animationend`, with a timer behind it. A section another
+workstream renders puts the id on its own root. Never rename or drop a deep-link key: four files outside Settings pass them.
 
 Sections are **siblings under one tab wrapper**, so
 `.biorouter-settings-section + .biorouter-settings-section` actually fires. Only the tab's

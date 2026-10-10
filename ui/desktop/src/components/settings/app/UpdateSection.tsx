@@ -35,6 +35,7 @@ function statusLine(state: UpdaterState, checkRequested: boolean): ReactNode {
             <span className="tabular-nums">{state.percent}%</span>
           </span>
           <Progress
+            size="thin"
             className="max-w-xs"
             label={aboutCopy.downloadingLabel(state.latestVersion)}
             value={state.percent}
