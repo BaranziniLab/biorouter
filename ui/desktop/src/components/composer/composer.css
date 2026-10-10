@@ -253,6 +253,18 @@
   color: var(--text-default);
 }
 
+/* ── The text ──────────────────────────────────────────────────────────── */
+
+/* The field sizes to what is typed, one line to ten (14px on a 20px line, plus
+   the 6px padding above and below), then scrolls. Native sizing, so there is
+   no measuring script and no late jump after a keystroke. */
+.br-composer-input {
+  field-sizing: content;
+  min-height: var(--control-md);
+  max-height: calc(10 * 20px + 12px);
+  overflow-y: auto;
+}
+
 /* ── The controls row inside the card: [+] [Tools]  ·  [model] (Send) ───── */
 
 .br-composer-controls {

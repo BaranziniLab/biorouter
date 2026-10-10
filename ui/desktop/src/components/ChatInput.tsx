@@ -7,7 +7,6 @@ import { Button } from './ui/button';
 import type { View, ViewOptions } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
 import { ChatState } from '../types/chatState';
-import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
 import { ToolsChip } from './bottom_menu/ToolsChip';
 import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
@@ -1481,35 +1480,10 @@ export default function ChatInput({
     };
   }, []);
 
-  // Ten lines, counted in the line box the composer actually renders:
-  // `COMPOSER_INPUT_TYPE_CLASS` is `--text-body`, which is 14 on a 20px line.
-  // This tracked a 24px line while the input was briefly 16px; left at 24 it
-  // would now mean twelve lines, which is how this figure was wrong before.
-  // The textarea's own vertical padding is inside the measurement
-  // (`scrollHeight` includes padding), so the true ceiling is a shade under ten
-  // — the right way to be wrong for a scroll cap.
-  const maxHeight = 10 * 20;
-
   // Immediate function to update actual value - no debounce for better responsiveness
   const updateValue = React.useCallback((value: string) => {
     setValue(value);
   }, []);
-
-  const debouncedAutosize = useMemo(
-    () =>
-      debounce((element: HTMLTextAreaElement) => {
-        element.style.height = '0px'; // Reset height
-        const scrollHeight = element.scrollHeight;
-        element.style.height = Math.min(scrollHeight, maxHeight) + 'px';
-      }, 50),
-    [maxHeight]
-  );
-
-  useEffect(() => {
-    if (textAreaRef.current) {
-      debouncedAutosize(textAreaRef.current);
-    }
-  }, [debouncedAutosize, displayValue]);
 
   // Issue #65 — the composer's two views of one string.
   //
@@ -1566,14 +1540,6 @@ export default function ChatInput({
     },
     [displayValue, setComposerText]
   );
-
-  // Reset textarea height when the prose is empty. Keyed off the body, not the
-  // whole message: a message that is nothing but a chip shows an empty box.
-  useEffect(() => {
-    if (textAreaRef.current && composerBody === '') {
-      textAreaRef.current.style.height = 'auto';
-    }
-  }, [composerBody]);
 
   const handleChange = (evt: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = evt.target.value;
@@ -1795,13 +1761,6 @@ export default function ChatInput({
     // Add all new images to the existing list
     setPastedImages((prev) => [...prev, ...newImages]);
   };
-
-  // Cleanup debounced functions on unmount
-  useEffect(() => {
-    return () => {
-      debouncedAutosize.cancel?.();
-    };
-  }, [debouncedAutosize]);
 
   // Handlers for composition events, which are crucial for proper IME behavior
   const handleCompositionStart = () => {
@@ -2906,9 +2865,11 @@ export default function ChatInput({
         />
 
         <form id={composerFormId} onSubmit={onFormSubmit} className="relative flex min-w-0">
-          {/* `py-1.5` makes the textarea's box 32px around a 20px line, so the
-              text sits centred however it grows; `px-0` keeps the text on the
-              card's 16px edge. */}
+          {/* The field grows with what is typed by itself (`field-sizing:
+              content` in `composer.css`, as Crew's fields do), up to ten lines,
+              then scrolls. `py-1.5` makes its box 32px around a 20px line, so
+              the text sits centred however it grows; `px-0` keeps the text on
+              the card's 16px edge. */}
           <textarea
             data-testid="chat-input"
             autoFocus={autoFocusAtMountRef.current}
@@ -2929,12 +2890,8 @@ export default function ChatInput({
             onPaste={handlePaste}
             ref={textAreaRef}
             rows={1}
-            style={{
-              maxHeight: `${maxHeight}px`,
-              overflowY: 'auto',
-            }}
             className={cn(
-              'block w-full resize-none border-none bg-transparent px-0 py-1.5',
+              'br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5',
               COMPOSER_INPUT_TYPE_CLASS,
               'text-text-default placeholder:text-text-muted'
             )}
