@@ -158,7 +158,8 @@ The record carries the package id and display name, its version, the source URL
 / ref / resolved commit, the installer, the timestamp, the entry point, the
 groups and the component list. `skill_catalog` reads it into
 `CatalogBundle.package`, which is what lets the picker show one expandable row
-saying "HyperFrames — 5 skills — entry point: hyperframes".
+named "HyperFrames" over one line, "5 skills · 0.8.12", which opens to show the
+entry point and each component with its group.
 
 ## Atomicity
 
