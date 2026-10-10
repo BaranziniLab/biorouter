@@ -3,7 +3,11 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { SubagentTabHeader } from './SubagentTabHeader';
 import { GUARDRAIL_FRAME_CLOSE, GUARDRAIL_FRAME_OPEN } from '../../utils/guardrailFrame';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
-import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_TAB_READ_ONLY_REASON } from './subagentReadOnly';
+import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_STOP_NEEDS_DESKTOP_HELP } from './subagentReadOnly';
+import { transcriptCopy } from '../transcript/copy';
+
+const copy = transcriptCopy.subagent;
+const contextButton = () => screen.getByRole('button', { name: copy.context });
 
 const props = {
   sessionId: 'child-1',
@@ -24,25 +28,32 @@ describe('SubagentTabHeader', () => {
 
   it('shows lineage, grants, and an expandable spawn context', () => {
     render(<SubagentTabHeader {...props} />);
-    expect(screen.getByText(/spawned by/i)).toBeTruthy();
+    expect(screen.getByText(copy.of)).toBeTruthy();
     expect(screen.getByText(/Planning chat/)).toBeTruthy();
-    // ⚠ Counts on the band, names in the `title`. The header used to print one
-    // chip per grant in an uncapped flex-wrap, so a subagent tab grew taller
-    // than an ordinary one with every extension — and, before the backend fix,
-    // the names it printed were the user's whole globally-enabled set rather
-    // than the child's grants. The names must stay REACHABLE, which is what the
-    // title asserts; they must not set the band's height.
-    // `getByTitle`, not `getByText`: the count is interpolated
-    // (`{n} extension{s}`) so React splits it across text nodes, and the title
-    // is the thing that actually has to carry the names.
-    const exts = screen.getByTitle('developer, todo');
-    expect(exts.textContent).toBe('2 extensions');
-    const kbs = screen.getByTitle('kb-papers, kb-methods');
-    expect(kbs.textContent).toBe('2 knowledge bases');
+    // ⚠ Counts on the line, names in each count's InfoTip. The header used to
+    // print one chip per grant in an uncapped flex-wrap, so a subagent tab grew
+    // taller than an ordinary one with every extension, and, before the backend
+    // fix, the names it printed were the user's whole globally-enabled set
+    // rather than the child's grants. The names must stay REACHABLE (by
+    // keyboard and screen reader too, which a `title` never was), which is what
+    // the description asserts; they must not set the line's height.
+    const exts = screen.getByText('2 extensions');
+    expect(exts).toHaveAccessibleDescription('developer, todo');
+    expect(exts).toHaveAttribute('tabindex', '0');
+    expect(exts).not.toHaveAttribute('title');
+    const kbs = screen.getByText('2 knowledge bases');
+    expect(kbs).toHaveAccessibleDescription('kb-papers, kb-methods');
     // Collapsed by default; expanding reveals the spawn context.
     expect(screen.queryByText(/count the files/)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /spawn context/i }));
+    fireEvent.click(contextButton());
     expect(screen.getByText(/count the files/)).toBeTruthy();
+  });
+
+  it('is one 32px line in the reading column, not a second band', () => {
+    render(<SubagentTabHeader {...props} />);
+    const line = screen.getByTestId('subagent-header-child-1');
+    expect(line).toHaveClass('h-8', 'max-w-measure-chat');
+    expect(line.className).not.toMatch(/\bh-chrome\b|\bbg-sidebar\b|\bborder-b\b/);
   });
 
   it('Stop is offered while running and confirms through onStop', () => {
@@ -70,8 +81,12 @@ describe('SubagentTabHeader', () => {
       expect(screen.queryByRole('button', { name: /stop subagent/i })).toBeNull();
       const reason = screen.getByTestId('subagent-stop-unavailable');
       expect(reason).toHaveTextContent(SUBAGENT_STOP_NEEDS_DESKTOP);
-      // The whole sentence is still reachable from the line itself.
-      expect(reason).toHaveAttribute('title', SUBAGENT_TAB_READ_ONLY_REASON);
+      expect(reason).not.toHaveAttribute('title');
+      // The reason is still reachable from the line itself, by hover, Tab and
+      // screen reader alike: an InfoTip beside the words.
+      expect(
+        screen.getByRole('button', { name: `About ${SUBAGENT_STOP_NEEDS_DESKTOP}` })
+      ).toHaveAccessibleDescription(SUBAGENT_STOP_NEEDS_DESKTOP_HELP);
       fireEvent.click(reason);
       expect(props.onStop).not.toHaveBeenCalled();
     });
@@ -87,8 +102,8 @@ describe('SubagentTabHeader', () => {
       render(<SubagentTabHeader {...props} />);
       fireEvent.click(screen.getByRole('button', { name: 'Planning chat' }));
       expect(props.onOpenParent).toHaveBeenCalledOnce();
-      expect(screen.getByTitle('developer, todo')).toHaveTextContent('2 extensions');
-      fireEvent.click(screen.getByRole('button', { name: /spawn context/i }));
+      expect(screen.getByText('2 extensions')).toHaveAccessibleDescription('developer, todo');
+      fireEvent.click(contextButton());
       expect(screen.getByText(/count the files/)).toBeTruthy();
     });
 
@@ -100,8 +115,8 @@ describe('SubagentTabHeader', () => {
     });
   });
 
-  it('the spawned-by name is the control that opens the parent', () => {
-    // The lineage link is the whole point of the "spawned by" line, and it is
+  it('the parent name is the control that opens the parent', () => {
+    // The lineage link is the whole point of the "Subagent of" line, and it is
     // what BaseChat wires to the reducer's open-or-focus dispatch. Nothing else
     // in the suite ever clicks it.
     render(<SubagentTabHeader {...props} />);
@@ -121,8 +136,8 @@ describe('SubagentTabHeader', () => {
     // record either. The header still renders — lineage and Stop are the point —
     // but a toggle that can only ever open onto nothing is a dead control.
     render(<SubagentTabHeader {...props} spawnContext={undefined} />);
-    expect(screen.getByText(/spawned by/i)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /spawn context/i })).toBeNull();
+    expect(screen.getByText(copy.of)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: copy.context })).toBeNull();
   });
 
   /**
@@ -185,7 +200,7 @@ describe('SubagentTabHeader', () => {
 
   function expandedSpawnContext(spawnContext: string): string {
     render(<SubagentTabHeader {...props} spawnContext={spawnContext} />);
-    const toggle = screen.getByRole('button', { name: /spawn context/i });
+    const toggle = contextButton();
     fireEvent.click(toggle);
     const region = document.getElementById(toggle.getAttribute('aria-controls')!);
     return region?.textContent ?? '';
@@ -237,7 +252,7 @@ describe('SubagentTabHeader', () => {
 
   it('names the region the disclosure controls', () => {
     render(<SubagentTabHeader {...props} />);
-    const toggle = screen.getByRole('button', { name: /spawn context/i });
+    const toggle = contextButton();
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     const controls = toggle.getAttribute('aria-controls');
     expect(controls).toBeTruthy();

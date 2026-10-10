@@ -28,6 +28,7 @@ import {
 } from '../styles/codeTheme';
 import { AlertTriangle, Check, Copy, Image as ImageIcon, Play } from './icons/app-icons';
 import { TranscriptIconButton } from './transcript/TranscriptIconButton';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { scrollRegionProps, useOverflowsSideways } from './transcript/useOverflowsSideways';
 import { transcriptCopy } from './transcript/copy';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
@@ -424,17 +425,24 @@ function ArtifactLinkButton({
     );
   }
 
+  // The hint is a tooltip, never a `title`: the app's tooltip layer turns a
+  // button's title into its name, which would rename "report.html" to a
+  // sentence a screen reader then reads instead of the link's own words.
   return (
-    <button
-      type="button"
-      className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
-        inlineCode ? 'biorouter-inline-code bg-background-medium px-1 py-0.5' : ''
-      }`}
-      onClick={() => onOpenArtifact(artifact)}
-      title={codeCopy.previewInPanel(artifact.title)}
-    >
-      {children}
-    </button>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
+            inlineCode ? 'biorouter-inline-code bg-background-medium px-1 py-0.5' : ''
+          }`}
+          onClick={() => onOpenArtifact(artifact)}
+        >
+          {children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent>{codeCopy.previewInPanel(artifact.title)}</TooltipContent>
+    </Tooltip>
   );
 }
 

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ChatTurnError, hasVisibleTurnErrorMessage, presentChatTurnError } from './ChatTurnError';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
+import { transcriptCopy } from '../transcript/copy';
 
 const QUOTA_ERROR =
   'Stream error: provider_failure: Request failed: Stream decode error: Responses API error: Object {"type": String("insufficient_quota"), "code": String("insufficient_quota"), "message": String("You exceeded your current quota, please check your plan and billing details."), "param": Null}';
@@ -64,10 +65,13 @@ describe('ChatTurnError', () => {
       />
     );
 
-    const disclosure = screen.getByText('Technical details').closest('details');
-    expect(disclosure).not.toHaveAttribute('open');
-    fireEvent.click(screen.getByText('Technical details'));
-    expect(disclosure).toHaveAttribute('open');
+    // The shared Disclosure, labelled "Details": closed, the payload is not
+    // mounted at all; opened, it wraps however long the payload is.
+    const trigger = screen.getByRole('button', { name: transcriptCopy.turn.details });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText(details)).toBeNull();
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
 
     const detailBody = screen.getByText(details);
     expect(detailBody).toHaveClass('break-words');
@@ -115,8 +119,26 @@ describe('ChatTurnError', () => {
     );
 
     const retry = screen.getByTestId('chat-turn-error-retry');
+    expect(retry).toHaveAccessibleName(transcriptCopy.turn.retry);
     fireEvent.click(retry);
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a transcript row: a warning glyph, a title and a muted message, no toast surface', () => {
+    const { container } = render(
+      <ChatTurnError
+        error={error({ message: 'boom', scope: 'internal', retryable: true })}
+        onRetry={vi.fn()}
+      />
+    );
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveAttribute('data-testid', 'chat-turn-error');
+    expect(alert.querySelector('svg.text-text-danger')).not.toBeNull();
+    expect(screen.getByText('Model turn ended unexpectedly')).toHaveClass('text-label');
+    expect(screen.getByText('boom')).toHaveClass('text-secondary', 'text-text-muted');
+    // The one secondary button, not a hand-rolled 13px link.
+    expect(screen.getByTestId('chat-turn-error-retry').className).not.toMatch(/text-\[13px\]/);
+    expect(container.querySelector('[data-testid="notification-surface"]')).toBeNull();
   });
 
   it('omits the Retry action when the error is not retryable', () => {
@@ -261,7 +283,7 @@ describe('ChatTurnError', () => {
       expect(alert).toHaveTextContent(SETTINGS);
       expect(alert).not.toHaveTextContent('Model request failed');
       expect(alert).not.toHaveTextContent(/grant_expired|\{|"code"/);
-      expect(screen.queryByText('Technical details')).toBeNull();
+      expect(screen.queryByRole('button', { name: transcriptCopy.turn.details })).toBeNull();
       // Retrying would be refused the same way: the chat's Crew bar is the way on.
       expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
     });

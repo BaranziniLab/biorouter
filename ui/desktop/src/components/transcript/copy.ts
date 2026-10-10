@@ -36,6 +36,15 @@ export const transcriptCopy = {
     sendAgainLabel: 'Send this message again',
   },
 
+  /** The chat title pill, where no tab strip shows the title. */
+  title: {
+    actions: 'Chat title actions',
+    rename: 'Rename',
+    renameField: 'Chat title',
+    diverge: 'Diverge',
+    diverging: 'Diverging…',
+  },
+
   /** Editing a sent message: one composer-recipe card inside the column. */
   edit: {
     textbox: 'Edit message content',

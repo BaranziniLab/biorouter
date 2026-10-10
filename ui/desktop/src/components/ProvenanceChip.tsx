@@ -1,9 +1,15 @@
 /**
  * BR-71 §5: provenance is structural — any message injected across sessions is
  * permanently labeled in the transcript. Renders nothing for ordinary
- * same-session messages. Styling follows design.md (text-subtle, no ring).
+ * same-session messages. It is the neutral Badge Crew uses, in sentence case,
+ * and its full source (with the session id the label may not carry) is the
+ * badge's tooltip: the badge takes focus, so hover and Tab both reach it, and a
+ * screen reader reads the unclipped label from the badge itself. Never a
+ * `title`, which the app's tooltip layer would turn into the badge's name.
  */
 import type { ProvenanceKind } from '../api';
+import { Badge } from './ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 
 export type MessageProvenanceView = {
   // Pinned to the generated enum rather than re-spelled here: the Rust
@@ -22,18 +28,18 @@ export type MessageProvenanceView = {
 function labelFor(provenance: MessageProvenanceView): string {
   switch (provenance.kind) {
     case 'agent_injection':
-      return `injected by ${provenance.fromSessionName ?? provenance.fromSessionId ?? 'another agent'}`;
+      return `Injected by ${provenance.fromSessionName ?? provenance.fromSessionId ?? 'another agent'}`;
     case 'user_direct':
-      return 'direct user message';
+      return 'Direct user message';
     case 'spawn_context':
-      return 'spawn context';
+      return 'Spawn context';
     default: {
       // Unreachable while the switch stays exhaustive — this line is the type
       // error a new variant trips. It deliberately does not throw: a transcript
       // that crashes is worse than one labeled generically, should a session
       // persisted by a newer daemon ever be replayed here.
       const unhandled: never = provenance.kind;
-      return `cross-session message (${String(unhandled)})`;
+      return `Cross-session message (${String(unhandled)})`;
     }
   }
 }
@@ -42,17 +48,23 @@ export function ProvenanceChip({ provenance }: { provenance?: MessageProvenanceV
   if (!provenance) return null;
   const label = labelFor(provenance);
   // The session name comes from another session, so its length is not ours to
-  // assume: cap the chip and clip the label rather than let it widen the row.
-  // The full text (plus the id, which the label may not carry) moves into the
-  // tooltip so nothing is lost to the clip.
-  const title = provenance.fromSessionId ? `${label} (${provenance.fromSessionId})` : label;
+  // assume: cap the badge and clip the label rather than let it widen the row.
+  // The full text (plus the id, which the label may not carry) is the badge's
+  // tooltip, so nothing is lost to the clip.
+  const full = provenance.fromSessionId ? `${label} (${provenance.fromSessionId})` : label;
   return (
-    <span
-      className="inline-flex min-w-0 max-w-xs items-center gap-1 rounded-full border border-border-subtle px-2 py-0.5 text-xs text-text-subtle"
-      title={title}
-      data-provenance-kind={provenance.kind}
-    >
-      <span className="min-w-0 truncate">{label}</span>
-    </span>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          tone="neutral"
+          tabIndex={0}
+          className="min-w-0 max-w-xs"
+          data-provenance-kind={provenance.kind}
+        >
+          <span className="min-w-0 truncate">{label}</span>
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent>{full}</TooltipContent>
+    </Tooltip>
   );
 }

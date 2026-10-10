@@ -1,3 +1,4 @@
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ProvenanceChip } from './ProvenanceChip';
@@ -36,7 +37,7 @@ describe('ProvenanceChip', () => {
     expect(screen.getByText(/direct user message/i)).toBeTruthy();
   });
 
-  it('clips a long injected session name and keeps it reachable on hover', () => {
+  it('clips a long injected session name and keeps it reachable on hover and Tab', async () => {
     // The name is chosen by *another* session, so its length is not ours to
     // assume. jsdom applies no CSS, so this guard is necessarily structural:
     // the chip must cap its own width and clip the label instead of widening
@@ -55,9 +56,13 @@ describe('ProvenanceChip', () => {
     const label = screen.getByText(new RegExp(`injected by ${longName}`, 'i'));
     expect(label.className).toMatch(/\btruncate\b/);
 
-    // Clipped text must still be readable somewhere, and the id must survive.
-    expect(chip.title).toContain(longName);
-    expect(chip.title).toContain('s1');
+    // Clipped text must still be readable somewhere, and the id must survive:
+    // in the badge's tooltip, which Tab reaches as well as hover, never a `title`.
+    expect(chip).not.toHaveAttribute('title');
+    expect(chip).toHaveAttribute('tabindex', '0');
+    await userEvent.setup().tab();
+    expect(chip).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(`(s1)`);
   });
 
   it('renders nothing without provenance', () => {

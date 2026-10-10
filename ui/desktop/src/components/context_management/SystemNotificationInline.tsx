@@ -23,5 +23,11 @@ export const SystemNotificationInline: React.FC<SystemNotificationInlineProps> =
     return null;
   }
 
-  return <div className="text-xs text-text-muted py-2 text-left">{systemNotification.msg}</div>;
+  // The transcript row's type and rhythm (a 28px line in muted 13px ink), so a
+  // notice reads as a line of the chat rather than a footnote.
+  return (
+    <div className="flex min-h-7 items-center text-left text-secondary text-text-muted">
+      {systemNotification.msg}
+    </div>
+  );
 };

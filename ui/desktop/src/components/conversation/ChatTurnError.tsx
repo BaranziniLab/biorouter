@@ -1,4 +1,7 @@
-import { NotificationSurface } from '../alerts/NotificationSurface';
+import { AlertTriangle } from '../icons/app-icons';
+import { Button } from '../ui/button';
+import { Disclosure } from '../ui/disclosure';
+import { transcriptCopy } from '../transcript/copy';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
 import { isConnectionError } from '../../utils/conversionUtils';
@@ -168,37 +171,37 @@ export function ChatTurnError({
   // A turn refused for its Crew access would be refused again: the way on is the chat's Crew bar.
   const canRetry = error.retryable && !!onRetry && !crewTurnRefusalOf(error);
 
+  // A transcript row, not a toast pasted into the chat (spec 3.6 "Errors"): a
+  // 16px warning glyph in danger ink, the title in `text-label`, the message in
+  // muted `text-secondary`, Retry as the one secondary button, and the raw
+  // provider payload behind the shared Disclosure. It sits a turn's width (24px)
+  // under the chat, as the agent's answer would have.
   return (
-    <div data-testid="chat-turn-error" className="mt-4">
-      <NotificationSurface
-        status="error"
-        role="alert"
-        title={presentation.title}
-        message={presentation.message}
-        actions={
-          canRetry ? (
-            <button
-              type="button"
-              data-testid="chat-turn-error-retry"
-              onClick={onRetry}
-              className="inline-flex items-center rounded-md border border-border-subtle bg-background-default px-2.5 py-1 text-[13px] font-medium text-text-default transition-colors hover:bg-background-medium"
-            >
-              Retry
-            </button>
-          ) : undefined
-        }
-      >
+    <div data-testid="chat-turn-error" role="alert" className="mt-6 flex w-full items-start gap-2">
+      <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-danger" />
+      <div className="min-w-0 flex-1">
+        <div className="text-label text-text-default">{presentation.title}</div>
+        <div className="text-secondary text-text-muted break-words">{presentation.message}</div>
         {presentation.details && (
-          <details className="mt-2.5 text-xs text-text-muted">
-            <summary className="w-fit cursor-pointer select-none font-medium text-text-default">
-              Technical details
-            </summary>
-            <div className="mt-2 whitespace-pre-wrap break-words font-mono leading-relaxed [overflow-wrap:anywhere]">
+          <Disclosure label={transcriptCopy.turn.details} className="mt-1">
+            <div className="whitespace-pre-wrap break-words font-mono text-code text-text-muted [overflow-wrap:anywhere]">
               {presentation.details}
             </div>
-          </details>
+          </Disclosure>
         )}
-      </NotificationSurface>
+      </div>
+      {canRetry && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          data-testid="chat-turn-error-retry"
+          onClick={onRetry}
+          className="shrink-0"
+        >
+          {transcriptCopy.turn.retry}
+        </Button>
+      )}
     </div>
   );
 }

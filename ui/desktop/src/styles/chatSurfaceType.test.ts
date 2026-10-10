@@ -60,3 +60,38 @@ describe('chat-surface cards state their own type size', () => {
     expect(unsized).toEqual([]);
   });
 });
+
+/**
+ * The 16px radius (`rounded-2xl`, `--radius-surface`) belongs to the preview
+ * sheet alone (implementation spec 2.2: "`rounded-2xl` is banned outside
+ * `artifacts/`"). Every other surface takes the 12px container radius, so a
+ * card in the transcript and a card in a view read as one family. The approval,
+ * elicitation and secret cards and the find bar each carried their own 16px
+ * corners; this keeps a new one from arriving.
+ */
+describe('no 16px card radius outside the preview sheet', () => {
+  /**
+   * Files still on the old radius, each owned by a workstream that is moving
+   * it. An entry that no longer needs to be here fails too, so the list only
+   * shrinks.
+   */
+  const PENDING: Record<string, string> = {
+    // WS-MOTION: the find bar becomes a `rounded-container` overlay (spec 3.16).
+    'conversation/SearchBar.tsx': 'WS-MOTION',
+  };
+
+  const offenders = () =>
+    sourceFiles(COMPONENTS)
+      .map((path) => path.slice(COMPONENTS.length + 1))
+      .filter((rel) => !rel.startsWith('artifacts/'))
+      .filter((rel) => /\brounded-2xl\b/.test(readFileSync(join(COMPONENTS, rel), 'utf8')));
+
+  it('appears in no component outside artifacts/', () => {
+    expect(offenders().filter((rel) => !(rel in PENDING))).toEqual([]);
+  });
+
+  it('keeps the pending list honest', () => {
+    const found = new Set(offenders());
+    expect(Object.keys(PENDING).filter((rel) => !found.has(rel))).toEqual([]);
+  });
+});
