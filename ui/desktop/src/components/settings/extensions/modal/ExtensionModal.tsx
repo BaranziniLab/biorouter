@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Button } from '../../../ui/button';
 import { ModalShell } from '../../../ModalShell';
 import { InfoTip } from '../../../ui/info-tip';
@@ -58,6 +58,11 @@ export default function ExtensionModal({
   const [hasPendingEnvVars, setHasPendingEnvVars] = useState(false);
   const [hasPendingHeaders, setHasPendingHeaders] = useState(false);
   const [pendingHeader, setPendingHeader] = useState<{ key: string; value: string } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  // What a submit that passed validation could not do: say so, where the person is looking.
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const formRef = useRef<HTMLDivElement>(null);
+  const submitErrorRef = useRef<HTMLParagraphElement>(null);
 
   const isBuiltin = formData.type === 'builtin';
 
@@ -275,46 +280,66 @@ export default function ExtensionModal({
     );
   };
 
-  // Handle submit with validation and secret storage
+  /**
+   * Submit. The button is enabled whenever nothing is being saved (Crew's dialogs, the reference):
+   * it used to be disabled while the form was invalid, so the messages a failed validation draws
+   * under the fields (`submitAttempted`) could never appear, and a person facing a grey button
+   * had to guess what was missing. Now a press that cannot go through says what is wrong under
+   * the field and puts the keyboard on the first one that is.
+   */
   const handleSubmit = async () => {
+    if (submitting) return;
     setSubmitAttempted(true);
 
-    if (isFormValid()) {
-      const finalFormData = {
-        ...formData,
-        headers: getFinalHeaders(),
-      };
+    if (!isFormValid()) {
+      window.requestAnimationFrame(() => {
+        formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+      });
+      return;
+    }
 
-      // Only store env vars that have been edited (which includes new)
-      const secretPromises = finalFormData.envVars
-        .filter((envVar) => envVar.isEdited)
-        .map(({ key, value }) => storeSecret(key, value));
+    setSubmitting(true);
+    setSubmitError(null);
+    const finalFormData = {
+      ...formData,
+      headers: getFinalHeaders(),
+    };
 
-      try {
-        // Wait for all secrets to be stored
-        const results = await Promise.all(secretPromises);
+    // Only store env vars that have been edited (which includes new)
+    const secretPromises = finalFormData.envVars
+      .filter((envVar) => envVar.isEdited)
+      .map(({ key, value }) => storeSecret(key, value));
 
-        if (results.every((success) => success)) {
-          // Convert timeout to number if needed
-          const dataToSubmit = {
-            ...finalFormData,
-            timeout:
-              typeof finalFormData.timeout === 'string'
-                ? Number(finalFormData.timeout)
-                : finalFormData.timeout,
-          };
-          onSubmit(dataToSubmit);
-          onClose();
-        } else {
-          console.error('Failed to store one or more secrets');
-        }
-      } catch (error) {
-        console.error('Error during submission:', error);
+    try {
+      // Wait for all secrets to be stored
+      const results = await Promise.all(secretPromises);
+
+      if (results.every((success) => success)) {
+        // Convert timeout to number if needed
+        const dataToSubmit = {
+          ...finalFormData,
+          timeout:
+            typeof finalFormData.timeout === 'string'
+              ? Number(finalFormData.timeout)
+              : finalFormData.timeout,
+        };
+        onSubmit(dataToSubmit);
+        onClose();
+      } else {
+        console.error('Failed to store one or more secrets');
+        setSubmitError(COPY.saveFailed);
       }
-    } else {
-      console.log('Form validation failed');
+    } catch (error) {
+      console.error('Error during submission:', error);
+      setSubmitError(COPY.saveFailed);
+    } finally {
+      setSubmitting(false);
     }
   };
+
+  useEffect(() => {
+    if (submitError) submitErrorRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [submitError]);
 
   // Update title based on current state. No title icon: no other dialog has one.
   const modalTitle = showDeleteConfirmation ? COPY.removeTitle(formData.name) : title;
@@ -402,7 +427,7 @@ export default function ExtensionModal({
               <Button
                 data-testid="extension-submit-btn"
                 onClick={handleSubmit}
-                disabled={!isFormValid()}
+                disabled={submitting}
               >
                 {submitLabel}
               </Button>
@@ -418,7 +443,7 @@ export default function ExtensionModal({
             <InfoTip label={COPY.reviewCredentials} help={COPY.sharedCredentialsHelp} />
           </div>
         ) : (
-          <div className="br-ext-form">
+          <div className="br-ext-form" ref={formRef}>
             {formData.installation_notes && (
               <Note tone="info" icon={Info}>
                 <div className="text-label text-text-default">{COPY.installationNotes}</div>
@@ -516,6 +541,17 @@ export default function ExtensionModal({
                 </Button>
                 <InfoTip label={COPY.reviewCredentials} help={COPY.credentialsHelp} />
               </div>
+            )}
+
+            {submitError && (
+              <p
+                ref={submitErrorRef}
+                role="alert"
+                className="text-supporting text-text-danger"
+                data-testid="extension-submit-error"
+              >
+                {submitError}
+              </p>
             )}
           </div>
         )}

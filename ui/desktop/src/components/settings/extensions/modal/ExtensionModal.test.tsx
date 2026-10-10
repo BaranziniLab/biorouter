@@ -1,10 +1,20 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ExtensionModal from './ExtensionModal';
 import { ExtensionFormData } from '../utils';
 import { EXTENSION_MODAL_COPY as COPY } from '../copy';
 import ExtensionTimeoutField from './ExtensionTimeoutField';
+
+const mocks = vi.hoisted(() => ({ upsertConfig: vi.fn() }));
+
+// Saving an environment variable goes to the credential store through the daemon; nothing here
+// should reach one.
+vi.mock('../../../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../api')>()),
+  upsertConfig: mocks.upsertConfig,
+}));
+vi.mock('../../../../utils/userAction', () => ({ userActionHeaders: async () => ({}) }));
 
 describe('ExtensionModal', () => {
   // This is a full render-and-drive integration test: it mounts ExtensionModal,
@@ -386,5 +396,78 @@ describe('ExtensionTimeoutField', () => {
   it('is quiet until a submit was attempted', () => {
     render(<ExtensionTimeoutField timeout={0} onChange={vi.fn()} submitAttempted={false} />);
     expect(screen.queryByText(COPY.timeoutRequired)).toBeNull();
+  });
+});
+
+describe('ExtensionModal: pressing the submit button', () => {
+  const add = (props: Partial<React.ComponentProps<typeof ExtensionModal>> = {}) =>
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={stdio({ name: '', cmd: '' })}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add extension"
+        modalType="add"
+        {...props}
+      />
+    );
+
+  it('is never grey for a form that is not finished: it says what is missing, under the field', async () => {
+    // It was disabled while the form was invalid, so the messages a failed submit draws could
+    // never appear and the person was left to guess.
+    const user = userEvent.setup({ delay: null });
+    const onSubmit = vi.fn();
+    add({ onSubmit });
+
+    const submit = screen.getByTestId('extension-submit-btn');
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+
+    const name = screen.getByLabelText(COPY.nameLabel);
+    expect(await screen.findByText(COPY.nameRequired)).toBeVisible();
+    expect(screen.getByText(COPY.commandRequired)).toBeVisible();
+    expect(name).toHaveAttribute('aria-invalid', 'true');
+    expect(name).toHaveAccessibleDescription(COPY.nameRequired);
+    expect(onSubmit).not.toHaveBeenCalled();
+    // The keyboard goes to the first thing to fix.
+    await waitFor(() => expect(name).toHaveFocus());
+  });
+
+  it('says the whole timeout sentence once a submit was tried', async () => {
+    const user = userEvent.setup({ delay: null });
+    add({ initialData: stdio({ name: 'x', cmd: 'node server.js' }) });
+
+    fireEvent.change(screen.getByLabelText(COPY.timeoutLabel), { target: { value: '0' } });
+    expect(screen.queryByText(COPY.timeoutRequired)).toBeNull();
+    await user.click(screen.getByTestId('extension-submit-btn'));
+
+    expect(await screen.findByText(COPY.timeoutRequired)).toBeVisible();
+  });
+
+  it('says so, and stays open and pressable, when an environment variable could not be saved', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onSubmit = vi.fn();
+    const onClose = vi.fn();
+    mocks.upsertConfig.mockRejectedValueOnce(new Error('the credential store is locked'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    add({
+      onSubmit,
+      onClose,
+      initialData: stdio({
+        name: 'x',
+        cmd: 'node server.js',
+        envVars: [{ key: 'API_KEY', value: 'abc', isEdited: true }],
+      }),
+    });
+
+    await user.click(screen.getByTestId('extension-submit-btn'));
+
+    expect(await screen.findByTestId('extension-submit-error')).toHaveTextContent(COPY.saveFailed);
+    expect(screen.getByTestId('extension-submit-error')).toHaveAttribute('role', 'alert');
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId('extension-submit-btn')).toBeEnabled();
+    vi.restoreAllMocks();
   });
 });

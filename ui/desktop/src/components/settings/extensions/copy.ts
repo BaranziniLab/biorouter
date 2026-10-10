@@ -84,6 +84,9 @@ export const EXTENSION_MODAL_COPY = {
   timeoutLabel: 'Timeout (seconds)',
   timeoutRequired: 'Enter a timeout in seconds.',
 
+  /** A submit that passed validation but could not store an environment variable. */
+  saveFailed: 'Could not save the environment variables. Try again.',
+
   nameRequired: 'Name is required',
   commandRequired: 'Command is required',
   endpointRequired: 'Endpoint URL is required',
