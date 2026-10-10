@@ -60,10 +60,10 @@ import {
   Globe,
   Image,
   Lock,
-  MessageSquareText,
   MoreHorizontal,
   RefreshCw,
   Search,
+  TextQuote,
   X,
 } from '../icons/app-icons';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
@@ -1713,7 +1713,7 @@ export default function ArtifactViewer({
                   )
                 }
               >
-                <MessageSquareText className="h-4 w-4" aria-hidden="true" />
+                <TextQuote className="h-4 w-4" aria-hidden="true" />
               </PreviewIconButton>
             )}
             {isAnnotating && (

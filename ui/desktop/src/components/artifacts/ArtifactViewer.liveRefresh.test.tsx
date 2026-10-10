@@ -143,7 +143,8 @@ describe('completed coding changes refresh the existing artifact', () => {
     rerender(view(1));
     await waitFor(() => expect(readArtifactFile).toHaveBeenCalledTimes(2));
     expect(screen.getByText('left')).toBeInTheDocument();
-    expect(screen.queryByText('Loading')).not.toBeInTheDocument();
+    // A refresh keeps what is on screen: no loading state at all, word or skeleton.
+    expect(document.querySelector('[data-preview-loading]')).toBeNull();
     readArtifactFile.mockResolvedValueOnce({
       kind: 'text',
       path: artifact.path,

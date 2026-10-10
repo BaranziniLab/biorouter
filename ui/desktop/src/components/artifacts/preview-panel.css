@@ -15,6 +15,9 @@
    document, a loading or an error state used to sit on the muted ground while
    text sat on paper, so switching kinds changed the ground. */
 .br-preview-panel {
+  /* Above the conversation cell while it glides out from under the panel's
+     edge (WS-SUMMARY's column glide), on an opaque ground (spec 3.8). */
+  z-index: 1;
   background: var(--background-default);
   border-left: 1px solid var(--border-subtle);
   transition: border-left-color var(--dur-med) var(--ease-out);
