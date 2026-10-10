@@ -331,8 +331,6 @@ describe('the settings vocabulary', () => {
       'settings/capabilities/CapabilitiesSection.tsx',
       'settings/contexts/ContextsSection.tsx',
       'settings/brsdk/BrsdkSection.tsx',
-      // WS-SETTINGS-M: the Danger zone row (spec §3.13, Models tab).
-      'settings/reset_provider/ResetProviderSection.tsx',
     ]);
     const paragraphs: string[] = [];
     for (const { rel, text } of FILES) {

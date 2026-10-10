@@ -1,58 +1,73 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Button } from '../../../ui/button';
+import { SettingRow } from '../../../ui/setting-row';
 import { SwitchModelModal } from './SwitchModelModal';
 import type { View } from '../../../../utils/navigationUtils';
 import { shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_REASON } from '../../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../../utils/surface';
+import { defaultModelCopy } from '../copy';
 
 interface ConfigureModelButtonsProps {
   setView: (view: View) => void;
+  /** The model and provider in force, shown as the Model row's value. */
+  modelValue?: ReactNode;
 }
 
-export default function ModelSettingsButtons({ setView }: ConfigureModelButtonsProps) {
+/**
+ * The "Default model" section's rows: the model in force with a `Change…` action, and, when
+ * the deployment does not pin its models, a `Providers` row with `Manage…` (spec §3.13).
+ *
+ * The visible words are short ("Change…", "Manage…"); the accessible names stay the longer
+ * ones the daemon's docs and the tests use ("Switch models", "Configure providers"). They are
+ * set as `aria-label`, which `SettingRow` leaves alone, so the row label never replaces them.
+ */
+export default function ModelSettingsButtons({ setView, modelValue }: ConfigureModelButtonsProps) {
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   const hasPredefinedModels = shouldShowPredefinedModels();
   // SD-1: the dialog this opens ends in `/config/set_provider`, which a
-  // browser-served daemon refuses. "Configure providers" beside it stays live —
-  // storing an API key is not a capability write, and the picker it eventually
-  // reaches carries the same explanation.
+  // browser-served daemon refuses. "Manage…" beside it stays live — storing an
+  // API key is not a capability write, and the picker it eventually reaches
+  // carries the same explanation.
   const hostManaged = isBrowserSurface();
 
   return (
-    <div className="mt-2">
-      {/* `.biorouter-settings-control-strip` is the section-level button row —
-          flex, wrap, 10px gap, no chrome — in place of a hand-rolled
-          `flex gap-2`. */}
-      <div className="biorouter-settings-control-strip">
+    <>
+      <SettingRow label={defaultModelCopy.model} value={modelValue}>
         <Button
-          variant="default"
+          variant="secondary"
+          size="sm"
+          aria-label={defaultModelCopy.changeName}
           disabled={hostManaged}
           title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
           onClick={hostManaged ? undefined : () => setIsAddModelModalOpen(true)}
         >
-          Switch models
+          {defaultModelCopy.change}
         </Button>
-        {isAddModelModalOpen ? (
-          <SwitchModelModal
-            sessionId={null}
-            setView={setView}
-            onClose={() => setIsAddModelModalOpen(false)}
-          />
-        ) : null}
-        {!hasPredefinedModels && (
+      </SettingRow>
+      {isAddModelModalOpen ? (
+        <SwitchModelModal
+          sessionId={null}
+          setView={setView}
+          onClose={() => setIsAddModelModalOpen(false)}
+        />
+      ) : null}
+      {!hasPredefinedModels && (
+        <SettingRow label={defaultModelCopy.providers}>
           <Button
             variant="secondary"
+            size="sm"
+            aria-label={defaultModelCopy.manageName}
             onClick={() => {
               setView('ConfigureProviders');
             }}
           >
-            Configure providers
+            {defaultModelCopy.manage}
           </Button>
-        )}
-      </div>
+        </SettingRow>
+      )}
       <HostManagedModelNote className="mt-3" />
-    </div>
+    </>
   );
 }

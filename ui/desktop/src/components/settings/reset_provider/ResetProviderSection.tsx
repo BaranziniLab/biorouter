@@ -1,17 +1,23 @@
 import { useState } from 'react';
 import { Button } from '../../ui/button';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
-import { RotateCcw } from '../../icons/app-icons';
+import { SettingRow } from '../../ui/setting-row';
 import { useConfig } from '../../ConfigContext';
 import { View, ViewOptions } from '../../../utils/navigationUtils';
 import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_REASON } from '../../privacy/hostManagedModelCopy';
 import { isBrowserSurface } from '../../../utils/surface';
+import { modelsDangerCopy } from '../models/copy';
 
 interface ResetProviderSectionProps {
   setView: (view: View, viewOptions?: ViewOptions) => void;
 }
 
+/**
+ * The Models tab's one Danger zone row (spec §3.13): the label, an InfoTip, and a `Reset…`
+ * button (`destructive sm`). The consequence is stated at the moment of decision, in the
+ * confirmation, so it is not repeated up front.
+ */
 export default function ResetProviderSection(_props: ResetProviderSectionProps) {
   const { remove } = useConfig();
   /**
@@ -42,30 +48,19 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
   };
 
   return (
-    <div className="biorouter-settings-row px-3 py-2.5">
-      <p className="text-label text-text-default">Reset provider and model</p>
-      <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-        This will clear your selected model and provider settings. If no defaults are available,
-        you'll be taken to the welcome screen to set them up again.
-      </p>
-      {/* ⚠ The button carried `className="flex items-center justify-center gap-2"`
-          and the `flex` was flipping the cva base's `inline-flex` through
-          tailwind-merge — which is what rendered a destructive action as a
-          full-width red bar across the whole reading column. The other three
-          classes were exact duplicates of that base. The strip is `padding: 0`,
-          so the `pt-4` is what keeps the 16px separation the `mb-4` used to
-          give. */}
-      <div className="biorouter-settings-control-strip pt-4">
+    <>
+      <SettingRow label={modelsDangerCopy.row} help={modelsDangerCopy.rowHelp}>
         <Button
+          type="button"
+          variant="destructive"
+          size="sm"
           onClick={() => setConfirming(true)}
           disabled={hostManaged}
           title={hostManaged ? HOST_MANAGED_MODEL_REASON : undefined}
-          variant="destructive"
         >
-          <RotateCcw className="h-4 w-4" />
-          Reset provider and model
+          {modelsDangerCopy.open}
         </Button>
-      </div>
+      </SettingRow>
       {/*
         The SHORT form. `ModelSettingsButtons` sits on this same page and
         already carries the full three-sentence reason, so repeating it here
@@ -75,14 +70,14 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
       <HostManagedModelNote short className="mt-3" />
       <ConfirmationModal
         isOpen={confirming}
-        title="Reset provider and model?"
-        message="New chats will have no provider or model until you choose them again. If no defaults are available, Biorouter opens the welcome screen."
-        confirmLabel="Reset"
-        cancelLabel="Cancel"
+        title={modelsDangerCopy.confirmTitle}
+        message={modelsDangerCopy.confirmMessage}
+        confirmLabel={modelsDangerCopy.confirm}
+        cancelLabel={modelsDangerCopy.cancel}
         confirmVariant="destructive"
         onConfirm={handleResetProvider}
         onCancel={() => setConfirming(false)}
       />
-    </div>
+    </>
   );
 }
