@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
 import RecentChats from './RecentChats';
+import { DEFAULT_SIDEBAR_CHAT_VIEW } from './sidebarChatView';
 
 const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -62,6 +63,8 @@ function renderRecents(onOpen = vi.fn()) {
         onLoadMore={vi.fn()}
         onOpen={onOpen}
         onViewAll={vi.fn()}
+        view={DEFAULT_SIDEBAR_CHAT_VIEW}
+        onViewChange={vi.fn()}
       />
     </SidebarProvider>
   );
@@ -74,16 +77,49 @@ function renderRecents(onOpen = vi.fn()) {
  * could not be got out of the sidebar at all.
  */
 describe('sidebar Recents right-click menu', () => {
-  it('offers open, copy and permanent delete actions on a right-click', async () => {
+  /**
+   * Owner message 4: right-click a chat to rename it, "along with all the other
+   * actions possible there", in the spec's fixed order (3.4), text only.
+   */
+  it('offers rename, the openers, diverge, export, copy and delete on a right-click', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
 
     const items = await screen.findAllByRole('menuitem');
-    expect(items.map((item) => item.textContent)).toEqual([
+    expect(items.map((item) => item.getAttribute('aria-label') ?? item.textContent)).toEqual([
+      'RenameF2',
       'Open in new tab',
       'Open in new window',
+      'Diverge',
+      'Export…',
       'Copy chat ID',
       'Delete chat…',
+    ]);
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+  });
+
+  it('opens the same menu from Shift+F10 on the focused row', async () => {
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    expect(await screen.findByRole('menuitem', { name: 'Rename' })).toBeInTheDocument();
+  });
+
+  it('opens the same menu from the row’s ⋯ button', async () => {
+    renderRecents();
+    const more = screen.getByTestId('recent-chat-more-20260823_2');
+    expect(more).toHaveAccessibleName('More actions for Excel research');
+    fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.getAttribute('data-chat-row-action'))).toEqual([
+      'rename',
+      'open-tab',
+      'open-window',
+      'diverge',
+      'export',
+      'copy-id',
+      'delete',
     ]);
   });
 
@@ -145,7 +181,7 @@ describe('permanent Recents deletion', () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete chat…' }));
-    expect(await screen.findByText(/This action cannot be undone/)).toBeInTheDocument();
+    expect(await screen.findByText(/This can't be undone/)).toBeInTheDocument();
     expect(mocks.deleteConversation).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(mocks.deleteConversation).not.toHaveBeenCalled();

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, Home, Plus, Settings, Users } from '../icons/app-icons';
+import { ChevronRight, Home, NewChat, Settings } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { announceSameRouteReset } from '../../hooks/useSameRouteReset';
@@ -13,7 +13,6 @@ import {
   SidebarGroupContent,
 } from '../ui/sidebar';
 import { BioRouterWordmark } from '../icons/BioRouterWordmark';
-import { cn } from '../../utils';
 import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
@@ -28,6 +27,10 @@ import { attentionBadgeText } from '../crew/attention/crewAttention';
 import { useCrewAttention } from '../crew/attention/useCrewAttention';
 import RecentChats from './RecentChats';
 import useSidebarSessions from './useSidebarSessions';
+import { sidebarCopy } from './copy';
+import { isDefaultSidebarChatView } from './sidebarChatView';
+import { useSidebarChatView } from './useSidebarChatView';
+import './sidebar.css';
 
 function preloadHome(): void {
   preloadHomeActivity();
@@ -47,7 +50,6 @@ interface NavigationItem {
   path: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  tooltip: string;
 }
 
 const settingsItem: NavigationItem = {
@@ -55,7 +57,6 @@ const settingsItem: NavigationItem = {
   path: '/settings',
   label: 'Settings',
   icon: Settings,
-  tooltip: 'Configure Biorouter settings',
 };
 
 /**
@@ -80,21 +81,18 @@ const primaryItems: NavigationItem[] = [
     path: '/',
     label: 'Home',
     icon: Home,
-    tooltip: 'Go back to the main chat screen',
   },
   {
     type: 'item',
     path: '/pair',
     label: 'New chat',
-    icon: Plus,
-    tooltip: 'Start a new chat',
+    icon: NewChat,
   },
   {
     type: 'item',
     path: '/crew',
     label: 'Crew',
-    icon: Users,
-    tooltip: 'Work with your team',
+    icon: ENTITY_ICONS.crew,
   },
 ];
 
@@ -115,42 +113,36 @@ const componentItems: NavigationItem[] = [
     path: '/workflows',
     label: 'Workflows',
     icon: ENTITY_ICONS.workflow,
-    tooltip: 'Browse your saved workflows',
   },
   {
     type: 'item',
     path: '/schedules',
     label: 'Scheduler',
     icon: ENTITY_ICONS.schedule,
-    tooltip: 'Manage scheduled runs',
   },
   {
     type: 'item',
     path: '/extensions',
     label: 'Extensions',
     icon: ENTITY_ICONS.extension,
-    tooltip: 'Manage your extensions',
   },
   {
     type: 'item' as const,
     path: '/skills',
     label: 'Skills',
     icon: ENTITY_ICONS.skill,
-    tooltip: 'Manage reusable instruction skills',
   },
   {
     type: 'item' as const,
     path: '/knowledge',
     label: 'Knowledge',
     icon: ENTITY_ICONS.knowledge,
-    tooltip: 'Personal knowledge bases',
   },
   {
     type: 'item' as const,
     path: '/applications',
     label: 'Built apps',
     icon: ENTITY_ICONS.application,
-    tooltip: 'Apps you built with Agent Drafter',
   },
 ];
 
@@ -176,13 +168,20 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const [searchParams] = useSearchParams();
   const chatContext = useChatContext();
   const runningChats = useRunningChats();
-  const { sessions, hasMore, isLoading, loadMore } = useSidebarSessions();
+  const [chatView, setChatView] = useSidebarChatView();
+  // Any view but the default sorts or groups the whole list, so it reads every
+  // page first (spec 3.4 "Paging"); the default keeps lazy 10-row paging.
+  const { sessions, hasMore, isLoading, isLoadingAll, loadMore } = useSidebarSessions({
+    loadAll: !isDefaultSidebarChatView(chatView),
+  });
   const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
   const runningSessionIds = useMemo(
     () =>
       new Set(runningChats.filter((entry) => !entry.completedAt).map((entry) => entry.sessionId)),
     [runningChats]
   );
+  const homeDir = (window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined) ?? null;
+  const isMac = window.electron?.platform === 'darwin';
 
   useEffect(() => {
     const currentItem = [...primaryItems, ...componentItems, settingsItem].find(
@@ -198,12 +197,13 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     ) {
       titleBits.push(chatContext.chat.name);
     } else if (currentPath === '/sessions') {
-      titleBits.push('Chat history');
+      titleBits.push(sidebarCopy.documentTitle.history);
     } else if (currentPath !== '/' && currentItem) {
       titleBits.push(currentItem.label);
     }
 
-    document.title = titleBits.join(' - ');
+    // A middle dot, not a spaced hyphen used as punctuation (F-26).
+    document.title = titleBits.join(sidebarCopy.documentTitle.separator);
   }, [currentPath, chatContext?.chat?.name]);
 
   const isActivePath = (path: string) => {
@@ -285,7 +285,13 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     if (event.detail > 0) event.currentTarget.blur();
   }, []);
 
-  const renderMenuItem = (entry: NavigationItem, options?: { indented?: boolean }) => {
+  /**
+   * One row recipe for every destination (`.br-nav-row`, `sidebar.css`): 28px,
+   * 13px, a 16px icon at x=16 and the label at x=40, muted at rest, the accent
+   * rail on the current one. The Components children are NOT indented: the
+   * chevron above marks the group, as Crew's team headers do (F-11).
+   */
+  const renderMenuItem = (entry: NavigationItem) => {
     const IconComponent = entry.icon;
     const isActive = isDestinationActive(entry);
     const isAction = entry.path === '/pair';
@@ -300,27 +306,25 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
             if (isAction) blurAfterPointerActivation(event);
           }}
           aria-label={unread > 0 ? `${entry.label}, ${unread} unread` : undefined}
+          aria-current={isActive ? 'page' : undefined}
           onFocus={entry.path === '/' ? preloadHome : undefined}
           onPointerEnter={entry.path === '/' ? preloadHome : undefined}
           isActive={isActive}
-          tooltip={entry.tooltip}
-          // HIERARCHY BY INDENT, NEVER BY SIZE (§4.1.3). A child of the
-          // disclosure keeps the same 32px height and the same type; only its
-          // text edge moves, by 24px. Shrinking it would say it is a lesser kind
-          // of destination, which it is not.
-          className={cn(
-            'relative h-control-md w-full justify-start rounded-lg py-0 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar',
-            options?.indented ? 'pl-9 pr-3' : 'px-3'
-          )}
+          className="br-nav-row no-drag"
         >
           {/* Icons take --sidebar-icon rather than inheriting the label's ink.
               In Parchment that token passes through to --sidebar-foreground, so
               nothing changes there; Alma Mater points it at UCSF teal, which is
               where the brand actually lives in that theme. */}
-          <IconComponent className="h-4 w-4 text-sidebar-icon" />
-          <span>{entry.label}</span>
+          <IconComponent className="br-nav-row-icon" />
+          <span className="br-nav-row-label">{entry.label}</span>
+          {isAction ? (
+            <span className="br-nav-row-hint" aria-hidden="true">
+              {sidebarCopy.shortcut.newChat(isMac)}
+            </span>
+          ) : null}
           {unread > 0 ? (
-            <Badge tone="accent" className="ml-auto tabular-nums" aria-hidden="true">
+            <Badge tone="neutral" className="tabular-nums" aria-hidden="true">
               {attentionBadgeText(unread)}
             </Badge>
           ) : null}
@@ -353,145 +357,101 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     <>
       <SidebarContent className="gap-0 overflow-hidden">
         {/* The titlebar band: traffic lights and the floating TitlebarControls
-            strip live over this space, so the sidebar only reserves it. Its bottom
-            hairline continues the chat/preview header hairline, giving the window
-            one continuous top edge.
-            `-mt-2` cancels SidebarContent's 8px top padding so the band starts at
-            the window's top edge (y=0), exactly like the chat/preview header —
-            otherwise the band sat 8px low and its hairline fell ~9px below the tab
-            strip's, breaking the "one continuous top edge".
-
-            `h-chrome` (44px), not the `h-13` literal it carried: this is one of
-            the three bands that had to drop 52 -> 44 TOGETHER, because they share
-            a seam and a shrinking band beside a stationary one is a broken edge,
-            not a compaction. The traffic lights sit in the 32px drag region above
-            and clear it; the wordmark is NOT in this band (it is the row below),
-            which is what made the drop safe to take. */}
+            strip live over this space, so the sidebar only reserves it. Its
+            bottom hairline continues the chat and preview header hairline at
+            y=44 and runs the sidebar's full width (the container has no padding
+            of its own), giving the window one continuous top edge. `h-chrome`:
+            this band, BaseChat's header and the artifact strip read
+            `--chrome-height` and move together or not at all. */}
         <div
           data-testid="sidebar-titlebar-band"
           aria-hidden="true"
-          className="-mt-2 h-chrome shrink-0 border-b border-sidebar-border"
+          className="h-chrome shrink-0 border-b border-sidebar-border"
         />
 
-        <div className="shrink-0">
-          {/* Brand row. The wordmark IS the lockup now — "Bio" navy + "Router"
-              coral over the split underline (D-39), replacing the old mono glyph
-              + plain "Biorouter" text. Its left edge lands on the same 44px text
-              edge as every nav label. The component recolours navy -> UCSF teal
-              on a dark surface on its own. */}
-          {/* `pt-4 pb-2`, not `pt-2` with nothing below it. When the titlebar band
-              dropped 52 -> 44px the wordmark came up with it and landed 8px under
-              the hairline with the first nav row directly beneath — three things
-              stacked at one rhythm, which reads as crowded rather than dense. The
-              brand lockup is not a list item; it earns air on both sides. 16px
-              above separates it from the window chrome, 8px below separates it
-              from the navigation it is not part of. */}
-          <div className="px-2 pt-4 pb-2">
-            <div
-              data-testid="sidebar-biorouter-wordmark"
-              className="flex h-8 items-center gap-2 px-3"
-            >
-              <BioRouterWordmark
-                data-testid="sidebar-biorouter-mark"
-                // Scale the SVG box with UI text; its measured viewBox keeps
-                // the lettering and underline in proportion.
-                className="h-[calc(24px*var(--app-font-scale,1))] w-auto shrink-0"
-              />
-              <EnvironmentBadge />
-            </div>
+        {/* Brand row: 8px above and 4px below a 32px row, the wordmark 20px
+            tall at the icon column (x=16). The wordmark IS the lockup — "Bio"
+            navy + "Router" coral over the split underline (D-39) — and recolours
+            navy -> UCSF teal on a dark surface on its own. */}
+        <div className="br-sidebar-brand">
+          <div data-testid="sidebar-biorouter-wordmark" className="br-sidebar-brand-row">
+            <BioRouterWordmark
+              data-testid="sidebar-biorouter-mark"
+              className="br-sidebar-wordmark"
+            />
+            <EnvironmentBadge />
           </div>
-
-          {/* NO "MENU" HEADER (§4.1.2). It was 32px labelling something
-              self-evident: a vertical list of destinations at the top of a rail
-              does not need to be told apart from anything. The Recents header
-              stays, because it labels one list among two. */}
-          <SidebarGroup className="px-2 pb-1">
-            <SidebarGroupContent>
-              {/* 2px between rail rows, not 0. At `gap-0` the rounded washes of
-                  adjacent rows touch, so a hovered row bleeds into its neighbours
-                  and the list reads as one block of colour rather than as
-                  separable destinations. 2px is the same gap the app's own menu
-                  recipe uses between items, so the rail and the menus agree. */}
-              <SidebarMenu className="gap-0.5">
-                {primaryItems.map((entry) => renderMenuItem(entry))}
-
-                {/* The disclosure row: an item's twin, with a leading chevron in
-                    place of an icon and no uppercase mini-label. It is a control,
-                    not a destination, so it never takes the selected wash — even
-                    when one of its children is the current route. The child's own
-                    wash says where you are. */}
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    data-testid="sidebar-components-disclosure"
-                    aria-expanded={showComponentChildren}
-                    aria-controls="sidebar-components-group"
-                    onClick={toggleComponents}
-                    className="relative h-control-md w-full justify-start rounded-lg px-3 py-0 text-sm transition-colors duration-150 hover:bg-sidebar-hover"
-                  >
-                    <ChevronDown
-                      aria-hidden="true"
-                      className={cn(
-                        'h-4 w-4 text-sidebar-icon transition-transform duration-150',
-                        showComponentChildren ? '' : '-rotate-90'
-                      )}
-                    />
-                    <span>Components</span>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-
-                {showComponentChildren && (
-                  <div
-                    id="sidebar-components-group"
-                    data-testid="sidebar-components-group"
-                    className="flex flex-col gap-0.5"
-                  >
-                    {componentItems.map((entry) => renderMenuItem(entry, { indented: true }))}
-                  </div>
-                )}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
         </div>
 
-        {/* THE UPPER DIVIDER IS GONE (§4.1.4). The Components row and the
-            Recents header now do the zoning between the rail's destinations and
-            its history, so a rule between them was a third answer to a question
-            two elements already answered. */}
+        {/* NO "MENU" HEADER (§4.1.2): a vertical list of destinations at the top
+            of a rail does not need to be told apart from anything. */}
+        <SidebarGroup className="br-nav-group">
+          <SidebarGroupContent>
+            <SidebarMenu className="br-nav-list">
+              {primaryItems.map((entry) => renderMenuItem(entry))}
+
+              {/* The disclosure row: a group header in Crew's team-toggle recipe,
+                  a 16px chevron that turns 90°. It is a control, not a
+                  destination, so it never takes the selected wash — even when one
+                  of its children is the current route. Collapse is instant. */}
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  data-testid="sidebar-components-disclosure"
+                  aria-expanded={showComponentChildren}
+                  aria-controls="sidebar-components-group"
+                  onClick={toggleComponents}
+                  className="br-nav-row no-drag"
+                >
+                  <ChevronRight aria-hidden="true" className="br-nav-chevron" />
+                  <span className="br-nav-row-label">{sidebarCopy.components}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              {showComponentChildren && (
+                <div
+                  id="sidebar-components-group"
+                  data-testid="sidebar-components-group"
+                  className="br-nav-list"
+                >
+                  {componentItems.map((entry) => renderMenuItem(entry))}
+                </div>
+              )}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         <RecentChats
           sessions={sessions}
           activeSessionId={currentSessionId}
           runningSessionIds={runningSessionIds}
           hasMore={hasMore}
           isLoadingMore={isLoading}
+          isLoadingAll={isLoadingAll}
           onLoadMore={loadMore}
           onOpen={handleOpenChat}
           onViewAll={() => navigateWithViewTransition(navigate, '/sessions')}
+          view={chatView}
+          onViewChange={setChatView}
+          homeDir={homeDir}
         />
       </SidebarContent>
 
-      {/* The rail's ONE rule, and now it is unambiguous: it separates the
-          scrolling history from the fixed footer. Halved to a 10px block
-          (§4.1.4) — `my-1` + the hairline — because at `my-2` it was 18px of
-          rail spent on a 1px mark. */}
-      <div
-        data-testid="sidebar-footer-divider"
-        role="separator"
-        className="mx-3.5 my-1 h-px shrink-0 bg-sidebar-border"
-      />
-      <SidebarFooter className="gap-1 p-2">
+      {/* The rail's ONE rule: a full-bleed hairline over the fixed footer
+          (Crew's `.crew-sidebar-you`), replacing the inset `mx-3.5 my-1` rule. */}
+      <SidebarFooter data-testid="sidebar-footer" className="br-sidebar-footer">
         <DaemonRestartNotice />
-        <SidebarUpdateButton />
-        <SidebarMenu className="gap-0">
+        <SidebarMenu className="br-nav-list">
+          <SidebarUpdateButton />
           <SidebarMenuItem>
             <SidebarMenuButton
               data-testid="sidebar-settings-button"
               onClick={() => handleNavigation(settingsItem.path)}
               isActive={isActivePath(settingsItem.path)}
-              tooltip={settingsItem.tooltip}
-              className="relative h-control-md w-full justify-start rounded-lg px-3 py-0 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+              aria-current={isActivePath(settingsItem.path) ? 'page' : undefined}
+              className="br-nav-row no-drag"
             >
-              <Settings className="h-4 w-4" />
-              <span>{settingsItem.label}</span>
+              <Settings className="br-nav-row-icon" />
+              <span className="br-nav-row-label">{settingsItem.label}</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { Fragment, type ReactNode } from 'react';
 
 import {
   ContextMenu,
@@ -50,6 +50,14 @@ export interface ChatRowMenuExtraItem {
   label: string;
   onSelect: () => void;
   disabled?: boolean;
+  /**
+   * A sentence shown above the item while the menu is open, for an item that
+   * cannot work here and must say why (History's SD-8 refusal on a `serve`
+   * page). Never hover-only: a refusal stays visible (principle 2).
+   */
+  note?: string;
+  /** `data-testid` for the note paragraph. */
+  noteTestId?: string;
 }
 
 export type ChatRowMenuEntry =
@@ -61,6 +69,8 @@ export type ChatRowMenuEntry =
       danger?: boolean;
       shortcut?: string;
       disabled?: boolean;
+      note?: string;
+      noteTestId?: string;
     }
   | { kind: 'separator'; key: string };
 
@@ -126,6 +136,32 @@ export function chatRowMenuEntries(
   return entries;
 }
 
+/**
+ * Where focus goes when the menu closes. A surface that turns the row into an
+ * editor on Rename takes this to start editing only once the menu has let go of
+ * focus (and to stop the menu handing it back to the row).
+ */
+interface MenuFocusProps {
+  onCloseAutoFocus?: (event: Event) => void;
+}
+
+/**
+ * A refusal or other sentence shown above its item. A menu takes the width of
+ * its widest child, so the cap makes a sentence wrap instead of stretching the
+ * menu across the window (measured 2026-09-12).
+ */
+function MenuNote({ entry }: { entry: Extract<ChatRowMenuEntry, { kind: 'item' }> }) {
+  if (!entry.note) return null;
+  return (
+    <p
+      data-testid={entry.noteTestId}
+      className="max-w-72 px-3 py-2 text-supporting text-text-muted"
+    >
+      {entry.note}
+    </p>
+  );
+}
+
 /** The trailing hint on a menu row (Rename's F2): small, muted, at the row's end. */
 function MenuShortcut({ children }: { children: ReactNode }) {
   return (
@@ -142,25 +178,28 @@ function MenuShortcut({ children }: { children: ReactNode }) {
  */
 export function ChatRowContextMenuContent({
   target,
+  onCloseAutoFocus,
   ...handlers
-}: { target: ChatRowActionTarget } & ChatRowMenuHandlers) {
+}: { target: ChatRowActionTarget } & ChatRowMenuHandlers & MenuFocusProps) {
   return (
-    <ContextMenuContent className="w-56">
+    <ContextMenuContent className="w-56" onCloseAutoFocus={onCloseAutoFocus}>
       {chatRowMenuEntries(target, handlers).map((entry) =>
         entry.kind === 'separator' ? (
           <ContextMenuSeparator key={entry.key} />
         ) : (
-          <ContextMenuItem
-            key={entry.key}
-            data-chat-row-action={entry.key}
-            onSelect={entry.onSelect}
-            disabled={entry.disabled}
-            data-variant={entry.danger ? 'destructive' : undefined}
-            className={entry.danger ? 'text-text-danger' : undefined}
-          >
-            {entry.label}
-            {entry.shortcut ? <MenuShortcut>{entry.shortcut}</MenuShortcut> : null}
-          </ContextMenuItem>
+          <Fragment key={entry.key}>
+            <MenuNote entry={entry} />
+            <ContextMenuItem
+              data-chat-row-action={entry.key}
+              onSelect={entry.onSelect}
+              disabled={entry.disabled}
+              data-variant={entry.danger ? 'destructive' : undefined}
+              className={entry.danger ? 'text-text-danger' : undefined}
+            >
+              {entry.label}
+              {entry.shortcut ? <MenuShortcut>{entry.shortcut}</MenuShortcut> : null}
+            </ContextMenuItem>
+          </Fragment>
         )
       )}
     </ContextMenuContent>
@@ -174,24 +213,31 @@ export function ChatRowContextMenuContent({
 export function ChatRowDropdownMenuContent({
   target,
   align = 'end',
+  onCloseAutoFocus,
   ...handlers
-}: { target: ChatRowActionTarget; align?: 'start' | 'center' | 'end' } & ChatRowMenuHandlers) {
+}: {
+  target: ChatRowActionTarget;
+  align?: 'start' | 'center' | 'end';
+} & ChatRowMenuHandlers &
+  MenuFocusProps) {
   return (
-    <DropdownMenuContent align={align} className="w-56">
+    <DropdownMenuContent align={align} className="w-56" onCloseAutoFocus={onCloseAutoFocus}>
       {chatRowMenuEntries(target, handlers).map((entry) =>
         entry.kind === 'separator' ? (
           <DropdownMenuSeparator key={entry.key} />
         ) : (
-          <DropdownMenuItem
-            key={entry.key}
-            data-chat-row-action={entry.key}
-            onSelect={entry.onSelect}
-            disabled={entry.disabled}
-            variant={entry.danger ? 'destructive' : 'default'}
-          >
-            {entry.label}
-            {entry.shortcut ? <MenuShortcut>{entry.shortcut}</MenuShortcut> : null}
-          </DropdownMenuItem>
+          <Fragment key={entry.key}>
+            <MenuNote entry={entry} />
+            <DropdownMenuItem
+              data-chat-row-action={entry.key}
+              onSelect={entry.onSelect}
+              disabled={entry.disabled}
+              variant={entry.danger ? 'destructive' : 'default'}
+            >
+              {entry.label}
+              {entry.shortcut ? <MenuShortcut>{entry.shortcut}</MenuShortcut> : null}
+            </DropdownMenuItem>
+          </Fragment>
         )
       )}
     </DropdownMenuContent>

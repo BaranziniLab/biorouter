@@ -4,12 +4,9 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { chatKindOf } from '../chats/chatKind';
 import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
-import RecentChats, {
-  formatSessionDateLabel,
-  formatTimeSinceLastWorked,
-  groupRecentChatsByDate,
-  sortRecentChats,
-} from './RecentChats';
+import RecentChats, { chatHoverDetail, formatTimeSinceLastWorked } from './RecentChats';
+import { sidebarCopy } from './copy';
+import { DEFAULT_SIDEBAR_CHAT_VIEW } from './sidebarChatView';
 
 const now = Date.parse('2026-07-15T12:00:00.000Z');
 
@@ -63,38 +60,25 @@ function renderRecentChats(props: Partial<ComponentProps<typeof RecentChats>> = 
         onLoadMore={vi.fn()}
         onOpen={vi.fn()}
         onViewAll={vi.fn()}
+        view={DEFAULT_SIDEBAR_CHAT_VIEW}
+        onViewChange={vi.fn()}
         {...props}
       />
     </SidebarProvider>
   );
 }
 
-describe('sortRecentChats', () => {
-  it('orders every loaded chat by most recent activity without a fixed cap', () => {
-    const sessions = Array.from({ length: 12 }, (_, index) => makeSession(index));
-
-    expect(sortRecentChats(sessions).map((session) => session.id)).toEqual(
-      Array.from({ length: 12 }, (_, index) => `session-${index}`)
-    );
-  });
-
-  it('groups the sorted result under human-readable activity dates', () => {
-    const today = makeSession(0);
-    const yesterday = {
-      ...makeSession(1),
-      updated_at: '2026-07-14T12:00:00.000Z',
-    };
-    const earlier = {
-      ...makeSession(2),
-      updated_at: '2026-07-10T12:00:00.000Z',
-    };
-
-    expect(groupRecentChatsByDate([earlier, yesterday, today], now)).toEqual([
-      { label: 'Today', sessions: [today] },
-      { label: 'Yesterday', sessions: [yesterday] },
-      { label: 'Jul 10', sessions: [earlier] },
-    ]);
-    expect(formatSessionDateLabel(today.updated_at, now)).toBe('Today');
+describe('the date buckets', () => {
+  /**
+   * Coarse buckets, never a header per day (spec 3.4, F-07): the arranging
+   * itself is tested in `sidebarChatView.test.ts`; this pins what the list
+   * draws for it.
+   */
+  it('draws one quiet bucket label over the day, not a date per day', () => {
+    renderRecentChats();
+    const today = screen.getByText('Today');
+    expect(today).toHaveClass('br-sidebar-bucket');
+    expect(screen.queryByText(/^[A-Z][a-z]{2} \d{1,2}$/)).toBeNull();
   });
 });
 
@@ -142,51 +126,41 @@ function focusWithTab(element: HTMLElement) {
 describe('RecentChats', () => {
   it('opens individual chats, marks an ongoing chat, and exposes a compact summary on focus', async () => {
     const onOpen = vi.fn();
-    const currentDateLabel = new Intl.DateTimeFormat('en-US', {
-      month: 'short',
-      day: 'numeric',
-    }).format(Date.now());
     renderRecentChats({ onOpen, activeSessionId: 'session-0' });
 
     const currentChat = screen.getByTestId('recent-chat-session-0');
     const ongoingChat = screen.getByTestId('recent-chat-session-1');
     expect(ongoingChat).toHaveAccessibleName('Open ongoing chat: Chat 1');
-    expect(ongoingChat).toHaveClass('w-full', 'h-control-md', 'px-3', 'text-sm');
-    expect(ongoingChat.parentElement).toHaveClass('flex', 'flex-col', 'gap-0.5');
-    expect(ongoingChat).not.toHaveClass('font-medium');
-    expect(currentChat).toHaveClass('font-medium');
+    // One authored row recipe (`sidebar.css`): 28px, 13px, muted at rest, the
+    // accent rail on the current row. jsdom runs no CSS, so the class contract
+    // is pinned here and the geometry in `sidebarGeometry.browser.test.ts`.
+    expect(ongoingChat).toHaveClass('br-nav-row', 'br-chat-row');
+    expect(ongoingChat.closest('ul')).toHaveClass('br-nav-list');
     expect(currentChat).toHaveAttribute('aria-current', 'page');
-    expect(screen.getByTestId('running-chat-indicator-session-1')).toBeInTheDocument();
+    expect(ongoingChat).not.toHaveAttribute('aria-current');
+    expect(screen.getByTestId('running-chat-indicator-session-1')).toHaveClass('br-chat-row-ring');
     expect(ongoingChat).toHaveTextContent('Chat 1');
     expect(ongoingChat).not.toHaveTextContent('1 message');
-    expect(screen.getByText('Recents')).toBeInTheDocument();
-    expect(screen.getByText('Today')).toHaveClass('text-xs', 'font-normal');
-    // The badge is the past-7-day chat count (all 3 fixtures are seconds old),
-    // shown whether the list is expanded or not.
-    expect(screen.queryByTestId('recent-actions-divider')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recents-disclosure')).toHaveTextContent(sidebarCopy.chats.header);
 
     fireEvent.click(currentChat);
-    // One click, one real tab — no preview slot, no options object. Whether the
-    // chat is already open is the reducer's business (it dedupes), not the row's.
-    //
-    // The row hands over the NAME it is already rendering, so the tab opens
-    // titled instead of showing "New chat" until BaseChat has fetched the
-    // session. The row is the only place that knows this without a round-trip.
+    // One click, one real tab. The row hands over the NAME it is already
+    // rendering, so the tab opens titled.
     expect(onOpen).toHaveBeenCalledWith('session-0', 'Chat 0', false);
 
-    // Double click is not a distinct gesture any more: it is two opens of the
-    // same chat, which the reducer collapses to an activate.
+    // Double click is not a distinct gesture: it is two opens of the same chat,
+    // which the reducer collapses to an activate. Never a rename.
     onOpen.mockClear();
     fireEvent.doubleClick(currentChat);
     expect(onOpen.mock.calls.every((call) => call[0] === 'session-0')).toBe(true);
+    expect(screen.queryByRole('textbox')).toBeNull();
 
+    // Two lines at most: the title only when it is cut short (jsdom measures
+    // nothing, so it is not), then `path · time · messages` in one line.
     focusWithTab(currentChat);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
-    expect(summary).toHaveTextContent('Chat 0');
-    expect(summary).toHaveTextContent('/workspace/project-0');
-    expect(summary).toHaveTextContent('Last worked');
-    expect(summary).toHaveTextContent('0 messages');
-    expect(summary).toHaveTextContent(currentDateLabel);
+    expect(summary).toHaveTextContent('/workspace/project-0 · Just now · 0 messages');
+    expect(summary.querySelector('svg')).toBeNull();
   });
 
   it('preserves a user-chosen title that matches the legacy placeholder', () => {
@@ -208,27 +182,45 @@ describe('RecentChats', () => {
 
     const row = screen.getByTestId('recent-chat-session-0');
     const title = screen.getByText(longTitle);
-    expect(row).toHaveClass('w-full', 'min-w-0', 'max-w-full', 'overflow-hidden');
-    expect(title).toHaveClass('min-w-0', 'flex-1', 'truncate');
+    expect(row).toHaveClass('br-nav-row');
+    expect(title).toHaveClass('br-nav-row-label');
 
+    // A cut title earns the card's first line.
+    Object.defineProperties(title, {
+      scrollWidth: { configurable: true, value: 400 },
+      clientWidth: { configurable: true, value: 180 },
+    });
     focusWithTab(row);
     const [summary] = await screen.findAllByTestId('recent-chat-summary-session-0');
     expect(summary).toHaveTextContent(longTitle);
   });
 
-  it('keeps the full chat history one click away from the Recents label', () => {
+  it('keeps the full chat history one click away from the Chats header', () => {
     const onViewAll = vi.fn();
     renderRecentChats({ onViewAll });
 
+    // A 24px icon button named "All chats", in place of the "See all" link.
     const viewAllButton = screen.getByTestId('view-all-chat-history');
-    expect(viewAllButton).toHaveTextContent('See all');
-    expect(viewAllButton).not.toHaveClass('text-text-muted');
+    expect(viewAllButton).toHaveAccessibleName(sidebarCopy.chats.allChats);
+    expect(viewAllButton).not.toHaveTextContent('See all');
+    expect(screen.getByRole('button', { name: sidebarCopy.chats.viewOptions })).toHaveAttribute(
+      'aria-haspopup',
+      'menu'
+    );
 
     fireEvent.click(viewAllButton);
     expect(onViewAll).toHaveBeenCalledOnce();
   });
 
-  it('keeps See all reachable while Recents is retracted, so history is never stranded', () => {
+  it('reads Chats in sentence case, with no caps label and no See all', () => {
+    renderRecentChats();
+    expect(screen.queryByText('Recents')).toBeNull();
+    expect(screen.queryByText('RECENTS')).toBeNull();
+    expect(screen.queryByText('See all')).toBeNull();
+    expect(screen.getByText(sidebarCopy.chats.header)).toBeInTheDocument();
+  });
+
+  it('keeps All chats reachable while the list is retracted, so history is never stranded', () => {
     renderRecentChats();
 
     fireEvent.click(screen.getByTestId('recents-disclosure'));
@@ -236,18 +228,15 @@ describe('RecentChats', () => {
     expect(screen.getByTestId('view-all-chat-history')).toBeVisible();
   });
 
-  it('keeps See all attached to Recents when the list is empty', () => {
+  it('keeps All chats beside the header when the list is empty', () => {
     renderRecentChats({ sessions: [] });
 
-    const scrollContainer = screen.getByTestId('recent-chat-scroll');
-    expect(scrollContainer).toHaveClass('shrink', 'overflow-y-auto');
-    expect(scrollContainer).not.toHaveClass('flex-1');
-    expect(screen.getByText('No recent chats yet')).toBeInTheDocument();
+    expect(screen.getByTestId('recent-chat-scroll')).toHaveClass('br-sidebar-chats-scroll');
+    expect(screen.getByText(sidebarCopy.chats.empty)).toBeInTheDocument();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
-    // No chats at all, so there is no past-week count to show.
   });
 
-  it('retracts the history behind the Recents label, keeping the past-week count in both states', () => {
+  it('retracts the history behind the Chats header', () => {
     renderRecentChats();
 
     const disclosure = screen.getByTestId('recents-disclosure');
@@ -262,8 +251,6 @@ describe('RecentChats', () => {
     expect(disclosure).toHaveAttribute('aria-expanded', 'false');
     expect(scrollWell).not.toBeVisible();
     expect(screen.getByTestId('recent-chat-session-0')).not.toBeVisible();
-    // The count is a persistent past-week metric now, not a stand-in for the
-    // hidden rows — it stays put through the collapse.
 
     fireEvent.click(disclosure);
 
@@ -303,21 +290,19 @@ describe('RecentChats', () => {
       'app'
     );
 
-    // 14px, subdued — and the accent only on the row the user is in.
+    // A 16px slot (`.br-chat-kind-icon`), the body muted, default ink on the
+    // row the user is in; the lock badge alone wears the accent (spec 3.3).
     expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveClass(
-      'h-3.5',
-      'w-3.5',
-      'text-text-subtle'
+      'br-chat-kind-icon',
+      'text-text-muted'
     );
-    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveClass('text-accent-bar');
-    expect(screen.getByTestId('recent-chat-glyph-session-1')).not.toHaveClass('text-text-subtle');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveClass('text-text-default');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).not.toHaveClass('text-accent-bar');
     // The icon library pins every glyph to one stroke weight (design.md §3.9).
     expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveAttribute(
       'stroke-width',
       '1.5'
     );
-    // Rows stay 32px — the glyph must not change sidebar density (D-12).
-    expect(screen.getByTestId('recent-chat-session-0')).toHaveClass('h-control-md');
   });
 
   it('requests another page when the user scrolls near the end of the loaded chats', () => {
@@ -349,7 +334,7 @@ describe('RecentChats', () => {
     expect(glyph.getAttribute('aria-label')).toBe('Private chat');
   });
 
-  it('leaves public and untiered chats unmarked on this 32px row', () => {
+  it('leaves public and untiered chats unmarked on this 28px row', () => {
     renderRecentChats({
       sessions: [
         { ...makeSession(0), privacy_tier: 'public' },
@@ -382,5 +367,12 @@ describe('RecentChats', () => {
       'data-privacy',
       'private'
     );
+  });
+});
+
+describe('chatHoverDetail', () => {
+  it('writes the folder with ~ for home, the time and the count on one line', () => {
+    const session = { ...makeSession(3), working_dir: '/Users/me/lab/cohort' };
+    expect(chatHoverDetail(session, '/Users/me', now)).toBe('~/lab/cohort · 3m ago · 3 messages');
   });
 });

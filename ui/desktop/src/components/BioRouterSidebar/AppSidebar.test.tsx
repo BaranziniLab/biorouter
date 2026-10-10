@@ -107,85 +107,66 @@ describe('AppSidebar chat navigation', () => {
     const primaryMenu = homeButton.closest('[data-sidebar="menu"]');
 
     expect(newSessionButton).toHaveTextContent('New chat');
-    expect(newSessionButton).toHaveClass('h-control-md', 'w-full', 'px-3', 'py-0', 'text-sm');
-    expect(newSessionButton).not.toHaveClass(
-      'h-9',
-      'border',
-      'bg-background-default/55',
-      'font-semibold'
-    );
-    // The brand row is the wordmark SVG now (D-39): "Bio" + "Router" live as the
-    // SVG's own text nodes, so the accessible name is still there without a
-    // separate <span>.
+    // One authored row recipe for every destination (`.br-nav-row` in
+    // `sidebar.css`): 28px, 13px, muted at rest, the accent rail on the current
+    // row. jsdom runs no CSS, so the class contract is pinned here and the
+    // measured geometry in `sidebarGeometry.browser.test.ts`.
+    expect(newSessionButton).toHaveClass('br-nav-row');
+    expect(newSessionButton).not.toHaveClass('h-control-md', 'text-sm', 'px-3');
+    // The brand row is the wordmark SVG (D-39): "Bio" + "Router" live as the
+    // SVG's own text nodes, so the accessible name is there without a <span>.
     expect(wordmark).toHaveTextContent('BioRouter');
-    expect(wordmark).toHaveClass('h-8');
-    // The 40px of dead air is gone: the titlebar band now reserves that space
-    // explicitly and closes it with the hairline the chat/preview headers share.
+    expect(wordmark).toHaveClass('br-sidebar-brand-row');
     expect(sidebarContent).not.toHaveClass('pt-10');
     const titlebarBand = screen.getByTestId('sidebar-titlebar-band');
     // `h-chrome`, not a literal: this band, BaseChat's header and the artifact
     // strip all read `--chrome-height` (44px) so they can never drift apart at
-    // the seam they share. Pinning the TOKEN rather than the number is the point
-    // — if the band ever goes back to a hardcoded height, this fails even if the
-    // number it hardcodes happens to be right today.
+    // the seam they share. The container has no padding now, so the band starts
+    // at y=0 with no `-mt-2` to cancel one.
     expect(titlebarBand).toHaveClass('h-chrome', 'border-b', 'border-sidebar-border');
+    expect(titlebarBand).not.toHaveClass('-mt-2');
     expect(titlebarBand.compareDocumentPosition(wordmark)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
-    // The brand is a real row on the SAME text edge as every nav label. jsdom has
-    // no layout engine, so alignment is pinned here as the class contract that
-    // produces it; it was measured in a real browser against compiled Tailwind:
-    //   mark 20px / wordmark 44px  ==  nav icon 20px / nav label 44px
-    // Both rows are `px-3` inside a `px-2` parent and put a 16px mark before a
-    // `gap-2`, so 8 + 12 + 16 + 8 = 44px on each side.
-    expect(wordmark.parentElement).toHaveClass('px-2');
-    expect(wordmark).toHaveClass('flex', 'items-center', 'gap-2', 'px-3');
-    // The mark is the wordmark SVG, carrying the accessible name and sized to sit
-    // on the row (its own viewBox keeps the underline in proportion).
+    // The brand sits in its own 44px block (8 above, 32px row, 4 below), its
+    // mark 20px tall at the icon column.
+    expect(wordmark.parentElement).toHaveClass('br-sidebar-brand');
     const brandMark = screen.getByTestId('sidebar-biorouter-mark');
     expect(brandMark.tagName.toLowerCase()).toBe('svg');
     expect(brandMark).toHaveAttribute('aria-label', 'BioRouter');
-    expect(brandMark).toHaveClass('h-[calc(24px*var(--app-font-scale,1))]', 'w-auto');
-    expect(homeButton.closest('[data-sidebar="group"]')).toHaveClass('px-2');
-    expect(homeButton).toHaveClass('gap-2', 'px-3');
-    expect(homeButton.querySelector('svg')).toHaveClass('h-4', 'w-4');
+    expect(brandMark).toHaveClass('br-sidebar-wordmark');
+    expect(homeButton.closest('[data-sidebar="group"]')).toHaveClass('br-nav-group');
+    expect(homeButton.querySelector('svg')).toHaveClass('br-nav-row-icon');
 
     // Astryx §4.1.3 REVERSED THIS PAIR. Home is first because it is where the
     // rail returns you; New chat is beneath it because it is the one thing
-    // the rail does. An action in the top slot claims the position the eye reads
-    // as "the top of the map".
+    // the rail does.
     expect(wordmark.compareDocumentPosition(homeButton)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(homeButton.compareDocumentPosition(newSessionButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
-    expect(homeButton).toHaveClass('h-control-md', 'px-3', 'py-0', 'text-sm');
-    // 2px between rail rows, not the flush `gap-0` this asserted before. At zero
-    // the rows' rounded washes touch, so a hover bleeds into its neighbours and
-    // the destinations read as one block of colour. 2px is the gap the app's own
-    // menu recipe uses between items, so the rail and the menus now agree.
-    expect(primaryMenu).toHaveClass('gap-0.5');
+    expect(homeButton).toHaveClass('br-nav-row');
+    expect(primaryMenu).toHaveClass('br-nav-list');
     expect(primaryMenu).toContainElement(newSessionButton);
-    expect(homeButton).not.toHaveClass('text-text-muted');
-    expect(footer).toContainElement(settingsButton);
-    expect(settingsButton).toHaveClass('h-control-md', 'w-full', 'px-3', 'py-0', 'text-sm');
-    expect(settingsButton).not.toHaveClass('text-text-muted');
-    expect(screen.getByTestId('sidebar-biorouter-mark')).toBeInTheDocument();
-    // §4.1.4 — the UPPER rule is gone. The Components row and the Recents header
-    // do the zoning between destinations and history, so a rule between them was
-    // a third answer to a question two elements already answered.
-    expect(screen.queryByTestId('sidebar-nav-divider')).toBeNull();
-    // The one remaining rule, HALVED: `my-1` + the hairline is a 10px block. At
-    // `my-2` it was 18px of rail spent on a 1px mark.
-    expect(screen.getByTestId('sidebar-footer-divider')).toHaveClass(
-      'h-px',
-      'bg-sidebar-border',
-      'mx-3.5',
-      'my-1'
+    // New chat's shortcut is a hint the row shows on hover or focus only.
+    expect(newSessionButton.querySelector('.br-nav-row-hint')).toHaveAttribute(
+      'aria-hidden',
+      'true'
     );
-    expect(screen.getByTestId('sidebar-footer-divider')).not.toHaveClass('!w-8', 'my-2');
+    // The ten nav tooltips that could never show are gone (F-10).
+    expect(newSessionButton.closest('[data-slot="tooltip-trigger"]')).toBeNull();
+    expect(footer).toContainElement(settingsButton);
+    expect(settingsButton).toHaveClass('br-nav-row');
+    expect(screen.getByTestId('sidebar-biorouter-mark')).toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-nav-divider')).toBeNull();
+    // The footer's rule is a full-bleed hairline on the footer itself (Crew's
+    // `.crew-sidebar-you`), not an inset `mx-3.5 my-1` divider element.
+    expect(screen.queryByTestId('sidebar-footer-divider')).toBeNull();
+    expect(footer).toHaveClass('br-sidebar-footer');
     // §4.1.2 — no "MENU" header. 32px labelling something self-evident.
     expect(screen.queryByText('Menu')).toBeNull();
     expect(screen.queryByTestId('sidebar-menu-label')).toBeNull();
-    expect(screen.getByText('Recents')).toBeInTheDocument();
+    expect(screen.getByText('Chats')).toBeInTheDocument();
+    expect(screen.queryByText('Recents')).toBeNull();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
     expect(await screen.findByTestId('recent-chat-session-1')).toBeInTheDocument();
 
@@ -240,24 +221,24 @@ describe('AppSidebar — the Components disclosure', () => {
     expect(screen.queryByTestId('sidebar-knowledge-button')).toBeNull();
   });
 
-  it('opens on click, indents its children, and keeps them at the same 32px height', () => {
+  it('opens on click, and its children are rows like any other, at the same edge', () => {
     renderSidebar();
-    fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
+    const disclosure = screen.getByTestId('sidebar-components-disclosure');
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    // The chevron is the group's mark and the only thing that moves (Crew's
+    // team header): it turns 90° in CSS keyed on `aria-expanded`.
+    expect(disclosure.querySelector('svg')).toHaveClass('br-nav-chevron');
 
     const workflows = screen.getByTestId('sidebar-workflows-button');
     expect(screen.getByTestId('sidebar-components-group')).toContainElement(workflows);
-    expect(screen.getByTestId('sidebar-components-group')).toHaveClass(
-      'flex',
-      'flex-col',
-      'gap-0.5'
-    );
-    expect(workflows).toHaveClass('py-0');
-    // Hierarchy by INDENT, never by size (§4.1.3): the text edge moves 24px, the
-    // row height and type do not move at all.
-    expect(workflows).toHaveClass('h-control-md', 'pl-9', 'text-sm');
-    expect(workflows).not.toHaveClass('h-7', 'text-xs');
-    // The parent rows keep the unindented edge, so the indent reads as a step.
-    expect(screen.getByTestId('sidebar-home-button')).toHaveClass('px-3');
+    expect(screen.getByTestId('sidebar-components-group')).toHaveClass('br-nav-list');
+    // No indent (F-11): the children sit on the same icon and label columns as
+    // every other row, at the same height and type.
+    expect(workflows).toHaveClass('br-nav-row');
+    expect(workflows).not.toHaveClass('pl-9');
+    expect(workflows.className).toBe(screen.getByTestId('sidebar-home-button').className);
   });
 
   it('remembers being opened', () => {

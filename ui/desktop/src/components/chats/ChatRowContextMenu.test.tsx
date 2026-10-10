@@ -171,6 +171,32 @@ describe('chatRowMenuEntries', () => {
     ]);
   });
 
+  it('draws an extra item’s note above it, visibly, in the menu', async () => {
+    render(
+      <ChatRowContextMenu
+        target={{ sessionId: 's1', openInNewTab: vi.fn() }}
+        extraItems={[
+          {
+            key: 'make-public',
+            label: 'Make this chat public',
+            onSelect: vi.fn(),
+            disabled: true,
+            note: 'Only the host can make a chat public.',
+            noteTestId: 'declassify-note',
+          },
+        ]}
+      >
+        <div data-testid="row">Chat</div>
+      </ChatRowContextMenu>
+    );
+    fireEvent.contextMenu(screen.getByTestId('row'));
+    const note = await screen.findByTestId('declassify-note');
+    expect(note).toHaveTextContent('Only the host can make a chat public.');
+    const item = screen.getByRole('menuitem', { name: 'Make this chat public' });
+    expect(note.compareDocumentPosition(item)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(item).toHaveAttribute('data-disabled');
+  });
+
   it('hides the rename hint on a surface without the key', () => {
     const [rename] = chatRowMenuEntries(target, { onRename: () => {}, renameShortcut: null });
     expect(rename).toMatchObject({ key: 'rename' });

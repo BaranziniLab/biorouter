@@ -11,7 +11,7 @@ import { Input } from './input';
 import { Separator } from './separator';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from './sheet';
 import { Skeleton } from './skeleton';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './Tooltip';
+import { AppTooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
 import { useIsMobile } from '../../hooks/use-mobile';
 import {
   SIDEBAR_DEFAULT_WIDTH,
@@ -425,7 +425,11 @@ function SidebarProvider({
 
   return (
     <SidebarContext.Provider value={contextValue}>
-      <TooltipProvider delayDuration={0}>
+      {/* The app's one tooltip provider (spec 2.6): 500ms to open, 300ms skip
+          between neighbours. It was `delayDuration={0}`, which every tooltip
+          in the shell would have inherited once tooltips stopped bringing
+          their own provider. */}
+      <AppTooltipProvider>
         <div
           data-slot="sidebar-wrapper"
           style={
@@ -443,7 +447,7 @@ function SidebarProvider({
         >
           {children}
         </div>
-      </TooltipProvider>
+      </AppTooltipProvider>
     </SidebarContext.Provider>
   );
 }
@@ -658,11 +662,14 @@ function Sidebar({
       data-side={side}
       data-slot="sidebar"
     >
-      {/* This is what handles the sidebar gap on desktop */}
+      {/* This is what handles the sidebar gap on desktop. Its open and close
+          motion (300ms in, 175ms out) is authored in `main.css`, keyed on
+          `data-slot`, and `data-motion-layout` stops it during a resize. */}
       <div
         data-slot="sidebar-gap"
+        data-motion-layout=""
         className={cn(
-          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-[var(--motion-slow)] ease-[var(--ease-out)]',
+          'relative w-(--sidebar-width) bg-transparent',
           'group-data-[collapsible=offcanvas]:w-0',
           'group-data-[side=right]:rotate-180',
           variant === 'floating' || variant === 'inset'
@@ -673,17 +680,23 @@ function Sidebar({
       <div
         ref={panelRef}
         data-slot="sidebar-container"
+        data-motion-layout=""
         inert={offCanvas}
         onClick={handlePanelClick}
         className={cn(
-          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-[var(--motion-slow)] ease-[var(--ease-out)] will-change-transform md:flex',
+          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) will-change-transform md:flex',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:translate-x-[-100%]'
             : 'right-0 group-data-[collapsible=offcanvas]:translate-x-[100%]',
-          // Adjust the padding for floating and inset variants.
-          variant === 'floating' || variant === 'inset'
-            ? 'py-2 pl-2 pr-4 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]'
-            : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
+          // The inset variant (the app's) has no padding of its own: every list
+          // inside pads 8px on BOTH sides, so rows span x 8 to 280 at 288px and
+          // the band's hairline runs the full width to meet the chat header's at
+          // the seam. It used to pad 8px left and 16px right (spec 3.4, F-03).
+          variant === 'inset'
+            ? 'p-0'
+            : variant === 'floating'
+              ? 'py-2 pl-2 pr-4 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]'
+              : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
           className
         )}
         {...panelProps}
@@ -808,7 +821,7 @@ function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
       onClick={toggleSidebar}
       title="Toggle sidebar"
       className={cn(
-        'hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex',
+        'hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-colors group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex',
         'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',
         '[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize',
         'hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full',
@@ -832,6 +845,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       data-slot="sidebar-inset"
+      data-motion-layout=""
       className={cn(
         'biorouter-sidebar-inset-depth bg-background relative flex w-full flex-1 flex-col min-w-0',
         // For inset variant (used in the app): flush against the straight,
@@ -841,8 +855,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'div'>) {
         // For offcanvas variant - ensure content doesn't go under sidebar
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=expanded]:ml-[var(--sidebar-width)]',
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=collapsed]:ml-0',
-        // Smooth transition when sidebar state changes
-        'transition-[margin-left] duration-[var(--motion-slow)] ease-[var(--ease-out)]',
+        // The margin's motion follows the sidebar's (authored in `main.css`).
         className
       )}
       {...props}
@@ -931,7 +944,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        'text-sidebar-foreground/70 ring-sidebar-ring flex h-8 shrink-0 items-center rounded-element px-2 text-supporting transition-[margin,opacity] duration-200 ease-linear [&>svg]:size-4 [&>svg]:shrink-0',
+        'text-sidebar-foreground/70 ring-sidebar-ring flex h-8 shrink-0 items-center rounded-element px-2 text-supporting transition-[margin,opacity] [&>svg]:size-4 [&>svg]:shrink-0',
         'group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0',
         className
       )}

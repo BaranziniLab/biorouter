@@ -1,0 +1,470 @@
+/* @ws WS-SIDEBAR begin: the app sidebar (BioRouterSidebar/sidebar.css) */
+/* The app sidebar: Codex density in Crew's recipe (spec 3.4, owner messages
+   1, 3, 4 and 12).
+
+   Every row is 28px (`--row-height-nav`) with a 2px gap, so the pitch is 30px;
+   13px text (`--text-secondary`); a 16px icon at x=16 and the label at x=40 at
+   any sidebar width (8px list inset + 8px row padding, then 16 + 8). Muted ink
+   at rest, default ink on hover and on the current row, which also carries the
+   2px accent rail: Biorouter's one moment of colour in the column.
+
+   Authored rather than utilities at the call sites, as Crew's sidebar is: a
+   newly written Tailwind class can silently fail to generate under
+   `BIOROUTER_NO_HMR`, and several of these need a pseudo-element (the rail), a
+   descendant state (hover-revealed actions) or a rest under reduced motion.
+   These rules are unlayered, so they beat the Tailwind utilities the sidebar
+   primitive still carries (`SidebarMenuButton`'s cva string).
+
+   ⚠ Focus: a background set here beats the D-15 focus fill in `@layer base`,
+   so every rule that paints a row restates the focus fill and the 2px
+   `--border-focus` edge for `:focus-visible` (Crew's T-16). */
+
+/* ── Brand row: 8px above and 4px below a 32px row, 44px in all ─────────── */
+.br-sidebar-brand {
+  flex: none;
+  padding: 8px 8px 4px;
+}
+
+.br-sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control-md);
+  min-width: 0;
+  padding-inline: 8px;
+}
+
+.br-sidebar-wordmark {
+  flex: none;
+  width: auto;
+  height: calc(20px * var(--app-font-scale, 1));
+}
+
+/* ── Nav lists: one rhythm for destinations and chats ───────────────────── */
+.br-nav-group {
+  flex: none;
+  padding-inline: 8px;
+}
+
+.br-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.br-nav-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: var(--row-height-nav);
+  padding: 0 8px;
+  overflow: hidden;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+  text-align: start;
+  background-color: transparent;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-nav-row:hover {
+  background-color: var(--sidebar-hover);
+  color: var(--text-default);
+}
+
+.br-nav-row[data-active='true'],
+.br-nav-row[aria-current='page'] {
+  background-color: var(--sidebar-active);
+  color: var(--text-default);
+}
+
+/* The rail: 2px of accent at the leading edge, inset 7px top and bottom. */
+.br-nav-row[data-active='true']::before,
+.br-nav-row[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-block: 7px;
+  inset-inline-start: 0;
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--accent-bar);
+}
+
+.br-nav-row:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+.br-nav-row-icon {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--sidebar-icon);
+}
+
+.br-nav-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The New chat row's shortcut: shown only while the row is hovered or focused. */
+.br-nav-row-hint {
+  flex: none;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-subtle);
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-nav-row:hover .br-nav-row-hint,
+.br-nav-row:focus-visible .br-nav-row-hint {
+  opacity: 1;
+}
+
+/* The Update row's download glyph is the accent (principle 7). */
+.br-nav-row[data-tone='update'] .br-nav-row-icon {
+  color: var(--accent-bar);
+}
+
+/* ── Chevrons: a group's turns 90°; only the chevron moves (Crew's rule) ── */
+.br-nav-chevron {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  color: var(--sidebar-icon);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+
+[aria-expanded='true'] > .br-nav-chevron {
+  transform: rotate(90deg);
+  transition-duration: var(--dur-fast-max);
+}
+
+/* ── The Chats section ──────────────────────────────────────────────────── */
+.br-sidebar-chats {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin-block-start: 8px;
+}
+
+.br-sidebar-chats[data-expanded='true'] {
+  flex: 1 1 auto;
+}
+
+.br-sidebar-chats[data-expanded='false'] {
+  flex: none;
+}
+
+/* A 28px header: "Chats" on the left, two 24px icon buttons on the right. */
+.br-sidebar-chats-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: var(--row-height-nav);
+  min-width: 0;
+  margin-inline: 8px;
+  padding-inline-end: 2px;
+}
+
+.br-sidebar-chats-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  color: var(--text-muted);
+  text-align: start;
+  transition: color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-chats-toggle:hover {
+  color: var(--text-default);
+}
+
+.br-sidebar-chats-toggle:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* The header's chevron shows on hover or focus, and always while collapsed. */
+.br-sidebar-chats-toggle > .br-nav-chevron {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-chats-toggle:hover > .br-nav-chevron,
+.br-sidebar-chats-toggle:focus-visible > .br-nav-chevron,
+.br-sidebar-chats-toggle[aria-expanded='false'] > .br-nav-chevron {
+  opacity: 1;
+}
+
+.br-sidebar-chats-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The scrolling list: an 8px inset on both sides and a 10px fade at the
+   bottom edge, so the last row never clips mid-glyph against the footer
+   (F-30). */
+.br-sidebar-chats-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 8px 10px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 10px), transparent);
+}
+
+/* A view change re-renders the list at rest and fades it from 0.6; rows never FLIP. */
+.br-sidebar-chat-groups[data-view-changed='true'] {
+  animation: br-sidebar-list-settle var(--dur-fast-max) var(--ease-out);
+}
+
+@keyframes br-sidebar-list-settle {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.br-sidebar-group + .br-sidebar-group {
+  margin-block-start: 4px;
+}
+
+/* Date buckets: a quiet 12px label, 12px above and 4px below. */
+.br-sidebar-bucket {
+  margin: 0;
+  padding: 12px 8px 4px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 400;
+  color: var(--text-subtle);
+}
+
+.br-sidebar-group:first-child > .br-sidebar-bucket {
+  padding-top: 4px;
+}
+
+/* A folder group's header: Crew's team header at the sidebar's pitch. The
+   hover ground covers the whole header, its + and ⋯ included. */
+.br-sidebar-folder {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: var(--row-height-nav);
+  margin-block-end: 2px;
+  padding-inline-end: 2px;
+  border-radius: var(--radius-element);
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-folder:hover {
+  background-color: var(--sidebar-hover);
+}
+
+.br-sidebar-folder-toggle {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding-inline: 8px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  color: var(--text-muted);
+  text-align: start;
+}
+
+.br-sidebar-folder-toggle:hover {
+  color: var(--text-default);
+}
+
+.br-sidebar-folder-toggle:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+}
+
+/* ── Hover-revealed actions: opacity only, so they stay in the a11y tree ── */
+.br-sidebar-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-sidebar-folder:hover .br-sidebar-actions,
+.br-sidebar-folder:focus-within .br-sidebar-actions,
+.br-sidebar-actions:has([data-state='open']) {
+  opacity: 1;
+}
+
+/* ── A chat row ─────────────────────────────────────────────────────────── */
+.br-chat-row-item {
+  position: relative;
+  min-width: 0;
+}
+
+/* The 16px trailing slot: the running ring at rest, the ⋯ on hover or focus. */
+.br-chat-row-trailing {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--icon-row);
+  height: var(--icon-row);
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+/* The ⋯ sits over the trailing slot: 24px, centred on it (row padding 8 −
+   (24 − 16) / 2 = 4px from the row's end), vertically centred in 28px. */
+.br-chat-row-more {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-end: 4px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-chat-row-item:hover .br-chat-row-more,
+.br-chat-row-item:focus-within .br-chat-row-more,
+.br-chat-row-more[data-state='open'] {
+  opacity: 1;
+}
+
+.br-chat-row-item:hover .br-chat-row-trailing,
+.br-chat-row-item:focus-within .br-chat-row-trailing,
+.br-chat-row-item:has(.br-chat-row-more[data-state='open']) .br-chat-row-trailing {
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .br-sidebar-actions,
+  .br-chat-row-more {
+    opacity: 1;
+  }
+
+  .br-chat-row-trailing {
+    opacity: 0;
+  }
+}
+
+/* The running ring: one keyframe on a 12px element, paused while it is off
+   screen or the window is hidden (Codex's sidebar spinner held the GPU at
+   70%). A still ring under reduced motion (the global reset). */
+.br-chat-row-ring {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border-subtle);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  animation: br-chat-row-spin calc(var(--dur-slow) * 2) linear infinite;
+}
+
+.br-chat-row-ring[data-offscreen='true'],
+[data-document-hidden='true'] .br-chat-row-ring {
+  animation-play-state: paused;
+}
+
+@keyframes br-chat-row-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Rename in place: the row keeps its 28px box; the input is 24px. */
+.br-chat-row[data-editing='true'] {
+  background-color: var(--sidebar-active);
+  color: var(--text-default);
+}
+
+.br-chat-row-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  margin-inline-start: -4px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-default);
+  box-shadow: 0 0 0 1px var(--border-focus);
+  font: inherit;
+  color: var(--text-default);
+  outline: none;
+}
+
+/* "Show more" under a folder's first five chats, and the list's foot. */
+.br-sidebar-quiet-row {
+  color: var(--text-subtle);
+}
+
+.br-sidebar-foot {
+  margin: 0;
+  padding: 8px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-subtle);
+}
+
+/* ── Footer: a full-bleed hairline, then Update and Settings ────────────── */
+.br-sidebar-footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-block-start: 1px solid var(--sidebar-border);
+}
+
+@media (forced-colors: active) {
+  .br-nav-row[data-active='true']::before,
+  .br-nav-row[aria-current='page']::before {
+    background-color: Highlight;
+    forced-color-adjust: none;
+  }
+}
+/* @ws WS-SIDEBAR end: the app sidebar */

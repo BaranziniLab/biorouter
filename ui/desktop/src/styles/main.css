@@ -4614,6 +4614,33 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   box-shadow: 1px 0 0 0 var(--sidebar-border);
 }
 
+/* @ws WS-SIDEBAR begin: sidebar open and close motion */
+/* The sidebar opens over `--dur-med` (300ms) and closes over `--dur-fast-max`
+   (175ms): a transition runs with the duration of the state it is going TO, so
+   the collapsed state carries the shorter one. One curve, `--ease-out`. The
+   three boxes that move are the gap (its width, a named exception in principle
+   9), the panel (transform) and the inset (its margin). Each carries
+   `data-motion-layout`, so the resize rule above stops all three during a
+   window or sidebar drag, and the global reduced-motion reset nulls them. */
+[data-slot='sidebar-gap'] {
+  transition: width var(--dur-med) var(--ease-out);
+}
+
+[data-slot='sidebar-container'] {
+  transition: transform var(--dur-med) var(--ease-out);
+}
+
+[data-slot='sidebar-inset'] {
+  transition: margin-left var(--dur-med) var(--ease-out);
+}
+
+[data-slot='sidebar'][data-state='collapsed'] > [data-slot='sidebar-gap'],
+[data-slot='sidebar'][data-state='collapsed'] > [data-slot='sidebar-container'],
+[data-slot='sidebar'][data-state='collapsed'] ~ [data-slot='sidebar-inset'] {
+  transition-duration: var(--dur-fast-max);
+}
+/* @ws WS-SIDEBAR end: sidebar open and close motion */
+
 /* The sidebar's drag edge (components/ui/sidebar.tsx `SidebarResizeHandle`).
    ⚠ AUTHORED CSS, NOT A TAILWIND UTILITY STRING, for the same reason as
    `.biorouter-composer-card` below: the hover hairline and the resize cursor are
@@ -4642,7 +4669,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   right: 0;
   width: 2px;
   background: transparent;
-  transition: background-color var(--motion-fast) var(--ease-out);
+  /* @ws WS-SIDEBAR begin: resize hairline token */
+  transition: background-color var(--dur-fast) var(--ease-out);
+  /* @ws WS-SIDEBAR end: resize hairline token */
 }
 
 .biorouter-sidebar-resize-handle:hover::after,
