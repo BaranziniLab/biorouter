@@ -47,8 +47,21 @@ describe('BaseChat: the summary button and the rail', () => {
     expect(earlyReturn).toBeGreaterThan(todos);
   });
 
-  it('closes the popover when the rail takes its place', () => {
-    expect(code).toMatch(/if \(summaryRail\.shown\) setReviewOpen\(false\)/);
+  it('closes the popover when the rail takes its place, or the button turns into the rail’s', () => {
+    expect(code).toMatch(
+      /if \(summaryRail\.shown \|\| summaryRail\.mode === 'rail'\) setReviewOpen\(false\)/
+    );
+  });
+
+  it('tells the rail whether a turn is running, so a loaded history appears at rest', () => {
+    const call = code.slice(
+      code.indexOf('useSummaryRail({'),
+      code.indexOf('});', code.indexOf('useSummaryRail({'))
+    );
+    expect(call).toMatch(/chatPhase:/);
+    expect(call).toContain("'loading'");
+    expect(call).toContain("'running'");
+    expect(call).toContain('ChatState.LoadingConversation');
   });
 
   it('merges the two split-box styles after both spreads', () => {

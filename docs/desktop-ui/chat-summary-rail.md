@@ -66,6 +66,10 @@ browser` (`summaryRailVisible`).
   switch or a reload shows the rail at once and at rest. A narrowing hides it at once; a widening
   shows it only after the width has held still for 160ms, so a sidebar sweep does not make the
   column jump halfway. The rail never resizes the window.
+- **First turn or history load**: both turn a chat active, but only a turn that starts in this
+  mount enters the rail. `BaseChat` passes the stream's phase (`loading`, `running` or `idle`),
+  and a chat that becomes active while loading, or whose transcript lands with no turn running
+  (a tab opened from History, a restart, the cache), appears at rest like a tab switch.
 
 ## The header button
 
@@ -79,7 +83,8 @@ One `PanelRight` button in the chat header's actions
 
 The popover is anchored with `PopoverAnchor` rather than triggered, because a Radix trigger would
 stamp its own `aria-expanded` and open the popover in rail mode too. If the window widens while
-the popover is open, the rail replaces it and the popover closes.
+the popover is open, the rail replaces it and the popover closes, and so does a popover left open
+when the button turns into the rail's (the rail was closed, then the window widened).
 
 While the rail is hidden and a to-do step is running, the button carries a 6px coral dot and its
 name becomes "Chat summary, 2 of 5 to do items complete".
@@ -150,11 +155,12 @@ or the pointer is over the summary.
 | Test | Holds |
 |---|---|
 | `components/Layout/yieldLadder.test.ts` | Each seam one pixel apart (1055/1056, 1067/1068), the width steps (1056 → 240, 1076 → 260, 1096 → 280), the full measure across every pane width, the side-preview subtraction (1975/1976 at the default preview), a stacked preview, an unmeasured pane, and the window table |
-| `hooks/useSummaryRail.test.tsx` | No hidden-then-shown flash on mount, a narrowing hides at once, a widening shows after 160ms, a mount does not animate, the toggle's entrance, exit and glide |
+| `hooks/useSummaryRail.test.tsx` | No hidden-then-shown flash on mount, a narrowing hides at once, a widening shows after 160ms, a mount does not animate, the first turn enters but a loaded history (fetched, cached or rejoining a turn) does not, the toggle's entrance, exit and glide |
+| `components/summary/ChatSummaryRail.test.tsx` | The card mounts entered when geometry showed it, plays its entrance once, ignores its children's animations, reports its exit (or its cancelled exit) and re-arms the entrance when reopened mid-exit |
 | `Layout/summaryRailPreference.test.ts` | The per-viewer store, its default and the `storage` event |
 | `hooks/useColumnGlide.test.ts` | No glide while resizing, under reduced motion or under 8px; the composer left to its own FLIP; the scroll anchor |
 | `hooks/useSessionTodos.test.tsx` | Fetches with the user proof only while shown, refreshes after to-do writes, keeps the last list with an error and Retry |
-| `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words, the row entrances, the scrolling body |
+| `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, and the dot with its count |
 | `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, and the `paddingX={6}` and `'px-1',` literals the 56px comes from |
 | `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail |

@@ -38,6 +38,7 @@ function Harness(props: HarnessProps) {
 
 const defaults: HarnessProps = {
   active: true,
+  chatPhase: 'idle',
   isMobile: false,
   previewMode: null,
   previewWidth: 0,
@@ -177,13 +178,47 @@ describe('useSummaryRail', () => {
     const onGlide = vi.fn();
     const view = mount({ active: false, onGlide });
     commits = [];
-    view.update({ active: true });
+    view.update({ active: true, chatPhase: 'running' });
     expect(latest.shown).toBe(true);
     // The commit that mounted the card carried `still: false`; the card latches it.
     expect(commits.some((c) => c.rendered && !c.still)).toBe(true);
     expect(onGlide).toHaveBeenCalledWith(140, 'open');
     // Only that one commit: later geometry changes are still again.
     expect(latest.still).toBe(true);
+  });
+
+  describe('a chat that becomes active because its history arrived appears at rest', () => {
+    // A tab opened from History, or restored after a restart, mounts empty and
+    // fills from the store: the chat turns active, but no turn started here.
+    it('after a fetch (loading, then idle with the transcript)', () => {
+      const onGlide = vi.fn();
+      const view = mount({ active: false, chatPhase: 'loading', onGlide });
+      commits = [];
+      view.update({ active: true, chatPhase: 'idle' });
+      expect(latest.shown).toBe(true);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+
+    it('after a cached transcript lands in one step (idle, then idle with messages)', () => {
+      const onGlide = vi.fn();
+      const view = mount({ active: false, chatPhase: 'idle', onGlide });
+      commits = [];
+      view.update({ active: true, chatPhase: 'idle' });
+      expect(latest.shown).toBe(true);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
+
+    it('when the reloaded chat is rejoining a turn that is still running', () => {
+      const onGlide = vi.fn();
+      const view = mount({ active: false, chatPhase: 'loading', onGlide });
+      commits = [];
+      view.update({ active: true, chatPhase: 'running' });
+      expect(latest.shown).toBe(true);
+      expect(commits.filter((c) => c.rendered).every((c) => c.still)).toBe(true);
+      expect(onGlide).not.toHaveBeenCalled();
+    });
   });
 
   it('closes on a toggle: plays the exit, then drops the column and glides back', () => {

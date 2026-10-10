@@ -33,6 +33,21 @@ export const SUMMARY_RAIL_SHOW_SETTLE_MS = 160;
  */
 export const SUMMARY_RAIL_EXIT_FALLBACK_MS = 200;
 
+/**
+ * Where the chat's stream is, as far as the rail cares:
+ *
+ *   loading  the transcript is being fetched (`ChatState.LoadingConversation`)
+ *   running  a turn is under way
+ *   idle     neither
+ *
+ * It exists to tell a FIRST TURN from a history load. Both turn the chat
+ * `active` (the transcript goes from empty to something), but only a turn that
+ * starts in this mount is something the person did; a reload, a tab opened from
+ * History or a transcript restored from the cache arrives with the chat already
+ * written, and the rail then appears at rest like every other geometry change.
+ */
+export type SummaryRailChatPhase = 'loading' | 'running' | 'idle';
+
 /** Spread onto the split box beside the artifact panel's own props. */
 export interface SummaryRailSplitPaneProps {
   'data-summary-rail'?: '';
@@ -72,6 +87,8 @@ export interface UseSummaryRailOptions {
   splitPaneRef: RefObject<HTMLElement | null>;
   /** The chat has had a turn (or one is running). */
   active: boolean;
+  /** See {@link SummaryRailChatPhase}: `active` turning on only enters the rail in a `running` chat. */
+  chatPhase: SummaryRailChatPhase;
   isMobile: boolean;
   /** Null when no preview is mounted. */
   previewMode: PreviewPanelMode | null;
@@ -116,6 +133,7 @@ function readWidth(element: HTMLElement | null): number {
 export function useSummaryRail({
   splitPaneRef,
   active,
+  chatPhase,
   isMobile,
   previewMode,
   previewWidth,
@@ -129,15 +147,21 @@ export function useSummaryRail({
   const fit = summaryRailFit({ paneWidth, previewMode, previewWidth, previous: lastFit });
   const shown = summaryRailVisible({ fit, preference, active, isMobile });
 
-  // "The first turn starts": `active` turning on after this chat mounted. A
-  // chat that mounts already active (a tab switch, a reload) is at rest. This
-  // is React's "store information from previous renders" pattern, so the
-  // answer is known in the same render the rail first appears in.
+  // "The first turn starts": `active` turning on, in a chat whose turn is
+  // running, after this chat mounted. A chat that mounts already active (a tab
+  // switch) is at rest, and so is one that becomes active because its history
+  // arrived (`chatPhase` was `loading`, or the transcript landed with no turn
+  // under way). This is React's "store information from previous renders"
+  // pattern, so the answer is known in the same render the rail first appears in.
   const [previousActive, setPreviousActive] = useState(active);
+  const [previousPhase, setPreviousPhase] = useState(chatPhase);
   const [animateEntrance, setAnimateEntrance] = useState(false);
+  if (previousPhase !== chatPhase) setPreviousPhase(chatPhase);
   if (previousActive !== active) {
     setPreviousActive(active);
-    if (active) setAnimateEntrance(true);
+    if (active && chatPhase === 'running' && previousPhase !== 'loading') {
+      setAnimateEntrance(true);
+    }
   }
 
   const [exiting, setExiting] = useState(false);

@@ -2285,6 +2285,14 @@ function BaseChatContent({
   const summaryRail = useSummaryRail({
     splitPaneRef,
     active: summaryActive,
+    // A reload, a tab opened from History or a cached transcript also turns the
+    // chat active; only a turn that starts here enters the rail.
+    chatPhase:
+      chatState === ChatState.LoadingConversation
+        ? 'loading'
+        : isRunningState(chatState)
+          ? 'running'
+          : 'idle',
     isMobile,
     previewMode: previewMounted ? previewMode : null,
     previewWidth: previewSideWidth,
@@ -2304,10 +2312,11 @@ function BaseChatContent({
     reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState))
   );
 
-  // The window widened under an open popover: the rail replaces it.
+  // The window widened under an open popover: the button is the rail's now, in
+  // rail mode it never opens a popover, so a stale one closes.
   useEffect(() => {
-    if (summaryRail.shown) setReviewOpen(false);
-  }, [summaryRail.shown]);
+    if (summaryRail.shown || summaryRail.mode === 'rail') setReviewOpen(false);
+  }, [summaryRail.shown, summaryRail.mode]);
 
   // A preview open or close captured where the conversation was (the panel's
   // `onPresentedChange`, above); play the glide against the layout that has
