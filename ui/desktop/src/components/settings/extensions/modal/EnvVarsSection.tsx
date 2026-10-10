@@ -1,8 +1,13 @@
 import React from 'react';
 import { Button } from '../../../ui/button';
-import { Plus, X, Edit } from '../../../icons/app-icons';
+import { InfoTip } from '../../../ui/info-tip';
+import { IconAction } from '../../../ui/row-actions';
+import { Plus, X, Pencil } from '../../../icons/app-icons';
 import { Input } from '../../../ui/input';
 import { cn } from '../../../../utils';
+import { EXTENSION_MODAL_COPY as COPY } from '../copy';
+
+const SECRET_PLACEHOLDER = '••••••••';
 
 interface EnvVarsSectionProps {
   envVars: { key: string; value: string; isEdited?: boolean }[];
@@ -45,7 +50,7 @@ export default function EnvVarsSection({
         key: keyEmpty,
         value: valueEmpty,
       });
-      setValidationError('Both variable name and value must be entered');
+      setValidationError(COPY.variableNeedsBoth);
       return;
     }
 
@@ -54,7 +59,7 @@ export default function EnvVarsSection({
         key: true,
         value: false,
       });
-      setValidationError('Variable name cannot contain spaces');
+      setValidationError(COPY.variableNoSpaces);
       return;
     }
 
@@ -91,74 +96,68 @@ export default function EnvVarsSection({
     newEnvVars[index] = updatedEnvVar;
   };
 
+  const titleId = React.useId();
+  const errorId = React.useId();
+
+  // Visible red edge for an invalid cell; `aria-invalid` carries it for assistive tech.
+  const bad = 'border-border-danger focus:border-border-danger';
+
   return (
-    <div>
-      <div className="relative mb-2">
-        <label className="text-sm font-medium text-text-default mb-2 block">
-          Environment Variables
-        </label>
-        <p className="text-xs text-text-muted mb-4">
-          Add key-value pairs for environment variables. Click the "+" button to add after filling
-          both fields. For existing secret values, click the edit button to modify.
-        </p>
+    <div className="br-ext-section" role="group" aria-labelledby={titleId}>
+      <div className="br-ext-section-title">
+        <h3 id={titleId} className="text-label text-text-default">
+          {COPY.envTitle}
+        </h3>
+        <InfoTip label={COPY.envTitle} help={COPY.envHelp} />
       </div>
-      <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-center">
+      <div className="br-ext-kv">
         {/* Existing environment variables */}
-        {envVars.map((envVar, index) => (
-          <React.Fragment key={index}>
-            <div className="relative">
+        {envVars.map((envVar, index) => {
+          const saved = envVar.value === SECRET_PLACEHOLDER && !envVar.isEdited;
+          return (
+            <React.Fragment key={index}>
               <Input
                 value={envVar.key}
                 onChange={(e) => onChange(index, 'key', e.target.value)}
-                placeholder="Variable name"
-                className={cn(
-                  'w-full text-text-default border-border-subtle hover:border-border-default',
-                  isFieldInvalid(index, 'key') && 'border-border-danger focus:border-border-danger'
-                )}
+                placeholder={COPY.variableName}
+                aria-label={COPY.variableName}
+                aria-invalid={isFieldInvalid(index, 'key') || undefined}
+                className={cn('w-full', isFieldInvalid(index, 'key') && bad)}
               />
-            </div>
-            <div className="relative">
               <Input
                 value={envVar.value}
-                readOnly={envVar.value === '••••••••' && !envVar.isEdited}
+                readOnly={saved}
                 onChange={(e) => {
                   // If this is the first edit of a placeholder value, clear it
-                  const newValue =
-                    envVar.value === '••••••••' && !envVar.isEdited ? '' : e.target.value;
+                  const newValue = saved ? '' : e.target.value;
                   onChange(index, 'value', newValue);
                 }}
-                placeholder="Value"
+                placeholder={COPY.value}
+                aria-label={COPY.value}
+                aria-invalid={isFieldInvalid(index, 'value') || undefined}
                 className={cn(
-                  'w-full border-border-subtle',
-                  envVar.value === '••••••••' && !envVar.isEdited
-                    ? 'text-text-muted opacity-60 cursor-not-allowed hover:border-border-subtle'
-                    : 'text-text-default hover:border-border-default',
-                  isFieldInvalid(index, 'value') &&
-                    'border-border-danger focus:border-border-danger'
+                  'w-full',
+                  saved && 'text-text-muted opacity-60 cursor-not-allowed',
+                  isFieldInvalid(index, 'value') && bad
                 )}
               />
-            </div>
-            {envVar.value === '••••••••' && !envVar.isEdited && (
-              <Button
-                onClick={() => handleEdit(index)}
-                variant="ghost"
-                className="group p-2 h-auto text-text-muted"
-              >
-                <Edit className="h-3 w-3 text-text-muted group-hover:text-text-default transition-all" />
-              </Button>
-            )}
-            {(envVar.value !== '••••••••' || envVar.isEdited) && (
-              <div className="w-8 h-8"></div> /* Empty div to maintain grid spacing */
-            )}
-            <Button
-              onClick={() => onRemove(index)}
-              variant="ghost"
-              className="group p-2 h-auto text-text-muted"
-            >
-              <X className="h-3 w-3 text-text-muted group-hover:text-text-default transition-all" />
-            </Button>
-          </React.Fragment>
-        ))}
+              {saved ? (
+                <IconAction
+                  icon={Pencil}
+                  label={COPY.edit(envVar.key)}
+                  onSelect={() => handleEdit(index)}
+                />
+              ) : (
+                <span aria-hidden="true" /> /* keeps the grid's edit column */
+              )}
+              <IconAction
+                icon={X}
+                label={COPY.removeEntry(envVar.key)}
+                onSelect={() => onRemove(index)}
+              />
+            </React.Fragment>
+          );
+        })}
 
         {/* Empty row with Add button */}
         <Input
@@ -167,11 +166,11 @@ export default function EnvVarsSection({
             setNewKey(e.target.value);
             clearValidation();
           }}
-          placeholder="Variable name"
-          className={cn(
-            'w-full text-text-default border-border-subtle hover:border-border-default',
-            invalidFields.key && 'border-border-danger focus:border-border-danger'
-          )}
+          placeholder={COPY.variableName}
+          aria-label={COPY.variableName}
+          aria-invalid={invalidFields.key || undefined}
+          aria-describedby={validationError ? errorId : undefined}
+          className={cn('w-full', invalidFields.key && bad)}
         />
         <Input
           value={newValue}
@@ -179,23 +178,22 @@ export default function EnvVarsSection({
             setNewValue(e.target.value);
             clearValidation();
           }}
-          placeholder="Value"
-          className={cn(
-            'w-full text-text-default border-border-subtle hover:border-border-default',
-            invalidFields.value && 'border-border-danger focus:border-border-danger'
-          )}
+          placeholder={COPY.value}
+          aria-label={COPY.value}
+          aria-invalid={invalidFields.value || undefined}
+          aria-describedby={validationError ? errorId : undefined}
+          className={cn('w-full', invalidFields.value && bad)}
         />
-        <div className="col-span-2">
-          <Button
-            onClick={handleAdd}
-            variant="ghost"
-            className="flex items-center justify-start gap-1 px-2 pr-4 text-sm rounded-element text-text-default bg-background-default border border-border-subtle hover:border-border-default transition-colors min-w-[60px] h-9 [&>svg]:!size-4"
-          >
-            <Plus /> Add
-          </Button>
-        </div>
+        <Button variant="secondary" onClick={handleAdd} className="br-ext-kv-add">
+          <Plus aria-hidden />
+          {COPY.add}
+        </Button>
       </div>
-      {validationError && <div className="mt-2 text-text-danger text-sm">{validationError}</div>}
+      {validationError && (
+        <p id={errorId} role="alert" className="text-supporting text-text-danger">
+          {validationError}
+        </p>
+      )}
     </div>
   );
 }

@@ -6,14 +6,10 @@ import {
 } from '../../../../api';
 import { userActionHeaders } from '../../../../utils/userAction';
 import { Button } from '../../../ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../../ui/dialog';
+import { InfoTip } from '../../../ui/info-tip';
+import { ModalShell } from '../../../ModalShell';
+import { EXTENSION_CREDENTIALS_COPY as COPY } from '../copy';
+import './extension-modal.css';
 
 interface Props {
   name: string;
@@ -39,8 +35,7 @@ export default function ExtensionCredentialsDialog({ name, onClose, onDeleted }:
         });
         if (!cancelled) setCredentials(data);
       } catch {
-        if (!cancelled)
-          setError('Could not verify saved credentials. Close this dialog and try again.');
+        if (!cancelled) setError(COPY.loadFailed);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -68,82 +63,82 @@ export default function ExtensionCredentialsDialog({ name, onClose, onDeleted }:
       setDeleted(true);
       onDeleted(keys);
     } catch {
-      setError(
-        'Credentials could not be deleted. References may have changed or storage is unavailable. Close this dialog and review again.'
-      );
+      setError(COPY.deleteFailed);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Dialog
+    <ModalShell
       open
-      onOpenChange={() => {
-        if (!busy) onClose();
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
       }}
-    >
-      <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Saved credentials for {name}</DialogTitle>
-          <DialogDescription>
-            Delete saved credentials separately from removing the extension. Credentials referenced
-            by other installed extensions or providers are protected.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 py-4 text-sm">
-          <p>
-            Only saved values listed below can be deleted. Environment variables, values in
-            extension settings, and credentials already loaded in running chats stay unchanged.
-            Restart Biorouter after deleting credentials.
-          </p>
-          {loading ? (
-            <p role="status">Checking saved credentials…</p>
-          ) : credentials.length === 0 && !error ? (
-            <p>No saved credential references for this extension.</p>
-          ) : (
-            <ul className="space-y-3">
-              {credentials.map((credential) => (
-                <li key={credential.key}>
-                  <span className="font-medium break-all">{credential.key}</span>
-                  <p className="text-text-muted">
-                    {!credential.stored
-                      ? 'No saved value'
-                      : credential.used_by.length > 0
-                        ? `Retained — ${credential.used_by.join('; ')}`
-                        : 'Will be deleted from saved credentials'}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-          {deleted && (
-            <p role="status">
-              Saved credentials deleted. You will need to enter them again when required unless they
-              are supplied by your environment or extension settings.
-            </p>
-          )}
-          {error && (
-            <p role="alert" className="text-text-danger">
-              {error}
-            </p>
-          )}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={busy}>
-            {deleted ? 'Done' : 'Cancel'}
+      size="md"
+      // Nothing dismisses a deletion in flight; otherwise a form-like review whose list the
+      // person is reading, so a stray click on the scrim does not close it.
+      purpose={busy ? 'required' : 'form'}
+      title={COPY.title(name)}
+      subtitle={COPY.subtitle(name)}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            {deleted ? COPY.done : COPY.cancel}
           </Button>
           <Button
             variant="destructive"
             onClick={purge}
             disabled={loading || busy || !!error || removable.length === 0}
           >
-            {busy
-              ? 'Deleting…'
-              : `Delete ${removable.length} saved credential${removable.length === 1 ? '' : 's'}`}
+            {busy ? COPY.deleting : COPY.deleteCount(removable.length)}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+      bodyClassName="flex flex-col gap-3 py-3"
+    >
+      {loading ? (
+        <p role="status" className="text-body text-text-muted">
+          {COPY.checking}
+        </p>
+      ) : credentials.length === 0 && !error ? (
+        <p className="text-body text-text-muted">{COPY.none}</p>
+      ) : (
+        <ul className="br-ext-credentials">
+          {credentials.map((credential) => (
+            <li key={credential.key}>
+              <span className="br-ext-credential-key text-label text-text-default">
+                {credential.key}
+              </span>
+              <p className="text-supporting text-text-muted">
+                {!credential.stored
+                  ? COPY.noValue
+                  : credential.used_by.length > 0
+                    ? COPY.kept(credential.used_by.join('; '))
+                    : COPY.willDelete}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
+      {deleted ? (
+        <p role="status" className="flex items-center text-supporting text-text-muted">
+          {COPY.deleted}
+          <InfoTip label={COPY.title(name)} help={COPY.deletedHelp} />
+        </p>
+      ) : (
+        // The consequence stays on screen, at the moment of decision; what stays unchanged is
+        // the glyph's help.
+        <p className="flex items-center text-supporting text-text-muted">
+          {COPY.restart}
+          <InfoTip label={COPY.title(name)} help={COPY.help} />
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="text-body text-text-danger">
+          {error}
+        </p>
+      )}
+    </ModalShell>
   );
 }

@@ -1,18 +1,13 @@
 import { useState, useCallback } from 'react';
 import { Button } from '../../../ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../../ui/dialog';
+import { ModalShell } from '../../../ModalShell';
+import { InfoTip } from '../../../ui/info-tip';
+import { Note } from '../../../ui/note';
 import { ExtensionFormData } from '../utils';
 import EnvVarsSection from './EnvVarsSection';
 import HeadersSection from './HeadersSection';
 import ExtensionConfigFields from './ExtensionConfigFields';
-import { PlusIcon, Edit, Trash2, AlertTriangle, Info } from '../../../icons/app-icons';
+import { Info } from '../../../icons/app-icons';
 import ExtensionInfoFields from './ExtensionInfoFields';
 import ExtensionTimeoutField from './ExtensionTimeoutField';
 import { upsertConfig } from '../../../../api';
@@ -21,6 +16,8 @@ import { ConfirmationModal } from '../../../ui/ConfirmationModal';
 import { PrivacyBadge } from '../../../ui/PrivacyBadge';
 import { classifyExtension } from '../extensionPrivacy';
 import ExtensionCredentialsDialog from './ExtensionCredentialsDialog';
+import { EXTENSION_MODAL_COPY as COPY } from '../copy';
+import './extension-modal.css';
 
 interface ExtensionModalProps {
   title: string;
@@ -30,6 +27,11 @@ interface ExtensionModalProps {
   onDelete?: (name: string) => void;
   submitLabel: string;
   modalType: 'add' | 'edit';
+  /**
+   * Open at the removal step: the row's Remove… item asks to remove, not to edit, so the
+   * dialog starts on the question and Cancel closes it rather than showing a form.
+   */
+  startAtRemoval?: boolean;
 }
 
 export default function ExtensionModal({
@@ -40,9 +42,10 @@ export default function ExtensionModal({
   onDelete,
   submitLabel,
   modalType,
+  startAtRemoval = false,
 }: ExtensionModalProps) {
   const [formData, setFormData] = useState<ExtensionFormData>(initialData);
-  const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
+  const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(startAtRemoval);
   const [showCredentials, setShowCredentials] = useState(false);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [showCloseConfirmation, setShowCloseConfirmation] = useState(false);
@@ -210,18 +213,6 @@ export default function ExtensionModal({
     }
   };
 
-  // Function to determine which icon to display with proper styling
-  const getModalIcon = () => {
-    if (showDeleteConfirmation) {
-      return <AlertTriangle className="text-text-danger" size={24} />;
-    }
-    return modalType === 'add' ? (
-      <PlusIcon className="text-iconStandard" size={24} />
-    ) : (
-      <Edit className="text-iconStandard" size={24} />
-    );
-  };
-
   const isNameValid = () => {
     return formData.name.trim() !== '';
   };
@@ -319,8 +310,11 @@ export default function ExtensionModal({
     }
   };
 
-  // Update title based on current state
-  const modalTitle = showDeleteConfirmation ? `Delete Extension "${formData.name}"` : title;
+  // Update title based on current state. No title icon: no other dialog has one.
+  const modalTitle = showDeleteConfirmation ? COPY.removeTitle(formData.name) : title;
+
+  // Cancel at the removal step goes back to the form, unless the person never saw the form.
+  const cancelRemoval = () => (startAtRemoval ? onClose() : setShowDeleteConfirmation(false));
 
   /**
    * Issue #56 §13.5: "The manual 'Add stdio extension' form carries the same
@@ -342,215 +336,181 @@ export default function ExtensionModal({
    * this same modal.
    */
   const resultingTier = classifyExtension(formData.name);
-  const tierNotice =
-    resultingTier === 'private'
-      ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
-      : 'Extensions you add by hand are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.';
+  const tierNotice = resultingTier === 'private' ? COPY.tierPrivate : COPY.tierPublic;
 
   return (
     <>
-      <Dialog open={true} onOpenChange={handleClose}>
-        <DialogContent
-          {...(showDeleteConfirmation ? {} : { 'aria-describedby': undefined })}
-          className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto"
-        >
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              {getModalIcon()}
-              {modalTitle}
-            </DialogTitle>
-            {showDeleteConfirmation && (
-              <DialogDescription>
-                This will remove the extension configuration. Saved credentials are retained and may
-                be reused automatically if you reinstall.
-              </DialogDescription>
-            )}
-          </DialogHeader>
-
-          {showDeleteConfirmation ? (
-            <div className="py-4">
-              <p className="text-text-default">
-                To delete saved credentials first, choose Review saved credentials. Credentials
-                shared with other extensions or providers are protected.
-              </p>
-              <Button variant="outline" className="mt-4" onClick={() => setShowCredentials(true)}>
-                Review saved credentials
+      <ModalShell
+        open
+        onOpenChange={(open) => {
+          if (!open) handleClose();
+        }}
+        size="lg"
+        // A form: Escape and the × still leave (through the unsaved-changes guard), but a
+        // misclick on the scrim cannot throw away what was typed.
+        purpose="form"
+        // The form grows and shrinks as the type changes and rows are added; anchored at the
+        // top it grows downward, so the fields under the pointer do not move.
+        anchor="top"
+        scrollBody
+        title={modalTitle}
+        // The consequence of removing is the one description the dialog has, and only while it
+        // is being asked. Without it the dialog carries no description at all.
+        subtitle={showDeleteConfirmation ? COPY.removeDescription : undefined}
+        bodyClassName="py-4"
+        footer={
+          showDeleteConfirmation ? (
+            <>
+              <Button variant="secondary" onClick={cancelRemoval}>
+                {COPY.cancel}
               </Button>
-            </div>
+              <Button
+                onClick={() => {
+                  if (onDelete) {
+                    onDelete(formData.name);
+                    onClose();
+                  }
+                }}
+                variant="destructive"
+              >
+                {COPY.confirmRemoval}
+              </Button>
+            </>
           ) : (
-            <div className="py-4 space-y-6">
-              {modalType === 'edit' && !isBuiltin && (
-                <div className="space-y-2">
-                  <p className="text-sm text-text-muted">
-                    Removing this extension retains saved credentials for reuse. You can review and
-                    delete unshared saved credentials separately.
-                  </p>
-                  <Button variant="outline" onClick={() => setShowCredentials(true)}>
-                    Review saved credentials
-                  </Button>
-                </div>
+            <>
+              {modalType === 'edit' && onDelete && !isBuiltin && (
+                <Button
+                  onClick={() => setShowDeleteConfirmation(true)}
+                  variant="destructive"
+                  className="mr-auto"
+                >
+                  {COPY.removeAction}
+                </Button>
               )}
-              {formData.installation_notes && (
-                <div className="biorouter-modal-panel rounded-container p-4">
-                  <div className="flex items-start gap-2">
-                    <Info className="h-5 w-5 text-text-info shrink-0 mt-0.5" />
-                    <div>
-                      <h4 className="text-sm font-medium text-text-default mb-1">
-                        Installation Notes
-                      </h4>
-                      <p className="text-sm text-text-muted">{formData.installation_notes}</p>
-                    </div>
+              <Button variant="secondary" onClick={handleClose}>
+                {COPY.cancel}
+              </Button>
+              <Button
+                data-testid="extension-submit-btn"
+                onClick={handleSubmit}
+                disabled={!isFormValid()}
+              >
+                {submitLabel}
+              </Button>
+            </>
+          )
+        }
+      >
+        {showDeleteConfirmation ? (
+          <div className="flex items-center gap-1">
+            <Button variant="secondary" onClick={() => setShowCredentials(true)}>
+              {COPY.reviewCredentials}
+            </Button>
+            <InfoTip label={COPY.reviewCredentials} help={COPY.sharedCredentialsHelp} />
+          </div>
+        ) : (
+          <div className="br-ext-form">
+            {formData.installation_notes && (
+              <Note tone="info" icon={Info}>
+                <div className="text-label text-text-default">{COPY.installationNotes}</div>
+                <div className="mt-1">{formData.installation_notes}</div>
+              </Note>
+            )}
+
+            {isBuiltin ? (
+              <>
+                {/* A built-in's name and description are facts, not fields: Crew's label-over-value
+                    rows, and only the timeout can be changed. */}
+                <dl className="br-ext-facts">
+                  <div>
+                    <dt className="text-supporting text-text-muted">{COPY.nameLabel}</dt>
+                    <dd className="text-label text-text-default">{formData.name}</dd>
                   </div>
-                </div>
-              )}
-
-              {/* Form Fields */}
-              {isBuiltin ? (
-                <>
-                  <div className="space-y-2">
+                  {formData.description && (
                     <div>
-                      <label className="text-sm font-medium text-text-default">Name</label>
-                      <p className="text-sm text-text-muted mt-1">{formData.name}</p>
-                    </div>
-                    {formData.description && (
-                      <div>
-                        <label className="text-sm font-medium text-text-default">Description</label>
-                        <p className="text-sm text-text-muted mt-1">{formData.description}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
-
-                  <ExtensionTimeoutField
-                    timeout={formData.timeout || 300}
-                    onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                    submitAttempted={submitAttempted}
-                  />
-                </>
-              ) : (
-                <>
-                  {/* Name and Type */}
-                  <ExtensionInfoFields
-                    name={formData.name}
-                    type={formData.type}
-                    description={formData.description}
-                    onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                    submitAttempted={submitAttempted}
-                  />
-
-                  {modalType === 'add' && (
-                    <div className="biorouter-modal-panel rounded-lg p-3">
-                      <PrivacyBadge tier={resultingTier} />
-                      <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{tierNotice}</p>
+                      <dt className="text-supporting text-text-muted">{COPY.descriptionLabel}</dt>
+                      <dd className="text-body text-text-default">{formData.description}</dd>
                     </div>
                   )}
+                </dl>
 
-                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
-
-                  {/* Command */}
-                  <div>
-                    <ExtensionConfigFields
-                      type={formData.type}
-                      full_cmd={formData.cmd || ''}
-                      endpoint={formData.endpoint || ''}
-                      onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                      submitAttempted={submitAttempted}
-                      isValid={isConfigValid()}
-                    />
-                    <div className="mb-4" />
-                    <ExtensionTimeoutField
-                      timeout={formData.timeout || 300}
-                      onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                      submitAttempted={submitAttempted}
-                    />
-                  </div>
-                </>
-              )}
-
-              {!isBuiltin && formData.type === 'stdio' && (
-                <>
-                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
-
-                  <div>
-                    <EnvVarsSection
-                      envVars={formData.envVars}
-                      onAdd={handleAddEnvVar}
-                      onRemove={handleRemoveEnvVar}
-                      onChange={handleEnvVarChange}
-                      submitAttempted={submitAttempted}
-                      onPendingInputChange={setHasPendingEnvVars}
-                    />
-                  </div>
-                </>
-              )}
-
-              {!isBuiltin && formData.type === 'streamable_http' && (
-                <>
-                  {/* Divider */}
-                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
-
-                  <div>
-                    <HeadersSection
-                      headers={formData.headers}
-                      onAdd={handleAddHeader}
-                      onRemove={handleRemoveHeader}
-                      onChange={handleHeaderChange}
-                      submitAttempted={submitAttempted}
-                      onPendingInputChange={handlePendingHeaderChange}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          <DialogFooter className="pt-2">
-            {showDeleteConfirmation ? (
-              <>
-                <Button variant="outline" onClick={() => setShowDeleteConfirmation(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  onClick={() => {
-                    if (onDelete) {
-                      onDelete(formData.name);
-                      onClose();
-                    }
-                  }}
-                  variant="destructive"
-                >
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Confirm removal
-                </Button>
+                <ExtensionTimeoutField
+                  timeout={formData.timeout || 300}
+                  onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                  submitAttempted={submitAttempted}
+                />
               </>
             ) : (
               <>
-                {modalType === 'edit' && onDelete && !isBuiltin && (
-                  <Button
-                    onClick={() => setShowDeleteConfirmation(true)}
-                    variant="outline"
-                    className="text-text-danger hover:bg-background-danger/10"
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Remove extension
-                  </Button>
+                {/* Name and Type */}
+                <ExtensionInfoFields
+                  name={formData.name}
+                  type={formData.type}
+                  description={formData.description}
+                  onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                  submitAttempted={submitAttempted}
+                />
+
+                {modalType === 'add' && (
+                  // §13.5, and it stays on screen: the tier this name will produce, said before
+                  // the person commits. A badge and the one sentence, no box around either.
+                  <div className="br-ext-tier">
+                    <PrivacyBadge tier={resultingTier} />
+                    <p className="text-supporting text-text-muted">{tierNotice}</p>
+                  </div>
                 )}
-                <Button variant="outline" onClick={handleClose}>
-                  Cancel
-                </Button>
-                <Button
-                  data-testid="extension-submit-btn"
-                  onClick={handleSubmit}
-                  disabled={!isFormValid()}
-                >
-                  {submitLabel}
-                </Button>
+
+                <ExtensionConfigFields
+                  type={formData.type}
+                  full_cmd={formData.cmd || ''}
+                  endpoint={formData.endpoint || ''}
+                  onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                  submitAttempted={submitAttempted}
+                  isValid={isConfigValid()}
+                />
+                <ExtensionTimeoutField
+                  timeout={formData.timeout || 300}
+                  onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                  submitAttempted={submitAttempted}
+                />
               </>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
+            {!isBuiltin && formData.type === 'stdio' && (
+              <EnvVarsSection
+                envVars={formData.envVars}
+                onAdd={handleAddEnvVar}
+                onRemove={handleRemoveEnvVar}
+                onChange={handleEnvVarChange}
+                submitAttempted={submitAttempted}
+                onPendingInputChange={setHasPendingEnvVars}
+              />
+            )}
+
+            {!isBuiltin && formData.type === 'streamable_http' && (
+              <HeadersSection
+                headers={formData.headers}
+                onAdd={handleAddHeader}
+                onRemove={handleRemoveHeader}
+                onChange={handleHeaderChange}
+                submitAttempted={submitAttempted}
+                onPendingInputChange={handlePendingHeaderChange}
+              />
+            )}
+
+            {modalType === 'edit' && !isBuiltin && (
+              // Removing keeps credentials; reviewing them is its own step, one button and the
+              // sentence behind an InfoTip, at the foot of the form rather than above it.
+              <div className="flex items-center gap-1">
+                <Button variant="secondary" size="sm" onClick={() => setShowCredentials(true)}>
+                  {COPY.reviewCredentials}
+                </Button>
+                <InfoTip label={COPY.reviewCredentials} help={COPY.credentialsHelp} />
+              </div>
+            )}
+          </div>
+        )}
+      </ModalShell>
 
       {showCredentials && (
         <ExtensionCredentialsDialog
@@ -573,9 +533,10 @@ export default function ExtensionModal({
       {showCloseConfirmation && (
         <ConfirmationModal
           isOpen={showCloseConfirmation}
-          title="Unsaved Changes"
-          message="You have unsaved changes to the extension configuration. Are you sure you want to close without saving?"
-          confirmLabel="Close Without Saving"
+          title={COPY.unsavedTitle}
+          message={COPY.unsavedMessage}
+          confirmLabel={COPY.discard}
+          cancelLabel={COPY.cancel}
           onConfirm={handleConfirmClose}
           onCancel={handleCancelClose}
         />

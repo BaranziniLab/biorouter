@@ -1,8 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ExtensionModal from './ExtensionModal';
 import { ExtensionFormData } from '../utils';
+import { EXTENSION_MODAL_COPY as COPY } from '../copy';
+import ExtensionTimeoutField from './ExtensionTimeoutField';
 
 describe('ExtensionModal', () => {
   // This is a full render-and-drive integration test: it mounts ExtensionModal,
@@ -41,40 +43,31 @@ describe('ExtensionModal', () => {
 
     expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-describedby');
 
-    const nameInput = screen.getByPlaceholderText('Enter extension name...');
+    // Every field has a name a screen reader can say: the labels point at their controls.
+    const nameInput = screen.getByLabelText(COPY.nameLabel);
     const submitButton = screen.getByTestId('extension-submit-btn');
 
     await user.type(nameInput, 'Test MCP');
 
-    const typeSelect = screen.getByRole('combobox');
-    await user.click(typeSelect);
-
-    const httpOption = screen.getByText('Streamable HTTP');
-    await user.click(httpOption);
+    // The type is two short options, so it is a segmented control and not a select.
+    const typeGroup = screen.getByRole('radiogroup', { name: COPY.typeLabel });
+    expect(screen.queryByRole('combobox')).toBeNull();
+    await user.click(within(typeGroup).getByRole('radio', { name: COPY.typeHttp }));
 
     await waitFor(() => {
-      expect(screen.getByText('Request Headers')).toBeInTheDocument();
+      expect(screen.getByText(COPY.headersTitle)).toBeInTheDocument();
     });
 
-    const endpointInput = screen.getByPlaceholderText('Enter endpoint URL...');
+    const endpointInput = screen.getByLabelText(COPY.endpointLabel);
     await user.type(endpointInput, 'https://foo.bar.com/mcp/');
 
-    const descriptionInput = screen.getByPlaceholderText('Optional description...');
+    const descriptionInput = screen.getByLabelText(COPY.descriptionLabel);
     await user.type(descriptionInput, 'Test MCP extension');
 
-    const headerNameInput = screen.getByPlaceholderText('Header name');
-    const headerValueInput = screen
-      .getAllByPlaceholderText('Value')
-      .find(
-        (input) =>
-          input.closest('div')?.textContent?.includes('Request Headers') ||
-          input.parentElement?.parentElement?.textContent?.includes('Request Headers')
-      );
-
-    await user.type(headerNameInput, 'Authorization');
-    if (headerValueInput) {
-      await user.type(headerValueInput, 'Bearer abc123');
-    }
+    // The headers group is named by its heading, and its two cells by their own labels.
+    const headers = screen.getByRole('group', { name: COPY.headersTitle });
+    await user.type(within(headers).getByLabelText(COPY.headerName), 'Authorization');
+    await user.type(within(headers).getByLabelText(COPY.value), 'Bearer abc123');
 
     await user.click(submitButton);
 
@@ -135,9 +128,9 @@ describe('ExtensionModal', () => {
 
     const descriptionId = dialog.getAttribute('aria-describedby');
     expect(descriptionId).toBeTruthy();
-    expect(document.getElementById(descriptionId!)).toHaveTextContent(
-      'This will remove the extension configuration. Saved credentials are retained and may be reused automatically if you reinstall.'
-    );
+    expect(document.getElementById(descriptionId!)).toHaveTextContent(COPY.removeDescription);
+    // Sentence case, and the question names what is going.
+    expect(screen.getByRole('dialog', { name: COPY.removeTitle('developer') })).toBe(dialog);
   });
 
   /**
@@ -177,13 +170,16 @@ describe('ExtensionModal', () => {
       />
     );
 
+    // §13.5: the Add form's tier line is on screen as text, not behind a glyph.
+    expect(screen.getByText(COPY.tierPublic)).toBeVisible();
     expect(
       screen.getByText(/including commercial models hosted outside your institution/i)
     ).toBeInTheDocument();
 
-    await user.type(screen.getByPlaceholderText('Enter extension name...'), 'ucsfomopagent');
+    await user.type(screen.getByLabelText(COPY.nameLabel), 'ucsfomopagent');
 
     expect(await screen.findByText(/only private models/i)).toBeInTheDocument();
+    expect(screen.getByText(COPY.tierPrivate)).toBeVisible();
     expect(screen.queryByText(/always Public/i)).toBeNull();
   });
 });
@@ -218,4 +214,167 @@ it('discloses retained credentials and offers separate review before extension r
   expect(onDelete).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('button', { name: 'Confirm removal' }));
   expect(onDelete).toHaveBeenCalledWith('synthetic');
+});
+
+const stdio = (overrides: Partial<ExtensionFormData> = {}): ExtensionFormData => ({
+  name: 'synthetic',
+  description: '',
+  type: 'stdio',
+  cmd: 'unused',
+  enabled: true,
+  timeout: 300,
+  envVars: [],
+  headers: [],
+  ...overrides,
+});
+
+describe('ExtensionModal — the dialog and its form', () => {
+  const edit = (props: Partial<React.ComponentProps<typeof ExtensionModal>> = {}) =>
+    render(
+      <ExtensionModal
+        title="Update extension"
+        initialData={stdio()}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        onDelete={vi.fn()}
+        submitLabel="Save changes"
+        modalType="edit"
+        {...props}
+      />
+    );
+
+  it('is a 640px dialog anchored at the top, with a plain title and no icon before it', () => {
+    edit();
+    const dialog = screen.getByRole('dialog', { name: 'Update extension' });
+
+    expect(dialog).toHaveAttribute('data-size', 'lg');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+    // `text-iconStandard` was a class with no definition; no other dialog puts an icon in its title.
+    expect(dialog.querySelector('[data-slot="dialog-title"] svg')).toBeNull();
+  });
+
+  it('gives every text field a name and calls the timeout what it measures', () => {
+    edit();
+    const dialog = screen.getByRole('dialog');
+
+    for (const field of within(dialog).getAllByRole('textbox')) {
+      expect(field).toHaveAccessibleName();
+    }
+    expect(within(dialog).getByLabelText(COPY.timeoutLabel)).toHaveValue('300');
+    expect(COPY.timeoutLabel).toBe('Timeout (seconds)');
+  });
+
+  it('puts the long help behind InfoTips and leaves the section titles in sentence case', () => {
+    edit();
+    const dialog = screen.getByRole('dialog');
+
+    // The paragraph that opened the credentials row is the Review button's InfoTip now.
+    expect(within(dialog).getByText(COPY.credentialsHelp)).toHaveClass('sr-only');
+    expect(within(dialog).getByText(COPY.envHelp)).toHaveClass('sr-only');
+    expect(within(dialog).getByText(COPY.envTitle)).toBeInTheDocument();
+    for (const title of [COPY.envTitle, COPY.headersTitle, COPY.installationNotes]) {
+      expect(title).toBe(title.charAt(0) + title.slice(1).toLowerCase());
+    }
+  });
+
+  it('keeps Remove extension destructive, and Cancel quiet', () => {
+    edit();
+    const remove = screen.getByRole('button', { name: COPY.removeAction });
+    const cancel = screen.getByRole('button', { name: COPY.cancel });
+
+    expect(remove.className).toMatch(/text-text-danger/);
+    expect(remove.className).not.toMatch(/border-border-emphasized/);
+    expect(cancel.className).toMatch(/bg-background-medium/);
+    // The Button base already gaps its icon; the old `mr-2` doubled it.
+    expect(remove.className).not.toMatch(/\bmr-2\b/);
+  });
+
+  it('shows installation notes as an info Note under a sentence-case title', () => {
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={stdio({ installation_notes: 'Run `uv sync` once before the first start.' })}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add extension"
+        modalType="add"
+      />
+    );
+
+    const title = screen.getByText(COPY.installationNotes);
+    expect(title).toBeVisible();
+    expect(title.closest('[class*="bg-wash-info"]')).not.toBeNull();
+    expect(screen.getByText(/uv sync/)).toBeVisible();
+  });
+
+  it('opens at the removal question from the row, and Cancel closes instead of showing a form', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onClose = vi.fn();
+    edit({ startAtRemoval: true, onClose });
+
+    expect(screen.getByRole('dialog', { name: COPY.removeTitle('synthetic') })).toBeInTheDocument();
+    expect(screen.queryByLabelText(COPY.nameLabel)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: COPY.cancel }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns from the removal question to the form when it came from the form', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onClose = vi.fn();
+    edit({ onClose });
+
+    await user.click(screen.getByRole('button', { name: COPY.removeAction }));
+    await user.click(screen.getByRole('button', { name: COPY.cancel }));
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(COPY.nameLabel)).toBeInTheDocument();
+  });
+
+  it('guards unsaved work in sentence case and offers to discard it', async () => {
+    const user = userEvent.setup({ delay: null });
+    const onClose = vi.fn();
+    edit({ onClose });
+
+    await user.type(screen.getByLabelText(COPY.commandLabel), ' --flag');
+    await user.click(screen.getByRole('button', { name: COPY.cancel }));
+
+    expect(await screen.findByText(COPY.unsavedTitle)).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: COPY.discard }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('names a retired SSE type in a disabled third segment instead of dropping it', () => {
+    edit({ initialData: stdio({ type: 'sse', endpoint: 'https://example.com/sse', cmd: '' }) });
+
+    expect(screen.getByRole('radio', { name: COPY.typeSse })).toBeDisabled();
+  });
+
+  it('names the edit and remove buttons on a saved variable and a header row', () => {
+    edit({
+      initialData: stdio({ envVars: [{ key: 'API_TOKEN', value: '••••••••', isEdited: false }] }),
+    });
+
+    expect(screen.getByRole('button', { name: COPY.edit('API_TOKEN') })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: COPY.removeEntry('API_TOKEN') })).toBeInTheDocument();
+  });
+});
+
+describe('ExtensionTimeoutField', () => {
+  it('says the whole sentence, in the field’s own flow, when the timeout is not a positive number', () => {
+    render(<ExtensionTimeoutField timeout={0} onChange={vi.fn()} submitAttempted />);
+
+    const input = screen.getByLabelText(COPY.timeoutLabel);
+    const message = screen.getByText(COPY.timeoutRequired);
+    // It used to read "Timeout " and was `absolute`, floating over whatever followed.
+    expect(message.className).not.toMatch(/\babsolute\b/);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAccessibleDescription(COPY.timeoutRequired);
+  });
+
+  it('is quiet until a submit was attempted', () => {
+    render(<ExtensionTimeoutField timeout={0} onChange={vi.fn()} submitAttempted={false} />);
+    expect(screen.queryByText(COPY.timeoutRequired)).toBeNull();
+  });
 });

@@ -1,14 +1,29 @@
 import { Input } from '../../../ui/input';
-import { Select } from '../../../ui/Select';
+import { Field, fieldLabelId } from '../../../ui/field';
+import { SegmentedControl, type SegmentedOption } from '../../../ui/segmented-control';
+import { EXTENSION_MODAL_COPY as COPY } from '../copy';
+
+type ExtensionType = 'stdio' | 'sse' | 'streamable_http' | 'builtin';
 
 interface ExtensionInfoFieldsProps {
   name: string;
-  type: 'stdio' | 'sse' | 'streamable_http' | 'builtin';
+  type: ExtensionType;
   description: string;
   onChange: (key: string, value: string) => void;
   submitAttempted: boolean;
 }
 
+const TYPE_FIELD_ID = 'extension-type';
+
+/**
+ * Name, type and description. Each label points at its control, so every field has a name a
+ * screen reader can say (they were unassociated `<label>`s), and a validation message sits in
+ * the field's own flow instead of floating over whatever follows.
+ *
+ * The type is a choice of two short options, so it is the `SegmentedControl` and not a select
+ * (spec principle 5); the sentence that tells them apart is the label's InfoTip. An existing
+ * extension of the retired SSE type still says so, in a third, disabled segment.
+ */
 export default function ExtensionInfoFields({
   name,
   type,
@@ -20,67 +35,39 @@ export default function ExtensionInfoFields({
     return name.trim() !== '';
   };
 
+  const options: SegmentedOption<string>[] = [
+    { value: 'stdio', label: COPY.typeCommand },
+    { value: 'streamable_http', label: COPY.typeHttp },
+    ...(type === 'sse'
+      ? [{ value: 'sse', label: COPY.typeSse, disabled: true } as SegmentedOption<string>]
+      : []),
+  ];
+
   return (
-    <div className="flex flex-col gap-4 mb-6">
-      {/* Top row with Name and Type side by side */}
-      <div className="flex justify-between gap-4">
-        <div className="flex-1">
-          <label className="text-sm font-medium mb-2 block text-text-default">Extension Name</label>
-          <div className="relative">
-            <Input
-              value={name}
-              onChange={(e) => onChange('name', e.target.value)}
-              placeholder="Enter extension name..."
-              className={`${!submitAttempted || isNameValid() ? 'border-border-subtle' : 'border-border-danger'} text-text-default focus:border-border-default`}
-            />
-            {submitAttempted && !isNameValid() && (
-              <div className="absolute text-xs text-text-danger mt-1">Name is required</div>
-            )}
-          </div>
-        </div>
+    <>
+      <div className="br-ext-identity">
+        <Field
+          id="extension-name"
+          label={COPY.nameLabel}
+          required
+          error={submitAttempted && !isNameValid() ? COPY.nameRequired : undefined}
+        >
+          <Input value={name} onChange={(e) => onChange('name', e.target.value)} />
+        </Field>
 
-        {/* Type Dropdown */}
-        <div className="w-[200px]">
-          <label className="text-sm font-medium mb-2 block text-text-default">Type</label>
-          <Select
-            value={{
-              value: type,
-              label:
-                type === 'stdio'
-                  ? 'STDIO'
-                  : type === 'streamable_http'
-                    ? 'HTTP'
-                    : type === 'sse'
-                      ? 'SSE (unsupported)'
-                      : type.toUpperCase(),
-            }}
-            onChange={(newValue: unknown) => {
-              const option = newValue as { value: string; label: string } | null;
-              if (option) {
-                onChange('type', option.value);
-              }
-            }}
-            options={[
-              { value: 'stdio', label: 'Standard IO (STDIO)' },
-              { value: 'streamable_http', label: 'Streamable HTTP' },
-            ]}
-            isSearchable={false}
+        <Field id={TYPE_FIELD_ID} label={COPY.typeLabel} info={COPY.typeHelp}>
+          <SegmentedControl
+            options={options}
+            value={type}
+            onValueChange={(next) => onChange('type', next)}
+            aria-labelledby={fieldLabelId(TYPE_FIELD_ID)}
           />
-        </div>
+        </Field>
       </div>
 
-      {/* Bottom row with Description spanning full width */}
-      <div className="w-full">
-        <label className="text-sm font-medium mb-2 block text-text-default">Description</label>
-        <div className="relative">
-          <Input
-            value={description}
-            onChange={(e) => onChange('description', e.target.value)}
-            placeholder="Optional description..."
-            className={`text-text-default focus:border-border-default`}
-          />
-        </div>
-      </div>
-    </div>
+      <Field id="extension-description" label={COPY.descriptionLabel}>
+        <Input value={description} onChange={(e) => onChange('description', e.target.value)} />
+      </Field>
+    </>
   );
 }
