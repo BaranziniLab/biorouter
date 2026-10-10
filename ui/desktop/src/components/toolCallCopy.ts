@@ -193,6 +193,7 @@ export const ELICITATION_COPY = {
 export const SECRET_COPY = {
   fallbackPrompt: 'Biorouter needs some credentials.',
   reassurance: 'Saved on this machine. The model never sees it.',
+  reassuranceName: 'Credential storage',
   reassuranceHelp:
     "These values go straight to this machine's credential store. They are not added to " +
     'the chat, and the model never sees them.',

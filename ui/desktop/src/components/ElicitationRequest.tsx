@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { ActionRequired } from '../api';
 import JsonSchemaForm from './ui/JsonSchemaForm';
 import type { JsonSchema } from './ui/JsonSchemaForm';
-import { Check } from './icons/app-icons';
+import { Check, X } from './icons/app-icons';
 import { errorMessage } from '../utils/conversionUtils';
+import { TranscriptRow } from './TranscriptRow';
+import { ELICITATION_COPY } from './toolCallCopy';
 
 interface ElicitationRequestProps {
   isCancelledMessage: boolean;
@@ -42,44 +44,42 @@ export default function ElicitationRequest({
     }
   };
 
+  // Resolved states are transcript rows: the card has done its job.
   if (isCancelledMessage) {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        Information request was canceled.
+      <div className="biorouter-message-content text-body">
+        <TranscriptRow icon={X} label={ELICITATION_COPY.canceled} />
       </div>
     );
   }
 
   if (submitted) {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        <div className="flex items-center gap-2">
-          <Check className="w-5 h-5 text-text-muted" />
-          <span>Information submitted</span>
-        </div>
+      <div className="biorouter-message-content text-body">
+        <TranscriptRow icon={Check} label={ELICITATION_COPY.sent} />
       </div>
     );
   }
 
+  // Asking: the one card recipe. The question is the card's title; the form
+  // and its action follow. One box, not a bubble glued to a form.
   return (
-    <div className="flex flex-col">
-      <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-body text-text-default">
-        {message || 'Biorouter needs some information from you.'}
+    <div className="biorouter-message-content br-enter text-body flex min-w-0 flex-col gap-3 rounded-container border border-border-subtle bg-background-default p-4">
+      <div className="text-label text-text-default">
+        {message || ELICITATION_COPY.fallbackQuestion}
       </div>
-      <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3 text-body">
-        {error && (
-          <p role="alert" className="mb-2 text-text-default">
-            {error}
-          </p>
-        )}
-        <fieldset disabled={submitting}>
-          <JsonSchemaForm
-            schema={requested_schema as JsonSchema}
-            onSubmit={handleSubmit}
-            submitLabel={submitting ? 'Submitting…' : 'Submit'}
-          />
-        </fieldset>
-      </div>
+      {error && (
+        <p role="alert" className="text-supporting text-text-danger">
+          {error}
+        </p>
+      )}
+      <fieldset disabled={submitting} className="min-w-0">
+        <JsonSchemaForm
+          schema={requested_schema as JsonSchema}
+          onSubmit={handleSubmit}
+          submitLabel={submitting ? ELICITATION_COPY.submitting : ELICITATION_COPY.submit}
+        />
+      </fieldset>
     </div>
   );
 }

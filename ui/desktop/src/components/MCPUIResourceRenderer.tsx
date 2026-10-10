@@ -1,11 +1,42 @@
+import './tool-call.css';
+import type { ComponentType } from 'react';
 import { EmbeddedResource } from '../api';
-import { Maximize2 } from './icons/app-icons';
+import { ChartColumn, FileText, Globe } from './icons/app-icons';
+import { ENTITY_ICONS } from './icons/entity-icons';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { artifactSourceFromResource, titleFromResourceUri } from './artifacts/artifactUtils';
+import { ARTIFACT_CARD_COPY } from './toolCallCopy';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
   onOpenArtifact: (artifact: ArtifactSource) => void;
+}
+
+export type ArtifactCardKind = keyof typeof ARTIFACT_CARD_COPY.kind;
+
+const KIND_GLYPHS: Record<ArtifactCardKind, ComponentType<{ className?: string }>> = {
+  figure: ChartColumn,
+  // A report is a document of figures (`render_dashboard`), so it reads as a page.
+  report: FileText,
+  app: ENTITY_ICONS.application,
+  page: Globe,
+  resource: FileText,
+};
+
+/**
+ * What the card holds, in a person's words: never a MIME type. Read from the
+ * artifact source (an external page opens in the browser) and the `ui://`
+ * address the tool chose (`ui://agent-drafter/<id>` is an app,
+ * `ui://dashboard/report` is a report, every other Auto Visualiser address is
+ * a figure).
+ */
+export function artifactCardKind(source: ArtifactSource, uri?: string): ArtifactCardKind {
+  if (source.kind === 'externalUrl') return 'page';
+  const address = (uri ?? '').toLowerCase();
+  if (/^ui:\/\/agent[-_]drafter\//.test(address)) return 'app';
+  if (/^ui:\/\/dashboard\//.test(address)) return 'report';
+  if (source.kind === 'html') return 'figure';
+  return 'resource';
 }
 
 /**
@@ -21,10 +52,10 @@ interface MCPUIResourceRendererProps {
  * the card (whenever `artifactSourceFromResource` yields a source) or a
  * no-preview note (when it yields none).
  *
- * The card's chrome carries no colour literals — it is styled entirely in
- * semantic Tailwind classes (`bg-background-default`, `text-text-muted`,
- * `border-border-subtle`), which are CSS custom properties that main.css
- * re-points per `[data-theme]`. So it is theme-family-aware for free.
+ * The card spans the 760px column, carries a hairline and no shadow (it sits on
+ * the page, it does not float), and holds a 32px kind tile, the title and the
+ * kind. It only opens; there is no delete control (CLAUDE.md, Artifact side
+ * panel). Styled in authored CSS (`.br-artifact-card`, tool-call.css).
  */
 export default function MCPUIResourceRenderer({
   content,
@@ -33,7 +64,9 @@ export default function MCPUIResourceRenderer({
   const resource = content.resource as { uri?: string; mimeType?: string };
 
   const fallbackArtifactTitle =
-    titleFromResourceUri(resource.uri) || resource.uri?.split('/').pop() || 'Artifact';
+    titleFromResourceUri(resource.uri) ||
+    resource.uri?.split('/').pop() ||
+    ARTIFACT_CARD_COPY.fallbackTitle;
   const artifactSource = artifactSourceFromResource(content, fallbackArtifactTitle);
   const artifactTitle = artifactSource?.title ?? fallbackArtifactTitle;
 
@@ -49,37 +82,37 @@ export default function MCPUIResourceRenderer({
   };
 
   if (artifactSource) {
-    const destination =
-      artifactSource.kind === 'externalUrl' ? 'in the default browser' : 'in the artifact viewer';
+    const kind = artifactCardKind(artifactSource, resource.uri);
+    const Glyph = KIND_GLYPHS[kind];
     return (
-      <div className="group mt-3 flex w-full max-w-xl items-center gap-2">
-        <button
-          type="button"
-          onClick={handleOpenArtifact}
-          aria-label={`Open ${artifactTitle} ${destination}`}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-border-subtle bg-background-default/75 px-3 py-2.5 text-left shadow-popover transition-colors hover:bg-background-medium"
-        >
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background-medium text-text-muted">
-            <Maximize2 className="h-4 w-4" aria-hidden="true" />
+      <button
+        type="button"
+        onClick={handleOpenArtifact}
+        aria-label={ARTIFACT_CARD_COPY.openLabel(
+          artifactTitle,
+          artifactSource.kind === 'externalUrl'
+        )}
+        data-artifact-kind={kind}
+        className="br-artifact-card"
+      >
+        <span className="br-artifact-card-tile" aria-hidden="true">
+          <Glyph />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-label text-text-default">{artifactTitle}</span>
+          <span className="block truncate text-supporting text-text-muted">
+            {ARTIFACT_CARD_COPY.kind[kind]}
           </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-text-default">
-              {artifactTitle}
-            </span>
-            <span className="block truncate text-xs text-text-muted">
-              {resource.mimeType || 'text/html'}
-            </span>
-          </span>
-        </button>
-      </div>
+        </span>
+      </button>
     );
   }
 
   // No source at all: the uri was too long, an HTML payload would not decode, or
   // a uri-list held no usable URL. There is nothing the panel could show.
   return (
-    <div className="mt-3 text-xs text-text-muted" role="status">
-      No browser-safe preview is available for {artifactTitle}.
+    <div className="text-supporting text-text-muted" role="status">
+      {ARTIFACT_CARD_COPY.noPreview(artifactTitle)}
     </div>
   );
 }

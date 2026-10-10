@@ -2,7 +2,11 @@ import { useMemo, useState } from 'react';
 import type { ActionRequired, SecretKeyRequest } from '../api';
 import { submitSecrets } from '../api';
 import { Button } from './ui/button';
-import { Check, Lock } from './icons/app-icons';
+import { SecretInput } from './ui/secret-input';
+import { InfoTip } from './ui/info-tip';
+import { Check, Lock, X } from './icons/app-icons';
+import { TranscriptRow } from './TranscriptRow';
+import { SECRET_COPY } from './toolCallCopy';
 import { userActionHeaders } from '../utils/userAction';
 
 /**
@@ -45,7 +49,6 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
   const isSecretRequest = data.actionType === 'secretRequest';
 
   const [values, setValues] = useState<Record<string, string>>({});
-  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState<Status>({ kind: 'editing' });
 
   const keys: SecretKeyRequest[] = useMemo(
@@ -98,46 +101,39 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
             error:
               result.reason ??
               ((response.error as { error?: string } | undefined)?.error ||
-                'Biorouter could not store these values.'),
+                SECRET_COPY.storeFailed),
           });
       }
     } catch (error) {
       setStatus({
         kind: 'editing',
-        error: error instanceof Error ? error.message : 'Biorouter could not store these values.',
+        error: error instanceof Error ? error.message : SECRET_COPY.storeFailed,
       });
     }
   };
 
+  // Resolved states are transcript rows: the card has done its job.
   if (isCancelledMessage || status.kind === 'cancelled') {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        Credential setup was canceled. Nothing was installed.
+      <div className="biorouter-message-content text-body">
+        <TranscriptRow icon={X} label={SECRET_COPY.canceled} />
       </div>
     );
   }
 
   if (status.kind === 'gone') {
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        This request is no longer waiting for an answer. Ask again to configure{' '}
-        {extensionName ?? 'the extension'}.
+      <div className="biorouter-message-content text-body">
+        <TranscriptRow icon={X} label={SECRET_COPY.gone(extensionName)} />
       </div>
     );
   }
 
   if (status.kind === 'configured') {
+    // Names, never values: this line is part of the transcript.
     return (
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-body text-text-default">
-        <div className="flex items-center gap-2">
-          <Check className="w-5 h-5 text-text-muted" />
-          {/* Names, never values — this line is part of the transcript. */}
-          <span>
-            Credentials configured
-            {extensionName ? ` for ${extensionName}` : ''}
-            {status.keys.length > 0 ? `: ${status.keys.join(', ')}` : ''}
-          </span>
-        </div>
+      <div className="biorouter-message-content text-body">
+        <TranscriptRow icon={Check} label={SECRET_COPY.configured(extensionName, status.keys)} />
       </div>
     );
   }
@@ -146,100 +142,75 @@ export default function SecretRequestCard({ isCancelledMessage, actionRequiredCo
   const missing = status.kind === 'editing' ? (status.missing ?? []) : [];
 
   const field = (entry: SecretKeyRequest) => {
-    const isRevealed = revealed[entry.key] ?? false;
     const flagged = missing.includes(entry.key);
+    const inputId = `secret-${id}-${entry.key}`;
+    const helpId = `${inputId}-help`.replace(/[^a-zA-Z0-9_-]/g, '_');
     return (
-      <div key={entry.key}>
-        <div className="flex items-center justify-between gap-2">
-          <label htmlFor={`secret-${id}-${entry.key}`} className="block text-xs font-semibold mb-1">
+      <div key={entry.key} className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex min-w-0 items-center gap-1">
+          <label htmlFor={inputId} className="truncate text-label text-text-default">
             {entry.label}
-            {entry.required && <span className="text-text-danger"> *</span>}
+            {!entry.required && <span className="text-text-muted"> {SECRET_COPY.optional}</span>}
           </label>
-          <button
-            type="button"
-            className="text-[11px] text-text-muted underline"
-            onClick={() => setRevealed((prev) => ({ ...prev, [entry.key]: !isRevealed }))}
-          >
-            {isRevealed ? 'Hide' : 'Show'}
-          </button>
+          {/* The description is help, not a second copy of the placeholder: it
+              lives in an InfoTip beside the label (never inside it) and the
+              field points at the same text. */}
+          {entry.description && (
+            <InfoTip id={helpId} label={entry.label} help={entry.description} />
+          )}
         </div>
-        <input
-          id={`secret-${id}-${entry.key}`}
+        <SecretInput
+          id={inputId}
+          revealLabel={entry.label}
           // Masked by default with an intentional reveal, and NEVER pre-filled:
           // a default value here would have to be read back out of the
           // credential store, which is the one thing this whole path exists to
           // avoid.
-          type={isRevealed ? 'text' : 'password'}
-          className={[
-            'biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm',
-            flagged ? '!border-border-danger' : '',
-          ].join(' ')}
-          placeholder={entry.description ?? ''}
+          className={flagged ? '!border-border-danger' : undefined}
+          aria-invalid={flagged || undefined}
+          aria-describedby={entry.description ? helpId : undefined}
           value={values[entry.key] ?? ''}
           onChange={(e) => setValues((prev) => ({ ...prev, [entry.key]: e.target.value }))}
-          autoComplete="off"
-          spellCheck={false}
           disabled={busy}
         />
-        {entry.description && (
-          <p className="text-[11px] text-text-muted mt-1 leading-relaxed">{entry.description}</p>
-        )}
       </div>
     );
   };
 
+  // Asking: the one card recipe. Required fields first, then the optional ones,
+  // each marked "(optional)" rather than filed under a second caps heading.
   return (
-    <div className="flex flex-col">
-      <div className="biorouter-message-content bg-background-muted rounded-2xl rounded-b-none px-4 py-2 text-body text-text-default">
-        <div className="flex items-center gap-2">
-          <Lock className="w-4 h-4 text-text-muted shrink-0" />
-          <span>{prompt || 'Biorouter needs some credentials.'}</span>
+    <div className="biorouter-message-content br-enter text-body flex min-w-0 flex-col gap-3 rounded-container border border-border-subtle bg-background-default p-4">
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="text-label text-text-default">{prompt || SECRET_COPY.fallbackPrompt}</div>
+        {/* The decision point, so the reassurance stays visible in one short
+            line; the full sentence is in the InfoTip. */}
+        <div className="flex items-center gap-1.5 text-supporting text-text-muted">
+          <Lock aria-hidden="true" className="size-3.5 shrink-0" />
+          <span>{SECRET_COPY.reassurance}</span>
+          <InfoTip label={SECRET_COPY.reassuranceName} help={SECRET_COPY.reassuranceHelp} />
         </div>
       </div>
-      <div className="biorouter-message-content bg-background-default border border-border-subtle rounded-b-2xl px-4 py-3 text-body space-y-3">
-        <p className="text-[11px] text-text-muted leading-relaxed">
-          These go straight to this machine's credential store. They are not added to the
-          conversation and the model never sees them.
+
+      {required.map(field)}
+      {optional.map(field)}
+
+      {status.kind === 'editing' && status.error && (
+        <p role="alert" className="text-supporting text-text-danger">
+          {status.error}
         </p>
+      )}
+      {missing.length > 0 && (
+        <p className="text-supporting text-text-danger">{SECRET_COPY.stillNeeded(missing)}</p>
+      )}
 
-        {required.length > 0 && (
-          <div className="space-y-3">
-            <p className="text-xs font-semibold text-text-default uppercase tracking-wide">
-              Required
-            </p>
-            {required.map(field)}
-          </div>
-        )}
-
-        {optional.length > 0 && (
-          <div className="space-y-3">
-            <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
-              Optional
-            </p>
-            {optional.map(field)}
-          </div>
-        )}
-
-        {status.kind === 'editing' && status.error && (
-          <p className="text-xs text-text-danger">{status.error}</p>
-        )}
-        {missing.length > 0 && (
-          <p className="text-xs text-text-danger">Still needed: {missing.join(', ')}</p>
-        )}
-
-        <div className="flex items-center justify-end gap-2 pt-1">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => post({ cancelled: true })}
-          >
-            Cancel
-          </Button>
-          <Button size="sm" disabled={busy || missingRequired} onClick={() => post({ values })}>
-            {busy ? 'Saving…' : 'Save and continue'}
-          </Button>
-        </div>
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => post({ cancelled: true })}>
+          {SECRET_COPY.cancel}
+        </Button>
+        <Button size="sm" disabled={busy || missingRequired} onClick={() => post({ values })}>
+          {busy ? SECRET_COPY.saving : SECRET_COPY.save}
+        </Button>
       </div>
     </div>
   );

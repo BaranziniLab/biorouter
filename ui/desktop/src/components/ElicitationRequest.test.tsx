@@ -43,7 +43,7 @@ describe('ElicitationRequest', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('request expired'));
     expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument();
-    expect(screen.queryByText('Information submitted')).toBeNull();
+    expect(screen.queryByText('Information sent')).toBeNull();
   });
 
   it('marks the request submitted only after delivery succeeds', async () => {
@@ -58,7 +58,37 @@ describe('ElicitationRequest', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    await waitFor(() => expect(screen.getByText('Information submitted')).toBeInTheDocument());
+    // The answered card collapses to a transcript row.
+    await waitFor(() =>
+      expect(screen.getByText('Information sent')).toHaveClass('br-transcript-row-label')
+    );
     expect(onSubmit).toHaveBeenCalledWith('request-1', { cohort: 'synthetic' });
+  });
+
+  it('asks in the one card recipe with the question as its title', () => {
+    const { container } = render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={vi.fn(async () => undefined)}
+      />
+    );
+    const card = container.querySelector('.biorouter-message-content')!;
+    expect(card.className).toContain('rounded-container');
+    expect(card.className).not.toContain('rounded-2xl');
+    expect(screen.getByText('Which cohort?')).toHaveClass('text-label');
+  });
+
+  it('shows a canceled request as a quiet row', () => {
+    render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage
+        isClicked={false}
+        onSubmit={vi.fn(async () => undefined)}
+      />
+    );
+    expect(screen.getByText('Information request canceled')).toHaveClass('br-transcript-row-label');
   });
 });

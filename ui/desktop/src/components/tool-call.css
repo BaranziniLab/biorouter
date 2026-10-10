@@ -38,3 +38,47 @@
   height: 4px;
 }
 /* @ws WS-TOOLS end: tool rows */
+
+/* @ws WS-TOOLS begin: artifact card */
+/* The artifact card (`MCPUIResourceRenderer`): spans the 760px column, a 12px
+   radius, a hairline, no shadow, 32px kind tile, title over a human kind. It
+   asks for a click, so it answers the pointer with the neutral hover wash. */
+.br-artifact-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background: var(--background-default);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+/* The shared hover tint (ink at 5%) laid over the card's own ground. */
+.br-artifact-card:hover {
+  background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+}
+
+.br-artifact-card-tile {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-element);
+  background: var(--background-muted);
+  color: var(--text-muted);
+}
+
+.br-artifact-card-tile > svg {
+  width: 16px;
+  height: 16px;
+}
+/* @ws WS-TOOLS end: artifact card */

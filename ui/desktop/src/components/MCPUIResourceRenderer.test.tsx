@@ -194,4 +194,23 @@ describe('MCPUIResourceRenderer', () => {
       })
     );
   });
+
+  it.each([
+    ['ui://chart/visualization', 'figure', 'Figure'],
+    ['ui://dashboard/report', 'report', 'Report'],
+    ['ui://agent-drafter/researcher-impact-dashboard', 'app', 'App'],
+  ])('names %s by its kind (%s), never by a MIME type', (uri, kind, label) => {
+    renderSubject(uri);
+    const card = screen.getByRole('button', { name: /^Open / });
+    expect(card).toHaveAttribute('data-artifact-kind', kind);
+    expect(card).toHaveTextContent(label);
+    expect(card).not.toHaveTextContent('text/html');
+  });
+
+  it('draws the card on the page: a hairline, no shadow, the full column', () => {
+    renderSubject();
+    const card = screen.getByRole('button', { name: /^Open / });
+    expect(card).toHaveClass('br-artifact-card');
+    expect(card.className).not.toMatch(/shadow|max-w-xl/);
+  });
 });

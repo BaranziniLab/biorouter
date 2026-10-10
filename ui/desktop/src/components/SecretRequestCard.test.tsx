@@ -63,7 +63,7 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    await user.type(screen.getByLabelText(/PASSCODE/), SECRET);
+    await user.type(screen.getByLabelText('PASSCODE'), SECRET);
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
 
     await waitFor(() => expect(submitSecrets).toHaveBeenCalled());
@@ -93,7 +93,7 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    await user.type(screen.getByLabelText(/PASSCODE/), SECRET);
+    await user.type(screen.getByLabelText('PASSCODE'), SECRET);
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
 
     expect(
@@ -111,14 +111,14 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    const input = screen.getByLabelText(/PASSCODE/);
+    const input = screen.getByLabelText('PASSCODE');
     expect(input).toHaveAttribute('type', 'password');
     // Never pre-filled: a default would have to be read back out of the
     // credential store.
     expect(input).toHaveValue('');
 
-    await user.click(screen.getByRole('button', { name: 'Show' }));
-    expect(screen.getByLabelText(/PASSCODE/)).toHaveAttribute('type', 'text');
+    await user.click(screen.getByRole('button', { name: 'Show PASSCODE' }));
+    expect(screen.getByLabelText('PASSCODE')).toHaveAttribute('type', 'text');
   });
 
   it('gates Save on the required fields and separates the optional ones', async () => {
@@ -133,11 +133,12 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    expect(screen.getByText('Required')).toBeInTheDocument();
-    expect(screen.getByText('Optional')).toBeInTheDocument();
+    // Optional fields are marked in their label, not filed under a heading.
+    expect(screen.getByLabelText('SPOKE_HOST (optional)')).toBeInTheDocument();
+    expect(screen.queryByText('Required')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save and continue' })).toBeDisabled();
 
-    await user.type(screen.getByLabelText(/PASSCODE/), 'x');
+    await user.type(screen.getByLabelText('PASSCODE'), 'x');
     expect(screen.getByRole('button', { name: 'Save and continue' })).toBeEnabled();
   });
 
@@ -181,12 +182,12 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    await user.type(screen.getByLabelText(/PASSCODE/), 'typed-but-rejected');
+    await user.type(screen.getByLabelText('PASSCODE'), 'typed-but-rejected');
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
 
     expect(await screen.findByText(/Still needed: PASSCODE/)).toBeInTheDocument();
     // The form is still there to correct.
-    expect(screen.getByLabelText(/PASSCODE/)).toBeInTheDocument();
+    expect(screen.getByLabelText('PASSCODE')).toBeInTheDocument();
   });
 
   /** The client's own gate, before the daemon's. */
@@ -199,7 +200,7 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    await user.type(screen.getByLabelText(/PASSCODE/), '   ');
+    await user.type(screen.getByLabelText('PASSCODE'), '   ');
     expect(screen.getByRole('button', { name: 'Save and continue' })).toBeDisabled();
     expect(submitSecrets).not.toHaveBeenCalled();
   });
@@ -215,7 +216,7 @@ describe('SecretRequestCard — issue #117', () => {
       />
     );
 
-    await user.type(screen.getByLabelText(/PASSCODE/), 'x');
+    await user.type(screen.getByLabelText('PASSCODE'), 'x');
     await user.click(screen.getByRole('button', { name: 'Save and continue' }));
 
     expect(await screen.findByText(/no longer waiting for an answer/i)).toBeInTheDocument();
@@ -249,5 +250,43 @@ describe('the conversation transport has no way to carry a credential', () => {
     const card = src('./SecretRequestCard.tsx');
     const props = card.slice(card.indexOf('interface Props'), card.indexOf('type Status'));
     expect(props).not.toMatch(/append|onSubmit|sessionId/);
+  });
+});
+
+describe('SecretRequestCard shape (spec 3.6 cards)', () => {
+  it('asks in the one card recipe with one visible reassurance line', () => {
+    const { container } = render(
+      <SecretRequestCard
+        isCancelledMessage={false}
+        actionRequiredContent={card([{ key: 'PASSCODE', label: 'PASSCODE', required: true }])}
+      />
+    );
+    const root = container.querySelector('.biorouter-message-content')!;
+    expect(root.className).toContain('rounded-container');
+    expect(root.className).not.toContain('rounded-2xl');
+    expect(screen.getByText('Saved on this machine. The model never sees it.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'About Credential storage' })
+    ).toHaveAccessibleDescription(expect.stringContaining('credential store'));
+  });
+
+  it('gives a field description once, as help the field points at', () => {
+    render(
+      <SecretRequestCard
+        isCancelledMessage={false}
+        actionRequiredContent={card([
+          {
+            key: 'PASSCODE',
+            label: 'PASSCODE',
+            required: true,
+            description: 'From the SPOKE credentials page.',
+          },
+        ])}
+      />
+    );
+    const input = screen.getByLabelText('PASSCODE');
+    expect(input).not.toHaveAttribute('placeholder', 'From the SPOKE credentials page.');
+    expect(input).toHaveAccessibleDescription('From the SPOKE credentials page.');
+    expect(screen.getByRole('button', { name: 'About PASSCODE' })).toBeInTheDocument();
   });
 });
