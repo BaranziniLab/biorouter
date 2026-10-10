@@ -1,5 +1,6 @@
 import React from 'react';
-import { MessageSquare, AlertCircle, LoaderCircle } from '../icons/app-icons';
+import { MessageSquare, AlertCircle } from '../icons/app-icons';
+import { Spinner } from '../ui/spinner';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import MarkdownContent from '../MarkdownContent';
@@ -98,8 +99,7 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
       <div className="flex flex-col gap-6 pt-4 pb-24">
         {isLoading ? (
           <div className="flex justify-center items-center py-12">
-            <LoaderCircle className="h-4 w-4 animate-spin text-text-muted" aria-hidden="true" />
-            <span className="sr-only">{LOADING_CHAT}</span>
+            <Spinner label={LOADING_CHAT} />
           </div>
         ) : error ? (
           // §4.5 — the shared surface, not a fourth hand-rolled error column.
