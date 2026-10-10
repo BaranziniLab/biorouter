@@ -41,6 +41,9 @@ export function previewMotionKeyframes(
   ];
 }
 
+/** The panel the body sits in, which wears the `data-preview-motion` marker. */
+export const PREVIEW_PANEL_SELECTOR = '.br-preview-panel';
+
 /** Animate the existing content layer; changing grid geometry never moves focus or reloads a frame. */
 export function usePreviewMotion(
   ref: RefObject<HTMLDivElement | null>,
@@ -54,6 +57,8 @@ export function usePreviewMotion(
     const cancel = () => {
       active.current?.animation.cancel();
       active.current = null;
+      const panel = ref.current?.closest<HTMLElement>(PREVIEW_PANEL_SELECTOR);
+      if (panel) delete panel.dataset.previewMotion;
     };
     const changed = () => {
       if (preference.matches) cancel();
@@ -63,7 +68,7 @@ export function usePreviewMotion(
       preference.removeEventListener('change', changed);
       cancel();
     };
-  }, []);
+  }, [ref]);
 
   useLayoutEffect(() => {
     if (isOpen && !ready) return;
@@ -91,8 +96,19 @@ export function usePreviewMotion(
       fill: 'both',
     });
     active.current = { animation, opening };
+    // NOTHING POPS (spec 3.8). The panel around the body (its strip, its bar,
+    // its seam) fades on the same beat, in authored CSS keyed on this marker
+    // (`preview-panel.css`). A CSS transition cannot do it on open: the panel
+    // is inserted and opened before its first style pass, so there is no
+    // "before" to transition from, and the strip appeared in one frame.
+    const panel = body.closest<HTMLElement>(PREVIEW_PANEL_SELECTOR);
+    if (panel) panel.dataset.previewMotion = change;
+    const settle = () => {
+      if (panel && active.current?.animation === animation) delete panel.dataset.previewMotion;
+    };
     animation.onfinish = () => {
       if (active.current?.animation !== animation) return;
+      settle();
       animation.cancel();
       active.current = null;
     };

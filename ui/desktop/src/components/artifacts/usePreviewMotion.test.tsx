@@ -165,3 +165,33 @@ describe('preview motion keyframes', () => {
     ]);
   });
 });
+
+describe('the panel motion marker', () => {
+  function PanelHost({ open }: { open: boolean }) {
+    const ref = useRef<HTMLDivElement>(null);
+    usePreviewMotion(ref, { isOpen: open, layout: 'side', ready: true });
+    return (
+      <aside className="br-preview-panel" data-testid="panel">
+        <div ref={ref} />
+      </aside>
+    );
+  }
+
+  // The strip and the bar fade on this marker (preview-panel.css), so it must be
+  // on the panel for exactly as long as the body's own motion runs.
+  it('marks the panel while the body opens and clears it when the motion ends', () => {
+    const motion = animations();
+    try {
+      const { getByTestId, rerender } = render(<PanelHost open={false} />);
+      expect(getByTestId('panel').dataset.previewMotion).toBeUndefined();
+      rerender(<PanelHost open />);
+      expect(getByTestId('panel').dataset.previewMotion).toBe('open');
+      act(() => motion.results[0].onfinish?.());
+      expect(getByTestId('panel').dataset.previewMotion).toBeUndefined();
+      rerender(<PanelHost open={false} />);
+      expect(getByTestId('panel').dataset.previewMotion).toBe('close');
+    } finally {
+      motion.restore();
+    }
+  });
+});

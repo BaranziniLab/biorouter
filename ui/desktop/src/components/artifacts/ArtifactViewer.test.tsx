@@ -2395,6 +2395,12 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     await user.click(screen.getByRole('treeitem', { name: 'staged.ts, Staged' }));
     expect(await screen.findByText('export')).toBeInTheDocument();
+    // The selected file has its own bar beside the rail; the panel's bar keeps
+    // the folder's name and branch.
+    const bars = screen.getAllByTestId('artifact-status-strip');
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toHaveTextContent(/^repository/);
+    expect(bars[1]).toHaveTextContent(/^staged\.ts1 line/);
     expect(
       screen.getByRole('treeitem', {
         name: `staged.ts, Staged, ${PREVIEW_COPY.currentlyViewing}`,

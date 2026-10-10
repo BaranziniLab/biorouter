@@ -5,11 +5,17 @@
 // renders here is what renders in the app. Driven by agent-browser.
 //
 //   npx vite --config .artifact-harness/vite.config.mts --port 5199
-import { StrictMode, useState } from 'react';
+import { StrictMode, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ArtifactViewer from '../src/components/artifacts/ArtifactViewer';
 import type { ArtifactSource } from '../src/components/artifacts/artifactTypes';
+import {
+  useArtifactPanel,
+  type ArtifactPanelPresentedChange,
+} from '../src/components/artifacts/useArtifactPanel';
 import { ThemeProvider } from '../src/contexts/ThemeContext';
+import { useColumnGlide } from '../src/hooks/useColumnGlide';
+import { DUR } from '../src/styles/motion';
 import { IMAGE_MIME_TYPES } from '../src/utils/imageFormats';
 import './harness.css';
 
@@ -40,8 +46,9 @@ const extOf = (path: string) => path.split('.').pop()!.toLowerCase();
 // process's `readArtifactFile` gitDirectory reply.
 const GIT_DIR_PATH = '/w/repo';
 
-// One file per git status so the legend has something to explain, plus a nested
-// directory so the tree's indent is exercised. `parentPath` is relative and ''
+// One file per git status, plus a nested directory so the tree's indent is
+// exercised. Each name is a fixture the harness serves, so selecting a row shows
+// a real nested preview rather than a 404. `parentPath` is relative and ''
 // at the root, and a child's is its parent's RELATIVE path — the shape
 // artifactDirectory.ts's `visit('', …)` produces. An absolute parentPath here
 // renders "This folder is empty": the tree roots at appendChildren('').
@@ -53,37 +60,37 @@ const GIT_ENTRIES: {
   status: 'untracked' | 'modified' | 'staged' | 'committed' | 'pushed';
 }[] = [
   {
-    name: 'pipeline.R',
-    relativePath: 'pipeline.R',
+    name: 'analysis.R',
+    relativePath: 'analysis.R',
     parentPath: '',
     isDirectory: false,
     status: 'modified',
   },
   {
-    name: 'scratch.py',
-    relativePath: 'scratch.py',
+    name: 'summarize.py',
+    relativePath: 'summarize.py',
     parentPath: '',
     isDirectory: false,
     status: 'untracked',
   },
   {
-    name: 'manifest.json',
-    relativePath: 'manifest.json',
+    name: 'config.json',
+    relativePath: 'config.json',
     parentPath: '',
     isDirectory: false,
     status: 'staged',
   },
   { name: 'R', relativePath: 'R', parentPath: '', isDirectory: true, status: 'committed' },
   {
-    name: 'statistics.R',
-    relativePath: 'R/statistics.R',
+    name: 'query.sql',
+    relativePath: 'R/query.sql',
     parentPath: 'R',
     isDirectory: false,
     status: 'committed',
   },
   {
-    name: 'README.md',
-    relativePath: 'README.md',
+    name: 'report.md',
+    relativePath: 'report.md',
     parentPath: '',
     isDirectory: false,
     status: 'pushed',
@@ -106,10 +113,17 @@ async function readFixture(path: string) {
   if (path === GIT_DIR_PATH) return gitDirectoryFixture();
   const name = path.split('/').pop()!;
   const response = await fetch(`/fixtures/${name}`);
-  if (!response.ok) {
-    return { kind: 'error', title: name, path, error: `HTTP ${response.status}`, found: false };
-  }
   const ext = extOf(name);
+  // A missing fixture falls through to Vite's SPA fallback, which answers 200
+  // with the harness's own index.html. The fixture route always answers
+  // octet-stream, so text/html for a name that is not .html is that fallback:
+  // treat it as the 404 it is, or the panel previews the harness page.
+  const fellThrough =
+    ext !== 'html' && (response.headers.get('content-type') ?? '').includes('text/html');
+  if (!response.ok || fellThrough) {
+    const status = fellThrough ? 404 : response.status;
+    return { kind: 'error', title: name, path, error: `HTTP ${status}`, found: false };
+  }
   const imageMime = IMAGE_MIME_TYPES[ext];
   const officeMime = OFFICE_MIME[ext];
   const mimeType = imageMime ?? officeMime ?? MIME[ext] ?? 'text/plain';
@@ -205,6 +219,39 @@ Object.defineProperty(window, 'electron', {
       return { path: '/tmp/harness-capture.png', width: rect.width, height: rect.height };
     },
     deleteTempFile: () => undefined,
+    // The rest of the bridge the panel reaches: Open externally, Reveal in
+    // Finder and an external page's live view. They record what they were asked,
+    // so a sweep can assert it, and never leave the harness.
+    openArtifactInBrowser: async (payload: unknown) => {
+      (window as unknown as { __lastOpenInBrowser?: unknown }).__lastOpenInBrowser = payload;
+    },
+    openDirectoryInExplorer: async (target: string) => {
+      (window as unknown as { __lastReveal?: unknown }).__lastReveal = target;
+      return true;
+    },
+    getTempImage: async () => null,
+    ensureWindowContentWidth: async () => undefined,
+    // The live page is a native view in the app; here it is a placeholder that
+    // answers like one, so "Open here", the toolbar and its states can be swept.
+    embeddedBrowser: {
+      isManagedAppUrl: async () => false,
+      create: async (_viewId: string, url: string) => ({
+        url,
+        title: url,
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+      }),
+      setBounds: async () => undefined,
+      setVisible: async () => undefined,
+      navigate: async () => true,
+      control: async () => undefined,
+      readText: async () => null,
+      capture: async () => null,
+      clearData: async () => true,
+      destroy: async () => undefined,
+      onState: () => () => undefined,
+    },
   },
 });
 
@@ -223,6 +270,14 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
       kind: 'html',
       title: 'Agent Drafter Cohort Explorer',
       html: await (await fetch('/fixtures/agent-drafter-card.html')).text(),
+    }),
+  },
+  {
+    label: 'external page',
+    make: async (): Promise<ArtifactSource> => ({
+      kind: 'externalUrl',
+      title: 'UCSF',
+      url: 'https://www.ucsf.edu/',
     }),
   },
   {
@@ -272,6 +327,158 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     make: async (): Promise<ArtifactSource> => ({ kind: 'file', title: name, path: `/w/${name}` }),
   })),
 ];
+
+/**
+ * PANEL MODE (`?mode=panel`). The default mode mounts `ArtifactViewer` already
+ * open, under StrictMode, so its entrance never plays. This mode mounts it the
+ * way the app does: `useArtifactPanel` drives a real `[data-preview-split]` grid
+ * (the rung-2 CSS in main.css) beside a fake header, transcript and composer, and
+ * the conversation glide (`useColumnGlide`) runs on the same `onPresentedChange`
+ * the chat wires. Open, Close and Switch buttons sit in the fake header, so the
+ * open, the switch crossfade, the close and a side and stack crossing can be
+ * filmed (agent-browser `record_start`) and sampled frame by frame.
+ *
+ * Inline styles only, as in the rest of this file: Tailwind does not scan this
+ * dot-directory, so a utility written here would never be generated.
+ */
+function PanelHarness() {
+  const [index, setIndex] = useState(0);
+  const presentedChangeRef = useRef<((change: ArtifactPanelPresentedChange) => void) | null>(null);
+  const panel = useArtifactPanel({
+    isMobile: false,
+    allowWindowResize: false,
+    onPresentedChange: (change) => presentedChangeRef.current?.(change),
+  });
+  const glide = useColumnGlide(panel.splitPaneRef);
+  presentedChangeRef.current = (change) => {
+    if (change.layout === 'side') glide.capture({ windowGrowing: change.windowGrowing });
+  };
+  const mounted = Boolean(panel.artifact);
+  // While a preview is placed, main.css lays the split out as a grid and
+  // flattens the column and body (`display: contents`). An inline `display`
+  // would beat those rules, so the shell sets one only when nothing is placed.
+  const laidOut = 'data-preview-layout' in panel.splitPaneProps;
+  useLayoutEffect(() => {
+    glide.playCaptured({ duration: mounted ? DUR.med : DUR.fastMax });
+  }, [mounted, glide]);
+
+  const files = ARTIFACTS.filter((entry) => entry.label.includes('.'));
+  const openAt = async (next: number) => {
+    const entry = files[((next % files.length) + files.length) % files.length];
+    setIndex(next);
+    await panel.openArtifact(await entry.make());
+  };
+  const button = (label: string, onClick: () => void, testId: string) => (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      style={{
+        height: 28,
+        padding: '0 10px',
+        border: '1px solid var(--border-subtle)',
+        borderRadius: 8,
+        background: 'var(--background-default)',
+        color: 'var(--text-default)',
+        fontSize: 13,
+        cursor: 'pointer',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      data-testid="panel-host"
+      style={{
+        display: 'flex',
+        height: '100vh',
+        width: '100vw',
+        background: 'var(--background-default)',
+        color: 'var(--text-default)',
+      }}
+    >
+      <div
+        ref={panel.splitPaneRef}
+        {...panel.splitPaneProps}
+        style={{
+          position: 'relative',
+          display: laidOut ? undefined : 'flex',
+          flex: 1,
+          minWidth: 0,
+          minHeight: 0,
+          ...panel.splitPaneProps.style,
+        }}
+      >
+        <div
+          data-preview-area="column"
+          style={{
+            display: laidOut ? undefined : 'flex',
+            flex: 1,
+            minWidth: 0,
+            flexDirection: 'column',
+          }}
+        >
+          <div
+            data-preview-area="body"
+            style={{
+              display: laidOut ? undefined : 'flex',
+              flex: 1,
+              minHeight: 0,
+              flexDirection: 'column',
+            }}
+          >
+            <div
+              data-preview-area="header"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                height: 44,
+                padding: '0 16px',
+                borderBottom: '1px solid var(--border-subtle)',
+                flexShrink: 0,
+              }}
+            >
+              <span style={{ fontSize: 14, marginRight: 'auto' }}>Harness chat</span>
+              {button('Open', () => void openAt(index), 'panel-open')}
+              {button('Switch', () => void openAt(index + 1), 'panel-switch')}
+              {button('Close', () => panel.closePanel(), 'panel-close')}
+            </div>
+            <div data-preview-area="transcript" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <div
+                className="biorouter-chat-column"
+                style={{ maxWidth: 760, margin: '0 auto', padding: '24px' }}
+              >
+                {Array.from({ length: 12 }, (_, i) => (
+                  <p key={i} style={{ fontSize: 14, lineHeight: '21px', margin: '0 0 16px' }}>
+                    {i % 2
+                      ? 'The volcano plot shows 412 genes past the FDR threshold, most of them up in the tumour samples.'
+                      : 'Open a figure, switch between files and close the panel to film how it moves.'}
+                  </p>
+                ))}
+              </div>
+            </div>
+            <div data-preview-area="composer" style={{ flexShrink: 0, padding: '12px 24px 20px' }}>
+              <div
+                data-composer-shell=""
+                style={{
+                  maxWidth: 760,
+                  margin: '0 auto',
+                  height: 56,
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 16,
+                }}
+              />
+            </div>
+          </div>
+        </div>
+        {panel.artifact && <ArtifactViewer {...panel.viewerProps} sessionId="harness-session" />}
+      </div>
+    </div>
+  );
+}
 
 function Harness() {
   const [artifact, setArtifact] = useState<ArtifactSource | null>(null);
@@ -330,10 +537,22 @@ function Harness() {
   );
 }
 
+// `?mode=panel` films the panel as the app mounts it; the default lists every
+// fixture. Panel mode leaves StrictMode out: its simulated unmount cancels the
+// entrance animation (usePreviewMotion's cleanup), which is the one thing that
+// mode exists to show.
+const panelMode = new URLSearchParams(window.location.search).get('mode') === 'panel';
+
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
+  panelMode ? (
     <ThemeProvider>
-      <Harness />
+      <PanelHarness />
     </ThemeProvider>
-  </StrictMode>
+  ) : (
+    <StrictMode>
+      <ThemeProvider>
+        <Harness />
+      </ThemeProvider>
+    </StrictMode>
+  )
 );

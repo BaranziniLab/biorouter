@@ -283,9 +283,16 @@ describe('the preview panel stylesheet', () => {
     expect(panelRule('.br-preview-bar__actions')).toContain('flex: none;');
   });
 
+  // An animation on the hook's marker, not a transition: the panel is inserted
+  // and opened before its first style pass, so a transition never ran and the
+  // strip appeared in one frame (measured in the harness's panel mode).
   it('fades the strip and the bar with the body, never moving them', () => {
-    const fade = panelRule('.br-preview-panel > .br-tabstrip, .br-preview-panel > .br-preview-bar');
-    expect(fade).toContain('transition: opacity var(--dur-med) var(--ease-out);');
+    const fade = panelRule(
+      ".br-preview-panel[data-preview-motion='open'] > .br-tabstrip, .br-preview-panel[data-preview-motion='open'] > .br-preview-bar"
+    );
+    expect(fade).toContain('animation: br-preview-fade-in var(--dur-med) var(--ease-out) both;');
+    const motion = readFileSync('src/components/artifacts/usePreviewMotion.ts', 'utf-8');
+    expect(motion).toContain('panel.dataset.previewMotion = change;');
     expect(
       panelRule(
         ".br-preview-panel[data-panel-open='false'] > .br-tabstrip, .br-preview-panel[data-panel-open='false'] > .br-preview-bar"
@@ -299,12 +306,12 @@ describe('the preview panel stylesheet', () => {
   });
 
   it('animates only opacity and transform, on the tokens', () => {
-    for (const [, property] of panelFlat.matchAll(/transition: ([a-z-]+) /g)) {
+    const code = panelCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const [, property] of code.replace(/\s+/g, ' ').matchAll(/transition: ([a-z-]+) /g)) {
       expect(['opacity', 'background-color', 'border-left-color']).toContain(property);
     }
     // The one literal: the skeleton waits 200ms before it shows (spec 3.8), a
     // delay rather than a motion tier.
-    const code = panelCss.replace(/\/\*[\s\S]*?\*\//g, '');
     expect(code.replace(/animation-delay: 200ms;/g, '')).not.toMatch(/\d+ms/);
     expect(code).not.toMatch(/cubic-bezier/);
   });

@@ -2401,19 +2401,33 @@ function DirectoryTreePreview({
           )}
         </div>
       </div>
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
         {selectedEntry ? (
-          <ArtifactPreviewBody
-            preview={selectedPreview ? { kind: 'file', preview: selectedPreview } : LOADING_PREVIEW}
-            artifact={{ kind: 'file', title: selectedEntry.name, path: selectedEntry.path }}
-            resolvedTheme={resolvedTheme}
-            isResizing={isResizing}
-            trustedFrameRef={selectedFrameRef}
-            onOpenArtifactInTab={onOpenArtifactInTab}
-            // A directory tree only ever selects files, never URLs, so there is
-            // no live page to be browsing here.
-            isBrowsingUrl={false}
-          />
+          // The selected file gets its own 32px bar beside the rail's filter, so
+          // the two hairlines meet at the seam and the file's count, Copy and
+          // view switch sit over the file, not under the folder's name.
+          <PreviewBarScope>
+            <PreviewBar
+              name={selectedEntry.name}
+              path={selectedEntry.path}
+              className="br-preview-bar--pane"
+            />
+            <div className="relative min-h-0 flex-1">
+              <ArtifactPreviewBody
+                preview={
+                  selectedPreview ? { kind: 'file', preview: selectedPreview } : LOADING_PREVIEW
+                }
+                artifact={{ kind: 'file', title: selectedEntry.name, path: selectedEntry.path }}
+                resolvedTheme={resolvedTheme}
+                isResizing={isResizing}
+                trustedFrameRef={selectedFrameRef}
+                onOpenArtifactInTab={onOpenArtifactInTab}
+                // A directory tree only ever selects files, never URLs, so there
+                // is no live page to be browsing here.
+                isBrowsingUrl={false}
+              />
+            </div>
+          </PreviewBarScope>
         ) : (
           // One line, no paragraph (spec 3.8): the tree beside it explains itself.
           <div className="br-preview-state">

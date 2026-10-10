@@ -21,12 +21,22 @@
 }
 
 /* NOTHING POPS. The body slides and fades with `usePreviewMotion`; the strip,
-   the bar and the seam's hairline fade with it on the same state, so no part of
+   the bar and the seam's hairline fade with it on the same beat, so no part of
    the panel appears or vanishes in a single frame. Opacity only: the strip is a
-   band and must not move. Entrances take the panel tier, exits the fast one. */
-.br-preview-panel > .br-tabstrip,
-.br-preview-panel > .br-preview-bar {
-  transition: opacity var(--dur-med) var(--ease-out);
+   band and must not move. Entrances take the panel tier, exits the fast one.
+
+   The entrance is an ANIMATION keyed on the hook's `data-preview-motion`
+   marker, not a transition: the panel is inserted and opened before its first
+   style pass, so a transition has no "before" and the strip appeared at once
+   (measured in the harness's panel mode). Closed, everything rests at 0 and
+   the exit is a transition from the open state. */
+.br-preview-panel[data-preview-motion='open'] {
+  animation: br-preview-edge-in var(--dur-med) var(--ease-out) both;
+}
+
+.br-preview-panel[data-preview-motion='open'] > .br-tabstrip,
+.br-preview-panel[data-preview-motion='open'] > .br-preview-bar {
+  animation: br-preview-fade-in var(--dur-med) var(--ease-out) both;
 }
 
 .br-preview-panel[data-panel-open='false'] {
@@ -37,7 +47,7 @@
 .br-preview-panel[data-panel-open='false'] > .br-tabstrip,
 .br-preview-panel[data-panel-open='false'] > .br-preview-bar {
   opacity: 0;
-  transition-duration: var(--dur-fast);
+  transition: opacity var(--dur-fast) var(--ease-out);
 }
 
 /* ── The tab strip's edges ── a tab scrolled past an edge fades into it, so a
@@ -114,7 +124,9 @@
    4.5% of the panel the content's `--paper-gutter` takes in `cqw`) or the
    column's centring margin, whichever is larger — so the name starts on the
    left edge the prose, the code text and a table's first column share. It
-   refines `.br-preview-measure-strip` (main.css), which floors at 14px. */
+   refines `.br-preview-measure-strip` (main.css), which floors at 14px.
+   `--pane` is the same inset for a bar over one pane of the panel (the file
+   beside a directory's rail), whose content measures against that pane. */
 .br-preview-bar {
   display: flex;
   flex: none;
@@ -129,7 +141,8 @@
   line-height: var(--text-secondary--line-height);
 }
 
-.br-preview-bar.br-preview-measure-strip {
+.br-preview-bar.br-preview-measure-strip,
+.br-preview-bar.br-preview-bar--pane {
   padding-inline: max(clamp(16px, 4.5%, 32px), calc((100% - var(--measure-chat)) / 2));
 }
 
@@ -441,6 +454,12 @@ canvas.br-preview-page[data-rendered='true'] {
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes br-preview-edge-in {
+  from {
+    border-left-color: transparent;
   }
 }
 
