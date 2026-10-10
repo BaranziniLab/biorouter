@@ -14,7 +14,8 @@ import {
 import { toastService } from '../../../toasts';
 import type { ExtensionConfig, ProviderTier } from '../../../api/types.gen';
 import { catalogFreshnessLine, loadRegistry, type RegistryLoad } from '../../baam/registry';
-import { EXTENSION_ROW_COPY } from './copy';
+import { EXTENSION_MODAL_COPY, EXTENSION_ROW_COPY } from './copy';
+import { EXTENSIONS_COPY } from '../../extensions/copy';
 
 /**
  * The extensions this page lists: everything configured except the shipped capabilities, which
@@ -352,12 +353,12 @@ export default function ExtensionsSection({
       {/* Modal for updating an existing extension */}
       {isModalOpen && selectedExtension && (
         <ExtensionModal
-          title="Update extension"
+          title={EXTENSION_MODAL_COPY.updateTitle}
           initialData={extensionToFormData(selectedExtension)}
           onClose={handleModalClose}
           onSubmit={handleUpdateExtension}
           onDelete={handleDeleteExtension}
-          submitLabel="Save changes"
+          submitLabel={EXTENSION_MODAL_COPY.updateSubmit}
           modalType={'edit'}
           startAtRemoval={startAtRemoval}
         />
@@ -366,14 +367,14 @@ export default function ExtensionsSection({
       {/* Modal for adding extension from deeplink*/}
       {deepLinkConfigStateVar && showEnvVarsStateVar && (
         <ExtensionModal
-          title="Add custom extension"
+          title={EXTENSIONS_COPY.customTitle}
           initialData={extensionToFormData({
             ...deepLinkConfig,
             enabled: true,
           } as FixedExtensionEntry)}
           onClose={handleModalClose}
           onSubmit={handleAddExtension}
-          submitLabel="Add extension"
+          submitLabel={EXTENSIONS_COPY.customSubmit}
           modalType={'add'}
         />
       )}

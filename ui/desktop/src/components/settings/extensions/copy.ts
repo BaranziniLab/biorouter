@@ -60,6 +60,10 @@ export const EXTENSION_ROW_COPY = {
 
 /** The configure and add dialog. */
 export const EXTENSION_MODAL_COPY = {
+  /** The configure dialog's title and its submit button. The Add dialog's are on the page's copy. */
+  updateTitle: 'Update extension',
+  updateSubmit: 'Save changes',
+
   nameLabel: 'Name',
   descriptionLabel: 'Description',
 

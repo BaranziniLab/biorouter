@@ -26,7 +26,10 @@ export const BRXT_INSTALL_COPY = {
   // The drop zone: one line, and the zone is the control (Knowledge's recipe, as Add skill has it)
   dropZone: 'Drop a .brxt file here',
   dropZoneAnother: 'Drop a different .brxt file here',
+  // The button's accessible name: its visible line plus the way in that the drop does not show,
+  // so the name always CONTAINS what is on screen (WCAG 2.5.3, label in name).
   dropZoneName: 'Drop a .brxt file here, or choose a file',
+  dropZoneAnotherName: 'Drop a different .brxt file here, or choose a file',
   dropBrxt: 'Drop a .brxt file',
   reading: 'Reading bundle…',
   downloading: (name: string) => `Downloading ${name}…`,

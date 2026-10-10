@@ -405,7 +405,7 @@ export default function ExtensionModal({
       >
         {showDeleteConfirmation ? (
           <div className="flex items-center gap-1">
-            <Button variant="secondary" onClick={() => setShowCredentials(true)}>
+            <Button variant="secondary" size="sm" onClick={() => setShowCredentials(true)}>
               {COPY.reviewCredentials}
             </Button>
             <InfoTip label={COPY.reviewCredentials} help={COPY.sharedCredentialsHelp} />

@@ -22,6 +22,7 @@ import { ScrollArea } from '../ui/scroll-area';
 import { ExtensionLoadFailureNotice } from './ExtensionLoadFailureNotice';
 import { AddExtensionMenu } from './AddExtensionMenu';
 import { highlightRow } from './highlightRow';
+import { prefersReducedMotion } from '../../styles/motion';
 import { EXTENSIONS_COPY } from './copy';
 import { startNewSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
@@ -35,7 +36,7 @@ export type ExtensionsViewOptions = {
 };
 
 export function getExtensionScrollBehavior(): 'auto' | 'smooth' {
-  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  return prefersReducedMotion() ? 'auto' : 'smooth';
 }
 
 export default function ExtensionsView({

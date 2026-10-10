@@ -578,7 +578,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
               background and border beat any utility and the zone never changed on drag or error. */}
           <button
             type="button"
-            aria-label={COPY.dropZoneName}
+            aria-label={manifest ? COPY.dropZoneAnotherName : COPY.dropZoneName}
             disabled={isValidating}
             onDragOver={(e) => {
               e.preventDefault();

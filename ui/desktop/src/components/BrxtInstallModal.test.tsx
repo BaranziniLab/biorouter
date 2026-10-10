@@ -133,6 +133,7 @@ describe('BrxtInstallModal — the local-file route (issue #116)', () => {
     // "Browse file…" button beside it (Add skill's zone, Knowledge's recipe).
     expect(screen.getByText(COPY.dropZone)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: COPY.dropZoneName })).toBeInTheDocument();
+    expect(COPY.dropZoneName).toContain(COPY.dropZone);
     expect(screen.queryByText('or click to browse')).toBeNull();
     expect(screen.queryByRole('button', { name: /Browse file/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
@@ -162,7 +163,9 @@ describe('BrxtInstallModal — the local-file route (issue #116)', () => {
     expect(await screen.findByText(COPY.detectedFromBundle)).toBeInTheDocument();
     expect(screen.getByText(COPY.addTitle)).toBeInTheDocument();
     expect(screen.getByText(COPY.dropZoneAnother)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: COPY.dropZoneName })).toBeInTheDocument();
+    // The button's name contains the line on screen, whichever line that is (label in name).
+    const zone = screen.getByRole('button', { name: COPY.dropZoneAnotherName });
+    expect(zone).toHaveAccessibleName(expect.stringContaining(COPY.dropZoneAnother));
   });
 
   it('labels the local primary action by what it will actually do', async () => {
