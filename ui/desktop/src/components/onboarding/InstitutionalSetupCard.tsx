@@ -3,7 +3,7 @@ import { useConfig } from '../ConfigContext';
 import { checkProvider } from '../../api';
 import { checkCandidateCredentials } from '../settings/providers/modal/subcomponents/handlers/DefaultSubmitHandler';
 import { Button } from '../ui/button';
-import { ArrowRight } from '../icons/ArrowRight';
+import { ArrowRight } from '../icons/app-icons';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { Note } from '../ui/note';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';

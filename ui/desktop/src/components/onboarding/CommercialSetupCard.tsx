@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
-import { ArrowRight } from '../icons/ArrowRight';
 import { Note } from '../ui/note';
-import { AlertTriangle, Check } from '../icons/app-icons';
+import { AlertTriangle, ArrowRight, Check } from '../icons/app-icons';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { Spinner } from '../ui/spinner';
 
