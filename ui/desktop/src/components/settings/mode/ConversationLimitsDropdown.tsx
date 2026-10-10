@@ -44,13 +44,19 @@ interface MaxTurnsRowProps {
    */
   maxTurns: number | null;
   onMaxTurnsChange: (value: number) => void;
+  /**
+   * False until the saved value has been read. The field is then blank and disabled, because the
+   * default it would show (100) may not be what is saved, and a number typed into it would be
+   * replaced by the answer. Defaults to true for a caller that already holds the value.
+   */
+  loaded?: boolean;
 }
 
 /**
  * Settings > Chat > Approvals > Max turns. Always shown: it used to sit behind a "Chat limits"
  * disclosure that held exactly this one field (spec §3.13).
  */
-export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange }: MaxTurnsRowProps) => {
+export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange, loaded = true }: MaxTurnsRowProps) => {
   const shown = maxTurns ?? DEFAULT_MAX_TURNS;
   const [draft, setDraft] = useState(String(shown));
 
@@ -108,7 +114,7 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange }: MaxTurnsRowProps) =>
   // limit is named as the saved value, so the person knows it came from
   // before and was not their typing.
   const message =
-    draftValue !== null
+    !loaded || draftValue !== null
       ? null
       : storedIsInvalid && draft === String(maxTurns)
         ? `The saved value, ${maxTurns}, is not a whole number of at least 1. Enter a new value.`
@@ -145,7 +151,9 @@ export const MaxTurnsRow = ({ maxTurns, onMaxTurnsChange }: MaxTurnsRowProps) =>
         type="number"
         min="1"
         step="1"
-        value={draft}
+        value={loaded ? draft : ''}
+        disabled={!loaded}
+        aria-busy={!loaded || undefined}
         aria-invalid={message ? true : undefined}
         onChange={(e) => handleChange(e.target.value)}
         onBlur={flushSave}

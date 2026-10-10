@@ -20,7 +20,12 @@ export interface SettingSelectOption<T extends string = string> {
 
 export interface SettingSelectProps<T extends string = string> {
   options: ReadonlyArray<SettingSelectOption<T>>;
-  value: T;
+  /**
+   * The chosen option's value, or `null` while it is not known yet (a setting the daemon has not
+   * answered): the trigger is then blank and disabled rather than showing the first option, which
+   * would state a value nobody chose. An UNKNOWN stored value still shows the first option.
+   */
+  value: T | null;
   onValueChange: (value: T) => void;
   /** From `SettingRow`: the row label's id. The trigger is named by the label AND the value. */
   'aria-labelledby'?: string;
@@ -61,22 +66,26 @@ export function SettingSelect<T extends string>({
   'data-testid': testId,
 }: SettingSelectProps<T>) {
   const valueId = `${useId().replace(/[^a-zA-Z0-9_-]/g, '')}-setting-select-value`;
-  const current = options.find((option) => option.value === value) ?? options[0];
+  const pending = value === null;
+  const current = pending
+    ? undefined
+    : (options.find((option) => option.value === value) ?? options[0]);
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild disabled={disabled}>
+      <DropdownMenuTrigger asChild disabled={disabled || pending}>
         <Button
           variant="secondary"
           size="sm"
           className={cn('justify-between', triggerClassName)}
+          aria-busy={pending || undefined}
           aria-labelledby={ariaLabelledBy ? `${ariaLabelledBy} ${valueId}` : undefined}
           aria-label={ariaLabelledBy ? undefined : ariaLabel}
           aria-describedby={ariaDescribedBy}
           data-testid={testId}
         >
           <span id={valueId} className="truncate">
-            {current?.label}
+            {current?.label ?? '\u00a0'}
           </span>
           <ChevronDown aria-hidden="true" className="text-text-muted" />
         </Button>

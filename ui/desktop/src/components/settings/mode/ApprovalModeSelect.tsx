@@ -2,8 +2,8 @@ import { SettingSelect } from '../SettingSelect';
 import { approvalsCopy } from '../chat/copy';
 
 export interface ApprovalModeSelectProps {
-  /** The stored `BIOROUTER_MODE` key. */
-  value: string;
+  /** The stored `BIOROUTER_MODE` key, or `null` until it has been read. */
+  value: string | null;
   onValueChange: (mode: string) => void;
   /** From `SettingRow`: the row label's id, so the trigger is named by it. */
   'aria-labelledby'?: string;

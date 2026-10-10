@@ -45,6 +45,53 @@ describe('Settings > Chat > Approvals', () => {
     expect(screen.queryByRole('radiogroup')).toBeNull();
   });
 
+  /**
+   * The daemon answers a moment after the page draws. Until it does, the select must not state
+   * a mode: "Autonomous" shown first and corrected later told a person who chose Manual that
+   * nothing would ask them. Max turns is held back the same way, or a number typed into it would
+   * be replaced by the answer.
+   */
+  it('shows no mode and no Max turns value until the daemon has answered', async () => {
+    let answer: (key: string) => unknown = () => undefined;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    config.read.mockImplementation(async (key: string) => {
+      await gate;
+      return answer(key);
+    });
+    answer = (key) =>
+      key === 'BIOROUTER_MODE' ? 'approve' : key === 'BIOROUTER_MAX_TURNS' ? 25 : undefined;
+
+    render(<ModeSection />);
+    const select = screen.getByRole('button', { name: approvalsCopy.mode });
+    expect(select).toBeDisabled();
+    expect(select).toHaveAttribute('aria-busy', 'true');
+    expect(select).not.toHaveTextContent(/Autonomous|Manual|Smart|Chat only/);
+    expect(screen.getByRole('button', { name: approvalsCopy.editToolPermissions })).toBeDisabled();
+    const turns = screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns });
+    expect(turns).toBeDisabled();
+    expect(turns).toHaveValue(null);
+
+    release();
+    expect(
+      await screen.findByRole('button', { name: `${approvalsCopy.mode} Manual` })
+    ).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toHaveValue(25)
+    );
+    expect(screen.getByRole('spinbutton', { name: approvalsCopy.maxTurns })).toBeEnabled();
+  });
+
+  it('treats a mode that was never saved as Autonomous, the daemon’s default', async () => {
+    config.read.mockImplementation(async () => undefined);
+    render(<ModeSection />);
+    expect(
+      await screen.findByRole('button', { name: `${approvalsCopy.mode} Autonomous` })
+    ).toBeEnabled();
+  });
+
   it('keeps each mode’s explanation inside its menu item, and saves the choice', async () => {
     storedMode('auto');
     const user = userEvent.setup();

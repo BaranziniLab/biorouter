@@ -8,6 +8,9 @@ import { approvalsCopy } from '../chat/copy';
 import { ApprovalModeSelect } from './ApprovalModeSelect';
 import { MaxTurnsRow } from './ConversationLimitsDropdown';
 
+/** What `BIOROUTER_MODE` means when nothing is saved: the daemon's own default. */
+const DEFAULT_MODE = 'auto';
+
 /** The modes whose approvals the per-tool permissions shape. */
 const MODES_WITH_TOOL_PERMISSIONS = new Set(['approve', 'smart_approve']);
 
@@ -20,10 +23,16 @@ const MODES_WITH_TOOL_PERMISSIONS = new Set(['approve', 'smart_approve']);
  *   disclosure that held exactly one field).
  */
 export const ModeSection = () => {
-  const [currentMode, setCurrentMode] = useState('auto');
+  // `null` until the daemon has answered. The select stays blank and disabled until then: showing
+  // "Autonomous" first and correcting it a moment later told a person who chose Manual that
+  // nothing would ask them, which is the one setting that must never read wrong.
+  const [currentMode, setCurrentMode] = useState<string | null>(null);
   // `null` until a value is known to be saved; the field then shows the
   // agent's default rather than a number it does not use.
   const [maxTurns, setMaxTurns] = useState<number | null>(null);
+  // Whether the saved Max turns has been read, saved or not, so the field is not typed into (or
+  // read) as the default for the moment before the answer.
+  const [maxTurnsRead, setMaxTurnsRead] = useState(false);
   const [permissionsOpen, setPermissionsOpen] = useState(false);
   const { read, upsert } = useConfig();
 
@@ -38,12 +47,12 @@ export const ModeSection = () => {
 
   const fetchCurrentMode = useCallback(async () => {
     try {
-      const mode = (await read('BIOROUTER_MODE', false)) as string;
-      if (mode) {
-        setCurrentMode(mode);
-      }
+      const mode = await read('BIOROUTER_MODE', false);
+      // Nothing saved is the daemon's default, Autonomous.
+      setCurrentMode(typeof mode === 'string' && mode ? mode : DEFAULT_MODE);
     } catch (error) {
       console.error('Error fetching current mode:', error);
+      setCurrentMode(DEFAULT_MODE);
     }
   }, [read]);
 
@@ -59,6 +68,8 @@ export const ModeSection = () => {
       }
     } catch (error) {
       console.error('Error fetching max turns:', error);
+    } finally {
+      setMaxTurnsRead(true);
     }
   }, [read]);
 
@@ -76,7 +87,7 @@ export const ModeSection = () => {
     fetchMaxTurns();
   }, [fetchCurrentMode, fetchMaxTurns]);
 
-  const permissionsApply = MODES_WITH_TOOL_PERMISSIONS.has(currentMode);
+  const permissionsApply = currentMode !== null && MODES_WITH_TOOL_PERMISSIONS.has(currentMode);
 
   return (
     <SettingSection id={SETTINGS_SECTION_IDS.approvals} title={approvalsCopy.section}>
@@ -97,7 +108,11 @@ export const ModeSection = () => {
         </Button>
       </SettingRow>
 
-      <MaxTurnsRow maxTurns={maxTurns} onMaxTurnsChange={handleMaxTurnsChange} />
+      <MaxTurnsRow
+        maxTurns={maxTurns}
+        onMaxTurnsChange={handleMaxTurnsChange}
+        loaded={maxTurnsRead}
+      />
 
       <PermissionRulesModal isOpen={permissionsOpen} onClose={() => setPermissionsOpen(false)} />
     </SettingSection>

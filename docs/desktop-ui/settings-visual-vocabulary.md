@@ -93,7 +93,11 @@ biorouter-settings-row  (min-height var(--row-height) = 40px, padding 10px 12px,
   inside a `try`, never in an effect: an effect lands a frame after the first paint, so a row
   (Show in Dock) appears and pushes every row below it down, or a segmented thumb slides
   across on every visit. What only the daemon can answer (`read`) loads asynchronously, and
-  the primitives hide the arrival (the Switch's `data-motion-still`, a Skeleton).
+  nothing may state a value nobody chose while it waits: a switch lands without animating
+  (`data-motion-still`), a section shows a Skeleton, and a select or a field is blank,
+  disabled and `aria-busy` until it knows (`SettingSelect value={null}`, `MaxTurnsRow
+  loaded={false}`). Approval mode drawing "Autonomous" first and "Manual" a moment later was the
+  case that made this a rule.
 - No `min-h-*`, no `py-2`, no `py-3`, no `items-start`, no per-row measure fork. A hand-built
   row (a checkbox list inside a dialog, a row that is itself a button) uses the same
   `biorouter-settings-row` class with `px-3 py-2.5`.
