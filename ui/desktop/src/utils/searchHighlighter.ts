@@ -45,7 +45,8 @@
  *
  * ⚠ **An attribute this module exports, not a class name each side spells.**
  * The walker used to skip `.search-bar, .search-results`, and no element carried
- * either class: `SearchBar`'s root is `search-bar-enter` / `search-bar-exit`. So
+ * either class: `SearchBar`'s root was `search-bar-enter` / `search-bar-exit`
+ * (it is `.br-find-overlay` now, and carries this attribute). So
  * the bar's "Aa" toggle was walked, counted and marked under the button, where
  * nobody sees a mark — ⌘F then `aa` in a chat read "1/1" with nothing
  * highlighted, and on Settings → Skills `a` read 1/18 with the first two ⌘G
@@ -518,6 +519,30 @@ function glyphsOnLine(node: Text, start: number, end: number, rect: ViewportRect
   return glyphs;
 }
 
+/** How long the scroll events of our own instant scroll are ignored. */
+const INSTANT_SCROLL_HOLD_MS = 100;
+
+/**
+ * How long a smooth scroll of ours is waited out when `scrollend` never comes.
+ * Chromium ends a programmatic smooth scroll within about 750ms whatever the
+ * distance; this is a net, not the usual way the hold ends.
+ */
+const SMOOTH_SCROLL_NET_MS = 1000;
+
+/**
+ * Whether the person asked the OS to reduce motion. A private copy of
+ * `styles/motion.ts`'s check: this module imports nothing, because
+ * `searchHighlighter.browser.test.ts` transpiles it alone and runs it as a
+ * classic script in Chromium, where there is no `require`.
+ */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 interface MatchRecord {
   node: Text;
   startOffset: number;
@@ -545,6 +570,8 @@ export class SearchHighlighter {
       this.updateHighlightPositions();
     }
   };
+  /** A smooth scroll of ours ended: stop ignoring the scroll events the user makes. */
+  private readonly handleScrollEnd = () => this.releaseScrollHold();
 
   constructor(container: HTMLElement, onMatchesChange?: (count: number) => void) {
     this.container = container;
@@ -827,22 +854,54 @@ export class SearchHighlighter {
           (highlightRect.top - containerRect.top) -
           (containerRect.height - highlightRect.height) / 2;
 
-        this.holdScrollUpdates();
-
-        // Perform the scroll
-        this.scrollContainer.scrollTop = targetScrollTop;
+        this.scrollContainerTo(this.scrollContainer, targetScrollTop);
       }
     }
   }
 
+  /**
+   * Bring the current match into view: smoothly, except under reduced motion
+   * (spec 3.16), where it jumps as it always did.
+   *
+   * It also jumps when the smooth scroll would have nowhere to go (the
+   * container is already at the clamped target, so no scroll event and no
+   * `scrollend` would ever arrive to end the hold) and where the element has no
+   * `scrollTo` (jsdom).
+   */
+  private scrollContainerTo(scroller: HTMLElement, top: number) {
+    const farthest = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const lands = Math.min(Math.max(top, 0), farthest);
+    const smooth =
+      typeof scroller.scrollTo === 'function' &&
+      !prefersReducedMotion() &&
+      Math.abs(lands - scroller.scrollTop) >= 1;
+
+    if (!smooth) {
+      this.holdScrollUpdates();
+      scroller.scrollTop = top;
+      return;
+    }
+
+    // A smooth scroll fires scroll events for as long as it runs, which is
+    // longer than the 100ms an instant one needs. `scrollend` ends the hold
+    // exactly; the timer is only the net for a browser that never sends it.
+    this.holdScrollUpdates(SMOOTH_SCROLL_NET_MS);
+    scroller.addEventListener('scrollend', this.handleScrollEnd, { once: true });
+    scroller.scrollTo({ top, behavior: 'smooth' });
+  }
+
   /** Ignore the scroll events our own scrolling is about to fire. */
-  private holdScrollUpdates() {
+  private holdScrollUpdates(ms = INSTANT_SCROLL_HOLD_MS) {
+    this.releaseScrollHold();
     this.isScrollingProgrammatically = true;
+    this.scrollEndTimeout = setTimeout(() => this.releaseScrollHold(), ms);
+  }
+
+  private releaseScrollHold() {
     if (this.scrollEndTimeout) clearTimeout(this.scrollEndTimeout);
-    this.scrollEndTimeout = setTimeout(() => {
-      this.scrollEndTimeout = undefined;
-      this.isScrollingProgrammatically = false;
-    }, 100);
+    this.scrollEndTimeout = undefined;
+    this.scrollContainer?.removeEventListener('scrollend', this.handleScrollEnd);
+    this.isScrollingProgrammatically = false;
   }
 
   /**
@@ -901,9 +960,7 @@ export class SearchHighlighter {
     if (this.highlightTimeout) {
       clearTimeout(this.highlightTimeout);
     }
-    if (this.scrollEndTimeout) {
-      clearTimeout(this.scrollEndTimeout);
-    }
+    this.releaseScrollHold();
     this.overlayHost.removeEventListener('scroll', this.handleScroll, { capture: true });
     this.resizeObserver.disconnect();
     this.mutationObserver.disconnect();

@@ -52,6 +52,150 @@ describe('SearchHighlighter', () => {
   });
 });
 
+/// Spec 3.16: the current match scrolls into view smoothly, but not under
+/// reduced motion. jsdom lays nothing out, so the geometry is stubbed: a 200px
+/// viewport over 2000px of content with a match at y = 1000. What a real engine
+/// does with the scroll is pinned in `searchHighlighter.browser.test.ts`.
+describe('SearchHighlighter scrolling to a match', () => {
+  const MATCH_TOP = 1000;
+  const MATCH_HEIGHT = 16;
+  const VIEWPORT_HEIGHT = 200;
+  /** The match is centred: its top minus the room left over either side of it. */
+  const CENTRED = MATCH_TOP - (VIEWPORT_HEIGHT - MATCH_HEIGHT) / 2;
+
+  const rect = (top: number, height: number) =>
+    ({ top, height, bottom: top + height, left: 0, right: 100, width: 100 }) as DOMRect;
+
+  const setUp = ({
+    reducedMotion = false,
+    scrollTo = true,
+    scrollTop = 0,
+    scrollHeight = 2000,
+  }: {
+    reducedMotion?: boolean;
+    scrollTo?: boolean;
+    scrollTop?: number;
+    scrollHeight?: number;
+  } = {}) => {
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+    vi.stubGlobal(
+      'matchMedia',
+      (query: string) => ({ matches: reducedMotion, media: query }) as MediaQueryList
+    );
+    document.body.innerHTML = `
+      <div data-search-scroll-area>
+        <div data-radix-scroll-area-viewport><div id="search-content">alpha beta</div></div>
+      </div>`;
+    const content = document.getElementById('search-content') as HTMLDivElement;
+    const viewport = document.querySelector('[data-radix-scroll-area-viewport]') as HTMLDivElement;
+    Object.defineProperty(viewport, 'clientHeight', { value: VIEWPORT_HEIGHT, configurable: true });
+    Object.defineProperty(viewport, 'scrollHeight', { value: scrollHeight, configurable: true });
+    viewport.getBoundingClientRect = () => rect(0, VIEWPORT_HEIGHT);
+    viewport.scrollTop = scrollTop;
+    // jsdom has no Element.scrollTo, so the smooth path is only taken where the test gives it one.
+    const scrollToSpy = vi.fn();
+    if (scrollTo) viewport.scrollTo = scrollToSpy as unknown as typeof viewport.scrollTo;
+
+    const highlighter = new SearchHighlighter(content);
+    // One measured match, standing where the layout engine would have put it.
+    const mark = document.createElement('div');
+    mark.className = 'search-highlight';
+    mark.getBoundingClientRect = () => rect(MATCH_TOP, MATCH_HEIGHT);
+    const container = document.createElement('div');
+    container.appendChild(mark);
+    const internals = highlighter as unknown as {
+      highlights: HTMLElement[];
+      currentTerm: string;
+      isScrollingProgrammatically: boolean;
+    };
+    internals.highlights = [container];
+    internals.currentTerm = 'alpha';
+    // A scroll the hold lets through re-measures; count those instead of walking a document.
+    const remeasure = vi.spyOn(highlighter, 'highlight').mockReturnValue([]);
+    return { highlighter, viewport, scrollToSpy, remeasure, internals };
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('scrolls smoothly to centre the match', () => {
+    const { highlighter, viewport, scrollToSpy } = setUp();
+    highlighter.setCurrentMatch(0, true);
+    expect(scrollToSpy).toHaveBeenCalledWith({ top: CENTRED, behavior: 'smooth' });
+    // Not jumped: the browser moves it, over time.
+    expect(viewport.scrollTop).toBe(0);
+  });
+
+  it('jumps instead under reduced motion', () => {
+    const { highlighter, viewport, scrollToSpy } = setUp({ reducedMotion: true });
+    highlighter.setCurrentMatch(0, true);
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(CENTRED);
+  });
+
+  it('jumps where the element has no scrollTo', () => {
+    const { highlighter, viewport } = setUp({ scrollTo: false });
+    highlighter.setCurrentMatch(0, true);
+    expect(viewport.scrollTop).toBe(CENTRED);
+  });
+
+  it('does not scroll when only the paint changed', () => {
+    const { highlighter, viewport, scrollToSpy } = setUp();
+    highlighter.setCurrentMatch(0, false);
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(0);
+  });
+
+  it('ignores its own scroll events until scrollend, then listens again', () => {
+    const { highlighter, viewport, remeasure, internals } = setUp();
+    highlighter.setCurrentMatch(0, true);
+    expect(internals.isScrollingProgrammatically).toBe(true);
+
+    // Well past the 100ms an instant scroll needs, still scrolling: still ignored.
+    vi.advanceTimersByTime(600);
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(remeasure).not.toHaveBeenCalled();
+
+    viewport.dispatchEvent(new Event('scrollend'));
+    expect(internals.isScrollingProgrammatically).toBe(false);
+    viewport.dispatchEvent(new Event('scroll'));
+    expect(remeasure).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops ignoring scrolls after a second even if scrollend never comes', () => {
+    const { highlighter, internals } = setUp();
+    highlighter.setCurrentMatch(0, true);
+    vi.advanceTimersByTime(999);
+    expect(internals.isScrollingProgrammatically).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(internals.isScrollingProgrammatically).toBe(false);
+  });
+
+  /// A smooth scroll with nowhere to go fires neither scroll nor scrollend, so
+  /// holding for the net would deafen the bar for a second for nothing.
+  it('jumps, and holds only briefly, when the match is already as centred as the page allows', () => {
+    // The page's last line: the clamp is 1800 and the container is already there.
+    const { highlighter, viewport, scrollToSpy, internals } = setUp({ scrollTop: 1800 });
+    highlighter.setCurrentMatch(0, true);
+    expect(scrollToSpy).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(CENTRED + 1800);
+    vi.advanceTimersByTime(100);
+    expect(internals.isScrollingProgrammatically).toBe(false);
+  });
+
+  it('removes the pending scrollend listener when destroyed', () => {
+    const { highlighter, viewport } = setUp();
+    const removeEventListener = vi.spyOn(viewport, 'removeEventListener');
+    highlighter.setCurrentMatch(0, true);
+    highlighter.destroy();
+    expect(removeEventListener).toHaveBeenCalledWith('scrollend', expect.any(Function));
+  });
+});
+
 /// The rule itself, free of layout: which rects count and what gets painted.
 /// Where the rule meets real CSS (line-clamp, overflow, scrolling) is pinned in
 /// `searchHighlighter.browser.test.ts`, because jsdom lays nothing out.
