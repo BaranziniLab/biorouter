@@ -318,6 +318,27 @@ describe('BrxtInstallModal — the dialog', () => {
     expect(screen.queryByText(/pre-filled with defaults — install/)).toBeNull();
   });
 
+  it('names the publisher and version under the title, and says "from the marketplace" once', async () => {
+    withManifest([]);
+    open({
+      preloadedFilePath: '/tmp/cdw.brxt',
+      origin: {
+        kind: 'marketplace',
+        registrySource: { registryId: 'cdwagent' },
+        entry: { name: 'CDWAgent', organization: 'BaranziniLab · UCSF', privacyTier: 'private' },
+        downloading: false,
+        onRetry: () => {},
+      },
+    });
+
+    const dialog = await screen.findByRole('dialog', {
+      name: COPY.installTitle('Playwright Agent'),
+    });
+    expect(dialog).toHaveAccessibleDescription('BaranziniLab · UCSF · v0.1.0');
+    // The summary's first line is the one statement of where it came from.
+    expect(await screen.findAllByText(COPY.fromMarketplace)).toHaveLength(1);
+  });
+
   it('says what it is waiting for in one status line with the shared spinner', () => {
     render(
       <BrxtInstallModal

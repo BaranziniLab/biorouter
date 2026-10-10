@@ -14,8 +14,6 @@ export const BRXT_INSTALL_COPY = {
   installTitle: (name: string) => `Install ${name}`,
   configureTitle: (name: string) => `Configure ${name}`,
   fromMarketplace: 'From the Biorouter marketplace',
-  fromMarketplaceMeta: (meta: string) => `From the Biorouter marketplace · ${meta}`,
-  fromMarketplaceSentence: 'From the Biorouter marketplace.',
 
   // Section 13.5
   tierPrivate:

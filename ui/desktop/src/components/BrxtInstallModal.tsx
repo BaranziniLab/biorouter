@@ -389,9 +389,9 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     title = COPY.configureTitle(manifest?.display_name ?? '');
   } else if (isMarketplace) {
     title = COPY.installTitle(marketplaceName);
-    subtitle = marketplaceMeta
-      ? COPY.fromMarketplaceMeta(marketplaceMeta)
-      : COPY.fromMarketplaceSentence;
+    // Who published it and which version: facts. Where it came from is said once, by the
+    // summary's own first line (and by the tier sentence above it), not again under the title.
+    subtitle = marketplaceMeta || undefined;
   } else {
     title = COPY.addTitle;
   }
