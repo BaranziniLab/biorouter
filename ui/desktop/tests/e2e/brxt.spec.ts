@@ -310,9 +310,14 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(requiredLabel).toBeVisible();
     await expect(requiredLabel).toContainText('*');
 
-    // "Install Extension" button should be disabled because required field is empty
+    // "Install extension" stays pressable (Crew's dialogs); with the required field empty, a press
+    // says which value is missing, under the field, instead of installing.
     const installBtn = page.getByRole('button', { name: /Install extension/i });
-    await expect(installBtn).toBeDisabled({ timeout: 3000 });
+    await expect(installBtn).toBeEnabled({ timeout: 3000 });
+    await installBtn.click();
+    await expect(page.locator('[role="dialog"]').getByText('Enter a value')).toBeVisible({
+      timeout: 3000,
+    });
 
     // The optional var (OPTIONAL_KEY) should have a "Show N optional variables" toggle
     const showOptionalToggle = page

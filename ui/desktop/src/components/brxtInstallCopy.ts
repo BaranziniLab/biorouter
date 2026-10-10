@@ -44,6 +44,8 @@ export const BRXT_INSTALL_COPY = {
 
   // The configure step
   requiredMark: '*',
+  /** Under a required field that is still empty once Install has been pressed. */
+  valueRequired: 'Enter a value',
   optionalSettings: 'Optional settings',
   optionalHelp: (name: string, count: number) =>
     `${name} needs no credentials to run. ${count === 1 ? 'This setting is' : `These ${count} settings are`} pre-filled with defaults, so you can install without changing anything.`,

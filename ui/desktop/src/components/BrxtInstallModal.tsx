@@ -85,6 +85,9 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     Array<{ slug: string; name: string; description: string }>
   >([]);
   const [showOptional, setShowOptional] = useState(false);
+  // Set by pressing Install with a required value still empty: the empty ones then say so.
+  const [installAttempted, setInstallAttempted] = useState(false);
+  const fieldsRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addExtension } = useConfig();
 
@@ -468,7 +471,22 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
             {COPY.cancel}
           </Button>
         )}
-        <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>
+        {/* Pressable until it is installing, as Crew's dialogs have it: a grey button said
+            nothing about WHICH value was missing. A press with one missing says so under the
+            field and puts the keyboard on the first. */}
+        <Button
+          disabled={isInstalling}
+          onClick={() => {
+            if (requiredMissing) {
+              setInstallAttempted(true);
+              window.requestAnimationFrame(() => {
+                fieldsRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+              });
+              return;
+            }
+            handleInstall();
+          }}
+        >
           {isInstalling ? COPY.installing : COPY.installExtension}
         </Button>
       </>
@@ -493,6 +511,9 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
         )
       }
       required={entry.required}
+      error={
+        installAttempted && entry.required && !entry.value.trim() ? COPY.valueRequired : undefined
+      }
     >
       <Input
         type={entry.secret ? 'password' : 'text'}
@@ -655,7 +676,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
 
       {step === 'configure' && manifest && (
         <>
-          <div className="br-brxt-fields">
+          <div className="br-brxt-fields" ref={fieldsRef}>
             {requiredVars.map(envField)}
 
             {/* Issue #116. When an extension declares only optional variables the

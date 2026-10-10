@@ -321,7 +321,32 @@ describe('BrxtInstallModal — the dialog', () => {
     const label = document.querySelector('label[for="brxt-env-TEST_KEY"]') as HTMLElement;
     expect(label).toHaveTextContent('TEST_KEY *');
     expect(label.querySelector('[aria-hidden="true"]')).toHaveTextContent('*');
-    expect(screen.getByRole('button', { name: COPY.installExtension })).toBeDisabled();
+  });
+
+  it('says which value is missing when Install is pressed, instead of sitting grey', async () => {
+    const user = userEvent.setup({ delay: null });
+    const install = vi.fn(async () => ({ installDir: '/tmp/x' }));
+    withManifest([ENV({ key: 'TEST_KEY' })]);
+    (window.electron as unknown as { installBrxtBundle: unknown }).installBrxtBundle = install;
+    open();
+    await user.click(await screen.findByRole('button', { name: 'Next: configure' }));
+
+    const field = await screen.findByLabelText(/TEST_KEY/);
+    const installButton = screen.getByRole('button', { name: COPY.installExtension });
+    expect(installButton).toBeEnabled();
+    expect(screen.queryByText(COPY.valueRequired)).toBeNull();
+
+    await user.click(installButton);
+
+    expect(await screen.findByText(COPY.valueRequired)).toBeVisible();
+    expect(field).toHaveAttribute('aria-invalid', 'true');
+    expect(field).toHaveAccessibleDescription(COPY.valueRequired);
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(install).not.toHaveBeenCalled();
+
+    // The message follows what is typed.
+    await user.type(field, 'abc');
+    expect(screen.queryByText(COPY.valueRequired)).toBeNull();
   });
 
   it('keeps optional variables behind a disclosure when some are required', async () => {
