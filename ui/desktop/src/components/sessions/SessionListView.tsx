@@ -59,6 +59,7 @@ import { renameSessionOptimistically, SESSION_NAME_MAX_LENGTH } from '../../util
 import { exportConversation } from '../../utils/exportConversation';
 import { useDiverge } from '../../hooks/useDiverge';
 import { folderName } from './historyRow';
+import { applyHeldHistory, holdHistory, type HeldHistory } from './historyHold';
 import {
   BILLED_TOKENS_EXACT,
   BILLED_TOKENS_LOWER_BOUND,
@@ -562,17 +563,45 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
   const parentGroups = useMemo(() => groupSessionsByParent(filteredSessions), [filteredSessions]);
   // Only top-level rows are dated and paginated; children ride with their
   // parent, so `visibleSessionCount` counts rendered parents, not raw rows.
-  const topLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
-  const childrenByParentId = useMemo(() => {
+  const liveTopLevelSessions = useMemo(() => parentGroups.map((g) => g.session), [parentGroups]);
+  const liveChildrenByParentId = useMemo(() => {
     const map = new Map<string, Session[]>();
     for (const { session, children } of parentGroups) {
       if (children.length > 0) map.set(session.id, children);
     }
     return map;
   }, [parentGroups]);
-  const dateGroups = useMemo<DateGroup[]>(
-    () => groupSessionsByDate(topLevelSessions),
-    [topLevelSessions]
+  const liveDateGroups = useMemo<DateGroup[]>(
+    () => groupSessionsByDate(liveTopLevelSessions),
+    [liveTopLevelSessions]
+  );
+
+  // Principle 9: the list is live, and while the pointer is over it the rows
+  // keep the order they had when it came in (`historyHold.ts`). A new filter or
+  // the subagent toggle is the person's own change, not a live one, so it
+  // starts a new hold rather than being withheld.
+  const holdScope = `${debouncedFilter}\u0000${showSubagents}`;
+  const [pointerInside, setPointerInside] = useState(false);
+  const [held, setHeld] = useState<{ scope: string; order: HeldHistory } | null>(null);
+  const captureHold = useCallback(
+    () => setHeld({ scope: holdScope, order: holdHistory(liveDateGroups, liveChildrenByParentId) }),
+    [holdScope, liveDateGroups, liveChildrenByParentId]
+  );
+  useEffect(() => {
+    if (pointerInside && held && held.scope !== holdScope) captureHold();
+  }, [pointerInside, held, holdScope, captureHold]);
+  const arranged = useMemo(
+    () =>
+      pointerInside && held && held.scope === holdScope
+        ? applyHeldHistory(held.order, liveDateGroups, liveChildrenByParentId)
+        : { groups: liveDateGroups, children: liveChildrenByParentId },
+    [pointerInside, held, holdScope, liveDateGroups, liveChildrenByParentId]
+  );
+  const dateGroups = arranged.groups;
+  const childrenByParentId = arranged.children;
+  const topLevelCount = useMemo(
+    () => dateGroups.reduce((count, group) => count + group.sessions.length, 0),
+    [dateGroups]
   );
 
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
@@ -608,24 +637,24 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
 
       if (
         scrollHeight - scrollTop - clientHeight < threshold &&
-        visibleSessionCount < topLevelSessions.length
+        visibleSessionCount < topLevelCount
       ) {
         setVisibleSessionCount((previousCount) =>
-          Math.min(previousCount + VISIBLE_SESSION_BATCH, topLevelSessions.length)
+          Math.min(previousCount + VISIBLE_SESSION_BATCH, topLevelCount)
         );
       }
     },
-    [visibleSessionCount, topLevelSessions.length]
+    [visibleSessionCount, topLevelCount]
   );
 
   // A filter shows every match at once; clearing it returns to the paged list.
   useEffect(() => {
     if (debouncedFilter) {
-      setVisibleSessionCount(topLevelSessions.length);
+      setVisibleSessionCount(topLevelCount);
     } else {
       setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
     }
-  }, [debouncedFilter, topLevelSessions.length]);
+  }, [debouncedFilter, topLevelCount]);
 
   const loadSessions = useCallback(async () => {
     const hasCachedSessions = getCachedSessionList() !== null;
@@ -833,7 +862,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
           </section>
         ))}
 
-        {visibleSessionCount < topLevelSessions.length && (
+        {visibleSessionCount < topLevelCount && (
           <div className="flex items-center justify-center gap-2 py-6 text-supporting text-text-muted">
             <Spinner size={14} />
             <span>{LOADING_MORE_CHATS}</span>
@@ -898,10 +927,21 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
                 {(isLoading || showSkeleton) && <HistoryLoading />}
               </div>
 
-              {/* Content layer: always rendered, revealed once. */}
+              {/* Content layer: always rendered, revealed once. The pointer's
+                  presence holds the order (principle 9, `historyHold.ts`); a
+                  menu or tooltip portalled out of a row still counts as inside,
+                  because React's enter and leave follow the component tree. */}
               <div
                 data-history-layer="content"
                 className={`br-history-layer relative ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
+                onPointerEnter={() => {
+                  captureHold();
+                  setPointerInside(true);
+                }}
+                onPointerLeave={() => {
+                  setPointerInside(false);
+                  setHeld(null);
+                }}
               >
                 {renderActualContent()}
               </div>
