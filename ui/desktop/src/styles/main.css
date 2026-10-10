@@ -3231,15 +3231,27 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    pass ago, and never on the tabs a strip MOUNTS with (a reload restoring
    them, a window opening with them, a tear-off): mounting is not opening. It is
    later in the cascade than the active rule with the same specificity, so
-   enter wins over select on the new tab, which is usually the active one. The
-   attribute stays on an active tab until it stops being active, so its
-   `animation` never changes to `br-tab-select` and settles a second time. */
+   enter wins over select on the new tab, which is usually the active one. When
+   the entrance ends the attribute goes, and an ACTIVE tab takes
+   `data-tab-entered` in the same tick (the rule after this one), so its
+   `animation` computes `none` and never changes to `br-tab-select`, which would
+   settle it a second time. */
 .br-tab[data-tab-entering='true'] {
   transform-origin: left center;
   /* `backwards`, not `both`: a finished entrance must hold nothing, or its
-     `opacity: 1` would outrank the dragged tab's 35% for as long as the
-     attribute stays on the active tab. */
+     `opacity: 1` would outrank the dragged tab's 35%. */
   animation: br-tab-enter var(--dur-fast-max) var(--ease-out) backwards;
+}
+
+/* An active tab whose entrance has played. No animation at all, rather than the
+   select settle (it already grew in) and rather than a finished `br-tab-enter`:
+   React reorders keyed tabs with `insertBefore`, and re-inserting an element
+   restarts its CSS animation, so a tab that kept the entrance would fade out and
+   in again whenever a drag moved it. `ChatTabStrip` clears the attribute when the
+   tab stops being active, and selecting it again settles as usual. (0,3,0), so it
+   beats the active rule whatever the source order. */
+.br-tab[data-active='true'][data-tab-entered='true'] {
+  animation: none;
 }
 
 @keyframes br-tab-enter {
@@ -4038,6 +4050,53 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   display: none;
 }
 
+/* @ws WS-KNOWLEDGE begin: band */
+/* The Knowledge band is the app's one `PageHeader` band (spec 3.12). Its
+   adornment carries the subject (the base's name, which is the switcher, its
+   format, its tier and its counts), so here, unlike every other view, the
+   adornment is the part that gives way: the name truncates before the actions
+   or the tier badge move. */
+.br-knowledge-pane .biorouter-page-header-adornment {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+/* The tier badge-button (Crew's ClassificationBadge). The chip inside is
+   `PrivacyBadge`, the app's one tier mark; the button around it is
+   transparent, so the focus is an outline outside the chip, as the InfoTip's
+   `asChild` form draws it: the badge's opaque fill would cover the D-15 focus
+   surface. Hover and an open menu take a step of neutral ground. */
+.br-knowledge-tier {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  border-radius: var(--radius-inner);
+  background: transparent;
+  cursor: pointer;
+}
+
+.br-knowledge-tier:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.br-knowledge-tier [data-testid='privacy-badge'] {
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-knowledge-tier:hover [data-testid='privacy-badge'],
+.br-knowledge-tier[data-state='open'] [data-testid='privacy-badge'] {
+  background-color: var(--background-medium);
+}
+
+.br-knowledge-tier:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+/* @ws WS-KNOWLEDGE end: band */
+
 @container br-knowledge-pane (min-width: 860px) {
   .br-knowledge-tabs {
     display: none;
@@ -4051,6 +4110,14 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   .br-knowledge-graph {
     display: flex;
   }
+  /* @ws WS-KNOWLEDGE begin: column edge */
+  /* Two flush columns (spec 3.12): the Sources column ends in Crew's inset
+     hairline rather than a card's border, so nothing is a box inside a box.
+     Only at this step, because below it the column is alone and pane-wide. */
+  .br-knowledge-sources {
+    box-shadow: inset -1px 0 0 var(--border-subtle);
+  }
+  /* @ws WS-KNOWLEDGE end: column edge */
   .br-facet-all {
     display: none;
   }
@@ -4113,14 +4180,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   }
 }
 
-/* The height step. At a 600px window the pane is 568px, so this is the DEFAULT
-   state at the app's minimum, not an edge case: the header yields its
-   description line so the canvas keeps a usable box. */
-@container br-knowledge-pane (max-height: 620px) {
-  .br-knowledge-subtitle {
-    display: none;
-  }
-}
+/* @ws WS-KNOWLEDGE begin: no height step */
+/* There is no height step any more. It hid the header's subtitle below a 620px
+   pane; the subtitle is now the band's InfoTip, so there is nothing left to
+   yield (spec 3.12). */
+/* @ws WS-KNOWLEDGE end: no height step */
 
 /* ── the filter control (R-02) ──────────────────────────────────────────────
    A filter is NOT a button and NOT a pill. It sits on `--radius-element`, the

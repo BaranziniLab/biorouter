@@ -85,9 +85,9 @@ test.describe('Knowledge ingest workflow', () => {
     }
 
     await expect(page.getByTestId('knowledge-graph-canvas')).toBeVisible();
-    await expect(
-      page.getByText('No pages yet. Ingest a source to populate the graph.')
-    ).toHaveCount(0);
+    // The graph's empty state, which must be gone once a page exists. It used to
+    // name a string the view no longer renders, so the check passed vacuously.
+    await expect(page.getByText('Nothing digested yet')).toHaveCount(0);
   });
 
   test('stages folders and archives through the desktop flow and still forms the graph', async () => {
@@ -192,10 +192,7 @@ function writeFixtures(baseDir: string): string {
   fs.writeFileSync(
     path.join(baseDir, 'sample.pdf'),
     fs.readFileSync(
-      path.join(
-        __dirname,
-        '../../../../crates/biorouter-mcp/src/webdocuments/tests/data/test.pdf'
-      )
+      path.join(__dirname, '../../../../crates/biorouter-mcp/src/webdocuments/tests/data/test.pdf')
     )
   );
   fs.writeFileSync(

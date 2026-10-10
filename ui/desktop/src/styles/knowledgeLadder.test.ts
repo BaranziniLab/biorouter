@@ -47,11 +47,6 @@ const LADDER: { token: string; px: number; query: RegExp }[] = [
     px: 1400,
     query: /@container br-knowledge-pane \(min-width: 1400px\)/,
   },
-  {
-    token: '--knowledge-pane-short',
-    px: 620,
-    query: /@container br-knowledge-pane \(max-height: 620px\)/,
-  },
 ];
 
 describe('the Knowledge pane ladder', () => {
@@ -62,6 +57,16 @@ describe('the Knowledge pane ladder', () => {
       expect(CSS).toMatch(query);
     }
   );
+
+  /**
+   * The height step is retired with the subtitle it hid (spec 3.12): the view's description is
+   * the band's InfoTip now, so a short pane has nothing left to yield. A height query coming back
+   * would be a step the ladder above does not document.
+   */
+  it('has no height step', () => {
+    expect(CSS).not.toMatch(/@container br-knowledge-pane \(max-height:/);
+    expect(CSS).not.toContain('.br-knowledge-subtitle');
+  });
 
   it('has no @container step the ladder above does not account for', () => {
     const found = [

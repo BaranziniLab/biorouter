@@ -80,7 +80,7 @@ export function KnowledgeGraphPanel({
   const active = facetsActive(facets);
 
   return (
-    <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default">
+    <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden bg-background-default">
       {previewSha && (
         <div className="flex flex-none items-center justify-between gap-2 border-b border-border-subtle bg-wash-warning px-3 py-2 text-supporting text-text-warning">
           <span>Previewing commit {previewSha.slice(0, 7)}: read-only</span>

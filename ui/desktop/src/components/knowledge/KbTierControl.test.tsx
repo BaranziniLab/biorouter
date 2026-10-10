@@ -2,6 +2,21 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KbTierControl } from './KbTierControl';
+import { knowledgeCopy } from './copy';
+
+/**
+ * Spec 3.12 moved the TRIGGER, and only the trigger: the tier is a badge-button
+ * in the band (Crew's ClassificationBadge) whose menu holds the one tier action.
+ * Everything after the menu item (the typed id, the counts, `onSetTier`) is the
+ * frozen confirmation, and the cases below assert it unchanged.
+ */
+async function chooseTierAction(
+  user: ReturnType<typeof userEvent.setup>,
+  action: RegExp
+): Promise<void> {
+  await user.click(screen.getByTestId('kb-tier-chip'));
+  await user.click(await screen.findByRole('menuitem', { name: action }));
+}
 
 const onSetTier = vi.fn();
 
@@ -32,7 +47,7 @@ describe('KbTierControl', () => {
         onSetTier={onSetTier}
       />
     );
-    await user.click(screen.getByRole('button', { name: /Make this knowledge base public/ }));
+    await chooseTierAction(user, /Make public/);
 
     // Concrete, not "are you sure". A generic ConfirmationModal gives you the
     // latter for free, which is exactly the wrong implementation this rejects.
@@ -71,7 +86,7 @@ describe('KbTierControl', () => {
         onSetTier={onSetTier}
       />
     );
-    await user.click(screen.getByRole('button', { name: /Make this knowledge base private/ }));
+    await chooseTierAction(user, /Make private/);
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(onSetTier).toHaveBeenCalledWith('notes', 'private');
   });
@@ -89,9 +104,28 @@ describe('KbTierControl', () => {
         onSetTier={onSetTier}
       />
     );
-    await user.click(screen.getByRole('button', { name: /Make this knowledge base public/ }));
+    await chooseTierAction(user, /Make public/);
     expect(screen.queryByText(/0 pages/)).toBeNull();
     expect(screen.getByText(/every page and raw source/i)).toBeInTheDocument();
+  });
+
+  /**
+   * The badge is a real control, so a keyboard user reaches the explanation a
+   * mouse user gets on hover: its name carries the whole sentence (Crew UXN-15),
+   * and it carries no native `title`, which no keyboard could reach.
+   */
+  it('names the tier and what it means, and is a button', () => {
+    render(
+      <KbTierControl
+        kb={{ id: 'omop', name: 'OMOP Cohort', tier: 'private' }}
+        onSetTier={onSetTier}
+      />
+    );
+    const chip = screen.getByRole('button', {
+      name: knowledgeCopy.tier.name('Private', knowledgeCopy.tier.privateHint, false),
+    });
+    expect(chip).toBe(screen.getByTestId('kb-tier-chip'));
+    expect(chip).not.toHaveAttribute('title');
   });
 
   /** The chip itself, which is how the tier is visible without opening anything. */
