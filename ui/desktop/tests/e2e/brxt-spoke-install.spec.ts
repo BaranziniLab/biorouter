@@ -168,15 +168,19 @@ test.describe('SPOKEAgent .brxt install flow', () => {
     await expect(mainWindow.locator('text=Configure SPOKEAgent')).toBeVisible({ timeout: 5000 });
     await expect(mainWindow.locator('text=SPOKEAGENT_PASSCODE')).toBeVisible();
     const installBtn = mainWindow.locator('button:has-text("Install Extension")');
-    await expect(installBtn).toBeDisabled();
+    // Pressable (Crew's dialogs); with the passcode empty, a press says which value is missing.
+    await expect(installBtn).toBeEnabled();
+    await installBtn.click();
+    await expect(mainWindow.locator('[role="dialog"]').getByText('Enter a value')).toBeVisible();
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-5-env-form.png' });
-    console.log('✓ Configure step shown, Install disabled');
+    console.log('✓ Configure step shown, Install says what is missing');
   });
 
   test('6. Enter passcode → Install enabled', async () => {
     await mainWindow.fill('input[type="password"]', SPOKE_PASSCODE);
     const installBtn = mainWindow.locator('button:has-text("Install Extension")');
     await expect(installBtn).toBeEnabled({ timeout: 3000 });
+    await expect(mainWindow.locator('[role="dialog"]').getByText('Enter a value')).toHaveCount(0);
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-6-passcode-entered.png' });
     console.log('✓ Passcode entered, Install enabled');
   });
