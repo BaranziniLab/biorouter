@@ -75,6 +75,26 @@ describe('SharedSessionView sits on the chat measure', () => {
     expect(band.closest('.biorouter-readable-content')).toBeNull();
   });
 
+  /**
+   * "Shared chat" is the title's own fallback when the sender named nothing, so
+   * the band must not say it twice, and a link that has not resolved yet shows
+   * the title alone, with no facts beside it.
+   */
+  it('does not repeat "Shared chat" beside a title that already says it', () => {
+    const named = renderView(shared({ description: '' }));
+    const heading = named.getByRole('heading', { level: 1, name: 'Shared chat' });
+    const band = heading.closest('[data-band]') as HTMLElement;
+    expect(band.textContent?.match(/Shared chat/g)).toHaveLength(1);
+    expect(band.textContent).toMatch(/2 messages/);
+    named.unmount();
+
+    const loading = render(
+      <SharedSessionView session={null} isLoading={true} error={null} onRetry={vi.fn()} />
+    );
+    const loadingBand = loading.container.querySelector('[data-band]') as HTMLElement;
+    expect(loadingBand.textContent?.match(/Shared chat/g)).toHaveLength(1);
+  });
+
   /** The 896px replay fork never existed here, and must not arrive. */
   it('declares no second measure inside the column', () => {
     const { container } = renderView();

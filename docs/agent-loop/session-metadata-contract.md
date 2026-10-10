@@ -133,7 +133,7 @@ Two consequences worth stating plainly:
 `parent_session_id` and `diverged_from` are siblings, not synonyms: the first records a
 **delegation** (an agent spawned this), the second a **user fork** (a person branched this),
 paired with `branch_point_msg_uid` for the exact message the branch was taken at. A row can
-carry either, and they are rendered differently — a `sub` badge versus "branched from …".
+carry either, and they are rendered differently — a "Subagent" badge versus "branched from …".
 
 ## How each surface reads the contract
 
@@ -141,7 +141,7 @@ carry either, and they are rendered differently — a `sub` badge versus "branch
 |---|---|
 | History nesting | `session_type === 'sub_agent'` **and** a `parent_session_id` resolving to a top-level row (`ui/desktop/src/components/sessions/sessionGrouping.ts`) |
 | History "Show subagent runs" toggle | Whether `sub_agent` rows are fetched at all, then `withoutSubagents` at every read of the shared cache |
-| The `sub` badge | The row's own `session_type`, so an unnested child is still labelled |
+| The "Subagent" badge on a History row | The row's own `session_type`, so an unnested child is still labelled |
 | Sidebar chat list, tab strip, chat glyph | `chatKind.ts`, which prefers `diverged_from` / `parent_session_id` / `session_type` over the title |
 | `workspace_list` | `parent_session_id` and `only_subagents` as independent filters |
 | CLI | `crates/biorouter-cli/src/commands/session_grouping.rs`, the same two fields |

@@ -46,6 +46,7 @@ import { ModalShell } from '../ModalShell';
 import { Badge } from '../ui/badge';
 import { EmptyState } from '../ui/empty-state';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
+import { chatKindOf } from '../chats/chatKind';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import { DECLASSIFY_NEEDS_HOST_REASON, declassifyBrowserReason } from './declassifyOnBrowser';
 import {
@@ -253,17 +254,23 @@ function HistoryLoading() {
  * One cell of a History row's stats: a 14px glyph at the left, the figure at the
  * right, and for the screen reader "Messages: 6". The cell's width is the
  * column's (`history.css`), so this never sizes itself to its content.
+ *
+ * `detail` is what a sighted person gets from the hover tooltip and a screen
+ * reader would otherwise miss (the extensions' names, the lower-bound caveat on
+ * a token figure), appended to the cell's spoken text.
  */
 function HistoryStat({
   icon: Icon,
   label,
   value,
+  detail,
   tooltip,
   tooltipClassName,
 }: {
   icon: React.ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' }>;
   label: string;
   value: string | number;
+  detail?: string;
   tooltip?: string;
   tooltipClassName?: string;
 }) {
@@ -272,6 +279,7 @@ function HistoryStat({
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span className="sr-only">{label}: </span>
       <span className="whitespace-nowrap">{value}</span>
+      {detail ? <span className="sr-only"> ({detail})</span> : null}
     </span>
   );
   if (!tooltip) return cell;
@@ -348,7 +356,9 @@ const HistoryRow = React.memo(function HistoryRow({
     [session.id, session.working_dir, open]
   );
   const handlers = useMemo<ChatRowMenuHandlers>(() => {
-    const canDiverge = session.session_type !== 'sub_agent' && session.message_count > 0;
+    // The sidebar's rule (`canDivergeChat`), spelled from the same resolver, so
+    // the two surfaces of one menu cannot disagree about which chats branch.
+    const canDiverge = chatKindOf(session) !== 'subagent' && session.message_count > 0;
     return {
       onRename: () => onRename(session),
       onDiverge: canDiverge ? () => onDiverge(session) : undefined,
@@ -474,6 +484,7 @@ const HistoryRow = React.memo(function HistoryRow({
                 icon={Target}
                 label={BILLED_TOKENS_STAT}
                 value={formatBilledTokenEstimate(billedTokenEstimate)}
+                detail={billedTokenEstimate.lowerBound ? BILLED_TOKENS_LOWER_BOUND : undefined}
                 tooltip={
                   billedTokenEstimate.lowerBound ? BILLED_TOKENS_LOWER_BOUND : BILLED_TOKENS_EXACT
                 }
@@ -486,6 +497,7 @@ const HistoryRow = React.memo(function HistoryRow({
                 icon={Puzzle}
                 label={EXTENSIONS_STAT}
                 value={extensionNames.length}
+                detail={extensionNames.join(', ')}
                 tooltip={extensionNames.join(', ')}
                 tooltipClassName="max-w-xs"
               />
@@ -675,14 +687,19 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(({ onSelectSe
     [visibleSessionCount, topLevelCount]
   );
 
-  // A filter shows every match at once; clearing it returns to the paged list.
+  // A filter shows every match at once, and follows the match count as it moves.
   useEffect(() => {
-    if (debouncedFilter) {
-      setVisibleSessionCount(topLevelCount);
-    } else {
-      setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
-    }
+    if (debouncedFilter) setVisibleSessionCount(topLevelCount);
   }, [debouncedFilter, topLevelCount]);
+
+  // Clearing the filter returns to the first page, and only that does. This used
+  // to depend on the row count too, so deleting one chat, or a chat arriving
+  // from another window, snapped a list scrolled to row 60 back to 16 rows and
+  // threw the reader's place away: the rows moved under the pointer for a change
+  // that touched none of them (principle 9).
+  useEffect(() => {
+    if (!debouncedFilter) setVisibleSessionCount(INITIAL_VISIBLE_SESSIONS);
+  }, [debouncedFilter]);
 
   const loadSessions = useCallback(async () => {
     const hasCachedSessions = getCachedSessionList() !== null;

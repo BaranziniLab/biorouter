@@ -4621,6 +4621,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-info-tip-target:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
+  /* InfoTip gives the target `tabindex="0"`, so the base D-15 rule (`[tabindex]` arm) also
+     matches it and draws its inset edge: a second ring inside the first (WS-HISTORY-2, measured
+     on a Tab-focused badge). The outline is the whole indicator; the chip's own ground stays. */
+  box-shadow: none;
 }
 
 .br-info-tip-content {
@@ -4925,6 +4929,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   transition: opacity var(--dur-fast-min) var(--ease-out);
+  /* Text with no behaviour of its own, and it shares the cluster's grid cell. Once the row is
+     hovered it fades to opacity 0, and an element below opacity 1 is a stacking context that
+     paints ABOVE the opacity-1 cluster, so the invisible time sat on top of the right half of
+     the ⋯ button and ate the click (WS-VIEWS-A-3, measured in Chromium with real mouse input). */
+  pointer-events: none;
 }
 
 :is(.biorouter-list-row, .biorouter-settings-row, [data-row-actions-host]):is(
@@ -6732,20 +6741,25 @@ code [class~='token'] {
   color: var(--text-subtle);
 }
 
+/* @ws WS-PREVIEW begin: front matter disclosure on the scales */
+/* The spacing scale (12, 8) and the supporting role, not 14px, 7px and a bare
+   12px: the one thing in the title block that still wrote its own numbers. */
 .br-paper-frontmatter-more {
-  margin: 14px 0 0;
+  margin: 12px 0 0;
 }
 
 .br-paper-frontmatter-more > summary {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
   cursor: pointer;
   list-style: none;
   user-select: none;
 }
+/* @ws WS-PREVIEW end: front matter disclosure on the scales */
 
 .br-paper-frontmatter-more > summary::-webkit-details-marker {
   display: none;

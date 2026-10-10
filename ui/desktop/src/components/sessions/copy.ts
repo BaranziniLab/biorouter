@@ -82,6 +82,9 @@ export const IMPORT_INVALID_JSON = 'That file is not valid JSON.';
 export const BACK = 'Back';
 export const SHARE = 'Share';
 export const SHARE_NOT_SET_UP = 'Chat sharing is not set up on this install.';
+/** Thrown by the Share action when the saved settings cannot start a share (shown in a toast). */
+export const SHARE_NOT_CONFIGURED = 'Chat sharing is not configured.';
+export const SHARE_OFF = 'Chat sharing is off, or its base URL is missing.';
 export const RESUME = 'Resume';
 export const LOADING_CHAT = 'Loading chat…';
 export const CHAT_LOAD_ERROR_TITLE = "Couldn't load this chat";

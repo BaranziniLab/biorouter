@@ -18,6 +18,7 @@ import type { ArtifactSource } from '../artifacts/artifactTypes';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { SearchView } from '../conversation/SearchView';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { InfoTip } from '../ui/info-tip';
 import { exportSession, Message, Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
@@ -46,8 +47,11 @@ import {
   SHARE,
   SHARE_DIALOG_SUBTITLE,
   SHARE_DIALOG_TITLE,
+  SHARED_CHAT,
   SHARE_FAILED,
+  SHARE_NOT_CONFIGURED,
   SHARE_NOT_SET_UP,
+  SHARE_OFF,
   SHARE_READ_FAILED,
   TRY_AGAIN,
   billedTokens,
@@ -262,19 +266,19 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
     try {
       const savedSessionConfig = localStorage.getItem('session_sharing_config');
       if (!savedSessionConfig) {
-        throw new Error('Chat sharing is not configured.');
+        throw new Error(SHARE_NOT_CONFIGURED);
       }
 
       const config = JSON.parse(savedSessionConfig);
       if (!config.enabled || !config.baseUrl) {
-        throw new Error('Chat sharing is off, or its base URL is missing.');
+        throw new Error(SHARE_OFF);
       }
 
       const shareToken = await createSharedSession(
         config.baseUrl,
         session.working_dir,
         await transcriptToShare(session.id),
-        session.name || 'Shared chat',
+        session.name || SHARED_CHAT,
         billedTokenEstimate?.lowerBound ? null : (billedTokenEstimate?.value ?? null)
       );
 
@@ -339,16 +343,24 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         (declassifyOnHost !== null ? (
           /* SD-8's second entry point: a line of text, not a disabled control,
              because this surface can never declassify (the browser has no proof
-             of a person). The short line stays visible; the full reason is on
-             `title`, where the global tooltip enhancer also makes it the span's
-             spoken name. A refusal is never hover-only. */
-          <span
-            data-testid="declassify-browser-note"
-            title={declassifyOnHost}
-            className="whitespace-nowrap px-1 text-supporting text-text-muted"
+             of a person). The short line stays visible, and the full reason is
+             an InfoTip on it: reachable by Tab and read out as its description,
+             which a `title` was not (help never goes in `title=`, spec 2.6).
+             A refusal is never hover-only. */
+          <InfoTip
+            label={MAKE_CHAT_PUBLIC}
+            help={declassifyOnHost}
+            asChild
+            side="bottom"
+            align="end"
           >
-            {DECLASSIFY_NEEDS_HOST_SHORT}
-          </span>
+            <span
+              data-testid="declassify-browser-note"
+              className="br-history-note whitespace-nowrap px-1 text-supporting text-text-muted"
+            >
+              {DECLASSIFY_NEEDS_HOST_SHORT}
+            </span>
+          </InfoTip>
         ) : (
           <PageHeaderAction
             icon={Globe}

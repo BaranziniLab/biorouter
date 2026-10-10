@@ -729,6 +729,48 @@ describe('SessionListView stat column sizing', () => {
   });
 });
 
+// Principle 12: what a sighted person gets from a stat's hover tooltip (which
+// extensions, and that a token figure is only a floor) is not hover-only, so it
+// is part of the cell's spoken text as well.
+describe('SessionListView stat cells for a screen reader', () => {
+  it('say which extensions the count is of, and that an older figure is a floor', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'session-1',
+            name: 'Older analysis',
+            extension_data: {
+              'enabled_extensions.v0': {
+                extensions: [{ name: 'developer' }, { name: 'memory' }],
+              },
+            },
+            // No accumulated counters: only the last-turn figure, a lower bound.
+            total_tokens: 4096,
+          } as never),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    await screen.findByText('Older analysis');
+
+    const cells = [...document.querySelectorAll('.br-history-stat')].map(
+      (cell) => cell.textContent
+    );
+    expect(cells.find((text) => text?.startsWith('Extensions: 2'))).toMatch(/Developer, Memory/);
+    expect(cells.find((text) => text?.startsWith('Billed tokens: ≥4,096'))).toMatch(
+      /At least this many tokens/
+    );
+    // The figure that is exact says nothing more than its label.
+    expect(cells.find((text) => text?.startsWith('Messages: 2'))).toBe('Messages: 2');
+  });
+});
+
 /// A row shows names, not paths (principle 10). The folder a chat ran in is
 /// named by its last segment, in the body face; the full path is a machine
 /// string and lives in the row's tooltip (mono) and in the filter, never on the

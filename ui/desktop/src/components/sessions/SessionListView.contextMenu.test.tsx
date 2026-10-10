@@ -244,6 +244,42 @@ describe('History row menus', () => {
     }
   });
 
+  /**
+   * One menu, one rule: the sidebar asks `chatKindOf` whether a chat can branch
+   * (`canDivergeChat`), so a row that names a delegating parent is a run there
+   * whatever its stored type says, and History must agree. An empty chat has
+   * nothing to branch from on either surface.
+   */
+  it('offers Diverge on exactly the chats the sidebar offers it on', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          { ...session, id: '20260823_6', name: 'Empty chat', message_count: 0 },
+          {
+            ...session,
+            id: '20260823_7',
+            name: 'Delegated by parent',
+            parent_session_id: '20260823_2',
+          },
+        ],
+      },
+    });
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    await screen.findByText('Empty chat');
+
+    for (const label of ['Empty chat', 'Delegated by parent']) {
+      fireEvent.contextMenu(screen.getByText(label));
+      await screen.findAllByRole('menuitem');
+      expect(menuKeys()).toEqual(FULL_MENU.filter((key) => key !== 'diverge'));
+      fireEvent.keyDown(screen.getAllByRole('menuitem')[0], { key: 'Escape' });
+      await waitFor(() => expect(screen.queryAllByRole('menuitem')).toHaveLength(0));
+    }
+  });
+
   it('adds Make this chat public after Copy chat ID on a private row only', async () => {
     mocks.listSessions.mockResolvedValue({
       data: { sessions: [{ ...session, privacy_tier: 'private' }] },

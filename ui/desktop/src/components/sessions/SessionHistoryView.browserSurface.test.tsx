@@ -82,10 +82,13 @@ describe('SessionHistoryView declassification on a browser-served surface', () =
    * ⚠ **Fails against `origin/main`**, which renders a live "Make this chat public"
    * button here and nothing that explains anything.
    *
-   * The note carries the short line visibly and the full reason on `title` — a
-   * tooltip would be unreachable, because `buttonVariants` sets
-   * `disabled:pointer-events-none` and the Share button two elements away has
-   * had a tooltip nobody can trigger for exactly that reason.
+   * The note carries the short line visibly and the full reason as an InfoTip on
+   * it. A tooltip on the disabled button would be unreachable, because
+   * `buttonVariants` sets `disabled:pointer-events-none` (the Share button two
+   * elements away has had a tooltip nobody can trigger for exactly that reason),
+   * and a `title` is neither reachable by Tab nor allowed to carry help (spec
+   * 2.6). The InfoTip is focusable and hands the reason to a screen reader as the
+   * note's description.
    */
   it('replaces the button with a line saying where the chat can be marked public', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
@@ -94,7 +97,9 @@ describe('SessionHistoryView declassification on a browser-served surface', () =
     expect(screen.queryByRole('button', { name: MAKE_CHAT_PUBLIC })).toBeNull();
     const note = screen.getByTestId('declassify-browser-note');
     expect(note).toHaveTextContent(/needs the host/i);
-    expect(note.getAttribute('title')).toMatch(/biorouter serve/);
+    expect(note).toHaveAccessibleDescription(/biorouter serve/);
+    expect(note.getAttribute('title')).toBeNull();
+    expect(note.tabIndex).toBe(0);
     expect(mocks.declassifySession).not.toHaveBeenCalled();
   });
 

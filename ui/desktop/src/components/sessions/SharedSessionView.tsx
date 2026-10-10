@@ -37,14 +37,18 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
   const { splitPaneRef, artifact: presentedArtifact, openArtifact } = artifactPanel;
 
   const loaded = !isLoading && session !== null;
+  const title = session?.description || SHARED_CHAT;
+  // "Shared chat" is the title's own fallback when the sender named nothing, so
+  // it is not said a second time beside it.
+  const kind = title === SHARED_CHAT ? null : SHARED_CHAT;
   const facts = loaded
     ? [
-        SHARED_CHAT,
+        kind,
         session.messages[0]?.created ? formatMessageTimestamp(session.messages[0].created) : null,
         messageCount(session.message_count),
         session.total_tokens !== null ? billedTokens(session.total_tokens.toLocaleString()) : null,
       ].filter(Boolean)
-    : [SHARED_CHAT];
+    : [kind].filter(Boolean);
   const info =
     loaded && session.working_dir
       ? `${SHARED_CHAT_INFO} ${ranIn(session.working_dir)}`
@@ -63,11 +67,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
       >
         <div data-preview-area="column" className="flex min-w-0 flex-1 flex-col">
           <div data-preview-area="header" className="flex-shrink-0">
-            <PageHeader
-              title={session?.description || SHARED_CHAT}
-              info={info}
-              adornment={facts.join(' · ')}
-            />
+            <PageHeader title={title} info={info} adornment={facts.join(' · ')} />
           </div>
           <div data-preview-area="body" className="flex min-h-0 flex-1 flex-col">
             {/* A real reading column on the CHAT measure, like its local twin

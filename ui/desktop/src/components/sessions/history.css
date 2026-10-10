@@ -96,4 +96,30 @@
   width: 200px;
 }
 
+/* Share on a saved transcript stays focusable while it is unavailable
+   (`aria-disabled`, not `disabled`, so the tooltip that says why can still
+   open), and `buttonVariants` styles only the `disabled` attribute. Without this
+   it would look exactly like a Share that works. While it is running it shows
+   its spinner at full strength instead. */
+.br-transcript-action[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.br-transcript-action[aria-busy='true'] {
+  cursor: progress;
+  opacity: 1;
+}
+
+/* The SD-8 line on a saved transcript's band is an InfoTip trigger (`asChild`),
+   which draws its focus ring as an outline outside the element. The global D-15
+   rule for `[tabindex]` matches it too and adds its fill and inset edge, so the
+   line would wear two rings. It has no chip fill to keep, so it keeps the
+   outline and drops the second. */
+.br-history-note:focus-visible {
+  border-radius: var(--radius-inner);
+  background-color: transparent;
+  box-shadow: none;
+}
+
 /* @ws WS-HISTORY end: Chat history list */
