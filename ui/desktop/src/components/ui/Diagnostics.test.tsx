@@ -88,7 +88,7 @@ describe('DiagnosticsModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Generate diagnostics' }));
 
     expect(await screen.findByRole('status')).toHaveTextContent('Preparing diagnostics bundle');
-    expect(screen.getByRole('button', { name: 'Generating...' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Generating…' })).toBeDisabled();
 
     finishSave?.({ canceled: true });
 

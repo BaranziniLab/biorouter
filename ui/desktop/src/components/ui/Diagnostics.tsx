@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, Download, Github, Loader2 } from '../icons/app-icons';
+import { AlertTriangle, Download, Github } from '../icons/app-icons';
+import { Spinner } from './spinner';
 import { Button } from './button';
 import { toastError, toastSuccess } from '../../toasts';
 import { diagnostics, getSession, systemInfo } from '../../api';
@@ -266,27 +267,22 @@ Add any other context about the problem here.
             className="flex items-center gap-3 rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-body text-text-muted"
             role="status"
           >
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
-            Preparing diagnostics bundle...
+            <Spinner />
+            Preparing diagnostics bundle…
           </div>
         )}
         <DialogFooter className="sm:flex-wrap">
-          <Button onClick={onClose} variant="outline" size="sm" disabled={isBusy}>
+          <Button onClick={onClose} variant="ghost" size="sm" disabled={isBusy}>
             Cancel
           </Button>
-          <Button onClick={handleDownload} variant="outline" size="sm" disabled={isBusy}>
-            <Download size={16} className="mr-1" />
-            {isDownloading ? 'Generating...' : 'Generate diagnostics'}
+          <Button onClick={handleDownload} variant="secondary" size="sm" disabled={isBusy}>
+            <Download size={16} />
+            {isDownloading ? 'Generating…' : 'Generate diagnostics'}
           </Button>
-          <Button
-            onClick={handleFileGitHubIssue}
-            variant="outline"
-            size="sm"
-            disabled={isBusy}
-            className="bg-background-accent text-text-on-accent hover:bg-background-accent/90"
-          >
-            <Github size={16} className="mr-1" />
-            {isFilingBug ? 'Opening...' : 'File Bug on GitHub'}
+          {/* The view's one coral button (principle 7). */}
+          <Button onClick={handleFileGitHubIssue} size="sm" disabled={isBusy}>
+            <Github size={16} />
+            {isFilingBug ? 'Opening…' : 'File a bug on GitHub'}
           </Button>
         </DialogFooter>
       </DialogContent>

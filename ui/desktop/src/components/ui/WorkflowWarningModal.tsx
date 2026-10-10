@@ -99,7 +99,7 @@ export function WorkflowWarningModal({
           </div>
 
           <DialogFooter className="flex-shrink-0 p-6 pt-0">
-            <Button variant="outline" onClick={onCancel}>
+            <Button variant="secondary" onClick={onCancel}>
               Cancel
             </Button>
             <Button onClick={onConfirm}>Trust and execute</Button>

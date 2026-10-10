@@ -48,11 +48,11 @@ export function ConfirmationModal({
         {children}
 
         <DialogFooter className="pt-2">
-          <Button variant="outline" onClick={onCancel} disabled={isSubmitting}>
+          <Button variant="secondary" onClick={onCancel} disabled={isSubmitting}>
             {cancelLabel}
           </Button>
           <Button variant={confirmVariant} onClick={onConfirm} disabled={isSubmitting}>
-            {isSubmitting ? 'Processing...' : confirmLabel}
+            {isSubmitting ? 'Processing…' : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

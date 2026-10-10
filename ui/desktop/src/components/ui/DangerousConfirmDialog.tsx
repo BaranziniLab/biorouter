@@ -122,7 +122,7 @@ export function DangerousConfirmDialog({
 
         {phrase !== undefined && (
           <div className="flex flex-col gap-1.5">
-            <label htmlFor={fieldId} className="text-sm text-text-default">
+            <label htmlFor={fieldId} className="text-label text-text-default">
               {fieldLabel}
             </label>
             <div className="flex min-w-0 items-center gap-2">
@@ -147,7 +147,7 @@ export function DangerousConfirmDialog({
               />
               {/* Beside the field, so the user is comparing against the thing
                   itself rather than remembering it from the prose above. */}
-              <code className="shrink-0 rounded bg-background-muted px-2 py-1 font-mono text-sm text-text-muted select-all">
+              <code className="shrink-0 rounded-inner bg-background-muted px-2 py-1 font-mono text-code text-text-muted select-all">
                 {phrase}
               </code>
             </div>
@@ -155,7 +155,7 @@ export function DangerousConfirmDialog({
         )}
 
         <DialogFooter className="pt-2">
-          <Button ref={cancelRef} type="button" variant="outline" onClick={onCancel}>
+          <Button ref={cancelRef} type="button" variant="secondary" onClick={onCancel}>
             {cancelLabel}
           </Button>
           <Button
