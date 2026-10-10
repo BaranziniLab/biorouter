@@ -1,6 +1,6 @@
 # Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Copy is American English 2026-09-09 ([§3.10](#310--spelling))** · **Doc revision:** 1.87.2 (the app version at sign-off, not the current one) · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Copy is American English 2026-09-09 ([§3.10](#310--spelling))** · **Codex simplicity redesign 2026-10 ([Part 9](#part-9--2026-10-redesign-decisions))** · **Doc revision:** 1.87.2 (the app version at sign-off, not the current one) · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
 > D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile — now 36px content rows and 32px sidebar
@@ -248,6 +248,8 @@ The legacy aliases survive but are now honest about what they hold: `--color-blo
 
 #### The usage-heatmap ramp
 
+> **Level 0 and Parchment's dark level 1 superseded 2026-10 ([Part 9.5](#95--colour-and-contrast-additions)).** The idle day is the shared neutral `#eeeeea` (light) and `#32312e` (dark, 1.33:1 on the card); Parchment's dark level 1 is `#573e2a`.
+
 The Home page's usage heatmap is the one place a **sequential** scale is correct — it encodes a
 quantity, not a category. It is derived from the warm ramp and the accent, monotonic in luminance so
 the five steps read in order even in greyscale.
@@ -433,6 +435,8 @@ generator asserts the navy half at 3:1 against the splash ground (Parchment dark
 
 ### 3.2 · Typography
 
+> **Scale superseded 2026-10 ([Part 9.3](#93--type)).** The app now renders five sizes, 12 · 13 · 14 · 17 · 24, in two visible weights, as named roles (`text-supporting`, `text-secondary`, `text-body`, `text-label`, `text-prose`, `text-subheading`, `text-title`, `text-caps`). The table under "Canonical type scale" records the scale before the redesign.
+
 **Today:** `--font-sans` aliases the `--font-body` role, an Arial-first native stack (`Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`), and `--font-mono` is `ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace`. **No webfont is loaded anywhere**; both stacks are the OS's own faces.
 
 `TERMINAL_FONT` in `InAppTerminalDock.tsx` is that mono stack byte-for-byte, at 13/20, with a comment requiring it to stay identical, because xterm measures glyph widths itself and cannot read `var(--font-mono)`. So a command pasted from a chat code block renders in exactly the same face as the terminal. `DR-07` described the mismatch these used to have and is **fixed**.
@@ -541,6 +545,8 @@ Dark-mode variants deepen opacity and swap the hairline ring to `rgba(255,255,25
 ---
 
 ### 3.6 · Motion
+
+> **Tiers superseded 2026-10 ([Part 9.6](#96--motion)).** The ladder is now 95, 125, 175, 250, 300 and 525ms; `--ease-spring` is sanctioned for transforms of physical gestures; `--ease-in` is deleted; the `--motion-*` names below are aliases of the `--dur-*` tiers.
 
 **Today:** six durations (`150` ×43, `300` ×31, `200` ×28, `500` ×3, `75` ×1, `100` ×1) and eight keyframe animations. `prefers-reduced-motion` is honoured for exactly two of them (`.sidebar-item`, and one block at `main.css:1091`). `DR-13`.
 
@@ -764,6 +770,8 @@ site. All 68 such classes and all 54 focus-scoped ring utilities were removed; t
 ---
 
 ### 3.9 · Iconography
+
+> **Custom set and sizes superseded 2026-10 ([Part 9.8](#98--icons)).** Hand-drawn glyphs now sit beside Lucide in one registry, and the default icon size is 16px (14 in a chip, 20 in a banner or empty state).
 
 **Today:**
 - `app-icons.tsx` declares a `light()` wrapper whose contract is *"all icons render at `strokeWidth=1.5`."* But **~15 files import from `lucide-react` directly**, bypassing the wrapper, so those icons render at Lucide's native `strokeWidth=2`. Two icon weights coexist on screen. `DR-53`.
@@ -1001,6 +1009,8 @@ Also `text-base md:text-sm` — 16px below 930px, 14px above. `DR-08`
 
 ### 4.9 · Switch, checkbox, radio
 
+> **Superseded 2026-10 ([Part 9.7](#97--interaction-states-and-controls)).** The switch is 32×20 with a 16px knob that does not grow, off on `--control-track-off` with a `--border-control` ring; checkbox and radio rest on `--border-control`; the name of a switch is its row's visible label.
+
 **Canonical.** Track 36×20px, `--radius-full`; knob 16px white, 2px inset, 120ms translate. Off: `--background-strong`. On: accent. Focus: standard outline on the track.
 Checkbox 16px, `--radius-sm`, 1.5px border, accent fill + white check when set.
 Radio 16px, `--radius-full`, 1.5px border, 6px accent dot when set.
@@ -1022,6 +1032,8 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 
 ### 4.11 · Sidebar & navigation
 
+> **Row density superseded 2026-10 ([Part 9.1](#91--decisions-where-the-reports-disagreed), [9.4](#94--spacing-rows-bands-radii)).** App sidebar rows are 28px at 13px with a 2px gap (`--row-height-nav`), the width is 216 to 360 (default 288), and group and bucket labels are sentence case. Crew's 32px rail is unchanged.
+
 **Canonical.** 240px expanded, 60px collapsed. The responsive overlay also stays at the fixed 240px expanded width; it never grows to fit content. Surface `--sidebar`, right edge 1px `--sidebar-border`. The first navigation action is **New Session**, followed by Home, Workflows, Scheduler, Extensions, Skills, Knowledge, Applications, and conditional Apps. A date-grouped Recents list follows it, with **View all chat history** attached to that section; Settings remains fixed in the footer.
 
 | | Value |
@@ -1042,6 +1054,8 @@ The accent bar is the *only* place the coral appears in the sidebar. Active stat
 ---
 
 ### 4.12 · Page header & layout
+
+> **Superseded 2026-10 ([Part 9.1](#91--decisions-where-the-reports-disagreed)).** A page header is a 44px band with a 14px `<h1>`, actions on the right and the description in an `InfoTip`. The 24px title, paragraph and own-line action strip below are the pre-redesign canon.
 
 **Canonical.**
 
@@ -1106,6 +1120,8 @@ It has **zero call sites.** Delete the file. `DR-35`
 
 ### 4.17 · Tables
 
+> **Markdown tables superseded 2026-10 ([Part 9.1](#91--decisions-where-the-reports-disagreed)).** Chat, documents, CSV and notebook tables share Crew's recipe: a 1px `--border-subtle` frame, radius 8, top rules only, a `--background-muted` header row at 12px muted 600, cells 8px 12px with tabular numbers and no bold first column.
+
 Header row 32px, 11px caps `--text-muted`, bottom hairline. Body rows 36px ([D-12·C](#d-12--row-density)), hairline between. Numeric columns right-aligned with `tabular-nums`. No zebra striping, no vertical rules. Sortable headers show a 12px chevron on hover and when active.
 
 **Markdown tables (chat and document previews).** Use a soft gray `#ecece9` header with bold dark `#292927` sentence-case labels (dark mode: `#353533` with `#eeeeeb` text), 13px base type, and 11px × 16px cell padding. Separate body rows with fine horizontal rules, emphasize the first column, and preserve authored numeric alignment. Wide tables scroll inside a keyboard-focusable region; never split a numeric value to squeeze it into a narrow pane. This markdown treatment supersedes the earlier D-21 no-header-fill rule for these surfaces.
@@ -1113,6 +1129,8 @@ Header row 32px, 11px caps `--text-muted`, bottom hairline. Body rows 36px ([D-1
 ---
 
 ### 4.18 · Chat messages
+
+> **Headings and prose superseded 2026-10 ([Part 9.3](#93--type)).** Markdown has no coral bar beside h1 and h2; chat h1 and h2 are 17px, a document h1 is 24px at weight 400, and prose is 14/21. Blockquotes are a 2px `--border-strong` edge with no tint. Code blocks follow Crew's head-row recipe.
 
 The chat surface is an instrument readout, not a messaging app.
 
@@ -1525,6 +1543,8 @@ The warm two-tone sidebar shipped in v1.87.1.
 ---
 
 #### D-12 · Row density
+
+> **Sidebar value superseded 2026-10 ([Part 9.1](#91--decisions-where-the-reports-disagreed)).** The persistent sidebar row is now 28px (`--row-height-nav`). Content and settings rows are unchanged at `--row-height`; A-03's 36px is not part of the redesign.
 | | Option | Consequence |
 |---|---|---|
 | A | 44px default, 36px compact (user-togglable) | Comfortable default, dense on request. |
@@ -1770,3 +1790,280 @@ The original backlog, as audited:
 5. **CI should enforce** what review can't: no hex literals in `.tsx`; no `<button>`/`<input>`/`<select>` outside `components/ui/`; no `shadow-*` outside the four permitted tokens; contrast assertions on the token pairs in [3.1](#31--colour).
 
 `.claude/commands/frontend-design.md` is now downstream of this file. Regenerate it from Parts 1–3 once Part 6 is settled.
+
+---
+
+## Part 9 · 2026-10 redesign decisions
+
+> **What this is.** The record of the Codex simplicity redesign (2026-10): the decisions it made where
+> the research disagreed, the principles it binds, and the tokens and control specs it sets.
+> **Status:** Current. Where this part and an earlier passage disagree, **this part wins**. The
+> passages it supersedes carry an inline note pointing here, and are otherwise left as written
+> because they record what was true when they were signed off.
+> **Source:** the implementation spec,
+> [`docs/design/codex-simplicity-redesign/implementation-spec.md`](docs/design/codex-simplicity-redesign/implementation-spec.md)
+> (sections 0, 1 and 2, plus the owner decisions in section 6), and the requirement list `R-01` to
+> `R-24` in
+> [`requirements-and-plan.md`](docs/design/codex-simplicity-redesign/requirements-and-plan.md). Numbers
+> below were checked against `main.css` and the contrast checker when this part was written.
+
+The owner's brief, in one line: **simplicity above all**, Codex's structure and restraint, Biorouter's
+coral accent and personality kept, Crew as the in-house reference, the website's Arial face with few
+sizes, hover help instead of paragraphs, one control style, and a sidebar as dense as Codex's or
+Claude Code's.
+
+### 9.1 · Decisions where the reports disagreed
+
+| Question | Decision | Why |
+|---|---|---|
+| UI face | **Arial first**, byte-equal to the website's `--font` (`landing/site.css`). Inter is the wordmark and the BR mark only. One mono stack. | The owner settled it on 2026-10-09. Arial draws only 400 and 700, so 500 renders as 400 and 600 as 700. `styles/fontStacks.test.ts` pins the stack to the website's. |
+| Visible text sizes | **12 · 13 · 14 · 17 · 24.** Retire 10, 11, 15, 16, 19, 20, 28 and 30. | Crew already runs on 12/13/14 with 17 for one title. 24 is the one large step. Dropping 20 keeps the count at five. |
+| Sidebar row height | **28px rows, 13px text, 2px gap**, for the app sidebar only (`--row-height-nav`). Every other part of the row follows Crew's recipe. Crew keeps its 32px rail untouched. | The owner asked for a compact, Codex-like sidebar. On `/crew` at wide windows two pitches sit side by side, which is a known cost. |
+| Section labels | **One caps style survives, for page section labels only**: `text-caps` is 12/16/500 at +0.04em. Sidebar groups, menu group labels and bucket labels are sentence case at 12px. | Crew and Settings use caps section labels. The change reaches Crew's seven labels as a 1px change. |
+| Summary rail and the transcript | **The grid snaps and the transcript and composer cells FLIP.** Only `transform` and `opacity` animate. Crew's width tween stays inside Crew. | The chat transcript is not virtualized, so a width tween would re-lay out every frame. |
+| Overview and Models control | **Underline `Tabs`** for panel switching, **`SegmentedControl`** for a range. | Panels keep tab semantics (D-07). A range is a value, so it is a radio group. |
+| Help primitive | **`InfoTip`** (`components/ui/info-tip.tsx`). | One name across the research. |
+| Primary buttons | **Coral stays**, one coral-filled button per view. | The owner: retain the colour accent. |
+| Focus indicator | **D-15 stays**: a surface shift for controls, an inset edge for rows. | Signed off, and nothing in the requirements reopens it. |
+| Menu row height | **32px menu rows at 13px**, one recipe. The check and the value sit at the trailing edge. | Crew's menus are 32px. |
+| Extension provenance | **Keep the three privacy-tiers 13.5 strings visible.** Only the built-in sentence moves into a tooltip. | A privacy mandate cannot become tooltip-only. |
+| Page headers | **A 44px band with a 14px `<h1>`**, actions on the right, the description in an `InfoTip`. This reverses the 2026-09-07 "actions on their own line" decision. | Crew's channel header is the reference. |
+| Markdown code blocks and tables | **Copy Crew's recipes** as shared `br-md-*` classes, one look app-wide. Code block: `--background-well`, 1px `--border-subtle`, radius 12, a head row (language, Copy, Run) over a hairline, body 10px 12px mono 13/20. Table: 1px frame, radius 8, top rules only, header row `--background-muted` at 12px muted 600, cells 8px 12px, tabular numbers, no bold first column. Chat headings stay 17px. | Chat answers are documents. Two table looks, one in Crew and one elsewhere, was the alternative. |
+| Names of controls | A switch is named by its visible row label everywhere. No "Toggle …" and no "Enable …". | The spec contradicted itself in two places. |
+
+Owner decisions that shape the rest: large titles are **400**, 17px headings stay at 600 (6.2); the
+InfoTip glyph is **visible at rest**, in subtle ink (6.8); success toasts for toggles are dropped, error
+toasts stay (6.9); the Settings App section keeps Configuration then Privacy first (6.5); content rows
+stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
+
+### 9.2 · Principles
+
+1. **One reading column, quiet chrome.** Every surface has one 44px band holding a 14px title and a
+   cluster of 32px icon actions. Content sits in the 760px measure. Every band is a window drag region
+   and every interactive thing in it is `no-drag`. Home is the one exception.
+2. **Say it once, then hide the explanation.** A visible line is a label, a value or a state word.
+   Explanations live in an `InfoTip`. These always stay visible: errors, refusals, privacy disclosures,
+   the consequence of a destructive action at the moment of decision, and empty-state one-liners.
+3. **Five sizes, two visible weights, two families.** Regular (400) and strong (600). 500 never carries
+   a state alone. Mono is for machine strings only. Counts, dates, costs and percentages use the sans
+   face with `tabular-nums`.
+4. **Rows, not cards.** Anything enumerable is a hairline row list with one primary line and at most one
+   secondary line. A card is for something that asks the person to act, or a standalone object. A box
+   never sits inside a box.
+5. **Each job has one control, and each control has one look.** `Switch` when the change applies now, on
+   the right of the row. `Checkbox` to pick items or for an option submitted with a form, on the left.
+   `SegmentedControl` for two to four short options that need no explanation. A select menu for four or
+   more options, or options that each need a line of explanation. Radio rows only inside dialogs and
+   forms. A trailing check inside menus. Underline `Tabs` for sections.
+6. **Actions appear when wanted.** Row actions show on hover, on `:focus-within` and while their menu is
+   open, and always under `(hover: none)`. Right-click, Shift+F10 and the ContextMenu key open the same
+   menu as `⋯`. Only opacity changes, so the actions stay in the tab order.
+7. **The accent marks state and adds zest, nothing else.** Coral appears only on the 2px active-row rail,
+   the focused field and composer edge, the single primary button of a view, a ready Send button, the
+   on-state of switches and checkboxes, the active tab underline, the in-progress to-do glyph, the
+   composer's working sweep, links, text selection, the heatmap ramp, "New" or unread marks, the lock
+   badge on private chat glyphs, the Update row's download glyph, and the landing site's coral rule.
+   Hover is always neutral.
+8. **Borders come before shadows.** A 1px `--border-subtle` hairline plus a step of ground colour.
+   Shadows only on menus, popovers, toasts, dialogs and the composer. Hairlines are straight: no
+   `border-bottom` on a rounded row.
+9. **Layout snaps and content glides.** Animate only `transform`, `opacity` and `clip-path`, with tokens
+   only. The named exceptions, and no others: the Disclosure's height, the Progress fill's width,
+   absolutely positioned indicators that move no other box (the segmented thumb, the tab underline), the
+   long-message `max-height`, the sidebar's own gap width, and Crew's pane width. Never animate against a
+   resize of the window, a split, the sidebar or the preview. A surface that mounts because of
+   navigation, a reload, a tab switch or a history load appears at rest, and so does the first placement
+   of a sliding indicator. Never move a row under the pointer. Reduced motion is honoured in CSS, in JS
+   and in the main process.
+10. **Show names, not IDs.** Machine IDs and file paths go behind a "Copy …" item or a tooltip.
+11. **When unsure, copy Crew, and never edit Crew to match.** Promote Crew's recipes under `br-` names.
+    Never borrow a `crew-*` class outside `crew/`.
+12. **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by screen
+    reader, and the contrast gates pass, including the 3:1 control assertions in 9.5.
+
+Copy rules: sentence case, the noun is "chat", "Biorouter" and "BAAM", the typographic ellipsis, American
+spelling, no em or en dashes as punctuation, no marketing words. A one-line menu label takes no trailing
+period. InfoTip text is full sentences, at most two (about 160 characters).
+
+### 9.3 · Type
+
+| Role (utility) | Size / line | Weight | Tracking | Use |
+|---|---|---|---|---|
+| `text-supporting` | 12 / 16 | 400 | 0 | Metadata, times, counts, helper text, tooltip text, sidebar bucket and group labels, menu group labels, table heads, footnotes |
+| `text-chip` | 12 / 16 | 500 | 0 | Badges and chips, sentence case |
+| `text-caps` | 12 / 16 | 500 | +0.04em, uppercase | Page section labels only |
+| `text-secondary` | 13 / 18 | 400 | 0 | Sidebar rows, menu rows, tab labels, segmented labels, dense controls in strips of 36px or less, tool-call rows, table cells, composer controls |
+| `text-code` | 13 / 20 mono | 400 | 0 | Code and terminal text |
+| `text-body` | 14 / 20 | 400 | 0 | UI prose and values |
+| `text-label` | 14 / 20 | 500 | 0 | Control text, row titles, band titles, field labels |
+| `text-prose` | 14 / 21 | 400 | 0 | Chat markdown, document prose, Crew messages |
+| `text-subheading` | 17 / 24 | 600 | 0 | Dialog titles, empty-state titles, markdown h1 and h2 in chat, h2 in documents |
+| `text-title` | 24 / 32 | 400 | −0.01em | The Home greeting, the document h1, the preview front-matter title, stat values (with `tabular-nums`) |
+
+Markdown: chat h1 and h2 are 17/24 600, h3 to h6 are 14/21 600, prose is 14/21. A document (`[data-variant='document']`)
+has an h1 of 24/32 400, an h2 of 17/24 600, and prose at 14/21 (was 15). The 3px coral bar on h1 and h2,
+the tinted blockquote (now a 2px `--border-strong` left edge, muted ink, no fill) and the −0.015em
+tracking are gone. When front matter supplies a title, the first `# H1` takes the h2 style.
+
+Deleted from call sites: every `tracking-*` utility except those a role carries, `uppercase` beside
+`text-caps`, `font-bold` and CSS 700 (both become 600), and `leading-*` that only restates a role.
+`text-display` is deleted; `text-heading` is an alias of `text-subheading` until its last CSS use moves.
+`styles/typeScale.test.ts` pins the roles and guards the call sites.
+
+### 9.4 · Spacing, rows, bands, radii
+
+| Token | Value | Use |
+|---|---|---|
+| Spacing scale | 2, 4, 6, 8, 12, 16, 20, 24, 32 | 8 is the default gap and 16 the default inset. Padding that centres content in a token height, hairline offsets, negative hit-box margins, the heatmap's 3px gap and values copied from a Crew recipe are derived, not chosen, and are exempt. |
+| `--chrome-height` | 44 | Every band: sidebar titlebar band, chat header, artifact strip, page bands, Knowledge band, pane headers. The three shell bands move together or not at all. |
+| `--dock-height` | 36 | Dock strips (terminal, Knowledge facet strip) and the usage card header row |
+| `--tab-height` | 32 | Tabs in strips |
+| `--row-height-nav` | 28 | App sidebar rows only (scales with Text size) |
+| `--row-height-rail` | 32 | Crew rail and menu rows |
+| `--row-height` | 40 | Content and settings rows (A-03's 36px is not part of this pass) |
+| Controls | 24 `compact`, 28 `sm`, 32 `md`, 36 `lg` | Unchanged |
+| Icons | 14 chip and inline help glyph, 16 rows and controls, 20 banners and empty states | `--icon-chip`, `--icon-row`, `--icon-banner` |
+| Radii | 4 inner, 8 element, 12 container, 16 surface (the preview sheet only), full | A nested radius is outer minus padding. `rounded-2xl` is banned outside `artifacts/`. |
+| `--measure-chat` | 760 flat | Unchanged |
+| Sidebar width | 216 to 360, default 288 | `minWidth` 1048 is 288 + 760 |
+
+### 9.5 · Colour and contrast additions
+
+- `--border-control` is the resting edge of every input, checkbox, radio, select trigger and the switch
+  knob ring: `#86847f` in light (3.74:1 on the page and the card), `#817f7a` in dark (4.31:1). It replaces
+  `--border-emphasized`, which measured 1.6:1.
+- `--control-track-off` is the Switch's off track: `#ebebe8` light, `#33332f` dark. The off knob ring
+  clears 3:1 against it (3.13 and 3.17), which is why the track sits a quiet step off the page (1.19 and
+  1.36) rather than a mid-grey slab. Both are **hex literals declared once per mode in the base blocks**
+  because `check-contrast.mjs` resolves hex only; no family restates them.
+- Dark `--heat-0` is `#32312e` (was `#1e1d1b`, 1.02:1 on the card, so a quiet day vanished): 1.33:1 now.
+  Light is unchanged at `#eeeeea`. Each family's dark `--heat-1` moved one step where the lifted zero would
+  have swallowed it (Parchment `#573e2a`, Roche Limit `#5c3410`), so the first active step stays 1.2:1 or
+  more above zero.
+- New assertions in `scripts/check-contrast.mjs`, all six scopes: control edge on the default and card
+  grounds at 3:1; the off knob ring on its track at 3:1; the off track a step off the page; the on knob on
+  the accent at 3:1; the zero day on the card (1.3 dark, 1.1 light); the first heat step above zero (1.2
+  dark, 1.1 light); the lock badge ink (`--text-accent`) on `--sidebar`, `--sidebar-active` and
+  `--background-default` at 3:1.
+- Any new colour a Tailwind utility names needs a `--color-*` mirror in `@theme inline`
+  (`npm run check:tokens`). Prefer authored CSS for controls.
+
+### 9.6 · Motion
+
+| Token | Value | Use |
+|---|---|---|
+| `--dur-fast-min` | 95ms | Row and menu-item hover, row-action reveal, tooltip exit |
+| `--dur-fast` | 125ms | Control state changes, and every exit of a small surface |
+| `--dur-fast-max` | 175ms | Entrances of small surfaces, tab enter, slide and settle, rail content, crossfade in, chevrons |
+| `--dur-med-min` | 250ms | Dialog enter, progress fill, side and stack crossfade |
+| `--dur-med` | 300ms | Panels: preview open, rail open, the conversation glide, sidebar open, disclosure open |
+| `--dur-slow` | 525ms | The period unit for ambient loops only (`calc(var(--dur-slow) * n)`) |
+| `--ease-out` | `cubic-bezier(0.24, 1, 0.4, 1)` | Everything |
+| `--ease-spring` | `cubic-bezier(0.34, 1.56, 0.64, 1)` | Transforms of physical gestures only: tab slide and settle, drag lift, the segmented thumb |
+
+Constants: pop-in scale 0.97 (dialogs 0.98); travel 4px (menus, row insert), 8px (crossfade rise, cover
+pane, toast), 32px in and 16px out (preview body); stagger 30ms with at most five items animated; the
+resize settles 180ms after the last event. Exits are one tier faster than entrances and travel half the
+distance. `--dur-med-max` and `--ease-in` are deleted; `--motion-fast`, `--motion-base` and `--motion-slow`
+are aliases of the `--dur-*` tiers until their last uses are swapped.
+
+`styles/motion.ts` exports `DUR`, `EASE_OUT`, `EASE_SPRING`, `MOTION`, `TRAVEL`, `prefersReducedMotion()`,
+`isWindowResizing()` and `motionDuration()`; `styles/motion.test.ts` pins every number to `main.css`. In
+CSS, `body.biorouter-window-resizing [data-motion-layout]` and the sidebar equivalent set
+`transition-duration: 0ms` and `animation: none`. Three shared classes, each with a reduced-motion rest:
+`.br-enter` (rise 4px and fade over 175ms), `.br-crossfade` (stack in one grid cell: the incoming layer
+rises 8px over 175ms, the outgoing fades over 125ms) and `.br-highlight` (an `--overlay-selected` wash that
+clears over three `--dur-slow` periods). Ambient loops run on multiples of `--dur-slow`; the tool pulse is
+four.
+
+### 9.7 · Interaction states and controls
+
+Hover is `--overlay-hover` (ink at 5%). Press is `--overlay-pressed` plus the `--press-scale` 0.98 transform.
+Focus follows D-15: controls take the surface shift (`.biorouter-focus-surface`), rows take
+`--background-focus` plus an inset `0 0 0 2px var(--border-focus)`, tabs take no fill and their underline
+firms from 2px to 3px. Programmatic focus never matches the visible-focus treatment, and the tooltip layer
+opens on focus only after a Tab.
+
+- **Switch.** One style, no variants. Track 32×20, `--radius-full`; off `--control-track-off`, on
+  `--background-accent`. Knob 16px, inset 2px on every side in both states, travel 12px, no growth; off it is
+  `--background-default` ringed by `--border-control` (dark: `--text-muted` fill), on it is `--text-on-accent`.
+  Knob and track animate over 125ms; a value that loads asynchronously does not animate
+  (`data-motion-still`). Named by the row's visible label through `aria-labelledby`. Stays a Radix
+  `button[role=switch]`.
+- **Checkbox.** A 16px box inside a 24px hit target, radius 4, 1.5px `--border-control` edge. Checked is an
+  accent fill with a 10px check in `--text-on-accent`; indeterminate is an 8×2px bar. The fill transitions
+  over 95ms. The label sits 8px to the right.
+- **Radio.** A 16px ring on the same edge token with a 6px dot that scales from 0.6 to 1 over 125ms.
+- **SegmentedControl.** `role="radiogroup"` with roving arrow keys. Track 28px tall, 2px padding,
+  `--radius-element`, `--background-muted`, no border. Segment 24px tall, radius 6, `text-secondary`,
+  resting ink `--text-muted`, selected ink `--text-default`. One thumb (`--background-default`,
+  `--shadow-raised`, `--inset-hairline`) slides with `translate` over 175ms `--ease-spring`. It never uses
+  coral, and its first placement does not animate.
+- **Menus.** One row for DropdownMenu, ContextMenu, Command, Select options and composer popups. Surface
+  `.biorouter-popover-surface`, radius 12, 4px padding, no row gap, width 180 to 320. Row 32px, padding 0 12px,
+  radius 8, `text-secondary`, a muted leading 16px icon, highlight `--overlay-hover` over 95ms. A selected item
+  shows a trailing 16px check; a submenu shows a chevron. Group label `text-supporting` muted, sentence case.
+  Open: opacity, `scale(.97)` and 4px toward the trigger over 175ms. Close: opacity only over 125ms.
+- **Tooltip.** One app-level provider (500ms delay, 300ms skip). Inverse fill, radius 12, padding 6×8, 12/16.
+  Fade in over 125ms, out over 95ms. Help text never goes in `title=`.
+- **InfoTip.** A 14px `Info` glyph in a 24×24 hit box, `--text-subtle` at rest and visible. Opens on hover
+  after 200ms, on Tab focus and on click; closes on leave, blur, Escape and scroll. The same text is always
+  rendered in a visually hidden node that `aria-describedby` points to. Plain text, at most two sentences,
+  no links. Never inside a `<label>`.
+- **SettingRow and SettingSection.** A row is `min-height: var(--row-height)`, padding 10px 12px, gap 12px:
+  a real `<label>` in `text-label`, the InfoTip as its sibling, an optional transient `status` line, an
+  optional `value`, and exactly one control at the trailing edge. A section is a `text-caps` muted label with
+  an optional InfoTip and action; no paragraph under the header. The row hairline is straight and inset by
+  the row radius, drawn with `::after`, and absent on the last row.
+- **RowActions.** A primary icon plus `⋯`, revealed over 95ms on row hover, `:focus-within` and an open menu,
+  always shown under `(hover: none)`. The same items open as a context menu on right-click.
+- **Fields and buttons.** `Input`, `Select` and `Textarea` are 32px tall (textarea at least three rows),
+  radius 8, rest edge `--border-control`. Buttons keep the 24, 28, 32 and 36px ladder, radius 8, 12px
+  padding and `text-label`; `secondary` is the default secondary action and `destructive` is a 22% danger wash
+  with danger ink.
+- **Dialogs and sheets.** The overlay fades over 250ms; the panel goes from opacity 0 and scale 0.98 to 1 over
+  250ms; exit is opacity and scale 0.98 over 125ms. A sheet is 300ms in and 125ms out. Tabs keep 36px, 2px
+  `--accent-bar` underline and a 20px gap; the underline is one indicator that travels (175ms).
+- **Filter field.** One 28px list filter for every view band, with a leading 16px `Search` glyph, the
+  placeholder "Filter", and ⌘F to focus it.
+
+### 9.8 · Icons
+
+- One registry: `components/icons/app-icons.tsx`. Lucide through `light()`, plus hand-drawn glyphs with the
+  same contract (24 grid, stroke 1.5, `currentColor`): `ChatBubble`, `CrewChat`, `Agent`, `KnowledgeGraph`,
+  `Skill` and `Copilot`. Each stamps `br-icon br-icon-<name>`. This supersedes the "custom set is only for
+  domain marks" line in §3.9.
+- One glyph per concept: `ENTITY_ICONS` (`entity-icons.ts`) holds workflow, knowledge, extension, skill,
+  application, schedule, crew, agent, chat, model and folder. Chat kinds and tool rows read their glyphs from it.
+- New chat is `NewChat` (SquarePen); `Plus` means add. Slash commands are `SquareSlash`. Resume is `Play`.
+  Writing or editing a file is `FilePen`; reading is `FileText`.
+- Chat kinds (`chats/chatKind.ts`): chat, Crew task, sub-agent, branch, app, scheduled run, terminal. Private
+  is a shape on every kind: the lock badge, in the family accent (`.br-icon-lock-badge`), over a body that is
+  muted at rest and default ink on the active row, always in a 16px slot.
+- Tool rows (`utils/toolGlyph.ts`) use a seven-rung ladder. Specific glyphs exist only for Biorouter's own
+  extensions; every external extension draws the Puzzle; the wrench is for an unknown tool.
+- Sizes: 14 chip and inline help glyph, 16 rows and controls, 20 banners and empty states.
+
+### 9.9 · Where this part supersedes earlier passages
+
+| Earlier passage | What changed |
+|---|---|
+| §3.1 heatmap ramp | Level 0 is the shared neutral `#eeeeea` light and `#32312e` dark; Parchment's dark level 1 is `#573e2a` |
+| §3.2 type scale | Replaced by 9.3 |
+| §3.6 motion | The tiers are 95, 125, 175, 250, 300 and 525ms; `--ease-spring` is sanctioned for physical gestures; the `--motion-*` names are aliases |
+| §3.9 iconography | Hand-drawn glyphs sit beside Lucide, default 16px; see 9.8 |
+| §4.9 switch, checkbox, radio | Replaced by the specs in 9.7 |
+| §4.11 sidebar | Rows are 28px at 13px with a 2px gap; section labels are sentence case |
+| §4.12 page header | A 44px band with a 14px `<h1>`; the description moves into an `InfoTip` |
+| §4.17 markdown tables | Crew's table recipe, top rules only, one look for chat, documents, CSV and notebooks |
+| §4.18 chat headings | No accent bar; chat h1 and h2 are 17px, document h1 is 24px at 400 |
+| D-12 | The sidebar row is 28px; content rows are unchanged at `--row-height` |
+
+### 9.10 · Open at the time of writing (2026-10-10)
+
+Moves that were still waiting on other owners: `body` still defaults to 16px and moves to
+`var(--text-body)` last, behind a visual sweep (KaTeX and any element without a size inherit it); the
+`--motion-*` aliases and `text-heading` are deleted once their last uses are swapped;
+`styles/typeScale.test.ts` lists the files that still carry legacy type classes and becomes strict when the
+list is empty; and `.claude/commands/frontend-design.md` is regenerated from Parts 1 to 3 only with the
+coordinator's approval.
