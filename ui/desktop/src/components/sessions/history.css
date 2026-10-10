@@ -61,12 +61,17 @@
   column-gap: 12px;
 }
 
+/* One right-aligned cell per stat: the glyph sits 4px before its own figure,
+   and the figures line up on the column's right edge. With the glyph at the
+   cell's LEFT edge, the token glyph sat 12px after the message count and 57px
+   before its own value, so it read as part of the message column (vision
+   V1-L1). */
 .br-history-stat {
   display: flex;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  justify-content: flex-end;
+  gap: 4px;
 }
 
 /* The skeleton-to-content crossfade on a cold load: the content rises in over

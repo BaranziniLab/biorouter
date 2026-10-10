@@ -276,18 +276,63 @@ describe('Chat history rows in a real layout engine', () => {
           return { left: r.left, width: r.width, glyph: glyph.left, figureRight: figure.right };
         }, id);
       // Row `a` holds every figure (a 10-digit token count); row `c` holds only
-      // the message count. The message column must not move.
+      // the message count. The message column must not move, and its figures
+      // line up on its right edge.
       const a = await edge('a-messages');
       const c = await edge('c-messages');
       expect(c.left).toBe(a.left);
       expect(c.width).toBe(a.width);
-      expect(c.glyph).toBe(a.glyph);
       expect(c.figureRight).toBe(a.figureRight);
+      expect(a.figureRight).toBeCloseTo(a.left + a.width, 0);
       // The token column of the full row sits after it, 12px on, and its figure
       // ends at the cell's right edge.
       const tokens = await edge('a-tokens');
       expect(tokens.left - (a.left + a.width)).toBe(12);
       expect(tokens.figureRight).toBeCloseTo(tokens.left + tokens.width, 0);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  /**
+   * Vision V1-L1: with each glyph at its cell's LEFT edge, the token glyph sat
+   * 12px after the message count and 57px before its own figure, so it read as
+   * part of the message column. Each glyph sits 4px before its own figure, and
+   * is further from the figure before it than from its own.
+   */
+  it('puts each glyph directly before its own figure', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const cell = (id: string) =>
+        tab.evaluate((el) => {
+          const node = document.getElementById(el)!;
+          const glyph = node.querySelector('svg')!.getBoundingClientRect();
+          const figure = node.querySelector('span')!.getBoundingClientRect();
+          return {
+            glyphLeft: glyph.left,
+            glyphRight: glyph.right,
+            figureLeft: figure.left,
+            figureRight: figure.right,
+          };
+        }, id);
+      for (const row of ['a', 'c', 'd']) {
+        for (const stat of ['messages', 'tokens', 'ext']) {
+          const id = `${row}-${stat}`;
+          if (!(await tab.$(`#${id}`))) continue;
+          const { glyphRight, figureLeft } = await cell(id);
+          expect(figureLeft - glyphRight, id).toBeCloseTo(4, 0);
+        }
+      }
+      const messages = await cell('a-messages');
+      const tokens = await cell('a-tokens');
+      const extensions = await cell('a-ext');
+      expect(tokens.glyphLeft - messages.figureRight).toBeGreaterThan(
+        tokens.figureLeft - tokens.glyphRight
+      );
+      expect(extensions.glyphLeft - tokens.figureRight).toBeGreaterThan(
+        extensions.figureLeft - extensions.glyphRight
+      );
     } finally {
       await tab.close();
     }

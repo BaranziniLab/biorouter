@@ -267,9 +267,10 @@ function HistoryLoading() {
 }
 
 /**
- * One cell of a History row's stats: a 14px glyph at the left, the figure at the
- * right, and for the screen reader "Messages: 6". The cell's width is the
- * column's (`history.css`), so this never sizes itself to its content.
+ * One cell of a History row's stats: a 14px glyph 4px before its figure, both
+ * on the cell's right edge, and for the screen reader "Messages: 6". The cell's
+ * width is the column's (`history.css`), so this never sizes itself to its
+ * content.
  *
  * `detail` is what a sighted person gets from the hover tooltip and a screen
  * reader would otherwise miss (the extensions' names, the lower-bound caveat on
@@ -500,10 +501,10 @@ const HistoryRow = React.memo(function HistoryRow({
           </button>
 
           {/* The stats are three fixed columns, the same in every row: sans and
-              tabular, the glyph at each cell's left edge and the figure at its
-              right. A row with no token figure or no extensions leaves its cell
-              empty rather than letting the others slide, so the columns read
-              straight down the list. */}
+              tabular, each figure on its column's right edge with its glyph
+              just before it. A row with no token figure or no extensions
+              leaves its cell empty rather than letting the others slide, so
+              the columns read straight down the list. */}
           <div className="br-history-row-stats text-supporting text-text-muted tabular-nums">
             <HistoryStat
               icon={MessageSquareText}
