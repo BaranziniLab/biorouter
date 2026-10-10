@@ -5121,97 +5121,86 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   --tw-prose-invert-td-borders: var(--border-subtle);
 }
 
-/* Shared markdown typography. Documents use a larger title, while the rhythm,
-   callouts, tables and code wells match their chat counterparts. */
-.biorouter-markdown.prose {
-  --md-code-pad: 14px 16px;
-  --md-title-size: calc(24px * var(--app-font-scale, 1));
-  font-size: 14px;
-  line-height: 1.7;
-}
+/* @ws WS-TRANSCRIPT begin: markdown */
+/* Shared markdown typography: chat answers, documents in the preview, notes.
 
-.biorouter-markdown.prose[data-variant='document'] {
-  --md-title-size: calc(28px * var(--app-font-scale, 1));
-  font-size: 15px;
+   One prose line, 14px on 21px, the same reading line as Crew's messages
+   (`.crew-md`). Chat headings stop at 17px because an answer is a document,
+   not a page; a document's h1 is the 24px title. Nothing here carries the
+   accent: no bar beside a heading and no tinted quote. The accent marks state
+   (spec principle 7). Spacing is on the 4px grid in px, so a heading's gap does
+   not drift with its own size. */
+.biorouter-markdown.prose {
+  font-size: 14px;
+  line-height: 21px;
 }
 
 .biorouter-markdown.prose :where(h1, h2, h3, h4, h5, h6) {
   color: var(--text-default);
-  font-family: var(--font-sans);
-  font-weight: 700;
-  line-height: 1.35;
-  letter-spacing: -0.015em;
+  font-family: var(--font-heading);
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 .biorouter-markdown.prose :where(h1, h2) {
-  position: relative;
-  padding-left: 0.7em;
+  margin: 20px 0 8px;
+  font-size: 17px;
+  line-height: 24px;
 }
 
-.biorouter-markdown.prose :where(h1, h2)::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0.2em;
-  width: 3px;
-  height: 0.85em;
-  border-radius: 2px;
-  background: var(--accent-bar);
-}
-
-.biorouter-markdown.prose h1 {
-  margin: 1.4em 0 0.7em;
-  font-size: var(--md-title-size);
-  line-height: 1.25;
-}
-
-.biorouter-markdown.prose h2 {
-  margin: 1.6em 0 0.65em;
-  font-size: 19px;
-}
-
-.biorouter-markdown.prose h3 {
-  margin: 1.4em 0 0.5em;
-  font-size: 16px;
-}
-
-.biorouter-markdown.prose :where(h4, h5, h6) {
-  margin: 1.3em 0 0.5em;
+.biorouter-markdown.prose :where(h3, h4, h5, h6) {
+  margin: 16px 0 4px;
   font-size: 14px;
+  line-height: 21px;
+}
+
+/* A document's first heading is its title: the 24px step, regular weight. */
+.biorouter-markdown.prose[data-variant='document'] h1 {
+  margin: 24px 0 12px;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* A document whose front matter already names it: its first `# H1` would be a
+   second title, so it takes the h2 step (`demoteFirstHeading`). */
+.biorouter-markdown.prose[data-variant='document'][data-demote-h1] h1:first-of-type {
+  margin: 20px 0 8px;
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
   letter-spacing: 0;
 }
 
 .biorouter-markdown.prose p {
-  margin: 0 0 0.85em;
+  margin: 0 0 12px;
 }
 
 .biorouter-markdown.prose :where(ul, ol) {
-  margin: 0 0 1em;
+  margin: 0 0 12px;
   padding-left: 1.5em;
 }
 
 .biorouter-markdown.prose li {
-  margin: 0.3em 0;
-  padding-left: 0.2em;
+  margin: 4px 0;
+  padding-left: 2px;
 }
 
-.biorouter-markdown.prose li > :where(ul, ol) {
-  margin: 0.45em 0 0.65em;
-}
-
+.biorouter-markdown.prose li > :where(ul, ol),
 .biorouter-markdown.prose li > p {
-  margin: 0.5em 0;
+  margin: 4px 0;
 }
 
+/* A quote is an edge and muted ink, never a tinted box. */
 .biorouter-markdown.prose blockquote {
-  margin: 1.25em 0;
-  padding: 1em 1.2em;
-  border-left: 3px solid var(--accent-bar);
-  border-radius: 0 10px 10px 0;
-  background: color-mix(in srgb, var(--accent-bar) 6%, var(--background-default));
-  color: var(--text-default);
+  margin: 12px 0;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-muted);
   font-style: normal;
   font-weight: 400;
+  quotes: none;
 }
 
 .biorouter-markdown.prose blockquote > :last-child {
@@ -5219,185 +5208,209 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 }
 
 .biorouter-markdown.prose hr {
-  margin: 2em 0;
+  margin: 24px 0;
   border-color: var(--border-subtle);
 }
 
+/* The first and last block sit flush with the message's own edges. A fenced
+   block is wrapped (`.biorouter-md-pre`), so its margin is reached through the
+   wrapper. */
 .biorouter-markdown.prose > :first-child,
 .biorouter-markdown.prose > .biorouter-md-pre:first-child > .biorouter-md-code {
   margin-top: 0;
 }
 
-.biorouter-markdown.prose > :last-child {
+.biorouter-markdown.prose > :last-child,
+.biorouter-markdown.prose > .biorouter-md-pre:last-child > .biorouter-md-code {
   margin-bottom: 0;
 }
 
+/* Inline code: one chip, Crew's (`.crew-md-code-inline`). It is authored here
+   rather than as `prose-code:*` utilities on the wrapper, so its size is the
+   code role and nothing depends on Tailwind having scanned a new class. */
 .biorouter-markdown .biorouter-inline-code {
+  padding: 1px 4px;
+  border-radius: var(--radius-inner);
+  background-color: var(--background-medium);
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  font-weight: 400;
   word-break: normal;
   overflow-wrap: anywhere;
 }
 
-.biorouter-markdown .biorouter-md-code {
-  margin: 1em 0 1.25em;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-}
-
-.biorouter-markdown .biorouter-md-code-head {
-  min-height: 36px;
-  gap: 12px;
-  padding: 4px 10px 4px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--background-muted);
-}
-
-.biorouter-markdown .biorouter-md-code-lang {
-  font-family: var(--font-mono);
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.biorouter-markdown .biorouter-md-code-body {
-  background:
-    linear-gradient(to left, var(--background-code) 45%, transparent) 100% 0 / 36px 100%
-      no-repeat local,
-    linear-gradient(to left, var(--border-subtle), transparent) 100% 0 / 14px 100% no-repeat
-      scroll;
-}
-
-.biorouter-markdown .biorouter-md-table-scroll {
-  max-width: 100%;
-  margin: 1.2em 0 1.5em;
-  overflow-x: auto;
-  border-radius: 8px 8px 0 0;
-}
-
-.biorouter-markdown .biorouter-md-table-scroll:focus-visible,
-.biorouter-markdown .biorouter-md-code-body:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: -2px;
-}
-
-.biorouter-markdown.prose table {
-  width: 100%;
-  margin: 0;
-  border-collapse: collapse;
-  font-size: 13px;
-  line-height: 1.6;
-  font-variant-numeric: tabular-nums;
-}
-
-.biorouter-markdown.prose :where(th, td) {
-  padding: 11px 16px;
-  border: 0;
+/* A code span in a table cell is plain mono, not a chip (Crew, design.md §4.17). */
+.biorouter-markdown .br-md-table .biorouter-inline-code {
+  padding: 0;
+  background-color: transparent;
   overflow-wrap: normal;
-  word-break: normal;
-  vertical-align: top;
 }
 
-/* Tokens, not literals. These four were hex, and three of the four matched no
-   token in any theme file — dark `--background-medium` is #2c2c29, not #353533,
-   and Parchment dark's `--text-default` is the warm #f4f0e6, not #eeeeeb. So a
-   table header was a cool grey among warm ink in Parchment dark, and would stay
-   on Parchment's values under Alma Mater and Roche Limit. `npm run themes`
-   generates the token blocks and `check-contrast.mjs` discovers families from
-   this stylesheet; a literal is invisible to both.
-   The pairing is already guaranteed: check-contrast asserts `--text-default` on
-   `--background-medium` at 4.5:1 in all six scopes. (`--text-subtle` on that
-   ground is the one that is sub-AA — do not reach for it here.) */
-.biorouter-markdown.prose thead {
-  background: var(--background-medium);
+/* Fenced code and tables keep the prose rhythm around them. */
+.biorouter-markdown .biorouter-md-code,
+.biorouter-markdown .br-md-table-scroll {
+  margin: 12px 0;
 }
 
-.biorouter-markdown.prose thead th {
-  color: var(--text-default);
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0;
-  text-transform: none;
-  white-space: nowrap;
-  text-align: left;
+.biorouter-markdown .br-md-table {
+  width: auto;
+  margin: 0;
 }
 
-.biorouter-markdown.prose thead th :where(strong, em, a, button:not(.biorouter-inline-code), span:not(.biorouter-inline-code)) {
-  color: inherit;
-}
-
-.biorouter-markdown.prose tbody td {
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-default);
-}
-
-.biorouter-markdown.prose tbody td:first-child {
-  font-weight: 600;
-}
-
-.biorouter-markdown.prose tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-.biorouter-markdown.prose :where(th, td)[align='right'] {
+.biorouter-markdown .br-md-table :where(th, td)[align='right'] {
   text-align: right;
 }
 
-.biorouter-markdown.prose :where(th, td)[align='center'] {
+.biorouter-markdown .br-md-table :where(th, td)[align='center'] {
   text-align: center;
 }
+/* @ws WS-TRANSCRIPT end: markdown */
 
-.user-message p {
-  margin-bottom: 0 !important;
+/* @ws WS-TRANSCRIPT begin: md recipes */
+/* The code block and the table, promoted from Crew so the app has one look for
+   each (spec section 0, decision 6.15). Copied from
+   `crew/timeline/timeline.css` (`.crew-md-code*`, `.crew-md-table*`); a parity
+   test keeps the two equal, so change Crew's first or not at all. Chat and
+   documents use them through `MarkdownContent`; the preview's CSV and notebook
+   DataFrames use `.br-md-table` too.
+
+   One deliberate difference from Crew: table cells are 8px 12px, on the
+   spacing scale, where Crew's are 11px 16px (Crew defect D11). */
+
+/* A fenced block sits in the well, never on `--background-code`, which in dark
+   mode is the page itself. The syntax palettes are measured against the well
+   (`themes/*.theme.mjs`). */
+.br-md-code {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container);
+  background-color: var(--background-well);
 }
+
+.br-md-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 2px 2px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.br-md-code-lang {
+  font-family: var(--font-mono);
+}
+
+.br-md-code-body {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* Only a box that scrolls is focusable, so only it ever shows this. */
+.br-md-code-body:focus-visible,
+.br-md-table-scroll:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--border-accent);
+}
+
+/* A box with more to its right fades out at its right edge: macOS hides
+   overlay scrollbars, so a clipped column gave no sign that the box scrolls.
+   `data-overflow` is set while there is more to the right and dropped at the
+   scroll end, so the last column is never dimmed. A mask paints nothing
+   (`black` is alpha), so the fade is right on any ground. */
+.br-md-code-body[data-overflow='true'],
+.br-md-table-scroll[data-overflow='true'] {
+  mask-image: linear-gradient(to right, black calc(100% - 40px), transparent);
+}
+
+/* A table's body rows are on the page's ground, so the box also draws a
+   hairline at its right edge, kept out of the fade: the mask stops 1px short
+   and the border's pixel stays opaque, so the cut reads as an edge on every
+   row. */
+.br-md-table-scroll[data-overflow='true'] {
+  border-right: 1px solid var(--border-subtle);
+  mask-image: linear-gradient(
+    to right,
+    black calc(100% - 41px),
+    transparent calc(100% - 1px),
+    black calc(100% - 1px)
+  );
+}
+
+/* Focused from the keyboard, the box drops its fade: the mask would fade the
+   right side of the focus edge with the last column. */
+.br-md-code-body[data-overflow='true']:focus-visible,
+.br-md-table-scroll[data-overflow='true']:focus-visible {
+  mask-image: none;
+}
+
+.br-md-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Rounded corners need the separate border model (a collapsed table ignores its
+   radius), so each body cell draws only its top edge and the table draws the
+   outside. Horizontal rules only; numbers line up in columns. */
+.br-md-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-element);
+  overflow: hidden;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.br-md-table :where(th, td) {
+  padding: 8px 12px;
+  border: 0;
+  border-block-start: 1px solid var(--border-subtle);
+  color: var(--text-default);
+  font-weight: 400;
+  text-align: start;
+  vertical-align: top;
+  /* Never the prose's `overflow-wrap: anywhere`: a narrow column would split
+     "Sample" into "Sampl / e". A table that is too wide scrolls instead. */
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+/* Headers and every column after the first stay on one line; the first column
+   (names) may still wrap between words. */
+.br-md-table th,
+.br-md-table td:not(:first-child) {
+  white-space: nowrap;
+}
+
+/* The header row is the first, and only it has no top rule. */
+.br-md-table thead :where(th, td),
+.br-md-table th[data-head] {
+  border-block-start: 0;
+  background-color: var(--background-muted);
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-weight: 600;
+}
+
+.br-md-table thead :where(strong, em, a) {
+  color: inherit;
+}
+/* @ws WS-TRANSCRIPT end: md recipes */
 
 .scrollbar-thin {
   scrollbar-width: thin;
 }
 
-.assistant:has(+ .user):not(.in-chain) .biorouter-message {
-  padding-bottom: 24px;
-}
-
-/* Virtualized list styles */
-.virtualized-list {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-neutral-300) transparent;
-}
-
-.virtualized-list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.virtualized-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.virtualized-list::-webkit-scrollbar-thumb {
-  background-color: var(--color-neutral-300);
-  border-radius: 4px;
-}
-
-.dark .virtualized-list::-webkit-scrollbar-thumb {
-  background-color: var(--color-neutral-400);
-}
-
-.virtualized-list::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-neutral-400);
-}
-
-.dark .virtualized-list::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-neutral-300);
-}
-
-/* Ensure virtualized items don't have margin/padding that could break layout */
-.virtualized-list > div {
-  outline: none;
-}
-
-/* Optimize performance for virtualized rendering */
-.virtualized-list * {
-  contain: layout style paint;
-}
-
-/* Biorouter icon animation to replace framer-motion */
+/* @ws WS-TRANSCRIPT begin: transcript leftovers */
+/* The ProviderGuard mark's entrance. */
 @keyframes biorouter-icon-entrance {
   from {
     opacity: 0;
@@ -5410,9 +5423,10 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 }
 
 .biorouter-icon-animation {
-  animation: biorouter-icon-entrance var(--motion-slow) var(--ease-out) forwards;
+  animation: biorouter-icon-entrance var(--dur-med) var(--ease-out) forwards;
   transform-origin: bottom left;
 }
+/* @ws WS-TRANSCRIPT end: transcript leftovers */
 
 /* Session list optimizations */
 .session-grid {

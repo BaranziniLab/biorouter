@@ -26,9 +26,10 @@ import {
   CODE_LINE_HEIGHT,
   codeThemesByFamily,
 } from '../styles/codeTheme';
-import { Button } from './ui/button';
-
 import { AlertTriangle, Check, Copy, Image as ImageIcon, Play } from './icons/app-icons';
+import { TranscriptIconButton } from './transcript/TranscriptIconButton';
+import { scrollRegionProps, useOverflowsSideways } from './transcript/useOverflowsSideways';
+import { transcriptCopy } from './transcript/copy';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
 import { normalizeExternalHttpUrl } from '../utils/externalUrl';
 import { runnableCommandFromCodeBlock } from '../utils/shellCommandBlock';
@@ -48,6 +49,8 @@ import {
   type KnownFilePaths,
 } from './artifacts/artifactFileLinks';
 import { isOpenableFileLink, useFileLinkExistence } from './artifacts/fileLinkStatus';
+
+const codeCopy = transcriptCopy.code;
 
 interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
@@ -94,6 +97,11 @@ interface MarkdownContentProps {
    *   document without a caller-chosen class name.
    */
   variant?: 'chat' | 'document';
+  /**
+   * A document whose front matter already shows its title: its first `# H1`
+   * takes the h2 step, so the page does not carry two titles (spec 2.1).
+   */
+  demoteFirstHeading?: boolean;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
@@ -185,10 +193,9 @@ const CodeBlock = memo(function CodeBlock({
         PreTag="div"
         customStyle={{
           margin: 0,
-          // Overridable, so a surface that restyles the block (the artifact
-          // panel's paper) can set its own inset without an !important fight
-          // with an inline style. Chat never sets it and keeps 12px.
-          padding: 'var(--md-code-pad, calc(12px * var(--app-font-scale, 1)))',
+          // The body (`.br-md-code-body`) owns the 10px 12px inset, Crew's, so
+          // the highlighter adds none of its own.
+          padding: 0,
           background: 'transparent',
           // A kept line needs the block to be as wide as its longest line, so
           // the body (`overflow-x: auto`) scrolls it; a wrapped one fits.
@@ -215,108 +222,101 @@ const CodeBlock = memo(function CodeBlock({
     );
   }, [codeStyle, language, children, wrapLongLines]);
 
+  const [measureBody, bodyOverflow] = useOverflowsSideways<HTMLDivElement>();
+
+  const copyLabel =
+    copyOutcome === 'copied'
+      ? codeCopy.copied
+      : copyOutcome === 'failed'
+        ? codeCopy.copyFailed
+        : codeCopy.copy;
+  const copyTip =
+    copyOutcome === 'copied'
+      ? codeCopy.copied
+      : copyOutcome === 'failed'
+        ? codeCopy.copyFailedTip
+        : codeCopy.copyTip;
+  const runLabel =
+    runOutcome === 'sent'
+      ? codeCopy.sent
+      : runOutcome === 'unavailable'
+        ? codeCopy.terminalClosed
+        : codeCopy.run;
+  const runTip =
+    runOutcome === 'sent'
+      ? codeCopy.sentTip
+      : runOutcome === 'unavailable'
+        ? codeCopy.terminalClosedTip
+        : codeCopy.runTip;
+
   return (
-    // `bg-background-code`, not `bg-background-muted`: the syntax palette in
-    // codeTheme.ts is verified against --background-code (#f5f5f3 / #1b1b19,
-    // design.md §5.1) and --background-muted is a different surface (#f4f4f2 /
-    // #232320) — so painting muted would put dark code on a ground its palette
-    // was never measured on, which is how `comment` once fell to 4.15:1, under
-    // AA. The two tokens are close now that the neutrals are shared, but they
-    // are still distinct and the generator measures against the code one.
-    // The highlighter itself renders transparent, so this div IS the ground the
-    // reader sees.
+    // Crew's code block (`.br-md-code*`, main.css): the well, a hairline frame,
+    // a head row over a hairline on the same ground (no filled slab), and a
+    // 10px 12px mono body that fades at its right edge while it scrolls. The
+    // syntax palettes are measured against the well (`themes/*.theme.mjs`).
     //
-    // `not-prose` is a correction, not decoration. The wrapper's inline-code
-    // recipe (`prose-code:bg-background-medium px-1 py-0.5 rounded-sm`) targets
-    // every `<code>` under `.prose`, and the highlighter's own `<code>` is one —
-    // so each line of every fenced block painted an inline-code chip and the
-    // first line sat 4px right of the rest. The typography plugin's element
-    // variants skip `.not-prose` subtrees; nothing inside this block wants them.
+    // `not-prose` is a correction, not decoration. The typography plugin's
+    // inline-code rules target every `<code>` under `.prose`, and the
+    // highlighter's own `<code>` is one; its element variants skip `.not-prose`
+    // subtrees, and nothing inside this block wants them.
     //
-    // The `biorouter-md-code*` names are hooks for surfaces that restyle the
-    // block in authored CSS (the artifact panel's paper, main.css).
-    <div
-      ref={rootRef}
-      className="biorouter-md-code not-prose w-full overflow-hidden bg-background-code"
-    >
-      {/* Header bar */}
-      <div className="biorouter-md-code-head flex items-center justify-between">
-        <span className="biorouter-md-code-lang text-[11px] font-medium text-text-muted select-none">
-          {label || 'code'}
+    // The `biorouter-md-code*` names stay beside the `br-md-code*` recipe as
+    // hooks: the preview's paper and its tests address the block by them.
+    <div ref={rootRef} className="br-md-code biorouter-md-code not-prose w-full">
+      <div className="br-md-code-head biorouter-md-code-head">
+        <span className="br-md-code-lang biorouter-md-code-lang text-supporting text-text-muted select-none">
+          {label || codeCopy.plain}
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           {/* Run sits to the LEFT so Copy keeps the position it has always had.
               Copy is never REPLACED: this feature is the step
               CodingAgentInlineCard deliberately stopped short of ("a command
               the user runs, never one Biorouter runs"), and the old path has to
-              survive it. Nothing else here is a keyboard shortcut either — a
-              deliberate click is the whole consent. */}
+              survive it. Nothing else here is a keyboard shortcut either: a
+              deliberate click is the whole consent. Both answer a press in
+              their tooltip, so neither changes width. */}
           {runnableCommand && (
-            <Button
-              variant="ghost"
-              size="xs"
+            <TranscriptIconButton
+              label={runLabel}
+              tip={runTip}
+              holdTip={runOutcome !== 'idle'}
+              tone={runOutcome === 'unavailable' ? 'warning' : 'default'}
               onClick={handleRun}
-              className="gap-1 text-[11px] text-text-muted hover:text-text-default"
-              title={
-                runOutcome === 'unavailable'
-                  ? 'The terminal below has exited, so nothing was sent'
-                  : 'Run in the terminal below'
+              icon={
+                runOutcome === 'sent' ? (
+                  <Check aria-hidden="true" />
+                ) : runOutcome === 'unavailable' ? (
+                  <AlertTriangle aria-hidden="true" />
+                ) : (
+                  <Play aria-hidden="true" />
+                )
               }
-            >
-              {runOutcome === 'sent' ? (
-                <Check className="h-3 w-3" />
-              ) : runOutcome === 'unavailable' ? (
-                <AlertTriangle className="h-3 w-3" />
-              ) : (
-                <Play className="h-3 w-3" />
-              )}
-              <span>
-                {runOutcome === 'sent'
-                  ? 'Sent'
-                  : runOutcome === 'unavailable'
-                    ? 'Terminal closed'
-                    : 'Run'}
-              </span>
-            </Button>
+            />
           )}
-          <Button
-            variant="ghost"
-            size="xs"
+          <TranscriptIconButton
+            label={copyLabel}
+            tip={copyTip}
+            holdTip={copyOutcome !== null}
+            tone={copyOutcome === 'failed' ? 'warning' : 'default'}
             onClick={handleCopy}
-            className={`gap-1 text-[11px] ${
-              copyOutcome === 'failed'
-                ? 'text-text-warning hover:text-text-warning'
-                : 'text-text-muted hover:text-text-default'
-            }`}
-            title={
-              copyOutcome === 'failed'
-                ? 'Biorouter could not write to the clipboard. Select the code and copy it with your keyboard.'
-                : 'Copy code'
+            icon={
+              copyOutcome === 'copied' ? (
+                <Check aria-hidden="true" />
+              ) : copyOutcome === 'failed' ? (
+                <AlertTriangle aria-hidden="true" />
+              ) : (
+                <Copy aria-hidden="true" />
+              )
             }
-          >
-            {copyOutcome === 'copied' ? (
-              <Check className="h-3 w-3" />
-            ) : copyOutcome === 'failed' ? (
-              <AlertTriangle className="h-3 w-3" />
-            ) : (
-              <Copy className="h-3 w-3" />
-            )}
-            <span>
-              {copyOutcome === 'copied'
-                ? 'Copied'
-                : copyOutcome === 'failed'
-                  ? 'Copy failed'
-                  : 'Copy'}
-            </span>
-          </Button>
+          />
         </div>
       </div>
-      {/* Code body */}
+      {/* A region a keyboard can reach only while it scrolls (Crew's rule), and
+          the right-edge fade while there is more to its right. */}
       <div
-        className="biorouter-md-code-body w-full overflow-x-auto"
-        tabIndex={wrapLongLines ? undefined : 0}
-        role={wrapLongLines ? undefined : 'region'}
-        aria-label={wrapLongLines ? undefined : 'Scrollable code'}
+        ref={measureBody}
+        className="br-md-code-body biorouter-md-code-body w-full"
+        {...scrollRegionProps(bodyOverflow, codeCopy.region)}
       >
         {memoizedSyntaxHighlighter}
       </div>
@@ -376,7 +376,7 @@ const LINK_CLASS =
 // (CODE_FONT_SIZE) and inline code. The sole difference is the inline-code
 // fill, which is the only thing `inlineCode` should mean; the two variants
 // used to also disagree on font-size (0.9em vs 0.95em) for no stated reason.
-const ARTIFACT_LINK_BASE_CLASS = 'inline break-all rounded-sm text-left font-mono text-[13px]';
+const ARTIFACT_LINK_BASE_CLASS = 'inline break-all rounded-inner text-left font-mono text-code';
 
 function ArtifactLinkButton({
   artifact,
@@ -431,7 +431,7 @@ function ArtifactLinkButton({
         inlineCode ? 'biorouter-inline-code bg-background-medium px-1 py-0.5' : ''
       }`}
       onClick={() => onOpenArtifact(artifact)}
-      title={`Preview ${artifact.title} in the side panel`}
+      title={codeCopy.previewInPanel(artifact.title)}
     >
       {children}
     </button>
@@ -444,15 +444,15 @@ function ArtifactLinkButton({
 // busted src. The alt text stays legible so the reader still knows what was
 // meant to be here.
 function BrokenImage({ alt }: { alt?: string }) {
-  const label = alt?.trim() || 'Image unavailable';
+  const label = alt?.trim() || codeCopy.imageUnavailable;
   return (
     <span
       role="img"
       aria-label={label}
-      title={alt?.trim() ? `Image unavailable: ${alt}` : 'Image unavailable'}
-      className="inline-flex items-center gap-1 rounded-sm border border-border-subtle bg-background-medium px-1.5 py-0.5 align-middle text-[12px] text-text-muted"
+      title={alt?.trim() ? codeCopy.imageUnavailableNamed(alt) : codeCopy.imageUnavailable}
+      className="inline-flex items-center gap-1 rounded-inner border border-border-subtle bg-background-medium px-1.5 py-0.5 align-middle text-supporting text-text-muted"
     >
-      <ImageIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <ImageIcon className="size-3.5 shrink-0" aria-hidden="true" />
       {label}
     </span>
   );
@@ -534,8 +534,8 @@ const MarkdownImage = memo(function MarkdownImage({
   if (!resolvedSrc) {
     return (
       <span
-        aria-label={alt?.trim() || 'Loading image'}
-        className="inline-block h-4 w-24 animate-pulse rounded-sm bg-background-medium align-middle"
+        aria-label={alt?.trim() || codeCopy.loadingImage}
+        className="inline-block h-4 w-24 animate-pulse rounded-inner bg-background-medium align-middle"
       />
     );
   }
@@ -543,7 +543,7 @@ const MarkdownImage = memo(function MarkdownImage({
     <img
       src={resolvedSrc}
       alt={alt ?? ''}
-      className="mx-auto my-2 h-auto max-w-full rounded-md"
+      className="mx-auto my-2 h-auto max-w-full rounded-element"
       onError={() => setFailed(true)}
     />
   );
@@ -881,15 +881,21 @@ function MarkdownListItem({ children, node: _node, ...props }: SlotProps<'li'>) 
   );
 }
 
-function MarkdownTable({ node: _node, ...props }: SlotProps<'table'>) {
+/**
+ * Crew's table (`.br-md-table`, main.css): a hairline frame at radius 8, top
+ * rules only, a muted header row, 13px tabular cells. The scroll box is a
+ * region a keyboard can reach only while the table is wider than the column,
+ * and fades at its right edge while there is more to see.
+ */
+function MarkdownTable({ node: _node, className, ...props }: SlotProps<'table'>) {
+  const [measure, overflow] = useOverflowsSideways<HTMLDivElement>();
   return (
     <div
-      className="biorouter-md-table-scroll"
-      role="region"
-      aria-label="Scrollable table"
-      tabIndex={0}
+      ref={measure}
+      className="br-md-table-scroll biorouter-md-table-scroll"
+      {...scrollRegionProps(overflow, codeCopy.tableRegion)}
     >
-      <table {...props} />
+      <table {...props} className={['br-md-table', className].filter(Boolean).join(' ')} />
     </div>
   );
 }
@@ -945,6 +951,7 @@ const MarkdownContent = memo(function MarkdownContent({
   knownFilePaths,
   onRunInTerminal,
   variant = 'chat',
+  demoteFirstHeading = false,
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -966,18 +973,19 @@ const MarkdownContent = memo(function MarkdownContent({
   return (
     <div
       data-variant={variant}
+      // The inline-code chip, the table and the heading steps are authored in
+      // main.css (`.biorouter-markdown*`, `.br-md-*`), not as `prose-*:`
+      // utilities here: a size that depends on Tailwind having scanned a new
+      // class string can silently not exist (CLAUDE.md, BIOROUTER_NO_HMR).
+      data-demote-h1={demoteFirstHeading ? '' : undefined}
       className={`biorouter-markdown w-full min-w-0 overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
       prose-pre:[&:has(>code)]:p-3 prose-pre:[&>code]:p-0
       prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-mono
-      prose-code:text-text-default prose-code:bg-background-medium
-      prose-code:rounded-sm prose-code:px-1 prose-code:py-0.5
-      prose-code:text-[13px] prose-code:font-normal prose-code:not-italic
+      prose-code:text-text-default prose-code:font-normal prose-code:not-italic
       prose-code:before:content-none prose-code:after:content-none
       prose-a:break-all prose-a:font-medium prose-a:underline
       prose-a:decoration-text-accent/40 prose-a:underline-offset-2
-      prose-table:table prose-table:w-full prose-table:text-[13px]
-      prose-th:tabular-nums prose-td:tabular-nums
       [&_blockquote_p:first-of-type]:before:content-none
       [&_blockquote_p:last-of-type]:after:content-none ${className}`}
     >

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { act, fireEvent, render } from '@testing-library/react';
 import { screen, waitFor } from '@testing-library/dom';
 import MarkdownContent from './MarkdownContent';
+import { transcriptCopy } from './transcript/copy';
 import {
   resetFileLinkStatusForTests,
   type FilePathCheckRequest,
@@ -329,7 +330,9 @@ console.log('Hello, World!');
       const button = screen.getByRole('button', { name: 'Copy' });
 
       fireEvent.click(button);
-      await waitFor(() => expect(button).toHaveTextContent('Copied'));
+      // Icon only: the press is answered in the button's name and tooltip, so
+      // its width never changes.
+      await waitFor(() => expect(button).toHaveAccessibleName('Copied'));
       expect(writeText).toHaveBeenCalledExactlyOnceWith('print("hi")');
 
       // What a streamed chunk hands every finished message: equal answers, new identities.
@@ -365,7 +368,7 @@ console.log('Hello, World!');
         fireEvent.click(button);
       });
 
-      await waitFor(() => expect(button).toHaveTextContent('Copied'));
+      await waitFor(() => expect(button).toHaveAccessibleName('Copied'));
       expect(writeText).toHaveBeenCalledTimes(2);
       expect(execCommand).toHaveBeenCalledWith('copy');
       expect(inBlock).toBe(true);
@@ -1233,9 +1236,12 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
             }
           />
         );
-        const region = screen.getByRole('region', { name: 'Scrollable table' });
-        expect(region).toHaveAttribute('tabindex', '0');
-        expect(region.querySelector('table')).toBe(screen.getByRole('table'));
+        // jsdom lays nothing out, so the table "fits": no tab stop, no fade.
+        const scroll = screen.getByRole('table').parentElement!;
+        expect(scroll).toHaveClass('br-md-table-scroll');
+        expect(scroll).not.toHaveAttribute('tabindex');
+        expect(scroll).not.toHaveAttribute('data-overflow');
+        expect(screen.getByRole('table')).toHaveClass('br-md-table');
         expect(screen.getByRole('cell', { name: '5.809e-04' })).toHaveStyle({ textAlign: 'right' });
         expect(screen.getByRole('cell', { name: 'Ready' })).toHaveStyle({ textAlign: 'center' });
         expect(screen.getByRole('cell', { name: '1234567890.012345' })).toBeInTheDocument();
@@ -1271,6 +1277,77 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       }
     );
 
+    // Crew's rule (`crew/timeline/MessageBody.tsx`): only a box that scrolls is
+    // a region a keyboard can reach, and it fades at its right edge while
+    // there is more to see, dropping the fade at the scroll end.
+    describe('scrolling tables and code', () => {
+      afterEach(() => vi.restoreAllMocks());
+      const layoutWidths = (wide: boolean) => {
+        vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(wide ? 900 : 400);
+        vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(400);
+      };
+
+      it('makes a wide table a named region with a fade, dropped at the scroll end', () => {
+        layoutWidths(true);
+        render(<MarkdownContent content={'| A | B |\n|---|---|\n| 1 | 2 |'} />);
+        const region = screen.getByRole('region', { name: transcriptCopy.code.tableRegion });
+        expect(region).toHaveAttribute('tabindex', '0');
+        expect(region).toHaveAttribute('data-overflow', 'true');
+        region.scrollLeft = 500;
+        fireEvent.scroll(region);
+        expect(region).not.toHaveAttribute('data-overflow');
+        expect(region).toHaveAttribute('tabindex', '0');
+      });
+
+      it('does the same for a fenced block that scrolls', async () => {
+        layoutWidths(true);
+        render(<MarkdownContent variant="document" content={'```r\nsum(x)\n```'} />);
+        const region = await screen.findByRole('region', { name: transcriptCopy.code.region });
+        expect(region).toHaveClass('br-md-code-body');
+        expect(region).toHaveAttribute('data-overflow', 'true');
+      });
+
+      it('leaves a block that fits as a plain box', async () => {
+        layoutWidths(false);
+        const { container } = render(<MarkdownContent content={'```r\nsum(x)\n```'} />);
+        await waitFor(() => expect(container.querySelector('.br-md-code-body')).not.toBeNull());
+        expect(screen.queryByRole('region')).toBeNull();
+        expect(container.querySelector('.br-md-code-body')).not.toHaveAttribute('tabindex');
+      });
+    });
+
+    it("draws a fenced block on Crew's recipe with icon-only actions that name themselves", async () => {
+      const { container } = render(
+        <MarkdownContent content={'```bash\nls -la\n```'} onRunInTerminal={vi.fn(() => true)} />
+      );
+      await waitFor(() => expect(container.querySelector('.br-md-code')).not.toBeNull());
+      const block = container.querySelector('.br-md-code')!;
+      // One frame on the well; the head row and the body are its two parts.
+      expect(block.querySelector(':scope > .br-md-code-head')).not.toBeNull();
+      expect(block.querySelector(':scope > .br-md-code-body')).not.toBeNull();
+      expect(block.querySelector('.br-md-code-lang')).toHaveTextContent('bash');
+      // Copy and Run are 24px glyph buttons: their words live in the name and
+      // the tooltip, never in the button, so a press cannot change its width.
+      for (const name of [transcriptCopy.code.copy, transcriptCopy.code.run]) {
+        const button = screen.getByRole('button', { name });
+        expect(button.textContent?.trim()).toBe('');
+        expect(button).toHaveClass('h-control-compact', 'w-control-compact');
+      }
+    });
+
+    it("demotes a document's first heading when its front matter carries the title", () => {
+      const { container, rerender } = render(
+        <MarkdownContent variant="document" content={'# Title\n\nBody'} />
+      );
+      expect(container.querySelector('.biorouter-markdown')).not.toHaveAttribute('data-demote-h1');
+      rerender(
+        <MarkdownContent variant="document" demoteFirstHeading content={'# Title\n\nBody'} />
+      );
+      expect(container.querySelector('.biorouter-markdown')).toHaveAttribute('data-demote-h1');
+      // Still an h1 to a screen reader: only its size steps down.
+      expect(screen.getByRole('heading', { level: 1, name: 'Title' })).toBeInTheDocument();
+    });
+
     it('suppresses the curly quotes the typography plugin injects into blockquotes', async () => {
       render(<MarkdownContent content="> Confidence is an edge attribute." />);
 
@@ -1298,16 +1375,12 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       });
 
       const className = proseContainer()?.className ?? '';
-      // The shared stylesheet owns the header band and horizontal separators.
-      expect(className).not.toContain('prose-td:border');
-      expect(className).not.toContain('prose-th:border');
-      expect(className).not.toContain('prose-thead:bg-background-medium');
-      // prose-sm sets the table to 12px (the Caption role); §3.2 puts table
-      // text at the 13px Secondary/metadata step.
-      expect(proseContainer()).toHaveClass('prose-table:text-[13px]');
-      // Digits line up whether or not the model authored a `---:` column.
-      expect(proseContainer()).toHaveClass('prose-td:tabular-nums');
-      expect(proseContainer()).toHaveClass('prose-th:tabular-nums');
+      // The shared stylesheet owns the whole table: Crew's recipe
+      // (`.br-md-table`, main.css) sets the 13px secondary size, tabular
+      // numbers, the header band and the top rules. No `prose-*:` utility
+      // restates any of it, so there is one table look app-wide.
+      expect(className).not.toMatch(/prose-(table|thead|th|td):/);
+      expect(screen.getByRole('table')).toHaveClass('br-md-table');
     });
 
     it('gives links a single accent-token treatment', async () => {
@@ -1358,9 +1431,11 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       const button = await screen.findByRole('button', { name: 'dist/index.html' });
       // The two ArtifactLinkButton variants used to disagree (0.9em vs 0.95em)
       // for the same widget; inline code was 0.9em (12.6px) against the fenced
-      // block's 13px. All three are now the 13px "Code / terminal" step.
-      expect(button).toHaveClass('text-[13px]');
-      expect(proseContainer()).toHaveClass('prose-code:text-[13px]');
+      // block's 13px. All three are now the 13px code role: the button by its
+      // class, inline code by the authored `.biorouter-inline-code` rule.
+      expect(button).toHaveClass('text-code');
+      expect(button).toHaveClass('biorouter-inline-code');
+      expect(proseContainer()?.className).not.toContain('text-[13px]');
     });
 
     it('leaves inline code a single fill and drops the competing bg-inline-code class', async () => {
@@ -1369,9 +1444,11 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       const code = await screen.findByText('console.log()');
       expect(code.tagName).toBe('CODE');
       // Two fills (`bg-inline-code` on the element, `prose-code:bg-*` on the
-      // wrapper) were reconciled only by a specificity ladder in main.css.
+      // wrapper) were reconciled only by a specificity ladder in main.css. The
+      // one fill is now the authored chip on `.biorouter-inline-code`.
       expect(code).not.toHaveClass('bg-inline-code');
-      expect(proseContainer()).toHaveClass('prose-code:bg-background-medium');
+      expect(code).toHaveClass('biorouter-inline-code');
+      expect(proseContainer()?.className).not.toContain('prose-code:bg-');
     });
   });
 
@@ -1723,7 +1800,7 @@ for the result.`;
       await waitFor(() => expect(mention.tagName).toBe('SPAN'));
       // The TEXT is unchanged — same family, size and fill as inline code.
       expect(mention).toHaveClass('font-mono');
-      expect(mention).toHaveClass('text-[13px]');
+      expect(mention).toHaveClass('text-code');
       expect(mention).toHaveClass('bg-background-medium');
       expect(mention).not.toHaveClass('text-text-accent');
     });
