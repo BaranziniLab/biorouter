@@ -52,30 +52,6 @@
   gap: 12px;
 }
 
-/* Rename and `⋯`: shown on hover, on focus inside the row and while the menu is
-   open; always shown where nothing can hover. Only opacity moves, so both stay
-   in the tab order (principle 6). */
-.br-history-row-actions {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  gap: 4px;
-  opacity: 0;
-  transition: opacity var(--dur-fast-min) var(--ease-out);
-}
-
-.br-history-row:hover .br-history-row-actions,
-.br-history-row:focus-within .br-history-row-actions,
-.br-history-row-actions[data-state='open'] {
-  opacity: 1;
-}
-
-@media (hover: none) {
-  .br-history-row-actions {
-    opacity: 1;
-  }
-}
-
 /* The skeleton-to-content crossfade on a cold load: the content rises in over
    --dur-fast-max, the skeleton leaves over --dur-fast. */
 .br-history-layer {
@@ -87,7 +63,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .br-history-row-actions,
   .br-history-layer {
     transition: none;
   }

@@ -237,7 +237,7 @@ describe('SessionListView row actions', () => {
     );
 
     // Principle 6: one icon plus `⋯`, both ghost round 32px buttons, revealed
-    // together on hover or focus (the reveal is authored CSS on their cluster).
+    // together on hover or focus (the reveal is the shared `.br-row-actions` cluster).
     const visibleActions = await Promise.all([
       screen.findByRole('button', { name: 'Rename Example session' }),
       screen.findByRole('button', { name: 'More actions for Example session' }),
@@ -246,7 +246,7 @@ describe('SessionListView row actions', () => {
     for (const action of visibleActions) {
       expect(action).toHaveClass('h-control-md', 'w-control-md');
       expect(action).not.toHaveAttribute('title');
-      expect(action.closest('.br-history-row-actions')).not.toBeNull();
+      expect(action.closest('.br-row-actions')).not.toBeNull();
     }
 
     // Export moved into the menu with the rest, and Delete must NOT be a button

@@ -10,7 +10,10 @@
  * instead of pushing the stats out of their columns.
  *
  * The real `history.css` is loaded into Chromium over markup shaped like a
- * History bucket, with a stub of the shared `.biorouter-list-row` recipe.
+ * History bucket, together with the shared `@ws WS-PRIMITIVES` blocks of
+ * `main.css` that the row is made of: the `.biorouter-list-row` recipe and the
+ * `.br-row-actions` cluster whose reveal this test is about. Nothing here is
+ * a stub of either, so a change to the shared reveal reaches this test.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -20,14 +23,29 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { DUR } from '../../styles/motion';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+
+/** Every `@ws WS-PRIMITIVES` block of main.css, in file order (the rows, the row actions). */
+function primitiveBlocks(): string {
+  const out: string[] = [];
+  const re =
+    /\/\* @ws WS-PRIMITIVES begin: ([^*]+?) \*\/([\s\S]*?)\/\* @ws WS-PRIMITIVES end: \1 \*\//g;
+  for (const match of MAIN_CSS.matchAll(re)) out.push(match[2]);
+  if (out.length === 0) throw new Error('main.css has no @ws WS-PRIMITIVES block');
+  return out.join('\n');
+}
 
 const TOKENS = `:root {
   --radius-inner: 4px;
+  --radius-md: 8px;
   --radius-element: 8px;
   --row-height: 40px;
   --border-subtle: rgb(200, 200, 200);
+  --border-focus: rgb(90, 90, 90);
   --background-canvas: rgb(250, 250, 249);
   --overlay-selected: rgb(220, 220, 220);
+  --overlay-hover: rgb(240, 240, 240);
+  --background-focus: rgb(235, 235, 235);
   --text-default: rgb(20, 20, 20);
   --dur-fast-min: ${DUR.fastMin}ms;
   --dur-fast: ${DUR.fast}ms;
@@ -37,8 +55,6 @@ const TOKENS = `:root {
 body { margin: 0; font: 14px/20px sans-serif; }
 * { box-sizing: border-box; }
 button { font: inherit; border: 0; background: none; padding: 0; }
-/* The shared list-row recipe (WS-PRIMITIVES), reduced to what geometry reads. */
-.biorouter-list-row { min-height: var(--row-height); border-bottom: 1px solid var(--border-subtle); }
 .text-label { font-size: 14px; line-height: 20px; }
 .text-supporting { font-size: 12px; line-height: 16px; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -59,14 +75,16 @@ const row = (id: string, title: string) => `
     <div class="br-history-row-stats text-supporting" id="${id}-stats">
       <span>12</span><span>29,988,671</span><span>5</span>
     </div>
-    <div class="br-history-row-actions" data-state="closed" id="${id}-actions">
-      <button type="button" style="width:32px;height:32px" id="${id}-rename">R</button>
-      <button type="button" style="width:32px;height:32px" id="${id}-more">M</button>
+    <div class="br-row-actions-slot">
+      <div class="br-row-actions" data-state="closed" id="${id}-actions">
+        <button type="button" style="width:32px;height:32px" id="${id}-rename">R</button>
+        <button type="button" style="width:32px;height:32px" id="${id}-more">M</button>
+      </div>
     </div>
   </div>`;
 
 function page(css: string) {
-  return `<!doctype html><html><head><style>${TOKENS}\n${css}</style></head><body>
+  return `<!doctype html><html><head><style>${TOKENS}\n${primitiveBlocks()}\n${css}</style></head><body>
     <main style="width:760px;padding:0 24px">
       <section>
         <h2 class="br-history-bucket text-supporting" id="bucket">Today</h2>

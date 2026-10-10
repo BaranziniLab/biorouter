@@ -13,20 +13,9 @@ import {
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate } from 'react-router-dom';
 import { toastError, toastSuccess } from '../../toasts';
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from '../ui/context-menu';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
+import { ContextMenu, ContextMenuTrigger } from '../ui/context-menu';
+import { DropdownMenu, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { IconAction } from '../ui/row-actions';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { ScrollArea } from '../ui/scroll-area';
@@ -39,7 +28,11 @@ import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../uti
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
 import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
-import { chatRowMenuEntries, type ChatRowMenuEntry } from '../chats/ChatRowContextMenu';
+import {
+  ChatRowContextMenuContent,
+  ChatRowDropdownMenuContent,
+  type ChatRowMenuHandlers,
+} from '../chats/ChatRowContextMenu';
 import { chatRowCopy } from '../chats/copy';
 import { Skeleton } from '../ui/skeleton';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -244,83 +237,6 @@ function HistoryLoading() {
   );
 }
 
-/**
- * The SD-8 refusal, shown above "Make this chat public" while a menu is open on a
- * browser-served page, where that item can never work. Visible, never hover-only:
- * a privacy refusal stays on screen (principle 2).
- *
- * ⚠ `max-w-72` is load-bearing: a menu takes the width of its widest child, and
- * three unwrapped sentences stretched it across the window (measured 2026-09-12).
- * ⚠ No `title=` on the item: the global tooltip enhancer would make the paragraph
- * the item's accessible NAME.
- */
-function DeclassifyBrowserNote() {
-  return (
-    <p
-      data-testid="declassify-browser-note"
-      className="max-w-72 px-3 py-2 text-supporting text-text-muted"
-    >
-      {DECLASSIFY_NEEDS_HOST_REASON}
-    </p>
-  );
-}
-
-/**
- * A History row's menu, drawn from `chatRowMenuEntries` — the one list of items,
- * order and words the sidebar and the tab strip draw too (owner message 4) — as
- * either the `⋯` dropdown or the right-click menu. Only the item chrome is drawn
- * here, so History can put its SD-8 note above "Make this chat public".
- */
-function HistoryRowMenuItems({
-  entries,
-  kind,
-  declassifyNote,
-}: {
-  entries: ChatRowMenuEntry[];
-  kind: 'dropdown' | 'context';
-  declassifyNote: boolean;
-}) {
-  return (
-    <>
-      {entries.map((entry) => {
-        if (entry.kind === 'separator') {
-          return kind === 'dropdown' ? (
-            <DropdownMenuSeparator key={entry.key} />
-          ) : (
-            <ContextMenuSeparator key={entry.key} />
-          );
-        }
-        const content = (
-          <>
-            {entry.label}
-            {entry.shortcut ? (
-              <span aria-hidden="true" className="ml-auto text-supporting text-text-subtle">
-                {entry.shortcut}
-              </span>
-            ) : null}
-          </>
-        );
-        const itemProps = {
-          'data-chat-row-action': entry.key,
-          onSelect: entry.onSelect,
-          disabled: entry.disabled,
-          variant: entry.danger ? ('destructive' as const) : ('default' as const),
-        };
-        return (
-          <React.Fragment key={entry.key}>
-            {entry.key === 'declassify' && declassifyNote ? <DeclassifyBrowserNote /> : null}
-            {kind === 'dropdown' ? (
-              <DropdownMenuItem {...itemProps}>{content}</DropdownMenuItem>
-            ) : (
-              <ContextMenuItem {...itemProps}>{content}</ContextMenuItem>
-            )}
-          </React.Fragment>
-        );
-      })}
-    </>
-  );
-}
-
 interface HistoryRowProps {
   session: Session;
   onSelectSession: (sessionId: string) => void;
@@ -366,38 +282,47 @@ const HistoryRow = React.memo(function HistoryRow({
 
   /**
    * The row's menu: the shared items (Rename · open in a tab or window · Diverge ·
-   * Export… · Copy chat ID · Delete chat…), plus "Make this chat public" on a
-   * private row only (issue #56 §12.1: History's row and the session page are the
-   * only two places it is offered). "Open in new tab" is the row's own click, so
-   * the two can never disagree about what it does. A subagent run is machinery,
-   * not a chat to branch, and an empty chat has nothing to branch from, so
-   * neither offers Diverge.
+   * Export… · Copy chat ID · Delete chat…), drawn by the same two components the
+   * sidebar and the tab strip draw (`chats/ChatRowContextMenu`), plus "Make this
+   * chat public" on a private row only (issue #56 §12.1: History's row and the
+   * session page are the only two places it is offered). "Open in new tab" is the
+   * row's own click, so the two can never disagree about what it does. A subagent
+   * run is machinery, not a chat to branch, and an empty chat has nothing to
+   * branch from, so neither offers Diverge.
+   *
+   * On a browser-served page that item can never work (SD-8), so it carries its
+   * refusal as a `note` the menu draws above it: visible, never hover-only, and
+   * not a `title=` (the global tooltip enhancer would make the sentence the
+   * item's accessible NAME).
    */
-  const entries = useMemo(() => {
+  const target = useMemo(
+    () => ({ sessionId: session.id, workingDir: session.working_dir, openInNewTab: open }),
+    [session.id, session.working_dir, open]
+  );
+  const handlers = useMemo<ChatRowMenuHandlers>(() => {
     const canDiverge = session.session_type !== 'sub_agent' && session.message_count > 0;
-    return chatRowMenuEntries(
-      { sessionId: session.id, workingDir: session.working_dir, openInNewTab: open },
-      {
-        onRename: () => onRename(session),
-        onDiverge: canDiverge ? () => onDiverge(session) : undefined,
-        onExport: () => onExport(session),
-        onDelete: () => onDelete(session),
-        extraItems:
-          session.privacy_tier === 'private'
-            ? [
-                {
-                  key: 'declassify',
-                  label: MAKE_CHAT_PUBLIC,
-                  disabled: declassifyOnHost !== null,
-                  onSelect: () => {
-                    if (declassifyOnHost === null) onDeclassify(session);
-                  },
+    return {
+      onRename: () => onRename(session),
+      onDiverge: canDiverge ? () => onDiverge(session) : undefined,
+      onExport: () => onExport(session),
+      onDelete: () => onDelete(session),
+      extraItems:
+        session.privacy_tier === 'private'
+          ? [
+              {
+                key: 'declassify',
+                label: MAKE_CHAT_PUBLIC,
+                disabled: declassifyOnHost !== null,
+                note: declassifyOnHost !== null ? DECLASSIFY_NEEDS_HOST_REASON : undefined,
+                noteTestId: 'declassify-browser-note',
+                onSelect: () => {
+                  if (declassifyOnHost === null) onDeclassify(session);
                 },
-              ]
-            : [],
-      }
-    );
-  }, [session, open, onRename, onDiverge, onExport, onDelete, onDeclassify, declassifyOnHost]);
+              },
+            ]
+          : [],
+    };
+  }, [session, onRename, onDiverge, onExport, onDelete, onDeclassify, declassifyOnHost]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const target = event.target;
@@ -529,65 +454,47 @@ const HistoryRow = React.memo(function HistoryRow({
             )}
           </div>
 
-          {/* One action and `⋯`, revealed on hover, on focus within the row and
-              while the menu is open; always shown on a touch screen. Only the
-              opacity changes, so both stay in the tab order. Everything else,
-              Delete included, is behind `⋯`. */}
-          <div className="br-history-row-actions" data-state={menuOpen ? 'open' : 'closed'}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  shape="round"
-                  aria-label={renameLabel(session.name)}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRename(session);
-                  }}
-                >
-                  <Pencil aria-hidden="true" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top">{RENAME}</TooltipContent>
-            </Tooltip>
-            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      shape="round"
-                      aria-label={moreActionsLabel(session.name)}
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <MoreHorizontal aria-hidden="true" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                </TooltipTrigger>
-                <TooltipContent side="top">{MORE_ACTIONS}</TooltipContent>
-              </Tooltip>
-              <DropdownMenuContent
-                align="end"
-                className="w-56"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <HistoryRowMenuItems
-                  entries={entries}
-                  kind="dropdown"
-                  declassifyNote={declassifyOnHost !== null}
-                />
-              </DropdownMenuContent>
-            </DropdownMenu>
+          {/* One action and `⋯`, the shared row-actions cluster: revealed on hover,
+              on focus within the row and while the menu is open, and always shown
+              on a touch screen. Only the opacity changes, so both stay in the tab
+              order. Everything else, Delete included, is behind `⋯`. */}
+          <div className="br-row-actions-slot" data-slot="row-actions-slot">
+            <div
+              className="br-row-actions"
+              data-slot="row-actions"
+              data-state={menuOpen ? 'open' : 'closed'}
+            >
+              <IconAction
+                icon={Pencil}
+                label={renameLabel(session.name)}
+                tooltip={RENAME}
+                onSelect={() => onRename(session)}
+              />
+              <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        shape="round"
+                        aria-label={moreActionsLabel(session.name)}
+                        data-row-action=""
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <MoreHorizontal aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">{MORE_ACTIONS}</TooltipContent>
+                </Tooltip>
+                <ChatRowDropdownMenuContent target={target} {...handlers} />
+              </DropdownMenu>
+            </div>
           </div>
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-56">
-        <HistoryRowMenuItems
-          entries={entries}
-          kind="context"
-          declassifyNote={declassifyOnHost !== null}
-        />
-      </ContextMenuContent>
+      <ChatRowContextMenuContent target={target} {...handlers} />
     </ContextMenu>
   );
 });
