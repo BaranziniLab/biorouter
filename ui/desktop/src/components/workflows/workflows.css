@@ -1,0 +1,56 @@
+/*
+ * Workflows' own surface rules (spec 3.10, global rules: CSS that serves one surface lives next
+ * to its component). Authored rather than written as Tailwind strings, because a newly written
+ * utility can silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md).
+ */
+
+/* The import drop zone: a dashed hairline well. A file held over it takes the accent edge and
+   the selected wash (the "this will act" state), an error takes the danger edge. Hover is
+   neutral, like every hover in the app. */
+.br-workflow-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-container);
+  background: var(--background-muted);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    border-color var(--dur-fast-min) var(--ease-out);
+}
+
+/* The hover wash layered over the well's ground, so the well keeps its own step. */
+.br-workflow-dropzone:hover {
+  background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+}
+
+.br-workflow-dropzone[data-state='dragging'] {
+  border-color: var(--border-accent);
+  background: var(--overlay-selected);
+}
+
+.br-workflow-dropzone[data-state='error'] {
+  border-color: var(--border-danger);
+}
+
+.br-workflow-dropzone[aria-disabled='true'] {
+  cursor: progress;
+}
+
+.br-workflow-dropzone:focus-visible {
+  outline: none;
+  border-style: solid;
+  border-color: var(--border-focus);
+  background: var(--background-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-workflow-dropzone {
+    transition: none;
+  }
+}

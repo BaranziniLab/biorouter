@@ -1,19 +1,16 @@
 import { useState, useCallback, useRef } from 'react';
 import { Upload } from '../icons/app-icons';
 import { Button } from '../ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '../ui/dialog';
-import { MODAL_SIZE } from '../ModalShell';
+import { Spinner } from '../ui/spinner';
+import { ModalShell } from '../ModalShell';
 import { toastSuccess } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import { parseWorkflow } from '../../api';
 import type { Workflow } from '../../workflow';
+import { workflowsCopy } from './copy';
+import './workflows.css';
+
+const copy = workflowsCopy.importDialog;
 
 interface ImportWorkflowFormProps {
   isOpen: boolean;
@@ -58,12 +55,16 @@ export default function ImportWorkflowForm({
     onClose();
   };
 
+  const browse = () => {
+    if (!isSubmitting) fileInputRef.current?.click();
+  };
+
   const processContent = useCallback(
     async (content: string, filename: string) => {
       const isYaml = /\.(ya?ml)$/i.test(filename);
       const isJson = /\.json$/i.test(filename);
       if (!isYaml && !isJson) {
-        setError('Choose a YAML or JSON workflow file.');
+        setError(copy.wrongType);
         return;
       }
       setError('');
@@ -74,10 +75,7 @@ export default function ImportWorkflowForm({
         reset();
         onClose();
         onSuccess();
-        toastSuccess({
-          title: workflow.title?.trim() || 'Workflow',
-          msg: 'Workflow imported',
-        });
+        toastSuccess({ title: copy.imported(workflow.title?.trim() || 'workflow') });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setIsSubmitting(false);
@@ -114,31 +112,44 @@ export default function ImportWorkflowForm({
   );
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && handleClose()}>
-      <DialogContent dismissible={!isSubmitting} className={MODAL_SIZE.md}>
-        <DialogHeader>
-          <DialogTitle>Import workflow</DialogTitle>
-          <DialogDescription>
-            Drag and drop a workflow YAML or JSON file, or click to browse.
-          </DialogDescription>
-        </DialogHeader>
-
+    <ModalShell
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isSubmitting) handleClose();
+      }}
+      size="md"
+      purpose="form"
+      title={copy.title}
+      footer={
+        <Button variant="ghost" onClick={handleClose} disabled={isSubmitting}>
+          {copy.cancel}
+        </Button>
+      }
+    >
+      <div className="flex flex-col gap-2 pb-1">
+        {/* The drop zone says what to do in its own words, so the dialog carries
+            no description repeating them. It is a button to the keyboard too:
+            Enter or Space opens the file picker. */}
         <div
+          role="button"
+          tabIndex={isSubmitting ? -1 : 0}
+          aria-disabled={isSubmitting || undefined}
+          aria-describedby={error ? 'import-workflow-error' : undefined}
+          data-state={isDragging ? 'dragging' : error ? 'error' : undefined}
           onDragOver={(e) => {
             e.preventDefault();
             setIsDragging(true);
           }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          onClick={() => !isSubmitting && fileInputRef.current?.click()}
-          className={[
-            'biorouter-modal-panel flex flex-col items-center justify-center gap-2 rounded-container py-10 cursor-pointer transition-colors select-none',
-            isDragging
-              ? '!border-block-teal bg-block-teal/5'
-              : error
-                ? '!border-border-danger bg-background-danger/10'
-                : 'hover:!border-border-strong hover:bg-overlay-hover',
-          ].join(' ')}
+          onClick={browse}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              browse();
+            }
+          }}
+          className="br-workflow-dropzone"
         >
           <input
             ref={fileInputRef}
@@ -148,38 +159,25 @@ export default function ImportWorkflowForm({
             className="hidden"
           />
           {isSubmitting ? (
-            <p className="text-body text-text-muted animate-pulse">Importing…</p>
+            <span role="status" className="flex items-center gap-2 text-body text-text-muted">
+              <Spinner size={16} />
+              {copy.importing}
+            </span>
           ) : (
             <>
-              <Upload className="w-8 h-8 text-text-muted" />
-              <p className="text-label text-text-default">Drop a YAML or JSON file here</p>
-              <p className="text-supporting text-text-muted">or click to browse</p>
+              <Upload className="size-5 text-text-muted" aria-hidden />
+              <p className="text-label text-text-default">{copy.drop}</p>
+              <p className="text-supporting text-text-muted">{copy.browse}</p>
             </>
           )}
         </div>
 
-        {error && <p className="text-body text-text-danger">{error}</p>}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={handleClose} disabled={isSubmitting}>
-            Cancel
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-export function ImportWorkflowButton({ onClick }: { onClick: () => void }) {
-  return (
-    // Variant only. `buttonVariants`' base already emits `inline-flex
-    // items-center justify-center gap-2` and sizes a bare svg to 16px, and a
-    // `flex` on the call site FLIPS that `inline-flex` through tailwind-merge —
-    // which is how a row action elsewhere in the app became a full-width bar
-    // (vocabulary V7).
-    <Button onClick={onClick} variant="outline">
-      <Upload />
-      Import workflow
-    </Button>
+        {error && (
+          <p id="import-workflow-error" role="alert" className="text-supporting text-text-danger">
+            {error}
+          </p>
+        )}
+      </div>
+    </ModalShell>
   );
 }
