@@ -129,23 +129,28 @@ test.describe('SPOKEAgent .brxt install flow', () => {
     console.log('✓ Extensions tab');
   });
 
-  test('2. Click "Add extension" — modal opens', async () => {
-    await mainWindow.click('button:has-text("Add extension")', { timeout: 5000 });
+  test('2. Add, then "Install from file (.brxt)" opens the modal', async () => {
+    // The Extensions band has one "Add" menu (Browse marketplace, Install from file, Custom extension…).
+    await mainWindow.getByRole('button', { name: 'Add', exact: true }).click({ timeout: 5000 });
+    await mainWindow.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
     // Verify the modal dialog is open (avoid strict-mode by targeting the dialog role)
     await expect(mainWindow.locator('[role="dialog"]')).toBeVisible({ timeout: 5000 });
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-2-modal-open.png' });
     console.log('✓ Modal opened');
   });
 
-  test('3. Click "Browse file…" — PLAYWRIGHT_BRXT_FILE hook returns SPOKEAgent .brxt', async () => {
+  test('3. Click the drop zone: PLAYWRIGHT_BRXT_FILE hook returns SPOKEAgent .brxt', async () => {
     // The PLAYWRIGHT_BRXT_FILE env var makes the main-process IPC handler return
-    // the preset path without opening a native dialog.
-    await mainWindow.click('button:has-text("Browse file")', { timeout: 5000 });
+    // the preset path without opening a native dialog. The one-line drop zone is
+    // itself the file control (it calls openBrxtFilePicker()).
+    await mainWindow
+      .getByRole('button', { name: /Drop a \.brxt file here/ })
+      .click({ timeout: 5000 });
 
     // Validation runs; manifest preview card should appear
     await expect(mainWindow.locator('text=SPOKEAgent').first()).toBeVisible({ timeout: 20000 });
     await mainWindow.screenshot({ path: 'test-results/brxt-spoke-3-manifest-loaded.png' });
-    console.log('✓ Manifest preview loaded — Browse file button works correctly');
+    console.log('✓ Manifest preview loaded: the drop zone opens the file picker');
   });
 
   test('4. Manifest info card shows name, version, description', async () => {
