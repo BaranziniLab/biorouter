@@ -51,6 +51,11 @@ pages. Three documents sit directly in this folder:
   [the nested `KnowledgeProvider` blocker](chat-groups/knowledge-provider-nesting-blocker.md),
   a spike report proving that two nested providers clobber each other's active knowledge
   base; its prerequisite fix is still **not** made, so provider nesting remains blocked.
+- **[`codex-simplicity-redesign/`](codex-simplicity-redesign/README.md)**: the October 2026
+  redesign of the desktop app and the website toward Codex like simplicity, with Crew as the in
+  house reference. Holds the [requirements and plan](codex-simplicity-redesign/requirements-and-plan.md)
+  (items R-01 to R-24, owner decisions, workstreams) and the
+  [progress tracker](codex-simplicity-redesign/progress.md). **Current**: in progress.
 - **[`composer-thinking-indicator/`](composer-thinking-indicator/README.md)** — the affordance
   that says Biorouter is working on your turn. Holds the
   [redesign of record](composer-thinking-indicator/thinking-indicator-redesign.md) — seven
