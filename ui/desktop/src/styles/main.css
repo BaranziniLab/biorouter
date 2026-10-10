@@ -2569,10 +2569,40 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-dialog-motion[data-state='closed'],
 .br-sheet-motion[data-state='closed'] {
   --tw-duration: var(--dur-fast);
+  animation-name: br-surface-out;
 }
 
 .br-dialog-motion[data-state='closed'] {
   --tw-exit-scale: 0.98;
+}
+
+/* The surfaces' own keyframes (vision round 1, V1-L7). tw-animate's `enter` and `exit` always
+   write `filter: blur(var(--tw-enter-blur, 0))`, so every menu, popover, tooltip, dialog, sheet
+   and scrim animated `filter` alongside opacity and transform, even at a blur of 0: principle 9
+   allows transform and opacity only. These read the same `--tw-*` values the utilities and the
+   rules here set, and draw nothing else. Unlayered, so `animation-name` here beats the
+   utility's `animation` shorthand while its duration, ease and fill still apply. The menu and
+   tooltip rules in the primitives block below name them too. */
+@keyframes br-surface-in {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0)
+      scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1));
+  }
+}
+
+@keyframes br-surface-out {
+  to {
+    opacity: var(--tw-exit-opacity, 1);
+    transform: translate3d(var(--tw-exit-translate-x, 0), var(--tw-exit-translate-y, 0), 0)
+      scale3d(var(--tw-exit-scale, 1), var(--tw-exit-scale, 1), var(--tw-exit-scale, 1));
+  }
+}
+
+.biorouter-modal-overlay[data-state='open'],
+.br-dialog-motion[data-state='open'],
+.br-sheet-motion[data-state='open'] {
+  animation-name: br-surface-in;
 }
 
 /* ModalShell `xl`: 800px from the `sm` breakpoint, authored because the utility is new. */
@@ -4542,14 +4572,19 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    "Desktop shell geometry"). Spec 2.6. */
 
 /* Tooltip and InfoTip motion: in over `--dur-fast`, out over `--dur-fast-min`, `--ease-out`.
-   `animate-in`/`animate-out` (tw-animate-css) read `--tw-duration` and `--tw-ease`. */
+   `animate-in`/`animate-out` (tw-animate-css) read `--tw-duration` and `--tw-ease`; the frames are
+   the surfaces' own (`br-surface-in/out`, the dialog motion block), which draw no `filter`
+   (V1-L7). A tooltip is open in `delayed-open`, `instant-open` or with no state at all
+   (`AppTooltipLayer`), so the closed state is the one named. */
 .br-tooltip-motion {
   --tw-duration: var(--dur-fast);
   --tw-ease: var(--ease-out);
+  animation-name: br-surface-in;
 }
 
 .br-tooltip-motion[data-state='closed'] {
   --tw-duration: var(--dur-fast-min);
+  animation-name: br-surface-out;
 }
 
 /* Menus and popovers (`MENU_SURFACE_CLASS_NAME`, `PopoverContent`): open with opacity,
@@ -4570,6 +4605,8 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 .br-menu-motion[data-state='open'] {
   --tw-duration: var(--dur-fast-max);
   --tw-enter-scale: 0.97;
+  /* The surfaces' own keyframes, which draw no `filter` (V1-L7, the dialog motion block). */
+  animation-name: br-surface-in;
 }
 
 .br-menu-motion[data-state='open'][data-side='bottom'] {
@@ -4593,6 +4630,7 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   --tw-exit-scale: 1;
   --tw-exit-translate-x: 0;
   --tw-exit-translate-y: 0;
+  animation-name: br-surface-out;
 }
 
 /* Defaults a caller's own width utility may override, hence the layer. */
@@ -6212,6 +6250,32 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 .biorouter-markdown.prose li > :where(ul, ol),
 .biorouter-markdown.prose li > p {
   margin: 4px 0;
+}
+
+/* A task list (`- [x]`, `- [ ]`) draws the summary rail's glyphs, a 14px check
+   or circle in muted ink, never a native checkbox (`MarkdownInputSlot`). The
+   glyph hangs in the bullet gutter where the bullet would be (20px: 14px glyph
+   plus a 6px gap), so the item's text keeps the left edge of the lists around
+   it. */
+.biorouter-markdown.prose li.task-list-item {
+  list-style: none;
+}
+
+.biorouter-markdown .br-md-task {
+  display: inline-flex;
+  width: 14px;
+  height: var(--text-prose--line-height);
+  margin-right: 6px;
+  margin-left: -20px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  vertical-align: top;
+}
+
+.biorouter-markdown .br-md-task > svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* A quote is an edge and muted ink, never a tinted box. */

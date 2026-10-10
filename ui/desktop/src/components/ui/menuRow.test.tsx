@@ -193,5 +193,16 @@ describe('one menu row (spec 2.6)', () => {
     expect(css).toMatch(
       /\.br-menu-motion\[data-state='closed'\] \{\s*--tw-duration: var\(--dur-fast\);\s*--tw-exit-scale: 1;/
     );
+    // The surfaces' own keyframes, never tw-animate's `enter`/`exit`, which animate `filter`
+    // (V1-L7; the cascade is measured in `surfaceMotion.browser.test.ts`).
+    expect(css).toMatch(
+      /\.br-menu-motion\[data-state='open'\] \{[^}]*animation-name: br-surface-in;/
+    );
+    expect(css).toMatch(
+      /\.br-menu-motion\[data-state='closed'\] \{[^}]*animation-name: br-surface-out;/
+    );
+    const keyframes = css.match(/@keyframes br-surface-(in|out) \{[\s\S]*?\n\}/g) ?? [];
+    expect(keyframes).toHaveLength(2);
+    for (const block of keyframes) expect(block).not.toMatch(/filter/);
   });
 });
