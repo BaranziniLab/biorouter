@@ -123,14 +123,17 @@ const CHAT_MEASURE_VIEWS = [
  * which any render test noticed, because each view rendered exactly what it
  * meant to. What no view can now do is mean something different.
  *
- * `ScheduleDetailView` and the two transcripts are deliberately ABSENT: they
- * are drill-in surfaces with a Back-button header, which is a different object
- * from a page header and keeps its own shape.
+ * The drill-in surfaces joined on 2026-10-09 (spec 3.10, 3.4): the schedule
+ * detail and the two transcripts used to keep a Back-button header of their
+ * own shape, and now take the same band with `onBack`.
  */
 const PAGE_HEADER_VIEWS = [
   'settings/SettingsView.tsx',
   'sessions/SessionListView.tsx',
+  'sessions/SessionHistoryView.tsx',
+  'sessions/SharedSessionView.tsx',
   'schedule/SchedulesView.tsx',
+  'schedule/ScheduleDetailView.tsx',
   'workflows/WorkflowsView.tsx',
   'extensions/ExtensionsView.tsx',
   'skills/SkillsView.tsx',
