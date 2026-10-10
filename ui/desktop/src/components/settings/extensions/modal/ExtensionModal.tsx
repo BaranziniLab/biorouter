@@ -361,7 +361,9 @@ export default function ExtensionModal({
         footer={
           showDeleteConfirmation ? (
             <>
-              <Button variant="secondary" onClick={cancelRemoval}>
+              {/* First focus lands on the safe answer, not on "Review saved credentials" and not
+                  on the removal button: Radix keeps a focus that is already inside the dialog. */}
+              <Button variant="secondary" onClick={cancelRemoval} autoFocus>
                 {COPY.cancel}
               </Button>
               <Button

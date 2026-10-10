@@ -83,7 +83,9 @@ export default function ExtensionCredentialsDialog({ name, onClose, onDeleted }:
       subtitle={COPY.subtitle(name)}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>
+          {/* First focus lands on the safe answer of a destructive dialog, not on the help glyph
+              that is the first thing in its body. */}
+          <Button variant="secondary" onClick={onClose} disabled={busy} autoFocus>
             {deleted ? COPY.done : COPY.cancel}
           </Button>
           <Button

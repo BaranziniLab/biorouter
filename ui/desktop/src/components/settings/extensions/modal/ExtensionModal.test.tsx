@@ -319,6 +319,16 @@ describe('ExtensionModal — the dialog and its form', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('moves focus to Cancel when the removal question replaces the form', async () => {
+    const user = userEvent.setup({ delay: null });
+    edit();
+
+    await user.click(screen.getByRole('button', { name: COPY.removeAction }));
+
+    // The safe answer, not the Review button and not the removal button.
+    expect(screen.getByRole('button', { name: COPY.cancel })).toHaveFocus();
+  });
+
   it('returns from the removal question to the form when it came from the form', async () => {
     const user = userEvent.setup({ delay: null });
     const onClose = vi.fn();

@@ -90,6 +90,13 @@ describe('the saved-credentials dialog chrome', () => {
     expect(dialog.querySelector('.br-info-tip')).not.toBeNull();
   });
 
+  it('puts first focus on Cancel, the safe answer, not on the help glyph in the body', async () => {
+    render(<ExtensionCredentialsDialog name="fixture" onClose={vi.fn()} onDeleted={vi.fn()} />);
+    await screen.findByRole('dialog', { name: COPY.title('fixture') });
+
+    expect(screen.getByRole('button', { name: COPY.cancel })).toHaveFocus();
+  });
+
   it('shows the dialog description without a dash anywhere in its copy', () => {
     const strings = [
       COPY.subtitle('x'),
