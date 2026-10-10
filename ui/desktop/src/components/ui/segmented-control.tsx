@@ -132,7 +132,9 @@ function SegmentedControlInner<T extends string>(
           '--br-segmented-count': options.length,
           '--br-segmented-index': selectedIndex,
         } as React.CSSProperties)
-      : { width: thumb!.width, transform: `translateX(${thumb!.left}px)` };
+      : // `translate`, not `transform`: the thumb's transition is written on `translate` and
+        // `width` (main.css), so a `transform` here snapped while only the width slid.
+        ({ width: thumb!.width, translate: `${thumb!.left}px 0` } as React.CSSProperties);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Home' && event.key !== 'End') return;

@@ -2373,10 +2373,81 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-sm);
+  /* @ws WS-MOTION begin: toast close motion */
   transition:
-    opacity var(--motion-fast) var(--ease-out),
-    background-color var(--motion-fast) var(--ease-out);
+    opacity var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out);
+  /* @ws WS-MOTION end: toast close motion */
 }
+
+/* @ws WS-MOTION begin: toast motion */
+/* The toast's entrance and exit (spec 3.16), replacing react-toastify's
+   default Bounce, which flew in from 3000px with -25/+10/-5px overshoots over
+   500ms. `App.tsx` hands these two classes to `cssTransition`:
+   - in: opacity and an 8px drop over `--dur-fast-max`;
+   - out: opacity and an 8px slide toward the corner over `--dur-fast`;
+   then the library collapses the slot over 125ms (`collapseDuration`).
+   Only opacity and transform move.
+
+   ⚠ THE TRAVEL IS BOUNDED BY THE DRAG BAND. The layer sits at
+   `--toast-inset-top` (44px), so the entrance starts 8px above it, at 36px,
+   still under `--titlebar-drag-height` (32px)'s floor. Raise the travel or
+   lower the inset and a toast ENTERS the drag rect, whose clicks Electron
+   swallows by DOM order (issue #74): its × and "View details" would be dead for
+   as long as it animates. `styles/toastLayer.test.ts` holds the sum.
+
+   Under reduced motion both are a fade. The exit must stay an ANIMATION there,
+   never `animation: none`: the library removes the toast on `animationend`, and
+   an exit that never ends leaves a toast that never goes. */
+.br-toast-in {
+  animation: br-toast-in var(--dur-fast-max) var(--ease-out) both;
+}
+
+.br-toast-out {
+  animation: br-toast-out var(--dur-fast) var(--ease-out) both;
+}
+
+@keyframes br-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes br-toast-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-toast-in {
+    animation-name: br-fade-in;
+  }
+
+  .br-toast-out {
+    animation-name: br-toast-fade-out;
+  }
+}
+
+@keyframes br-toast-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+/* @ws WS-MOTION end: toast motion */
 
 /* A toast stays clickable while a modal dialog is open.
    Radix's modal sets `pointer-events: none` on <body> for as long as the dialog
@@ -4355,6 +4426,32 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* The one menu row (`MENU_ROW_CLASS_NAME`): its highlight eases over `--dur-fast-min`. */
 .br-menu-row {
   transition-duration: var(--dur-fast-min);
+}
+
+/* Its geometry, authored as well as written in the row's utilities (the same values, pinned
+   together in `menuRow.test.tsx`): a 32px floor, 6px 12px padding, an 8px gap, radius 8, 13/18
+   text. Layered, so a caller's own utility still wins; it is what a stylesheet without
+   Tailwind (the geometry browser test, a scanner that missed a string) still draws. */
+@layer components {
+  .br-menu-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-block-size: var(--control-md);
+    padding: 6px 12px;
+    border-radius: var(--radius-element);
+    font-size: var(--text-secondary);
+    line-height: var(--text-secondary--line-height);
+  }
+
+  .br-menu-row-trailing {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 8px;
+    margin-inline-start: auto;
+  }
 }
 
 /* InfoTip trigger: a 14px glyph in a 24×24 hit box drawn with a −5px margin, so it adds 14px

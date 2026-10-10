@@ -65,6 +65,27 @@ describe('one menu row (spec 2.6)', () => {
     }
   });
 
+  /**
+   * The same geometry is authored on `.br-menu-row` (layered), so a stylesheet without Tailwind
+   * still draws it and `controlsGeometry.browser.test.tsx` can measure it. The two copies must
+   * agree, value for value.
+   */
+  it('authors the same geometry the utilities carry', () => {
+    const css = readFileSync(resolve(__dirname, '../../styles/main.css'), 'utf8');
+    const at = css.indexOf('@layer components {\n  .br-menu-row {');
+    expect(at, 'no layered .br-menu-row rule').toBeGreaterThanOrEqual(0);
+    const body = css.slice(css.indexOf('.br-menu-row {', at), css.indexOf('}', at));
+    expect(body).toMatch(/min-block-size:\s*var\(--control-md\)/); // min-h-control-md
+    expect(body).toMatch(/padding:\s*6px 12px/); // py-1.5 px-3
+    expect(body).toMatch(/gap:\s*8px/); // gap-2
+    expect(body).toMatch(/border-radius:\s*var\(--radius-element\)/); // rounded-element
+    expect(body).toMatch(/font-size:\s*var\(--text-secondary\)/); // text-secondary
+    const tokens = MENU_ROW_CLASS_NAME.split(/\s+/);
+    for (const token of ['min-h-control-md', 'py-1.5', 'px-3', 'gap-2', 'rounded-element']) {
+      expect(tokens).toContain(token);
+    }
+  });
+
   it('is the row of a dropdown item', async () => {
     await openDropdown(<DropdownMenuItem>Rename</DropdownMenuItem>);
     expectMenuRow(screen.getByRole('menuitem', { name: 'Rename' }));
