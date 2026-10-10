@@ -89,7 +89,11 @@ function PreviewFrame({
         <span aria-hidden="true" className="shrink-0">
           {icon}
         </span>
-        <span className={machineTitle ? 'truncate font-mono' : 'truncate'} title={title}>
+        {/* A long path truncates; the whole path stays one hover away. */}
+        <span
+          className={machineTitle ? 'truncate font-mono' : 'truncate'}
+          title={machineTitle ? title : undefined}
+        >
           {title}
         </span>
         {meta && <span className="ml-auto shrink-0 tabular-nums">{meta}</span>}
