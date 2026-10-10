@@ -42,6 +42,23 @@ export interface PickerPanelProps {
   'data-testid'?: string;
 }
 
+/**
+ * The keys `Command` answers at its root for the listbox: the arrows, Home, End and
+ * Enter.
+ *
+ * ⚠ **`Command` handles them wherever the key came from**, and the scope line sits
+ * inside its root. So Enter on the scope word's InfoTip, or on the bulk button,
+ * bubbled to the root, which toggled whichever row was highlighted and cancelled
+ * the Enter: the person asked for "Disable all" or for the explanation and an
+ * extension went off instead. (Space was unaffected, which is why a click test
+ * missed it.) The scope line's own controls keep these keys.
+ */
+const LIST_KEYS = new Set(['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter']);
+
+function keepListKeysInTheList(event: React.KeyboardEvent<HTMLElement>) {
+  if (LIST_KEYS.has(event.key)) event.stopPropagation();
+}
+
 export function PickerPanel({
   listLabel,
   searchPlaceholder,
@@ -69,7 +86,7 @@ export function PickerPanel({
         placeholder={searchPlaceholder}
         aria-label={searchPlaceholder.replace(/…$/, '')}
       />
-      <div className="br-picker-panel__bar">
+      <div className="br-picker-panel__bar" onKeyDown={keepListKeysInTheList}>
         <span className="br-picker-panel__scope">
           <span>{scopeLabel}</span>
           <InfoTip label={TOOLS_COPY.scope.about} help={scopeHelp} />
@@ -133,9 +150,15 @@ export function PickerRow({
   'data-testid': testId,
 }: PickerRowProps) {
   const nameNode = <span className="br-picker-row__name">{name}</span>;
+  const picture = React.useRef<HTMLButtonElement>(null);
   return (
     <CommandItem
-      onSelect={onToggle}
+      // The change goes THROUGH the switch picture (below), not around it: the
+      // switch slides a change the person made and snaps one that arrived by
+      // itself (a list that loaded, another window), and it can only tell the two
+      // apart by being clicked. Straight to `onToggle`, every toggle read as
+      // "arrived by itself" and the knob jumped.
+      onSelect={() => (picture.current ? picture.current.click() : onToggle())}
       selected={checked}
       disabled={disabled}
       aria-label={label}
@@ -165,7 +188,16 @@ export function PickerRow({
         {note && <span className="br-picker-row__note">{note}</span>}
       </span>
       <span className="br-picker-row__switch" aria-hidden="true">
-        <Switch checked={checked} disabled={disabled} tabIndex={-1} aria-hidden="true" />
+        <Switch
+          ref={picture}
+          checked={checked}
+          onCheckedChange={() => onToggle()}
+          // The click came from the row; it must not bubble back to it.
+          onClick={(event) => event.stopPropagation()}
+          disabled={disabled}
+          tabIndex={-1}
+          aria-hidden="true"
+        />
       </span>
     </CommandItem>
   );
