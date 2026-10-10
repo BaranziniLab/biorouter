@@ -313,21 +313,25 @@ describe('ChatTabStrip: the new-tab entrance (spec 3.16)', () => {
     }
   });
 
-  it('an ACTIVE new tab keeps the attribute after its entrance, until it stops being active', () => {
+  it('an ACTIVE new tab swaps entering for entered when its entrance ends, until it stops being active', () => {
     const { container, rerender, props } = renderStrip([tab('a')], { activeTabId: 'a' });
     rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="b" />);
 
     const b = tabNode(container, 'b');
     expect(b.dataset.tabEntering).toBe('true');
+    expect(b.dataset.tabEntered).toBeUndefined();
 
-    // The entrance ends. Dropping the attribute now would swap the computed
-    // animation to `br-tab-select` and settle the tab a second time.
+    // The entrance ends. Dropping `entering` alone would swap the computed
+    // animation to `br-tab-select` and settle the tab a second time, so the
+    // active tab takes `entered` (computes `animation: none`) in the same tick.
     fireEvent.animationEnd(b);
-    expect(b.dataset.tabEntering).toBe('true');
+    expect(b.dataset.tabEntering).toBeUndefined();
+    expect(b.dataset.tabEntered).toBe('true');
 
-    // Another tab becomes active: now it lets go.
+    // Another tab becomes active: now it lets go, and selecting it later settles.
     rerender(<ChatTabStrip {...props} tabs={[tab('a'), tab('b')]} activeTabId="a" />);
     expect(b.dataset.tabEntering).toBeUndefined();
+    expect(b.dataset.tabEntered).toBeUndefined();
   });
 
   it('an INACTIVE new tab lets go of the attribute when its entrance ends', () => {
@@ -341,6 +345,8 @@ describe('ChatTabStrip: the new-tab entrance (spec 3.16)', () => {
     expect(b.dataset.tabEntering).toBe('true');
     fireEvent.animationEnd(b);
     expect(b.dataset.tabEntering).toBeUndefined();
+    // An inactive tab has no settle to suppress, so it takes no `entered` mark.
+    expect(b.dataset.tabEntered).toBeUndefined();
   });
 
   it('marks the entrance under reduced motion too (the CSS rests it to a fade)', () => {
@@ -392,5 +398,13 @@ describe('ChatTabStrip: the new-tab entrance (spec 3.16)', () => {
     expect(css.indexOf(".br-tab[data-tab-entering='true'] {")).toBeGreaterThan(
       css.indexOf(".br-tab[data-active='true'] {")
     );
+
+    // An active tab whose entrance has played holds NO animation: not the settle,
+    // and not a finished entrance a DOM move (React's keyed reorder) would replay.
+    const entered = css.match(
+      /\.br-tab\[data-active='true'\]\[data-tab-entered='true'\]\s*\{([^}]*)\}/
+    );
+    expect(entered, 'no .br-tab[data-tab-entered] rule').not.toBeNull();
+    expect(entered![1]).toMatch(/animation:\s*none/);
   });
 });

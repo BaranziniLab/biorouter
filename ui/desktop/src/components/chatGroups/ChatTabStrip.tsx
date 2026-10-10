@@ -105,13 +105,18 @@ export const TAB_BAND_DRAG_GUTTER = 44;
  * edge, `--dur-fast-max`, `--ease-out`; an opacity fade under reduced motion),
  * and the keyframe wins over the active tab's `br-tab-select` settle.
  *
- * ⚠ **The attribute leaves an ACTIVE tab only when it stops being active,**
- * never at `animationend`. Dropping it the moment the entrance ends would swap
- * the computed `animation` from `br-tab-enter` to `br-tab-select`, and a CSS
- * animation whose name newly applies starts from its first keyframe: the new tab
- * would grow in and then settle a second time. An inactive tab has no animation
- * under it, so it lets go at `animationend`; the active one lets go in
- * {@link releaseSettledEntrances}.
+ * ⚠ **An ACTIVE tab swaps the attribute for `data-tab-entered`, it does not
+ * simply lose it.** Dropping `data-tab-entering` alone would change the computed
+ * `animation` from `br-tab-enter` to `br-tab-select`, and a CSS animation whose
+ * name newly applies starts from its first keyframe: the new tab would grow in
+ * and then settle a second time. `data-tab-entered` computes `animation: none`
+ * (main.css), so nothing starts. It is also why the attribute does not stay
+ * `entering`: React reorders keyed tabs with `insertBefore`, and re-inserting an
+ * element RESTARTS its CSS animation (measured in Chromium), so a tab that kept
+ * `br-tab-enter` would fade out and in again whenever a drag moved it. An
+ * inactive tab has no animation under it, so it just lets go.
+ * {@link releaseSettledEntrances} clears `entered` when the tab stops being
+ * active, so selecting it again settles as usual.
  */
 function markTabEntering(el: HTMLElement): void {
   el.dataset.tabEntering = 'true';
@@ -119,16 +124,19 @@ function markTabEntering(el: HTMLElement): void {
     if (event.target !== el) return;
     el.removeEventListener('animationend', onEnd);
     el.removeEventListener('animationcancel', onEnd);
-    if (el.dataset.active !== 'true') delete el.dataset.tabEntering;
+    delete el.dataset.tabEntering;
+    if (el.dataset.active === 'true') el.dataset.tabEntered = 'true';
   };
   el.addEventListener('animationend', onEnd);
   el.addEventListener('animationcancel', onEnd);
 }
 
-/** Drop `data-tab-entering` from every tab that is no longer the active one. */
+/** Clear the entrance attributes from every tab that is no longer the active one. */
 function releaseSettledEntrances(strip: HTMLElement): void {
-  for (const el of strip.querySelectorAll<HTMLElement>('[data-tab-entering]')) {
-    if (el.dataset.active !== 'true') delete el.dataset.tabEntering;
+  for (const el of strip.querySelectorAll<HTMLElement>('[data-tab-entering], [data-tab-entered]')) {
+    if (el.dataset.active === 'true') continue;
+    delete el.dataset.tabEntering;
+    delete el.dataset.tabEntered;
   }
 }
 
@@ -398,8 +406,8 @@ export function ChatTabStrip({
     // Keyed on the rendered order string — the DOM is the dependency here.
   }, [orderKey]);
 
-  // The active tab keeps its entrance attribute until it stops being active
-  // (see markTabEntering); this is where it lets go.
+  // The active tab keeps `data-tab-entered` until it stops being active (see
+  // markTabEntering); this is where it lets go.
   useLayoutEffect(() => {
     const strip = stripRef.current;
     if (strip) releaseSettledEntrances(strip);

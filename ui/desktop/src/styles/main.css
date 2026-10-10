@@ -5775,6 +5775,15 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
   transition-duration: 0ms !important;
 }
 
+/* @ws WS-PREVIEW begin: fold chevron motion */
+/* The folded sheet's chevron turns rather than flips (spec 3.8, P0 4). Written
+   here, after the resizing block, because the rung-2 block above must carry no
+   motion at all (measures.test.ts). `rotate` is a transform. */
+.br-preview-fold-toggle > svg {
+  transition: rotate var(--dur-fast) var(--ease-out);
+}
+/* @ws WS-PREVIEW end: fold chevron motion */
+
 @media (max-height: 520px) {
   .biorouter-clean-conversation {
     align-items: flex-start;
@@ -6652,30 +6661,37 @@ code [class~='token'] {
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* @ws WS-PREVIEW begin: front matter type */
+/* The title is the document h1's step, `text-title` (24/32 at 400, spec 2.1 and
+   owner decision 6.2); the subtitle is body size in muted ink and the byline is
+   supporting size. The body's own first `# H1` takes the h2 step under it
+   (`demoteFirstHeading`), so a report never shows two titles. */
 .br-paper-title {
   margin: 0;
   color: var(--text-default);
-  font-size: 28px;
-  line-height: 1.2;
-  font-weight: 700;
-  letter-spacing: -0.015em;
+  font-size: var(--text-title);
+  line-height: var(--text-title--line-height);
+  font-weight: var(--text-title--font-weight);
+  letter-spacing: var(--text-title--letter-spacing);
 }
 
 .br-paper-subtitle {
   margin: 8px 0 0;
   color: var(--text-muted);
-  font-size: 17px;
-  line-height: 1.4;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
 }
 
 .br-paper-byline {
   display: flex;
   flex-wrap: wrap;
   gap: 0 12px;
-  margin: 12px 0 0;
+  margin: 8px 0 0;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
 }
+/* @ws WS-PREVIEW end: front matter type */
 
 .br-paper-byline > span + span::before {
   content: '·';
@@ -6711,7 +6727,9 @@ code [class~='token'] {
   height: 0;
   border-left: 5px solid currentColor;
   border-block: 3.5px solid transparent;
-  transition: transform var(--motion-fast) var(--ease-out);
+  /* @ws WS-PREVIEW begin: front matter disclosure motion (WS-TOKENS-1) */
+  transition: transform var(--dur-fast) var(--ease-out);
+  /* @ws WS-PREVIEW end: front matter disclosure motion */
 }
 
 .br-paper-frontmatter-more[open] > summary::before {

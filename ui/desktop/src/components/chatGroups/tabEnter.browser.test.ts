@@ -9,8 +9,10 @@
  *   - a new tab grows in from its LEFT edge (its left x does not move while it
  *     scales), starting transparent;
  *   - on an active new tab the entrance wins over the select settle;
- *   - and the reason `ChatTabStrip` keeps `data-tab-entering` on the active tab:
- *     dropping it would start `br-tab-select`, a second settle.
+ *   - and why an active tab takes `data-tab-entered` when its entrance ends:
+ *     dropping `data-tab-entering` alone would start `br-tab-select`, a second
+ *     settle, and keeping the entrance would replay it whenever React moves the
+ *     tab with `insertBefore` (a reorder).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -38,6 +40,7 @@ const TAB_CSS = [
   ".br-tab[data-active='true'] {",
   '@keyframes br-tab-select {',
   ".br-tab[data-tab-entering='true'] {",
+  ".br-tab[data-active='true'][data-tab-entered='true'] {",
   '@keyframes br-tab-enter {',
 ]
   .map(block)
@@ -136,7 +139,7 @@ describe('a new tab grows in from its left edge', () => {
     expect(active.names).toEqual(['br-tab-enter']);
   });
 
-  it('dropping the attribute from the active tab would start a second settle', async () => {
+  it('dropping the attribute from the active tab alone would start a second settle', async () => {
     if (!browser) return;
     const names = await page.evaluate(() => {
       const tab = document.getElementById('b')!;
@@ -146,7 +149,37 @@ describe('a new tab grows in from its left edge', () => {
         .getAnimations()
         .map((a) => (a as Animation & { animationName: string }).animationName);
     });
-    // This is why ChatTabStrip keeps the attribute until the tab is inactive.
+    // This is why ChatTabStrip swaps `entering` for `entered` on the active tab.
     expect(names).toEqual(['br-tab-select']);
+  });
+
+  it('swapping entering for entered on the active tab starts nothing, and a reorder replays nothing', async () => {
+    if (!browser) return;
+    const result = await page.evaluate(async () => {
+      const names = (el: HTMLElement) =>
+        el.getAnimations().map((a) => (a as Animation & { animationName: string }).animationName);
+      // A fresh active tab, entrance finished, as ChatTabStrip's animationend leaves it.
+      document.getElementById('b')?.remove();
+      const tab = document.createElement('div');
+      tab.className = 'br-tab';
+      tab.id = 'b';
+      tab.dataset.active = 'true';
+      tab.dataset.tabEntering = 'true';
+      document.getElementById('strip')!.appendChild(tab);
+      for (const animation of tab.getAnimations()) animation.finish();
+      delete tab.dataset.tabEntering;
+      tab.dataset.tabEntered = 'true';
+      const afterSwap = names(tab);
+
+      // React reorders keyed tabs with insertBefore; a re-inserted element restarts
+      // any CSS animation it carries.
+      const strip = document.getElementById('strip')!;
+      strip.insertBefore(tab, document.getElementById('a'));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      return { afterSwap, afterMove: names(tab), opacity: getComputedStyle(tab).opacity };
+    });
+    expect(result.afterSwap).toEqual([]);
+    expect(result.afterMove).toEqual([]);
+    expect(result.opacity).toBe('1');
   });
 });
