@@ -15,17 +15,18 @@ import { aboutCopy } from './copy';
 const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 
 /**
- * The Version row's status line. A ready update shows whether or not this panel asked for it
- * (it may have been found at startup); every other line answers a check made here.
+ * The Version row's status line. Whatever keeps the action busy is always said, whoever started
+ * it: a ready update, a check under way and a download in progress (the startup check finds
+ * updates before this panel opens, and a disabled button with no reason beside it reads as
+ * broken). The verdicts, "up to date" and a failure, answer a check made HERE, so they show
+ * only after one.
  */
 function statusLine(state: UpdaterState, checkRequested: boolean): ReactNode {
-  if (state.phase === 'downloaded') return aboutCopy.ready(state.latestVersion);
-  if (!checkRequested) return undefined;
   switch (state.phase) {
+    case 'downloaded':
+      return aboutCopy.ready(state.latestVersion);
     case 'checking':
       return aboutCopy.checking;
-    case 'up-to-date':
-      return aboutCopy.upToDate;
     case 'available':
       return (
         <span className="flex flex-col gap-1">
@@ -41,8 +42,12 @@ function statusLine(state: UpdaterState, checkRequested: boolean): ReactNode {
           />
         </span>
       );
+    case 'up-to-date':
+      return checkRequested ? aboutCopy.upToDate : undefined;
     case 'error':
-      return <span className="text-text-danger">{aboutCopy.failed}</span>;
+      return checkRequested ? (
+        <span className="text-text-danger">{aboutCopy.failed}</span>
+      ) : undefined;
     default:
       return undefined;
   }

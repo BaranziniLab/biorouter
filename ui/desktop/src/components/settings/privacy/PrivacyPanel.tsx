@@ -164,8 +164,12 @@ export default function PrivacyPanel() {
           privacy prose here is exactly the drift the one-definition rule exists
           to prevent — the served disclosure below is where this panel's
           statement of scope comes from. */}
-      <div className="biorouter-settings-section-header">
-        <h2 className="text-caps text-text-muted">Privacy</h2>
+      {/* The header takes the shared section-header geometry (`br-setting-section-header`: the
+          12px inset every other section's caps label has), so PRIVACY lines up with GENERAL
+          and the rest instead of standing 12px to their left. The boxes below keep the
+          column's own edge, as every row's hover fill does. */}
+      <div className="biorouter-settings-section-header br-setting-section-header">
+        <h2 className="br-setting-section-title text-caps text-text-muted">Privacy</h2>
       </div>
 
       <div className="space-y-3">
@@ -255,7 +259,9 @@ export default function PrivacyPanel() {
         )}
       </div>
 
-      <div className="biorouter-settings-list">
+      {/* `mt-2`: the switch row sits 8px under the disclosure box above it, the gap a header has
+          over its first row, rather than touching it. */}
+      <div className="biorouter-settings-list mt-2">
         {/* ⚠ The help is two clauses, not three, and the third is the reason. It used to end
             "and can't reach your knowledge bases through the shell", which is false: the general
             filesystem read-deny did not ship, and the served disclosure above says so. A panel

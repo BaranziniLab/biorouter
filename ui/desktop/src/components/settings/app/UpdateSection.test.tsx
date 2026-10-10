@@ -85,6 +85,32 @@ describe('Settings > App > About > Version: one-click flow', () => {
     expect(screen.getByRole('button', { name: 'About Version' })).toBeTruthy();
   });
 
+  it('says why the button is busy when the startup check already has a download going', async () => {
+    (
+      window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }
+    ).electron.getUpdateState = vi.fn().mockResolvedValue({
+      status: 'downloading',
+      updateAvailable: true,
+      latestVersion: '1.86.0',
+      percent: 40,
+    });
+    render(<UpdateSection />);
+    // Nobody pressed "Check for updates" here, and the line is still there: a disabled button
+    // with no reason beside it reads as broken.
+    expect(await screen.findByText(/Downloading 1\.86\.0/i)).toBeTruthy();
+    emitAct({ event: 'download-progress', data: { percent: 40 } });
+    expect(screen.getByText('40%')).toBeTruthy();
+    expect(screen.getByRole('button', { name: aboutCopy.checkForUpdates })).toBeDisabled();
+  });
+
+  it('keeps the verdicts, "up to date" and a failure, for a check made in this panel', () => {
+    render(<UpdateSection />);
+    emitAct({ event: 'update-not-available' });
+    expect(screen.queryByText(/up to date/i)).toBeNull();
+    emitAct({ event: 'error', data: 'offline' });
+    expect(screen.queryByText(/Could not complete the update/i)).toBeNull();
+  });
+
   it('recovers a ready-to-install update opened from a fresh Settings panel', async () => {
     (
       window as unknown as { electron: { getUpdateState: ReturnType<typeof vi.fn> } }

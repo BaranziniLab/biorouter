@@ -16,22 +16,22 @@ export const approvalsCopy = {
     {
       key: 'auto',
       label: 'Autonomous',
-      description: 'Use tools and change files without asking first',
+      description: 'Uses tools and edits files without asking',
     },
     {
       key: 'approve',
       label: 'Manual',
-      description: 'Ask before using tools, extensions or changing files',
+      description: 'Asks before using tools or changing files',
     },
     {
       key: 'smart_approve',
       label: 'Smart',
-      description: 'Ask only when an action’s risk needs your approval',
+      description: 'Asks only when an action looks risky',
     },
     {
       key: 'chat',
       label: 'Chat only',
-      description: 'Talk to the model without tools or extensions',
+      description: 'Talks to the model with no tools',
     },
   ],
   toolPermissions: 'Tool permissions',
