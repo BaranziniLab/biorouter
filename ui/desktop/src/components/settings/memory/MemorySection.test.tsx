@@ -318,14 +318,16 @@ describe('MemorySection layout', () => {
 
     // The audience sentence and the folder are the tip's description, so they are heard on
     // reaching the glyph and are not standing text.
-    const globalTip = screen.getByRole('button', { name: 'About Global' });
+    const globalTip = screen.getByRole('button', { name: `About ${memoryCopy.global.tipLabel}` });
     expect(globalTip).toHaveAccessibleDescription(
       expect.stringContaining('Shared by every chat on this computer')
     );
     expect(globalTip).toHaveAccessibleDescription(
       expect.stringContaining('/Users/someone/.config/biorouter/memory')
     );
-    expect(screen.getByRole('button', { name: 'About This project' })).toHaveAccessibleDescription(
+    expect(
+      screen.getByRole('button', { name: `About ${memoryCopy.local.tipLabel}` })
+    ).toHaveAccessibleDescription(
       expect.stringContaining('/Users/someone/work/proj/.biorouter/memory')
     );
     // The old sentence-long headings are gone.
@@ -399,9 +401,10 @@ describe('MemorySection layout', () => {
 
     const line = await screen.findByText(memoryCopy.empty);
     expect(line.closest('.br-memory-empty')).not.toBeNull();
-    expect(line.closest('.br-memory-empty')!.querySelector('button')).toHaveAccessibleDescription(
-      memoryCopy.emptyHelp
-    );
+    const tip = line.closest('.br-memory-empty')!.querySelector('button')!;
+    expect(tip).toHaveAccessibleDescription(memoryCopy.emptyHelp);
+    // Named for what it explains, not "About Nothing has been remembered yet."
+    expect(tip).toHaveAccessibleName(`About ${memoryCopy.emptyTipLabel}`);
     // A Note (a bordered box) is not used for an empty list.
     expect(line.closest('[class*="bg-background-muted"]')).toBeNull();
   });
@@ -414,7 +417,7 @@ describe('MemorySection layout', () => {
     const line = screen.getByText(memoryCopy.noProject);
     expect(line.closest('.br-memory-empty')).not.toBeNull();
     expect(
-      screen.getByRole('button', { name: `About ${memoryCopy.noProject}` })
+      screen.getByRole('button', { name: `About ${memoryCopy.noProjectTipLabel}` })
     ).toHaveAccessibleDescription(memoryCopy.noProjectHelp);
     // The store still has its heading, so the page does not lose a section.
     expect(screen.getByRole('heading', { name: memoryCopy.local.heading })).toBeInTheDocument();

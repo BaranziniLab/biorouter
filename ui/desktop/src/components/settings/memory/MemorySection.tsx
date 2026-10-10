@@ -252,6 +252,7 @@ export default function MemorySection() {
           <StoreBlock
             store={global}
             heading={memoryCopy.global.heading}
+            tipLabel={memoryCopy.global.tipLabel}
             audience={memoryCopy.global.help}
             expanded={expanded}
             onToggle={toggle}
@@ -267,6 +268,7 @@ export default function MemorySection() {
             <StoreBlock
               store={local}
               heading={memoryCopy.local.heading}
+              tipLabel={memoryCopy.local.tipLabel}
               audience={memoryCopy.local.help}
               expanded={expanded}
               onToggle={toggle}
@@ -279,7 +281,11 @@ export default function MemorySection() {
             />
           ) : (
             <StoreFrame heading={memoryCopy.local.heading}>
-              <MutedRow text={memoryCopy.noProject} help={memoryCopy.noProjectHelp} />
+              <MutedRow
+                text={memoryCopy.noProject}
+                tipLabel={memoryCopy.noProjectTipLabel}
+                help={memoryCopy.noProjectHelp}
+              />
             </StoreFrame>
           )}
         </>
@@ -307,11 +313,14 @@ export default function MemorySection() {
  */
 function StoreFrame({
   heading,
+  tipLabel,
   help,
   count,
   children,
 }: {
   heading: string;
+  /** What the InfoTip is about ("global memory"), so its name reads "About global memory". */
+  tipLabel?: string;
   /** The InfoTip's body: the audience sentence and the store's folder. */
   help?: React.ReactNode;
   count?: string;
@@ -327,7 +336,7 @@ function StoreFrame({
         >
           {heading}
         </h3>
-        {help ? <InfoTip label={heading}>{help}</InfoTip> : null}
+        {help ? <InfoTip label={tipLabel ?? heading}>{help}</InfoTip> : null}
         {count ? (
           <span className="br-memory-store-count text-supporting tabular-nums text-text-subtle">
             {count}
@@ -340,11 +349,11 @@ function StoreFrame({
 }
 
 /** One muted line, for a store with nothing to list. The rest of the explanation is its InfoTip. */
-function MutedRow({ text, help }: { text: string; help: string }) {
+function MutedRow({ text, tipLabel, help }: { text: string; tipLabel: string; help: string }) {
   return (
     <div className="br-memory-empty">
       <span className="text-secondary text-text-muted">{text}</span>
-      <InfoTip label={text} help={help} />
+      <InfoTip label={tipLabel} help={help} />
     </div>
   );
 }
@@ -352,6 +361,7 @@ function MutedRow({ text, help }: { text: string; help: string }) {
 function StoreBlock({
   store,
   heading,
+  tipLabel,
   audience,
   expanded,
   onToggle,
@@ -360,6 +370,7 @@ function StoreBlock({
 }: {
   store: MemoryStoreInventory | null;
   heading: string;
+  tipLabel: string;
   audience: string;
   expanded: Set<string>;
   onToggle: (key: string) => void;
@@ -376,6 +387,7 @@ function StoreBlock({
   return (
     <StoreFrame
       heading={heading}
+      tipLabel={tipLabel}
       // The folder is a machine string, so it is mono and on its own line, and it stays in the DOM
       // (the tip's hidden description) for anything that reads it.
       help={
@@ -386,7 +398,11 @@ function StoreBlock({
       count={total === 0 ? undefined : countLabelFor(total)}
     >
       {store.categories.length === 0 ? (
-        <MutedRow text={memoryCopy.empty} help={memoryCopy.emptyHelp} />
+        <MutedRow
+          text={memoryCopy.empty}
+          tipLabel={memoryCopy.emptyTipLabel}
+          help={memoryCopy.emptyHelp}
+        />
       ) : (
         // The rows are the shared settings row and abut: the hairline is their only
         // separator, and a store's last row has none.
