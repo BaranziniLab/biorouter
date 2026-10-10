@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigData } from '../../../types/config';
+import { getUiNames } from '../../../utils/configUtils';
 
 const mocks = vi.hoisted(() => ({
   upsert: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock('../../../toasts', () => ({
 }));
 
 import ConfigSettings, { PRIVACY_SETTINGS_PATH } from './ConfigSettings';
+import { configCopy } from './copy';
 
 // The config `GET /config` serves: the record is an OBJECT (W2-PRV-8).
 const served: ConfigData = {
@@ -84,10 +86,11 @@ describe('ConfigSettings and the privacy settings', () => {
       'BIOROUTER_PRIVACY_TIERS_RECORD',
       'BIOROUTER_PRIVACY_MIXING_POLICY',
     ]) {
-      expect(within(dialog).queryByTitle(key)).toBeNull();
+      // A field is found by its label (the key itself is that label's tooltip, not a `title`).
+      expect(within(dialog).queryByLabelText(getUiNames(key))).toBeNull();
     }
     // An ordinary key is still editable.
-    expect(within(dialog).getByTitle('BIOROUTER_MODE')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(getUiNames('BIOROUTER_MODE'))).toBeInTheDocument();
   });
 
   it('links to the Privacy section it names', () => {
@@ -125,5 +128,49 @@ describe('ConfigSettings and the privacy settings', () => {
 
     await waitFor(() => expect(mocks.toastError).toHaveBeenCalled());
     expect(mocks.toastError.mock.calls[0][0].msg).toContain(sentence);
+  });
+});
+
+// Spec 3.14: the editor is a ModalShell, titled "Configuration", with no icon and no lowercase
+// brand, and its fields are named by their labels.
+describe('ConfigSettings editor', () => {
+  it('is a large dialog titled Configuration, with no description and no lowercase brand', () => {
+    const dialog = openEditor();
+    expect(dialog).toHaveAttribute('data-size', 'lg');
+    expect(
+      within(dialog).getByRole('heading', { name: configCopy.dialogTitle })
+    ).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/biorouter configuration/);
+    expect(dialog.textContent).not.toMatch(/current settings for/);
+    expect(dialog.querySelector('svg[class*="lucide-file"]')).toBeNull();
+  });
+
+  it('names each field by its label and keeps no native title or placeholder help', () => {
+    const dialog = openEditor();
+    const field = within(dialog).getByLabelText(getUiNames('BIOROUTER_MODE'));
+    expect(field).toHaveValue('auto');
+    expect(field).not.toHaveAttribute('placeholder');
+    expect(dialog.querySelector('[title]')).toBeNull();
+  });
+
+  it('keeps exactly one button in each field row', () => {
+    const dialog = openEditor();
+    const field = within(dialog).getByLabelText(getUiNames('BIOROUTER_MODE'));
+    const row = field.closest('div.grid') as HTMLElement;
+    expect(within(row).getAllByRole('button')).toHaveLength(1);
+    expect(within(row).getByRole('button')).toHaveAccessibleName(
+      configCopy.saveLabel(getUiNames('BIOROUTER_MODE'))
+    );
+  });
+
+  it('closes with Done and gives focus back to the Edit button', async () => {
+    render(<ConfigSettings />);
+    const edit = screen.getByRole('button', { name: configCopy.editName });
+    fireEvent.click(edit);
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: configCopy.done })
+    );
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(edit).toHaveFocus();
   });
 });

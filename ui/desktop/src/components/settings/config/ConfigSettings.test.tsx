@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import type { ConfigData } from '../../../types/config';
 
 // #50 — Settings → App named a stale provider ("current settings for ollama"
@@ -54,6 +54,10 @@ vi.mock('../../ModelAndProviderContext', () => ({
 }));
 
 import ConfigSettings from './ConfigSettings';
+import { configCopy } from './copy';
+
+/** The Configuration row, whose value is the provider the settings belong to. */
+const configRow = () => screen.getByTestId('config-settings-row');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -65,21 +69,37 @@ describe('ConfigSettings provider label (#50)', () => {
   it('names the live provider, not the one cached in the config context', () => {
     render(<ConfigSettings />);
 
+    expect(within(configRow()).getByText('versa_azure')).toBeInTheDocument();
+    expect(screen.queryByText('ollama')).not.toBeInTheDocument();
+    // The sentence that used to sit under the header is gone: the row's value says it.
+    expect(screen.queryByText(/current settings for/)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Edit your Biorouter configuration settings \(current settings for/)
-    ).toHaveTextContent('(current settings for versa_azure)');
-    expect(screen.queryByText(/current settings for ollama/)).not.toBeInTheDocument();
+      screen.queryByText(/Edit your Biorouter configuration settings/)
+    ).not.toBeInTheDocument();
   });
 
-  it('updates the label when the active provider changes', () => {
+  it('updates the value when the active provider changes', () => {
     const { rerender } = render(<ConfigSettings />);
 
     modelAndProvider.currentProvider = 'databricks';
     rerender(<ConfigSettings />);
 
-    expect(screen.getByText(/current settings for/)).toHaveTextContent(
-      '(current settings for databricks)'
-    );
+    expect(within(configRow()).getByText('databricks')).toBeInTheDocument();
+    expect(within(configRow()).queryByText('versa_azure')).not.toBeInTheDocument();
+  });
+
+  it('is one row: the word Configuration, the provider, an Edit… button and a tip', () => {
+    render(<ConfigSettings />);
+
+    const row = configRow();
+    expect(within(row).getByText(configCopy.row)).toBeInTheDocument();
+    const edit = within(row).getByRole('button', { name: configCopy.editName });
+    expect(edit).toHaveTextContent(configCopy.edit);
+    // Edit… is the 28px secondary rung, and the tip explains the row without a paragraph.
+    expect(edit).toHaveAccessibleDescription(configCopy.help);
+    expect(
+      within(row).getByRole('button', { name: `About ${configCopy.row}` })
+    ).toBeInTheDocument();
   });
 
   it('re-reads the active provider when the section mounts', async () => {
@@ -104,9 +124,7 @@ describe('ConfigSettings provider label (#50)', () => {
     modelAndProvider.currentProvider = null;
     render(<ConfigSettings />);
 
-    expect(screen.getByText(/current settings for/)).toHaveTextContent(
-      '(current settings for ollama)'
-    );
+    expect(within(configRow()).getByText('ollama')).toBeInTheDocument();
   });
 
   // `refreshConfig` used to be incapable of rejecting: it called the non-throwing
@@ -145,8 +163,6 @@ describe('ConfigSettings provider label (#50)', () => {
     render(<ConfigSettings />);
 
     await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
-    expect(screen.getByText(/current settings for/)).toHaveTextContent(
-      '(current settings for versa_azure)'
-    );
+    expect(within(configRow()).getByText('versa_azure')).toBeInTheDocument();
   });
 });
