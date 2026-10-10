@@ -1,32 +1,63 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { Progress } from '../../ui/progress';
-import {
-  ExternalLink,
-  CheckCircle,
-  Download,
-  AlertCircle,
-  Loader2,
-  Rocket,
-} from '../../icons/app-icons';
+import { SettingRow } from '../../ui/setting-row';
 import {
   initialUpdaterState,
   reduceUpdaterEvent,
   type UpdaterState,
 } from '../../../utils/updaterState';
+import { aboutCopy } from './copy';
 
 // Always point users at the official Biorouter download website (the same place
 // the startup update flow directs to) rather than the raw GitHub releases page.
 const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 
 /**
- * Settings → "Check for Updates".
+ * The Version row's status line. A ready update shows whether or not this panel asked for it
+ * (it may have been found at startup); every other line answers a check made here.
+ */
+function statusLine(state: UpdaterState, checkRequested: boolean): ReactNode {
+  if (state.phase === 'downloaded') return aboutCopy.ready(state.latestVersion);
+  if (!checkRequested) return undefined;
+  switch (state.phase) {
+    case 'checking':
+      return aboutCopy.checking;
+    case 'up-to-date':
+      return aboutCopy.upToDate;
+    case 'available':
+      return (
+        <span className="flex flex-col gap-1">
+          <span>
+            {aboutCopy.downloading(state.latestVersion)}{' '}
+            <span className="tabular-nums">{state.percent}%</span>
+          </span>
+          <Progress
+            className="max-w-xs"
+            label={aboutCopy.downloadingLabel(state.latestVersion)}
+            value={state.percent}
+            minVisiblePercent={4}
+          />
+        </span>
+      );
+    case 'error':
+      return <span className="text-text-danger">{aboutCopy.failed}</span>;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Settings > App > About > Version: the version as the row's value, one action at the
+ * trailing edge, and the update's progress as the row's status line (spec §3.13).
  *
- * Drives the same `electron-updater` pipeline as the startup modal: pressing
- * "Check for Updates" asks the main process to check GitHub; if a newer release
- * exists it downloads in the background and this panel shows progress, then a
- * one-click **Restart & Update** button. No manual DMG/drag-and-drop.
+ * Drives the same `electron-updater` pipeline as the startup modal: "Check for updates" asks
+ * the main process to check GitHub; a newer release downloads in the background while the
+ * status line counts it, then "Restart to update" replaces the button. No manual DMG.
+ *
+ * Returns a fragment: the row (and, after a failure, the error note under it) belong directly
+ * to the About section's list.
  */
 export default function UpdateSection() {
   const [currentVersion, setCurrentVersion] = useState('');
@@ -85,108 +116,63 @@ export default function UpdateSection() {
   const { phase } = state;
   const busy = phase === 'checking' || phase === 'available';
 
+  const status = statusLine(state, checkRequested);
+
+  // Each action names itself: the visible words are the accessible name (label in name).
+  const action =
+    phase === 'downloaded' ? (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={handleRestartAndUpdate}
+        aria-label={aboutCopy.restartToUpdate}
+      >
+        {aboutCopy.restartToUpdate}
+      </Button>
+    ) : (
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={checkForUpdates}
+        disabled={busy}
+        aria-label={aboutCopy.checkForUpdates}
+      >
+        {aboutCopy.checkForUpdates}
+      </Button>
+    );
+
   return (
-    <div>
-      {/* The wrapper's own `text-sm text-text-muted` was dead — both children
-          set their own type — and the 16px gap under it belonged to a
-          `.biorouter-settings-control-strip` that no longer wraps this panel. */}
-      <div className="mb-2">
-        <div className="flex flex-col">
-          <div className="text-text-default text-display font-mono">
-            {currentVersion || 'Loading...'}
-          </div>
-          <div className="text-supporting text-text-muted">Current version</div>
-        </div>
-      </div>
+    <>
+      <SettingRow
+        label={aboutCopy.version}
+        help={aboutCopy.versionHelp}
+        value={currentVersion || aboutCopy.development}
+        valueMono
+        status={status}
+        data-testid="settings-version-row"
+      >
+        {action}
+      </SettingRow>
 
-      {/* The control strip, and none of the three Buttons carries geometry any
-          more: `flex items-center gap-2` was flipping the cva base's
-          `inline-flex` through tailwind-merge while restating what the base
-          already emits. */}
-      <div className="biorouter-settings-control-strip">
-        {phase === 'downloaded' ? (
-          <Button onClick={handleRestartAndUpdate} variant="default">
-            <Rocket className="w-4 h-4" />
-            Restart &amp; Update{state.latestVersion ? ` to ${state.latestVersion}` : ''}
-          </Button>
-        ) : (
-          <Button onClick={checkForUpdates} disabled={busy} variant="secondary">
-            {busy ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <ExternalLink className="w-4 h-4" />
-            )}
-            Check for updates
-          </Button>
-        )}
-        <p className="text-supporting text-text-muted">
-          Biorouter installs updates automatically. Restart to use the new version.
-        </p>
-      </div>
-
-      {/* Status line */}
-      {checkRequested && (
-        <div className="mt-3 text-supporting">
-          {phase === 'checking' && (
-            <div className="flex items-center gap-2 text-text-muted">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Checking for updates…
-            </div>
-          )}
-
-          {phase === 'up-to-date' && (
-            <div className="flex items-center gap-2 text-text-success">
-              <CheckCircle className="w-4 h-4" />
-              Biorouter is up to date.
-            </div>
-          )}
-
-          {phase === 'available' && (
-            <div className="space-y-2 max-w-sm">
-              <div className="flex items-center gap-2 text-text-default">
-                <Download className="w-4 h-4 text-background-accent" />
-                Downloading {state.latestVersion ?? 'update'}…
-              </div>
-              <Progress
-                label={`Downloading ${state.latestVersion ?? 'update'}`}
-                value={state.percent}
-                minVisiblePercent={4}
-              />
-              <p className="text-right font-mono text-supporting text-text-muted">
-                {state.percent}%
-              </p>
-            </div>
-          )}
-
-          {phase === 'downloaded' && (
-            <div className="flex items-center gap-2 text-text-default">
-              <CheckCircle className="w-4 h-4 text-text-success" />
-              Version {state.latestVersion} is ready. Click Restart &amp; Update.
-            </div>
-          )}
-
-          {phase === 'error' && (
-            <div className="space-y-2">
-              <div className="flex items-center gap-2 text-text-danger">
-                <AlertCircle className="w-4 h-4" />
-                Could not complete the update.
-              </div>
-              {state.error && (
-                <Note tone="danger" className="font-mono">
-                  {state.error}
-                </Note>
-              )}
-              <Button
-                variant="secondary"
-                onClick={() => window.open(DOWNLOAD_WEBSITE_URL, '_blank')}
-              >
-                <ExternalLink className="w-4 h-4" />
-                Download from Biorouter
-              </Button>
-            </div>
-          )}
-        </div>
+      {checkRequested && phase === 'error' && state.error && (
+        // The failure stays visible (principle 2), with the one way forward beside it.
+        <Note
+          tone="danger"
+          role="alert"
+          className="mt-2"
+          action={
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => window.open(DOWNLOAD_WEBSITE_URL, '_blank')}
+            >
+              {aboutCopy.downloadFromSite}
+            </Button>
+          }
+        >
+          <span className="font-mono">{state.error}</span>
+        </Note>
       )}
-    </div>
+    </>
   );
 }

@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, History, Loader2, RotateCcw } from '../../icons/app-icons';
-import { ENTITY_ICONS, type EntityIcon } from '../../icons/entity-icons';
+import { useCallback, useId, useState } from 'react';
 import { previewReset, resetAppData } from '../../../api';
 import type { ResetCategory, ResetCounts } from '../../../api';
 import { toastService } from '../../../toasts';
@@ -10,19 +8,13 @@ import { LocalMessageStorage } from '../../../utils/localMessageStorage';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
+import { SettingRow, SettingSection } from '../../ui/setting-row';
+import { ModalShell } from '../../ModalShell';
+import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { resetBrowserReason } from './resetOnBrowser';
-import { MODAL_SIZE } from '../../ModalShell';
-import { cn } from '../../../utils';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
+import { resetCopy } from './copy';
 
 type ResetPanelProps = {
   onReset?: (categories: ResetCategory[]) => void;
@@ -35,17 +27,15 @@ type CategoryDefinition = {
   countKey: keyof ResetCounts;
   countLabel: string;
   singularCountLabel?: string;
-  icon: EntityIcon;
 };
 
-const CATEGORIES: CategoryDefinition[] = [
+export const RESET_CATEGORIES: CategoryDefinition[] = [
   {
     id: 'applications',
     title: 'Built apps',
     description: 'Delete every app created with Agent Drafter.',
     countKey: 'applications',
     countLabel: 'built',
-    icon: ENTITY_ICONS.application,
   },
   {
     id: 'knowledge',
@@ -54,7 +44,6 @@ const CATEGORIES: CategoryDefinition[] = [
     countKey: 'knowledgeBases',
     countLabel: 'bases',
     singularCountLabel: 'base',
-    icon: ENTITY_ICONS.knowledge,
   },
   {
     id: 'skills',
@@ -62,7 +51,6 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove user-installed skills and restore built-in skill files.',
     countKey: 'skills',
     countLabel: 'custom',
-    icon: ENTITY_ICONS.skill,
   },
   {
     id: 'extensions',
@@ -70,7 +58,6 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove added extensions while keeping bundled capabilities.',
     countKey: 'extensions',
     countLabel: 'custom',
-    icon: ENTITY_ICONS.extension,
   },
   {
     id: 'schedules',
@@ -78,7 +65,6 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove custom schedules and restore Daily Meditation.',
     countKey: 'schedules',
     countLabel: 'custom',
-    icon: ENTITY_ICONS.schedule,
   },
   {
     id: 'workflows',
@@ -86,20 +72,18 @@ const CATEGORIES: CategoryDefinition[] = [
     description: 'Remove managed workflows and restore the Meditation workflow.',
     countKey: 'workflows',
     countLabel: 'custom',
-    icon: ENTITY_ICONS.workflow,
   },
   {
     id: 'history',
     title: 'Chat & usage history',
-    description: 'Clear every chat, token meter, cost total, and checkpoint.',
+    description: 'Clear every chat, token meter, cost total and checkpoint.',
     countKey: 'conversations',
     countLabel: 'chats',
     singularCountLabel: 'chat',
-    icon: History,
   },
 ];
 
-const ALL_CATEGORIES = CATEGORIES.map((category) => category.id);
+const ALL_CATEGORIES = RESET_CATEGORIES.map((category) => category.id);
 
 // Dashboard mode is gone, but installs that ran an older build still carry its
 // localStorage payload. Reset stays responsible for clearing it so the keys do
@@ -134,8 +118,8 @@ function clearKnowledgeSelections() {
  * Under `throwOnError` the generated client throws the PARSED BODY, not an
  * `Error` (`api/client/client.gen.ts`). This route's failures are
  * `ResetErrorResponse` objects, so reading `Error.message` alone replaced every
- * one of them — the 403 saying why a reset was refused, the 409 saying a chat is
- * still running — with the generic fallback.
+ * one of them (the 403 saying why a reset was refused, the 409 saying a chat is
+ * still running) with the generic fallback.
  */
 function resetErrorMessage(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message;
@@ -147,31 +131,45 @@ function resetErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function countText(category: CategoryDefinition, counts: ResetCounts | null): string | null {
+  const count = counts?.[category.countKey];
+  if (count === undefined) return null;
+  const noun =
+    count === 1 && category.singularCountLabel ? category.singularCountLabel : category.countLabel;
+  return `${count.toLocaleString()} ${noun}`;
+}
+
+/**
+ * Settings > App > Danger zone (spec §3.13): ONE row, "Reset data", whose `Reset…` button opens
+ * the dialog that holds the whole decision: the seven categories as checkboxes (each one's
+ * meaning in an InfoTip), Select all, the permanence line, and the one destructive button,
+ * which reads "Reset everything" when every box is checked.
+ *
+ * Crew's pattern (`crew/pane/AboutTab.tsx`): a page never shows the checklist or a red button
+ * beside a paragraph; the consequence is stated in the dialog, at the moment of decision.
+ */
 export default function ResetPanel({ onReset }: ResetPanelProps) {
+  const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<ResetCategory>>(new Set());
-  const [expanded, setExpanded] = useState<ResetCategory | null>(null);
-  const [pendingCategories, setPendingCategories] = useState<ResetCategory[] | null>(null);
   const [counts, setCounts] = useState<ResetCounts | null>(null);
-  const [loadingCounts, setLoadingCounts] = useState(true);
   const [resetting, setResetting] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [completed, setCompleted] = useState(false);
+  const idPrefix = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   /**
-   * SD-8: on a browser-served page the daemon refuses every reset, so the panel
-   * says so in place of its controls instead of letting the user select, confirm
-   * and then read a refusal. See `resetOnBrowser.ts`. Read from the DOM marker on
-   * every render, as `isBrowserSurface` requires.
+   * SD-8: on a browser-served page the daemon refuses every reset, so the row says so in place
+   * of a working control instead of letting the person select, confirm and then read a refusal.
+   * See `resetOnBrowser.ts`. Read from the DOM marker on every render, as `isBrowserSurface`
+   * requires.
    */
   const hostOnly = resetBrowserReason();
 
   const loadCounts = useCallback(async () => {
-    // The preview is refused on that surface for the same reason, and its only
-    // use is to show what a reset there could not do.
+    // The preview is refused on that surface for the same reason as the reset.
     if (resetBrowserReason()) {
       setCounts(null);
-      setLoadingCounts(false);
       return;
     }
-    setLoadingCounts(true);
     try {
       // ⚠ The proof on BOTH calls. The daemon answers the preview and the reset
       // only for a request that proves the person at the keyboard sent it: the
@@ -181,25 +179,23 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
         throwOnError: true,
       });
       setCounts(response.data.counts);
-    } catch (error) {
-      console.error('Failed to inspect reset data:', error);
+    } catch (loadError) {
+      console.error('Failed to inspect reset data:', loadError);
       setCounts(null);
-    } finally {
-      setLoadingCounts(false);
     }
   }, []);
 
-  useEffect(() => {
+  const openDialog = () => {
+    if (resetBrowserReason()) return;
+    setSelected(new Set());
+    setError(null);
+    setCompleted(false);
+    setOpen(true);
     void loadCounts();
-  }, [loadCounts]);
-
-  const selectedCategories = useMemo(
-    () => CATEGORIES.filter((category) => selected.has(category.id)).map((category) => category.id),
-    [selected]
-  );
+  };
 
   const toggleCategory = (category: ResetCategory) => {
-    setStatus(null);
+    setError(null);
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(category)) next.delete(category);
@@ -208,15 +204,16 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
     });
   };
 
-  const openConfirmation = (categories: ResetCategory[]) => {
-    setPendingCategories(categories);
-  };
+  const selectedCategories = RESET_CATEGORIES.filter((category) => selected.has(category.id)).map(
+    (category) => category.id
+  );
+  const everything = selectedCategories.length === ALL_CATEGORIES.length;
 
   const handleReset = async () => {
-    if (!pendingCategories?.length || resetBrowserReason()) return;
-    const categories = pendingCategories;
+    if (selectedCategories.length === 0 || resetBrowserReason()) return;
+    const categories = selectedCategories;
     setResetting(true);
-    setStatus(null);
+    setError(null);
     try {
       await resetAppData<true>({
         body: { categories },
@@ -226,233 +223,144 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
       if (categories.includes('history')) clearRendererHistory();
       if (categories.includes('knowledge')) clearKnowledgeSelections();
       setSelected(new Set());
-      setPendingCategories(null);
-      setStatus('Reset complete. Factory defaults have been restored for the selected areas.');
-      await loadCounts();
+      setOpen(false);
+      setCompleted(true);
       onReset?.(categories);
       window.dispatchEvent(new CustomEvent('biorouter:data-reset', { detail: { categories } }));
       toastService.success({
-        title: 'Reset complete',
-        msg: `${categories.length} ${categories.length === 1 ? 'area was' : 'areas were'} restored.`,
+        title: resetCopy.completeToastTitle,
+        msg: resetCopy.completeToast(categories.length),
       });
-    } catch (error) {
-      console.error('Failed to reset app data:', error);
-      const message = resetErrorMessage(error, 'Biorouter could not reset the selected data.');
-      setStatus(message);
-      toastService.error({ title: 'Reset failed', msg: message });
+    } catch (resetError) {
+      console.error('Failed to reset app data:', resetError);
+      const message = resetErrorMessage(resetError, resetCopy.failedFallback);
+      // The refusal is shown in the dialog that caused it, and as a toast.
+      setError(message);
+      toastService.error({ title: resetCopy.failedToastTitle, msg: message });
     } finally {
       setResetting(false);
     }
   };
 
-  const pendingDefinitions = pendingCategories
-    ? CATEGORIES.filter((category) => pendingCategories.includes(category.id))
-    : [];
-  const isEverything = pendingCategories?.length === ALL_CATEGORIES.length;
-
   return (
-    <div className="biorouter-settings-section" data-testid="reset-panel">
-      <div className="biorouter-settings-section-header flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h2 className="mb-1 text-caps text-text-muted">Reset</h2>
-          <p className="text-supporting text-text-muted">
-            Choose what to clean up. Built-in content is restored; models, credentials, and
-            preferences are kept.
-          </p>
-        </div>
-        {/* `mr-3` so the cluster's box shares the rows' 12px inset while the
-            `text-caps` label opposite it stays flush. Both actions carry labels,
-            so neither may sit on the 24px `xs` rung. */}
-        {hostOnly === null && (
-          <div className="mr-3 flex items-center gap-2 pb-0.5">
-            <span className="text-supporting tabular-nums text-text-muted">
-              {selected.size} of {CATEGORIES.length} selected
-            </span>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => setSelected(new Set(ALL_CATEGORIES))}
-            >
-              Select all
-            </Button>
-            {selected.size > 0 && (
-              <Button type="button" variant="ghost" onClick={() => setSelected(new Set())}>
-                Clear
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
+    <SettingSection
+      id={SETTINGS_SECTION_IDS.appDangerZone}
+      title={resetCopy.section}
+      data-testid="reset-panel"
+    >
+      <SettingRow
+        label={resetCopy.row}
+        help={resetCopy.rowHelp}
+        status={completed ? resetCopy.complete : undefined}
+      >
+        <Button
+          type="button"
+          variant="destructive"
+          size="sm"
+          disabled={hostOnly !== null}
+          onClick={openDialog}
+        >
+          {resetCopy.open}
+        </Button>
+      </SettingRow>
 
-      <div className="biorouter-settings-list">
-        {CATEGORIES.map((category) => {
-          const isSelected = selected.has(category.id);
-          const isExpanded = expanded === category.id;
-          const count = counts?.[category.countKey];
-          const countText =
-            count === undefined
-              ? null
-              : `${count.toLocaleString()} ${
-                  count === 1 && category.singularCountLabel
-                    ? category.singularCountLabel
-                    : category.countLabel
-                }`;
-          return (
-            <Collapsible
-              key={category.id}
-              open={isExpanded}
-              onOpenChange={(open) => setExpanded(open ? category.id : null)}
-              data-testid={`reset-option-${category.id}`}
-              // No `bg-background-accent/5` while selected: the checkbox states
-              // the selection, and an accent-tinted row ground is what P3 rules
-              // out. The row also brought its own `min-h-12`, a fifth row height
-              // beside the one `--row-height` declares.
-              className="biorouter-settings-row"
-            >
-              <div className="flex items-center gap-3 px-3 py-2.5">
-                <CollapsibleTrigger
-                  aria-label={`${isExpanded ? 'Hide' : 'Show'} details for ${category.title}`}
-                  className="group flex min-w-0 flex-1 items-center justify-between gap-3 text-left"
-                >
-                  <span className="min-w-0 truncate text-label text-text-default">
-                    {category.title}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <span className="flex items-center gap-1 text-supporting tabular-nums text-text-muted">
-                      {loadingCounts ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        (countText ?? '—')
-                      )}
-                    </span>
-                    <ChevronDown
-                      aria-hidden="true"
-                      className={`h-3.5 w-3.5 text-text-muted transition-transform ${
-                        isExpanded ? 'rotate-180' : ''
-                      }`}
-                    />
-                  </span>
-                </CollapsibleTrigger>
-                {/* The real `Checkbox` primitive, in place of a hand-rolled
-                    `<button aria-pressed>` on an off-ladder 20px box. The label
-                    stops flipping to "Deselect" with it: a checkbox exposes its
-                    state through `checked`, so saying it again in the name means
-                    a screen reader announces the state twice, once inverted. */}
-                <Checkbox
-                  checked={isSelected}
-                  disabled={hostOnly !== null}
-                  onChange={() => toggleCategory(category.id)}
-                  aria-label={`Select ${category.title} for reset`}
-                />
-              </div>
-              <CollapsibleContent className="-mt-1 px-3 pb-2.5 text-supporting text-text-muted">
-                {category.description}
-              </CollapsibleContent>
-            </Collapsible>
-          );
-        })}
-      </div>
-
-      {hostOnly !== null ? (
-        // The whole reason, in place of the two buttons it disables, so the
-        // person reads it before reaching for a control rather than after.
-        <Note tone="neutral" testId="reset-needs-host-note" className="mt-3">
+      {hostOnly !== null && (
+        // The whole reason, beside the control it disables, so the person reads
+        // it before reaching for the control rather than after.
+        <Note tone="neutral" testId="reset-needs-host-note" className="mt-2">
           {hostOnly}
         </Note>
-      ) : (
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-start gap-2">
-            <RotateCcw className="mt-0.5 h-4 w-4 shrink-0 text-text-danger" />
-            <p className="max-w-xl text-supporting text-text-muted">
-              Resetting is permanent. Export anything you want to keep before continuing.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* A plain `outline`. The danger border plus a second hover fill made
-              two loud destructive buttons side by side; the pair now mirrors this
-              file's own dialog footer, where the dismiss is outline and the
-              confirm is destructive. */}
+      )}
+
+      <ModalShell
+        open={open}
+        onOpenChange={(next) => !next && !resetting && setOpen(false)}
+        size="md"
+        purpose={resetting ? 'required' : 'form'}
+        title={resetCopy.dialogTitle}
+        subtitle={resetCopy.rowHelp}
+        footer={
+          <>
             <Button
               type="button"
               variant="outline"
-              disabled={selectedCategories.length === 0 || resetting}
-              onClick={() => openConfirmation(selectedCategories)}
+              disabled={resetting}
+              onClick={() => setOpen(false)}
             >
-              Reset selected
+              {resetCopy.cancel}
             </Button>
             <Button
               type="button"
               variant="destructive"
-              disabled={resetting}
-              onClick={() => openConfirmation(ALL_CATEGORIES)}
+              disabled={resetting || selectedCategories.length === 0}
+              onClick={handleReset}
             >
-              <RotateCcw />
-              Reset everything
+              {resetting
+                ? resetCopy.resetting
+                : everything
+                  ? resetCopy.resetEverything
+                  : resetCopy.resetSelected}
             </Button>
-          </div>
-        </div>
-      )}
-
-      {status && (
-        <p
-          className={cn(
-            'mt-2 text-supporting',
-            status.startsWith('Reset complete') ? 'text-text-muted' : 'text-text-danger'
-          )}
-          role="status"
-        >
-          {status}
-        </p>
-      )}
-
-      <Dialog
-        open={pendingCategories !== null}
-        onOpenChange={(open) => !open && !resetting && setPendingCategories(null)}
+          </>
+        }
       >
-        <DialogContent dismissible={!resetting} className={MODAL_SIZE.md}>
-          <DialogHeader>
-            <DialogTitle>{isEverything ? 'Reset everything?' : 'Reset selected data?'}</DialogTitle>
-            <DialogDescription>
-              This cannot be undone. Biorouter will restore built-in content after removing:
-            </DialogDescription>
-          </DialogHeader>
+        <div className="flex items-center justify-between gap-2 pb-2">
+          <span className="text-supporting tabular-nums text-text-muted">
+            {resetCopy.selectedCount(selectedCategories.length, ALL_CATEGORIES.length)}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={resetting}
+            onClick={() => setSelected(everything ? new Set() : new Set(ALL_CATEGORIES))}
+          >
+            {everything ? resetCopy.clear : resetCopy.selectAll}
+          </Button>
+        </div>
 
-          <div className="grid grid-cols-1 gap-2 rounded-element border border-border-subtle bg-background-muted p-3 sm:grid-cols-2">
-            {pendingDefinitions.map((category) => {
-              const Icon = category.icon;
-              return (
-                <div
-                  key={category.id}
-                  className="flex items-center gap-2 text-label text-text-default"
+        <ul className="biorouter-settings-list">
+          {RESET_CATEGORIES.map((category) => {
+            const checkboxId = `${idPrefix}-reset-${category.id}`;
+            const count = countText(category, counts);
+            return (
+              <li
+                key={category.id}
+                data-testid={`reset-option-${category.id}`}
+                className="biorouter-settings-row flex min-w-0 items-center gap-2 px-3 py-2.5"
+              >
+                <Checkbox
+                  id={checkboxId}
+                  checked={selected.has(category.id)}
+                  disabled={resetting}
+                  onChange={() => toggleCategory(category.id)}
+                />
+                <label
+                  htmlFor={checkboxId}
+                  className="min-w-0 truncate text-label text-text-default"
                 >
-                  <Icon className="h-4 w-4 text-text-muted" />
                   {category.title}
-                </div>
-              );
-            })}
-          </div>
+                </label>
+                <InfoTip label={category.title} help={category.description} />
+                {count && (
+                  <span className="ml-auto shrink-0 text-supporting tabular-nums text-text-muted">
+                    {count}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
 
-          <p className="text-supporting text-text-muted">
-            Your configured models, provider credentials, theme, and app preferences will stay in
-            place.
-          </p>
+        {/* Essential, so it stays visible at the moment of decision (principle 2). */}
+        <p className="pt-3 text-supporting text-text-muted">{resetCopy.permanence}</p>
 
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={resetting}
-              onClick={() => setPendingCategories(null)}
-            >
-              Cancel
-            </Button>
-            <Button type="button" variant="destructive" disabled={resetting} onClick={handleReset}>
-              {resetting && <Loader2 className="animate-spin" />}
-              {resetting ? 'Resetting…' : isEverything ? 'Reset everything' : 'Reset selected'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+        {error && (
+          <Note tone="danger" role="alert" className="mt-3">
+            {error}
+          </Note>
+        )}
+      </ModalShell>
+    </SettingSection>
   );
 }

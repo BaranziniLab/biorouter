@@ -83,7 +83,7 @@ describe.each(bridges)('Appearance controls on %s', (_name, makeBridge) => {
     expect(() => fireEvent.click(screen.getByTestId('dark-mode-button'))).not.toThrow();
     expect(capture.errors).toEqual([]);
     expect(document.documentElement.classList.contains('dark')).toBe(true);
-    expect(screen.getByTestId('dark-mode-button').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('dark-mode-button').getAttribute('aria-checked')).toBe('true');
 
     expect(() => fireEvent.click(screen.getByTestId('system-mode-button'))).not.toThrow();
     expect(() => fireEvent.click(screen.getByTestId('dark-mode-button'))).not.toThrow();
@@ -94,7 +94,7 @@ describe.each(bridges)('Appearance controls on %s', (_name, makeBridge) => {
     document.documentElement.classList.remove('dark', 'light');
     mount();
     expect(document.documentElement.classList.contains('dark')).toBe(true);
-    expect(screen.getByTestId('dark-mode-button').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('dark-mode-button').getAttribute('aria-checked')).toBe('true');
     expect(capture.errors).toEqual([]);
   });
 

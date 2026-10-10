@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { generalCopy } from './copy';
 
 const mocks = vi.hoisted(() => ({ upsert: vi.fn(), read: vi.fn() }));
 
@@ -11,15 +12,15 @@ vi.mock('../../ConfigContext', async (importOriginal) => {
   };
 });
 
-import { WorkspaceSettingsSection } from './WorkspaceSettingsSection';
+import { NeverOpenTabsRow } from './WorkspaceSettingsSection';
 
-describe('WorkspaceSettingsSection', () => {
+describe('Never open tabs automatically', () => {
   afterEach(() => vi.clearAllMocks());
 
   it('reflects the stored value and writes the config key on toggle', async () => {
     mocks.read.mockResolvedValue(false);
-    render(<WorkspaceSettingsSection />);
-    const toggle = await screen.findByRole('switch', { name: /never open tabs automatically/i });
+    render(<NeverOpenTabsRow />);
+    const toggle = await screen.findByRole('switch', { name: generalCopy.announceOnly });
     expect(toggle.getAttribute('aria-checked')).toBe('false');
 
     fireEvent.click(toggle);
@@ -30,26 +31,33 @@ describe('WorkspaceSettingsSection', () => {
 
   it('starts checked when the key is already true', async () => {
     mocks.read.mockResolvedValue(true);
-    render(<WorkspaceSettingsSection />);
-    const toggle = await screen.findByRole('switch', { name: /never open tabs automatically/i });
+    render(<NeverOpenTabsRow />);
+    const toggle = await screen.findByRole('switch', { name: generalCopy.announceOnly });
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
   });
 
-  // The App tab is a stack of titled `biorouter-settings-section` blocks, each
-  // with a header and a `biorouter-settings-list`. A bare row mounted after
-  // `AppSettingsSection`'s `pb-8` renders — the row class carries its own
-  // border and hover — but as an unlabelled orphan under the previous
-  // section's heading, so the user reads it as part of "Updates".
-  it('renders as a titled section, not a headerless orphan row', async () => {
+  it('rolls the switch back when the write fails', async () => {
     mocks.read.mockResolvedValue(false);
-    const { container } = render(<WorkspaceSettingsSection />);
-    await screen.findByRole('switch', { name: /never open tabs automatically/i });
+    mocks.upsert.mockRejectedValueOnce(new Error('refused'));
+    render(<NeverOpenTabsRow />);
+    const toggle = await screen.findByRole('switch', { name: generalCopy.announceOnly });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+  });
 
-    expect(screen.getByRole('heading', { name: /workspace/i })).toBeInTheDocument();
-    const section = container.querySelector('.biorouter-settings-section');
-    expect(section).not.toBeNull();
-    expect(
-      section?.querySelector('.biorouter-settings-list .biorouter-settings-row')
-    ).not.toBeNull();
+  /**
+   * It used to be a whole "Workspace" section holding this one row, with a two-sentence
+   * paragraph under the label. It is a row of General now, and the explanation is help the
+   * switch hears through `aria-describedby` rather than a paragraph on the page.
+   */
+  it('is one row with its explanation as help, not a section with a paragraph', async () => {
+    mocks.read.mockResolvedValue(false);
+    const { container } = render(<NeverOpenTabsRow />);
+    const toggle = await screen.findByRole('switch', { name: generalCopy.announceOnly });
+
+    expect(container.querySelector('.biorouter-settings-section')).toBeNull();
+    expect(screen.queryByRole('heading')).toBeNull();
+    expect(container.querySelector('.biorouter-settings-row p')).toBeNull();
+    expect(toggle).toHaveAccessibleDescription(generalCopy.announceOnlyHelp);
   });
 });

@@ -1,21 +1,28 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsView from './SettingsView';
 import { CONFIGURATION_ENABLED } from '../../updates';
+import { SETTINGS_SECTION_IDS } from './settingsSections';
+import { settingsShellCopy } from './app/copy';
 
 // Every section but Privacy is stubbed, and each stub is identifiable, so this
-// file can assert both that the Privacy panel is really mounted — the failure
+// file can assert both that the Privacy panel is really mounted (the failure
 // mode being a settings component that is declared and plausible but has zero
-// consumers repo-wide, so it renders for nobody — and WHERE it sits relative to
+// consumers repo-wide, so it renders for nobody) and WHERE it sits relative to
 // its neighbours.
-vi.mock('./models/ModelsSection', () => ({ default: () => <div /> }));
-vi.mock('./chat/ChatSettingsSection', () => ({ default: () => <div /> }));
+vi.mock('./models/ModelsSection', () => ({
+  default: () => <div data-testid="section-models" />,
+}));
+vi.mock('./chat/ChatSettingsSection', () => ({
+  default: () => (
+    <div data-testid="section-chat">
+      <section id={SETTINGS_SECTION_IDS.approvals} data-testid="section-approvals" />
+    </div>
+  ),
+}));
 vi.mock('./app/AppSettingsSection', () => ({
   default: () => <div data-testid="section-app" />,
-}));
-vi.mock('./app/WorkspaceSettingsSection', () => ({
-  WorkspaceSettingsSection: () => <div data-testid="section-workspace" />,
 }));
 vi.mock('./config/ConfigSettings', () => ({
   default: () => <div data-testid="section-config" />,
@@ -38,6 +45,17 @@ function sectionOrder(): string[] {
   );
 }
 
+const scrollIntoView = vi.fn();
+
+beforeEach(() => {
+  scrollIntoView.mockReset();
+  Element.prototype.scrollIntoView = scrollIntoView;
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('SettingsView', () => {
   /**
    * ⚠ **Privacy is a SECTION of App, not a tab.** It shipped as a fourth tab,
@@ -56,13 +74,13 @@ describe('SettingsView', () => {
 
   /**
    * The operator's order, and it is the point of the change: Configuration,
-   * Privacy, Workspace, then everything `AppSettingsSection` owns — which ends
-   * with Updates, so Updates stays at the bottom of the page.
+   * Privacy, then everything `AppSettingsSection` owns (General, which now holds
+   * the old one-row Workspace section, Appearance, Usage, About, Danger zone).
    *
    * Asserted as document order rather than by eyeballing the JSX, because the
    * JSX is exactly what a later edit reorders.
    */
-  it('orders the App tab: Configuration, Privacy, Workspace, then the rest', async () => {
+  it('orders the App tab: Configuration, Privacy, then the rest', async () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByTestId('settings-app-tab'));
@@ -70,8 +88,8 @@ describe('SettingsView', () => {
 
     const order = sectionOrder();
     const expected = CONFIGURATION_ENABLED
-      ? ['section-config', 'section-privacy', 'section-workspace', 'section-app']
-      : ['section-privacy', 'section-workspace', 'section-app'];
+      ? ['section-config', 'section-privacy', 'section-app']
+      : ['section-privacy', 'section-app'];
     expect(order).toEqual(expected);
   });
 
@@ -86,6 +104,97 @@ describe('SettingsView', () => {
   });
 });
 
+describe('the Settings band', () => {
+  /**
+   * One 44px band holds the title and the three tabs (spec §3.13): no description paragraph,
+   * no tab strip of its own under the header, and text-only tabs.
+   */
+  it('holds the title and the three text-only tabs, and no description', () => {
+    renderSettings();
+    const band = screen.getByTestId('page-header');
+    expect(within(band).getByRole('heading', { level: 1 })).toHaveTextContent(
+      settingsShellCopy.title
+    );
+    const tabs = within(band).getAllByRole('tab');
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      settingsShellCopy.tabs.models,
+      settingsShellCopy.tabs.chat,
+      settingsShellCopy.tabs.app,
+    ]);
+    for (const tab of tabs) expect(tab.querySelector('svg')).toBeNull();
+    expect(within(band).queryByText(/Manage models/)).toBeNull();
+  });
+
+  it('keeps the tab test ids the e2e suite reads', () => {
+    renderSettings();
+    for (const id of ['settings-models-tab', 'settings-chat-tab', 'settings-app-tab']) {
+      expect(screen.getByTestId(id)).toBeInTheDocument();
+    }
+  });
+
+  it('opens on Models, or on the tab a deep link names', () => {
+    const { unmount } = renderSettings();
+    expect(screen.getByTestId('settings-models-tab')).toHaveAttribute('data-state', 'active');
+    unmount();
+    renderSettings({ section: 'modes' });
+    expect(screen.getByTestId('settings-chat-tab')).toHaveAttribute('data-state', 'active');
+  });
+});
+
+describe('Settings scrolling', () => {
+  const viewport = () =>
+    document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') as HTMLElement;
+
+  /** One scroller holds all three tabs; a tab change starts the next tab at its top. */
+  it('starts each tab at the top', async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    viewport().scrollTop = 600;
+    await user.click(screen.getByTestId('settings-chat-tab'));
+    expect(viewport().scrollTop).toBe(0);
+  });
+
+  it('scrolls a deep-linked section into view and highlights it', async () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    renderSettings({ section: 'modes' });
+    const section = screen.getByTestId('section-approvals');
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'start' }));
+    expect(scrollIntoView.mock.contexts[0]).toBe(section);
+    expect(section).toHaveClass('br-highlight');
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(section).not.toHaveClass('br-highlight');
+  });
+
+  it('jumps instead of gliding when the person prefers reduced motion', async () => {
+    const matchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query.includes('reduce'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      onchange: null,
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia;
+    try {
+      vi.useFakeTimers({ toFake: ['requestAnimationFrame'] });
+      renderSettings({ section: 'modes' });
+      await act(async () => {
+        vi.advanceTimersByTime(50);
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'auto' }));
+    } finally {
+      window.matchMedia = matchMedia;
+    }
+  });
+});
+
 /**
  * Settings reads the CHAT measure (760px), not the fluid page measure
  * (operator decision, 2026-09-07): it is a column of labelled rows, so width
@@ -93,43 +202,33 @@ describe('SettingsView', () => {
  * showing more.
  *
  * ⚠ **What this can and cannot see.** jsdom has no layout engine and never runs
- * Tailwind, so `getBoundingClientRect()` here is zero for every box and the
- * WIDTH is unassertable — the alignment was measured in a real browser instead
- * (see the PR). What is assertable is the attribute that selects the width, and
- * that all three boxes agree on it: the header, the tab strip and the scrolling
- * body are three separate `ReadableContent`s meeting at one left edge, so a
- * size on one and not its siblings is a visible step in that edge rather than
- * an invisible inconsistency. The count is pinned so that a fourth column added
- * on the default size fails here rather than shipping a step, and
- * `styles/measures.test.ts` closes the remaining case this file cannot see: a
- * `<ReadableContent` written with no `size` prop at all.
+ * Tailwind, so the WIDTH is unassertable here; what is assertable is the
+ * attribute that selects it. The band is not a reading column (it runs edge to
+ * edge), so the body is the one column, and it is pinned so that a second
+ * column added on the default size fails here rather than shipping a step in
+ * the left edge. `styles/measures.test.ts` closes the remaining case this file
+ * cannot see: a `<ReadableContent` written with no `size` prop at all.
  */
 describe('SettingsView sits on the chat measure', () => {
   const readableColumns = () =>
     [...document.querySelectorAll('.biorouter-readable-content')] as HTMLElement[];
 
-  it('renders exactly three reading columns, all of them the chat size', () => {
+  it('renders one reading column, on the chat size', () => {
     renderSettings();
 
     const columns = readableColumns();
-    expect(columns).toHaveLength(3);
+    expect(columns).toHaveLength(1);
     for (const column of columns) expect(column.dataset.size).toBe('chat');
   });
 
-  /**
-   * The tab strip and the body are inside `Tabs`, so switching tabs re-renders
-   * the body. Asserted on the App tab as well because that is the tab with the
-   * most sections under it, and the one a later edit is most likely to wrap in
-   * a column of its own.
-   */
-  it('keeps every column on the chat size after switching tabs', async () => {
+  it('keeps the column on the chat size after switching tabs', async () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByTestId('settings-app-tab'));
     await screen.findByRole('switch', { name: /Privacy tiers/ });
 
     const columns = readableColumns();
-    expect(columns).toHaveLength(3);
+    expect(columns).toHaveLength(1);
     for (const column of columns) expect(column.dataset.size).toBe('chat');
   });
 

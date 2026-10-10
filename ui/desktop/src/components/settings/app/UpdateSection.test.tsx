@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, act, cleanup } from '@testing-library/react';
 import UpdateSection from './UpdateSection';
+import { aboutCopy } from './copy';
 import type { UpdaterEventPayload } from '../../../utils/updaterState';
 
 let emit: (p: UpdaterEventPayload) => void = () => {};
@@ -33,10 +34,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('Settings → UpdateSection — one-click flow', () => {
-  it('shows the current version', () => {
+describe('Settings > App > About > Version: one-click flow', () => {
+  it('shows the current version as the Version row’s value', () => {
     render(<UpdateSection />);
     expect(screen.getByText('1.85.4')).toBeTruthy();
+    expect(screen.getByText(aboutCopy.version)).toBeTruthy();
   });
 
   it('drives electron-updater check, shows progress, then one-click install', async () => {
@@ -52,7 +54,10 @@ describe('Settings → UpdateSection — one-click flow', () => {
     expect(screen.getByText('60%')).toBeTruthy();
 
     emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
-    const installBtn = await screen.findByRole('button', { name: /Restart & Update to 1\.86\.0/i });
+    // "Restart to update" replaces the button; the version moves to the status line (§3.13).
+    const installBtn = await screen.findByRole('button', { name: aboutCopy.restartToUpdate });
+    expect(screen.getByText(aboutCopy.ready('1.86.0'))).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Check for Updates/i })).toBeNull();
     fireEvent.click(installBtn);
     expect(installUpdate).toHaveBeenCalledTimes(1);
   });
@@ -69,7 +74,15 @@ describe('Settings → UpdateSection — one-click flow', () => {
     render(<UpdateSection />);
     fireEvent.click(screen.getByRole('button', { name: /Check for Updates/i }));
     expect(await screen.findByText(/Could not complete the update/i)).toBeTruthy();
-    expect(screen.getByText(/offline/i)).toBeTruthy();
+    // The failure stays visible, with the one way forward beside it.
+    expect(screen.getByRole('alert')).toHaveTextContent('offline');
+    expect(screen.getByRole('button', { name: aboutCopy.downloadFromSite })).toBeTruthy();
+  });
+
+  it('keeps its explanation as help the button row hears, not a paragraph', () => {
+    const { container } = render(<UpdateSection />);
+    expect(container.querySelector('p')).toBeNull();
+    expect(screen.getByRole('button', { name: 'About Version' })).toBeTruthy();
   });
 
   it('recovers a ready-to-install update opened from a fresh Settings panel', async () => {
@@ -79,7 +92,8 @@ describe('Settings → UpdateSection — one-click flow', () => {
       .fn()
       .mockResolvedValue({ status: 'downloaded', latestVersion: '1.86.0', percent: 100 });
     render(<UpdateSection />);
-    const installBtn = await screen.findByRole('button', { name: /Restart & Update to 1\.86\.0/i });
+    const installBtn = await screen.findByRole('button', { name: aboutCopy.restartToUpdate });
+    expect(screen.getByText(aboutCopy.ready('1.86.0'))).toBeTruthy();
     fireEvent.click(installBtn);
     expect(installUpdate).toHaveBeenCalledTimes(1);
   });
