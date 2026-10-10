@@ -2,6 +2,8 @@ import React, { useState, useEffect, FormEvent } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Note } from '../ui/note';
+import { Field, fieldHelpId } from '../ui/field';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { ScheduledJob } from '../../schedule';
 import { CronPicker } from './CronPicker';
 import { getStorageDirectory } from '../../workflow/workflow_management';
@@ -9,6 +11,9 @@ import { Folder } from '../icons/app-icons';
 import { ModalShell } from '../ModalShell';
 import { scheduleDisplayName } from '../../utils/builtins';
 import { scheduleNameProblem } from './scheduleName';
+import { scheduleCopy } from './copy';
+
+const copy = scheduleCopy.modal;
 
 export interface NewSchedulePayload {
   id: string;
@@ -27,8 +32,6 @@ interface ScheduleModalProps {
   initialDeepLink?: string | null;
 }
 
-const FIELD_LABEL = 'mb-1.5 block text-label text-text-default';
-
 /**
  * Create or edit a schedule.
  *
@@ -42,7 +45,12 @@ const FIELD_LABEL = 'mb-1.5 block text-label text-text-default';
  * single-decision notices", and the cron picker beside it is deliberately one
  * inline sentence of controls; 400px folds that sentence onto three lines and
  * turns the thing back into a stack of boxes. `md` is the ladder's own form
- * rung and is what the dialog's old ad-hoc `max-w-md` was reaching for.
+ * rung.
+ *
+ * Every field is the shared `Field` (Crew's recipe): a `text-label` label, the
+ * control, then ONE line that is the helper or, when something is wrong, the
+ * error in its place. The name's format rule stays visible as its helper (spec
+ * 3.10): a hidden format rule costs a round trip.
  *
  * `purpose` flips to `required` while a save is in flight, so a dismissal
  * cannot orphan a create that the daemon is already running.
@@ -60,7 +68,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   const [scheduleId, setScheduleId] = useState<string>('');
   const [workflowSourcePath, setWorkflowSourcePath] = useState<string>('');
   const [cronExpression, setCronExpression] = useState<string>('0 0 14 * * *');
-  const [internalValidationError, setInternalValidationError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
   const [isValid, setIsValid] = useState(true);
 
   useEffect(() => {
@@ -72,8 +81,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
         setScheduleId('');
         setWorkflowSourcePath('');
         setCronExpression('0 0 14 * * *');
-        setInternalValidationError(null);
       }
+      setNameError(null);
+      setWorkflowError(null);
     }
   }, [isOpen, schedule]);
 
@@ -83,9 +93,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     if (filePath) {
       if (filePath.endsWith('.yaml') || filePath.endsWith('.yml')) {
         setWorkflowSourcePath(filePath);
-        setInternalValidationError(null);
+        setWorkflowError(null);
       } else {
-        setInternalValidationError('Invalid file type: choose a YAML file (.yaml or .yml)');
+        setWorkflowError(copy.wrongFileType);
       }
     }
   };
@@ -93,7 +103,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   const handleLocalSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (isLoadingExternally) return;
-    setInternalValidationError(null);
+    setNameError(null);
+    setWorkflowError(null);
 
     if (isEditMode) {
       await onSubmit(cronExpression);
@@ -102,25 +113,23 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
     // The rule is stated here so the user reads it at the field, not after a
     // round trip. The daemon's `validate_schedule_id` remains the authority —
-    // it closes an arbitrary-file write — and its refusal now reaches this same
-    // Note through `createSchedule`, so a drift between the two costs a
+    // it closes an arbitrary-file write — and its refusal reaches the Note at
+    // the top through `createSchedule`, so a drift between the two costs a
     // round trip rather than an unreadable error. See `scheduleName.ts`.
     const nameProblem = scheduleNameProblem(scheduleId.trim());
     if (nameProblem) {
-      setInternalValidationError(nameProblem);
+      setNameError(nameProblem);
       return;
     }
 
     if (!workflowSourcePath) {
-      setInternalValidationError('Workflow source file is required.');
+      setWorkflowError(copy.workflowRequired);
       return;
     }
 
-    const finalWorkflowSource = workflowSourcePath;
-
     const newSchedulePayload: NewSchedulePayload = {
       id: scheduleId.trim(),
-      workflow_source: finalWorkflowSource,
+      workflow_source: workflowSourcePath,
       cron: cronExpression,
     };
 
@@ -137,97 +146,95 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       }}
       size="md"
       purpose={isLoadingExternally ? 'required' : 'form'}
-      title={isEditMode ? 'Edit schedule' : 'New schedule'}
+      title={isEditMode ? copy.editTitle : copy.newTitle}
       subtitle={schedule ? scheduleDisplayName(schedule.id) : undefined}
       scrollBody
       footer={
         <>
-          <Button type="button" variant="outline" onClick={onClose} disabled={isLoadingExternally}>
-            Cancel
+          <Button type="button" variant="ghost" onClick={onClose} disabled={isLoadingExternally}>
+            {copy.cancel}
           </Button>
           <Button type="submit" form="schedule-form" disabled={isLoadingExternally || !isValid}>
             {isLoadingExternally
               ? isEditMode
-                ? 'Saving…'
-                : 'Creating…'
+                ? copy.saving
+                : copy.creating
               : isEditMode
-                ? 'Save changes'
-                : 'Create schedule'}
+                ? copy.save
+                : copy.create}
           </Button>
         </>
       }
     >
-      <form id="schedule-form" onSubmit={handleLocalSubmit} className="flex flex-col gap-5 py-1">
+      <form id="schedule-form" onSubmit={handleLocalSubmit} className="flex flex-col gap-4 py-1">
         {apiErrorExternally && (
           <Note tone="danger" role="alert">
             {apiErrorExternally}
           </Note>
         )}
-        {internalValidationError && (
-          <Note tone="danger" role="alert">
-            {internalValidationError}
-          </Note>
-        )}
 
         {!isEditMode && (
           <>
-            <div>
-              <label htmlFor="scheduleId-modal" className={FIELD_LABEL}>
-                Name
-              </label>
+            <Field
+              id="scheduleId-modal"
+              label={copy.name}
+              required
+              helper={copy.nameHelper}
+              error={nameError ? <span role="alert">{nameError}</span> : undefined}
+            >
               <Input
                 type="text"
-                id="scheduleId-modal"
                 value={scheduleId}
-                onChange={(e) => setScheduleId(e.target.value)}
-                placeholder="e.g., daily-summary-job"
+                onChange={(e) => {
+                  setScheduleId(e.target.value);
+                  setNameError(null);
+                }}
+                placeholder={copy.namePlaceholder}
                 required
               />
-              <p className="mt-1.5 text-supporting text-text-muted">
-                Letters, digits, hyphens and underscores only
-              </p>
-            </div>
+            </Field>
 
-            <div>
-              {/* One `Input` with a trailing ghost Browse button, NOT an input
-                  wrapped in a `biorouter-modal-panel` — a bordered panel around
-                  a bordered field inside a bordered dialog was the box in a box
-                  in a box, in miniature. */}
-              <label htmlFor="workflowSource-modal" className={FIELD_LABEL}>
-                Workflow file
-              </label>
-              <div className="flex items-center gap-2">
+            {/* One `Input` with a trailing ghost Browse button. The row is the
+                Field's child, so the label is pointed at the input by id. */}
+            <Field
+              id="workflowSource-modal"
+              label={copy.workflowFile}
+              error={workflowError ? <span role="alert">{workflowError}</span> : undefined}
+            >
+              <div id="workflowSource-modal-row" className="flex items-center gap-2">
                 <Input
                   type="text"
                   id="workflowSource-modal"
+                  aria-describedby={workflowError ? fieldHelpId('workflowSource-modal') : undefined}
+                  aria-invalid={workflowError ? true : undefined}
                   value={workflowSourcePath}
                   onChange={(e) => {
                     setWorkflowSourcePath(e.target.value);
-                    setInternalValidationError(null);
+                    setWorkflowError(null);
                   }}
-                  placeholder="/path/to/workflow.yaml"
-                  className="font-mono"
+                  placeholder={copy.workflowPlaceholder}
                 />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  shape="round"
-                  onClick={handleBrowseFile}
-                  title="Browse for a YAML file"
-                  aria-label="Browse for a YAML file"
-                >
-                  <Folder />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      shape="round"
+                      onClick={handleBrowseFile}
+                      aria-label={copy.browse}
+                    >
+                      <Folder />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{copy.browse}</TooltipContent>
+                </Tooltip>
               </div>
-              <p className="mt-1.5 text-supporting text-text-muted">
-                Select a YAML workflow file (.yaml or .yml)
-              </p>
-            </div>
+            </Field>
           </>
         )}
 
-        <div>
-          <span className={FIELD_LABEL}>Schedule</span>
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <span className="text-label text-text-default">{copy.when}</span>
           <CronPicker schedule={schedule} onChange={setCronExpression} isValid={setIsValid} />
         </div>
       </form>

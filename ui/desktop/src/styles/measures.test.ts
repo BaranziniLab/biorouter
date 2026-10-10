@@ -463,7 +463,7 @@ describe('the schedule detail sizes itself from its parent', () => {
     if (!detail) throw new Error('ScheduleDetailView.tsx is not in CHAT_MEASURE_VIEWS');
     const code = codeWithoutComments(detail.source);
     expect(code).not.toContain('h-screen');
-    expect(code).toContain('<MainPanelLayout>');
+    expect(code).toMatch(/<MainPanelLayout\b[^>]*>/);
   });
 });
 

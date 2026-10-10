@@ -214,6 +214,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
   const [dayOfMonth, setDayOfMonth] = useState('1');
   const [month, setMonth] = useState('1');
   const [readableCron, setReadableCron] = useState('');
+  const [cronError, setCronError] = useState<string | null>(null);
 
   useEffect(() => {
     const parsed = parseCron(schedule?.cron || '');
@@ -260,10 +261,12 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
       const cronWithoutSeconds = cron.split(' ').slice(1).join(' ');
       try {
         setReadableCron(cronstrue.toString(cronWithoutSeconds));
+        setCronError(null);
         isValid(true);
       } catch (e) {
         isValid(false);
-        setReadableCron('error: ' + errorMessage(e));
+        setReadableCron('');
+        setCronError(errorMessage(e));
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -353,7 +356,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
               value={isPM ? 'PM' : 'AM'}
               options={MERIDIEM_OPTIONS}
               onChange={(value) => setIsPM(value === 'PM')}
-              width="w-[4.5rem]"
+              width="w-20"
             />
           </span>
         )}
@@ -385,7 +388,15 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
         )}
       </div>
 
-      <p className="text-supporting text-text-muted">{readableCron}</p>
+      {/* The sentence the picker builds, read back. An invalid combination says
+          why in danger ink rather than as "error: …" in the muted preview line. */}
+      {cronError ? (
+        <p className="text-supporting text-text-danger" role="alert">
+          {cronError}
+        </p>
+      ) : (
+        <p className="text-supporting text-text-muted">{readableCron}</p>
+      )}
     </div>
   );
 };

@@ -9,23 +9,12 @@ import {
   unpauseSchedule,
   updateSchedule,
   killRunningJob,
-  inspectRunningJob,
+  runScheduleNow,
   ScheduledJob,
 } from '../../schedule';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
-import {
-  Plus,
-  RefreshCw,
-  Pause,
-  Play,
-  Edit,
-  Square,
-  Eye,
-  CircleDotDashed,
-  Trash2,
-  Clock,
-} from '../icons/app-icons';
+import { Plus, RefreshCw, Pause, Play, CircleDotDashed, StopSquare } from '../icons/app-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
 import { toastError, toastSuccess } from '../../toasts';
@@ -39,43 +28,55 @@ import {
   scheduleDisplayName,
 } from '../../utils/builtins';
 import { ReadableContent } from '../Layout/ReadableContent';
-import { PageHeader } from '../Layout/PageHeader';
+import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
 import { Note } from '../ui/note';
 import { Skeleton } from '../ui/skeleton';
-import { ScheduleStatus, readableCronOf } from './scheduleStatus';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { IconAction, RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
+import { ScheduleStatusDot, formatRunTime, readableCronOf, scheduleState } from './scheduleStatus';
+import { DELETE_SCHEDULE_MESSAGE, scheduleCopy as copy } from './copy';
 
-/**
- * What deleting a schedule actually does, said in the confirmation.
- *
- * ⚠ It no longer removes the workflow, so it must no longer imply that it
- * might. The previous sentence — "This permanently removes the schedule and its
- * run configuration" — was written when a delete unlinked `job.source`
- * unconditionally, and for a schedule added from a workflow row that source was
- * the user's own workflow file. `scheduler::scheduler_owns_source` now confines
- * the unlink to the private copy the scheduler made for itself, so the
- * confirmation names the file that survives instead of leaving the reader to
- * work out what "run configuration" covered.
- *
- * Exported so `SchedulesView.test.tsx` asserts the promise the dialog makes
- * against the behaviour the scheduler tests pin.
- */
-export const DELETE_SCHEDULE_MESSAGE =
-  'This removes the schedule and stops its future runs. The workflow it runs is left in place. This action cannot be undone.';
+// Kept as an export of this module too: older imports read it from here.
+export { DELETE_SCHEDULE_MESSAGE };
 
 interface SchedulesViewProps {
   onClose?: () => void;
 }
 
+const errorText = (error: unknown, fallback: string) =>
+  error instanceof Error && error.message ? error.message : fallback;
+
 /**
- * One schedule, as a hairline row on the canvas.
+ * The cron as words, with the expression itself one hover away (spec 3.10: "the full cron goes
+ * in the tooltip of the cron phrase").
+ */
+function CronPhrase({ cron }: { cron: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span>{readableCronOf(cron)}</span>
+      </TooltipTrigger>
+      <TooltipContent>
+        <span className="font-mono">{cron}</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * One schedule, as a two-line hairline row (spec 3.10, Crew's content row).
  *
- * There is no card here and no card around the list: §3.10's "a list gets no
- * container" and design.md's P2 (rows, not cards). Status is TEXT beside a
- * status dot rather than a filled pill — the alpha-mixed 15% background pills
- * this replaced are exactly the hand-mixed fills the settings vocabulary bans, and
- * §2.5 reserves translucent status fills for a `Note`, not for a word in a row.
+ * - A leading 8px status dot (Codex's per-thread circle) in place of the clock glyph.
+ * - Line 1: the name (and Built-in). Line 2: ONE meta line, "{status} · {cron} · Last run
+ *   {when}", in the sans face with tabular figures. A failed schedule's last error replaces
+ *   that line in danger ink: it is the only record of a failure (issue #56), so it stays
+ *   visible.
+ * - Actions appear when wanted: Pause or Resume (Stop while running) and `⋯` with Edit, Run
+ *   now, Inspect run, then Delete. Right-click and Shift+F10 open the same menu.
+ * - The row's body is the button that opens the detail; the actions are their own controls,
+ *   never nested inside it.
  */
 const ScheduleRow: React.FC<{
   job: ScheduledJob;
@@ -84,7 +85,7 @@ const ScheduleRow: React.FC<{
   onPause: (id: string) => void;
   onUnpause: (id: string) => void;
   onKill: (id: string) => void;
-  onInspect: (id: string) => void;
+  onRunNow: (id: string) => void;
   onDelete: (id: string) => void;
   actionInProgress: boolean;
 }> = ({
@@ -94,141 +95,105 @@ const ScheduleRow: React.FC<{
   onPause,
   onUnpause,
   onKill,
-  onInspect,
+  onRunNow,
   onDelete,
   actionInProgress,
 }) => {
-  const readableCron = readableCronOf(job.cron);
-  const formattedLastRun = formatToLocalDateWithTimezone(job.last_run);
+  const name = scheduleDisplayName(job.id);
+  const { words, failed } = scheduleState(job);
+  const running = Boolean(job.currently_running);
+  const lastRun = formatRunTime(job.last_run);
+
+  const menu: RowActionItem[] = [
+    ...(running
+      ? [{ label: copy.inspectRun, onSelect: () => onNavigateToDetail(job.id) } as RowActionItem]
+      : []),
+    {
+      label: copy.edit,
+      onSelect: () => onEdit(job),
+      disabled: running || actionInProgress,
+    },
+    {
+      label: copy.runNow,
+      onSelect: () => onRunNow(job.id),
+      disabled: running || actionInProgress,
+    },
+    { kind: 'separator' },
+    {
+      label: copy.delete,
+      onSelect: () => onDelete(job.id),
+      destructive: true,
+      disabled: actionInProgress,
+    },
+  ];
+
+  const primary = running ? (
+    <IconAction
+      icon={StopSquare}
+      label={copy.stopNamed(name)}
+      onSelect={() => onKill(job.id)}
+      disabled={actionInProgress}
+    />
+  ) : job.paused ? (
+    <IconAction
+      icon={Play}
+      label={copy.resumeNamed(name)}
+      onSelect={() => onUnpause(job.id)}
+      disabled={actionInProgress}
+    />
+  ) : (
+    <IconAction
+      icon={Pause}
+      label={copy.pauseNamed(name)}
+      onSelect={() => onPause(job.id)}
+      disabled={actionInProgress}
+    />
+  );
 
   return (
-    <div className="biorouter-list-row group flex items-start justify-between gap-3 px-3 py-3">
-      <button
-        type="button"
-        className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-        onClick={() => onNavigateToDetail(job.id)}
-        aria-label={`View schedule ${scheduleDisplayName(job.id)}`}
-      >
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Clock className="h-4 w-4 shrink-0 text-text-muted" aria-hidden />
-          <h3 className="min-w-0 truncate text-label" title={job.id}>
-            {scheduleDisplayName(job.id)}
-          </h3>
-          {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
-          <ScheduleStatus job={job} />
-        </div>
-        <p className="mt-0.5 line-clamp-1 text-supporting text-text-muted" title={readableCron}>
-          {readableCron}
-        </p>
-        <p className="mt-1 text-supporting text-text-muted">
-          Last run <span className="font-mono tabular-nums">{formattedLastRun}</span>
-        </p>
-        {/*
-          Issue #56. A schedule whose last tick failed looks identical to a
-          healthy one on this list — a fresh session is minted per run, so
-          there is nothing else here to notice. Cleared by the next success.
-        */}
-        {job.last_error && (
-          <p
-            className="mt-1 line-clamp-2 text-supporting text-text-danger [overflow-wrap:anywhere]"
-            title={job.last_error}
-          >
-            {job.last_error}
-          </p>
-        )}
-      </button>
-
-      <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-        {!job.currently_running && (
-          <>
-            <Button
-              onClick={(e) => {
-                e.stopPropagation();
-                onEdit(job);
-              }}
-              disabled={actionInProgress}
-              variant="ghost"
-              shape="round"
-              title="Edit schedule"
-              aria-label={`Edit ${scheduleDisplayName(job.id)}`}
-            >
-              <Edit />
-            </Button>
-            <Button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (job.paused) {
-                  onUnpause(job.id);
-                } else {
-                  onPause(job.id);
-                }
-              }}
-              disabled={actionInProgress}
-              variant="ghost"
-              shape="round"
-              title={job.paused ? 'Resume this schedule' : 'Pause this schedule'}
-              aria-label={`${job.paused ? 'Resume' : 'Pause'} ${scheduleDisplayName(job.id)}`}
-            >
-              {job.paused ? <Play /> : <Pause />}
-            </Button>
-          </>
-        )}
-        {job.currently_running && (
-          <>
-            <Button
-              onClick={(e) => {
-                e.stopPropagation();
-                onInspect(job.id);
-              }}
-              disabled={actionInProgress}
-              variant="ghost"
-              shape="round"
-              title="Show the current run"
-              aria-label={`Inspect ${scheduleDisplayName(job.id)}`}
-            >
-              <Eye />
-            </Button>
-            <Button
-              onClick={(e) => {
-                e.stopPropagation();
-                onKill(job.id);
-              }}
-              disabled={actionInProgress}
-              variant="ghost"
-              shape="round"
-              title="Stop the running job"
-              aria-label={`Stop ${scheduleDisplayName(job.id)}`}
-            >
-              <Square />
-            </Button>
-          </>
-        )}
-        <Button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(job.id);
-          }}
-          disabled={actionInProgress}
-          variant="ghost"
-          shape="round"
-          className="text-text-danger"
-          title="Delete schedule"
-          aria-label={`Delete ${scheduleDisplayName(job.id)}`}
+    <RowContextMenu items={menu}>
+      <div className="biorouter-list-row flex items-center gap-3" data-testid="schedule-row">
+        <ScheduleStatusDot job={job} className="shrink-0" />
+        <button
+          type="button"
+          className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          onClick={() => onNavigateToDetail(job.id)}
+          aria-label={copy.view(name)}
         >
-          <Trash2 />
-        </Button>
+          <span className="flex min-w-0 items-center gap-2">
+            <h3 className="min-w-0 truncate text-label">{name}</h3>
+            {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
+          </span>
+          {failed ? (
+            <p className="truncate text-supporting text-text-danger">
+              {words.join(' · ')} · {job.last_error}
+            </p>
+          ) : (
+            <p className="truncate text-supporting text-text-muted tabular-nums">
+              {words.join(' · ')} · <CronPhrase cron={job.cron} /> ·{' '}
+              {lastRun ? (
+                <span title={formatToLocalDateWithTimezone(job.last_run)}>
+                  {copy.lastRun(lastRun)}
+                </span>
+              ) : (
+                copy.notRunYet
+              )}
+            </p>
+          )}
+        </button>
+        <RowActions primary={primary} menu={menu} menuLabel={copy.moreActionsNamed(name)} />
       </div>
-    </div>
+    </RowContextMenu>
   );
 };
 
 /** Loading is rows that are the shape of rows, not a spinner in dead space. */
 const ScheduleRowSkeleton: React.FC = () => (
-  <div className="biorouter-list-row flex items-start justify-between gap-3 px-3 py-3">
+  <div className="biorouter-list-row flex items-center gap-3">
+    <Skeleton className="h-2 w-2 rounded-full" />
     <div className="min-w-0 flex-1">
       <Skeleton className="h-4 w-48" />
-      <Skeleton className="mt-2 h-3 w-32" />
-      <Skeleton className="mt-2 h-3 w-56" />
+      <Skeleton className="mt-1 h-3 w-64" />
     </div>
   </div>
 );
@@ -278,11 +243,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       setSchedules(fetchedSchedules);
     } catch (error) {
       console.error('Failed to fetch schedules:', error);
-      setApiError(
-        error instanceof Error
-          ? error.message
-          : 'An unknown error occurred while fetching schedules.'
-      );
+      setApiError(errorText(error, copy.loadFailed));
     } finally {
       setIsLoading(false);
     }
@@ -327,10 +288,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     try {
       if (editingSchedule) {
         await updateSchedule(editingSchedule.id, payload as string);
-        toastSuccess({
-          title: 'Schedule updated',
-          msg: `Updated schedule "${editingSchedule.id}"`,
-        });
+        toastSuccess({ title: copy.saved(scheduleDisplayName(editingSchedule.id)) });
       } else {
         const newPayload = payload as NewSchedulePayload;
         await createSchedule(newPayload);
@@ -340,8 +298,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       setEditingSchedule(null);
     } catch (error) {
       console.error('Failed to save schedule:', error);
-      const errorMsg = error instanceof Error ? error.message : 'Unknown error saving schedule.';
-      setSubmitApiError(errorMsg);
+      setSubmitApiError(errorText(error, 'Unknown error saving schedule.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -350,39 +307,34 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
   const handleDeleteSchedule = async (id: string) => {
     if (!beginAction(id)) return;
     if (viewingScheduleId === id) setViewingScheduleId(null);
-    setApiError(null);
 
     try {
       await deleteSchedule(id);
       await fetchSchedules();
     } catch (error) {
       console.error(`Failed to delete schedule "${id}":`, error);
-      const errorMsg = error instanceof Error ? error.message : `Unknown error deleting "${id}".`;
-      setApiError(errorMsg);
+      toastError({
+        title: copy.couldNotDelete(scheduleDisplayName(id)),
+        msg: errorText(error, `Unknown error deleting "${id}".`),
+      });
     } finally {
       finishAction(id);
       setScheduleToDeleteId(null);
     }
   };
 
+  // Pause and Resume raise no success toast (spec 6.9): the row's status word is the
+  // confirmation. A failure keeps its reason.
   const handlePauseSchedule = async (id: string) => {
     if (!beginAction(id)) return;
-    setApiError(null);
-
     try {
       await pauseSchedule(id);
-      toastSuccess({
-        title: 'Schedule paused',
-        msg: `Paused schedule "${id}"`,
-      });
       await fetchSchedules();
     } catch (error) {
       console.error(`Failed to pause schedule "${id}":`, error);
-      const errorMsg = error instanceof Error ? error.message : `Unknown error pausing "${id}".`;
-      setApiError(errorMsg);
       toastError({
-        title: 'Pause schedule error',
-        msg: errorMsg,
+        title: copy.couldNotPause(scheduleDisplayName(id)),
+        msg: errorText(error, `Unknown error pausing "${id}".`),
       });
     } finally {
       finishAction(id);
@@ -391,22 +343,14 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
 
   const handleUnpauseSchedule = async (id: string) => {
     if (!beginAction(id)) return;
-    setApiError(null);
-
     try {
       await unpauseSchedule(id);
-      toastSuccess({
-        title: 'Schedule unpaused',
-        msg: `Resumed schedule "${id}"`,
-      });
       await fetchSchedules();
     } catch (error) {
-      console.error(`Failed to unpause schedule "${id}":`, error);
-      const errorMsg = error instanceof Error ? error.message : `Unknown error unpausing "${id}".`;
-      setApiError(errorMsg);
+      console.error(`Failed to resume schedule "${id}":`, error);
       toastError({
-        title: 'Unpause schedule error',
-        msg: errorMsg,
+        title: copy.couldNotResume(scheduleDisplayName(id)),
+        msg: errorText(error, `Unknown error resuming "${id}".`),
       });
     } finally {
       finishAction(id);
@@ -415,57 +359,34 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
 
   const handleKillRunningJob = async (id: string) => {
     if (!beginAction(id)) return;
-    setApiError(null);
-
     try {
-      const result = await killRunningJob(id);
-      toastSuccess({
-        title: 'Job stopped',
-        msg: result.message,
-      });
+      await killRunningJob(id);
+      toastSuccess({ title: copy.runStopped });
       await fetchSchedules();
     } catch (error) {
       console.error(`Failed to kill running job "${id}":`, error);
-      const errorMsg =
-        error instanceof Error ? error.message : `Unknown error killing job "${id}".`;
-      setApiError(errorMsg);
       toastError({
-        title: 'Could not stop the job',
-        msg: errorMsg,
+        title: copy.couldNotStop,
+        msg: errorText(error, `Unknown error stopping "${id}".`),
       });
     } finally {
       finishAction(id);
     }
   };
 
-  const handleInspectRunningJob = async (id: string) => {
+  const handleRunNow = async (id: string) => {
     if (!beginAction(id)) return;
-    setApiError(null);
-
     try {
-      const result = await inspectRunningJob(id);
-      if (result.sessionId) {
-        const duration = result.runningDurationSeconds
-          ? `${Math.floor(result.runningDurationSeconds / 60)}m ${result.runningDurationSeconds % 60}s`
-          : 'Unknown';
-        toastSuccess({
-          title: 'Job inspection',
-          msg: `Session ID: ${result.sessionId}\nRunning for: ${duration}`,
-        });
-      } else {
-        toastSuccess({
-          title: 'Job inspection',
-          msg: 'No detailed information available for this job',
-        });
-      }
+      const result = await runScheduleNow(id);
+      toastSuccess({
+        title: result === 'CANCELLED' ? copy.runStoppedWhileStarting : copy.runStarted,
+      });
+      await fetchSchedules();
     } catch (error) {
-      console.error(`Failed to inspect running job "${id}":`, error);
-      const errorMsg =
-        error instanceof Error ? error.message : `Unknown error inspecting job "${id}".`;
-      setApiError(errorMsg);
+      console.error(`Failed to run schedule "${id}":`, error);
       toastError({
-        title: 'Inspect job error',
-        msg: errorMsg,
+        title: copy.couldNotRun(scheduleDisplayName(id)),
+        msg: errorText(error, `Unknown error running "${id}".`),
       });
     } finally {
       finishAction(id);
@@ -492,47 +413,36 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
 
   return (
     <>
-      <MainPanelLayout>
-        <div className="flex-1 flex flex-col min-h-0">
-          {/* ⚠ The two actions sit on their OWN LINE under the description, not
-              on the title row — the operator's decision, 2026-09-07, naming
-              Workflows / Extensions / Skills / Built apps as the shape the rest
-              of the app should match. This view shipped the §4.2 original
-              (right-aligned on the title row) and §4.2 is amended rather than
-              quietly contradicted; `PageHeader` owns the placement now, so the
-              Scheduler cannot drift from its siblings again.
-
-              `New schedule` comes FIRST because the strip reads left to right
-              and the primary leads it, the same order Workflows uses (Create,
-              then Import). The reading column is still the chat measure, for
-              the reason it always was: this is a column of rows, not a
-              document, so width past the measure buys margin. */}
+      <MainPanelLayout removeTopPadding>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* The band (spec 3.10): the title with its help in an InfoTip, Refresh
+              as a ghost round icon, and "New schedule" as the view's one accent.
+              The empty state below carries no second button. The list also polls
+              every 15s, so Refresh is a convenience, not the only way to see a
+              change. */}
           <PageHeader
-            title="Scheduler"
-            description="Run a saved workflow automatically, at the time you choose."
+            title={copy.title}
+            info={copy.info}
             actions={
               <>
-                <Button onClick={openCreateModal}>
-                  <Plus />
-                  New schedule
-                </Button>
-                <Button
+                <PageHeaderAction
+                  icon={RefreshCw}
+                  label={copy.refresh}
+                  tooltip={copy.refreshTooltip}
                   onClick={handleRefresh}
                   disabled={isRefreshing || isLoading}
-                  variant="ghost"
-                  shape="round"
-                  title="Refresh"
-                  aria-label="Refresh schedules"
-                >
-                  <RefreshCw className={isRefreshing ? 'animate-spin' : undefined} />
+                />
+                <Button onClick={openCreateModal}>
+                  <Plus />
+                  {copy.newSchedule}
                 </Button>
               </>
             }
           />
 
-          <ReadableContent size="chat" className="flex-1 min-h-0 relative px-6 pt-6">
+          <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6 pt-2">
             <ScrollArea className="h-full">
-              <div className="h-full relative pb-8">
+              <div className="relative h-full pb-6">
                 {apiError && (
                   <Note tone="danger" role="alert" className="mb-4">
                     {apiError}
@@ -550,14 +460,8 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                 {!isLoading && !apiError && schedules.length === 0 && (
                   <EmptyState
                     icon={CircleDotDashed}
-                    title="No schedules yet"
-                    description="Create a schedule to run a saved workflow automatically at the time you choose."
-                    actions={
-                      <Button onClick={openCreateModal}>
-                        <Plus />
-                        New schedule
-                      </Button>
-                    }
+                    title={copy.emptyTitle}
+                    description={copy.emptyDescription}
                   />
                 )}
 
@@ -584,7 +488,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                         onPause={handlePauseSchedule}
                         onUnpause={handleUnpauseSchedule}
                         onKill={handleKillRunningJob}
-                        onInspect={handleInspectRunningJob}
+                        onRunNow={handleRunNow}
                         onDelete={setScheduleToDeleteId}
                         actionInProgress={actionsInProgress.has(job.id) || isSubmitting}
                       />
@@ -611,10 +515,10 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       />
       <ConfirmationModal
         isOpen={scheduleToDeleteId !== null}
-        title={`Delete "${scheduleToDeleteId ?? ''}"?`}
+        title={copy.deleteTitle(scheduleDisplayName(scheduleToDeleteId ?? ''))}
         message={DELETE_SCHEDULE_MESSAGE}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={copy.deleteConfirm}
+        cancelLabel={copy.cancel}
         confirmVariant="destructive"
         isSubmitting={scheduleToDeleteId !== null && actionsInProgress.has(scheduleToDeleteId)}
         onConfirm={() => scheduleToDeleteId && void handleDeleteSchedule(scheduleToDeleteId)}

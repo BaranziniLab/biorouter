@@ -5,12 +5,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import ScheduleDetailView from './ScheduleDetailView';
+import { scheduleCopy } from './copy';
 
 const mocks = vi.hoisted(() => ({
   getScheduleSessions: vi.fn(),
   listSchedules: vi.fn(),
   runScheduleNow: vi.fn(),
   pauseSchedule: vi.fn(),
+  deleteSchedule: vi.fn(),
+  inspectRunningJob: vi.fn(),
+  getSession: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
 }));
@@ -20,10 +24,10 @@ vi.mock('../../schedule', () => ({
   unpauseSchedule: vi.fn(),
   updateSchedule: vi.fn(),
   killRunningJob: vi.fn(),
-  inspectRunningJob: vi.fn(),
 }));
 vi.mock('../../toasts', () => mocks);
-vi.mock('../../api', () => ({ getSession: vi.fn() }));
+vi.mock('../../api', () => ({ getSession: mocks.getSession }));
+vi.mock('../../utils/userAction', () => ({ userActionHeaders: async () => ({ proof: 'x' }) }));
 // The session list is where a run's privacy tier comes from (its own endpoint
 // carries none). `null` is "not fetched yet", as the real cache starts.
 let cachedSessionList: Array<{ id: string; privacy_tier?: string }> | null = null;
@@ -32,7 +36,11 @@ vi.mock('../../utils/sessionListCache', () => ({
   subscribeSessionList: () => () => {},
   preloadSessionList: () => {},
 }));
-vi.mock('../sessions/SessionHistoryView', () => ({ default: () => null }));
+vi.mock('../sessions/SessionHistoryView', () => ({
+  default: ({ session }: { session: { id: string } }) => (
+    <div data-testid="opened-run">{session.id}</div>
+  ),
+}));
 vi.mock('./ScheduleModal', () => ({ ScheduleModal: () => null }));
 vi.mock('../ui/scroll-area', () => ({
   ScrollArea: ({ children }: { children: ReactNode }) => <div>{children}</div>,
@@ -47,12 +55,20 @@ const schedule = {
   paused: false,
 };
 
-function renderDetails() {
+function renderDetails(onNavigateBack = vi.fn()) {
   return render(
     <MemoryRouter>
-      <ScheduleDetailView scheduleId={schedule.id} onNavigateBack={vi.fn()} />
+      <ScheduleDetailView scheduleId={schedule.id} onNavigateBack={onNavigateBack} />
     </MemoryRouter>
   );
+}
+
+/** Radix opens a dropdown on pointerdown, not click. */
+function openBandMenu() {
+  fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
+    button: 0,
+    ctrlKey: false,
+  });
 }
 
 beforeEach(() => {
@@ -74,7 +90,11 @@ describe('manual schedule run feedback', () => {
 
     expect(mocks.runScheduleNow).toHaveBeenCalledTimes(1);
     expect(run).toBeDisabled();
-    expect(screen.getByRole('status')).toHaveTextContent('Waiting for the scheduled run to finish');
+    // Spec 3.10: the pending run is a status word in the band beside Run now,
+    // not a note under an Actions section.
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent(scheduleCopy.detail.running);
+    expect(screen.getByTestId('page-header')).toContainElement(status);
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
 
     await act(async () => finish('finished-session'));
@@ -159,32 +179,7 @@ describe('a run’s privacy glyph', () => {
   });
 });
 
-describe('one session id, one typeface', () => {
-  /**
-   * A session id was rendered three times on this screen in two faces.
-   *
-   * In a single run card, an unnamed session's heading printed
-   * `Session ID: <id>` in the body font while the row 26 lines below printed
-   * `ID: <id>` in `font-mono` — the SAME string, in one card, visible without
-   * scrolling. The running-schedule line above printed a third copy in the body
-   * font again. The working directory beside them was body here and mono in the
-   * sidebar, the history view and the shared-session view.
-   *
-   * The rule is `main.css`'s own D-31 — "mono for data, sans for chrome" — and
-   * an id and a path are both data. What made this a bug rather than a
-   * preference is that the two renderings were on screen at the same time.
-   *
-   * ⚠ **The card is gone and so is the duplication.** A run is now one row, and
-   * the row prints an unnamed run's id ONCE, in mono. So the assertion moved
-   * from "every copy is mono" to "there is exactly one copy, and it is mono" —
-   * which is the stronger statement, and the one that fails if a second
-   * rendering of the same id is ever added back beside the first.
-   *
-   * ⚠ jsdom never runs Tailwind, so `getComputedStyle(...).fontFamily` reports
-   * the same thing whatever the class says. The assertion has to be on the
-   * class, and it walks up from the text node because the class sits on a
-   * wrapping span rather than on the element holding the text.
-   */
+describe('names, not ids (principle 10)', () => {
   const monoAncestor = (element: HTMLElement | null): boolean => {
     for (let node = element; node; node = node.parentElement) {
       if (node.classList?.contains('font-mono')) return true;
@@ -192,7 +187,11 @@ describe('one session id, one typeface', () => {
     return false;
   };
 
-  it('sets an unnamed session id and its working directory in the data face', async () => {
+  /**
+   * An unnamed run has no name to show, so its id is its name, printed ONCE and
+   * in the data face. The working directory is a path: it is not a row line.
+   */
+  it('names an unnamed run by its id once, in mono, and leaves the path off the row', async () => {
     mocks.getScheduleSessions.mockResolvedValue([
       { id: 'sess-20260902-7f3', name: null, workingDir: '/tmp/work', messageCount: 2 },
     ]);
@@ -200,18 +199,44 @@ describe('one session id, one typeface', () => {
 
     const rendered = await screen.findAllByText('sess-20260902-7f3');
     expect(rendered).toHaveLength(1);
-    for (const node of rendered) {
-      expect(monoAncestor(node as HTMLElement)).toBe(true);
-    }
-    expect(monoAncestor(screen.getByText('/tmp/work') as HTMLElement)).toBe(true);
+    expect(monoAncestor(rendered[0] as HTMLElement)).toBe(true);
+    expect(screen.queryByText('/tmp/work')).toBeNull();
   });
 
-  it('sets a running schedule’s current session id in the same face', async () => {
+  /** Run rows are sans tabular: date, message count and tokens. */
+  it('says a run’s facts in the sans face with tabular figures', async () => {
+    mocks.getScheduleSessions.mockResolvedValue([
+      {
+        id: 'run-1',
+        name: 'Nightly cohort pull',
+        createdAt: '2026-10-07T21:00:00Z',
+        messageCount: 4,
+      },
+    ]);
+    renderDetails();
+
+    const meta = (await screen.findByText('4 messages')).parentElement as HTMLElement;
+    expect(meta).toHaveClass('tabular-nums');
+    expect(meta).toHaveTextContent(/ · 4 messages$/);
+    expect(monoAncestor(meta)).toBe(false);
+  });
+
+  /**
+   * The running chat used to be its session id in mono on a definition row.
+   * Now it is a button that opens that chat (spec 3.10, "an Open chat button").
+   */
+  it('opens the running chat instead of printing its id', async () => {
     mocks.listSchedules.mockResolvedValue([
       { ...schedule, currently_running: true, current_session_id: 'sess-running-1' },
     ]);
+    mocks.getSession.mockResolvedValue({ data: { id: 'sess-running-1' } });
     renderDetails();
-    expect(monoAncestor((await screen.findByText('sess-running-1')) as HTMLElement)).toBe(true);
+
+    fireEvent.click(await screen.findByRole('button', { name: scheduleCopy.detail.openChat }));
+    expect(await screen.findByTestId('opened-run')).toHaveTextContent('sess-running-1');
+    expect(mocks.getSession).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { session_id: 'sess-running-1' }, headers: { proof: 'x' } })
+    );
   });
 });
 
@@ -242,25 +267,38 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     // it forces viewport height regardless of the parent, which breaks the view
     // inside an embedded pane.
     expect(CODE).not.toContain('h-screen');
-    expect(CODE).toContain('<MainPanelLayout>');
+    expect(CODE).toMatch(/<MainPanelLayout\b[^>]*>/);
   });
 
-  it('renders the facts as definition rows, one hairline list', async () => {
+  it('renders the facts by name as definition rows, one hairline list', async () => {
     renderDetails();
 
-    for (const label of ['Runs', 'Cron', 'Workflow', 'Last run', 'Id']) {
+    for (const label of ['Runs', 'Workflow', 'Last run']) {
       expect(await screen.findByText(label)).toBeInTheDocument();
     }
+    // Names, never ids (principle 10): no raw cron row and no Id row; the
+    // workflow is its file name, the full path one hover away.
+    expect(screen.queryByText('Cron')).toBeNull();
+    expect(screen.queryByText('Id')).toBeNull();
+    const workflowRow = screen.getByText('Workflow').closest('.biorouter-settings-row');
+    expect(workflowRow).not.toBeNull();
+    expect(workflowRow).toHaveTextContent('daily-meditation.yaml');
+    expect(workflowRow).not.toHaveTextContent('/tmp/');
+  });
 
-    // The row is the shared settings row, and the value sits on its trailing
-    // edge — not a `**Label:** value` sentence inside a card.
-    const cronLabel = await screen.findByText('Cron');
-    const row = cronLabel.closest('.biorouter-settings-row');
-    expect(row).not.toBeNull();
-    expect(row).toHaveTextContent('0 0 3 * * *');
+  it('puts back, the name and the status in the band, with Run now as its one accent', async () => {
+    const onBack = vi.fn();
+    renderDetails(onBack);
 
-    // The id is a definition row now, not a "Viewing Schedule ID:" sentence.
-    expect(screen.queryByText(/Viewing Schedule ID/)).not.toBeInTheDocument();
+    const band = screen.getByTestId('page-header');
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Daily Meditation' })
+    ).toBeInTheDocument();
+    expect(band).toHaveTextContent('Scheduled');
+    fireEvent.click(screen.getByRole('button', { name: scheduleCopy.detail.back }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+    // The old Actions section and its notes are gone.
+    expect(screen.queryByText('Actions')).toBeNull();
   });
 
   it('says a paused schedule is paused as text, never as a filled pill', async () => {
@@ -268,22 +306,39 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     renderDetails();
 
     const paused = await screen.findByText('Paused');
-    // A hand-mixed alpha fill (`bg-background-warning/15`) is what the status
-    // used to be, and rule 4 of the settings vocabulary bans exactly that.
     for (let node: HTMLElement | null = paused; node; node = node.parentElement) {
       expect(node.className).not.toMatch(/bg-background-\w+\/\d/);
-      if (node.classList.contains('biorouter-settings-section')) break;
+      if (node.classList.contains('biorouter-page-header')) break;
     }
     // The hue is carried by a dot beside the word, the §3.4 idiom.
-    expect(paused.querySelector('.rounded-full')).not.toBeNull();
+    expect(paused.querySelector('[data-slot="status-dot"]')).toHaveAttribute('data-tone', 'idle');
   });
 
-  it('turns the paused sentence into one note rather than loose warning prose', async () => {
+  /**
+   * Spec 3.10: the three notes are deleted. The status says Paused; Resume's
+   * tooltip says what it does; nothing explains the state in prose.
+   */
+  it('explains the paused state through Resume, not a note', async () => {
     mocks.listSchedules.mockResolvedValue([{ ...schedule, paused: true }]);
     renderDetails();
-    expect(
-      await screen.findByText(/This schedule is paused and will not run automatically/)
-    ).toBeInTheDocument();
+
+    expect(await screen.findByRole('button', { name: scheduleCopy.resume })).toBeInTheDocument();
+    expect(screen.queryByText(/will not run automatically/)).toBeNull();
+  });
+
+  it('deletes from the band menu after confirming, then goes back', async () => {
+    mocks.deleteSchedule.mockResolvedValue(undefined);
+    const onBack = vi.fn();
+    renderDetails(onBack);
+
+    await screen.findByRole('heading', { level: 1, name: 'Daily Meditation' });
+    openBandMenu();
+    fireEvent.click(await screen.findByRole('menuitem', { name: scheduleCopy.delete }));
+    expect(screen.getByRole('dialog')).toHaveTextContent(/workflow it runs is left in place/);
+    fireEvent.click(screen.getByRole('button', { name: scheduleCopy.deleteConfirm }));
+
+    await waitFor(() => expect(mocks.deleteSchedule).toHaveBeenCalledWith('daily-meditation'));
+    await waitFor(() => expect(onBack).toHaveBeenCalledTimes(1));
   });
 
   /**
@@ -296,15 +351,22 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     mocks.listSchedules.mockResolvedValue([{ ...schedule, currently_running: true }]);
     renderDetails();
 
-    expect(await screen.findByRole('button', { name: 'Inspect run' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Stop run' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Run now' })).toBeDisabled();
-    // Nothing is left greyed out that could simply be absent.
-    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: scheduleCopy.stopRun })).toBeInTheDocument();
+    const runNow = screen.getByRole('button', { name: scheduleCopy.runNow });
+    expect(runNow).toBeDisabled();
+    // A disabled control still says why, without a hover.
+    expect(runNow.parentElement).toHaveAccessibleDescription(scheduleCopy.detail.availableAfterRun);
+    // Pause is replaced by Stop, not left greyed out.
+    expect(screen.queryByRole('button', { name: scheduleCopy.pause })).not.toBeInTheDocument();
 
-    // One note, and only the one that applies.
-    expect(await screen.findByText(/This schedule is running/)).toBeInTheDocument();
-    expect(screen.queryByText(/This schedule is paused/)).not.toBeInTheDocument();
+    openBandMenu();
+    expect(await screen.findByRole('menuitem', { name: scheduleCopy.inspectRun })).toBeEnabled();
+    expect(screen.getByRole('menuitem', { name: scheduleCopy.edit })).toHaveAttribute(
+      'aria-disabled',
+      'true'
+    );
+
+    // No prose explains the state: the status says Running.
+    expect(screen.queryByText(/This schedule is running/)).not.toBeInTheDocument();
   });
 });
