@@ -238,11 +238,14 @@ describe('BrowseExtensionsModal — marketplace install (issue #116)', () => {
     const field = screen.getByLabelText(/PLAYWRIGHT_TOKEN/);
     // A secret is masked in the form it is typed into.
     expect(field).toHaveAttribute('type', 'password');
-    expect(screen.getByRole('button', { name: 'Install extension' })).toBeDisabled();
+    // Pressable (Crew's dialogs): pressed with the token empty, it installs nothing and says so.
+    const install = screen.getByRole('button', { name: 'Install extension' });
+    expect(install).toBeEnabled();
+    await user.click(install);
+    expect(electron.installBrxtBundle).not.toHaveBeenCalled();
+    expect(await screen.findByText(BRXT_INSTALL_COPY.valueRequired)).toBeVisible();
 
     await user.type(field, 'a-token');
-    expect(screen.getByRole('button', { name: 'Install extension' })).toBeEnabled();
-
     await user.click(screen.getByRole('button', { name: 'Install extension' }));
     await waitFor(() => expect(electron.installBrxtBundle).toHaveBeenCalled());
   });
