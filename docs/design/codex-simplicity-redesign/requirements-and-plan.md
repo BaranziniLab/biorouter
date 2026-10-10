@@ -19,7 +19,7 @@ the prefix `WS-`. Both schemes are local to this folder.
 
 | ID | Requirement |
 |----|-------------|
-| R-01 | Simplicity governs every decision. Take inspiration from Codex. Keep Biorouter's own identity: the coral accent, warm ink, UCSF navy, the three theme families, light and dark. |
+| R-01 | Simplicity governs every decision. Take inspiration from Codex for structure and restraint, and keep Biorouter's personality: the coral accent (each family's accent), warm ink, UCSF navy, the BR mark, the three theme families, light and dark, and a few deliberate moments of color so the app never reads as grey. |
 | R-02 | Remove unnecessary interface text, and remove instructions the user no longer needs to read. |
 | R-03 | Long explanations become small help that appears on hover and on keyboard focus, instead of paragraphs shown up front. Help stays reachable by keyboard and by screen readers. |
 | R-04 | Use the website's font family everywhere (Arial first interface stack; Inter only for the wordmark; one monospace stack for code). Use only a few font sizes and weights. |
