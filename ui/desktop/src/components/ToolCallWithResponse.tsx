@@ -1189,6 +1189,11 @@ function ToolCallView({
   // rather than only inside the card is what stops the two from drifting into
   // "expanded for a control that does not render".
   const acceptOffer = sessionId ? crossAffiliationOffer(toolError) : null;
+  // Open until the person says otherwise: `null` means "never toggled", which
+  // follows the offer, so a refusal that lands AFTER the row mounted (the row
+  // was running) still opens onto its accept control.
+  const [openChoice, setOpenChoice] = React.useState<boolean | null>(null);
+  const isOpen = openChoice ?? acceptOffer !== null;
 
   // Executed sub-call telemetry (#28): what a coordinated execute_code step
   // actually ran, with exact inputs and per-call status. Shown alongside the
@@ -1409,7 +1414,8 @@ function ToolCallView({
       meta={metaParts.length > 0 ? metaParts.join(' ') : undefined}
       running={loadingStatus === 'loading'}
       statusLabel={TOOL_ROW_COPY.statusLabel(toolCallStatus)}
-      defaultOpen={acceptOffer !== null}
+      open={isOpen}
+      onOpenChange={setOpenChoice}
       triggerClassName="br-tool-disclosure"
       trailing={
         providerExecution === 'child' ? (

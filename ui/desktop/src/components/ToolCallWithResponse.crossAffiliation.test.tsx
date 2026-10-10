@@ -125,6 +125,31 @@ describe('the cross-institutional refusal in the transcript', () => {
     expect(await screen.findByText('Recorded for this chat only.')).toBeInTheDocument();
   });
 
+  it('opens onto the accept control when the refusal lands after the row was drawn', async () => {
+    // A call is drawn the moment it starts, running, with nothing to open. The
+    // refusal arrives later on the same row; the row must still open onto the
+    // way out rather than wait for a click nobody knows to make.
+    const props = {
+      sessionId: 'chat_7',
+      isCancelledMessage: false,
+      toolRequest,
+      onOpenArtifact: noopOpenArtifact,
+    };
+    const view = render(<ToolCallWithResponse {...props} turnActive />);
+    expect(acceptControl()).toBeNull();
+    view.rerender(
+      <ToolCallWithResponse
+        {...props}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-xaff',
+          toolResult: { status: 'error', error: grantableRefusal('ucsfomopagent') },
+        }}
+      />
+    );
+    expect(await screen.findByRole('button', { name: /approve this flow/i })).toBeVisible();
+  });
+
   it('reads the connector out of the refusal rather than off the tool name', async () => {
     // `get_client_for_tool` resolves an extension by longest key, so an
     // extension named `ucsf` and one named `ucsf__omop` both prefix
