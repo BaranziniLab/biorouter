@@ -66,6 +66,10 @@ export default function UserMessage({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  // Set when the editor closes by the person's own act (Cancel, Escape, Save),
+  // so focus goes back to the Edit button that opened it instead of to the body.
+  const restoreEditFocus = useRef(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [hasBeenEdited, setHasBeenEdited] = useState(false);
@@ -162,6 +166,14 @@ export default function UserMessage({
     return () => window.clearTimeout(timer);
   }, [clampState]);
 
+  // The editor replaced the bubble, and with it the button the person pressed:
+  // when it closes, hand focus back to that button's successor.
+  useEffect(() => {
+    if (isEditing || !restoreEditFocus.current) return;
+    restoreEditFocus.current = false;
+    editButtonRef.current?.focus();
+  }, [isEditing]);
+
   // Effect to handle message content changes and ensure persistence
   useEffect(() => {
     // If we're not editing, update the edit content to match the current message
@@ -226,6 +238,7 @@ export default function UserMessage({
       }
 
       if (editContent.trim() === displayText.trim()) {
+        restoreEditFocus.current = true;
         setIsEditing(false);
         return;
       }
@@ -235,6 +248,7 @@ export default function UserMessage({
         if (onMessageUpdate(message.id, editContent, editType) === false) return;
         setHasBeenEdited(true);
       }
+      restoreEditFocus.current = true;
       setIsEditing(false);
     },
     [editContent, displayText, onMessageUpdate, message.id]
@@ -243,6 +257,7 @@ export default function UserMessage({
   // Handle cancel action
   const handleCancel = useCallback(() => {
     window.electron.logInfo('Cancel clicked - reverting to original content');
+    restoreEditFocus.current = true;
     setIsEditing(false);
     setEditContent(displayText); // Reset to original content
     setError(null);
@@ -390,6 +405,7 @@ export default function UserMessage({
                 timestamp={hasBeenEdited ? transcriptCopy.message.edited(timestamp) : timestamp}
               >
                 <TranscriptIconButton
+                  ref={editButtonRef}
                   onClick={handleEditClick}
                   label={transcriptCopy.message.editNamed(displayText)}
                   tip={transcriptCopy.message.edit}

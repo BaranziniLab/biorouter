@@ -52,6 +52,23 @@ describe('UserMessage edit actions', () => {
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
   });
 
+  it('hands focus back to the Edit button when the editor closes', () => {
+    // The editor replaces the bubble and the button that opened it, so a
+    // keyboard user would otherwise be dropped on the page.
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+    const open = () => fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
+
+    open();
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Edit message content' }), {
+      key: 'Escape',
+    });
+    expect(screen.getByRole('button', { name: /edit message:/i })).toHaveFocus();
+
+    open();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing' }));
+    expect(screen.getByRole('button', { name: /edit message:/i })).toHaveFocus();
+  });
+
   it('saves in place from the filled button and from Cmd+Enter', () => {
     const onMessageUpdate = vi.fn();
     const { rerender } = render(
