@@ -74,6 +74,8 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   { dir: join(SETTINGS_DIR, '../extensions'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../skills'), outOfScope: [] },
   { dir: join(SETTINGS_DIR, '../applications'), outOfScope: [] },
+  // Knowledge, 2026-10-10 (spec wave 2), once its owner's sweep had cleared the rules' offenders.
+  { dir: join(SETTINGS_DIR, '../knowledge'), outOfScope: [] },
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {

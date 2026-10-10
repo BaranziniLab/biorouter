@@ -457,7 +457,7 @@ The 2026-10 redesign's final sweep has started on those lists. The permission di
 onto `ModalShell` and `SettingRow` on 2026-10-09 and their folder left the exclusions on
 2026-10-10. Home's usage surfaces (`SessionsInsights`, `HomeUsageCard`, `UsageHeatmap`) sit
 in the chat-history root and follow the vocabulary since the same date, and BAAM
-(`components/baam/`) is a root of its own. Knowledge joins once its owner's sweep lands.
+(`components/baam/`) and Knowledge (`components/knowledge/`) are roots of their own.
 
 `ui/ConfirmationModal.tsx`'s `sm:max-w-[425px]` is left alone: it is a shared primitive, so
 moving it onto the `MODAL_SIZE` ladder changes every confirmation in the app rather than one
