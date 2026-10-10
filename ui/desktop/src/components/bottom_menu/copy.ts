@@ -34,7 +34,7 @@ export const TOOLS_COPY = {
     thisChat: 'This chat',
     nextChat: 'Next chat',
     newChats: 'New chats',
-    defaultForChats: 'Default',
+    defaultForChats: 'Default for chats',
     /** The InfoTip's name reads "About where changes apply". */
     about: 'where changes apply',
   },

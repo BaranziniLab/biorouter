@@ -156,6 +156,32 @@ describe('the model and effort chip', () => {
     expect(reasoningEffortForRequest(getReasoningEffort(SCOPE))).toBe('deep');
   });
 
+  /**
+   * Chromium draws script focus as keyboard focus when nothing held focus a moment
+   * before, and the menu item that was just picked has unmounted by then. So a mouse
+   * pick left the chip ringed like a Tab stop. Focus goes back after a key, and a
+   * click leaves it where the click put it. (The ring itself is a CSS state jsdom
+   * cannot see; what is pinned here is who gets the focus.)
+   */
+  it('leaves focus alone after a mouse pick, and returns it to the chip after a key', async () => {
+    renderChip();
+    const chip = await openMenu();
+
+    const deep = await screen.findByTestId('effort-deep');
+    fireEvent.pointerDown(deep, { button: 0, ctrlKey: false });
+    fireEvent.click(deep);
+    await waitFor(() => expect(screen.queryByTestId('effort-deep')).toBeNull());
+    expect(getReasoningEffort(SCOPE)).toBe('deep');
+    expect(chip).not.toHaveFocus();
+
+    await openMenu();
+    const quick = await screen.findByTestId('effort-quick');
+    fireEvent.keyDown(quick, { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByTestId('effort-quick')).toBeNull());
+    expect(getReasoningEffort(SCOPE)).toBe('quick');
+    await waitFor(() => expect(chip).toHaveFocus());
+  });
+
   it('is a model picker only when no effort scope is given', async () => {
     renderChip(null);
     await openMenu();

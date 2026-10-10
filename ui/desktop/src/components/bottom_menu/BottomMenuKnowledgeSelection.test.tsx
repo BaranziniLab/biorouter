@@ -9,7 +9,7 @@ import { KNOWLEDGE_COPY, TOOLS_COPY } from './copy';
  * The knowledge list as the Tools chip holds it (spec 3.7). The harness's
  * button stands in for the chip and states the hook's count.
  */
-function BottomMenuKnowledgeSelection() {
+function BottomMenuKnowledgeSelection({ inChat = true }: { inChat?: boolean }) {
   const [open, setOpen] = React.useState(false);
   const picker = useKnowledgePicker({ open });
   return (
@@ -19,7 +19,7 @@ function BottomMenuKnowledgeSelection() {
         aria-label={`Manage knowledge bases (${picker.visibleCount} visible)`}
         onClick={() => setOpen((current) => !current)}
       />
-      {open && <KnowledgePanel picker={picker} inChat />}
+      {open && <KnowledgePanel picker={picker} inChat={inChat} />}
     </>
   );
 }
@@ -129,6 +129,17 @@ describe('BottomMenuKnowledgeSelection', () => {
     fireEvent.change(field, { target: { value: 'brain' } });
     expect(screen.queryByText('Soul')).not.toBeInTheDocument();
     expect(screen.getByText('brainstorm')).toBeInTheDocument();
+  });
+
+  it('names the list the default chats inherit when there is no chat', async () => {
+    render(<BottomMenuKnowledgeSelection inChat={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Manage knowledge bases/ }));
+    await screen.findByRole('listbox', { name: KNOWLEDGE_COPY.listLabel });
+    expect(screen.getByText(TOOLS_COPY.scope.defaultForChats)).toBeInTheDocument();
+    expect(screen.queryByText(TOOLS_COPY.scope.thisChat)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: `About ${TOOLS_COPY.scope.about}` })
+    ).toHaveAccessibleDescription(KNOWLEDGE_COPY.helpDefault);
   });
 
   it('keeps the built-in sentence on the Soul row, since its badge is plain inside a row', async () => {
