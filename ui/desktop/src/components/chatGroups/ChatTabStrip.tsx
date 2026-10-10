@@ -63,7 +63,8 @@ import { chatTabStripCopy, TAB_MENU_FILTER_MIN } from './copy';
 function tabKindSource(
   tab: { title: string },
   annotation?: { badge?: string; parentSessionId?: string },
-  rowSessionType?: SessionType
+  rowSessionType?: SessionType,
+  rowWorkingDir?: string
 ): ChatKindSource {
   // ⚠ Only `badge === 'subagent'` or a row that says `sub_agent` marks a
   // sub-agent here — deliberately NOT `parentSessionId`, from either source.
@@ -79,6 +80,9 @@ function tabKindSource(
   return {
     name: tab.title,
     session_type: subagent ? 'sub_agent' : null,
+    // Read only by the Crew test (`isCrewTask`): a Crew task's folder survives
+    // a rename that its title prefix does not.
+    working_dir: rowWorkingDir ?? null,
   };
 }
 
@@ -207,6 +211,12 @@ export interface ChatTabStripProps {
    * compiling untouched.
    */
   sessionTypes?: Record<string, SessionType>;
+  /**
+   * Each held chat's working folder, from its listed row, per SESSION id, so a
+   * renamed Crew task keeps its glyph (`chatKind.isCrewTask` reads the folder
+   * before the title). Optional with a `{}` default, like `sessionTypes`.
+   */
+  sessionWorkingDirs?: Record<string, string>;
   onSelect: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
   onReorder: (draggedTabId: ChatTabId, targetTabId: ChatTabId) => void;
@@ -244,6 +254,7 @@ export function ChatTabStrip({
   tabAnnotations = {},
   privacyTiers = {},
   sessionTypes = {},
+  sessionWorkingDirs = {},
   onSelect,
   onClose,
   onReorder,
@@ -711,7 +722,8 @@ export function ChatTabStrip({
                     session={tabKindSource(
                       tab,
                       tabAnnotations[tab.sessionId],
-                      sessionTypes[tab.sessionId]
+                      sessionTypes[tab.sessionId],
+                      sessionWorkingDirs[tab.sessionId]
                     )}
                     tier={privacyTiers[tab.sessionId]}
                     className="h-4 w-4 br-tab__privacy-dot"
@@ -768,7 +780,8 @@ export function ChatTabStrip({
                         session={tabKindSource(
                           tab,
                           tabAnnotations[tab.sessionId],
-                          sessionTypes[tab.sessionId]
+                          sessionTypes[tab.sessionId],
+                          sessionWorkingDirs[tab.sessionId]
                         )}
                         tier={privacyTiers[tab.sessionId]}
                         className="h-4 w-4 br-tab__privacy-dot"
@@ -862,7 +875,8 @@ export function ChatTabStrip({
               session={tabKindSource(
                 tab,
                 tabAnnotations[tab.sessionId],
-                sessionTypes[tab.sessionId]
+                sessionTypes[tab.sessionId],
+                sessionWorkingDirs[tab.sessionId]
               )}
               tier={privacyTiers[tab.sessionId]}
               className="h-4 w-4"

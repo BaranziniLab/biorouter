@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Edit, Save } from '../icons/app-icons';
+import { Pencil, Save } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { Alert, AlertType } from './types';
 import { NotificationSurface, type NotificationStatus } from './NotificationSurface';
@@ -223,7 +223,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                 className="p-1 hover:opacity-60 transition-opacity cursor-pointer relative z-10"
                 style={{ minWidth: '20px', minHeight: '20px' }}
               >
-                <Edit className="w-3 h-3 opacity-70" />
+                <Pencil className="w-3 h-3 opacity-70" />
               </button>
             </>
           )}

@@ -130,12 +130,15 @@ export const DEFAULT_GHOST_STYLE: GhostStyle = {
   color: '#2a2520',
   accent: '#cf6d47',
   radius: '4px',
-  fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+  // The app's one UI stack, `--font-body` in main.css (spec 2.1; the website's
+  // Arial-first stack). `dragGhostWindow.test.ts` pins the two together.
+  fontFamily:
+    "Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
   fontSize: '13px',
   fontWeight: '400',
   shadow: '0 8px 24px rgba(0, 0, 0, 0.18)',
   paddingX: '11px',
-  gap: '7px',
+  gap: '8px',
 };
 
 export const DEFAULT_GHOST_SPEC: GhostSpec = {
@@ -295,7 +298,7 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * `MessageSquare` from `components/icons/app-icons`, inlined.
+ * `ChatBubble` (`ENTITY_ICONS.chat`) from `components/icons/app-icons`, inlined.
  *
  * The design doc's Phase 4b sketch reuses the real component at a `#/drag-ghost`
  * route; that needs a route in `App.tsx`, and a second full renderer boot per
@@ -303,10 +306,10 @@ export function escapeHtml(value: string): string {
  * cost — and this window has no React, no preload and no app bundle, which is
  * also what keeps its creation cheap enough to sit inside a pointer gesture.
  */
-const MESSAGE_SQUARE_SVG =
+const CHAT_BUBBLE_SVG =
   '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"' +
-  ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-  '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+  ' stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M3 8a3.5 3.5 0 0 1 3.5-3.5h11A3.5 3.5 0 0 1 21 8v5.5a3.5 3.5 0 0 1-3.5 3.5H8.4a1.5 1.5 0 0 0-.98.37L4.25 20.1A.75.75 0 0 1 3 19.53Z"/></svg>';
 
 /**
  * The ghost window's whole document.
@@ -356,7 +359,7 @@ export function ghostWindowHtml(spec: GhostSpec, options: { transparent: boolean
   .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   svg { flex: none; }
 </style></head>
-<body><div class="ghost">${MESSAGE_SQUARE_SVG}<span class="label">${escapeHtml(spec.title)}</span></div></body></html>`;
+<body><div class="ghost">${CHAT_BUBBLE_SVG}<span class="label">${escapeHtml(spec.title)}</span></div></body></html>`;
 }
 
 /**

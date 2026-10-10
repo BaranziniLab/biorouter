@@ -137,6 +137,39 @@ function useSessionListTypes(): Record<string, SessionType> {
   return types;
 }
 
+function readCachedWorkingDirs(): Record<string, string> {
+  const dirs: Record<string, string> = {};
+  for (const session of getCachedSessionList() ?? []) {
+    if (session.working_dir) dirs[session.id] = session.working_dir;
+  }
+  return dirs;
+}
+
+/**
+ * Working folder per listed session id, followed exactly like
+ * `useSessionListTypes`. The strip reads it for one thing only: a Crew task is
+ * recognised by its folder (`chatKind.isCrewTask`), and the folder survives a
+ * rename that the title prefix does not, so a renamed Crew task keeps its glyph
+ * in its tab as it does in the sidebar.
+ */
+function useSessionListWorkingDirs(): Record<string, string> {
+  const [dirs, setDirs] = useState<Record<string, string>>(readCachedWorkingDirs);
+  useEffect(() => {
+    const read = () => {
+      const next = readCachedWorkingDirs();
+      setDirs((prev) => {
+        const ids = Object.keys(prev);
+        const differ =
+          ids.length !== Object.keys(next).length || ids.some((id) => prev[id] !== next[id]);
+        return differ ? next : prev;
+      });
+    };
+    read();
+    return subscribeSessionList(read);
+  }, []);
+  return dirs;
+}
+
 /** `map` without the chats no tab holds; the same object when there are none. */
 function onlyHeld<T>(map: Record<string, T>, held: ReadonlySet<string>): Record<string, T> {
   let next = map;
@@ -802,6 +835,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   // the wrapper object is new per render and is never passed on.
   const { outsideListTiers, rowSessionTypes } = useTabTitlesFromSessionList(groups);
   const privacyTiers = useSessionPrivacyTiers(outsideListTiers);
+  const sessionWorkingDirs = useSessionListWorkingDirs();
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -1287,6 +1321,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // loaded by the live store. The strip ORs a `sub_agent` here with
         // `tabAnnotations`, which do not survive leaving `/pair` or a reload.
         sessionTypes={rowSessionTypes}
+        sessionWorkingDirs={sessionWorkingDirs}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret

@@ -722,3 +722,32 @@ describe('the main-process half, read from main.ts', () => {
     expect(released).toBeLessThan(firstReturn);
   });
 });
+
+/**
+ * Spec 2.1 and 3.16: the ghost's fallback look speaks the app's one UI stack
+ * (`--font-body`, the website's Arial-first stack) and draws the app's chat
+ * glyph, so a torn-off tab does not change face or icon the moment the probe
+ * comes back empty.
+ */
+describe('the ghost fallback matches the app', () => {
+  it('uses the --font-body stack from main.css, byte for byte (whitespace aside)', () => {
+    const css = readFileSync(join(__dirname, 'styles/main.css'), 'utf8');
+    const match = css.match(/--font-body:\s*([^;]+);/);
+    expect(match, 'no --font-body in main.css').not.toBeNull();
+    const normalise = (value: string) => value.replace(/\s+/g, ' ').trim();
+    expect(normalise(DEFAULT_GHOST_STYLE.fontFamily)).toBe(normalise(match![1]));
+    // And it survives the sanitiser it is the fallback for.
+    expect(sanitizeCssValue(DEFAULT_GHOST_STYLE.fontFamily, 'x')).toBe(
+      normalise(DEFAULT_GHOST_STYLE.fontFamily)
+    );
+  });
+
+  it('draws the chat bubble the strip draws, at the app stroke', () => {
+    const html = ghostWindowHtml(
+      { ...DEFAULT_GHOST_SPEC, title: 'Cohort query' },
+      { transparent: true }
+    );
+    expect(html).toContain('stroke-width="1.5"');
+    expect(html).toContain('M3 8a3.5 3.5 0 0 1 3.5-3.5h11A3.5 3.5 0 0 1 21 8v5.5');
+  });
+});

@@ -1,6 +1,6 @@
 import { CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { MessageSquare } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { DropZone } from './dropZones';
 import { DragGhost } from './useTabDragReorder';
 import { clampGhostToViewport } from './tabTearOffBridge';
@@ -172,7 +172,7 @@ export function ChatTabGhost({ ghost, detached }: { ghost: DragGhost; detached?:
         ...(osGhostUp ? { visibility: 'hidden' as const } : null),
       }}
     >
-      <MessageSquare className="h-4 w-4 flex-none" />
+      <ENTITY_ICONS.chat className="h-4 w-4 flex-none" />
       <span className="br-tab__label">{ghost.title}</span>
     </div>,
     document.body
