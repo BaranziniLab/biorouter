@@ -125,3 +125,49 @@ export function motionDuration(
   if (!options.keepUnderReducedMotion && prefersReducedMotion()) return 0;
   return DUR[tier];
 }
+
+/**
+ * The class that stills every transition for the frame a theme changes in.
+ * `main.css` pairs it with `transition: none !important` on `:root` and every
+ * element and pseudo-element under it.
+ */
+export const THEME_SWITCHING_CLASS = 'biorouter-theme-switching';
+
+let themeSwitchGeneration = 0;
+
+/**
+ * Call immediately before flipping the light/dark class or `data-theme`, in the
+ * same task, so the new theme lands in one frame.
+ *
+ * Without it the grounds snap (they carry no transition) while every button,
+ * row and tooltip that eases its `color`, `background-color` or `border-color`
+ * over 95 to 125ms walks there from the old theme: a dark button on a white
+ * page and 2:1 sidebar text for about 120ms after Dark to Light (vision
+ * finding V4-15, checklist 12). A theme change is a jump, not a change the
+ * person is watching an element make, so nothing animates it.
+ *
+ * The class comes off two animation frames later. The first frame's callback
+ * runs before that frame computes style, so removing the class there would undo
+ * it before the new theme was ever styled; by the second, the new colours are
+ * the computed values, and restoring the transitions starts none. Overlapping
+ * calls keep the class until the last one's second frame. A hidden window runs
+ * no frames, so the class stays until it is shown, which is harmless.
+ */
+export function suspendTransitionsForThemeChange(
+  root: HTMLElement | null = typeof document === 'undefined' ? null : document.documentElement
+): void {
+  if (!root) return;
+  const view = root.ownerDocument.defaultView;
+  const frame =
+    view && typeof view.requestAnimationFrame === 'function'
+      ? (callback: () => void) => view.requestAnimationFrame(callback)
+      : (callback: () => void) => setTimeout(callback, 16);
+
+  const generation = ++themeSwitchGeneration;
+  root.classList.add(THEME_SWITCHING_CLASS);
+  frame(() =>
+    frame(() => {
+      if (generation === themeSwitchGeneration) root.classList.remove(THEME_SWITCHING_CLASS);
+    })
+  );
+}

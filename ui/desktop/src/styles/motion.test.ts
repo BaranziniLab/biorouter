@@ -8,10 +8,12 @@ import {
   EASE_SPRING,
   MOTION,
   RESIZING_CLASSES,
+  THEME_SWITCHING_CLASS,
   TRAVEL,
   isWindowResizing,
   motionDuration,
   prefersReducedMotion,
+  suspendTransitionsForThemeChange,
 } from './motion';
 
 /**
@@ -194,6 +196,76 @@ describe('the resize rule', () => {
     expect(match, 'expected the global [data-motion-layout] resize rule').toBeTruthy();
     expect(match![1]).toMatch(/transition-duration:\s*0ms\s*!important/);
     expect(match![1]).toMatch(/animation:\s*none\s*!important/);
+  });
+});
+
+describe('a theme change lands in one frame (V4-15)', () => {
+  /**
+   * The grounds carry no transition, so they snap; every control that eases
+   * its colour used to walk to the new theme over 95 to 125ms instead. The rule
+   * stills every transition on `:root` and everything under it, pseudo-elements
+   * included, while the class is on <html>.
+   */
+  it('stills every transition while <html> carries the class', () => {
+    const at = `:root.${THEME_SWITCHING_CLASS}`;
+    const body = rule(`${at},\n${at} *,\n${at} *::before,\n${at} *::after`);
+    expect(body).toMatch(/^\s*transition:\s*none\s*!important;\s*$/);
+  });
+
+  describe('suspendTransitionsForThemeChange()', () => {
+    let frames: ((time: number) => void)[] = [];
+    const runFrame = () => {
+      const due = frames;
+      frames = [];
+      due.forEach((callback) => callback(0));
+    };
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      frames = [];
+      document.documentElement.classList.remove(THEME_SWITCHING_CLASS);
+    });
+
+    const stubFrames = () =>
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+
+    /**
+     * The first frame's callback runs BEFORE that frame computes style, so a
+     * removal there would undo the class before the new theme was ever styled
+     * with it. It must survive one whole frame.
+     */
+    it('adds the class at once and removes it on the second frame, not the first', () => {
+      stubFrames();
+      const root = document.documentElement;
+      suspendTransitionsForThemeChange(root);
+      expect(root.classList.contains(THEME_SWITCHING_CLASS)).toBe(true);
+      runFrame();
+      expect(root.classList.contains(THEME_SWITCHING_CLASS)).toBe(true);
+      runFrame();
+      expect(root.classList.contains(THEME_SWITCHING_CLASS)).toBe(false);
+    });
+
+    it('keeps the class until the second frame of the LAST of overlapping changes', () => {
+      stubFrames();
+      const root = document.documentElement;
+      suspendTransitionsForThemeChange(root);
+      runFrame();
+      suspendTransitionsForThemeChange(root); // a family change right after a mode change
+      runFrame(); // the first call's second frame
+      expect(root.classList.contains(THEME_SWITCHING_CLASS)).toBe(true);
+      runFrame();
+      expect(root.classList.contains(THEME_SWITCHING_CLASS)).toBe(false);
+    });
+
+    it('defaults to <html> and is a no-op without a root', () => {
+      stubFrames();
+      suspendTransitionsForThemeChange();
+      expect(document.documentElement.classList.contains(THEME_SWITCHING_CLASS)).toBe(true);
+      expect(() => suspendTransitionsForThemeChange(null)).not.toThrow();
+    });
   });
 });
 
