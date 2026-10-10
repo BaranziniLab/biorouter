@@ -4037,11 +4037,18 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* The Knowledge band is the app's one `PageHeader` band (spec 3.12). Its
    adornment carries the subject (the base's name, which is the switcher, its
    format, its tier and its counts), so here, unlike every other view, the
-   adornment is the part that gives way: the name truncates before the actions
-   or the tier badge move. */
+   adornment is the part that gives way, and inside it only the name does:
+   the title, the tabs, the tier badge and the actions keep their size.
+   Measured in `knowledge/knowledgeBand.browser.test.tsx`: with the band's
+   default shrink, a 760px pane truncated "Knowledge" and the tabs as well. */
 .br-knowledge-pane .biorouter-page-header-adornment {
   flex-shrink: 1;
   min-width: 0;
+}
+
+.br-knowledge-pane .biorouter-page-header-title,
+.br-knowledge-pane .biorouter-page-header-tabs {
+  flex-shrink: 0;
 }
 
 /* The tier badge-button (Crew's ClassificationBadge). The chip inside is
