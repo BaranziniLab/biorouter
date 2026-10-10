@@ -6220,7 +6220,11 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 }
 /* @ws WS-TRANSCRIPT end: transcript leftovers */
 
-/* Session list optimizations */
+/* @ws WS-HISTORY begin: history list containment */
+/* Chat history's list: a column of rows, each contained so a row's layout never
+   reaches its neighbours. Nothing here animates (the hover wash is the shared
+   `.biorouter-list-row`'s), so there is no `will-change` or layer promotion to ask
+   for. */
 .session-grid {
   display: flex;
   flex-direction: column;
@@ -6228,33 +6232,9 @@ body.biorouter-sidebar-resizing [data-slot='sidebar-gap'] {
 }
 
 .session-item {
-  /* Default state - visible and positioned */
-  opacity: 1;
-  transform: translateY(0) translateZ(0);
-
-  /* Optimize individual session cards */
   contain: layout style;
-  /* Use hardware acceleration */
-  backface-visibility: hidden;
-  /* Ensure smooth interactions */
-  will-change: auto;
 }
-
-.session-item:hover {
-  /* Only use will-change during hover */
-  will-change: transform, box-shadow;
-}
-
-.session-item:not(:hover) {
-  will-change: auto;
-}
-
-/* Optimize session skeleton loading */
-.session-skeleton {
-  contain: layout style paint;
-  /* Prevent layout thrashing during loading */
-  min-height: 140px;
-}
+/* @ws WS-HISTORY end: history list containment */
 
 /* Ensure navigation is always responsive.
    This was three rules carrying the same `pointer-events: auto !important`
@@ -7349,6 +7329,7 @@ code [class~='token'] {
 }
 /* @ws WS-USAGE end: heatmap */
 
+/* @ws WS-HISTORY begin: history loading */
 @keyframes biorouter-history-loading {
   0%,
   100% {
@@ -7361,17 +7342,17 @@ code [class~='token'] {
   }
 }
 
+/* An ambient loop, so its period is a multiple of `--dur-slow` (spec 2.4). */
 .biorouter-history-loading-cell {
-  animation: biorouter-history-loading 1.4s linear infinite;
+  animation: biorouter-history-loading calc(var(--dur-slow) * 3) linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .biorouter-heatmap-loading-cell,
-  .biorouter-heatmap-loading-line,
   .biorouter-history-loading-cell {
     animation: none;
   }
 }
+/* @ws WS-HISTORY end: history loading */
 
 /* The grid settles immediately; only the existing content layer animates. */
 [data-preview-open='false'] {

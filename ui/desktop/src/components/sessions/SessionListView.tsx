@@ -211,17 +211,28 @@ function HistoryLoading() {
                 <div
                   key={index}
                   data-testid="history-loading-row"
-                  className="flex min-h-row items-center gap-3 border-b border-border-subtle px-3 py-2 last:border-b-0"
+                  className="biorouter-list-row br-history-row pointer-events-none"
                 >
-                  <div className="min-w-0 flex-1">
-                    <Skeleton
-                      className={`biorouter-history-loading-cell mb-1.5 h-4 ${HISTORY_LOADING_TITLE_WIDTHS[currentRow % HISTORY_LOADING_TITLE_WIDTHS.length]} rounded-inner bg-background-medium`}
-                      style={{ animationDelay: `${delay}ms` }}
-                    />
-                    <Skeleton
-                      className="biorouter-history-loading-cell h-3 w-32 rounded-inner bg-background-medium"
-                      style={{ animationDelay: `${delay - 70}ms` }}
-                    />
+                  {/* The row's own shape: the 16px glyph slot, a title line and a
+                      meta line at the real lines' heights, then the stats. The
+                      skeleton replaces the rows without moving them. */}
+                  <Skeleton
+                    className="biorouter-history-loading-cell h-4 w-4 flex-none rounded-inner bg-background-medium"
+                    style={{ animationDelay: `${delay}ms` }}
+                  />
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                    <div className="flex h-5 items-center">
+                      <Skeleton
+                        className={`biorouter-history-loading-cell h-3.5 ${HISTORY_LOADING_TITLE_WIDTHS[currentRow % HISTORY_LOADING_TITLE_WIDTHS.length]} rounded-inner bg-background-medium`}
+                        style={{ animationDelay: `${delay}ms` }}
+                      />
+                    </div>
+                    <div className="flex h-4 items-center">
+                      <Skeleton
+                        className="biorouter-history-loading-cell h-3 w-32 rounded-inner bg-background-medium"
+                        style={{ animationDelay: `${delay - 70}ms` }}
+                      />
+                    </div>
                   </div>
                   <Skeleton
                     className="biorouter-history-loading-cell h-3 w-14 rounded-inner bg-background-medium"
