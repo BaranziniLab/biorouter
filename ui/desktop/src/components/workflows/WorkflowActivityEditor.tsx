@@ -90,7 +90,6 @@ export default function WorkflowActivityEditor({
           onBlur={onBlur}
           placeholder={copy.messagePlaceholder}
           rows={3}
-          className="resize-none"
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck="false"

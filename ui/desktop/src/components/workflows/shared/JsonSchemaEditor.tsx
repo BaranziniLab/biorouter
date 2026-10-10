@@ -3,6 +3,7 @@ import { Button } from '../../ui/button';
 import { Textarea } from '../../ui/textarea';
 import { ModalShell } from '../../ModalShell';
 import { workflowFormCopy } from '../copy';
+import '../workflows.css';
 
 const copy = workflowFormCopy.schemaEditor;
 
@@ -107,7 +108,7 @@ export default function JsonSchemaEditor({
         </>
       }
     >
-      <div className="flex flex-col gap-2 py-1">
+      <div className="flex flex-col gap-2 py-4">
         <div className="flex justify-end">
           <Button type="button" onClick={insertExample} variant="ghost" size="sm">
             {copy.insertExample}
@@ -122,7 +123,7 @@ export default function JsonSchemaEditor({
           }}
           aria-invalid={shownError ? true : undefined}
           aria-describedby={shownError ? 'schema-editor-error' : undefined}
-          className="min-h-[360px] resize-none font-mono text-code"
+          className="br-workflow-editor-field font-mono text-code"
           placeholder={`{
  "type": "object",
  "properties": {

@@ -3,6 +3,7 @@ import { Button } from '../../ui/button';
 import { Textarea } from '../../ui/textarea';
 import { ModalShell } from '../../ModalShell';
 import { workflowFormCopy } from '../copy';
+import '../workflows.css';
 
 const copy = workflowFormCopy.instructionsEditor;
 
@@ -87,7 +88,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
         </>
       }
     >
-      <div className="flex flex-col gap-2 py-1">
+      <div className="flex flex-col gap-2 py-4">
         <div className="flex justify-end">
           <Button type="button" onClick={insertExample} variant="ghost" size="sm">
             {copy.insertExample}
@@ -99,7 +100,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
           onChange={(e) => setLocalValue(e.target.value)}
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? 'instructions-editor-error' : undefined}
-          className="min-h-[400px] resize-none font-mono text-code"
+          className="br-workflow-editor-field font-mono text-code"
           placeholder={workflowFormCopy.instructionsPlaceholder}
         />
         {error && (

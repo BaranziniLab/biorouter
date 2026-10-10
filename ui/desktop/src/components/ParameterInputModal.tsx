@@ -156,7 +156,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
           event.preventDefault();
           handleSubmit();
         }}
-        className="flex flex-col gap-4 py-3"
+        className="flex flex-col gap-4 py-4"
       >
         {parameters.map((param, index) => {
           const id = `workflow-parameter-${index}`;

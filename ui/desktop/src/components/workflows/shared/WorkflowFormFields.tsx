@@ -411,7 +411,6 @@ export function WorkflowFormFields({
                 }}
                 placeholder={copy.instructionsPlaceholder}
                 rows={8}
-                className="resize-none"
                 data-testid="instructions-input"
               />
             </FieldWithAction>
@@ -450,7 +449,6 @@ export function WorkflowFormFields({
               }}
               placeholder={copy.promptPlaceholder}
               rows={3}
-              className="resize-none"
               data-testid="prompt-input"
             />
           </Field>

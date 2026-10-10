@@ -189,7 +189,6 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') e.stopPropagation();
                 }}
-                className="resize-none"
                 placeholder={'Option 1\nOption 2\nOption 3'}
                 rows={3}
               />

@@ -308,7 +308,7 @@ export default function CreateEditWorkflowModal({
         </>
       }
     >
-      <div className="py-1">
+      <div className="py-4">
         <WorkflowFormFields
           form={form}
           extensions={workflowExtensions}

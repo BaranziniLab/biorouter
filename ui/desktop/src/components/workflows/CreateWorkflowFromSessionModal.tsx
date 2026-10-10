@@ -16,6 +16,7 @@ import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
 import { ModalShell } from '../ModalShell';
 import { Spinner } from '../ui/spinner';
 import { workflowFormCopy as copy } from './copy';
+import './workflows.css';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 
 interface CreateWorkflowFromSessionModalProps {
@@ -546,10 +547,10 @@ export default function CreateWorkflowFromSessionModal({
         </>
       }
     >
-      <div className="py-1" data-testid="create-workflow-modal">
+      <div className="py-4" data-testid="create-workflow-modal">
         {isAnalyzing ? (
           <div
-            className="flex min-h-[240px] items-center justify-center gap-2"
+            className="br-workflow-pending flex items-center justify-center gap-2"
             data-testid="analyzing-state"
           >
             <Spinner size={16} data-testid="analysis-spinner" />
@@ -560,7 +561,7 @@ export default function CreateWorkflowFromSessionModal({
         ) : refusal ? (
           <div
             role="alert"
-            className="flex min-h-[240px] flex-col items-center justify-center gap-1 text-center"
+            className="br-workflow-pending flex flex-col items-center justify-center gap-1 text-center"
             data-testid="create-workflow-refused"
           >
             <p className="text-label text-text-default">{copy.refusedTitle}</p>

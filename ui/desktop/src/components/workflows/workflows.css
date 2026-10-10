@@ -54,3 +54,20 @@
     transition: none;
   }
 }
+
+/* The response-schema and instructions editors' text areas fill their dialog.
+   ⚠ `.br-textarea` (main.css) is UNLAYERED and sets its own `min-block-size` and `resize`, so a
+   Tailwind `min-h-[400px]` or `resize-none` on the same element loses to it whatever its
+   specificity: measured in Chromium, the editor was 74px tall (three rows) in an 800px dialog.
+   This rule is authored at higher specificity for that reason, and also because a newly written
+   arbitrary utility can fail to generate under BIOROUTER_NO_HMR. */
+.br-textarea.br-workflow-editor-field {
+  min-block-size: 400px;
+  resize: none;
+}
+
+/* "Reading this chat…" and a refusal hold the dialog's height while the form is not there yet,
+   so the dialog does not jump when it arrives. */
+.br-workflow-pending {
+  min-block-size: 240px;
+}

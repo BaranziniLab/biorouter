@@ -166,7 +166,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
         </>
       }
     >
-      <form id="schedule-form" onSubmit={handleLocalSubmit} className="flex flex-col gap-4 py-1">
+      <form id="schedule-form" onSubmit={handleLocalSubmit} className="flex flex-col gap-4 py-4">
         {apiErrorExternally && (
           <Note tone="danger" role="alert">
             {apiErrorExternally}
