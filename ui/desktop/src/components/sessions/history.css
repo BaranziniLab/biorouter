@@ -111,15 +111,4 @@
   opacity: 1;
 }
 
-/* The SD-8 line on a saved transcript's band is an InfoTip trigger (`asChild`),
-   which draws its focus ring as an outline outside the element. The global D-15
-   rule for `[tabindex]` matches it too and adds its fill and inset edge, so the
-   line would wear two rings. It has no chip fill to keep, so it keeps the
-   outline and drops the second. */
-.br-history-note:focus-visible {
-  border-radius: var(--radius-inner);
-  background-color: transparent;
-  box-shadow: none;
-}
-
 /* @ws WS-HISTORY end: Chat history list */

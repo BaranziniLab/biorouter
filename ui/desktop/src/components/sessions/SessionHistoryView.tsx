@@ -356,7 +356,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           >
             <span
               data-testid="declassify-browser-note"
-              className="br-history-note whitespace-nowrap px-1 text-supporting text-text-muted"
+              className="whitespace-nowrap px-1 text-supporting text-text-muted"
             >
               {DECLASSIFY_NEEDS_HOST_SHORT}
             </span>
