@@ -13,6 +13,8 @@ export const settingsShellCopy = {
   title: 'Settings',
   /** Pinned by daemon copy ("Settings > Models", "Settings > App > Privacy"); never rename. */
   tabs: { models: 'Models', chat: 'Chat', app: 'App' },
+  /** The tab list's accessible name (the band's title names the page, not its switch). */
+  tabsLabel: 'Settings sections',
 } as const;
 
 export const generalCopy = {

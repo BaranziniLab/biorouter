@@ -1,0 +1,24 @@
+/*
+ * Settings' own band rules (`SettingsView.tsx`; spec 3.13). Authored here, next to the one
+ * component that uses them, because the shared band is another owner's (`.biorouter-page-header*`
+ * in `main.css`) and a newly written Tailwind utility can silently fail to generate under
+ * `BIOROUTER_NO_HMR` (CLAUDE.md, "Desktop shell geometry").
+ *
+ * THE TABS SIT ON THE TITLE'S LINE. The band centres its 14px title in the 44px bar, while the
+ * tab wrapper bottom-aligns a 36px trigger so the underline lands on the band's hairline. That
+ * put the tab text 3px under the title's, so "Settings Models Chat App" read as two lines that
+ * had slipped. The list now stretches to the band's own height and each trigger fills it:
+ * the text centres on the same line as the title, and the underline still sits on the hairline
+ * (it is positioned from the list's bottom edge, which has not moved).
+ *
+ * The 16px margin is added to the bar's 8px gap, so the title and the first tab are 24px apart:
+ * far enough that the title reads as the page and the tabs as its switch.
+ */
+.biorouter-settings-tabs {
+  align-self: stretch;
+  margin-inline-start: 16px;
+}
+
+.biorouter-settings-tabs > [role='tab'] {
+  height: 100%;
+}

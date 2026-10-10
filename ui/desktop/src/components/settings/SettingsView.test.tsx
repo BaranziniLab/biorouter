@@ -17,7 +17,12 @@ vi.mock('./models/ModelsSection', () => ({
 vi.mock('./chat/ChatSettingsSection', () => ({
   default: () => (
     <div data-testid="section-chat">
-      <section id={SETTINGS_SECTION_IDS.approvals} data-testid="section-approvals" />
+      <section id={SETTINGS_SECTION_IDS.approvals} data-testid="section-approvals">
+        <h2>Approvals</h2>
+        <div className="biorouter-settings-row" data-testid="row-approval-mode" />
+      </section>
+      {/* A section with no row in it (a card, a list of its own): the wash covers it whole. */}
+      <section id={SETTINGS_SECTION_IDS.display} data-testid="section-display" />
     </div>
   ),
 }));
@@ -125,6 +130,11 @@ describe('the Settings band', () => {
     expect(within(band).queryByText(/Manage models/)).toBeNull();
   });
 
+  it('names the tab list, so a screen reader hears what the tabs switch', () => {
+    renderSettings();
+    expect(screen.getByRole('tablist', { name: settingsShellCopy.tabsLabel })).toBeInTheDocument();
+  });
+
   it('keeps the tab test ids the e2e suite reads', () => {
     renderSettings();
     for (const id of ['settings-models-tab', 'settings-chat-tab', 'settings-app-tab']) {
@@ -154,20 +164,57 @@ describe('Settings scrolling', () => {
     expect(viewport().scrollTop).toBe(0);
   });
 
-  it('scrolls a deep-linked section into view and highlights it', async () => {
+  it('scrolls a deep-linked section into view and washes its first row', async () => {
     vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
     renderSettings({ section: 'modes' });
     const section = screen.getByTestId('section-approvals');
+    const row = screen.getByTestId('row-approval-mode');
     await act(async () => {
       vi.advanceTimersByTime(50);
     });
     expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'start' }));
     expect(scrollIntoView.mock.contexts[0]).toBe(section);
-    expect(section).toHaveClass('br-highlight');
+    // The control the link names, not the whole section around it.
+    expect(row).toHaveClass('br-highlight');
+    expect(section).not.toHaveClass('br-highlight');
     await act(async () => {
       vi.advanceTimersByTime(2000);
     });
+    expect(row).not.toHaveClass('br-highlight');
+  });
+
+  it('washes the whole section when it holds no row, and ends the wash with its animation', async () => {
+    vi.useFakeTimers({ toFake: ['requestAnimationFrame', 'setTimeout', 'clearTimeout'] });
+    renderSettings({ section: 'styles' });
+    const section = screen.getByTestId('section-display');
+    await act(async () => {
+      vi.advanceTimersByTime(50);
+    });
+    expect(section).toHaveClass('br-highlight');
+
+    // A child's animation bubbles up and must not end the wash early...
+    const child = document.createElement('span');
+    section.appendChild(child);
+    act(() => {
+      child.dispatchEvent(new Event('animationend', { bubbles: true }));
+    });
+    expect(section).toHaveClass('br-highlight');
+
+    // ...the section's own does.
+    act(() => {
+      section.dispatchEvent(new Event('animationend'));
+    });
     expect(section).not.toHaveClass('br-highlight');
+  });
+
+  it('starts a different tab at the top when a deep link switches to it', async () => {
+    const { rerender } = renderSettings();
+    viewport().scrollTop = 600;
+    rerender(
+      <SettingsView onClose={() => {}} setView={() => {}} viewOptions={{ section: 'app' }} />
+    );
+    expect(screen.getByTestId('settings-app-tab')).toHaveAttribute('data-state', 'active');
+    expect(viewport().scrollTop).toBe(0);
   });
 
   it('jumps instead of gliding when the person prefers reduced motion', async () => {

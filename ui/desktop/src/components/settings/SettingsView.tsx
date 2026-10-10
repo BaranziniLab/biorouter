@@ -15,6 +15,7 @@ import { PageHeader } from '../Layout/PageHeader';
 import { prefersReducedMotion } from '../../styles/motion';
 import { settingsShellCopy } from './app/copy';
 import { resolveSettingsDeepLink, type SettingsTab } from './settingsSections';
+import './settings.css';
 
 export type SettingsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -49,41 +50,78 @@ export default function SettingsView({
     initialTarget?.sectionId ?? null
   );
   const tabsRef = useRef<HTMLDivElement>(null);
+  // The tab on screen, readable inside effects that must not re-run when it changes.
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
 
   const viewport = () =>
     tabsRef.current?.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]') ?? null;
 
+  /**
+   * Show a tab. One scroller holds all three, so a change of tab would otherwise land mid-page
+   * at the previous tab's offset (and a smooth scroll to a deep-linked section would glide there
+   * from it), so every move to a DIFFERENT tab starts at the top.
+   */
+  const showTab = (tab: SettingsTab) => {
+    if (tab !== activeTabRef.current) {
+      const scroller = viewport();
+      if (scroller) scroller.scrollTop = 0;
+    }
+    setActiveTab(tab);
+  };
+
   const handleTabChange = (tab: string) => {
     if (!isSettingsTab(tab)) return;
-    // One scroller holds all three tabs, so a tab change would otherwise land mid-page at the
-    // previous tab's offset.
-    const scroller = viewport();
-    if (scroller) scroller.scrollTop = 0;
     setPendingSection(null);
-    setActiveTab(tab);
+    showTab(tab);
   };
 
   // A deep link that arrives while Settings is already open (route state or `?section=`).
   useEffect(() => {
     const target = resolveSettingsDeepLink(viewOptions.section);
     if (!target) return;
-    setActiveTab(target.tab);
+    showTab(target.tab);
     setPendingSection(target.sectionId ?? null);
+    // `showTab` only reads refs and a setter, so a change of `section` is the one trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewOptions.section]);
 
-  // The highlighted section and the timer that clears it. Held outside the scroll effect: that
-  // effect re-runs (and cleans up) the moment it clears `pendingSection`, which must not cancel
-  // the highlight's own end.
-  const highlight = useRef<{ section: HTMLElement; timer: number } | null>(null);
+  // The highlighted row and what clears it. Held outside the scroll effect: that effect re-runs
+  // (and cleans up) the moment it clears `pendingSection`, which must not cancel the highlight's
+  // own end.
+  const highlight = useRef<{ target: HTMLElement; end: () => void } | null>(null);
   useEffect(
     () => () => {
-      if (highlight.current) window.clearTimeout(highlight.current.timer);
+      highlight.current?.end();
     },
     []
   );
 
-  // Scroll a deep-linked section into view and highlight it. Sections such as Privacy and Usage
-  // load asynchronously, so the element is looked for on each frame for a short while.
+  /** Wash `target` (`.br-highlight`) until its animation ends, with a timer for a renderer that
+   *  never runs one (and for reduced motion's hold, which ends on its own schedule). */
+  const highlightRow = (target: HTMLElement) => {
+    highlight.current?.end();
+    let timer = 0;
+    const end = () => {
+      window.clearTimeout(timer);
+      target.removeEventListener('animationend', onAnimationEnd);
+      target.classList.remove('br-highlight');
+      if (highlight.current?.target === target) highlight.current = null;
+    };
+    // A child's animation bubbles here too, and must not end the wash early.
+    const onAnimationEnd = (event: AnimationEvent) => {
+      if (event.target === target) end();
+    };
+    target.classList.add('br-highlight');
+    target.addEventListener('animationend', onAnimationEnd);
+    timer = window.setTimeout(end, HIGHLIGHT_MS);
+    highlight.current = { target, end };
+  };
+
+  // Scroll a deep-linked section into view and highlight its first row (the control the link
+  // names: Approval mode, Tool call details, Privacy tiers, Version). Sections such as Privacy
+  // and Usage load asynchronously, so the element is looked for on each frame for a short while.
+  // A section that holds no row (a card, a list of its own) is washed whole.
   useEffect(() => {
     if (!pendingSection) return;
     let frame = 0;
@@ -95,18 +133,7 @@ export default function SettingsView({
           behavior: prefersReducedMotion() ? 'auto' : 'smooth',
           block: 'start',
         });
-        if (highlight.current) {
-          window.clearTimeout(highlight.current.timer);
-          highlight.current.section.classList.remove('br-highlight');
-        }
-        section.classList.add('br-highlight');
-        highlight.current = {
-          section,
-          timer: window.setTimeout(() => {
-            section.classList.remove('br-highlight');
-            highlight.current = null;
-          }, HIGHLIGHT_MS),
-        };
+        highlightRow(section.querySelector<HTMLElement>('.biorouter-settings-row') ?? section);
         setPendingSection(null);
         return;
       }
@@ -118,6 +145,7 @@ export default function SettingsView({
     };
     frame = window.requestAnimationFrame(find);
     return () => window.cancelAnimationFrame(frame);
+    // `highlightRow` reads only refs; a new pending section or tab is the trigger.
   }, [pendingSection, activeTab]);
 
   useEffect(() => {
@@ -162,7 +190,10 @@ export default function SettingsView({
           tabs={
             // `border-b-0`: the band's own hairline is the one rule; the active underline
             // lands on it.
-            <TabsList className="biorouter-settings-tabs border-b-0">
+            <TabsList
+              aria-label={settingsShellCopy.tabsLabel}
+              className="biorouter-settings-tabs border-b-0"
+            >
               <TabsTrigger value="models" data-testid="settings-models-tab">
                 {settingsShellCopy.tabs.models}
               </TabsTrigger>
