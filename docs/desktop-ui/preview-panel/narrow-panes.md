@@ -1,7 +1,7 @@
 # The preview panel in a narrow pane
 
 > **What this is.** The rule for where the artifact preview goes when a chat pane is too narrow to seat it beside the conversation, how that rule is built, and how its content animates without remounting.
-> **Status:** Implemented on `fix/preview-panel-narrow-panes`; fresh integrated Electron acceptance is tracked in PR #325.
+> **Status:** Current. Implemented on `fix/preview-panel-narrow-panes`; fresh integrated Electron acceptance is tracked in PR #325. Rung 0, the summary rail, was added in October 2026.
 > **Audience:** contributors changing the artifact panel, the chat pane's layout or the split panes.
 
 In a window split into two or three panes, opening an artifact used to cover the pane it was opened in: below 720px the panel floated over the transcript and the composer of the very conversation it belonged to. A preview is now always beside the conversation or above it, and never over it. This page is the rule, the parts that implement it, and the invariants the tests hold.
@@ -23,6 +23,10 @@ The preview's shape is a pure function of the pane's width P, measured on the sp
 - **360** is the panel's own floor: its tab strip, status strip and file text fit with no overflow. A 285px floor cut the tab label to "Lab |".
 
 The conversation always wins a collision: the sheet gives way down to its strip, and never covers anything.
+
+### Rung 0 first: the summary rail
+
+Before the preview takes any width, the docked Chat summary gives way. Rung 0 (`summaryRailFit`) docks the rail only where the conversation keeps its full measure: a transcript cell of 816px (760 plus 56px of column chrome) plus the rail's 240px floor, so `available ≥ 1056`, and 1068 after a measured hide. `available` is the pane minus the side preview's width, and a stacked sheet hides the rail outright. The rail's width is `clamp(available − 816, 240, 280)`. Beside a default-width preview that needs a 1976px pane, so in practice opening a preview folds the rail away and the header button opens the summary as a popover instead. When the rail and a side preview do share the pane, the grid's columns are `minmax(440px, 1fr)`, the rail, then the preview. The full rule is in [The Chat summary rail](../chat-summary-rail.md).
 
 ## How it is built
 
@@ -49,7 +53,7 @@ The conversation always wins a collision: the sheet gives way down to its strip,
 
 ## Motion and mounting guarantees
 
-- **The panel stays mounted.** Each host renders one `<ArtifactViewer>` at a fixed position with no layout-dependent key. A side and stack crossing changes attributes, the custom properties and authored CSS only. Measured across 13 crossings and a fold: the aside, split box, header, transcript scroller, composer and figure frame are the same nodes; the frame fires 0 `load` events and keeps its `contentWindow`. The only DOM removals are the composer toolbar's rung 3b controls and Radix's auto-hiding scrollbar, both independent of the panel.
+- **The panel stays mounted.** Each host renders one `<ArtifactViewer>` at a fixed position with no layout-dependent key. A side and stack crossing changes attributes, the custom properties and authored CSS only. Measured across 13 crossings and a fold: the aside, split box, header, transcript scroller, composer and figure frame are the same nodes; the frame fires 0 `load` events and keeps its `contentWindow`. The only DOM removal is Radix's auto-hiding scrollbar, independent of the panel. (The composer toolbar's rung 3b controls, which also came and went, were retired with the one-card composer.)
 - **The box settles immediately; its contents animate.** The existing preview body translates 32px and fades with the Web Animations API: entrance 300ms, orientation 250ms, exit 125ms. A window resize does not cancel entrance. Reduced motion disables animation and cancels an active animation when enabled. The grid and conversation do not animate.
 - **No per-frame JavaScript layout.** The shape comes from `ResizeObserver` callbacks that bail out on equal values. Content height is measured when content changes, never on the panel's own resize. The only `requestAnimationFrame` loop runs during a pointer drag.
 
@@ -77,3 +81,4 @@ Each of those was made to fail once on purpose: 16 mutations, each turning a nam
 - [Where a generated artifact is displayed](../artifact-display-surfaces.md) — why the panel is the only artifact surface.
 - [Window-scaling regressions](../window-scaling-regressions.md) — the window-size impostors a measurement of this layout has to avoid.
 - [Renderer testing traps](../renderer-testing-traps.md) — why a component test cannot see this layout, and what can.
+- [The Chat summary rail](../chat-summary-rail.md): rung 0, the summary rail that folds away before the preview takes width.

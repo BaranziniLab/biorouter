@@ -1,21 +1,31 @@
 # Chat summary and academic figure acceptance
 
+> **What this is.** The acceptance contract for the Chat summary and for generated figures, followed by the dated development evidence gathered against it from August 30, 2026.
+> **Status:** Current. The contract is maintained (the rail-or-popover form since October 2026); the evidence sections below it are a dated record and are not re-run.
+> **Audience:** developers and QA working on the Chat summary, its to-do list, or Auto Visualiser figures.
+
 > Computer-use references in historical investigations below are superseded by the [native Biorouter Copilot contract](../design/computer-use-integration-plan.md). Old script/control and Developer capture routes are removed; web/document tools now belong to `webdocuments`. Historical source paths and test receipts are not current executable guidance.
 
 
 ## Contract
 
-The chat summary is a compact contextual popover, not a dashboard: use the
-application's small typography, neutral surfaces, spacing and standard buttons.
-Show persisted To Do state as an ordered stepper with explicit status text and a
-completion count. Connections indicate list order, not inferred dependencies.
-Hide the section when there are no tasks. Task updates, reopening, renaming,
-replacement and chat switching must not show another chat's or an obsolete list.
-The task list is a scroll region with a tab stop so a keyboard user can scroll
-it; it takes no focus fill (D-15's third amendment, `.biorouter-focus-region`),
-and the next Tab lands on the panel's own buttons, which do.
-Amended 2026-09-08 (D-15's fourth): the focused list draws a 1px inset
-`--border-accent` edge — the exemption had removed the fill *and* the UA ring,
+The chat summary is a rail or a popover, not a dashboard: docked beside the
+chat where the pane seats both at the full 760px measure, and the same content in
+a 280px popover from the header button where it does not (see
+[The Chat summary rail](chat-summary-rail.md)). Use the application's small
+typography (13px rows, 12px labels), neutral surfaces, spacing and standard
+buttons. Show persisted To Do state as an ordered list with a completion count.
+Each step's status is announced to assistive technology and distinguishable by
+shape (an open circle, a dashed circle, a check, an alert), never by colour
+alone. Hide the section when there are no tasks. Task updates, reopening,
+renaming, replacement and chat switching must not show another chat's or an
+obsolete list.
+The summary's scrolling body is a scroll region with a tab stop so a keyboard
+user can scroll it; it takes no focus fill (D-15's third amendment,
+`.biorouter-focus-region`), and the next Tab lands on the footer's buttons,
+which do.
+Amended 2026-09-08 (D-15's fourth): the focused region draws a 1px inset
+`--border-accent` edge. The exemption had removed the fill *and* the UA ring,
 leaving a keyboard user with no indicator at all (WCAG 2.4.7).
 
 Generated figures prioritize the data: meaningful titles, units, source or
@@ -1465,3 +1475,9 @@ WD-BLACK's `agent-error-logging-validation.tar.gz`, SHA-256
 `e3c909b8515984935cb92ef259c22dc4675332df45345c493a9e2a182b2457cb`.
 Production CLI/daemon hashes remain unchanged at `2ae49597`; no fresh live
 provider acceptance, rebuild, push or release occurred.
+
+## Related documentation
+
+- [The Chat summary rail](chat-summary-rail.md): where the summary appears, the width rule and the tests that pin it.
+- [Where a generated artifact is displayed](artifact-display-surfaces.md): the one surface a figure is shown on.
+- [Biorouter Copilot integration plan](../design/computer-use-integration-plan.md): the contract that supersedes the Computer Use references in the evidence above.

@@ -9,7 +9,7 @@ biorouter provides several built-in features to help you get support, report iss
 | Feature | Purpose | Location | Output |
 |---------|---------|----------|---------|
 | **Ask the agent** | Have biorouter work out what went wrong and file it for you | Say "report a bug" in any chat | A GitHub issue, after you approve the exact text |
-| **Diagnostics** | Generate troubleshooting data | Chat summary (upper right) → `Diagnostics` | ZIP file with system info, logs, and session data |
+| **Diagnostics** | Generate troubleshooting data | Chat summary (beside the chat, or its button in the chat header) → `Diagnostics` | ZIP file with system info, logs, and session data |
 | **File Bug on GitHub** | Open a pre-filled issue template | Same `Diagnostics` dialog | Opens GitHub in your browser |
 | **Report a Bug** | Open a blank issue template | Settings → Help & feedback | Opens GitHub issue template |
 | **Request a Feature** | Suggest new features | Settings → Help & feedback | Opens GitHub issue template |
@@ -30,8 +30,8 @@ Generate one when you are:
 
 ### Generating a bundle from the desktop app
 
-1. In an active chat session, click the **chat summary** icon in the upper right of the chat header.
-2. Click `Diagnostics` in the popover.
+1. Open the **Chat summary** of an active chat. In a wide window it is already docked to the right of the chat; otherwise click the summary button in the upper right of the chat header.
+2. Click `Diagnostics` at the bottom of the summary.
 3. Review the information in the dialog about what data will be collected.
 4. Click `Generate diagnostics`. A native save dialog opens, defaulting to your `Downloads` folder.
 5. The ZIP file is saved as `diagnostics_{session_id}.zip`. Nothing is uploaded anywhere.
