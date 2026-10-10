@@ -1,5 +1,6 @@
 import { render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DUR, EASE_OUT } from '../styles/motion';
 import { useTextAnimator } from './use-text-animator';
 
 /**
@@ -19,7 +20,13 @@ import { useTextAnimator } from './use-text-animator';
  * hundred milliseconds later.
  */
 
-const started: Array<{ el: Element; delay: number }> = [];
+const started: Array<{
+  el: Element;
+  delay: number;
+  duration?: number;
+  easing?: string;
+  keyframes: Record<string, unknown>[];
+}> = [];
 
 function Harness({ text, enabled = true }: { text: string; enabled?: boolean }) {
   const ref = useTextAnimator({ text, enabled });
@@ -37,10 +44,16 @@ beforeEach(() => {
   // and returns just enough of an `Animation` for the animator to drive.
   Element.prototype.animate = function (
     this: Element,
-    _keyframes: unknown,
-    options: { delay?: number }
+    keyframes: Record<string, unknown>[],
+    options: { delay?: number; duration?: number; easing?: string }
   ) {
-    started.push({ el: this, delay: options?.delay ?? 0 });
+    started.push({
+      el: this,
+      delay: options?.delay ?? 0,
+      duration: options?.duration,
+      easing: options?.easing,
+      keyframes,
+    });
     return { cancel: () => {}, onfinish: null } as unknown as globalThis.Animation;
   } as unknown as Element['animate'];
   window.matchMedia = ((q: string) => ({
@@ -74,6 +87,24 @@ describe('useTextAnimator', () => {
     const delays = started.map((s) => s.delay);
     expect(new Set(delays).size).toBeGreaterThan(1);
     expect(delays).toEqual([...delays].sort((a, b) => a - b));
+  });
+
+  /**
+   * The unroll is on the motion tokens (spec 2.4): `--dur-med` on `--ease-out`,
+   * 12ms between characters, and only `opacity` and `transform` move. The old
+   * blur animated `filter`, which principle 9 does not allow.
+   */
+  it('moves only opacity and transform, over the medium tier on the one curve', () => {
+    render(<Harness text="Hello there" />);
+    expect(started.length).toBeGreaterThan(1);
+    for (const run of started) {
+      expect(run.duration).toBe(DUR.med);
+      expect(run.easing).toBe(EASE_OUT);
+      for (const frame of run.keyframes) {
+        expect(Object.keys(frame).sort()).toEqual(['opacity', 'transform']);
+      }
+    }
+    expect(started[1].delay - started[0].delay).toBe(12);
   });
 
   /**
