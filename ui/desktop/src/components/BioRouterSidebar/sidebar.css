@@ -349,6 +349,13 @@
   min-width: 0;
 }
 
+/* The kind glyph keeps its 16px slot however long the title is; the glyph's
+   own `flex-none` is a Tailwind class, and this column must not depend on one
+   having been generated. */
+.br-chat-row .br-chat-kind-icon {
+  flex: none;
+}
+
 /* The 16px trailing slot: the running ring at rest, the ⋯ on hover or focus. */
 .br-chat-row-trailing {
   display: flex;
