@@ -59,6 +59,6 @@
 .br-provider-other-institutions {
   display: flex;
   align-items: center;
+  margin-block-start: 12px;
   padding-inline: 12px;
-  padding-block-start: 8px;
 }

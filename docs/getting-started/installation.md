@@ -109,7 +109,7 @@ biorouter configure
 
 ### Switch or update your provider
 
-**Desktop:** to change the model of a chat, choose the model chip under its message box. To set up or change a provider, open **Settings** > **Models** > **Configure providers**, and choose **Configure** on its row.
+**Desktop:** to change the model of a chat, choose the model chip under its message box. To set up or change a provider, open **Settings** > **Models** > **Providers** > **Manage…**, and choose **Configure** on its row.
 
 **CLI:**
 

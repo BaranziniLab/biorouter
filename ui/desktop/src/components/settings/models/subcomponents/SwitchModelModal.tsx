@@ -1318,7 +1318,7 @@ export const SwitchModelModal = ({
           is the label's SIBLING, never inside it: a click on its glyph would toggle the box.
         */}
         {chatScope && !hostManaged && !crewFixed && (
-          <div className="flex items-center" data-testid="switch-model-also-new-chats">
+          <div className="br-model-check-row" data-testid="switch-model-also-new-chats">
             <label className="flex cursor-pointer items-center gap-2">
               <Checkbox
                 id="switch-model-also-new-chats"

@@ -43,7 +43,7 @@ backend-driven and required no MiMo-specific code.
 
 | Surface | What appears | Where it is wired |
 | --- | --- | --- |
-| Provider configuration (Settings → Models → Configure providers) | On the *Public* tab, under "API providers", in display-name order after Anthropic, OpenAI and Google; backend-driven via `GET /config/providers` | Ordering in `ui/desktop/src/components/settings/providers/providerOrdering.ts` (`pinnedThenAlphabetical`) |
+| Provider configuration (Settings → Models → Providers → Manage…) | On the *Public* tab, under "API providers", in display-name order after Anthropic, OpenAI and Google; backend-driven via `GET /config/providers` | Ordering in `ui/desktop/src/components/settings/providers/providerOrdering.ts` (`pinnedThenAlphabetical`) |
 | Provider configuration modal | `XIAOMI_MIMO_API_KEY` (secret) + optional `XIAOMI_MIMO_HOST` fields, rendered from backend `config_keys` | Labels in `ui/desktop/src/utils/configUtils.ts` |
 | Onboarding | Listed under "Auto-detect from API key", and on the first run screen's *Public* tab | Auto-detect in `crates/biorouter/src/providers/auto_detect.rs`; text in `ui/desktop/src/components/onboarding/CommercialSetupCard.tsx` |
 | Main model selector (bottom menu / `SwitchModelModal`) | Once configured, `mimo-*` models appear in the picker | Backend-driven |

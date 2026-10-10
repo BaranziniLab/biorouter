@@ -93,7 +93,7 @@ Run with the dev app (`ENABLE_PLAYWRIGHT=true npm run start-gui`, see the `debug
 skill; for driving the same dev GUI from a terminal over the Chrome DevTools Protocol,
 see [debugging the dev GUI with agent-browser](../../desktop-ui/agent-browser-debugging.md)):
 
-- [ ] **Provider ordering** — Settings → Configure providers: **Llama Server is first**
+- [ ] **Provider ordering** — Settings → Models → Providers → Manage…: **Llama Server is first**
       under "Local Models", before Ollama; Local group precedes
       Institutional/Commercial.
 - [ ] **Configure** — the Llama Server card's *Configure* saves with no API key (Port

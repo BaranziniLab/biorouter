@@ -27,17 +27,39 @@ Both are now `components/settings/providers/ProviderCatalog.tsx`, in `mode="sett
 Three tabs, in this fixed order — the order the product ranks these everywhere else
 (onboarding, the settings provider grid, `biorouter configure`):
 
-| Tab | Panel heading (§14.5) | What it holds |
+| Tab | Group label (§14.5) | What it holds |
 |---|---|---|
 | **Local** | Private · Local | Llama Server, then Ollama, then any other local provider by display name |
-| **Institutional** | Private · Institutional | One section per institution, then "Unaffiliated private gateways", then the "Other institutions" explainer |
+| **Institutional** | Private · Institutional | One section per institution, then "Unaffiliated private gateways", then the "Don't see your institution?" line |
 | **Public** | Public · Commercial | "AI agents · your subscription", then "API providers" |
 
-The panel heading, its one-line note and the tier dot all come from
+The group label, its one-line note and the tier dot all come from
 `getOrderedProviderGroups` in `providerOrdering.ts` — the same function
-`components/knowledge/IngestPanel/IngestModelPicker.tsx` reads. The tab trigger's short
-label (`Local` / `Institutional` / `Public`) is derived there too, so a trigger and the
-panel it opens cannot come to name different things.
+`components/knowledge/IngestPanel/IngestModelPicker.tsx` reads, which prints the label as its
+`<optgroup>`. The tab trigger's short label (`Local` / `Institutional` / `Public`) is derived there
+too, so a trigger and the panel it opens cannot come to name different things.
+
+**The panel prints the tier note, not the group label.** Since the 2026-10 redesign a panel opens
+with one muted line, the group's note ("Private because inference runs on this machine.", "Public.
+Biorouter can't verify…"), and no heading: the tab already names the group, and the note starts with
+the same word the tier dot means, so the old "Private · Local" heading only repeated the tab. The
+line is privacy information, so it is visible text and never an InfoTip
+(`ProviderCatalog.privacy.test.tsx` holds both).
+
+## The rows
+
+A provider is a row on the shared settings-row geometry (`ProviderCard.tsx`, `providers.css`): a name
+over a one-line description (truncated, with a focusable tooltip for the rest), "Configured" as a success
+dot and a word, and one action. There is no initial tile. In settings the action (`Configure`, named for
+its row, as in "Configure Anthropic") shows on hover and on focus and is always shown without a hover
+pointer (`.br-row-actions`); on first run a configured provider's action is `Launch` and is always
+shown. An accordion row (the coding agents, and the local providers on first run) and its panel are two
+siblings in the list, never one wrapper, because the list's hairline recipe drops the last child's rule.
+
+A section is a `SettingSection`: a caps heading with, where there is a reason to give, an InfoTip beside
+it (`OrderedProviderSection.help`: the agents' subscription billing, a gateway with no named
+institution). An institution's own note only lists its rows, so it gets no tip. "Don't see your
+institution?" is one quiet line under the Institutional tab with the answer in an InfoTip.
 
 The taxonomy strings themselves are the design of record in
 [`docs/security/privacy-tiers.md`](../security/privacy-tiers.md) §14.5 and are pinned by
@@ -57,7 +79,7 @@ in the catalog component.
 - **Public**: the two coding-agent providers first, in the order
   `codingAgentStatus.ts` declares (`CODING_AGENT_ORDER`); then `anthropic`, `openai`,
   `google` pinned; then every remaining public provider — built-in, declarative and
-  custom alike — by **display name**, case-insensitively; then "Add Custom Provider".
+  custom alike — by **display name**, case-insensitively; then "Add custom provider".
 
 The set of AI-agent provider ids is imported from `codingAgentStatus.ts`, which already
 owns the map of each agent's config key. `providerOrdering.test.ts` asserts the two agree,
@@ -230,6 +252,7 @@ renders normally.
 | `ui/desktop/src/components/settings/providers/ProviderCatalog.tsx` | The tabbed catalog; both modes; `defaultCatalogTab` |
 | `ui/desktop/src/components/settings/providers/providerOrdering.ts` | Groups, sections, ordering, `institutionsForProvider` |
 | `ui/desktop/src/components/settings/providers/subcomponents/ProviderCard.tsx` | One row definition, click-to-configure or accordion |
+| `ui/desktop/src/components/settings/providers/copy.ts`, `providers.css` | The catalog's words (tests import them) and its row geometry |
 | `ui/desktop/src/components/settings/providers/ProviderSettingsPage.tsx` | The `configure-providers` and `welcome` routes |
 | `ui/desktop/src/components/ProviderGuard.tsx` | The first-run wall, and the way past it |
 | `ui/desktop/src/components/onboarding/OnboardingCardShell.tsx` | `card` / `bare` chrome around one body |
@@ -256,5 +279,6 @@ suite here uses a `clickTab` helper that fires both.
 ## Related documentation
 
 - [Privacy tiers](../security/privacy-tiers.md) — §14.5 owns the three group labels and their notes; SD-1 owns the browser surface's behaviour.
+- [Settings visual vocabulary](settings-visual-vocabulary.md) — the row, section and InfoTip anatomy the catalog and the Models tab now share.
 - [Coding-agent providers](../providers/coding-agents/README.md) — what `claude_code` and `codex` are, and why both are `ProviderTier::Public`.
 - [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) — how to put this screen in front of you.

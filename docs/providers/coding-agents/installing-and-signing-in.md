@@ -56,7 +56,7 @@ a chat's message box), exactly as you would any other provider. A signed-in agen
 even if you have never used it in BioRouter, and choosing it saves its one setting first. The
 switch applies to that chat, and to new chats only if you tick **Also use for new chats**.
 
-You can also set it up in **Settings** > **Models** > **Configure providers**: on the **Public** tab,
+You can also set it up in **Settings** > **Models** > **Providers** > **Manage…**: on the **Public** tab,
 the agent's row under "AI agents · your subscription" offers **Use Claude Code** or **Use Codex**,
 then asks for a model. There is no key to enter. The only setting either provider has is the name or
 path of its executable, which defaults to `claude` and `codex` respectively.

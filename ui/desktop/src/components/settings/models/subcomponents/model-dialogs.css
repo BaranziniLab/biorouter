@@ -54,3 +54,12 @@
   inline-size: 72px;
   flex: none;
 }
+
+/* The "Also use for new chats" box: the Checkbox draws a 16px square inside a 24px hit target,
+   so its edge sits 4px inside the fields above it; pull the row back so the square lines up
+   with them. */
+.br-model-check-row {
+  display: flex;
+  align-items: center;
+  margin-inline-start: -4px;
+}

@@ -1,10 +1,10 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-09-28.
+> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07). The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-10-10.
 > **Audience:** end users
 
-Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then **Configure providers**.
+Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then choose **Manage…** on the **Providers** row.
 
 **UCSF users:** For institution-managed access, start with **Versa API Azure** (`versa_azure`, the UCSF ChatGPT models) or **Versa API Bedrock** (`versa_bedrock`, the UCSF-hosted Anthropic models). The generic **Azure OpenAI** and **Amazon Bedrock** providers are the commercial ones, not the UCSF institutional ones. For fully local inference, use **Llama Server** or **Ollama**.
 
@@ -14,24 +14,24 @@ The **default model** is the one Biorouter uses when you configure a provider wi
 
 ## Provider configuration panel
 
-Open **Settings** > **Models** and choose **Configure providers**. Each provider row shows:
+Open **Settings** > **Models** and choose **Manage…** on the **Providers** row. Each provider row shows:
 
-- The provider's name and whether it is configured.
+- The provider's name, a one-line description, and **Configured** when it is set up.
 - A **Configure** button to enter API keys or credentials. It appears when you point at the row or tab to it, and choosing the row itself opens it too.
 
 The first run screen shows the same rows, and there a configured provider also has **Launch**, which switches to that provider and asks for a model. Everywhere else you choose a model in **Switch models**.
 
 The providers sit on three tabs, always in this order:
 
-| Tab | Heading | Providers, in order |
+| Tab | Opens with | Providers, in order |
 |---|---|---|
-| **Local** | Private · Local | `llamacpp` (Llama Server), `ollama`, then any other local provider by display name |
-| **Institutional** | Private · Institutional | One section for each institution, named as its provider publishes it (such as UCSF, with `versa_azure` and `versa_bedrock`), sections in name order, then "Unaffiliated private gateways" |
-| **Public** | Public · Commercial | "AI agents · your subscription" (`claude_code`, then `codex`), then "API providers": `anthropic`, `openai` and `google`, then every other public provider by display name |
+| **Local** | "Private because inference runs on this machine." | `llamacpp` (Llama Server), `ollama`, then any other local provider by display name |
+| **Institutional** | "Private because Biorouter recognizes this institutional gateway endpoint." | One section for each institution, named as its provider publishes it (such as UCSF, with `versa_azure` and `versa_bedrock`), sections in name order, then "Unaffiliated private gateways" |
+| **Public** | "Public. Biorouter can't verify where this account's endpoint points…" | "AI agents · your subscription" (`claude_code`, then `codex`), then "API providers": `anthropic`, `openai` and `google`, then every other public provider by display name |
 
 The panel hides nothing: every provider Biorouter has is on one of the three tabs. A tab opens selected when it holds your current provider. In `biorouter configure`, the providers are one list with no group headings: Llama Server, Ollama, the two Versa providers, then the rest by display name.
 
-You can also add fully custom providers (e.g. any OpenAI-compatible endpoint) via the "Add Custom Provider" card.
+You can also add fully custom providers (e.g. any OpenAI-compatible endpoint) with **Add custom provider**, the last row of the API providers.
 
 ## Supported providers
 
@@ -477,7 +477,7 @@ Custom providers are stored in `~/.config/biorouter/config.yaml` and available i
 
 ## Switch providers and models
 
-**Desktop:** in a chat, choose the model chip under the message box, then pick a provider and model in **Switch models**. To set up a provider first, open **Settings** > **Models** > **Configure providers**, and choose **Configure** on its row.
+**Desktop:** in a chat, choose the model chip under the message box, then pick a provider and model in **Switch models**. To set up a provider first, open **Settings** > **Models** > **Providers** > **Manage…**, and choose **Configure** on its row.
 
 **CLI:**
 
