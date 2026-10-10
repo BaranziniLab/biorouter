@@ -6,9 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
 import { clearSessionListCache } from '../../utils/sessionListCache';
 import type { Session } from '../../api';
+import { chatRowCopy } from '../chats/copy';
+import { MAKE_CHAT_PUBLIC, RENAME_TITLE } from './copy';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
+  exportSession: vi.fn(),
+  divergeSession: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
 }));
@@ -16,7 +20,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api', () => ({
   listSessions: mocks.listSessions,
   deleteSession: vi.fn(),
-  exportSession: vi.fn(),
+  exportSession: mocks.exportSession,
+  divergeSession: mocks.divergeSession,
   importSession: vi.fn(),
   updateSessionName: vi.fn(),
   declassifySession: vi.fn(),
@@ -27,8 +32,9 @@ vi.mock('../../toasts', () => ({
   toastError: mocks.toastError,
 }));
 
-vi.mock('../conversation/SearchView', () => ({
-  SearchView: ({ children }: { children: ReactNode }) => <>{children}</>,
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-proof' }),
+  isPrivateCopyRefusal: () => false,
 }));
 
 vi.mock('../ui/scroll-area', () => ({
@@ -63,46 +69,75 @@ async function renderHistory(onSelectSession = vi.fn()) {
   return { onSelectSession };
 }
 
+/** The keys of the open menu's items, in order. */
+function menuKeys(): (string | null)[] {
+  return screen.getAllByRole('menuitem').map((item) => item.getAttribute('data-chat-row-action'));
+}
+
+/** The menu a public chat with messages offers: the sidebar's order (owner message 4). */
+const FULL_MENU = ['rename', 'open-tab', 'open-window', 'diverge', 'export', 'copy-id', 'delete'];
+
 describe('History row menus', () => {
-  it('offers the three actions on a right-click', async () => {
+  /**
+   * History, the sidebar and the tab strip share one menu: the order and the
+   * words come from `chatRowMenuEntries`, so a Rename on one surface is a
+   * Rename on all of them.
+   */
+  it('offers the shared menu on a right-click, in its fixed order', async () => {
     await renderHistory();
     fireEvent.contextMenu(screen.getByText('Excel research'));
 
-    const items = await screen.findAllByRole('menuitem');
-    expect(items.map((item) => item.textContent)).toEqual([
-      'Open in new tab',
-      'Open in new window',
-      'Copy conversation ID',
-    ]);
+    await screen.findAllByRole('menuitem');
+    expect(menuKeys()).toEqual(FULL_MENU);
+    expect(screen.getByRole('menuitem', { name: chatRowCopy.menu.rename })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: chatRowCopy.menu.copyId })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: chatRowCopy.menu.delete })).toBeInTheDocument();
   });
 
   /**
-   * The `⋯` overflow is the keyboard path — Tab to it, Enter — so it must carry
-   * the SAME list. It had the first two items before #114; asserting all three
-   * against the same expectation as the right-click menu is what stops the two
-   * menus on one row from drifting apart.
+   * The `⋯` overflow is the pointer-free path to the same menu, so it must carry
+   * the SAME list, or the two menus on one row drift apart.
    */
   it('offers the identical list from the keyboard-reachable overflow', async () => {
     await renderHistory();
-    // Radix opens a dropdown on pointerdown, not click — the same door the
-    // declassify suite next door uses.
+    // Radix opens a dropdown on pointerdown, not click.
     fireEvent.pointerDown(screen.getByLabelText('More actions for Excel research'), {
       button: 0,
       ctrlKey: false,
     });
 
-    const items = await screen.findAllByRole('menuitem');
-    expect(items.slice(0, 3).map((item) => item.textContent)).toEqual([
-      'Open in new tab',
-      'Open in new window',
-      'Copy conversation ID',
-    ]);
+    await screen.findAllByRole('menuitem');
+    expect(menuKeys()).toEqual(FULL_MENU);
   });
 
-  it('copies the raw conversation id from the right-click menu', async () => {
+  /**
+   * macOS sends no `contextmenu` for Shift+F10 or the Menu key, so the row has
+   * to open its own (ui/keyboardContextMenu.ts). Without it the menu was
+   * reachable by pointer alone on the platform the app ships first.
+   */
+  it('opens the menu from the keyboard with Shift+F10', async () => {
+    await renderHistory();
+    const open = screen.getByRole('button', { name: 'Open chat Excel research' });
+    open.focus();
+    fireEvent.keyDown(open, { key: 'F10', shiftKey: true });
+
+    await screen.findAllByRole('menuitem');
+    expect(menuKeys()).toEqual(FULL_MENU);
+  });
+
+  it('opens Rename with F2 on a focused row', async () => {
+    await renderHistory();
+    const open = screen.getByRole('button', { name: 'Open chat Excel research' });
+    open.focus();
+    fireEvent.keyDown(open, { key: 'F2' });
+
+    expect(await screen.findByRole('dialog', { name: RENAME_TITLE })).toBeInTheDocument();
+  });
+
+  it('copies the raw chat id from the right-click menu', async () => {
     await renderHistory();
     fireEvent.contextMenu(screen.getByText('Excel research'));
-    fireEvent.click(await screen.findByText('Copy conversation ID'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.copyId }));
 
     await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledWith('20260823_2'));
   });
@@ -135,15 +170,43 @@ describe('History row menus', () => {
     );
   });
 
+  it('exports through the shared export path, with the proof', async () => {
+    mocks.exportSession.mockRejectedValue('refused');
+    await renderHistory();
+    fireEvent.contextMenu(screen.getByText('Excel research'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.export }));
+
+    await waitFor(() =>
+      expect(mocks.exportSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: { session_id: '20260823_2' },
+          headers: { 'X-User-Action': 'test-proof' },
+        })
+      )
+    );
+  });
+
+  it('diverges through the shared diverge path, with the proof', async () => {
+    mocks.divergeSession.mockResolvedValue({ data: { sessionId: 'branch-1', workingDir: '/x' } });
+    Object.assign(window.electron, { createDivergedChatWindow: vi.fn() });
+    await renderHistory();
+    fireEvent.contextMenu(screen.getByText('Excel research'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.diverge }));
+
+    await waitFor(() =>
+      expect(mocks.divergeSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: { session_id: '20260823_2' },
+          headers: { 'X-User-Action': 'test-proof' },
+        })
+      )
+    );
+  });
+
   /**
-   * "Works for user, scheduled, diverged, and subagent rows." The menu is not
-   * gated on kind and must not become so — a subagent run is exactly the row
-   * whose id an agent is most likely to be asked about, and it is the one that
-   * only appears once "Show subagent runs" is on, so it is the one a
-   * kind-dependent regression would hide.
-   *
-   * `chatRowActions` takes no kind at all, which is why this can be asserted
-   * once across all four rather than four times.
+   * "Works for user, scheduled, diverged, and subagent rows." Every kind keeps
+   * the menu and copies its own id. A subagent run is machinery rather than a
+   * chat to branch, so it is the one row without Diverge.
    */
   it('offers the menu on every kind of row, copying each row’s own id', async () => {
     mocks.listSessions.mockResolvedValue({
@@ -167,22 +230,39 @@ describe('History row menus', () => {
     fireEvent.click(await screen.findByLabelText(/show subagent runs/i));
     await screen.findByText('Subagent: Word research');
 
-    for (const [label, id] of [
-      ['Excel research', '20260823_2'],
-      ['Nightly QC', '20260823_3'],
-      ['Branch of Excel', '20260823_4'],
-      ['Subagent: Word research', '20260823_5'],
+    for (const [label, id, keys] of [
+      ['Excel research', '20260823_2', FULL_MENU],
+      ['Nightly QC', '20260823_3', FULL_MENU],
+      ['Branch of Excel', '20260823_4', FULL_MENU],
+      ['Subagent: Word research', '20260823_5', FULL_MENU.filter((key) => key !== 'diverge')],
     ] as const) {
       fireEvent.contextMenu(screen.getByText(label));
-      const items = await screen.findAllByRole('menuitem');
-      expect(items.map((item) => item.textContent)).toEqual([
-        'Open in new tab',
-        'Open in new window',
-        'Copy conversation ID',
-      ]);
-      fireEvent.click(screen.getByText('Copy conversation ID'));
+      await screen.findAllByRole('menuitem');
+      expect(menuKeys()).toEqual(keys);
+      fireEvent.click(screen.getByRole('menuitem', { name: chatRowCopy.menu.copyId }));
       await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(id));
     }
+  });
+
+  it('adds Make this chat public after Copy chat ID on a private row only', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: { sessions: [{ ...session, privacy_tier: 'private' }] },
+    });
+    await renderHistory();
+    fireEvent.contextMenu(screen.getByText('Excel research'));
+
+    await screen.findAllByRole('menuitem');
+    expect(menuKeys()).toEqual([
+      'rename',
+      'open-tab',
+      'open-window',
+      'diverge',
+      'export',
+      'copy-id',
+      'declassify',
+      'delete',
+    ]);
+    expect(screen.getByRole('menuitem', { name: MAKE_CHAT_PUBLIC })).toBeInTheDocument();
   });
 
   /**

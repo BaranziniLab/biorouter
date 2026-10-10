@@ -10,6 +10,18 @@ import {
   updateCachedSessionList,
 } from '../../utils/sessionListCache';
 import type { Session } from '../../api';
+import { chatRowCopy } from '../chats/copy';
+import {
+  CHAT_DELETED,
+  HISTORY_EMPTY,
+  HISTORY_TITLE,
+  IMPORT_CHAT,
+  LOADING_MORE_CHATS,
+  RENAME_PLACEHOLDER,
+  RENAME_TITLE,
+  SHOW_SUBAGENT_RUNS,
+  START_A_CHAT,
+} from './copy';
 
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
@@ -170,12 +182,16 @@ describe('SessionListView loading and cache', () => {
     await screen.findByText('Conversation 1');
     expect(screen.getByText('Conversation 16')).toBeInTheDocument();
     expect(screen.queryByText('Conversation 17')).not.toBeInTheDocument();
-    expect(screen.getByText('Loading more chats...')).toBeInTheDocument();
+    expect(screen.getByText(LOADING_MORE_CHATS)).toBeInTheDocument();
   });
 });
 
 describe('SessionListView empty state', () => {
-  it('explains where chats appear and offers useful next steps', async () => {
+  /**
+   * One sentence and one way forward. Import lives in the band, where it is on
+   * every state of the page, so the empty state does not offer it twice.
+   */
+  it('says where chats will appear and offers one next step', async () => {
     render(
       <MemoryRouter>
         <SessionListView onSelectSession={vi.fn()} />
@@ -185,21 +201,19 @@ describe('SessionListView empty state', () => {
     const title = await screen.findByRole('heading', { name: 'No chats yet' });
     const emptyState = title.closest('section');
 
-    expect(emptyState).toHaveAccessibleDescription(
-      'Past chats will appear here after you start chatting. You can also import an existing chat.'
-    );
-    expect(screen.getByRole('button', { name: 'Start a chat' })).toBeInTheDocument();
-    // Scoped: the page header carries an Import chat button too, and both now
-    // share one name because they are one action. Before the rename they were
-    // 'Import Session' and 'Import session', which only differed by case.
+    expect(emptyState).toHaveAccessibleDescription(HISTORY_EMPTY);
     expect(
-      within(emptyState as HTMLElement).getByRole('button', { name: 'Import chat' })
+      within(emptyState as HTMLElement).getByRole('button', { name: START_A_CHAT })
     ).toBeInTheDocument();
+    expect(
+      within(emptyState as HTMLElement).queryByRole('button', { name: IMPORT_CHAT })
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: IMPORT_CHAT })).toBeInTheDocument();
   });
 });
 
 describe('SessionListView row actions', () => {
-  it('shows three 32px row actions and keeps the destructive one in the overflow', async () => {
+  it('shows one row action and the overflow, and keeps the destructive one in the overflow', async () => {
     mocks.listSessions.mockResolvedValue({
       data: {
         sessions: [
@@ -222,21 +236,22 @@ describe('SessionListView row actions', () => {
       </MemoryRouter>
     );
 
-    // §3.10 — every visible row action is one 32px icon button. This assertion
-    // is what ended the 28-vs-32px fork between the outlined trio and delete.
+    // Principle 6: one icon plus `⋯`, both ghost round 32px buttons, revealed
+    // together on hover or focus (the reveal is authored CSS on their cluster).
     const visibleActions = await Promise.all([
-      screen.findByRole('button', { name: 'Edit Example session' }),
-      screen.findByRole('button', { name: 'Export Example session' }),
+      screen.findByRole('button', { name: 'Rename Example session' }),
       screen.findByRole('button', { name: 'More actions for Example session' }),
     ]);
 
     for (const action of visibleActions) {
-      expect(action).toHaveClass('h-control-md', 'w-control-md', 'border');
+      expect(action).toHaveClass('h-control-md', 'w-control-md');
       expect(action).not.toHaveAttribute('title');
+      expect(action.closest('.br-history-row-actions')).not.toBeNull();
     }
 
-    // Destructive actions live only in the overflow, so Delete must NOT be one
-    // of the buttons a stray click can reach.
+    // Export moved into the menu with the rest, and Delete must NOT be a button
+    // a stray click can reach.
+    expect(screen.queryByRole('button', { name: 'Export Example session' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Delete Example session' })).toBeNull();
   });
 
@@ -289,15 +304,10 @@ describe('SessionListView row actions', () => {
     await user.click(
       await screen.findByRole('button', { name: `More actions for ${session.name}` })
     );
-    await user.click(await screen.findByRole('menuitem', { name: `Delete ${session.name}` }));
+    await user.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.delete }));
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm deletion' }));
 
-    await waitFor(() =>
-      expect(mocks.toastSuccess).toHaveBeenCalledWith({
-        title: 'Chat deleted',
-        msg: `"${session.name}" was removed from chat history.`,
-      })
-    );
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledWith({ title: CHAT_DELETED }));
     expect(mocks.deleteSession).toHaveBeenCalledWith({
       path: { session_id: session.id },
       headers: { 'X-User-Action': 'test-proof' },
@@ -338,7 +348,7 @@ describe('SessionListView row actions', () => {
       await user.click(
         await screen.findByRole('button', { name: `More actions for ${session.name}` })
       );
-      await user.click(await screen.findByRole('menuitem', { name: `Delete ${session.name}` }));
+      await user.click(await screen.findByRole('menuitem', { name: chatRowCopy.menu.delete }));
       fireEvent.click(await screen.findByRole('button', { name: 'Confirm deletion' }));
 
       await waitFor(() => expect(removed).toEqual(['session-1']));
@@ -537,7 +547,12 @@ describe('SessionListView row actions', () => {
     expect(screen.queryByText('Subagent task')).not.toBeInTheDocument();
   });
 
-  it('uses the shared notification surface after editing a session', async () => {
+  /**
+   * Rename goes through the one optimistic path every surface shares: the PUT
+   * carries the person's proof, and there is no success toast, because the row
+   * already shows the new name.
+   */
+  it('renames a chat through the shared helper, with no success toast', async () => {
     const session = {
       id: 'session-1',
       name: 'Original session name',
@@ -548,6 +563,7 @@ describe('SessionListView row actions', () => {
       working_dir: '/Users/wgu/Desktop',
     };
     mocks.listSessions.mockResolvedValue({ data: { sessions: [session] } });
+    mocks.updateSessionName.mockResolvedValue({ data: undefined });
 
     render(
       <MemoryRouter>
@@ -555,24 +571,41 @@ describe('SessionListView row actions', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: `Edit ${session.name}` }));
-    fireEvent.change(await screen.findByPlaceholderText('Enter chat description'), {
-      target: { value: 'Updated session name' },
-    });
+    fireEvent.click(await screen.findByRole('button', { name: `Rename ${session.name}` }));
+    expect(await screen.findByRole('dialog', { name: RENAME_TITLE })).toBeInTheDocument();
+    const field = screen.getByPlaceholderText(RENAME_PLACEHOLDER);
+    expect(field).toHaveValue(session.name);
+    fireEvent.change(field, { target: { value: 'Updated session name' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
-      expect(mocks.toastSuccess).toHaveBeenCalledWith({
-        title: 'Chat updated',
-        msg: 'Description saved.',
+      expect(mocks.updateSessionName).toHaveBeenCalledWith({
+        path: { session_id: session.id },
+        body: { name: 'Updated session name' },
+        headers: { 'X-User-Action': 'test-proof' },
+        throwOnError: true,
       })
     );
-    expect(mocks.updateSessionName).toHaveBeenCalledWith({
-      path: { session_id: session.id },
-      body: { name: 'Updated session name' },
-      headers: { 'X-User-Action': 'test-proof' },
-      throwOnError: true,
+    expect(await screen.findByText('Updated session name')).toBeInTheDocument();
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: RENAME_TITLE })).toBeNull();
+  });
+
+  it('makes no call for an unchanged name', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: { sessions: [row({ id: 'session-1', name: 'Same name' })] },
     });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename Same name' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: RENAME_TITLE })).toBeNull());
+    expect(mocks.updateSessionName).not.toHaveBeenCalled();
   });
 });
 
@@ -682,18 +715,12 @@ describe('SessionListView stat column sizing', () => {
   });
 });
 
-/// A working directory is a PATH, and this list is one click from
-/// SessionHistoryView, whose header draws the same value beside the same
-/// Folder glyph at the same size and colour — in `font-mono`. Body font here
-/// made a path change typeface purely by being navigated to. The sidebar's
-/// RecentChats tooltip, SharedSessionView and SessionItem all use mono too.
-///
-/// jsdom never runs Tailwind, so asserting a computed font would pass whatever
-/// the class says. This asserts the CLASS, and walks the ancestors because
-/// `font-mono` on a parent is inherited — the way this would regress without
-/// the element itself being touched.
-describe('SessionListView — the working directory is a path, so it is monospace', () => {
-  it('sets the row working directory in monospace, not the body font', async () => {
+/// A row shows names, not paths (principle 10). The folder a chat ran in is
+/// named by its last segment, in the body face; the full path is a machine
+/// string and lives in the row's tooltip (mono) and in the filter, never on the
+/// row itself.
+describe('SessionListView — a row names its folder, not its path', () => {
+  it('shows the folder name in the body face and keeps the path off the row', async () => {
     mocks.listSessions.mockResolvedValue({
       data: {
         sessions: [row({ id: 'session-1', name: 'Analysis', working_dir: '/Users/wgu/data' })],
@@ -707,36 +734,31 @@ describe('SessionListView — the working directory is a path, so it is monospac
     );
 
     await screen.findByText('Analysis');
-    const dir = screen.getByText('/Users/wgu/data');
-    expect(dir.className).toMatch(/font-mono/);
+    const folder = screen.getByText('data');
+    expect(folder).toHaveAttribute('data-working-dir', '/Users/wgu/data');
+    for (let el: HTMLElement | null = folder; el; el = el.parentElement) {
+      expect(el.className).not.toMatch(/font-mono/);
+    }
+    expect(screen.queryByText('/Users/wgu/data')).toBeNull();
   });
 });
 
-// v1.89.0 visual review, D4. The bare `<input type="checkbox">` this replaces
-// computed `appearance: auto` / `accent-color: auto`, so it painted as the macOS
-// system blue in light mode and a bare white square in dark — the only unstyled
-// control found anywhere in the sweep. jsdom cannot see either rendering; what
-// it can see is whether the app draws its own box, which is the thing that
-// stopped the OS from drawing one.
+// The subagent filter is a view toggle in the band: a button that says whether
+// it is on (`aria-pressed`) and is named by what it does whatever its state.
 describe('SessionListView subagent toggle', () => {
-  it('uses the design-system checkbox rather than the OS control', async () => {
+  it('is a pressed-state button in the band that refetches with include_subagents', async () => {
     render(
       <MemoryRouter>
         <SessionListView onSelectSession={vi.fn()} />
       </MemoryRouter>
     );
 
-    const input = await screen.findByLabelText(/show subagent runs/i);
-    // `appearance-none opacity-0` is what hands the painting to the app's own
-    // box. A revert to the native control fails here, and the label association
-    // below keeps the accessible control from being replaced by a decorative div.
-    // (It read `sr-only` until the primitive stopped hiding its input in a 1px
-    // corner — see `Checkbox.tsx`: that shape made the visible square a picture
-    // unless a call site remembered to wrap it in a label.)
-    expect(input).toHaveClass('appearance-none', 'opacity-0');
-    expect(input).toHaveAttribute('type', 'checkbox');
+    const toggle = await screen.findByRole('button', { name: SHOW_SUBAGENT_RUNS });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(toggle.closest('[data-band]')).not.toBeNull();
 
-    fireEvent.click(input);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() =>
       expect(mocks.listSessions).toHaveBeenLastCalledWith(
         expect.objectContaining({ query: { include_subagents: true } })
@@ -749,82 +771,51 @@ describe('SessionListView subagent toggle', () => {
  * Chat history sits on the CHAT measure, not the fluid page measure (operator
  * decision, 2026-09-07): a row is a title on the left and a stats cluster on
  * the right, so page width landed between the two rather than showing more, and
- * a row click opens the live chat — which is already on this measure.
+ * a row click opens the live chat, which is already on this measure.
  *
  * ⚠ **jsdom can see the ATTRIBUTE and the COUNT, and nothing else.** There is
- * no layout engine and Tailwind never runs here, so `max-w-measure-chat`
- * computes to nothing and a column's `getBoundingClientRect()` is zero whatever
- * the size says; the widths themselves were measured in a browser against the
- * built stylesheet (760px column, 704px rows, at 1048 / 1280 / 1680). The case
- * this file cannot see at all — a `<ReadableContent` written with no `size`
- * prop, which silently DEFAULTS to the page measure — is closed at the source
- * by `styles/measures.test.ts`.
+ * no layout engine and Tailwind never runs here. The case this file cannot see,
+ * a `<ReadableContent` written with no `size`, is closed at the source by
+ * `styles/measures.test.ts`.
  */
-describe('SessionListView sits on the chat measure', () => {
-  it('renders both reading columns at the chat size, neither left on the default', async () => {
+describe('SessionListView sits on the chat measure under a band', () => {
+  it('renders one reading column, at the chat size, below the band', async () => {
     const { container } = render(
       <MemoryRouter>
         <SessionListView onSelectSession={vi.fn()} />
       </MemoryRouter>
     );
 
-    await screen.findByText('Chat history');
+    await screen.findByText(HISTORY_TITLE);
 
+    // The band is full width and holds no column; only the body is measured.
     const columns = [...container.querySelectorAll('.biorouter-readable-content')];
-    // The count is pinned as well as the size: the header and the scrolling
-    // body meet at one left edge under a full-bleed hairline, so a third column
-    // added on the default size would be a visible step in that edge rather
-    // than an invisible inconsistency.
-    expect(columns).toHaveLength(2);
-    for (const column of columns) {
-      expect((column as HTMLElement).dataset.size).toBe('chat');
-    }
+    expect(columns).toHaveLength(1);
+    expect((columns[0] as HTMLElement).dataset.size).toBe('chat');
+    expect(columns[0].closest('[data-band]')).toBeNull();
   });
 
   /**
-   * Import chat moved OFF the title row (operator decision, 2026-09-07): the
-   * page's actions go on their own line under the description, which is what
-   * §4.2 now says and what Workflows / Extensions / Skills / Built apps already
-   * did. Pinned at this call site as well as in `PageHeader.test.tsx`, because
-   * the primitive can be correct while a view has grown a second header of its
-   * own beside it.
-   *
-   * The title's `min-w-0 truncate` went with the button: it existed only so the
-   * heading would give way to the control sharing its row, and nothing shares
-   * that row now.
+   * The 44px band (spec 3.4 and 3.10): the title, its help in an InfoTip, and
+   * the filter and two icon actions at the trailing edge. No paragraph under
+   * the title.
    */
-  it('puts Import chat on its own line under the description', async () => {
+  it('puts the title, the filter and the actions on one band', async () => {
     render(
       <MemoryRouter>
         <SessionListView onSelectSession={vi.fn()} />
       </MemoryRouter>
     );
 
-    const heading = await screen.findByRole('heading', { level: 1, name: 'Chat history' });
-    expect(heading.parentElement?.querySelector('button')).toBeNull();
-    expect(heading.className).not.toMatch(/\btruncate\b/);
-
-    const strip = screen
-      .getAllByRole('button', { name: 'Import chat' })[0]
-      .closest('.biorouter-settings-control-strip');
-    expect(strip).not.toBeNull();
-  });
-
-  /**
-   * The subagent filter is `PageHeader`'s `children`, not a second `actions`
-   * entry: a control that changes what the list SHOWS is not an action the page
-   * offers, and sharing the strip with Import chat would give the two the same
-   * standing.
-   */
-  it('keeps the subagent filter out of the action strip', async () => {
-    render(
-      <MemoryRouter>
-        <SessionListView onSelectSession={vi.fn()} />
-      </MemoryRouter>
+    const heading = await screen.findByRole('heading', { level: 1, name: HISTORY_TITLE });
+    const band = heading.closest('[data-band]') as HTMLElement;
+    expect(band).not.toBeNull();
+    expect(within(band).getByRole('searchbox', { name: 'Search history' })).toHaveAttribute(
+      'placeholder',
+      expect.stringMatching(/^Search history… (⌘F|Ctrl\+F)$/)
     );
-
-    await screen.findByText('Chat history');
-    const checkbox = screen.getByRole('checkbox', { name: /Show subagent runs/i });
-    expect(checkbox.closest('.biorouter-settings-control-strip')).toBeNull();
+    expect(within(band).getByRole('button', { name: IMPORT_CHAT })).toBeInTheDocument();
+    expect(within(band).getByRole('button', { name: SHOW_SUBAGENT_RUNS })).toBeInTheDocument();
+    expect(band.querySelector('p')).toBeNull();
   });
 });

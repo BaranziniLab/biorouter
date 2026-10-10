@@ -1,0 +1,107 @@
+/* @ws WS-HISTORY begin: Chat history list (spec 3.4)
+
+   Authored here rather than as Tailwind strings because these rules are
+   load-bearing (the hover reveal, the pressed toggle) and a newly written
+   utility can silently fail to generate under BIOROUTER_NO_HMR. One surface,
+   so one file next to it (spec 3: "New CSS that serves one surface goes in a
+   file next to the component"). The row's ground, hairline, radius and hover
+   wash are the shared `.biorouter-list-row` recipe's; nothing here restates
+   them. */
+
+/* Bucket labels: sentence case, 12px subtle ink, 12px above and 4px below,
+   aligned with the rows' text. Sticky, so a long bucket keeps its heading. */
+.br-history-bucket {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin: 0;
+  padding: 12px 12px 4px;
+  background: var(--background-canvas);
+}
+
+.br-history-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+/* The open control is the whole text block: title, then one muted line. */
+.br-history-row-open {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-inner);
+}
+
+.br-history-row-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.br-history-row-stats {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Rename and `⋯`: shown on hover, on focus inside the row and while the menu is
+   open; always shown where nothing can hover. Only opacity moves, so both stay
+   in the tab order (principle 6). */
+.br-history-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-history-row:hover .br-history-row-actions,
+.br-history-row:focus-within .br-history-row-actions,
+.br-history-row-actions[data-state='open'] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .br-history-row-actions {
+    opacity: 1;
+  }
+}
+
+/* The skeleton-to-content crossfade on a cold load: the content rises in over
+   --dur-fast-max, the skeleton leaves over --dur-fast. */
+.br-history-layer {
+  transition: opacity var(--dur-fast-max) var(--ease-out);
+}
+
+.br-history-layer.opacity-0 {
+  transition-duration: var(--dur-fast);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-history-row-actions,
+  .br-history-layer {
+    transition: none;
+  }
+}
+
+/* "Show subagent runs" is a view toggle in the band: pressed reads as a
+   selected ground and default ink, never coral (hover is always neutral). */
+.br-history-toggle[aria-pressed='true'] {
+  background: var(--overlay-selected);
+  color: var(--text-default);
+}
+
+.br-history-filter {
+  width: 200px;
+}
+
+/* @ws WS-HISTORY end: Chat history list */
