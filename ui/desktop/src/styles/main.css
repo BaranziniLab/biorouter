@@ -2298,32 +2298,12 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   }
 }
 
-@keyframes biorouter-working-ring {
-  0% {
-    opacity: 0.5;
-    transform: scale(0.5);
-  }
-  70% {
-    opacity: 0;
-    transform: scale(1.55);
-  }
-  100% {
-    opacity: 0;
-    transform: scale(1.55);
-  }
-}
-
-@keyframes biorouter-working-glow {
-  0%,
-  100% {
-    opacity: 0.2;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 0.55;
-    transform: scale(1.18);
-  }
-}
+/* @ws WS-TRANSCRIPT begin: working ring */
+/* `biorouter-working-ring` and `biorouter-working-glow` are gone with the ring
+   and glow they drew on the activity line and the loading line (spec 3.6): the
+   transcript's one "working" motion is the running row's text pulse beside the
+   shared spinner. */
+/* @ws WS-TRANSCRIPT end: working ring */
 
 /* `sidebar-item-in` and `wind` are gone with the staggered nav entrance and the
    FlyingBird decoration they drove (D-14). `.sidebar-item` itself — the inert

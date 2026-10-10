@@ -75,10 +75,7 @@ describe('no 16px card radius outside the preview sheet', () => {
    * it. An entry that no longer needs to be here fails too, so the list only
    * shrinks.
    */
-  const PENDING: Record<string, string> = {
-    // WS-MOTION: the find bar becomes a `rounded-container` overlay (spec 3.16).
-    'conversation/SearchBar.tsx': 'WS-MOTION',
-  };
+  const PENDING: Record<string, string> = {};
 
   const offenders = () =>
     sourceFiles(COMPONENTS)
