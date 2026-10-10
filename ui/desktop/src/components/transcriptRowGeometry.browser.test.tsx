@@ -66,6 +66,8 @@ interface Geometry {
   chevron: { left: number; width: number } | null;
   meta: { right: number; clipped: boolean } | null;
   well: { left: number; top: number } | null;
+  /** The second row's glyph and head, when a row nests inside another's body. */
+  nested: { glyphLeft: number; headHeight: number } | null;
 }
 
 describe('TranscriptRow in a real layout engine', () => {
@@ -105,6 +107,8 @@ describe('TranscriptRow in a real layout engine', () => {
         const chevron = q('.br-transcript-row-chevron')?.getBoundingClientRect() ?? null;
         const metaNode = q('.br-transcript-row-meta') as HTMLElement | null;
         const well = q('.br-transcript-row-well')?.getBoundingClientRect() ?? null;
+        const nestedGlyph = document.querySelectorAll('.br-transcript-row-glyph')[1];
+        const nestedHead = document.querySelectorAll('.br-transcript-row-head')[1];
         return {
           head: { left: head.left - origin, height: head.height, right: head.right - origin },
           glyph: { left: glyph.left - origin, width: glyph.width, height: glyph.height },
@@ -122,6 +126,13 @@ describe('TranscriptRow in a real layout engine', () => {
               }
             : null,
           well: well ? { left: well.left - origin, top: well.top } : null,
+          nested:
+            nestedGlyph && nestedHead
+              ? {
+                  glyphLeft: nestedGlyph.getBoundingClientRect().left - origin,
+                  headHeight: nestedHead.getBoundingClientRect().height,
+                }
+              : null,
         };
       });
     } finally {
@@ -186,5 +197,28 @@ describe('TranscriptRow in a real layout engine', () => {
     expect(g.label.clipped).toBe(true);
     expect(g.label.height).toBe(18);
     expect(g.meta!.clipped).toBe(false);
+  });
+
+  it('collapses an empty meta, so the chevron keeps its 8px from the label', async () => {
+    if (!browser) return;
+    const g = await layOut(
+      <TranscriptRow icon={Terminal} label="Thinking" meta="">
+        <p>x</p>
+      </TranscriptRow>
+    );
+    expect(g.chevron!.left).toBe(g.label.right + 8);
+  });
+
+  it("nests rows on a plain body with their glyphs on the outer label's edge", async () => {
+    if (!browser) return;
+    // The Explored row (ToolCallRows): the calls of a run sit on a plain body.
+    const g = await layOut(
+      <TranscriptRow icon={Terminal} label="Explored" meta="· 2 files" body="plain" defaultOpen>
+        <TranscriptRow icon={Terminal} label="Read a.ts">
+          <pre>x</pre>
+        </TranscriptRow>
+      </TranscriptRow>
+    );
+    expect(g.nested).toEqual({ glyphLeft: g.label.left, headHeight: 28 });
   });
 });
