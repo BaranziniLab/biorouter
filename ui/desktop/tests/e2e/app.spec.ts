@@ -162,26 +162,24 @@ test.describe('Biorouter App', () => {
 
       await removeExtensionIfPresent(mainWindow, MCP_EXTENSION_NAME);
 
-      await mainWindow.getByRole('button', { name: 'Add custom extension' }).first().click();
+      // One Add menu in the band (spec 3.11); "Custom extension…" is its third item.
+      await mainWindow.getByRole('button', { name: 'Add', exact: true }).click();
+      await mainWindow.getByRole('menuitem', { name: 'Custom extension…' }).click();
       const dialog = mainWindow.locator('[role="dialog"]');
       await expect(dialog).toBeVisible({ timeout: 10_000 });
 
-      await dialog.locator('input[placeholder="Enter extension name..."]').fill(MCP_EXTENSION_NAME);
+      // Fields are labelled now; the instruction placeholders are gone.
+      await dialog.getByLabel('Name', { exact: true }).fill(MCP_EXTENSION_NAME);
       await dialog
-        .locator('input[placeholder="Optional description..."]')
+        .getByLabel('Description', { exact: true })
         .fill('Inspirational running quotes MCP server');
-      await dialog
-        .locator('input[placeholder="e.g. npx -y @modelcontextprotocol/my-extension <filepath>"]')
-        .fill(`node ${MCP_SERVER_SCRIPT}`);
+      await dialog.getByLabel('Command', { exact: true }).fill(`node ${MCP_SERVER_SCRIPT}`);
       await mainWindow.screenshot({ path: 'test-results/mcp-filled-form.png' });
 
       await mainWindow.getByTestId('extension-submit-btn').click();
 
-      // The row is found by the toggle's own aria-label rather than by
-      // `div.flex:has-text(...)`, which matched every ancestor of the text.
-      const toggle = mainWindow.getByRole('switch', {
-        name: `Toggle ${MCP_EXTENSION_NAME} extension`,
-      });
+      // The switch is named by its row's title (spec 2.6), the same in both states.
+      const toggle = mainWindow.getByRole('switch', { name: MCP_EXTENSION_NAME });
       await expect(toggle).toBeVisible({ timeout: 60_000 });
       await expect(toggle).toHaveAttribute('data-state', 'checked', { timeout: 15_000 });
       await mainWindow.screenshot({ path: 'test-results/mcp-extension-added.png' });
@@ -238,18 +236,14 @@ async function waitForTurn(page: Page, budgetMs = LIVE_TURN_TIMEOUT_MS): Promise
 
 /** Removes a previously installed extension so the add flow starts from a clean state. */
 async function removeExtensionIfPresent(page: Page, name: string): Promise<void> {
-  const configure = page.getByRole('button', { name: `Configure ${name} extension` });
-  if ((await configure.count()) === 0) return;
+  const row = page.locator(`#extension-${name.toLowerCase().replace(/\s+/g, '-')}`);
+  if ((await row.count()) === 0) return;
 
-  await configure.first().click();
-  const dialog = page.locator('[role="dialog"]');
-  await expect(dialog).toBeVisible({ timeout: 10_000 });
-  await dialog.getByRole('button', { name: /^Remove extension$/i }).click();
-
-  // Confirmation modal.
-  await page
-    .getByRole('button', { name: /^(Remove|Delete)$/i })
-    .last()
-    .click();
-  await expect(configure).toHaveCount(0, { timeout: 30_000 });
+  // The row's ⋯ menu appears on hover or focus; "Remove…" opens the dialog at its question.
+  await row.hover();
+  await row.getByRole('button', { name: 'More actions' }).click();
+  await page.getByRole('menuitem', { name: 'Remove…' }).click();
+  await expect(page.locator('[role="dialog"]')).toBeVisible({ timeout: 10_000 });
+  await page.getByRole('button', { name: 'Confirm removal' }).click();
+  await expect(row).toHaveCount(0, { timeout: 30_000 });
 }

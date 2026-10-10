@@ -54,7 +54,7 @@ const HISTORY_DIR = join(__dirname, '..', 'sessions');
 const ROOTS: { dir: string; outOfScope: string[] }[] = [
   {
     dir: SETTINGS_DIR,
-    outOfScope: ['extensions/', 'providers/', 'dictation/', 'tunnel/', 'sessions/'],
+    outOfScope: ['extensions/', 'dictation/', 'tunnel/', 'sessions/'],
   },
   // Home's usage surfaces (SessionsInsights, HomeUsageCard, UsageHeatmap) sit in
   // this directory too and follow the vocabulary since the 2026-10 redesign.
