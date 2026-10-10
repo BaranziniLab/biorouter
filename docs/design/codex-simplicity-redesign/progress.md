@@ -67,18 +67,18 @@ spec's tables are authoritative where this summary is shorter.
 | R-09 | Motion polish | WS-TOKENS, WS-MOTION | In progress |
 | R-10 | Preview panel polish | WS-PREVIEW | In progress |
 | R-11 | Usage dashboard on Home | WS-USAGE | In progress |
-| R-12 | Chat interface redesign | WS-CHAT | In progress |
-| R-13 | Composer redesign | WS-CHAT | In progress |
+| R-12 | Chat interface redesign | WS-TRANSCRIPT, WS-TOOLS | In progress |
+| R-13 | Composer redesign | WS-COMPOSER, WS-PICKERS | In progress |
 | R-14 | Crew kept as the reference | none | In progress |
-| R-15 | Component views in Crew's language | WS-VIEWS-A, WS-VIEWS-B | In progress |
-| R-16 | Knowledge simplified, same logic | WS-VIEWS-B | In progress |
-| R-17 | Settings redesign | WS-SETTINGS | In progress |
+| R-15 | Component views in Crew's language | WS-VIEWS-A, WS-EXTENSIONS, WS-SKILLS | In progress |
+| R-16 | Knowledge simplified, same logic | WS-KNOWLEDGE | In progress |
+| R-17 | Settings redesign | WS-SETTINGS-A, WS-SETTINGS-M, WS-SETTINGS-B | In progress |
 | R-18 | One control style | WS-PRIMITIVES | In progress |
 | R-19 | Icon audit and refresh | WS-ICONS | In progress |
 | R-20 | Conversation kind icons | WS-ICONS | In progress |
 | R-21 | Tool call icons | WS-ICONS | In progress |
 | R-22 | Website revision | WS-LANDING | In progress |
-| R-23 | Vision verification loops | WS-VERIFY | Not started |
+| R-23 | Vision verification loops | coordinator (vision loop) | Not started |
 | R-24 | Requirements and progress documents | coordinator | Done |
 
 ## Log
@@ -101,6 +101,18 @@ spec's tables are authoritative where this summary is shorter.
 - Owner messages 7 to 12 folded in: icons per chat kind and per tool (built in only), keep the
   accent and personality, sidebar density measured against Codex and Claude Code.
 - Waves 0 and 1 started: 21 workstream agents in one worktree, each owning a disjoint file set.
+
+### 2026-10-10
+
+- The first implementation run (14 agents at once) hit the account's usage limit after about 35
+  minutes. Before it stopped, 74 commits had landed, including all ten wave 0 contracts (tokens,
+  primitives, icons, page band, sidebar helpers, transcript row, pickers, marketplace dialog,
+  settings section ids, preview width). Seven workstreams had not started.
+- Coordinator requests applied: Settings and Skills doc wording, the Skills e2e locator, and
+  `--row-height-nav` scaling with Text size.
+- Implementation resumed through a pool of eight agents at a time: each resumed workstream picks
+  up its predecessor's notes, commits and uncommitted edits; a reviewer follows each one; a gate
+  then runs the full lint, format and test suites.
 
 ## Related documentation
 
