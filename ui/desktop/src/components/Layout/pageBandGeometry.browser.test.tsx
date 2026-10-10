@@ -1,0 +1,297 @@
+// @vitest-environment node
+/**
+ * The page band measured in a real layout engine (spec 3.10 and 5.7).
+ *
+ * jsdom lays nothing out and evaluates no sibling combinator against a sidebar's state, so the
+ * component test (`PageHeader.test.tsx`) can only pin class names. The acceptance numbers are
+ * geometry: the band is 44px (`--chrome-height`) with its hairline at y=44, where it meets the
+ * sidebar's titlebar band and the chat header; the title starts 16px in with the sidebar open,
+ * and at the titlebar reserve with it collapsed, so the floating titlebar controls never sit
+ * on the title; and the bar (not the header) is the window-drag rect, every control in it
+ * `no-drag`, the reserve outside the drag rect (issue #74).
+ *
+ * The real `PageHeader` is bundled with esbuild and rendered by React in Chromium, styled by
+ * the `.biorouter-page-header` family of `styles/main.css` (this workstream's `@ws WS-VIEWS-A`
+ * blocks plus the hairline rule above them) and WS-PRIMITIVES' blocks for the InfoTip, with the
+ * token values read from that file.
+ */
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+import { chromium, type Browser, type Page } from 'playwright';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MAIN_CSS = readFileSync(resolve(here, '../../styles/main.css'), 'utf8');
+
+const TOKEN_NAMES = ['--chrome-height', '--control-md', '--radius-full', '--radius-inner'];
+
+/** The first declaration of each token in main.css, so a token change reaches this test. */
+function readTokens(): string {
+  const lines = TOKEN_NAMES.map((name) => {
+    const match = MAIN_CSS.match(new RegExp(`\\n\\s*${name.replace(/-/g, '\\-')}:\\s*([^;]+);`));
+    if (!match) throw new Error(`main.css does not declare ${name}`);
+    return `  ${name}: ${match[1].trim()};`;
+  });
+  return `:root {\n${lines.join('\n')}\n}`;
+}
+
+/** Every `@ws <ws>` block of main.css, in file order. */
+function wsBlocks(ws: string): string {
+  const out: string[] = [];
+  const re = new RegExp(
+    `/\\* @ws ${ws} begin: ([^*]+?) \\*/([\\s\\S]*?)/\\* @ws ${ws} end: \\1 \\*/`,
+    'g'
+  );
+  for (const match of MAIN_CSS.matchAll(re)) out.push(match[2]);
+  if (out.length === 0) throw new Error(`main.css has no @ws ${ws} block`);
+  return out.join('\n');
+}
+
+/** The band's hairline rule (D-05), which sits just above this workstream's markers. */
+function hairlineRule(): string {
+  const match = MAIN_CSS.match(/\n\.biorouter-page-header \{[^}]*\}/);
+  if (!match) throw new Error('main.css has no `.biorouter-page-header` hairline rule');
+  return match[0];
+}
+
+/** Tailwind's preflight, the parts the layout depends on, plus colours that only paint. */
+const PREFLIGHT = `
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; font-size: 14px; line-height: 20px; }
+h1 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 500; }
+button { margin: 0; padding: 0; border: 0; background: none; font: inherit; color: inherit; }
+svg { display: block; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
+.min-w-0 { min-width: 0; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:root { --sidebar: #f7f7f5; --border-subtle: #d9d9d6; --text-subtle: #777; --text-default: #111;
+  --background-focus: #ddd; --border-focus: #555; }
+[data-slot='shell'] { display: flex; width: 1200px; height: 400px; }
+[data-slot='sidebar'][data-state='expanded'] { width: 288px; flex: none; }
+[data-slot='sidebar'][data-state='collapsed'] { width: 0; flex: none; }
+[data-slot='sidebar-inset'] { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+`;
+
+const ENTRY = `
+import * as React from 'react';
+import { createRoot } from 'react-dom/client';
+import { PageHeader, PageHeaderAction } from './PageHeader';
+import { Upload } from '../icons/app-icons';
+
+function Shell({ state, onBack }: { state: 'expanded' | 'collapsed'; onBack?: boolean }) {
+  return (
+    <div data-slot="shell" id={state + (onBack ? '-back' : '')}>
+      <div data-slot="sidebar" data-state={state} />
+      <main data-slot="sidebar-inset">
+        <PageHeader
+          title="Workflows"
+          info="Reusable chat setups."
+          onBack={onBack ? () => {} : undefined}
+          actions={
+            <>
+              <input aria-label="Filter workflows" style={{ width: 160, height: 28 }} />
+              <PageHeaderAction icon={Upload} label="Import workflow" onClick={() => {}} />
+              <button type="button" style={{ height: 32 }}>New workflow</button>
+            </>
+          }
+        />
+      </main>
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <div>
+      <Shell state="expanded" />
+      <Shell state="collapsed" />
+      <Shell state="expanded" onBack />
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(<App />);
+`;
+
+const launchChromium = async (): Promise<Browser | null> => {
+  for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
+    try {
+      return await chromium.launch(options);
+    } catch {
+      // try the next build
+    }
+  }
+  return null;
+};
+
+const EPSILON = 0.5;
+const near = (actual: number, expected: number, what: string) =>
+  expect(Math.abs(actual - expected), `${what}: ${actual} vs ${expected}`).toBeLessThanOrEqual(
+    EPSILON
+  );
+
+describe('the page band in a real layout engine (spec 3.10, 5.7)', () => {
+  let browser: Browser | null = null;
+  let script = '';
+  let css = '';
+
+  beforeAll(async () => {
+    browser = await launchChromium();
+    if (!browser) {
+      console.warn(
+        'No Chromium found (Playwright’s or Google Chrome): skipping the page band geometry tests.'
+      );
+      return;
+    }
+    const bundle = await build({
+      stdin: { contents: ENTRY, loader: 'tsx', resolveDir: here, sourcefile: 'entry.tsx' },
+      bundle: true,
+      write: false,
+      format: 'iife',
+      jsx: 'automatic',
+      platform: 'browser',
+      define: { 'process.env.NODE_ENV': '"production"' },
+      logLevel: 'silent',
+    });
+    script = bundle.outputFiles[0].text;
+    css =
+      PREFLIGHT +
+      readTokens() +
+      wsBlocks('WS-PRIMITIVES') +
+      hairlineRule() +
+      wsBlocks('WS-VIEWS-A');
+  }, 120_000);
+
+  afterAll(async () => {
+    await browser?.close();
+  }, 120_000);
+
+  async function open(reserve?: number): Promise<Page> {
+    const tab = await browser!.newPage({ viewport: { width: 1200, height: 1300 } });
+    const root =
+      reserve === undefined ? '' : `:root { --biorouter-titlebar-control-reserve: ${reserve}px; }`;
+    await tab.setContent(
+      `<!doctype html><html><head><style>${css}${root}</style></head><body><div id="root"></div></body></html>`
+    );
+    await tab.addScriptTag({ content: script });
+    await tab.waitForSelector('#expanded-back header');
+    return tab;
+  }
+
+  /** Boxes relative to each shell's own top-left, so the three shells read alike. */
+  async function measure(tab: Page, shellId: string) {
+    return tab.evaluate((id) => {
+      const shell = document.getElementById(id)!;
+      const origin = shell.getBoundingClientRect();
+      const rel = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left - origin.left, y: r.top - origin.top, w: r.width, h: r.height };
+      };
+      const header = shell.querySelector('header.biorouter-page-header')!;
+      const bar = header.querySelector('.biorouter-page-header-bar')!;
+      const title = header.querySelector('h1')!;
+      const inset = shell.querySelector('[data-slot="sidebar-inset"]')!;
+      const region = (el: Element) =>
+        getComputedStyle(el).getPropertyValue('-webkit-app-region').trim();
+      const buttons = Array.from(bar.querySelectorAll('button, input'));
+      return {
+        header: rel(header),
+        bar: rel(bar),
+        title: rel(title),
+        inset: rel(inset),
+        hairline: getComputedStyle(header).borderBottomWidth,
+        headerRegion: region(header),
+        barRegion: region(bar),
+        controlRegions: buttons.map(region),
+      };
+    }, shellId);
+  }
+
+  it('is 44px tall with its hairline at y=44', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      for (const id of ['expanded', 'collapsed', 'expanded-back']) {
+        const m = await measure(tab, id);
+        near(m.header.y, 0, `${id} band top`);
+        near(m.header.h, 44, `${id} band height`);
+        near(m.header.y + m.header.h, 44, `${id} hairline bottom`);
+        expect(m.hairline, `${id} hairline width`).toBe('1px');
+        // The hairline and the ground run edge to edge of the pane.
+        near(m.header.x, m.inset.x, `${id} band left edge`);
+        near(m.header.w, m.inset.w, `${id} band width`);
+      }
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('starts the title 16px in with the sidebar open', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await measure(tab, 'expanded');
+      near(m.title.x - m.inset.x, 16, 'title inset');
+      // Vertically centred in the band.
+      near(m.title.y + m.title.h / 2, 22, 'title centre');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('starts the title at the titlebar reserve with the sidebar collapsed', async (ctx) => {
+    if (!browser) return ctx.skip();
+    for (const reserve of [undefined, 132]) {
+      const tab = await open(reserve);
+      try {
+        const m = await measure(tab, 'collapsed');
+        const expected = reserve ?? 172;
+        near(m.title.x - m.inset.x, expected, `title x with a ${expected}px reserve`);
+        // The reserve is a MARGIN: the drag rect starts after it, never under the controls.
+        near(m.bar.x - m.inset.x, expected, `drag rect left with a ${expected}px reserve`);
+      } finally {
+        await tab.close();
+      }
+    }
+  });
+
+  it('puts the back button first, then the title, in a drill-in', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await measure(tab, 'expanded-back');
+      const plain = await measure(tab, 'expanded');
+      const back = await tab.evaluate(() => {
+        const button = document.querySelector('#expanded-back button[aria-label="Back"]')!;
+        const r = button.getBoundingClientRect();
+        return { left: r.left, right: r.right };
+      });
+      // The button's own 32px box comes from Tailwind, which this page does not run; what the
+      // band owns is the order and the 8px gap after it.
+      near(back.left, plain.title.x, 'back button starts where the title would');
+      near(m.title.x - back.right, 8, 'gap between back and title');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('drags the window from the bar, and never from its controls', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const m = await measure(tab, 'collapsed');
+      // Chromium parses the property outside Electron too; if it ever stops, the numbers above
+      // still hold and this is the one assertion that cannot run here.
+      if (!m.barRegion) return ctx.skip();
+      expect(m.barRegion).toBe('drag');
+      expect(m.headerRegion).not.toBe('drag');
+      expect(m.controlRegions.length).toBeGreaterThan(0);
+      for (const region of m.controlRegions) expect(region).toBe('no-drag');
+    } finally {
+      await tab.close();
+    }
+  });
+});
