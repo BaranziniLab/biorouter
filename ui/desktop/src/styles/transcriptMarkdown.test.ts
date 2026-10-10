@@ -140,3 +140,57 @@ describe('the transcript rhythm', () => {
     expect(css).not.toContain('.assistant:has(+ .user)');
   });
 });
+
+/**
+ * The promoted recipes stay Crew's (spec section 0, decision 6.15, critic item
+ * 39): one code block and one table look in the app. Read from both sheets and
+ * compared declaration by declaration, so a change to Crew's recipe that is not
+ * carried over (or the reverse) fails here. The one deliberate difference, the
+ * table cell's 8px 12px against Crew's off-token 11px 16px (Crew defect D11), is
+ * named rather than skipped.
+ */
+describe('parity with Crew’s code block and table', () => {
+  const crew = readFileSync('src/components/crew/timeline/timeline.css', 'utf-8');
+
+  /** Declarations of the first rule whose selector list is exactly `selector`. */
+  function declarations(sheet: string, selector: string): string[] {
+    const want = selector.replace(/\s+/g, ' ');
+    const rules = sheet.replace(/\/\*[\s\S]*?\*\//g, '').split('}');
+    const rule = rules
+      .map((chunk) => chunk.split('{'))
+      .find(([head]) => head !== undefined && head.trim().replace(/\s+/g, ' ') === want);
+    expect(rule, `rule ${selector}`).toBeDefined();
+    return rule![1]
+      .split(';')
+      .map((line) => line.trim().replace(/\s+/g, ' '))
+      .filter(Boolean)
+      .sort();
+  }
+
+  const pairs: Array<[string, string]> = [
+    ['.br-md-code', '.crew-md-code'],
+    ['.br-md-code-head', '.crew-md-code-head'],
+    ['.br-md-code-lang', '.crew-md-code-lang'],
+    ['.br-md-code-body', '.crew-md-code-body'],
+    ['.br-md-table-scroll', '.crew-md-table-scroll'],
+    [".br-md-table-scroll[data-overflow='true']", ".crew-md-table-scroll[data-overflow='true']"],
+  ];
+
+  it.each(pairs)('%s declares exactly what %s does', (ours, theirs) => {
+    expect(declarations(css, ours)).toEqual(declarations(crew, theirs));
+  });
+
+  it('frames the table as Crew does, adding only the role line height', () => {
+    const ours = declarations(css, '.br-md-table');
+    const theirs = declarations(crew, '.crew-md-table');
+    expect(ours.filter((d) => !theirs.includes(d))).toEqual([
+      'line-height: var(--text-secondary--line-height)',
+    ]);
+    expect(theirs.filter((d) => !ours.includes(d))).toEqual([]);
+  });
+
+  it('differs from Crew’s cell only in the on-token padding', () => {
+    expect(declarations(crew, '.crew-md-cell')).toContain('padding: 11px 16px');
+    expect(declarations(css, '.br-md-table :where(th, td)')).toContain('padding: 8px 12px');
+  });
+});
