@@ -55,6 +55,8 @@ describe('Switch geometry and colour (authored in main.css)', () => {
       /transition: background-color var\(--dur-fast\) var\(--ease-out\);/
     );
     expect(rule('.br-switch-thumb')).toMatch(/transform var\(--dur-fast\) var\(--ease-out\)/);
+    // Only the knob's transform moves: its fill and ring snap (principle 9, V4-18).
+    expect(rule('.br-switch-thumb')).not.toMatch(/box-shadow var\(|background-color var\(--dur/);
     expect(
       rule('.br-switch[data-motion-still],\n.br-switch[data-motion-still] > .br-switch-thumb')
     ).toMatch(/transition-duration: 0ms;/);

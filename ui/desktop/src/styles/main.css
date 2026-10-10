@@ -4903,10 +4903,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
     0 1px 2px rgb(0 0 0 / 0.12);
   transform: translateX(2px);
   pointer-events: none;
-  transition:
-    transform var(--dur-fast) var(--ease-out),
-    background-color var(--dur-fast) var(--ease-out),
-    box-shadow var(--dur-fast) var(--ease-out);
+  /* The knob moves; its fill and ring snap (principle 9: the track's colour is the one
+     animated paint, spec 2.6; vision round 1, V4-18). */
+  transition: transform var(--dur-fast) var(--ease-out);
 }
 
 .dark .br-switch-thumb {
