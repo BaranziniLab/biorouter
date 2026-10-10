@@ -104,7 +104,9 @@ function page(css: string, width: number): string {
     '</ul></div>' +
     '<div class="br-sidebar-chats" data-expanded="true">' +
     '<div class="br-sidebar-chats-header" id="chats-header">' +
-    '<button type="button" class="br-sidebar-chats-toggle" id="chats-toggle"><span class="br-nav-row-label">Chats</span></button>' +
+    '<button type="button" class="br-sidebar-chats-toggle" id="chats-toggle" aria-expanded="true">' +
+    '<span class="br-nav-row-label" id="chats-label">Chats</span>' +
+    '<svg class="br-nav-chevron" id="chats-chevron" viewBox="0 0 16 16"></svg></button>' +
     '<div class="br-sidebar-chats-actions"><button type="button" style="width:24px;height:24px"></button></div>' +
     '</div>' +
     '<div class="br-sidebar-chats-scroll" id="scroll"><div class="br-sidebar-chat-groups">' +
@@ -368,6 +370,22 @@ describe('the app sidebar in a real layout engine', () => {
    * column (x=40), not under the glyphs. And a row whose menu is open keeps the
    * hover ground, because the pointer is over the menu, not over the row.
    */
+  /** The header's chevron follows the word, not the buttons at the far end of the header. */
+  it('draws the Chats chevron right after the label, 4px away', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(288);
+    const textRight = await tab.evaluate(() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById('chats-label')!);
+      return range.getBoundingClientRect().right;
+    });
+    const b = await boxes(tab, ['chats-label', 'chats-chevron', 'chats-toggle']);
+    near(b['chats-chevron'].left - textRight, 4, 'gap from "Chats" to its chevron');
+    // The button still spans the header, so a click anywhere on it folds the list.
+    expect(b['chats-toggle'].width).toBeGreaterThan(150);
+    await tab.close();
+  });
+
   it('puts Show more on the label column and keeps a menu-open row lit', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await open(288);

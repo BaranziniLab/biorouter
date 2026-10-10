@@ -214,6 +214,13 @@
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
+/* The label takes its own width, so the chevron sits right after "Chats" and not
+   at the far end beside the two buttons, where it would read as theirs. The
+   button still spans the whole space, so a click anywhere on it toggles. */
+.br-sidebar-chats-toggle > .br-nav-row-label {
+  flex: 0 1 auto;
+}
+
 /* The header's chevron shows on hover or focus, and always while collapsed. */
 .br-sidebar-chats-toggle > .br-nav-chevron {
   width: 14px;

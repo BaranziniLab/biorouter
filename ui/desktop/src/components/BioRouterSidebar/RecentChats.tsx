@@ -37,6 +37,7 @@ import {
 } from '../ui/dropdown-menu';
 import { isContextMenuKey, openContextMenuFromKeyboard } from '../ui/keyboardContextMenu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { useSidebar } from '../ui/sidebar';
 import { useRovingRows } from '../ui/useRovingRows';
 import { sidebarCopy } from './copy';
 import SidebarViewMenu from './SidebarViewMenu';
@@ -516,6 +517,7 @@ export default function RecentChats({
   homeDir,
 }: RecentChatsProps) {
   const [isExpanded, setIsExpanded] = useState(readStoredRecentsExpanded);
+  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const { diverge } = useDiverge();
 
@@ -558,6 +560,9 @@ export default function RecentChats({
     }
     lastView.current = view;
     setViewGeneration((generation) => generation + 1);
+    // A different arrangement starts from its top, not from wherever the last
+    // one had been scrolled to.
+    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
   }, [view]);
 
   const [collapsedFolders, , setFolderCollapsed] = useCollapsedFolders();
@@ -686,12 +691,15 @@ export default function RecentChats({
       if (!mod || !event.altKey || event.shiftKey || event.code !== 'KeyR') return;
       if (!activeSessionId || !sessions.some((session) => session.id === activeSessionId)) return;
       event.preventDefault();
+      // A closed sidebar is inert and off screen: an editor mounted in it could
+      // not take focus and would sit there unseen. Open it first.
+      if (!sidebarOpen) setSidebarOpen(true);
       setIsExpanded(true);
       startRename(activeSessionId);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeSessionId, sessions, startRename]);
+  }, [activeSessionId, sessions, startRename, sidebarOpen, setSidebarOpen]);
 
   // Delete, behind one confirmation for the list.
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);

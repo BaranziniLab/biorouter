@@ -277,6 +277,78 @@ describe('the editor on an unusual row', () => {
   });
 });
 
+describe('⌘⌥R renames the chat you are in', () => {
+  afterEach(() => {
+    Object.assign(window, { electron: undefined });
+  });
+
+  const renderActive = (defaultOpen = true, sessions: SessionSummary[] = [SESSION]) =>
+    render(
+      <SidebarProvider defaultOpen={defaultOpen}>
+        <Sidebar variant="inset" collapsible="offcanvas">
+          <RecentChats
+            sessions={sessions}
+            activeSessionId="s1"
+            runningSessionIds={new Set()}
+            hasMore={false}
+            isLoadingMore={false}
+            onLoadMore={vi.fn()}
+            onOpen={vi.fn()}
+            onViewAll={vi.fn()}
+            view={DEFAULT_SIDEBAR_CHAT_VIEW}
+            onViewChange={vi.fn()}
+          />
+        </Sidebar>
+        <SidebarInset>
+          <main />
+        </SidebarInset>
+      </SidebarProvider>
+    );
+
+  it('opens the editor on the active row with ⌘⌥R on macOS', async () => {
+    Object.assign(window, { electron: { platform: 'darwin' } });
+    renderActive();
+    // `code`, not `key`: Option changes the character the key types.
+    fireEvent.keyDown(window, { key: '®', code: 'KeyR', metaKey: true, altKey: true });
+    expect(await screen.findByRole('textbox')).toHaveValue('Cohort pull');
+  });
+
+  it('uses Ctrl+Alt+R elsewhere, and ignores a plain ⌘R and a Shift chord', async () => {
+    Object.assign(window, { electron: { platform: 'linux' } });
+    renderActive();
+    fireEvent.keyDown(window, { code: 'KeyR', metaKey: true, altKey: true });
+    fireEvent.keyDown(window, { code: 'KeyR', ctrlKey: true });
+    fireEvent.keyDown(window, { code: 'KeyR', ctrlKey: true, altKey: true, shiftKey: true });
+    expect(screen.queryByRole('textbox')).toBeNull();
+
+    fireEvent.keyDown(window, { code: 'KeyR', ctrlKey: true, altKey: true });
+    expect(await screen.findByRole('textbox')).toBeInTheDocument();
+  });
+
+  it('does nothing when the active chat is not in the list', () => {
+    Object.assign(window, { electron: { platform: 'darwin' } });
+    renderActive(true, [{ ...SESSION, id: 'other' }]);
+    fireEvent.keyDown(window, { code: 'KeyR', metaKey: true, altKey: true });
+    expect(screen.queryByRole('textbox')).toBeNull();
+  });
+
+  it('opens a closed sidebar first, so the editor is not left inert and unseen', async () => {
+    Object.assign(window, { electron: { platform: 'darwin' } });
+    renderActive(false);
+    expect(document.querySelector('[data-slot="sidebar"]')).toHaveAttribute(
+      'data-state',
+      'collapsed'
+    );
+    fireEvent.keyDown(window, { code: 'KeyR', metaKey: true, altKey: true });
+    const editor = await screen.findByRole('textbox');
+    expect(document.querySelector('[data-slot="sidebar"]')).toHaveAttribute(
+      'data-state',
+      'expanded'
+    );
+    await waitFor(() => expect(editor).toHaveFocus());
+  });
+});
+
 describe('Escape in the editor inside the overlay sidebar', () => {
   beforeEach(() => document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS));
   afterEach(() => document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS));
