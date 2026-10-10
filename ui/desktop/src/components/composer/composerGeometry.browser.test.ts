@@ -12,7 +12,8 @@
  *    and stops at ten lines, then scrolls;
  *  - the controls row is 32px, the `+` glyph sits on the text's left edge, and
  *    Send ends the row at the card's inner right edge;
- *  - a queue row is 28px and its actions appear only on hover;
+ *  - a queue row is 28px, reads `↳ text` at rest, and its actions (and its
+ *    grip, in place of the arrow) appear only on hover;
  *  - an image thumbnail is 48px and its loading scrim is translucent;
  *  - a quotation is a 2px rule with no fill (never a box in the card), its
  *    words stop at four lines, and in a queue row it folds to the row's line;
@@ -77,7 +78,10 @@ const MARKUP = `
   <div class="br-queue">
     <ul class="br-queue-list">
       <li id="queue-row" class="br-queue-row">
-        <span class="br-queue-arrow">↳</span>
+        <span class="br-queue-glyph">
+          <span id="queue-arrow" class="br-queue-arrow">↳</span>
+          <span id="queue-grip" class="br-queue-grip"><i style="${GLYPH}"></i></span>
+        </span>
         <button class="br-queue-text br-queue-edit">and rerun the fit</button>
         <div id="queue-actions" class="br-queue-actions">
           <button style="${BUTTON(24)}">x</button>
@@ -166,6 +170,8 @@ describe('the composer recipes in a real layout engine', () => {
       'br-composer-thumb__scrim',
       'br-queue-row',
       'br-queue-actions',
+      'br-queue-glyph',
+      'br-queue-grip',
       'br-quote-chip',
       'br-quote-chip__body',
       'br-quote-chip__source',
@@ -214,12 +220,17 @@ describe('the composer recipes in a real layout engine', () => {
   it('keeps a queue row at 28px and shows its actions only on hover', async (ctx) => {
     if (!page) return ctx.skip();
     expect((await box('#queue-row')).height).toBe(28);
-    const opacity = () =>
-      page!.$eval('#queue-actions', (el) => Number(getComputedStyle(el).opacity));
+    const opacity = (selector: string) =>
+      page!.$eval(selector, (el) => Number(getComputedStyle(el).opacity));
     await page.mouse.move(0, 0);
-    expect(await opacity()).toBe(0);
+    expect(await opacity('#queue-actions')).toBe(0);
+    // `↳ text` at rest; the grip takes the arrow's place on hover.
+    expect(await opacity('#queue-arrow')).toBe(1);
+    expect(await opacity('#queue-grip')).toBe(0);
     await page.hover('#queue-row');
-    expect(await opacity()).toBe(1);
+    expect(await opacity('#queue-actions')).toBe(1);
+    expect(await opacity('#queue-arrow')).toBe(0);
+    expect(await opacity('#queue-grip')).toBe(1);
     await page.mouse.move(0, 0);
   });
 

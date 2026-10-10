@@ -356,15 +356,18 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             onDrop={(e) => handleDrop(e, message.id)}
             onDragEnd={handleDragEnd}
           >
-            {onReorderMessages ? (
-              <span className="br-queue-grip" aria-label={COPY.dragToReorder} role="img">
-                <GripVertical className="size-3.5" />
-              </span>
-            ) : (
+            {/* `↳ text` at rest (spec 3.7). A reorderable row trades the arrow
+                for its grip on hover or focus, like a row action. */}
+            <span className="br-queue-glyph">
               <span className="br-queue-arrow" aria-hidden>
                 ↳
               </span>
-            )}
+              {onReorderMessages && (
+                <span className="br-queue-grip" aria-label={COPY.dragToReorder} role="img">
+                  <GripVertical className="size-3.5" />
+                </span>
+              )}
+            </span>
 
             {editingMessage === message.id ? (
               <div className="flex min-w-0 flex-1 flex-col gap-1.5 py-1">

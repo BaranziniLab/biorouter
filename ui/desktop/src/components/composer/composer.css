@@ -97,13 +97,53 @@
   opacity: 0.6;
 }
 
-.br-queue-grip {
+/* The row's leading glyph: the arrow at rest; on a reorderable row the grip
+   takes its place on hover, on focus inside the row, and always where nothing
+   can hover. Only opacity changes. */
+.br-queue-glyph {
+  position: relative;
   display: inline-flex;
   flex: none;
   width: 14px;
   justify-content: center;
+}
+
+.br-queue-grip {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
   cursor: grab;
+  opacity: 0;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-queue-glyph .br-queue-arrow {
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+.br-queue-row:hover .br-queue-grip,
+.br-queue-row:focus-within .br-queue-grip,
+.br-queue-row[data-dragging] .br-queue-grip {
+  opacity: 1;
+}
+
+.br-queue-row:hover .br-queue-glyph:has(.br-queue-grip) .br-queue-arrow,
+.br-queue-row:focus-within .br-queue-glyph:has(.br-queue-grip) .br-queue-arrow,
+.br-queue-row[data-dragging] .br-queue-glyph:has(.br-queue-grip) .br-queue-arrow {
+  opacity: 0;
+}
+
+@media (hover: none) {
+  .br-queue-grip {
+    opacity: 1;
+  }
+
+  .br-queue-glyph:has(.br-queue-grip) .br-queue-arrow {
+    opacity: 0;
+  }
 }
 
 .br-queue-row[data-dragging] .br-queue-grip {
