@@ -17,8 +17,8 @@ Requirement IDs (`R-nn`) and workstream names (`WS-...`) are defined in the
 | 1. Research and audit | Done | 20 agents: Codex, Claude usage, motion; shell, chat interface, summary, typography, primitives, preview, usage, two view groups, two settings halves, Crew reference, website, icons, baseline screenshots. |
 | 2. Specification | Done | [implementation-spec.md](implementation-spec.md): synthesis, critic pass, coordinator rulings (section 8). |
 | 3. Foundations | Done | All ten wave 0 contracts landed. |
-| 4. Surfaces | In progress | 20 of 21 workstreams implemented; the website is finishing; then the integration gate and the wave 2 sweeps. |
-| 5. Verification loops | Not started | |
+| 4. Surfaces | Done | All 21 workstreams implemented and reviewed; integration gate green; wave 2 sweeps done. |
+| 5. Verification loops | In progress | Vision reviewers on four sandboxed app instances and the website, owner-routed fixes, until each group is clean twice. |
 | 6. Review and pull request | Not started | |
 
 ## Workstreams and file ownership
@@ -30,7 +30,7 @@ spec's tables are authoritative where this summary is shorter.
 | Workstream | Owns (summary) | Wave 0 contract | Status |
 |------------|----------------|-----------------|--------|
 | WS-TOKENS | `styles/main.css` token blocks, `styles/motion.ts`, `ui/desktop/themes/**`, token scripts, `design.md` | type roles, motion tokens and classes | Implemented and reviewed; vision check pending |
-| WS-PRIMITIVES | `components/ui/**` (not the sidebar files), `ModalShell.tsx`, Crew fix list | `InfoTip`, `SegmentedControl`, `SettingRow`, `RowActions`, `Field`, `FilterInput`, `Spinner`, `PopoverAnchor` | Implemented; review running |
+| WS-PRIMITIVES | `components/ui/**` (not the sidebar files), `ModalShell.tsx`, Crew fix list | `InfoTip`, `SegmentedControl`, `SettingRow`, `RowActions`, `Field`, `FilterInput`, `Spinner`, `PopoverAnchor` | Implemented and reviewed; vision check pending |
 | WS-ICONS | `components/icons/**`, `chats/{chatKind.ts,ChatKindIcon.tsx}`, `utils/{toolIconMapping.tsx,toolGlyph.ts}`, `ItemIcon.tsx` | `toolGlyph.ts`, `chatKind.ts` with the crew kind | Implemented and reviewed; vision check pending |
 | WS-SIDEBAR | `BioRouterSidebar/**`, `ui/{sidebar.tsx,sidebarWidth.ts}`, `TitlebarControls.tsx`, `chats/**` (rest), session name, delete and export helpers | `renameSessionOptimistically`, `chatDateBuckets`, `exportConversation`, row menu props | Implemented and reviewed; vision check pending |
 | WS-HISTORY | `sessions/**` (not the usage files), `utils/dateUtils.ts` | none | Implemented and reviewed; vision check pending |
@@ -42,14 +42,14 @@ spec's tables are authoritative where this summary is shorter.
 | WS-PREVIEW | `artifacts/**`, `.artifact-harness/**` | `sideWidth` on the panel controller | Implemented and reviewed; vision check pending |
 | WS-USAGE | `sessions/{SessionsInsights,UsageHeatmap,HomeUsageCard}.tsx`, `components/usage/**`, `settings/usage/**` | none | Implemented and reviewed; vision check pending |
 | WS-VIEWS-A | `Layout/{PageHeader,MainPanelLayout,ReadableContent,AppLayout}.tsx`, `workflows/**`, `schedule/**`, `applications/**` | `PageHeader` band API | Implemented and reviewed; vision check pending |
-| WS-EXTENSIONS | `extensions/**`, `settings/extensions/**`, install modals | none | Implemented; review running |
+| WS-EXTENSIONS | `extensions/**`, `settings/extensions/**`, install modals | none | Implemented and reviewed; vision check pending |
 | WS-SKILLS | `skills/**`, `baam/**` | `MarketplaceDialog` | Implemented and reviewed; vision check pending |
 | WS-KNOWLEDGE | `knowledge/**` (tier confirmation logic frozen) | none | Implemented and reviewed; vision check pending |
 | WS-SETTINGS-A | `SettingsView.tsx`, `settings/{app,chat,mode,permission,response_styles}/**`, theme selectors | section ids for deep links | Implemented and reviewed; vision check pending |
-| WS-SETTINGS-M | `settings/{models,providers,reset_provider}/**`, `onboarding/**`, `ProviderGuard.tsx` | none | Implemented; review running |
+| WS-SETTINGS-M | `settings/{models,providers,reset_provider}/**`, `onboarding/**`, `ProviderGuard.tsx` | none | Implemented and reviewed; vision check pending |
 | WS-SETTINGS-B | `settings/{capabilities,config,contexts,brsdk,memory}/**`, Copilot setup | none | Implemented and reviewed; vision check pending |
 | WS-MOTION | `chatGroups/**`, find in chat, `App.tsx`, `toasts.tsx`, `alerts/**`, `main.ts` window regions, terminal dock | none | Implemented and reviewed; vision check pending |
-| WS-LANDING | `landing/**`, `docs/website/**` | none | In progress |
+| WS-LANDING | `landing/**`, `docs/website/**` | none | Implemented and reviewed; vision check pending |
 | Coordinator | `docs/design/codex-simplicity-redesign/**`, `CLAUDE.md`, `scripts/check-crew-manual.mjs`, `docs/crew/**`, the shared dev app instance | ownership copy | Done |
 
 ## Requirements
@@ -78,7 +78,7 @@ spec's tables are authoritative where this summary is shorter.
 | R-20 | Conversation kind icons | WS-ICONS | In progress |
 | R-21 | Tool call icons | WS-ICONS | In progress |
 | R-22 | Website revision | WS-LANDING | In progress |
-| R-23 | Vision verification loops | coordinator (vision loop) | Not started |
+| R-23 | Vision verification loops | coordinator (vision loop) | In progress |
 | R-24 | Requirements and progress documents | coordinator | Done |
 
 ## Log
@@ -121,6 +121,19 @@ spec's tables are authoritative where this summary is shorter.
 - Started the finishing run: a coordinator delegate applies or routes the coordinator requests,
   then the website resumes, the three reviews and every inbox run, then the full gate loop, then
   the wave 2 sweeps (alias deletions, the switch variant removal, stricter guards) and a final gate.
+- Finishing run done (37 agents, none lost): the coordinator delegate applied or routed 29
+  requests (doc wording for the moved Settings, Skills, Extensions and Knowledge surfaces, e2e
+  locators, the Crew manual checker, and the Cmd+Opt+R rename shortcut, which no longer reloads
+  the window); the website workstream finished; the last three reviews ran; every inbox emptied.
+- Integration gate green: `lint:check` (944 contrast assertions), `format:check`, all 851 test files
+  (11,858 tests), the website consistency and Crew manual checks, clean tree. Wave 2 sweeps removed
+  the old aliases and tightened the guards; the second gate was green too.
+- Coordinator rulings: dialogs take Crew's top anchor and header rule app wide; the unused Block
+  logo images stay; the 14px body default lands before the vision loop so the loop sees the final
+  sizes.
+- Vision loop started: four sandboxed app instances (shell and Home, chat, component views,
+  Settings with dialogs and a Crew regression check) and the website, each reviewed from real
+  screenshots in light and dark at several widths.
 
 ## Related documentation
 
