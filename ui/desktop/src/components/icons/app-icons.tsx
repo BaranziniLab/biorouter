@@ -42,7 +42,6 @@ import {
   Copy as _Copy,
   Database as _Database,
   Download as _Download,
-  Edit as _Edit,
   ExternalLink as _ExternalLink,
   Eye as _Eye,
   EyeOff as _EyeOff,
@@ -214,7 +213,6 @@ export const CodeAnalysis = light(_SearchCode);
 export const Copy = light(_Copy);
 export const Database = light(_Database);
 export const Download = light(_Download);
-export const Edit = light(_Edit);
 export const ExternalLink = light(_ExternalLink);
 export const Eye = light(_Eye);
 export const EyeOff = light(_EyeOff);
