@@ -1,7 +1,6 @@
 import React from 'react';
 import { isImageExtension } from '../utils/imageFormats';
 import {
-  Folder,
   File,
   Image,
   Video,
@@ -12,8 +11,8 @@ import {
   Code,
   Database,
   Settings,
+  SquareSlash,
   Terminal,
-  Zap,
   Wrench,
 } from './icons/app-icons';
 import { ENTITY_ICONS } from './icons/entity-icons';
@@ -36,8 +35,10 @@ const CURRENT = 'currentColor';
 
 export const getItemIcon = (item: DisplayItem): IconInfo => {
   switch (item.itemType) {
+    // A built-in entry is a slash command: the one slash-command mark, not a
+    // bolt (the bolt now lives inside the Skill glyph) and not `Terminal`.
     case 'Builtin':
-      return { Icon: Zap, color: CURRENT };
+      return { Icon: SquareSlash, color: CURRENT };
     case 'Workflow':
       return { Icon: ENTITY_ICONS.workflow, color: CURRENT };
     case 'KnowledgeBase':
@@ -47,7 +48,7 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
     case 'Extension':
       return { Icon: ENTITY_ICONS.extension, color: CURRENT };
     case 'Directory':
-      return { Icon: Folder, color: CURRENT };
+      return { Icon: ENTITY_ICONS.folder, color: CURRENT };
     default: {
       const ext = item.name.split('.').pop()?.toLowerCase() || '';
 

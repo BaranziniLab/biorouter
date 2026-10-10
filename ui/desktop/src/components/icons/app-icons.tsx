@@ -23,7 +23,6 @@ import {
   Brain as _Brain,
   Bug as _Bug,
   Calendar as _Calendar,
-  CalendarClock as _CalendarClock,
   Camera as _Camera,
   ChartColumn as _ChartColumn,
   Check as _Check,
@@ -92,7 +91,6 @@ import {
   LogOut as _LogOut,
   Maximize2 as _Maximize2,
   MessageSquare as _MessageSquare,
-  MessageSquareLock as _MessageSquareLock,
   MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
   MessagesSquare as _MessagesSquare,
@@ -191,7 +189,6 @@ export const Brain = light(_Brain);
 /** `platform__report_bug` rows. */
 export const Bug = light(_Bug);
 export const Calendar = light(_Calendar);
-export const CalendarClock = light(_CalendarClock);
 export const Camera = light(_Camera);
 /** A figure: Auto Visualiser tool rows and `ui://` figure tabs. */
 export const ChartColumn = light(_ChartColumn);
@@ -264,9 +261,8 @@ export const HeartPulse = light(_HeartPulse);
 export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
-/** A device key a person holds (Crew's Keys dialog). Deliberately not `Key`
- * (`icons/Key.tsx`, the provider API-key mark) and not `Lock`, which is the
- * privacy tier and nothing else. */
+/** A device key a person holds (Crew's Keys dialog). Deliberately not `Lock`,
+ * which is the privacy tier and nothing else. */
 export const KeyRound = light(_KeyRound);
 // The three affiliation marks (`AffiliationBadge`); the tier mark is `Lock`,
 // below. They live here for the reason every other glyph does —
@@ -315,7 +311,6 @@ export const Lock = light(_Lock);
 export const LogOut = light(_LogOut);
 export const Maximize2 = light(_Maximize2);
 export const MessageSquare = light(_MessageSquare);
-export const MessageSquareLock = light(_MessageSquareLock);
 export const MessageSquarePlus = light(_MessageSquarePlus);
 export const MessageSquareText = light(_MessageSquareText);
 /** Other chats: the `workspace__workspace_*` tool rows (read, steer, open). */

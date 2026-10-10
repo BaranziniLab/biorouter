@@ -47,7 +47,7 @@ export const ENTITY_ICONS: Record<EntityKind, EntityIcon> = {
   extension: Puzzle,
   skill: Skill,
   application: AppWindow,
-  // Also the scheduled-run chat glyph (it was CalendarClock there).
+  // Also the scheduled-run chat glyph, so a run and the Scheduler agree.
   schedule: Clock,
   crew: Users,
   agent: Agent,
