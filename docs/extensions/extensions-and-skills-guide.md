@@ -40,15 +40,21 @@ Additional in-process capabilities:
 | **Code Execution** | Execute JavaScript in a sandboxed environment for tool discovery and calling | Enabled |
 | **Workspace Control** | Work across conversations and delegate to visible subagents | Enabled |
 
+### The Extensions page
+
+Open **Extensions** in the sidebar to see every installed extension in two groups, **Enabled** and **Available**. Each row shows the extension's name, a **Public** or **Private** badge, and one line of description. For an extension you installed, that line also says where it came from: the Biorouter marketplace or a file. The switch on the right turns the extension on or off for new chats. Hover a row to reveal its **⋯** menu, or right-click the row, to **Configure…** it or **Remove…** it. Built-in extensions can be turned off and configured, but not removed.
+
+Type in the filter at the top right (**Ctrl+F**, or **⌘F** on a Mac) to narrow the list. The **Add** button next to it opens a menu with three ways to add an extension: **Browse marketplace**, **Install from file (.brxt)** and **Custom extension…**.
+
 ### Adding an external extension
 
-Any MCP server can be added as a Biorouter extension. Pick whichever of the three routes below fits how you work — they write to the same configuration.
+Any MCP server can be added as a Biorouter extension. Pick whichever of the three routes below fits how you work, since they write to the same configuration.
 
 #### From the desktop app
 
-1. Open the sidebar, then **Extensions** → **Add custom extension**.
-2. Enter the extension type, ID, name, command, arguments, and any required environment variables.
-3. Click **Add**.
+1. Open the sidebar, then **Extensions** → **Add** → **Custom extension…**.
+2. Enter a name, choose **Command** or **HTTP**, and give the command (or the endpoint URL). Add any environment variables or request headers the server needs.
+3. Click **Add extension**.
 
 #### From the CLI
 
