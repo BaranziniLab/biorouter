@@ -2075,5 +2075,6 @@ Moves that were still waiting on other owners, and where each stands at the end 
 `--motion-*` aliases and `text-heading` are deleted, and `styles/typeScale.test.ts` is strict (no guarded
 file may carry a legacy type class or a px font size; `ModelAndProviderContext.tsx` and the other frozen
 files are out of scope). Still open: `body` defaults to 16px and moves to `var(--text-body)` last, behind a
-visual sweep (KaTeX and any element without a size inherit it), and `.claude/commands/frontend-design.md` is
-regenerated from Parts 1 to 3 and Part 9 once the vision loop has run, which the coordinator has approved.
+visual sweep (KaTeX and any element without a size inherit it). `.claude/commands/frontend-design.md` was
+regenerated from Parts 1 to 3 and Part 9 at the end of wave 2 (2026-10-10), with the coordinator's approval;
+if the vision loop changes this part, bring that file back in line with it.
