@@ -100,7 +100,11 @@ export function TranscriptRow({
       {statusLabel ? <span role="img" className="sr-only" aria-label={statusLabel} /> : null}
       <span className="br-transcript-row-label">{label}</span>
       {meta !== undefined && meta !== null && meta !== false ? (
-        <span className="br-transcript-row-meta">{meta}</span>
+        <>
+          {/* A space for the spoken name ("Thinking · 9s", not "Thinking· 9s").
+              Between two flex items it takes no room; the gap does the spacing. */}{' '}
+          <span className="br-transcript-row-meta">{meta}</span>
+        </>
       ) : null}
     </>
   );

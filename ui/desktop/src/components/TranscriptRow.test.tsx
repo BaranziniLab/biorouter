@@ -29,6 +29,15 @@ describe('TranscriptRow', () => {
     expect(screen.getByText('Body text').closest('.br-transcript-row-well')).not.toBeNull();
   });
 
+  it('speaks the label and the meta as two words, not one', () => {
+    render(
+      <TranscriptRow icon={Brain} label="Thought" meta="· 8s">
+        <p>Body text</p>
+      </TranscriptRow>
+    );
+    expect(screen.getByRole('button')).toHaveAccessibleName('Thought · 8s');
+  });
+
   it('starts open on defaultOpen and reports changes', async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();

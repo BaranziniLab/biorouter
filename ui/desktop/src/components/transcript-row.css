@@ -96,6 +96,12 @@ button.br-transcript-row-head:focus-visible {
   white-space: nowrap;
 }
 
+/* A meta that renders nothing yet (the thinking clock says nothing for its
+   first 2s) must not add a gap before the chevron. */
+.br-transcript-row-meta:empty {
+  display: none;
+}
+
 .br-transcript-row-chevron {
   flex-shrink: 0;
   width: 16px;
