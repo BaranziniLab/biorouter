@@ -24,8 +24,7 @@ const SCALE = [12, 13, 14, 17, 24];
 function roles(): Map<string, Record<string, string>> {
   const out = new Map<string, Record<string, string>>();
   const re = /(^|\n)@theme\s*\{/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(CODE))) {
+  while (re.exec(CODE)) {
     let depth = 1;
     let i = re.lastIndex;
     for (; i < CODE.length && depth > 0; i++) {
