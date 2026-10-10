@@ -14,7 +14,8 @@ import {
 } from '../../schedule';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
-import { Plus, RefreshCw, Pause, Play, CircleDotDashed, StopSquare } from '../icons/app-icons';
+import { Plus, RefreshCw, Pause, Play, StopSquare } from '../icons/app-icons';
+import { ENTITY_ICONS } from '../icons/entity-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
 import { toastError, toastSuccess } from '../../toasts';
@@ -35,7 +36,13 @@ import { Note } from '../ui/note';
 import { Skeleton } from '../ui/skeleton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { IconAction, RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
-import { ScheduleStatusDot, formatRunTime, readableCronOf, scheduleState } from './scheduleStatus';
+import {
+  ScheduleStatusDot,
+  formatRunTime,
+  readableCronOf,
+  runStoppedWhileStarting,
+  scheduleState,
+} from './scheduleStatus';
 import { DELETE_SCHEDULE_MESSAGE, scheduleCopy as copy } from './copy';
 
 // Kept as an export of this module too: older imports read it from here.
@@ -379,7 +386,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     try {
       const result = await runScheduleNow(id);
       toastSuccess({
-        title: result === 'CANCELLED' ? copy.runStoppedWhileStarting : copy.runStarted,
+        title: runStoppedWhileStarting(result) ? copy.runStoppedWhileStarting : copy.runStarted,
       });
       await fetchSchedules();
     } catch (error) {
@@ -459,7 +466,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
 
                 {!isLoading && !apiError && schedules.length === 0 && (
                   <EmptyState
-                    icon={CircleDotDashed}
+                    icon={ENTITY_ICONS.schedule}
                     title={copy.emptyTitle}
                     description={copy.emptyDescription}
                   />

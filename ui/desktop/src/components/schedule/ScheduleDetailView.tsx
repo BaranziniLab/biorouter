@@ -22,7 +22,12 @@ import {
 } from '../../schedule';
 import SessionHistoryView from '../sessions/SessionHistoryView';
 import { ScheduleModal, NewSchedulePayload } from './ScheduleModal';
-import { ScheduleStatus, formatRunTime, readableCronOf } from './scheduleStatus';
+import {
+  ScheduleStatus,
+  formatRunTime,
+  readableCronOf,
+  runStoppedWhileStarting,
+} from './scheduleStatus';
 import { toastError, toastSuccess } from '../../toasts';
 import { Pause, Play, MessageSquareText, StopSquare } from '../icons/app-icons';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
@@ -304,10 +309,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     try {
       const newSessionId = await runScheduleNow(scheduleId);
       toastSuccess({
-        title:
-          newSessionId === 'CANCELLED'
-            ? scheduleCopy.runStoppedWhileStarting
-            : scheduleCopy.runStarted,
+        title: runStoppedWhileStarting(newSessionId)
+          ? scheduleCopy.runStoppedWhileStarting
+          : scheduleCopy.runStarted,
       });
       await fetchSessions(scheduleId);
       await fetchSchedule(scheduleId);
@@ -596,13 +600,16 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                       </DefinitionRow>
                     )}
                     {running && (
-                      <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-1">
+                      // The 28px button rides a negative hit-box margin so the row keeps the
+                      // one 40px rhythm (`px-3 py-2.5`, settings vocabulary V2).
+                      <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
                         <span className="text-body text-text-muted">
                           {scheduleCopy.status.running}
                         </span>
                         <Button
                           variant="secondary"
                           size="sm"
+                          className="-my-1"
                           onClick={() => void handleInspect()}
                           disabled={isActionLoading}
                         >
