@@ -32,6 +32,11 @@ A clear and concise description of what you expected to happen.
 
 ---
 
+**Suspected cause**
+If you have an idea where the problem is (a file, a setting, a step that behaves differently from the documentation), describe it here. Optional.
+
+---
+
 **Screenshots**
 If applicable, add screenshots to help explain your problem.
 
