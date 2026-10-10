@@ -443,6 +443,22 @@ describe('workbook sheet theming', () => {
     }
   });
 
+  // The renderer's own stylesheet paints the row and column labels light blue and
+  // the grid #f0f0f0 in every theme; the sheet puts them on the family's scales.
+  it.each(THEME_FAMILY_IDS)(
+    'puts the %s labels and grid on the family hairline',
+    async (family) => {
+      for (const mode of ['light', 'dark'] as const) {
+        const { border, muted } = GENERATED_THEMES[family][mode].surface;
+        const srcdoc = await srcdocFor(family, mode);
+        expect(srcdoc).toContain(`td { border-color: ${border}; }`);
+        expect(srcdoc).toMatch(
+          new RegExp(`td\\.order \\{[^}]*color: ${muted};[^}]*font-size: 12px;`)
+        );
+      }
+    }
+  );
+
   // Without this, re-hardcoding a colour would leave every per-family
   // assertion above still passing for whichever family the hardcode matched.
   it('gives each family a distinct dark sheet', async () => {

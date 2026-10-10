@@ -477,6 +477,19 @@ function prepareSpreadsheetHtml(
     }
     table { background: ${surface.card}; }
     td { min-width: 4rem; }
+    /* The renderer paints its row and column labels a fixed light blue and its
+       grid #f0f0f0, which is a bright slab on a dark ground and a second palette
+       on a light one. They take the panel's own scales instead: a quiet ground,
+       12px muted ink, the family's hairline. The selectors out-rank the
+       renderer's class rules (its styles come later in the document); a cell the
+       WORKBOOK styled keeps its inline colour, border and font. */
+    body table[class] tbody[class] { border-color: ${surface.border}; }
+    body table[class] tbody[class] td { border-color: ${surface.border}; }
+    body table[class] tbody[class] td.order {
+      background: color-mix(in srgb, ${surface.foreground} 5%, ${surface.card});
+      color: ${surface.muted};
+      font-size: 12px;
+    }
   `;
   document.head.append(style);
   return `<!doctype html>${document.documentElement.outerHTML}`;
