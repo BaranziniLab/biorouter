@@ -407,14 +407,19 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
+              {/* A nested list inside its own item, so the children are list items
+                  of a list (a bare div inside the menu's <ul> is not valid and
+                  loses the list for a screen reader). */}
               {showComponentChildren && (
-                <div
-                  id="sidebar-components-group"
-                  data-testid="sidebar-components-group"
-                  className="br-nav-list"
-                >
-                  {componentItems.map((entry) => renderMenuItem(entry))}
-                </div>
+                <SidebarMenuItem>
+                  <ul
+                    id="sidebar-components-group"
+                    data-testid="sidebar-components-group"
+                    className="br-nav-list"
+                  >
+                    {componentItems.map((entry) => renderMenuItem(entry))}
+                  </ul>
+                </SidebarMenuItem>
               )}
             </SidebarMenu>
           </SidebarGroupContent>

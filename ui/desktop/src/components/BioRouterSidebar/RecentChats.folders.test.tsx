@@ -162,6 +162,62 @@ describe('Group by Folder', () => {
     ).toEqual([`folder:${PROJECT}`]);
   });
 
+  it('closes the folder that holds the current chat when its header is clicked, and opens it again', () => {
+    // It used to change only the stored choice, which the drawn folder ignores
+    // while it holds the current chat: a click that did nothing on screen.
+    renderFolders({ activeSessionId: 'p0' });
+    expect(screen.getByTestId('recent-chat-p0')).toBeInTheDocument();
+
+    fireEvent.click(toggleOf(PROJECT));
+    expect(screen.queryByTestId('recent-chat-p0')).toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem(SIDEBAR_COLLAPSED_FOLDERS_STORAGE_KEY) ?? '[]')
+    ).toContain(`folder:${PROJECT}`);
+
+    fireEvent.click(
+      within(folder(PROJECT)).getByRole('button', { expanded: false, name: 'project' })
+    );
+    expect(screen.getByTestId('recent-chat-p0')).toBeInTheDocument();
+    expect(
+      JSON.parse(window.localStorage.getItem(SIDEBAR_COLLAPSED_FOLDERS_STORAGE_KEY) ?? '[]')
+    ).not.toContain(`folder:${PROJECT}`);
+  });
+
+  it('opens the folder again for the next chat that lives in it', () => {
+    const { rerender } = renderFolders({ activeSessionId: 'p0' });
+    fireEvent.click(toggleOf(PROJECT));
+    expect(screen.queryByTestId('recent-chat-p0')).toBeNull();
+
+    // Another chat becomes current, in another folder: this one stays closed.
+    const props = {
+      sessions: SESSIONS,
+      runningSessionIds: new Set<string>(),
+      hasMore: false,
+      isLoadingMore: false,
+      onLoadMore: vi.fn(),
+      onOpen: vi.fn(),
+      onViewAll: vi.fn(),
+      view: FOLDER_VIEW,
+      onViewChange: vi.fn(),
+      homeDir: '/Users/x',
+    };
+    rerender(
+      <SidebarProvider>
+        <RecentChats {...props} activeSessionId="n0" />
+      </SidebarProvider>
+    );
+    expect(screen.queryByTestId('recent-chat-p0')).toBeNull();
+    expect(screen.getByTestId('recent-chat-n0')).toBeInTheDocument();
+
+    // A chat in the closed folder becomes current: the folder opens for it.
+    rerender(
+      <SidebarProvider>
+        <RecentChats {...props} activeSessionId="p1" />
+      </SidebarProvider>
+    );
+    expect(screen.getByTestId('recent-chat-p1')).toBeInTheDocument();
+  });
+
   it('puts the full path in the header tooltip, not on the row', () => {
     renderFolders();
     expect(within(folder(PROJECT)).queryByText('~/project')).toBeNull();

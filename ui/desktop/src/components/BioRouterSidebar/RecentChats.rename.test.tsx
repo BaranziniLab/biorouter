@@ -209,6 +209,74 @@ describe('renaming a chat from its sidebar row (owner message 4)', () => {
   });
 });
 
+function StaticRecents({ sessions }: { sessions: SessionSummary[] }) {
+  return (
+    <RecentChats
+      sessions={sessions}
+      runningSessionIds={new Set()}
+      hasMore={false}
+      isLoadingMore={false}
+      onLoadMore={vi.fn()}
+      onOpen={vi.fn()}
+      onViewAll={vi.fn()}
+      view={DEFAULT_SIDEBAR_CHAT_VIEW}
+      onViewChange={vi.fn()}
+    />
+  );
+}
+
+describe('the editor on an unusual row', () => {
+  it('does not name an unnamed chat "Untitled chat" when Enter is pressed on the untouched draft', async () => {
+    // A chat with no name is drawn "Untitled chat" and the editor opens on that
+    // text: confirming it unchanged is not a rename.
+    render(
+      <SidebarProvider>
+        <StaticRecents sessions={[{ ...SESSION, name: '' }]} />
+      </SidebarProvider>
+    );
+    row().focus();
+    fireEvent.keyDown(row(), { key: 'F2' });
+    const editor = await screen.findByRole('textbox');
+    expect(editor).toHaveValue('Untitled chat');
+    fireEvent.keyDown(editor, { key: 'Enter' });
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    expect(mocks.updateSessionName).not.toHaveBeenCalled();
+  });
+
+  it('still names an unnamed chat when the person types a name', async () => {
+    render(
+      <SidebarProvider>
+        <StaticRecents sessions={[{ ...SESSION, name: '' }]} />
+      </SidebarProvider>
+    );
+    row().focus();
+    fireEvent.keyDown(row(), { key: 'F2' });
+    const editor = await screen.findByRole('textbox');
+    fireEvent.change(editor, { target: { value: 'Named at last' } });
+    fireEvent.keyDown(editor, { key: 'Enter' });
+    await waitFor(() => expect(mocks.updateSessionName).toHaveBeenCalledTimes(1));
+  });
+
+  it('closes the editor when its chat is deleted while the name is being typed', async () => {
+    const { rerender } = render(
+      <SidebarProvider>
+        <StaticRecents sessions={[SESSION, { ...SESSION, id: 's2', name: 'Another' }]} />
+      </SidebarProvider>
+    );
+    row().focus();
+    fireEvent.keyDown(row(), { key: 'F2' });
+    expect(await screen.findByRole('textbox')).toBeInTheDocument();
+
+    rerender(
+      <SidebarProvider>
+        <StaticRecents sessions={[{ ...SESSION, id: 's2', name: 'Another' }]} />
+      </SidebarProvider>
+    );
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    expect(screen.getByTestId('recent-chat-s2')).toBeInTheDocument();
+  });
+});
+
 describe('Escape in the editor inside the overlay sidebar', () => {
   beforeEach(() => document.body.classList.add(SIDEBAR_OVERLAY_BODY_CLASS));
   afterEach(() => document.body.classList.remove(SIDEBAR_OVERLAY_BODY_CLASS));

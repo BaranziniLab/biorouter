@@ -39,8 +39,18 @@ export function useSidebarChatView(): [SidebarChatView, (view: SidebarChatView) 
   return [view, setView];
 }
 
-/** The folder groups the person collapsed, remembered the same way. */
-export function useCollapsedFolders(): [ReadonlySet<string>, (folder: string) => void] {
+/**
+ * The folder groups the person collapsed, remembered the same way. The third
+ * member sets a folder's stored state outright: the list decides what a click
+ * means from what is DRAWN (a folder that holds the current chat is drawn open
+ * whatever is stored), so a toggle of the stored value alone would be a click
+ * that changes nothing on screen.
+ */
+export function useCollapsedFolders(): [
+  ReadonlySet<string>,
+  (folder: string) => void,
+  (folder: string, collapsed: boolean) => void,
+] {
   const [folders, setFolders] = useState<string[]>(() => readCollapsedFolders());
 
   useEffect(() => {
@@ -64,6 +74,15 @@ export function useCollapsedFolders(): [ReadonlySet<string>, (folder: string) =>
     });
   }, []);
 
+  const setCollapsed = useCallback((folder: string, collapsed: boolean) => {
+    setFolders((current) => {
+      if (current.includes(folder) === collapsed) return current;
+      const next = collapsed ? [...current, folder] : current.filter((entry) => entry !== folder);
+      writeCollapsedFolders(next);
+      return next;
+    });
+  }, []);
+
   const collapsed = useMemo(() => new Set(folders), [folders]);
-  return [collapsed, toggle];
+  return [collapsed, toggle, setCollapsed];
 }

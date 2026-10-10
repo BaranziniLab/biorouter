@@ -182,6 +182,27 @@ describe('the sidebar chat row menu', () => {
     ]);
   });
 
+  it('leaves focus off the row after a choice made with the pointer, and returns it after Escape', async () => {
+    // Handing focus back to a row the person clicked with a mouse rings it and
+    // pins its ⋯ open (`:focus-within`); a keyboard user needs it back.
+    renderRecents();
+    const row = screen.getByTestId('recent-chat-20260823_2');
+
+    row.focus();
+    fireEvent.pointerDown(row, { button: 2 });
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Copy chat ID' }));
+    await waitFor(() => expect(screen.queryByRole('menuitem')).toBeNull());
+    expect(row).not.toHaveFocus();
+
+    row.focus();
+    fireEvent.keyDown(row, { key: 'F10', shiftKey: true });
+    const menu = await screen.findByRole('menu');
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await waitFor(() => expect(row).toHaveFocus());
+  });
+
   it('copies the raw conversation id', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));

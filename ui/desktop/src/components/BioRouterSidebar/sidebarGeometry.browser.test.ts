@@ -74,8 +74,8 @@ const navRow = (id: string, label: string, extra = '') =>
   `<svg class="br-nav-row-icon" id="${id}-icon" viewBox="0 0 16 16"></svg>` +
   `<span class="br-nav-row-label" id="${id}-label">${label}</span></button></li>`;
 
-const chatRow = (id: string, title: string, active = false) =>
-  `<li class="br-chat-row-item">` +
+const chatRow = (id: string, title: string, active = false, itemAttrs = '') =>
+  `<li class="br-chat-row-item"${itemAttrs}>` +
   `<button type="button" class="br-nav-row br-chat-row" id="${id}"${active ? ' aria-current="page"' : ''}>` +
   `<svg class="br-chat-kind-icon" id="${id}-glyph" viewBox="0 0 16 16"></svg>` +
   `<span class="br-nav-row-label" id="${id}-label">${title}</span>` +
@@ -132,6 +132,10 @@ function page(css: string, width: number): string {
     '<div class="br-sidebar-actions"><button type="button" style="width:24px;height:24px"></button></div>' +
     '</div><ul class="br-nav-list">' +
     chatRow('chat4', 'Figure 3 draft') +
+    // A row whose menu is open keeps its hover ground; "Show more" sits in the label column.
+    chatRow('chat5', 'Row with its menu open', false, ' data-menu-open') +
+    '<li><button type="button" class="br-nav-row br-sidebar-quiet-row" id="more" aria-expanded="false">' +
+    '<span class="br-nav-row-label" id="more-label">Show more</span></button></li>' +
     '</ul></section></div></div></div>' +
     '<div class="br-sidebar-footer" id="footer"><ul class="br-nav-list">' +
     navRow('settings', 'Settings') +
@@ -356,6 +360,32 @@ describe('the app sidebar in a real layout engine', () => {
     // Its first chat sits 2px under it, on the shared columns.
     near(b.chat4.top - b.folder.bottom, 2, 'header to first row');
     near(b['chat4-glyph'].left, 16, 'folder chat glyph x');
+    await tab.close();
+  });
+
+  /**
+   * "Show more" belongs to the chats above it: its label starts on the label
+   * column (x=40), not under the glyphs. And a row whose menu is open keeps the
+   * hover ground, because the pointer is over the menu, not over the row.
+   */
+  it('puts Show more on the label column and keeps a menu-open row lit', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open(288);
+    const b = await boxes(tab, ['more', 'chat4', 'chat5']);
+    near(b.more.height, 28, 'Show more row height');
+    const labelX = await tab.evaluate(() => {
+      const range = document.createRange();
+      range.selectNodeContents(document.getElementById('more-label')!);
+      return range.getBoundingClientRect().left;
+    });
+    near(labelX, 40, 'Show more label x');
+    const grounds = await tab.evaluate(() => {
+      const ground = (id: string) => getComputedStyle(document.getElementById(id)!).backgroundColor;
+      return { open: ground('chat5'), rest: ground('chat4') };
+    });
+    // --sidebar-hover in the page's own stand-in tokens is #eee; a row at rest is transparent.
+    expect(grounds.open).toBe('rgb(238, 238, 238)');
+    expect(grounds.rest).toBe('rgba(0, 0, 0, 0)');
     await tab.close();
   });
 

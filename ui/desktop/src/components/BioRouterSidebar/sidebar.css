@@ -327,6 +327,21 @@
   box-shadow: inset 0 0 0 2px var(--border-focus);
 }
 
+/* While a row's menu is open the pointer is over the menu, not the row, so the
+   row would lose its hover ground and stop reading as the thing the menu is
+   about. It keeps the hover ground until the menu closes (the current row
+   keeps its own, stronger one). `data-menu-open` is set by the row/header that
+   owns the menu. */
+.br-chat-row-item[data-menu-open] > .br-chat-row:not([aria-current='page']),
+.br-sidebar-folder[data-menu-open] {
+  background-color: var(--sidebar-hover);
+}
+
+.br-chat-row-item[data-menu-open] > .br-chat-row,
+.br-sidebar-folder[data-menu-open] .br-sidebar-folder-toggle {
+  color: var(--text-default);
+}
+
 /* ── Hover-revealed actions: opacity only, so they stay in the a11y tree ── */
 .br-sidebar-actions {
   display: flex;
@@ -447,6 +462,10 @@
 /* "Show more" under a folder's first five chats, and the list's foot. */
 .br-sidebar-quiet-row {
   color: var(--text-subtle);
+  /* "Show more" belongs to the chats above it, so its label sits in the label
+     column (x=40: 8 row padding + a 16px glyph slot + the 8px gap), not under
+     the glyphs. */
+  padding-inline-start: calc(8px + var(--icon-row) + 8px);
 }
 
 .br-sidebar-foot {

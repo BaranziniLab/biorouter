@@ -1,3 +1,4 @@
+import { keepFocusOffAfterPointerClose } from '../chats/menuFocusReturn';
 import { SlidersHorizontal } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import {
@@ -57,7 +58,7 @@ export default function SidebarViewMenu({ view, onViewChange }: SidebarViewMenuP
         </TooltipTrigger>
         <TooltipContent>{sidebarCopy.chats.viewOptions}</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end">
+      <DropdownMenuContent align="end" onCloseAutoFocus={keepFocusOffAfterPointerClose}>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger data-testid="sidebar-view-group-by">
             <span className="flex-1">{copy.groupBy}</span>

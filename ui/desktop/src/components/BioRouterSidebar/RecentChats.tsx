@@ -14,7 +14,7 @@ import { useDiverge } from '../../hooks/useDiverge';
 import { toastError, toastSuccess } from '../../toasts';
 import { deleteConversation } from '../../utils/deleteConversation';
 import { exportConversation } from '../../utils/exportConversation';
-import { renameSessionOptimistically } from '../../utils/sessionNameSync';
+import { normalizeSessionName, renameSessionOptimistically } from '../../utils/sessionNameSync';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { chatKindOf } from '../chats/chatKind';
 import {
@@ -24,6 +24,7 @@ import {
 } from '../chats/ChatRowContextMenu';
 import { ChatRowRenameInput } from '../chats/ChatRowRenameInput';
 import { chatRowCopy } from '../chats/copy';
+import { keepFocusOffAfterPointerClose } from '../chats/menuFocusReturn';
 import { ChevronRight, Folder, History, MoreHorizontal, Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -201,7 +202,13 @@ function RecentChatRow({
     onDelete: () => onRequestDelete(session),
   };
   const onMenuCloseAutoFocus = (event: Event) => {
-    if (!renameAfterMenu.current) return;
+    if (!renameAfterMenu.current) {
+      // A choice made with the pointer leaves focus alone: handing it back to
+      // the row would ring a button the person clicked with a mouse and pin the
+      // row's hover-revealed ⋯ open.
+      keepFocusOffAfterPointerClose(event);
+      return;
+    }
     renameAfterMenu.current = false;
     event.preventDefault();
     onStartRename(session.id);
@@ -366,6 +373,12 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
   const [menuOpen, setMenuOpen] = useState(false);
   const canStartChat =
     !group.isCrew && Boolean(group.workingDir) && Boolean(window.electron?.createChatWindow);
+  // The path tooltip opens beside the header's toggle, whose right edge is where
+  // the hover-revealed + and ⋯ begin, so at the default offset it covers the very
+  // buttons the pointer is heading for. Clear them: 24px each, 2px between and 2px
+  // of end padding (`.br-sidebar-folder`, `.br-sidebar-actions`).
+  const actionCount = (canStartChat ? 1 : 0) + (group.workingDir ? 1 : 0);
+  const pathTooltipOffset = 8 + 2 + actionCount * 24 + Math.max(0, actionCount - 1) * 2;
 
   const copyPath = async () => {
     const path = group.workingDir ?? '';
@@ -405,7 +418,11 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
             <span className="br-nav-row-label">{group.label}</span>
           </button>
         </TooltipTrigger>
-        {group.path ? <TooltipContent side="right">{group.path}</TooltipContent> : null}
+        {group.path ? (
+          <TooltipContent side="right" sideOffset={pathTooltipOffset}>
+            {group.path}
+          </TooltipContent>
+        ) : null}
       </Tooltip>
       <div className="br-sidebar-actions">
         {canStartChat ? (
@@ -449,7 +466,11 @@ function FolderHeader({ group, collapsed, tabIndex, onRowFocus, onToggle }: Fold
               </TooltipTrigger>
               <TooltipContent>{sidebarCopy.folder.moreActions(group.label)}</TooltipContent>
             </Tooltip>
-            <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuContent
+              align="end"
+              className="w-56"
+              onCloseAutoFocus={keepFocusOffAfterPointerClose}
+            >
               <DropdownMenuItem onSelect={() => void copyPath()}>
                 {sidebarCopy.folder.copyPath}
               </DropdownMenuItem>
@@ -516,7 +537,10 @@ export default function RecentChats({
   useEffect(() => {
     if (!holding) setHeld(null);
   }, [holding]);
-  const captureHold = () => setHeld((current) => current ?? holdArrangement(arranged, view));
+  const captureHold = useCallback(
+    () => setHeld((current) => current ?? holdArrangement(arranged, view)),
+    [arranged, view]
+  );
   const groups = useMemo(
     () =>
       holding && held && held.view.groupBy === view.groupBy && held.view.sortBy === view.sortBy
@@ -536,8 +560,16 @@ export default function RecentChats({
     setViewGeneration((generation) => generation + 1);
   }, [view]);
 
-  const [collapsedFolders, toggleFolder] = useCollapsedFolders();
+  const [collapsedFolders, , setFolderCollapsed] = useCollapsedFolders();
   const [expandedFolders, setExpandedFolders] = useState<ReadonlySet<string>>(new Set());
+  // A folder that holds the current chat is drawn open whatever is stored, so a
+  // click to close it needs somewhere to live: the keys the person closed while
+  // that chat was current. It expires when another chat becomes current, so the
+  // folder opens itself again for the next chat that lives in it.
+  const [closedWithActive, setClosedWithActive] = useState<{
+    sessionId: string | null;
+    keys: readonly string[];
+  }>({ sessionId: null, keys: [] });
 
   // What each group actually shows: a collapsed folder shows no rows (unless it
   // holds the current chat, which opens it without touching the stored choice),
@@ -549,23 +581,30 @@ export default function RecentChats({
           return {
             group,
             collapsed: false,
+            holdsActive: false,
             rows: group.sessions,
             more: null as null | 'more' | 'less',
           };
         }
         const activeIndex = group.sessions.findIndex((session) => session.id === activeSessionId);
-        const collapsed = collapsedFolders.has(group.key) && activeIndex < 0;
-        if (collapsed) return { group, collapsed, rows: [], more: null };
+        const closedByPerson =
+          closedWithActive.sessionId === activeSessionId &&
+          closedWithActive.keys.includes(group.key);
+        const collapsed = (collapsedFolders.has(group.key) && activeIndex < 0) || closedByPerson;
+        if (collapsed) {
+          return { group, collapsed, holdsActive: activeIndex >= 0, rows: [], more: null };
+        }
         const long = group.sessions.length > FOLDER_PREVIEW_COUNT;
         const expanded = expandedFolders.has(group.key) || activeIndex >= FOLDER_PREVIEW_COUNT;
         return {
           group,
           collapsed,
+          holdsActive: activeIndex >= 0,
           rows: long && !expanded ? group.sessions.slice(0, FOLDER_PREVIEW_COUNT) : group.sessions,
           more: !long ? null : expanded ? ('less' as const) : ('more' as const),
         };
       }),
-    [groups, collapsedFolders, expandedFolders, activeSessionId]
+    [groups, collapsedFolders, expandedFolders, closedWithActive, activeSessionId]
   );
 
   // One tab stop for the list (spec 3.4, F-18): ↑/↓/Home/End move between rows.
@@ -596,10 +635,21 @@ export default function RecentChats({
     (sessionId: string) => {
       const session = sessions.find((candidate) => candidate.id === sessionId);
       if (!session) return;
+      // Whatever started the edit (F2, ⌘⌥R, the menu), the rows hold still
+      // while the person types, as they do under the pointer.
+      captureHold();
       setEditing({ sessionId, draft: session.name.trim() || sidebarCopy.chats.untitled });
     },
-    [sessions]
+    [sessions, captureHold]
   );
+
+  // A chat deleted (here or in another window) while it is being renamed leaves
+  // no row to hold the editor, and nothing else would end the hold it carries.
+  useEffect(() => {
+    if (editing && !sessions.some((session) => session.id === editing.sessionId)) {
+      setEditing(null);
+    }
+  }, [editing, sessions]);
 
   const finishRename = (sessionId: string) => {
     focusAfterEdit.current = sessionId;
@@ -610,6 +660,9 @@ export default function RecentChats({
     const session = sessions.find((candidate) => candidate.id === sessionId);
     finishRename(sessionId);
     if (!session) return;
+    // A chat with no name is drawn "Untitled chat", and that is the text the
+    // editor opens with: Enter on it, unchanged, must not name the chat that.
+    if (!session.name.trim() && normalizeSessionName(value) === sidebarCopy.chats.untitled) return;
     void renameSessionOptimistically(sessionId, value, {
       name: session.name,
       userSetName: session.user_set_name ?? false,
@@ -806,7 +859,7 @@ export default function RecentChats({
             className="br-sidebar-chat-groups"
             data-view-changed={viewGeneration > 0 ? 'true' : undefined}
           >
-            {shown.map(({ group, collapsed, rows, more }) => (
+            {shown.map(({ group, collapsed, holdsActive, rows, more }) => (
               <section
                 key={group.key}
                 className="br-sidebar-group"
@@ -819,7 +872,31 @@ export default function RecentChats({
                     collapsed={collapsed}
                     tabIndex={roving.tabIndexFor(folderKey(group))}
                     onRowFocus={roving.onRowFocus}
-                    onToggle={() => toggleFolder(group.key)}
+                    onToggle={() => {
+                      // What a click does follows what is DRAWN: an open folder
+                      // closes and a closed one opens, even when the open one is
+                      // only open because it holds the current chat.
+                      if (collapsed) {
+                        setFolderCollapsed(group.key, false);
+                        setClosedWithActive((current) => ({
+                          ...current,
+                          keys: current.keys.filter((key) => key !== group.key),
+                        }));
+                        return;
+                      }
+                      setFolderCollapsed(group.key, true);
+                      if (holdsActive) {
+                        setClosedWithActive((current) => ({
+                          sessionId: activeSessionId ?? null,
+                          keys: [
+                            ...(current.sessionId === (activeSessionId ?? null)
+                              ? current.keys
+                              : []),
+                            group.key,
+                          ],
+                        }));
+                      }
+                    }}
                   />
                 ) : null}
                 {rows.length > 0 ? (
