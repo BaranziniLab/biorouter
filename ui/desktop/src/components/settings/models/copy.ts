@@ -52,6 +52,46 @@ export const localModelsCopy = {
   close: 'Close',
   warmUpModel: 'Warm up model',
   installModel: 'Install model',
+  /** A model's state, in words, for the info dialog's Status row. */
+  status: {
+    downloadedInOllama: 'Downloaded in Ollama',
+    downloaded: 'Downloaded',
+    fallbackReady: 'Fallback ready',
+    partial: 'Partial download',
+    needsDownload: 'Needs download',
+  },
+  /** The info dialog's rows. The dialog is where the machine facts live, not the row. */
+  detail: {
+    status: 'Status',
+    family: 'Family',
+    download: 'Download',
+    expectedSpeed: 'Expected speed',
+    context: 'Context',
+    minimumMemory: 'Minimum memory',
+    recommendedMemory: 'Recommended memory',
+    detectedMemory: 'Detected memory',
+    recommendation: 'Recommendation',
+    ollamaModel: 'Ollama model',
+    fallbackGguf: 'Fallback GGUF',
+    officialUrl: 'Official URL',
+    modelStore: 'Model store',
+    modelBlob: 'Model blob',
+  },
+  /** A model bigger than this computer's memory recommendation asks before it installs or loads. */
+  confirmResources: {
+    title: 'Continue anyway?',
+    installAnyway: 'Install anyway',
+    warmUpAnyway: 'Warm up anyway',
+    fallbackConfirm: 'Continue',
+    cancel: 'Cancel',
+  },
+  confirmDelete: {
+    title: 'Delete this local model?',
+    message: (name: string) =>
+      `${name} will be removed from the local model inventory. You can download it again later.`,
+    confirm: 'Delete',
+    cancel: 'Cancel',
+  },
 } as const;
 
 export const modelsDangerCopy = {

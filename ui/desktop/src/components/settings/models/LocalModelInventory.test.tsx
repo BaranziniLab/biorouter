@@ -188,7 +188,7 @@ describe('LocalModelInventory', () => {
     const user = await openRowMenu();
     await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
 
-    expect(await screen.findByText('Expected speed')).toBeInTheDocument();
+    expect(await screen.findByText(localModelsCopy.detail.expectedSpeed)).toBeInTheDocument();
     // The row keeps only the speed word; the whole hint is the dialog's.
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText(/Fast — ~4B active parameters/)).toBeInTheDocument();
@@ -220,11 +220,13 @@ describe('LocalModelInventory', () => {
     };
 
     // Model ids: names, so body font.
-    expect((await valueFor('Ollama model')).className).not.toMatch(/font-mono/);
-    expect((await valueFor('Fallback GGUF')).className).not.toMatch(/font-mono/);
+    expect((await valueFor(localModelsCopy.detail.ollamaModel)).className).not.toMatch(/font-mono/);
+    expect((await valueFor(localModelsCopy.detail.fallbackGguf)).className).not.toMatch(
+      /font-mono/
+    );
 
     // Filesystem paths: a job mono earns (D-31), and still mono.
-    expect((await valueFor('Model store')).className).toMatch(/font-mono/);
+    expect((await valueFor(localModelsCopy.detail.modelStore)).className).toMatch(/font-mono/);
   });
 
   it('renders the busy row for an operation started elsewhere (#34)', async () => {
@@ -232,6 +234,10 @@ describe('LocalModelInventory', () => {
     render(<LocalModelInventory />);
 
     expect(await screen.findByText('downloading 42%')).toBeInTheDocument();
+    // The button's name follows the word it shows, and it waits while the work runs.
+    const busyButton = screen.getByRole('button', { name: 'Installing Gemma 4 E4B' });
+    expect(busyButton).toHaveTextContent(localModelsCopy.installing);
+    expect(busyButton).toBeDisabled();
   });
 
   it('a refresh that settles after unmount updates the store but no component state (finding 8)', async () => {

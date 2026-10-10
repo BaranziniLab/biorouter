@@ -22,6 +22,7 @@ import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
 import { Spinner } from '../../ui/spinner';
 import { StatusDot } from '../../ui/status-dot';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
@@ -42,14 +43,15 @@ const isInstalled = (model: LlamaCppModel) =>
   model.download_status === 'downloaded' || model.fallback_download_status === 'downloaded';
 
 const installedLabel = (model: LlamaCppModel) => {
+  const words = localModelsCopy.status;
   if (model.download_status === 'downloaded') {
-    return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
+    return model.download_source === 'ollama' ? words.downloadedInOllama : words.downloaded;
   }
-  if (model.fallback_download_status === 'downloaded') return 'Fallback ready';
+  if (model.fallback_download_status === 'downloaded') return words.fallbackReady;
   if (model.download_status === 'partial' || model.fallback_download_status === 'partial') {
-    return 'Partial download';
+    return words.partial;
   }
-  return 'Needs download';
+  return words.needsDownload;
 };
 
 /** "Fast", "Fastest" or "Moderate": the head of the catalog's speed hint, before its detail. */
@@ -66,7 +68,7 @@ const factsLine = (model: LlamaCppModel) =>
     model.download_size,
     localModelsCopy.contextWindow(model.context_limit),
     model.download_status === 'partial' || model.fallback_download_status === 'partial'
-      ? 'Partial download'
+      ? localModelsCopy.status.partial
       : null,
   ]
     .filter(Boolean)
@@ -210,7 +212,7 @@ export default function LocalModelInventory() {
   const runInstall = useCallback(
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
-      if (!(await confirmResources(model, 'Install anyway'))) return;
+      if (!(await confirmResources(model, localModelsCopy.confirmResources.installAnyway))) return;
       let opId = llamaServerStore.beginOperation('install', model.name, 'Preparing install…', {
         poll: false,
       });
@@ -284,7 +286,7 @@ export default function LocalModelInventory() {
   const runWarmup = useCallback(
     async (model: LlamaCppModel) => {
       if (llamaServerStore.getSnapshot().operation || deleteAction) return;
-      if (!(await confirmResources(model, 'Warm up anyway'))) return;
+      if (!(await confirmResources(model, localModelsCopy.confirmResources.warmUpAnyway))) return;
       const opId = llamaServerStore.beginOperation('warmup', model.name, 'Warming up model…');
 
       try {
@@ -383,6 +385,7 @@ export default function LocalModelInventory() {
     return items;
   };
 
+  const detail = localModelsCopy.detail;
   const largeWarning =
     snapshot?.system.os === 'macos'
       ? localModelsCopy.largeForThisMac
@@ -400,18 +403,24 @@ export default function LocalModelInventory() {
               {localModelsCopy.installedCount(installedCount, catalog.length)}
             </span>
           ) : null}
-          <Button
-            type="button"
-            shape="round"
-            size="sm"
-            variant="ghost"
-            className="br-local-models-refresh"
-            onClick={() => void refresh()}
-            disabled={isLoading || busy}
-            aria-label={localModelsCopy.refresh}
-          >
-            {isLoading ? <Spinner /> : <RefreshCw />}
-          </Button>
+          {/* A glyph alone: its name is also its tooltip, as every icon action's is. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                shape="round"
+                size="sm"
+                variant="ghost"
+                className="br-local-models-refresh"
+                onClick={() => void refresh()}
+                disabled={isLoading || busy}
+                aria-label={localModelsCopy.refresh}
+              >
+                {isLoading ? <Spinner /> : <RefreshCw />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{localModelsCopy.refresh}</TooltipContent>
+          </Tooltip>
         </div>
       }
     >
@@ -491,7 +500,11 @@ export default function LocalModelInventory() {
                       type="button"
                       size="sm"
                       variant="secondary"
-                      aria-label={`${localModelsCopy.install} ${model.display_name}`}
+                      // The name follows the visible word ("Install Gemma 4 12B", then "Installing Gemma 4 12B"),
+                      // so what a screen reader says always contains what the button shows.
+                      aria-label={`${
+                        isInstalling ? localModelsCopy.installing : localModelsCopy.install
+                      } ${model.display_name}`}
                       onClick={() => void runInstall(model)}
                       disabled={busy}
                     >
@@ -558,34 +571,34 @@ export default function LocalModelInventory() {
       >
         {selectedModel && (
           <div className="space-y-2 py-3">
-            <DetailRow label="Status">{installedLabel(selectedModel)}</DetailRow>
-            <DetailRow label="Family">{selectedModel.family}</DetailRow>
-            <DetailRow label="Download">{selectedModel.download_size}</DetailRow>
-            <DetailRow label="Expected speed">{selectedModel.speed_hint}</DetailRow>
-            <DetailRow label="Context">
+            <DetailRow label={detail.status}>{installedLabel(selectedModel)}</DetailRow>
+            <DetailRow label={detail.family}>{selectedModel.family}</DetailRow>
+            <DetailRow label={detail.download}>{selectedModel.download_size}</DetailRow>
+            <DetailRow label={detail.expectedSpeed}>{selectedModel.speed_hint}</DetailRow>
+            <DetailRow label={detail.context}>
               {formatContext(selectedModel.context_limit)} tokens
             </DetailRow>
-            <DetailRow label="Minimum memory">
+            <DetailRow label={detail.minimumMemory}>
               {selectedModel.min_gpu_memory_gib} GiB GPU-addressable memory
             </DetailRow>
-            <DetailRow label="Recommended memory">
+            <DetailRow label={detail.recommendedMemory}>
               {selectedModel.recommended_gpu_memory_gib} GiB GPU-addressable memory
             </DetailRow>
-            <DetailRow label="Detected memory">
+            <DetailRow label={detail.detectedMemory}>
               {typeof snapshot?.system.accelerator_memory_gib === 'number'
                 ? `${snapshot.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(
                     snapshot.system.accelerator_memory_kind
                   )}`
                 : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
             </DetailRow>
-            <DetailRow label="Recommendation">{selectedModel.suitability_message}</DetailRow>
+            <DetailRow label={detail.recommendation}>{selectedModel.suitability_message}</DetailRow>
             {/* NOT `mono`. A model id is a NAME everywhere else in the app (the composer chip,
                 the model pickers, the onboarding cards), so it takes the body face. The `mono`
                 rows below stay: those are filesystem paths, which is a job mono actually earns
                 (D-31). */}
-            <DetailRow label="Ollama model">{selectedModel.ollama_name ?? 'none'}</DetailRow>
-            <DetailRow label="Fallback GGUF">{selectedModel.hf_spec}</DetailRow>
-            <DetailRow label="Official URL">
+            <DetailRow label={detail.ollamaModel}>{selectedModel.ollama_name ?? 'none'}</DetailRow>
+            <DetailRow label={detail.fallbackGguf}>{selectedModel.hf_spec}</DetailRow>
+            <DetailRow label={detail.officialUrl}>
               <button
                 type="button"
                 className="inline-flex min-w-0 items-center justify-end gap-1 text-text-accent hover:underline"
@@ -597,11 +610,11 @@ export default function LocalModelInventory() {
                 <ExternalLink className="h-3.5 w-3.5 shrink-0" />
               </button>
             </DetailRow>
-            <DetailRow label="Model store" mono>
+            <DetailRow label={detail.modelStore} mono>
               {snapshot?.system.model_cache_dir ?? 'unknown'}
             </DetailRow>
             {selectedModel.model_path && (
-              <DetailRow label="Model blob" mono>
+              <DetailRow label={detail.modelBlob} mono>
                 {selectedModel.model_path}
               </DetailRow>
             )}
@@ -613,10 +626,12 @@ export default function LocalModelInventory() {
           a deletion, and the loud variant would say the wrong thing about it. */}
       <ConfirmationModal
         isOpen={pendingResourceConfirm !== null}
-        title="Continue anyway?"
+        title={localModelsCopy.confirmResources.title}
         message={pendingResourceConfirm?.message ?? ''}
-        confirmLabel={pendingResourceConfirm?.confirmLabel ?? 'Continue'}
-        cancelLabel="Cancel"
+        confirmLabel={
+          pendingResourceConfirm?.confirmLabel ?? localModelsCopy.confirmResources.fallbackConfirm
+        }
+        cancelLabel={localModelsCopy.confirmResources.cancel}
         confirmVariant="default"
         onConfirm={() => {
           pendingResourceConfirm?.resolve(true);
@@ -633,14 +648,14 @@ export default function LocalModelInventory() {
           reopen the dialog for the duration of the delete it just started. */}
       <ConfirmationModal
         isOpen={pendingDelete !== null}
-        title="Delete this local model?"
+        title={localModelsCopy.confirmDelete.title}
         message={
           pendingDelete
-            ? `${pendingDelete.ollama_name ?? pendingDelete.name} will be removed from the local model inventory. You can download it again later.`
+            ? localModelsCopy.confirmDelete.message(pendingDelete.ollama_name ?? pendingDelete.name)
             : ''
         }
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={localModelsCopy.confirmDelete.confirm}
+        cancelLabel={localModelsCopy.confirmDelete.cancel}
         confirmVariant="destructive"
         isSubmitting={deleteAction !== null}
         onConfirm={() => {
