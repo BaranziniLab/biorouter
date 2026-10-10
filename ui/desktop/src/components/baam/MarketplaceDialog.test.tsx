@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { MarketplaceDialog, MarketplaceRow, MarketplaceSection } from './MarketplaceDialog';
 import { MARKETPLACE_COPY } from './copy';
+import { MODAL_SIZE } from '../ModalShell';
 
 function renderDialog(props: Partial<React.ComponentProps<typeof MarketplaceDialog>> = {}) {
   const onClose = vi.fn();
@@ -46,6 +47,15 @@ describe('MarketplaceDialog — the shell both browse dialogs share', () => {
   it('dates a catalog that is not live, and says nothing for a live one', () => {
     renderDialog({ live: false, fetchedAt: undefined });
     expect(screen.getByText(/showing bundled catalog \(offline\)/)).toBeInTheDocument();
+  });
+
+  it('is the 640px dialog, anchored to the top so a narrowing search never re-centres it', () => {
+    renderDialog();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('data-size', 'lg');
+    expect(dialog).toHaveClass(MODAL_SIZE.lg);
+    expect(MODAL_SIZE.lg).toBe('sm:max-w-[640px]');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
   });
 
   it('names the search field and leaves the placeholder short', async () => {
