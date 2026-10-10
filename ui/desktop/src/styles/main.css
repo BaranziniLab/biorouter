@@ -2748,55 +2748,6 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 
 /* ============================================================
-   THE WORKING-DIRECTORY CHIP'S PATH, WHILE THE DIRECTORY IS STILL CHOOSABLE
-
-   Two separate things live in one rule because they are one mechanism, and
-   splitting them is how the bug below shipped.
-
-   1. THE BOX IS RTL SO THE *HEAD* IS CLIPPED. `text-overflow: ellipsis` cuts
-      at the line's end edge, which in an RTL box is the LEFT — so a path too
-      long for the chip loses `/Users/wgu/` and keeps the final segments, which
-      are the informative end. Do not "fix" this to LTR: clipping a path from
-      the right hides the only part that identifies it.
-
-   2. THE TEXT IS AN LTR ISOLATE SO THE PATH IS THE PATH. `/` is bidi-neutral
-      (Unicode class CS), and so is `\`. In an RTL paragraph the Unicode
-      bidirectional algorithm resolves a neutral that sits at a paragraph
-      boundary to the PARAGRAPH direction — so the path's LEADING slash was
-      reordered to the visual right end and `/Users/wgu/Downloads` rendered as
-      `...wgu/Downloads/`, a path that does not exist, while the tooltip beside
-      it read correctly. A chip showing a wrong path is worse than one showing
-      a truncated right path. `direction: ltr` (not merely `unicode-bidi:
-      isolate`, which would inherit the RTL base and reorder exactly the same)
-      pins the path's STRUCTURE left-to-right; an RTL-script folder name inside
-      it still renders in its own direction, which is what a terminal does too.
-
-   3. THE CAP IS `ch`, AND THERE IS DELIBERATELY NO PERCENTAGE TERM. The chip
-      shares the context strip with the extension/skill/KB counts under
-      `justify-between`, and those counts must never be squeezed or pushed off.
-      A `min(46ch, 40%)` cap was considered for that job and declined twice
-      over: the counts group is already `flex-shrink-0` while every box on this
-      side (strip item -> button -> this div) carries `min-w-0`, so ALL
-      shrinkage lands here and the guarantee already holds without a
-      percentage; and the percentage could not do the job anyway, because this
-      div's containing block is a content-sized flex item with no definite
-      width, which is the case where a percentage max-width resolves against an
-      indefinite size and behaves as `none`. 46ch is generous for an ordinary
-      path (`/Users/wgu/Downloads` is 20 characters) and flex shrinks it
-      further in a narrow or split pane. The LOCKED chip is a different control
-      with a different job — a basename, capped at 112px in DirSwitcher.tsx —
-      and is deliberately not covered by this rule. */
-.biorouter-dir-chip-path {
-  direction: rtl;
-  max-width: 46ch;
-}
-
-.biorouter-dir-chip-path > bdi {
-  direction: ltr;
-  unicode-bidi: isolate;
-}
-
-/* ============================================================
    THE COMPOSER'S WORKING EDGE — "Biorouter has the floor"
 
    While a turn is running, the composer's own 1px border carries a slow
