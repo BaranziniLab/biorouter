@@ -45,8 +45,8 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The bar itself is the primitive's `size="thin"` (4px); only its gap is ours. */
 .br-summary .br-summary__progress {
-  height: 4px;
   margin-bottom: 4px;
 }
 

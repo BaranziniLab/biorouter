@@ -44,8 +44,14 @@ function Stat({ label, children }: { label: ReactNode; children: ReactNode }) {
 }
 
 /**
- * One to-do row. The glyph crossfades when the status changes after the row
+ * One to-do row. The glyph crossfades whenever the status changes after the row
  * first rendered; a row that arrives with the list stays at rest.
+ *
+ * Whether the row ENTERS is decided once, in the render that mounts it. The
+ * list above re-derives "entering" on every render from a baseline that moves
+ * on after the first, and BaseChat re-renders on every streamed chunk, so
+ * reading it live would drop `.br-enter` (and its stagger delay) from a row
+ * milliseconds into its 175ms entrance and pop it to full opacity.
  */
 function TodoRow({
   item,
@@ -56,14 +62,23 @@ function TodoRow({
   entering: boolean;
   enterIndex: number;
 }) {
-  const [initialStatus] = useState(item.status);
+  const [animateIn] = useState(entering);
+  const [delayIndex] = useState(enterIndex);
+  // A row that has changed status once keeps its crossfade, so a return to the
+  // status it began with (pending, running, pending) still plays.
+  const [seenStatus, setSeenStatus] = useState(item.status);
+  const [changed, setChanged] = useState(false);
+  if (seenStatus !== item.status) {
+    setSeenStatus(item.status);
+    setChanged(true);
+  }
   const Icon = TODO_STATUS_ICONS[item.status];
-  const style: CSSProperties | undefined = entering
-    ? { animationDelay: `${enterIndex * ROW_STAGGER_MS}ms` }
+  const style: CSSProperties | undefined = animateIn
+    ? { animationDelay: `${delayIndex * ROW_STAGGER_MS}ms` }
     : undefined;
   return (
     <li
-      className={entering ? 'br-summary__todo br-enter' : 'br-summary__todo'}
+      className={animateIn ? 'br-summary__todo br-enter' : 'br-summary__todo'}
       data-status={item.status}
       data-nested={item.parent !== undefined ? '' : undefined}
       data-todo-id={item.id}
@@ -72,7 +87,7 @@ function TodoRow({
       <span
         key={item.status}
         className="br-summary__glyph"
-        data-changed={item.status !== initialStatus ? '' : undefined}
+        data-changed={changed ? '' : undefined}
         aria-hidden="true"
       >
         <Icon />
@@ -193,6 +208,7 @@ export function ChatSummary({
               </span>
             </div>
             <Progress
+              size="thin"
               className="br-summary__progress"
               value={completed}
               max={total}

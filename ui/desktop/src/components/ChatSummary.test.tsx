@@ -185,6 +185,72 @@ describe('compact chat summary', () => {
     ]);
   });
 
+  it('keeps a new row’s entrance through the re-renders that follow it', () => {
+    // BaseChat re-renders on every streamed chunk, so the summary re-renders
+    // within milliseconds of a row arriving: the entrance must not be cut off
+    // (a row losing `.br-enter` mid-animation just pops to full opacity).
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items }} />
+    );
+    const added = Array.from({ length: 3 }, (_, i) => ({
+      id: `new-${i}`,
+      text: `Added ${i}`,
+      status: 'pending' as const,
+    }));
+    const next = { ...props.todos, items: [...items, ...added] };
+    rerender(<ChatSummary {...props} todos={next} />);
+    rerender(<ChatSummary {...props} todos={{ ...next }} />);
+    rerender(<ChatSummary {...props} todos={{ ...next }} />);
+    const entering = Array.from(container.querySelectorAll<HTMLElement>('.br-enter'));
+    expect(entering.map((row) => row.dataset.todoId)).toEqual(['new-0', 'new-1', 'new-2']);
+    expect(entering.map((row) => row.style.animationDelay)).toEqual(['0ms', '30ms', '60ms']);
+  });
+
+  it('does not enter a row that was past the five-row cap when it arrived, on a later render', () => {
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items }} />
+    );
+    const added = Array.from({ length: 7 }, (_, i) => ({
+      id: `new-${i}`,
+      text: `Added ${i}`,
+      status: 'pending' as const,
+    }));
+    const next = { ...props.todos, items: [...items, ...added] };
+    rerender(<ChatSummary {...props} todos={next} />);
+    rerender(<ChatSummary {...props} todos={{ ...next }} />);
+    const entering = Array.from(container.querySelectorAll<HTMLElement>('.br-enter'));
+    expect(entering.map((row) => row.dataset.todoId)).toEqual([
+      'new-0',
+      'new-1',
+      'new-2',
+      'new-3',
+      'new-4',
+    ]);
+  });
+
+  it('crossfades a glyph on every change, including a return to the status the row began with', () => {
+    const begin = [{ id: '1', text: 'Verify', status: 'pending' as const }];
+    const { rerender, container } = render(
+      <ChatSummary {...props} todos={{ ...props.todos, items: begin }} />
+    );
+    const glyph = () => container.querySelector('.br-summary__glyph');
+    expect(glyph()).not.toHaveAttribute('data-changed');
+    rerender(
+      <ChatSummary
+        {...props}
+        todos={{ ...props.todos, items: [{ ...begin[0], status: 'in_progress' }] }}
+      />
+    );
+    expect(glyph()).toHaveAttribute('data-changed');
+    rerender(<ChatSummary {...props} todos={{ ...props.todos, items: begin }} />);
+    expect(glyph()).toHaveAttribute('data-changed');
+  });
+
+  it('draws the progress as the thin 4px bar', () => {
+    render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
+    expect(screen.getByRole('progressbar')).toHaveAttribute('data-size', 'thin');
+  });
+
   it('scrolls its body, not the list, and keeps the list a list', () => {
     const { container } = render(<ChatSummary {...props} todos={{ ...props.todos, items }} />);
     const body = container.querySelector('[data-summary-body]');
