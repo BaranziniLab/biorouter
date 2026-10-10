@@ -65,12 +65,15 @@ operation accepts exactly this string with no decoration: Chat Recall's exact-ID
 
 ## Getting an ID out of the app, and what to do with it
 
-Right-click a conversation and pick **Copy conversation ID**. The menu is on all
-three places a chat row is drawn — sidebar Recents, full History, and the tab strip —
-and carries the same three actions in the same order everywhere: *Open in new tab*,
-*Open in new window*, *Copy conversation ID*. History's `⋯` overflow shows the identical
-list, which is also the keyboard path there; on any row the Menu key or Shift+F10 opens
-the right-click menu, because both dispatch a `contextmenu` event on the focused element.
+Right-click a chat and pick **Copy chat ID**. The menu is on all three places a chat row
+is drawn (the sidebar's Chats list, full History, and the tab strip) and is one menu
+(`components/chats/ChatRowContextMenu.tsx`) in one order everywhere: *Rename*, *Open in
+new tab*, *Open in new window*, *Diverge*, *Export…*, *Copy chat ID*, *Delete chat…*. A
+surface leaves out an item it cannot run (the tab strip shows only the three shared
+actions until its Rename lands; a subagent run offers no *Diverge*). The row's `⋯` button
+in the sidebar and History opens the identical list, and on any row the Menu key or
+Shift+F10 opens the right-click menu, because both dispatch a `contextmenu` event on the
+focused element.
 
 What lands on the clipboard is `Session.id` and nothing else — no prefix, no URL, no
 name. That is the point: the string can be pasted straight into a chat, where it is
@@ -158,7 +161,7 @@ for a restricted caller is not evidence the conversation does not exist. See
 
 ## What is deliberately not in the contract
 
-- **A second identity mechanism in the UI.** Copy conversation ID copies `Session.id` and
+- **A second identity mechanism in the UI.** Copy chat ID copies `Session.id` and
   nothing else — no prefix, no URL, no display name. Any surface that needs to name a
   conversation to an agent uses that same string.
 - **A `kind` that can mint every `SessionType`.** `workspace_open`'s `new.kind` accepts

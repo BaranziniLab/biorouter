@@ -2,8 +2,9 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionSummary } from '../../api';
+import { chatRowCopy } from '../chats/copy';
 import { SidebarProvider } from '../ui/sidebar';
-import RecentChats from './RecentChats';
+import RecentChats, { canDivergeChat } from './RecentChats';
 import { DEFAULT_SIDEBAR_CHAT_VIEW } from './sidebarChatView';
 
 const mocks = vi.hoisted(() => ({
@@ -138,6 +139,49 @@ describe('sidebar Recents right-click menu', () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith('20260823_2', 'Excel research', true));
   });
 
+  /**
+   * History's menu is the reference for what a chat offers (spec 3.4), and the
+   * two share one menu, so they share its rule: a subagent run is machinery, and
+   * an empty chat has nothing to branch from. A scheduled run, a terminal chat
+   * and a one-message chat still offer it; the daemon answers for the rest.
+   */
+  it('offers Diverge by History’s rule', () => {
+    expect(canDivergeChat(session)).toBe(true);
+    expect(canDivergeChat({ ...session, message_count: 0 })).toBe(false);
+    expect(canDivergeChat({ ...session, message_count: 1 })).toBe(true);
+    expect(canDivergeChat({ ...session, session_type: 'sub_agent' })).toBe(false);
+    expect(canDivergeChat({ ...session, parent_session_id: 'parent' })).toBe(false);
+    expect(canDivergeChat({ ...session, session_type: 'scheduled' })).toBe(true);
+  });
+
+  it('leaves Diverge out of a subagent run’s menu and keeps every other item', async () => {
+    render(
+      <SidebarProvider>
+        <RecentChats
+          sessions={[{ ...session, session_type: 'sub_agent' }]}
+          runningSessionIds={new Set()}
+          hasMore={false}
+          isLoadingMore={false}
+          onLoadMore={vi.fn()}
+          onOpen={vi.fn()}
+          onViewAll={vi.fn()}
+          view={DEFAULT_SIDEBAR_CHAT_VIEW}
+          onViewChange={vi.fn()}
+        />
+      </SidebarProvider>
+    );
+    fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
+    const items = await screen.findAllByRole('menuitem');
+    expect(items.map((item) => item.getAttribute('data-chat-row-action'))).toEqual([
+      'rename',
+      'open-tab',
+      'open-window',
+      'export',
+      'copy-id',
+      'delete',
+    ]);
+  });
+
   it('copies the raw conversation id', async () => {
     renderRecents();
     fireEvent.contextMenu(screen.getByTestId('recent-chat-20260823_2'));
@@ -194,7 +238,10 @@ describe('permanent Recents deletion', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(mocks.deleteConversation).toHaveBeenCalledWith('20260823_2'));
     expect(mocks.deleteConversation).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+    // History's toast, word for word: the title and no sentence under it.
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith({ title: chatRowCopy.deleteDialog.deleted })
+    );
   });
   it('keeps the dialog open and shows an actionable API error', async () => {
     mocks.deleteConversation.mockRejectedValue(new Error('Server unavailable'));

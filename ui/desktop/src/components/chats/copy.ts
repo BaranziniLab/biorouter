@@ -26,6 +26,10 @@ export const chatRowCopy = {
     message: (title: string) => `Delete "${title}"? This can't be undone.`,
     confirm: 'Delete',
     cancel: 'Cancel',
+    /** The toast after a delete lands: the row leaving the list says the rest. */
+    deleted: 'Chat deleted',
     failed: "Couldn't delete chat",
+    /** Only when a failure carries no text of its own; a daemon sentence is shown as is. */
+    failedFallback: 'Try again.',
   },
 } as const;

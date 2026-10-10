@@ -121,10 +121,15 @@ const chatKey = (sessionId: string) => `chat:${sessionId}`;
 const folderKey = (group: SidebarChatGroup) => `folder:${group.key}`;
 const moreKey = (group: SidebarChatGroup) => `more:${group.key}`;
 
-/** What a row's menu offers, decided from the chat itself (History's menu is the reference). */
-function canDiverge(session: SessionSummary): boolean {
-  const kind = chatKindOf(session);
-  return (kind === 'chat' || kind === 'branch' || kind === 'crew') && session.message_count > 1;
+/**
+ * What a row's menu offers, decided from the chat itself, by History's rule
+ * (spec 3.4: History's menu is the reference, and the two share one menu): a
+ * subagent run is machinery, not a chat to branch, and an empty chat has
+ * nothing to branch from. Everything else offers Diverge, and the daemon
+ * answers for the rest.
+ */
+export function canDivergeChat(session: SessionSummary): boolean {
+  return chatKindOf(session) !== 'subagent' && session.message_count > 0;
 }
 
 // ── One chat row ──────────────────────────────────────────────────────────
@@ -191,7 +196,7 @@ function RecentChatRow({
     onRename: () => {
       renameAfterMenu.current = true;
     },
-    onDiverge: canDiverge(session) ? () => onDiverge(session.id) : undefined,
+    onDiverge: canDivergeChat(session) ? () => onDiverge(session.id) : undefined,
     onExport: () => void exportConversation(session.id, title, { scope: 'app' }),
     onDelete: () => onRequestDelete(session),
   };
@@ -644,20 +649,21 @@ export default function RecentChats({
     if (!session || deletePending.current) return;
     deletePending.current = true;
     setDeleting(true);
-    const title = session.name.trim() || sidebarCopy.chats.untitled;
     try {
       await deleteConversation(session.id);
       setPendingDelete(null);
-      toastSuccess({ title: 'Chat deleted', msg: `"${title}" was removed from chat history.` });
+      // History's toast, word for word: the title alone, no sentence under it.
+      toastSuccess({ title: chatRowCopy.deleteDialog.deleted });
     } catch (error) {
+      // A refusal stays readable: the daemon's own sentence is the message.
       toastError({
         title: chatRowCopy.deleteDialog.failed,
         msg:
           typeof error === 'string' && error.trim()
             ? error
-            : error instanceof Error
+            : error instanceof Error && error.message.trim()
               ? error.message
-              : 'Please try again.',
+              : chatRowCopy.deleteDialog.failedFallback,
       });
     } finally {
       deletePending.current = false;
