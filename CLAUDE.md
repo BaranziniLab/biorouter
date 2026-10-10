@@ -626,6 +626,12 @@ was removed to make it true:
      `--output` targets. Relative paths resolve against the session working dir.
      Only successful tool responses count. See `fileArtifactPathsFromToolCall`.
   3. File paths the assistant mentions in its prose (the original behaviour).
+- **Every kind sits under one 32px preview bar** (`artifacts/PreviewBar.tsx`: name, meta,
+  Copy, view switch), drawn from the artifact's metadata before the content loads. The content
+  portals its count and actions into it (`PreviewBarMeta` / `PreviewBarActions`), and a layer
+  that is fading out is wrapped in `PreviewBarGate` so it puts nothing into the bar. A tab that
+  has been seen never shows a loading state again (`previewCacheRef`); a first load shows
+  nothing for 200ms, then `PreviewSkeleton`'s three lines.
 - **How each kind renders:** HTML → sandboxed `srcdoc` iframe; images → inline;
   directories → `DirectoryTreePreview`, a left rail holding a filter box and an
   expandable `role="tree"` (branch chip and per-entry status dots on a
@@ -869,6 +875,18 @@ value's *location* is as load-bearing as the number.
   prose the eye has to track back across. `styles/measures.test.ts` asserts the
   whole string, because every loose matcher (`/760px/`) is satisfied by
   `clamp(760px, 78%, 1180px)`, the value being ruled out.
+- **The Chat summary docks as rung 0, before anything else yields** (`summaryRailFit` in
+  `Layout/yieldLadder.ts`; [`docs/desktop-ui/chat-summary-rail.md`](docs/desktop-ui/chat-summary-rail.md)).
+  Once a chat has had a turn, a 240 to 280px card sits to the right of the conversation under the chat
+  header, but only where the conversation keeps its full measure: a 816px transcript cell (760 plus
+  the 56px of `px-1` and `paddingX={6}` around it) plus the rail, so `available ≥ 1056` (1068 after
+  a measured hide), width `clamp(available − 816, 240, 280)`; `available` is the pane minus a side
+  preview, and a stacked preview hides it. Elsewhere the header's `PanelRight` button opens the same
+  content as a 280px popover. ⚠ The 56 is derived from two literals in `BaseChat.tsx`, which
+  `styles/summaryRail.test.ts` pins; moving either moves the seam. The grid lives in
+  `components/summary/summaryRail.css`, not `main.css`, keyed on
+  `[data-summary-rail]:not([data-preview-layout])`, and it snaps: only the conversation's FLIP
+  (`hooks/useColumnGlide.ts`) and the card itself animate.
 - **The composer's card is the input, and nothing else** (`ChatInput.tsx`). Three
   rows — context above, the card holding the prose *and* Send, controls below —
   with the outer two directly on the canvas, so the only boxed thing on screen is
