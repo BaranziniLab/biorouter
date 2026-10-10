@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Download, Github } from '../icons/app-icons';
 import { Spinner } from './spinner';
 import { Button } from './button';
+import { InfoTip } from './info-tip';
 import { toastError, toastSuccess } from '../../toasts';
 import { diagnostics, getSession, systemInfo } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
@@ -224,11 +225,19 @@ Add any other context about the problem here.
               <AlertTriangle size={20} />
             </div>
             <div className="min-w-0 flex-1">
-              <DialogTitle>Report a problem</DialogTitle>
+              <div className="flex items-center">
+                <DialogTitle>Report a problem</DialogTitle>
+                {/* The other way to report: it is a tip, not a disclosure, so it sits behind the
+                    glyph (spec principle 2). The words stay in the page for a screen reader. */}
+                <InfoTip
+                  label="Report a problem"
+                  help="Say “report a bug” in the chat and Biorouter writes the report, removes paths and credentials, and shows you the exact text before anything is published."
+                  data-testid="diagnostics-agent-hint"
+                />
+              </div>
+              {/* What the bundle holds is a disclosure of what leaves the machine, so it stays. */}
               <DialogDescription className="mt-2">
-                You can download a diagnostics zip file to share with the team, or file a bug
-                directly on GitHub with your system details pre-filled. A diagnostics report
-                contains the following:
+                A diagnostics report contains the following:
               </DialogDescription>
             </div>
           </div>
@@ -254,13 +263,6 @@ Add any other context about the problem here.
               should not leave this machine.
             </p>
           )}
-          <p>If you file a bug, consider attaching the diagnostics report to it.</p>
-          <p data-testid="diagnostics-agent-hint">
-            You can also just say{' '}
-            <strong className="text-text-default">&ldquo;report a bug&rdquo;</strong> in the chat.
-            Biorouter will work out what went wrong, write the report, remove paths and credentials
-            from it, and show you the exact text before anything is published.
-          </p>
         </div>
         {isDownloading && (
           <div

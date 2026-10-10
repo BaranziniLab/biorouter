@@ -47,6 +47,27 @@ describe('DiagnosticsModal', () => {
     >);
   });
 
+  /**
+   * Principle 2: a visible line is a label, a value or a state word; the explanation of the other
+   * way to report sits behind an InfoTip. What leaves the machine (the list, the sensitive-data
+   * warning, the private-chat warning) stays in the page.
+   */
+  it('keeps what leaves the machine visible and puts the tips behind an InfoTip', () => {
+    render(<DiagnosticsModal isOpen onClose={() => {}} sessionId="20260716_27" />);
+    const dialog = screen.getByRole('dialog', { name: 'Report a problem' });
+    expect(dialog).toHaveTextContent('A diagnostics report contains the following:');
+    expect(dialog).toHaveTextContent('Your current chat messages');
+    expect(dialog).toHaveTextContent('do not share the diagnostics file publicly');
+    expect(dialog).not.toHaveTextContent('consider attaching');
+
+    const tip = screen.getByTestId('diagnostics-agent-hint');
+    expect(tip).toHaveAccessibleName('About Report a problem');
+    expect(tip).toHaveAccessibleDescription(
+      /report a bug.*removes paths and credentials.*exact text before anything is published/
+    );
+    expect(tip.closest('p')).toBeNull();
+  });
+
   it('generates and saves the archive through the native diagnostics IPC', async () => {
     const onClose = vi.fn();
     saveDiagnosticsBundle.mockResolvedValue({
