@@ -185,7 +185,8 @@ describe('ModalShell — defaults an area gives its dialogs', () => {
     expect(surface()).toHaveClass('crew-dialog', 'extra');
   });
 
-  // QA Q2-26: one header rule for every dialog of an area, not only the scrolling ones.
+  // QA Q2-26: one header rule for every dialog of an area, not only the scrolling ones. A context
+  // value is still honoured (an area can opt its dialogs out), and a prop still beats it.
   it('draws the header hairline from a default, a prop winning, and gives the body its gutter', () => {
     render(
       <ModalShellDefaultsContext.Provider value={{ headerRule: true }}>
@@ -206,22 +207,89 @@ describe('ModalShell — defaults an area gives its dialogs', () => {
     expect(header()).not.toHaveClass('border-b');
     cleanup();
 
-    open();
+    render(
+      <ModalShellDefaultsContext.Provider value={{ headerRule: false }}>
+        <ModalShell open onOpenChange={vi.fn()} title="An area that opts out">
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
     expect(header()).not.toHaveClass('border-b');
+    cleanup();
+
+    render(
+      <ModalShellDefaultsContext.Provider value={{ headerRule: false }}>
+        <ModalShell open onOpenChange={vi.fn()} title="Its own choice" headerRule>
+          <p>body</p>
+        </ModalShell>
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(header()).toHaveClass('border-b');
+  });
+});
+
+/**
+ * Coordinator ruling 1 (Codex simplicity redesign): Crew is the reference design, so the header
+ * hairline is the shell's own default, not something an area has to provide. A dialog outside Crew,
+ * with no provider above it, gets the same chrome.
+ */
+describe('ModalShell — the header rule is on by default', () => {
+  const header = () => surface().firstElementChild as HTMLElement;
+
+  it('draws the hairline with no provider and no prop, and gives the body its gutter', () => {
+    open();
+    expect(header()).toHaveClass('border-b', 'border-border-subtle');
+    expect(screen.getByText('body').parentElement).toHaveClass('pt-3');
+  });
+
+  it('draws it for a dialog that is only a title and a footer', () => {
+    render(
+      <ModalShell
+        open
+        onOpenChange={vi.fn()}
+        title="Delete this?"
+        footer={<button>Delete</button>}
+      />
+    );
+    expect(header()).toHaveClass('border-b');
+  });
+
+  it('keeps the rule for a scrolling body whatever headerRule says', () => {
+    open({ scrollBody: true, headerRule: false });
+    expect(header()).toHaveClass('border-b');
+  });
+
+  it('headerRule={false} is the explicit opt-out', () => {
+    open({ headerRule: false });
+    expect(header()).not.toHaveClass('border-b');
+    // No rule, so the body takes no extra top gutter.
+    expect(screen.getByText('body').parentElement).not.toHaveClass('pt-3');
   });
 });
 
 /**
  * The anchor axis (QA T-30). The primitive centres a dialog with `top: 50%` and a -50% Y translate,
  * so a dialog whose height changes while it is open re-centres and jumps under the pointer. `top`
- * pins the top edge instead. The default stays `center`, so no caller outside Crew moves.
+ * pins the top edge instead, and since coordinator ruling 1 it is the default everywhere: Crew's
+ * placement is the reference design.
  *
  * jsdom drops `max()` from an inline `top`, so the geometry is asserted on the one exported style
  * (what a real browser receives) and the rendered surface is asserted by its marker and translate.
  */
 describe('ModalShell — the anchor axis', () => {
-  it('stays centred by default, with no inline geometry', () => {
+  it('pins the top edge by default, with no provider and no prop', () => {
     open();
+    expect(surface()).toHaveAttribute('data-anchor', 'top');
+    expect((surface() as HTMLElement).style.getPropertyValue('translate')).toBe('-50% 0');
+    expect(MODAL_ANCHOR_TOP_STYLE).toEqual({
+      top: 'max(10vh, 48px)',
+      translate: '-50% 0',
+      maxHeight: 'min(85vh, calc(100vh - max(10vh, 48px) - 16px))',
+    });
+  });
+
+  it('still centres when a dialog asks for it, with no inline geometry', () => {
+    open({ anchor: 'center' });
     expect(surface()).not.toHaveAttribute('data-anchor');
     expect(surface().getAttribute('style') ?? '').not.toContain('translate');
     expect(surface()).toHaveClass('top-[50%]', 'translate-y-[-50%]');
@@ -231,11 +299,6 @@ describe('ModalShell — the anchor axis', () => {
     open({ anchor: 'top' });
     expect(surface()).toHaveAttribute('data-anchor', 'top');
     expect((surface() as HTMLElement).style.getPropertyValue('translate')).toBe('-50% 0');
-    expect(MODAL_ANCHOR_TOP_STYLE).toEqual({
-      top: 'max(10vh, 48px)',
-      translate: '-50% 0',
-      maxHeight: 'min(85vh, calc(100vh - max(10vh, 48px) - 16px))',
-    });
   });
 
   it('takes the anchor and close handler from a surrounding default, a prop winning', async () => {
@@ -264,6 +327,15 @@ describe('ModalShell — the anchor axis', () => {
     render(
       <ModalShellDefaultsContext.Provider value={{ anchor: 'top' }}>
         <ModalShell open onOpenChange={vi.fn()} anchor="center" title="Its own choice" />
+      </ModalShellDefaultsContext.Provider>
+    );
+    expect(surface()).not.toHaveAttribute('data-anchor');
+    cleanup();
+
+    // An area can still ask for centre, and the shell's `top` default does not override it.
+    render(
+      <ModalShellDefaultsContext.Provider value={{ anchor: 'center' }}>
+        <ModalShell open onOpenChange={vi.fn()} title="An area that centres" />
       </ModalShellDefaultsContext.Provider>
     );
     expect(surface()).not.toHaveAttribute('data-anchor');

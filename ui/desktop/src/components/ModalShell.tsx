@@ -65,11 +65,13 @@ export type ModalPurpose = 'info' | 'form' | 'required';
 /**
  * Where the dialog sits vertically.
  *
- * - `center` (the default, and every caller outside Crew): centred on the window by the
- *   primitive's `top: 50%` plus a -50% Y translate, so it re-centres whenever its height changes.
- * - `top`: its top edge is pinned at `max(10vh, 48px)` and it grows downward only. For a dialog
- *   whose height changes while it is open — a tab switch, a result replacing a form, an error
- *   appearing — which otherwise jumps up and down under the pointer (QA T-30).
+ * - `top` (the default, app-wide since the Codex simplicity redesign: Crew is the reference
+ *   design, coordinator ruling 1): its top edge is pinned at `max(10vh, 48px)` and it grows
+ *   downward only. A dialog whose height changes while it is open — a tab switch, a result
+ *   replacing a form, an error appearing — otherwise jumps up and down under the pointer (QA T-30).
+ * - `center`: centred on the window by the primitive's `top: 50%` plus a -50% Y translate, so it
+ *   re-centres whenever its height changes. A dialog that reads wrong pinned to the top (a short,
+ *   fixed-height notice) passes it explicitly, with a one-line reason at the call site.
  *
  * Authored as an inline style rather than utilities: an inline declaration always beats the
  * primitive's `top-[50%] translate-y-[-50%]`, and a newly written arbitrary utility can silently
@@ -87,8 +89,10 @@ export const MODAL_ANCHOR_TOP_STYLE: React.CSSProperties = {
 /**
  * Defaults a surface that mounts many dialogs gives every `ModalShell` inside it, so the dialogs
  * need not each repeat them — and so a dialog that area does not own still gets them. A prop on
- * the shell wins over the default. Crew's `CrewDialogs` provides `anchor: 'top'` and a close
- * handler that keeps Radix from moving focus, because Crew returns focus to the opener itself.
+ * the shell wins over the default, and the default wins over the shell's own (`anchor: 'top'`,
+ * `headerRule: true`, which are what Crew's `CrewDialogs` provides too, now that the shell
+ * itself takes them). Crew's remaining difference is a close handler that keeps Radix from moving
+ * focus, because Crew returns focus to the opener itself.
  */
 export interface ModalShellDefaults {
   anchor?: ModalAnchor;
@@ -125,7 +129,7 @@ export interface ModalShellProps {
   scrollBody?: boolean;
   className?: string;
   bodyClassName?: string;
-  /** Vertical placement; `center` unless a `ModalShellDefaultsContext` says otherwise. */
+  /** Vertical placement; `top` unless this prop or a `ModalShellDefaultsContext` says otherwise. */
   anchor?: ModalAnchor;
   /**
    * Radix's close-focus hook, for a dialog opened without a `Dialog.Trigger` that returns focus
@@ -137,7 +141,10 @@ export interface ModalShellProps {
    * than a form (QA Q2-28). Used only without a `subtitle`, which is the description when present.
    */
   describedBy?: string;
-  /** The header's hairline without a scrolling body; a `ModalShellDefaultsContext` may set it. */
+  /**
+   * The header's hairline, drawn without a scrolling body too. On unless this prop or a
+   * `ModalShellDefaultsContext` says otherwise.
+   */
   headerRule?: boolean;
 }
 
@@ -161,9 +168,9 @@ export function ModalShell({
 }: ModalShellProps) {
   const dismissible = purpose !== 'required';
   const defaults = React.useContext(ModalShellDefaultsContext);
-  const placement = anchor ?? defaults.anchor ?? 'center';
+  const placement = anchor ?? defaults.anchor ?? 'top';
   const closeAutoFocus = onCloseAutoFocus ?? defaults.onCloseAutoFocus;
-  const rule = scrollBody || (headerRule ?? defaults.headerRule ?? false);
+  const rule = scrollBody || (headerRule ?? defaults.headerRule ?? true);
   // A subtitle is the description (Radix links it). Without one, a message body can name its own
   // node; otherwise the attribute is dropped rather than dangled at nothing.
   const bodyDescribes = !subtitle && Boolean(describedBy);

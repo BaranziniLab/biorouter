@@ -65,6 +65,10 @@ Focus is a surface shift plus an inset 2px edge, never a ring. Four rules keep i
 - A list or settings row takes its wash and firmed line from `:focus-visible`, never from `:focus-within` (see Rows and row actions).
 - `DialogContent` and `SheetContent` give focus back to the control that opened them. Radix returns focus to a dialog's own `Trigger` and to nothing else, so a dialog opened from state left focus on the page body after Escape. The opener is read in `onOpenAutoFocus`, because the wrapper is mounted while the dialog is still closed. A caller's own `onCloseAutoFocus` runs first and wins when it cancels the event (Crew's dialogs do), and an opener that is gone is left alone. Whether the returned focus shows a ring is the browser's call from how the person closed it: a click on Cancel shows none, Escape does.
 
+## Dialog placement
+
+`ModalShell` pins every dialog's top edge at `max(10vh, 48px)` and draws the header hairline, on any surface, because Crew's dialogs are the reference design. A dialog whose height changes while it is open (a tab, a result replacing a form, an error) grows downward instead of re-centring under the pointer. A dialog that reads wrong pinned to the top passes `anchor="center"`, with a one-line reason beside it, and one that wants no hairline passes `headerRule={false}`. A `ModalShellDefaultsContext` still overrides both for an area, and a prop beats the context. `ModalShell.test.tsx` pins the defaults, the opt-outs and the precedence.
+
 ## Fields and the cascade
 
 Text fields rest on `--border-control`, which clears 3:1 on every ground. The edge, and the defaults of a textarea (three rows, vertical resize), sit in `@layer components`. That matters in both directions. A layered rule lets a caller's `border-border-danger`, `min-h-*` or `resize-none` win, as a caller expects. An unlayered rule outranks every utility whatever its specificity: the first version of the edge hid the red border four forms pass in, and the first `.br-textarea` ignored `resize-none` and kept the workflow editors at three rows. The `Field` wrapper is `.br-form-field`, not `.br-field`, which belongs to the input alone.
