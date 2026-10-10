@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { aboutCopy, appearanceCopy, generalCopy } from './copy';
 
 // The General rows are what this file is about; the rest of the App tab is
@@ -67,6 +68,25 @@ describe('General switches', () => {
     expect(sleep).toHaveAccessibleDescription(generalCopy.preventSleepHelp);
     // No description paragraph under any row label.
     expect(container.querySelectorAll('.biorouter-settings-row p')).toHaveLength(0);
+  });
+});
+
+/**
+ * A server render runs no effects, so it is the first paint. What the platform and storage
+ * already know must be on it: a row that arrives one frame later shifts every row below it.
+ */
+describe('the first render', () => {
+  it('already has the macOS-only Dock row and the macOS spelling of the Notifications button', () => {
+    const html = renderToString(<AppSettingsSection />);
+    expect(html).toContain(generalCopy.dock);
+    expect(html).toContain(generalCopy.openNotificationsMac);
+  });
+
+  it('leaves the Dock row out on another platform from the first render', () => {
+    (window.electron as unknown as { platform: string }).platform = 'linux';
+    const html = renderToString(<AppSettingsSection />);
+    expect(html).not.toContain(generalCopy.dock);
+    expect(html).toContain(generalCopy.openNotificationsOther);
   });
 });
 

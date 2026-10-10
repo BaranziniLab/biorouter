@@ -19,6 +19,15 @@ const BUG_REPORT_URL =
 const FEATURE_REQUEST_URL =
   'https://github.com/BaranziniLab/biorouter/issues/new?template=feature_request.md';
 
+/** Whether costs are shown; on unless the person turned them off (and on when storage is closed). */
+function readShowPricing(): boolean {
+  try {
+    return localStorage.getItem('show_pricing') !== 'false';
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Settings > App, after Configuration and Privacy (the operator's order, kept by `SettingsView`):
  * General, Appearance, Usage, About, Danger zone (spec §3.13).
@@ -35,23 +44,17 @@ export default function AppSettingsSection() {
   const [menuBarIconEnabled, setMenuBarIconEnabled] = useState(true);
   const [dockIconEnabled, setDockIconEnabled] = useState(true);
   const [wakelockEnabled, setWakelockEnabled] = useState(true);
-  const [isMacOS, setIsMacOS] = useState(false);
+  // Known on the first render: the platform is synchronous, and a row that appears one frame
+  // later (Show in Dock) shifts every row below it.
+  const [isMacOS] = useState(() => window.electron.platform === 'darwin');
   // The dock switch is held down for a second while the OS applies the change.
   const [isDockSwitchDisabled, disableDockSwitch] = useTransientFlag(1000);
-  const [showPricing, setShowPricing] = useState(true);
+  // Read before the first paint, so Usage does not appear and vanish for a person who hid it.
+  const [showPricing, setShowPricing] = useState(readShowPricing);
   const [usageVersion, setUsageVersion] = useState(0);
 
   const pinnedVersion = window.appConfig.get('BIOROUTER_VERSION');
   const shouldShowUpdates = !pinnedVersion;
-
-  useEffect(() => {
-    setIsMacOS(window.electron.platform === 'darwin');
-  }, []);
-
-  useEffect(() => {
-    const stored = localStorage.getItem('show_pricing');
-    setShowPricing(stored !== 'false');
-  }, []);
 
   useEffect(() => {
     window.electron.getMenuBarIconState().then((enabled) => {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import { renderToString } from 'react-dom/server';
 import { displayCopy, projectCopy } from './copy';
 import { SpellcheckRow } from './SpellcheckToggle';
 import { ProjectHintsRow } from './BioRouterHintsSection';
@@ -44,6 +45,18 @@ describe('Tool call details', () => {
       'true'
     );
     expect(localStorage.getItem(RESPONSE_STYLE_STORAGE_KEY)).toBe('concise');
+  });
+
+  /**
+   * Effects do not run in a server render, so this is the FIRST paint: a stored "Expanded" has to
+   * be drawn as Expanded right then, or the thumb is drawn at Collapsed and slides across on every
+   * visit (a value read in an effect arrives one frame late).
+   */
+  it('draws the stored choice on the first render, not after an effect', () => {
+    localStorage.setItem(RESPONSE_STYLE_STORAGE_KEY, 'detailed');
+    const html = renderToString(<ToolCallDetailsRow />);
+    const expandedButton = html.match(/<button[^>]*data-testid="tool-call-details-detailed"[^>]*>/);
+    expect(expandedButton?.[0]).toMatch(/aria-checked="true"/);
   });
 
   it('shows the stored choice, and keeps the stored keys when the person picks the other', () => {
