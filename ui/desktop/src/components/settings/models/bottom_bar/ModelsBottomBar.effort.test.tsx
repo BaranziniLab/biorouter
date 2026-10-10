@@ -159,9 +159,11 @@ describe('the model and effort chip', () => {
   /**
    * Chromium draws script focus as keyboard focus when nothing held focus a moment
    * before, and the menu item that was just picked has unmounted by then. So a mouse
-   * pick left the chip ringed like a Tab stop. Focus goes back after a key, and a
-   * click leaves it where the click put it. (The ring itself is a CSS state jsdom
-   * cannot see; what is pinned here is who gets the focus.)
+   * pick left the chip ringed like a Tab stop. The DropdownMenuContent primitive owns
+   * the rule (usePointerPickFocusRule): focus goes back after a key, and a pointer pick
+   * leaves it where the click put it. This pins that the chip, which no longer keeps a
+   * copy, still gets it. (The ring itself is a CSS state jsdom cannot see; what is
+   * pinned here is who gets the focus.)
    */
   it('leaves focus alone after a mouse pick, and returns it to the chip after a key', async () => {
     renderChip();

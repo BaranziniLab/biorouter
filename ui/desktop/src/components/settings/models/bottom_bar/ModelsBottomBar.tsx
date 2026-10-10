@@ -151,15 +151,6 @@ export default function ModelsBottomBar({
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
-  /**
-   * Was the last input inside the open menu the keyboard? The menu hands focus back
-   * to its chip when it closes, and Chromium draws that script focus as a keyboard
-   * focus (fill and inset edge) whenever nothing held focus at that moment, which a
-   * menu item that has just unmounted does not. So a person who picked "Deep" with
-   * the mouse found the chip ringed as if they had tabbed to it (measured with real
-   * pointer events). The focus goes back only after a key; a click leaves it alone.
-   */
-  const menuUsedKeyboard = useRef(false);
   const {
     currentModel,
     currentProvider,
@@ -582,11 +573,7 @@ export default function ModelsBottomBar({
   return (
     <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
-      <DropdownMenu
-        onOpenChange={(open) => {
-          if (open) menuUsedKeyboard.current = false;
-        }}
-      >
+      <DropdownMenu>
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger
@@ -636,15 +623,6 @@ export default function ModelsBottomBar({
           align="end"
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
-          onKeyDown={() => {
-            menuUsedKeyboard.current = true;
-          }}
-          onPointerDown={() => {
-            menuUsedKeyboard.current = false;
-          }}
-          onCloseAutoFocus={(event) => {
-            if (!menuUsedKeyboard.current) event.preventDefault();
-          }}
         >
           <div className="px-3 pt-2 pb-1.5">
             <div className="flex items-center text-supporting text-text-muted">
