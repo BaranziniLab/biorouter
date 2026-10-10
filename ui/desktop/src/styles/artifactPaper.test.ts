@@ -133,11 +133,11 @@ describe('artifact panel paper', () => {
     );
   });
 
-  it('keeps fenced code on the syntax palette ground with an overflow hint', () => {
-    const body = ruleBody('.biorouter-markdown .biorouter-md-code-body');
-    expect(body).toContain('var(--background-code)');
-    expect(body).toMatch(/no-repeat local,/);
-    expect(body).toMatch(/no-repeat scroll/);
+  it('keeps fenced code in the well with a right-edge fade while it scrolls', () => {
+    expect(ruleBody('.br-md-code')).toContain('background-color: var(--background-well);');
+    expect(css).toMatch(
+      /\.br-md-code-body\[data-overflow='true'\],\s*\.br-md-table-scroll\[data-overflow='true'\]\s*\{\s*mask-image: linear-gradient\(to right, black calc\(100% - 40px\), transparent\);/
+    );
   });
 
   // A narrow CSV used to stretch its columns across the whole column.
@@ -175,24 +175,16 @@ describe('artifact panel paper', () => {
   // dark). What is left for this file is the part that checker cannot see —
   // whether this rule uses those tokens at all.
   it('paints the shared markdown table header from tokens, never literals', () => {
-    const header = ruleBody('.biorouter-markdown.prose thead th');
-    const band = ruleBody('.biorouter-markdown.prose thead');
-    expect(band, 'thead rule').not.toBeNull();
-    expect(header, 'thead th rule').not.toBeNull();
-    expect(band).toContain('background: var(--background-medium);');
-    expect(header).toContain('color: var(--text-default);');
-    // The point of the exercise: no hex may come back, in either rule.
-    expect(band).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+    const header = ruleBody('.br-md-table thead :where(th, td), .br-md-table th[data-head]');
+    expect(header, 'table header rule').not.toBeNull();
+    expect(header).toContain('background-color: var(--background-muted);');
+    expect(header).toContain('color: var(--text-muted);');
+    // The point of the exercise: no hex may come back.
     expect(header).not.toMatch(/#[0-9a-f]{3,8}\b/i);
-    // And no `.dark` override may reintroduce one — the tokens already flip, so
+    // And no `.dark` override may reintroduce one: the tokens already flip, so
     // a dark-mode rule here is a literal waiting to be written.
-    expect(ruleBody('.dark .biorouter-markdown.prose thead')).toBeNull();
-    expect(ruleBody('.dark .biorouter-markdown.prose thead th')).toBeNull();
-    expect(
-      ruleBody(
-        '.biorouter-markdown.prose thead th :where(strong, em, a, button:not(.biorouter-inline-code), span:not(.biorouter-inline-code))'
-      )
-    ).toContain('color: inherit;');
+    expect(css).not.toMatch(/\.dark \.br-md-table/);
+    expect(ruleBody('.br-md-table thead :where(strong, em, a)')).toContain('color: inherit;');
   });
 });
 
@@ -242,5 +234,64 @@ describe('selection', () => {
     const end = css.indexOf('/* THEMES:GENERATED:FAMILIES:END */');
     expect(start).toBeGreaterThan(-1);
     expect(css.slice(start, end)).not.toContain('--selection');
+  });
+});
+
+/**
+ * The panel's own stylesheet (`components/artifacts/preview-panel.css`, spec 3.8):
+ * two grounds for every kind, the 32px bar that yields its meta before its
+ * controls, and the fades that keep any part of the panel from popping.
+ */
+describe('the preview panel stylesheet', () => {
+  const panelCss = readFileSync('src/components/artifacts/preview-panel.css', 'utf-8');
+  const panelFlat = panelCss.replace(/\s+/g, ' ');
+  function panelRule(selector: string): string | null {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Anchored after a rule or a comment, so `.br-preview-bar` cannot match the
+    // tail of `.br-preview-panel > .br-preview-bar`.
+    const match = new RegExp(`(?:^|[}/])\\s*${escaped} \\{([^}]*)\\}`).exec(panelFlat);
+    return match ? match[1] : null;
+  }
+
+  it('puts every kind on paper, under a band-ground strip', () => {
+    expect(panelRule('.br-preview-panel')).toContain('background: var(--background-default);');
+    expect(panelRule('.br-preview-body')).toContain('background: var(--background-default);');
+  });
+
+  it('draws the bar at the tab height with one hairline', () => {
+    const bar = panelRule('.br-preview-bar');
+    expect(bar).toContain('height: var(--tab-height);');
+    expect(bar).toContain('border-bottom: 1px solid var(--border-subtle);');
+  });
+
+  it('lets the meta give way first and never shrinks the controls', () => {
+    expect(panelRule('.br-preview-bar__meta')).toContain('flex: 0 100000 auto;');
+    expect(panelRule('.br-preview-bar__actions')).toContain('flex: none;');
+  });
+
+  it('fades the strip and the bar with the body, never moving them', () => {
+    const fade = panelRule('.br-preview-panel > .br-tabstrip, .br-preview-panel > .br-preview-bar');
+    expect(fade).toContain('transition: opacity var(--dur-med) var(--ease-out);');
+    expect(
+      panelRule(
+        ".br-preview-panel[data-panel-open='false'] > .br-tabstrip, .br-preview-panel[data-panel-open='false'] > .br-preview-bar"
+      )
+    ).toContain('opacity: 0;');
+  });
+
+  it('holds a frame transparent until it has loaded', () => {
+    expect(panelRule('.br-preview-frame')).toContain('opacity: 0;');
+    expect(panelRule(".br-preview-frame[data-loaded='true']")).toContain('opacity: 1;');
+  });
+
+  it('animates only opacity and transform, on the tokens', () => {
+    for (const [, property] of panelFlat.matchAll(/transition: ([a-z-]+) /g)) {
+      expect(['opacity', 'background-color', 'border-left-color']).toContain(property);
+    }
+    // The one literal: the skeleton waits 200ms before it shows (spec 3.8), a
+    // delay rather than a motion tier.
+    const code = panelCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(code.replace(/animation-delay: 200ms;/g, '')).not.toMatch(/\d+ms/);
+    expect(code).not.toMatch(/cubic-bezier/);
   });
 });

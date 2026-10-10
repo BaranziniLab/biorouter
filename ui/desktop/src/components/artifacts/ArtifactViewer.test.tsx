@@ -8,6 +8,7 @@ import MarkdownContent from '../MarkdownContent';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
+import { PREVIEW_COPY } from './copy';
 import { artifactSourceFromResource, PAPER_GUTTER_EM, titleFromResourceUri } from './artifactUtils';
 import {
   onArtifactAnnotation,
@@ -25,6 +26,12 @@ vi.mock('utif2', () => ({
   decodeImage: decodeTiffImage,
   toRGBA8: tiffToRgba,
 }));
+
+/** "Send a region to the chat" is an item in the header's More actions menu (spec 3.8). */
+async function startAnnotating() {
+  await userEvent.click(screen.getByRole('button', { name: PREVIEW_COPY.moreActions }));
+  await userEvent.click(await screen.findByTestId('artifact-annotate'));
+}
 
 /** The `rgb(r, g, b)` spelling jsdom reports for an inline `#rrggbb` colour. */
 function hexToRgb(hex: string) {
@@ -170,7 +177,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('External page')).toBeInTheDocument();
+    expect(await screen.findByTestId('artifact-external-page')).toBeInTheDocument();
     expect(screen.queryByRole('iframe')).not.toBeInTheDocument();
     // Nothing has loaded: arriving at a URL artifact must never start a page.
     expect(screen.queryByTestId('embedded-browser-slot')).not.toBeInTheDocument();
@@ -201,13 +208,14 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('Loading')).toBeInTheDocument();
-    expect(screen.queryByText('External page')).not.toBeInTheDocument();
+    // The first load is the quiet skeleton, not a word (spec 3.8).
+    await waitFor(() => expect(document.querySelector('[data-preview-loading]')).not.toBeNull());
+    expect(screen.queryByTestId('artifact-external-page')).not.toBeInTheDocument();
     expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
 
     await act(async () => approve(true));
     expect(await screen.findByTestId('embedded-browser-slot')).toBeInTheDocument();
-    expect(screen.queryByText('External page')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('artifact-external-page')).not.toBeInTheDocument();
     expect(window.electron.embeddedBrowser.create).toHaveBeenCalledWith(
       expect.any(String),
       'http://127.0.0.1:64005/apps/queue-workbench/',
@@ -235,7 +243,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('External page')).toBeInTheDocument();
+    expect(await screen.findByTestId('artifact-external-page')).toBeInTheDocument();
     expect(screen.getByTestId('artifact-open-here')).toBeInTheDocument();
     expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
   });
@@ -262,7 +270,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    await screen.findByText('External page');
+    await screen.findByTestId('artifact-external-page');
     expect(window.electron.embeddedBrowser.create).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByTestId('artifact-open-here'));
@@ -383,7 +391,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
     await waitFor(() => expect(window.electron.embeddedBrowser.create).toHaveBeenCalled());
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     expect(
       await screen.findByAltText('Snapshot of the live page for region selection')
     ).toBeInTheDocument();
@@ -418,7 +426,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     await screen.findByAltText('Snapshot of the live page for region selection');
     const overlay = screen.getByTestId('annotation-overlay');
     Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
@@ -461,7 +469,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await userEvent.click(await screen.findByTestId('artifact-open-here'));
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
 
     await waitFor(() =>
       expect(window.electron.deleteTempFile).toHaveBeenCalledWith('/tmp/browser-capture.png')
@@ -496,7 +504,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     const overlay = screen.getByTestId('annotation-overlay');
     Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
     fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
@@ -538,7 +546,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     const body = screen.queryByTestId('artifact-preview-content');
     expect(body).not.toBeNull();
     vi.spyOn(body as HTMLElement, 'getBoundingClientRect').mockReturnValue({
@@ -644,7 +652,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     expect(await screen.findByRole('img', { name: 'figure.png' })).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('artifact-annotate'));
+    await startAnnotating();
     const overlay = screen.getByTestId('annotation-overlay');
     Object.defineProperty(overlay, 'setPointerCapture', { value: vi.fn() });
     fireEvent.pointerDown(overlay, { button: 0, clientX: 20, clientY: 30, pointerId: 1 });
@@ -653,7 +661,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     await waitFor(() => expect(window.electron.captureRegion).toHaveBeenCalled());
 
     rerender(renderViewer({ kind: 'file', title: 'other.png', path: '/tmp/other.png' }));
-    await waitFor(() => expect(screen.getByText('other.png')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'other.png' })).toBeInTheDocument());
     resolveCapture({ path: '/tmp/stale-region.png', width: 200, height: 120 });
 
     await waitFor(() =>
@@ -879,7 +887,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       await waitFor(() => expect(window.electron.readArtifactFile).toHaveBeenCalledWith(path));
       fireEvent.click(screen.getByRole('button', { name: 'Line' }));
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: 'Raw' })).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByRole('radio', { name: 'Raw' })).toHaveAttribute('aria-checked', 'true');
         expect(
           container.querySelector('[data-source-line="2"][aria-current="location"]')
         ).toHaveTextContent('second_sentinel');
@@ -973,9 +981,12 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         "This file was moved, renamed, or deleted, so it can't be previewed anymore."
       )
     ).toBeInTheDocument();
-    expect(
-      screen.getByText('/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png')
-    ).toBeInTheDocument();
+    // The path is a machine string (principle 10): it is the title's tooltip,
+    // and the bar above already names the file.
+    expect(screen.getByText('File not available')).toHaveAttribute(
+      'title',
+      '/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png'
+    );
     expect(screen.queryByText(/ENOENT/)).not.toBeInTheDocument();
   });
 
@@ -1248,7 +1259,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     // Raw shows the markdown source itself. The syntax highlighter splits it
     // across token spans, so assert on the rendered text as a whole.
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Findings' })).not.toBeInTheDocument();
     });
@@ -1328,8 +1339,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     expect(firstRow.firstElementChild).toHaveTextContent('1');
     expect(firstRow.lastElementChild).toHaveClass('br-paper-fill');
     expect(screen.getAllByRole('row')[0].lastElementChild).toHaveClass('br-paper-fill');
-    // The strip states the table's shape, with a noun, instead of a line count.
-    expect(screen.getByText('2 rows · 3 columns')).toBeInTheDocument();
+    // The bar states the table's row count, with a noun, instead of a line count.
+    expect(screen.getByTestId('artifact-strip-count')).toHaveTextContent(/^2 rows$/);
     // The header's filler carries the overflow hint through the opaque sticky
     // header row (main.css, `.br-paper-fill-hint`).
     expect(
@@ -1340,10 +1351,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
   // A `shrink-0` count ("70 rows · 11 columns") kept its full width in a
   // narrow panel: it squeezed the file name to nothing and then pushed Table /
   // Raw past the panel's edge, where neither could be clicked. The count is
-  // now the first thing to give way (main.css, `.br-paper-strip-count`, whose
-  // geometry artifactPaper.test.ts pins); the controls still never shrink.
+  // now the first thing to give way (main.css, `.br-paper-strip-count`, and the
+  // bar's meta slot in preview-panel.css, both pinned by artifactPaper.test.ts);
+  // the controls' slot never shrinks.
   it.each([
-    ['a table', false, '2 rows · 1 column'],
+    ['a table', false, '2 rows'],
     ['the raw view', true, '3 lines'],
   ])('lets the strip count yield before the controls in %s', async (_view, raw, count) => {
     installElectronMock();
@@ -1366,17 +1378,20 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
     const strip = await screen.findByTestId('artifact-status-strip');
-    if (raw) fireEvent.click(within(strip).getByRole('button', { name: 'Raw' }));
+    if (raw) fireEvent.click(within(strip).getByRole('radio', { name: 'Raw' }));
     const counter = await within(strip).findByTestId('artifact-strip-count');
     expect(counter).toHaveTextContent(count);
     expect(counter).toHaveClass('br-paper-strip-count');
     expect(counter).not.toHaveClass('shrink-0');
-    // The controls' group is what never shrinks.
-    const controls = within(strip).getByRole('button', { name: 'Raw' }).closest('.ml-auto');
-    expect(controls).toHaveClass('shrink-0');
+    // The controls' slot is what never shrinks (`flex: none`, preview-panel.css).
+    const controls = within(strip)
+      .getByRole('radio', { name: 'Raw' })
+      .closest('.br-preview-bar__actions');
+    expect(controls).not.toBeNull();
+    expect(counter.closest('.br-preview-bar__meta')).not.toBeNull();
   });
 
-  it('states a table shape as rows and columns, singular and plural', async () => {
+  it('states a table as its row count, singular and plural, with the name first', async () => {
     installElectronMock();
     const header = Array.from({ length: 11 }, (_, i) => `col${i + 1}`).join(',');
     const body = Array.from({ length: 70 }, (_, r) =>
@@ -1403,8 +1418,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
     const strip = await screen.findByTestId('artifact-status-strip');
-    await waitFor(() => expect(strip).toHaveTextContent('70 rows · 11 columns'));
-    expect(strip).toHaveTextContent(/^CSV/);
+    await waitFor(() =>
+      expect(within(strip).getByTestId('artifact-strip-count')).toHaveTextContent(/^70 rows$/)
+    );
+    // The bar leads with the file's name; no language label (spec 3.8).
+    expect(strip).toHaveTextContent(/^deseq-results\.csv/);
     unmount();
 
     read.mockResolvedValue({
@@ -1425,7 +1443,39 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         />
       </ThemeProvider>
     );
-    await waitFor(() => expect(screen.getByText('1 row · 1 column')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId('artifact-strip-count')).toHaveTextContent(/^1 row$/)
+    );
+  });
+
+  // Past the cap the bar says how many rows show out of how many, and the
+  // sentence about the cap is that count's InfoTip, not a line of its own.
+  it('states a capped table as N of M rows, with the cap explained in an InfoTip', async () => {
+    installElectronMock();
+    const body = Array.from({ length: 620 }, (_, r) => `GENE${r},${r}`).join('\n');
+    vi.mocked(window.electron.readArtifactFile).mockResolvedValue({
+      kind: 'text',
+      title: 'big.csv',
+      path: '/w/big.csv',
+      mimeType: 'text/csv',
+      text: `gene,count\n${body}\n`,
+      size: 8000,
+      found: true,
+    });
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'big.csv', path: '/w/big.csv' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+    const count = await screen.findByTestId('artifact-strip-count');
+    await waitFor(() => expect(count).toHaveTextContent(PREVIEW_COPY.rowsShown(500, 620)));
+    expect(
+      screen.getByRole('button', { name: `About ${PREVIEW_COPY.rowsShown(500, 620)}` })
+    ).toHaveAccessibleDescription(PREVIEW_COPY.rowsCapHint(120));
   });
 
   // Prism's bundled `csv` grammar has two token kinds, so a raw results table
@@ -1453,8 +1503,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         />
       </ThemeProvider>
     );
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() =>
       expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(0)
     );
@@ -1473,7 +1523,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         false
       );
     }
-    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^CSV/);
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^deseq\.csv/);
   });
 
   it('highlights a raw TSV, which Prism has no grammar for', async () => {
@@ -1496,12 +1546,12 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
         />
       </ThemeProvider>
     );
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() =>
       expect(container.querySelectorAll('.br-paper-code code .token').length).toBeGreaterThan(0)
     );
-    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^TSV/);
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^sample-sheet\.tsv/);
   });
 
   // R Markdown opens with YAML front matter and ```{r setup} chunks. Unhandled,
@@ -1646,16 +1696,16 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     // Like markdown, an HTML file offers both a rendered Preview and the raw source.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: 'Preview' })).toBeInTheDocument();
     });
-    expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument();
 
     // Preview by default: rendered inside a sandboxed iframe.
     const frame = screen.getByTestId('artifact-viewer').querySelector('iframe');
     expect(frame).toHaveAttribute('sandbox');
 
     // Raw shows the HTML source itself.
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() => {
       expect(screen.getByTestId('artifact-viewer').textContent).toContain('Volcano');
     });
@@ -1675,10 +1725,10 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await waitFor(() => expect(screen.getByText(/select/)).toBeInTheDocument());
-    expect(screen.queryByRole('button', { name: 'Raw' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: 'Raw' })).not.toBeInTheDocument();
   });
 
-  it('labels a script with its language, line count and a copy action', async () => {
+  it('names a script in the bar with its line count and a copy action', async () => {
     installElectronMock();
     (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
       kind: 'text',
@@ -1700,22 +1750,21 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    await waitFor(() => expect(screen.getByText('R')).toBeInTheDocument());
     // The file has two lines; its trailing newline must not add a phantom third.
-    expect(screen.getByText('2 lines')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('2 lines')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: PREVIEW_COPY.copy })).toBeInTheDocument();
     // Highlighted, not dumped as one blob of plain text.
     expect(
       screen.getByTestId('artifact-viewer').querySelectorAll('span.token').length
     ).toBeGreaterThan(0);
 
-    // One status strip carries the language, the path (dir dimmed, filename not)
-    // and the toggle — there is no second per-preview sub-header.
+    // One bar carries the name (the full path is its tooltip, never the row),
+    // the count and the controls. No language label, no second sub-header.
     const strip = screen.getByTestId('artifact-status-strip');
-    expect(strip).toHaveTextContent('R');
-    expect(strip).toHaveTextContent('/work/');
-    expect(strip).toHaveTextContent('analysis.R');
-    expect(strip.querySelector('[title="/work/analysis.R"]')).toBeInTheDocument();
+    expect(strip).toHaveTextContent(/^analysis\.R2 lines$/);
+    expect(strip).not.toHaveTextContent('/work/');
+    expect(strip.querySelector('[title="/work/analysis.R"]')).toHaveTextContent('analysis.R');
+    expect(screen.getAllByTestId('artifact-status-strip')).toHaveLength(1);
   });
 
   it('sits the preview directly on the panel ground: panel → strip → content', async () => {
@@ -1816,8 +1865,8 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Raw' })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
 
     await waitFor(() => expect(container.querySelector('code')).toBeTruthy());
     expect(container.querySelectorAll('code .token.table').length).toBeGreaterThan(0);
@@ -1868,7 +1917,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     await waitFor(() =>
       expect(screen.getByRole('heading', { name: 'Findings' })).toBeInTheDocument()
     );
-    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await userEvent.click(screen.getByRole('radio', { name: 'Raw' }));
     await waitFor(() =>
       expect(screen.queryByRole('heading', { name: 'Findings' })).not.toBeInTheDocument()
     );
@@ -1885,7 +1934,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await waitFor(() => expect(screen.getByRole('table')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Table' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('radio', { name: 'Table' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('reports visualization render errors from the preview frame once', async () => {
@@ -1959,15 +2008,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
 
     await waitFor(() => {
-      expect(
-        screen.getByRole('button', { name: /open active artifact outside preview/i })
-      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: PREVIEW_COPY.openExternally })).toBeInTheDocument();
     });
 
     const viewer = screen.getByTestId('artifact-viewer');
-    const expandButton = screen.getByRole('button', {
-      name: /open active artifact outside preview/i,
-    });
+    const expandButton = screen.getByRole('button', { name: PREVIEW_COPY.openExternally });
     const closeButton = screen.getByRole('button', { name: /close preview panel/i });
     expect(viewer).toHaveClass('no-drag');
     expect(expandButton).toHaveClass('no-drag');
@@ -2058,7 +2103,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     );
     expect(onClose).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: /open active artifact outside preview/i }));
+    await user.click(screen.getByRole('button', { name: PREVIEW_COPY.openExternally }));
     expect(window.electron.openDirectoryInExplorer).toHaveBeenCalledWith(
       '/work/reports/summary.md'
     );
@@ -2330,21 +2375,30 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
 
     expect(await screen.findByRole('tree', { name: 'repository repository files' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /up to parent|back to containing/i })).toBeNull();
-    expect(screen.getByRole('treeitem', { name: 'staged.ts' })).toHaveAttribute(
+    // The status is said once: a dot, with the word in the row's name and its
+    // tooltip. No coloured name and no legend (spec 3.8).
+    expect(screen.getByRole('treeitem', { name: 'staged.ts, Staged' })).toHaveAttribute(
       'title',
       'src/staged.ts · Staged'
     );
+    // The branch is the bar's meta, the one machine string it shows.
+    expect(screen.getByTestId('artifact-directory-branch')).toHaveTextContent('feat/preview');
 
-    await user.click(screen.getByRole('treeitem', { name: 'staged.ts' }));
+    await user.click(screen.getByRole('treeitem', { name: 'staged.ts, Staged' }));
     expect(await screen.findByText('export')).toBeInTheDocument();
     expect(
-      screen.getByRole('treeitem', { name: /staged\.ts, currently viewing/i })
+      screen.getByRole('treeitem', {
+        name: `staged.ts, Staged, ${PREVIEW_COPY.currentlyViewing}`,
+      })
     ).toHaveAttribute('aria-current', 'true');
     expect(screen.getByRole('tree', { name: 'repository repository files' })).toBeVisible();
 
-    await user.type(screen.getByRole('searchbox', { name: 'Filter repository files' }), 'readme');
-    expect(screen.getByRole('treeitem', { name: 'README.md' })).toBeVisible();
-    expect(screen.queryByRole('treeitem', { name: 'staged.ts' })).toBeNull();
+    await user.type(
+      screen.getByRole('searchbox', { name: PREVIEW_COPY.filterRepository }),
+      'readme'
+    );
+    expect(screen.getByRole('treeitem', { name: 'README.md, Pushed' })).toBeVisible();
+    expect(screen.queryByRole('treeitem', { name: /^staged\.ts/ })).toBeNull();
   });
 
   it('recognizes Jupyter notebook files in the file-preview flow', async () => {
@@ -2373,8 +2427,13 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       </ThemeProvider>
     );
 
-    expect(await screen.findByText('Notebook')).toBeInTheDocument();
-    expect(screen.getByText('1 cell')).toBeInTheDocument();
+    // The bar names the file and counts its cells; the kernel is that count's
+    // InfoTip, not a second label (spec 3.8).
+    expect(await screen.findByText('1 cell')).toBeInTheDocument();
+    expect(screen.getByTestId('artifact-status-strip')).toHaveTextContent(/^analysis\.ipynb/);
+    expect(
+      screen.getByRole('button', { name: `About ${PREVIEW_COPY.kernel}` })
+    ).toHaveAccessibleDescription(PREVIEW_COPY.kernelHelp('Python 3'));
     expect(screen.getByRole('heading', { name: 'Notebook result' })).toBeInTheDocument();
   });
 });
@@ -2445,17 +2504,18 @@ describe('artifact render-error provenance', () => {
 /**
  * The same guard ChatTabStrip.test.tsx carries, for the panel's strip.
  *
- * design.md §3.9 fixes the icon scale at 16 (inline/dense) / 20 (default) /
- * 24 (page-level). This strip is the window's third one and had drifted to its
- * own third geometry — 14px (the tab glyph) and 12px (the close ×). The sweep is
- * scoped to `.br-tabstrip`, so it holds the whole bar (tab glyphs, the close ×,
- * the ▾ and the two panel actions) without reaching the preview body below it.
+ * The icon scale (spec 2.2) is 14 (chips, a tab's glyph and its close ×), 16
+ * (rows and controls) and 20 (banners, empty states). Spec 3.8 puts the tab's
+ * kind glyph and its close × at 14px, so they yield to the label; the header's
+ * actions are 16px controls. The sweep is scoped to `.br-tabstrip`, so it holds
+ * the whole band (tab glyphs, the close ×, the ▾ and the header actions) without
+ * reaching the preview body below it.
  *
  * Tailwind size classes are real DOM, so jsdom CAN hold this line: the classes
  * are the single source of the rendered px.
  */
-describe('ArtifactViewer — strip icons stay on the design.md §3.9 scale', () => {
-  const ON_SCALE = ['h-4 w-4', 'h-5 w-5', 'h-6 w-6'];
+describe('ArtifactViewer — strip icons stay on the icon scale', () => {
+  const ON_SCALE = ['h-3.5 w-3.5', 'h-4 w-4', 'h-5 w-5'];
 
   const viewer = (artifact: ArtifactSource) => (
     <ThemeProvider>
@@ -2487,6 +2547,14 @@ describe('ArtifactViewer — strip icons stay on the design.md §3.9 scale', () 
       expect(cls).not.toMatch(/[hw]-\[/);
       expect(ON_SCALE.some((size) => cls.includes(size))).toBe(true);
     }
+    // Inside a tab, 14px: the kind glyph and the close × yield to the label.
+    const tabGlyphs = [...container.querySelectorAll('.br-tab svg')];
+    expect(tabGlyphs.length).toBeGreaterThan(0);
+    for (const svg of tabGlyphs) expect(svg.getAttribute('class')).toContain('h-3.5 w-3.5');
+    // The header's actions are 16px, the size of every band's actions.
+    const actionGlyphs = [...container.querySelectorAll('.br-preview-actions svg')];
+    expect(actionGlyphs.length).toBeGreaterThan(0);
+    for (const svg of actionGlyphs) expect(svg.getAttribute('class')).toContain('h-4 w-4');
   });
 
   it('draws every strip glyph at stroke 1.5, which is what app-icons guarantees', async () => {

@@ -1,9 +1,11 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
 import NotebookPreview from './NotebookPreview';
 import type { ArtifactFilePreview } from './artifactTypes';
+import { PREVIEW_COPY } from './copy';
+import { PreviewBar, PreviewBarScope } from './PreviewBar';
 
 function notebookFile(text: string) {
   return {
@@ -38,15 +40,22 @@ describe('NotebookPreview', () => {
 
     render(
       <ThemeProvider>
-        <NotebookPreview file={notebookFile(text)} resolvedTheme="light" />
+        {/* The panel's one bar names the file; the notebook adds to it. */}
+        <PreviewBarScope>
+          <PreviewBar name="analysis.ipynb" path="/work/analysis.ipynb" />
+          <NotebookPreview file={notebookFile(text)} resolvedTheme="light" />
+        </PreviewBarScope>
       </ThemeProvider>
     );
 
-    // The status strip: shared label + path + cell count + kernel (design spec H).
-    expect(screen.getByText('Notebook')).toBeInTheDocument();
-    expect(screen.getByText('analysis.ipynb')).toBeInTheDocument();
-    expect(screen.getByText('2 cells')).toBeInTheDocument();
-    expect(screen.getByText('Python 3')).toBeInTheDocument();
+    // The bar: the name, the cell count, and the kernel as the count's help
+    // (spec 3.8) rather than a second label.
+    const bar = screen.getByTestId('artifact-status-strip');
+    expect(within(bar).getByText('analysis.ipynb')).toBeInTheDocument();
+    expect(within(bar).getByText('2 cells')).toBeInTheDocument();
+    expect(
+      within(bar).getByRole('button', { name: `About ${PREVIEW_COPY.kernel}` })
+    ).toHaveAccessibleDescription(PREVIEW_COPY.kernelHelp('Python 3'));
     expect(screen.getByRole('heading', { name: 'Expression analysis' })).toBeInTheDocument();
     expect(screen.getByText('ready')).toBeInTheDocument();
     expect(screen.getByAltText('Notebook output')).toHaveAttribute(
@@ -200,12 +209,14 @@ describe('NotebookPreview HTML output theming', () => {
     expect(srcdoc).toContain("default-src 'none'");
     expect(srcdoc).toContain("style-src 'unsafe-inline'");
     expect(srcdoc).not.toContain('script-src');
-    // A separate document: the renderer's orange selection and the paper table
-    // treatment are restated inside it, since it cannot load main.css. pandas
-    // writes `<table border="1">`, which only `border:0` on the table undoes.
-    // The dark tint is the renderer's: #e8895f at 24%, never Paper's 30% slab.
+    // A separate document: the renderer's orange selection and the app's one
+    // table (spec section 0: a framed table, top rules only) are restated inside
+    // it, since it cannot load main.css. pandas writes `<table border="1">`: the
+    // table's own border replaces it with the frame, and every cell is cleared
+    // before its top rule. The dark tint is the renderer's: #e8895f at 24%.
     expect(srcdoc).toContain('::selection{background:rgba(232,137,95,0.24)}');
-    expect(srcdoc).toContain('table{border:0;');
-    expect(srcdoc).toContain('td,th{border:0;border-bottom:1px solid');
+    expect(srcdoc).toContain('table{border:1px solid');
+    expect(srcdoc).toContain('td,th{border:0;border-top:1px solid');
+    expect(srcdoc).toContain('font-weight:400');
   });
 });

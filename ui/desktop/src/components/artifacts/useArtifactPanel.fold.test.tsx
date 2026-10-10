@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import ArtifactViewer from './ArtifactViewer';
 import { useArtifactPanel } from './useArtifactPanel';
+import { PREVIEW_COPY } from './copy';
 
 /**
  * Rung 2's fold and drag wiring, end to end through the real hook and the real
@@ -239,7 +240,7 @@ describe('rung 2 — folding and dragging a stacked sheet', () => {
     fireEvent.click(screen.getByTestId('artifact-fold-toggle'));
     expect(split().hasAttribute('data-preview-folded')).toBe(true);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Open active artifact outside preview' }));
+    fireEvent.click(screen.getByRole('button', { name: PREVIEW_COPY.openExternally }));
     expect(split().hasAttribute('data-preview-folded')).toBe(true);
 
     fireEvent.click(screen.getByRole('tablist', { name: 'Open artifact previews' }));
