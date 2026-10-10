@@ -55,6 +55,12 @@ up to 2,000 chats, and the list foot says "Loading chats…" meanwhile. **Every 
 `userActionHeaders()`**: without the proof the daemon silently omits private chats, which would read
 as chats vanishing when the person changed the view.
 
+The pages go into a buffer and the list changes **once**, when the last one has landed. Shown page by
+page, a list sorted by name reshuffled its top rows with every arrival, and each arrival re-rendered
+every row already held. A rename, a removal or a privacy change that lands during the read is applied
+to the buffer too, and a refresh asked for during the read runs after it. A page asks for no more
+rows than the cap leaves room for, so the read stops at 2,000 exactly.
+
 ### Folder groups
 
 A folder header is a 28px row: a chevron, a folder glyph and the folder's name. The name is the last
@@ -75,7 +81,7 @@ buttons below.
 
 Under Last activity a running chat moves to the top. While the pointer is over the list, or a row is
 being renamed, the list keeps the order it had (`applyHeldArrangement`), and the live order applies
-when the pointer leaves. A row that was removed goes, a rename shows, and rows that arrive below
+when the pointer leaves. The same holds when a full read lands under the pointer. A row that was removed goes, a rename shows, and rows that arrive below
 every held row come in; a row that would land above or between held rows waits.
 
 ## A row
@@ -83,8 +89,9 @@ every held row come in; a row that would land above or between held rows waits.
 A chat row is a 16px kind glyph (`ChatKindIcon`, which carries the lock badge of a private chat), the
 title, and a 16px trailing slot that holds the running ring and gives way to `⋯` on hover or focus.
 The hover card opens after 700ms with the title (only when it is cut off) and
-`~/folder · 3h ago · 12 messages`. The active chat shows the 2px accent rail. A row whose menu is
-open keeps its hover ground.
+`~/folder · 3h ago · 12 messages`, sized to its text up to 320px. It closes when its row can no
+longer be seen: Chats collapsed, the sidebar closed, or the row scrolled out of the list. The active
+chat shows the 2px accent rail. A row whose menu is open keeps its hover ground.
 
 ### The row menu
 
@@ -134,12 +141,13 @@ tab stop, so Tab reaches them from the row.
 | File | Holds |
 |---|---|
 | `BioRouterSidebar/sidebarChatView.test.ts` | All nine views, folder labels and collisions, the stored view, the held order |
-| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading every page with the proof |
+| `BioRouterSidebar/useSidebarSessions.test.ts` | Paging, and `loadAll` reading every page with the proof, into a buffer shown once, stopping at the cap |
 | `BioRouterSidebar/RecentChats.test.tsx`, `.folders.test.tsx` | The header, the buckets, the rows, Group by Folder |
 | `BioRouterSidebar/RecentChats.rename.test.tsx` | Rename in place: entry points, commit, cancel, rollback, the edge cases |
 | `BioRouterSidebar/RecentChats.contextMenu.test.tsx` | The menu's order and each action, delete, and where focus goes |
 | `chats/ChatRowContextMenu.test.tsx`, `chats/menuFocusReturn.test.ts` | The shared menu and the focus rule |
 | `BioRouterSidebar/sidebarGeometry.browser.test.ts` | In Chromium: 28px rows, the 30px pitch, x=16 and x=40 at 216, 288 and 360px, rename in place, folder headers, the rail |
+| `ui/sidebarMotion.browser.test.ts` | In Chromium: the panel slides with the gap (175ms out, 300ms in), snaps during a window resize, and wears the overlay shadow only while open |
 
 ## Related documentation
 
