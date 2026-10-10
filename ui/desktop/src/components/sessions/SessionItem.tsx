@@ -1,5 +1,5 @@
 import React from 'react';
-import { formatDate } from '../../utils/date';
+import { formatChatDay } from '../../utils/dateUtils';
 import { Session } from '../../api';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { messageCount } from './copy';
@@ -20,7 +20,7 @@ interface SessionItemProps {
  */
 const SessionItem: React.FC<SessionItemProps> = ({ session, extraActions }) => {
   const meta = [
-    formatDate(session.updated_at),
+    formatChatDay(session.updated_at),
     messageCount(session.message_count),
     folderName(session.working_dir),
   ].filter(Boolean);

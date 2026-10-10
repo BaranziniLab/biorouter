@@ -1,7 +1,7 @@
 import React from 'react';
 import { type SharedSessionDetails } from '../../sharedSessions';
 import { SessionMessages } from './SessionViewComponents';
-import { formatMessageTimestamp } from '../../utils/timeUtils';
+import { formatChatTimestamp } from '../../utils/dateUtils';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { PageHeader } from '../Layout/PageHeader';
 import ArtifactViewer from '../artifacts/ArtifactViewer';
@@ -44,7 +44,9 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
   const facts = loaded
     ? [
         kind,
-        session.messages[0]?.created ? formatMessageTimestamp(session.messages[0].created) : null,
+        session.messages[0]?.created
+          ? formatChatTimestamp(session.messages[0].created * 1000)
+          : null,
         messageCount(session.message_count),
         session.total_tokens !== null ? billedTokens(session.total_tokens.toLocaleString()) : null,
       ].filter(Boolean)

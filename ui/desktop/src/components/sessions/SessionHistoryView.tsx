@@ -8,7 +8,7 @@ import { toastError } from '../../toasts';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { PageHeader, PageHeaderAction } from '../Layout/PageHeader';
 import { ScrollArea } from '../ui/scroll-area';
-import { formatMessageTimestamp } from '../../utils/timeUtils';
+import { formatChatTimestamp } from '../../utils/dateUtils';
 import { createSharedSession } from '../../sharedSessions';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import ProgressiveMessageList from '../ProgressiveMessageList';
@@ -389,7 +389,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   // long it is, what it cost. Sans and tabular, like every count in the app.
   const facts = !isLoading
     ? [
-        messages[0]?.created ? formatMessageTimestamp(messages[0].created) : null,
+        messages[0]?.created ? formatChatTimestamp(messages[0].created * 1000) : null,
         messageCount(session.message_count),
         billedTokenEstimate ? billedTokens(formatBilledTokenEstimate(billedTokenEstimate)) : null,
       ].filter(Boolean)

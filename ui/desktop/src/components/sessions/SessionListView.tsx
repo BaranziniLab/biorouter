@@ -15,7 +15,6 @@ import {
   Pencil,
   Upload,
   Puzzle,
-  GitBranch,
   MoreHorizontal,
 } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
@@ -31,10 +30,14 @@ import { Spinner } from '../ui/spinner';
 import { FilterInput } from '../ui/filter-input';
 import { uiCopy } from '../ui/copy';
 import { isContextMenuKey, openContextMenuFromKeyboard } from '../ui/keyboardContextMenu';
-import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
-import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
+import {
+  formatChatDay,
+  formatChatTimestamp,
+  groupSessionsByDate,
+  type DateGroup,
+} from '../../utils/dateUtils';
 import { groupSessionsByParent, withoutSubagents } from './sessionGrouping';
 import {
   ChatRowContextMenuContent,
@@ -451,15 +454,30 @@ const HistoryRow = React.memo(function HistoryRow({
             </span>
             {/* One muted line: when, then where (by name; the path is in the
                 tooltip and in the filter, never on the row). A diverged chat
-                says what it branched from instead of where it ran. */}
+                says what it branched from instead of where it ran, in words
+                only: the row's kind glyph already draws the branch, and a
+                second, different branch glyph on the same row read as two
+                things (vision V1-L6). */}
             <span className="br-history-row-meta text-supporting text-text-muted">
-              <span className="shrink-0 whitespace-nowrap tabular-nums">
-                {formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}
-              </span>
+              {/* "3:39 PM" today, "Sep 5" this year, "Sep 5, 2025" before;
+                  the bucket heading names the period and the tooltip holds the
+                  full stamp. */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <time
+                    className="shrink-0 whitespace-nowrap tabular-nums"
+                    dateTime={session.updated_at}
+                  >
+                    {formatChatDay(session.updated_at)}
+                  </time>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="start">
+                  {formatChatTimestamp(session.updated_at)}
+                </TooltipContent>
+              </Tooltip>
               {parentName ? (
                 <span className="flex min-w-0 items-center gap-1">
                   <span aria-hidden="true">·</span>
-                  <GitBranch className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   <span className="truncate">{branchedFrom(parentName)}</span>
                 </span>
               ) : folder ? (

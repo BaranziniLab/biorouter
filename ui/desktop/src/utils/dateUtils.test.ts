@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../api';
-import { groupSessionsByDate } from './dateUtils';
+import { formatChatDay, formatChatTimestamp, groupSessionsByDate } from './dateUtils';
 
 const NOW = new Date(2026, 9, 9, 15, 0, 0).getTime(); // 9 Oct 2026, 15:00 local
 
@@ -59,5 +59,31 @@ describe('groupSessionsByDate', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].key).toBe('week');
     expect(groups[0].sessions.map((s) => s.id)).toEqual(['x', 'y', 'z']);
+  });
+});
+
+/** ICU may put a narrow no-break space before AM/PM; the words are what is pinned. */
+const plain = (text: string) => text.replace(/\s/g, ' ');
+
+describe('formatChatDay', () => {
+  it('reads the time for today, the day this year, and the day with its year before', () => {
+    expect(plain(formatChatDay(new Date(2026, 9, 9, 14, 39).toISOString(), NOW))).toBe('2:39 PM');
+    expect(formatChatDay(new Date(2026, 9, 8, 23, 50).toISOString(), NOW)).toBe('Oct 8');
+    expect(formatChatDay(new Date(2026, 8, 5, 10, 49).toISOString(), NOW)).toBe('Sep 5');
+    expect(formatChatDay(new Date(2025, 8, 5, 10, 49).toISOString(), NOW)).toBe('Sep 5, 2025');
+  });
+
+  it('never prints a numeric US date, and says nothing for a value that is not a date', () => {
+    expect(formatChatDay(new Date(2026, 8, 5, 10, 49).toISOString(), NOW)).not.toMatch(/\//);
+    expect(formatChatDay('not a date', NOW)).toBe('');
+  });
+});
+
+describe('formatChatTimestamp', () => {
+  it('gives the full stamp in the same words, from an ISO string or epoch milliseconds', () => {
+    const when = new Date(2026, 8, 5, 10, 49);
+    expect(plain(formatChatTimestamp(when.toISOString()))).toBe('Sep 5, 2026, 10:49 AM');
+    expect(plain(formatChatTimestamp(when.getTime()))).toBe('Sep 5, 2026, 10:49 AM');
+    expect(formatChatTimestamp('not a date')).toBe('');
   });
 });
