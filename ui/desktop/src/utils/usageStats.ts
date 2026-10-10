@@ -177,15 +177,24 @@ export function reportRowTokens(row: UsageReportRow): number {
 export interface ModelUsage {
   /** Stable React key. */
   key: string;
-  /** Null for the unattributed bucket and for `Other`. */
+  /** Null for `Other` and for the unrecorded row. */
   modelId: string | null;
   provider: string | null;
-  /** True for the `Other` row that folds every model past the top three. */
+  /** True for the `Other` row that folds the named models past the top rows. */
   other: boolean;
+  /**
+   * True for the one row holding usage saved without a model name. It is
+   * always last and carries no share: it says nothing about which models were
+   * used.
+   */
+  unrecorded: boolean;
   tokens: number;
   turns: number;
-  /** Fraction of all tokens in range, 0 to 1. */
-  share: number;
+  /**
+   * Fraction of the NAMED models' tokens in range, 0 to 1; null on the
+   * unrecorded row.
+   */
+  share: number | null;
 }
 
 function hasUsage(row: UsageReportRow): boolean {
@@ -208,42 +217,82 @@ export function favoriteModel(rows: readonly UsageReportRow[]): UsageReportRow |
 /** At most this many rows in the Models tab. */
 export const MODEL_ROWS_MAX = 4;
 
+function sumTokens(rows: readonly UsageReportRow[]): number {
+  return rows.reduce((sum, row) => sum + reportRowTokens(row), 0);
+}
+
+function sumTurns(rows: readonly UsageReportRow[]): number {
+  return rows.reduce((sum, row) => sum + row.turns, 0);
+}
+
 /**
- * The Models tab: every model when there are at most four, otherwise the top
- * three by tokens and one `Other` row holding the rest.
+ * The Models tab, which agrees with Favorite model about the top row.
+ *
+ * Named models come first, by tokens, and their shares are of the named
+ * models' tokens only. Usage saved without a model name (the report's
+ * unattributed bucket, often most of an older history) is folded into ONE
+ * `unrecorded` row, ranked last whatever its size and given no share: leading
+ * the list with it, as the tab used to, made Overview and Models disagree
+ * about the top model and dwarfed every real bar.
+ *
+ * At most four rows: when the named models do not fit beside the unrecorded
+ * row, the top ones stay and one `Other` row holds the rest.
  */
 export function modelBreakdown(rows: readonly UsageReportRow[]): ModelUsage[] {
-  const used = rows.filter(hasUsage).sort(byUsage);
-  const total = used.reduce((sum, row) => sum + reportRowTokens(row), 0);
-  const share = (tokens: number) => (total > 0 ? tokens / total : 0);
-  const toUsage = (row: UsageReportRow, index: number): ModelUsage => {
+  const used = rows.filter(hasUsage);
+  const named = used.filter((row) => row.modelId).sort(byUsage);
+  const unrecorded = used.filter((row) => !row.modelId);
+  const namedTotal = sumTokens(named);
+  const share = (tokens: number) => (namedTotal > 0 ? tokens / namedTotal : 0);
+  const toUsage = (row: UsageReportRow): ModelUsage => {
     const tokens = reportRowTokens(row);
     return {
-      key: `${row.provider ?? ''}/${row.modelId ?? `unknown-${index}`}`,
+      key: `${row.provider ?? ''}/${row.modelId}`,
       modelId: row.modelId ?? null,
       provider: row.provider ?? null,
       other: false,
+      unrecorded: false,
       tokens,
       turns: row.turns,
       share: share(tokens),
     };
   };
-  if (used.length <= MODEL_ROWS_MAX) return used.map(toUsage);
-  const top = used.slice(0, MODEL_ROWS_MAX - 1).map(toUsage);
-  const rest = used.slice(MODEL_ROWS_MAX - 1);
-  const restTokens = rest.reduce((sum, row) => sum + reportRowTokens(row), 0);
-  return [
-    ...top,
-    {
-      key: 'other',
+
+  const slots = MODEL_ROWS_MAX - (unrecorded.length > 0 ? 1 : 0);
+  let models: ModelUsage[];
+  if (named.length <= slots) {
+    models = named.map(toUsage);
+  } else {
+    const rest = named.slice(slots - 1);
+    const restTokens = sumTokens(rest);
+    models = [
+      ...named.slice(0, slots - 1).map(toUsage),
+      {
+        key: 'other',
+        modelId: null,
+        provider: null,
+        other: true,
+        unrecorded: false,
+        tokens: restTokens,
+        turns: sumTurns(rest),
+        share: share(restTokens),
+      },
+    ];
+  }
+
+  if (unrecorded.length > 0) {
+    models.push({
+      key: 'unrecorded',
       modelId: null,
       provider: null,
-      other: true,
-      tokens: restTokens,
-      turns: rest.reduce((sum, row) => sum + row.turns, 0),
-      share: share(restTokens),
-    },
-  ];
+      other: false,
+      unrecorded: true,
+      tokens: sumTokens(unrecorded),
+      turns: sumTurns(unrecorded),
+      share: null,
+    });
+  }
+  return models;
 }
 
 /** `62%`; `<1%` for a sliver that would otherwise round to nothing. */

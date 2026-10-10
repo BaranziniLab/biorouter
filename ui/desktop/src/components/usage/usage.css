@@ -186,6 +186,13 @@
   gap: 12px;
 }
 
+.br-usage-model-label {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  gap: 4px;
+}
+
 .br-usage-model-name {
   min-inline-size: 0;
   overflow: hidden;

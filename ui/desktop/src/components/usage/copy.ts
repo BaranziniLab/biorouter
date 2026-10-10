@@ -20,7 +20,9 @@ export const homeUsageCopy = {
   modelsHelp: 'Includes deleted chats and subagents.',
   modelsEmpty: 'No model usage in this period.',
   other: 'Other',
-  unknownModel: 'Unknown model',
+  /** Usage the report holds without a model name: last row, and the tile when it is all there is. */
+  notRecorded: 'Not recorded',
+  notRecordedHelp: 'Usage saved without a model name. The shares above count named models only.',
   rangeLabel: 'Time range',
   ranges: {
     '1y': { label: '1y', name: 'Last year' },

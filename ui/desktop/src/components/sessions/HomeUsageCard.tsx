@@ -21,6 +21,7 @@ import {
   type ModelUsage,
   type UsageRange,
 } from '../../utils/usageStats';
+import { friendlyModelName } from '../bottom_menu/modelLabel';
 import { getModelDisplayName } from '../settings/models/predefinedModelsUtils';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
@@ -125,8 +126,14 @@ function useModelReport(end: string, range: UsageRange): ReportState {
   return rows ? { status: 'ready', rows } : { status: 'loading' };
 }
 
+/**
+ * A model's name as the composer's model chip says it (principle 10): the
+ * configured alias when there is one, and the provider's release-date stamp
+ * off (`gpt-5.5-2026-04-24` reads `gpt-5.5`). The full `provider/modelId`
+ * stays in the tooltip.
+ */
 function modelName(modelId: string | null | undefined): string {
-  return modelId ? getModelDisplayName(modelId) : copy.unknownModel;
+  return modelId ? friendlyModelName(getModelDisplayName(modelId)) : copy.notRecorded;
 }
 
 function modelTitle(row: { modelId?: string | null; provider?: string | null }) {
@@ -210,8 +217,29 @@ function OverviewTiles({
 }
 
 function ModelRow({ model }: { model: ModelUsage }) {
+  if (model.unrecorded) {
+    // Last, muted and without a share: it says how much usage carries no model
+    // name, not which model it was.
+    return (
+      <li className="br-usage-model" data-testid="home-usage-model" data-unrecorded="">
+        <span className="br-usage-model-label">
+          <span className="br-usage-model-name text-body text-text-muted">{copy.notRecorded}</span>
+          <InfoTip label={copy.notRecorded} help={copy.notRecordedHelp} />
+        </span>
+        <span aria-hidden="true" />
+        <span
+          className="br-usage-model-tokens text-body text-text-muted"
+          title={model.tokens >= 10_000 ? formatCount(model.tokens) : undefined}
+        >
+          {formatTokensCompact(model.tokens)}
+        </span>
+        <span aria-hidden="true" />
+      </li>
+    );
+  }
   const name = model.other ? copy.other : modelName(model.modelId);
-  const width = `${Math.max(0, Math.min(100, model.share * 100))}%`;
+  const share = model.share ?? 0;
+  const width = `${Math.max(0, Math.min(100, share * 100))}%`;
   return (
     <li className="br-usage-model" data-testid="home-usage-model">
       <span className="br-usage-model-name text-body text-text-default" title={modelTitle(model)}>
@@ -227,7 +255,7 @@ function ModelRow({ model }: { model: ModelUsage }) {
         {formatTokensCompact(model.tokens)}
       </span>
       <span className="br-usage-model-share text-supporting text-text-muted">
-        {formatShare(model.share)}
+        {formatShare(share)}
       </span>
     </li>
   );

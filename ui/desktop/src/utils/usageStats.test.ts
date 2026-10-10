@@ -239,7 +239,7 @@ describe('modelBreakdown', () => {
     const models = modelBreakdown([row('a', 100), row('b', 300), row('c', 0, 0)]);
     expect(models.map((m) => m.modelId)).toEqual(['b', 'a']);
     expect(models.map((m) => m.share)).toEqual([0.75, 0.25]);
-    expect(models.every((m) => !m.other)).toBe(true);
+    expect(models.every((m) => !m.other && !m.unrecorded)).toBe(true);
   });
 
   it('folds everything past the top three into one Other row', () => {
@@ -253,8 +253,54 @@ describe('modelBreakdown', () => {
     expect(models).toHaveLength(4);
     expect(models.slice(0, 3).map((m) => m.modelId)).toEqual(['a', 'b', 'c']);
     expect(models[3]).toMatchObject({ other: true, modelId: null, tokens: 30, turns: 5 });
-    expect(models.reduce((sum, m) => sum + m.share, 0)).toBeCloseTo(1);
+    expect(models.reduce((sum, m) => sum + (m.share ?? 0), 0)).toBeCloseTo(1);
     expect(new Set(models.map((m) => m.key)).size).toBe(4);
+  });
+
+  /**
+   * V1-M7: the unattributed bucket led the tab ("Unknown model 743.8M 89%")
+   * while Favorite model skipped it, so the two tabs disagreed about the top
+   * model. It now trails, as one row, with no share, and the named models'
+   * shares are of their own total.
+   */
+  it('puts usage without a model name last, as one row with no share', () => {
+    const models = modelBreakdown([
+      { ...row(null, 700), provider: 'openai' },
+      row('a', 60),
+      { ...row(null, 40), provider: 'anthropic' },
+      row('b', 40),
+    ]);
+    expect(models.map((m) => m.modelId)).toEqual(['a', 'b', null]);
+    expect(models[0].share).toBeCloseTo(0.6);
+    expect(models[1].share).toBeCloseTo(0.4);
+    expect(models[2]).toMatchObject({
+      key: 'unrecorded',
+      unrecorded: true,
+      other: false,
+      tokens: 740,
+      turns: 2,
+      share: null,
+    });
+  });
+
+  it('keeps four rows when the unrecorded row needs a slot', () => {
+    const models = modelBreakdown([
+      row(null, 900),
+      row('a', 50),
+      row('b', 40),
+      row('c', 30),
+      row('d', 20),
+    ]);
+    expect(
+      models.map((m) => (m.other ? 'Other' : m.unrecorded ? 'unrecorded' : m.modelId))
+    ).toEqual(['a', 'b', 'Other', 'unrecorded']);
+    expect(models[2]).toMatchObject({ tokens: 50, share: 50 / 140 });
+  });
+
+  it('has only the unrecorded row when no usage names a model', () => {
+    expect(modelBreakdown([row(null, 500)])).toEqual([
+      expect.objectContaining({ unrecorded: true, tokens: 500, share: null }),
+    ]);
   });
 
   it('is empty when no model was used', () => {

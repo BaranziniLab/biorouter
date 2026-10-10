@@ -305,6 +305,68 @@ describe('HomeUsageCard', () => {
     expect(screen.getByRole('grid', { name: 'Daily usage heatmap' })).toBeInTheDocument();
   });
 
+  /**
+   * V1-M7: the tile and the rows say a model's name the way the composer's
+   * model chip does (the date stamp off), with `provider/modelId` behind it.
+   */
+  it('names models as the composer chip does, with the full id in the tooltip', async () => {
+    const user = userEvent.setup();
+    mocks.getUsageReport.mockResolvedValue({
+      data: {
+        rows: [report('gpt-5.5-2026-04-24', 900), report('claude-3-5-sonnet-20241022', 100)],
+      },
+    });
+    render(<HomeUsageCard window={windowOf()} />);
+    await waitFor(() => expect(figure('Favorite model')).toHaveTextContent('gpt-5.5'));
+    expect(figure('Favorite model')).not.toHaveTextContent('2026');
+    expect(figure('Favorite model').querySelector('.br-stat-figure')).toHaveAttribute(
+      'title',
+      'versa_azure/gpt-5.5-2026-04-24'
+    );
+
+    await user.click(screen.getByRole('tab', { name: 'Models' }));
+    const rows = await screen.findAllByTestId('home-usage-model');
+    expect(rows.map((row) => row.firstElementChild?.textContent)).toEqual([
+      'gpt-5.5',
+      'claude-3-5-sonnet',
+    ]);
+    expect(rows[1].firstElementChild).toHaveAttribute(
+      'title',
+      'versa_azure/claude-3-5-sonnet-20241022'
+    );
+  });
+
+  /**
+   * V1-M7: "Unknown model 743.8M 89%" led the Models tab while Overview's
+   * Favorite model skipped it. Both now agree on the top row; usage without a
+   * model name trails, muted, with no bar or share and an InfoTip.
+   */
+  it('agrees with Favorite model about the top row, and puts unrecorded usage last', async () => {
+    const user = userEvent.setup();
+    mocks.getUsageReport.mockResolvedValue({
+      data: { rows: [report(null, 7_438), report('gpt-5.6-sol', 545), report('claude-opus', 227)] },
+    });
+    render(<HomeUsageCard window={windowOf()} />);
+    await waitFor(() => expect(figure('Favorite model')).toHaveTextContent('GPT-5.6 Sol'));
+
+    await user.click(screen.getByRole('tab', { name: 'Models' }));
+    const rows = await screen.findAllByTestId('home-usage-model');
+    expect(rows.map((row) => row.querySelector('.br-usage-model-name')?.textContent)).toEqual([
+      'GPT-5.6 Sol',
+      'claude-opus',
+      copy.notRecorded,
+    ]);
+    expect(rows[0]).toHaveTextContent('71%');
+    const unrecorded = rows[2];
+    expect(unrecorded).toHaveAttribute('data-unrecorded');
+    expect(unrecorded).toHaveTextContent('7,438');
+    expect(unrecorded).not.toHaveTextContent('%');
+    expect(unrecorded.querySelector('.br-usage-model-bar')).toBeNull();
+    expect(
+      within(unrecorded).getByRole('button', { name: `About ${copy.notRecorded}` })
+    ).toHaveAccessibleDescription(copy.notRecordedHelp);
+  });
+
   it('says so in one line when no model was used in the range', async () => {
     const user = userEvent.setup();
     mocks.getUsageReport.mockResolvedValue({ data: { rows: [] } });
