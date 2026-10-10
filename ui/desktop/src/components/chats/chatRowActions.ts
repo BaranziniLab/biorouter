@@ -1,6 +1,3 @@
-import type { ComponentType } from 'react';
-
-import { Copy, MessageSquare, NewWindow } from '../icons/app-icons';
 import { toastError, toastSuccess } from '../../toasts';
 import { chatRowCopy } from './copy';
 
@@ -18,12 +15,14 @@ import { chatRowCopy } from './copy';
  *
  * The order is fixed by the issue and is not arbitrary: the two openers first,
  * because they are what a row is usually right-clicked for, then the copy.
+ *
+ * The descriptors carry no icon: chat-row menus are text only (spec 2.6, Crew's
+ * `ChannelRow` menus), so an icon here would only name a glyph nothing draws.
  */
 export type ChatRowAction = {
   /** Stable key for tests and React keys — never shown. */
   key: 'open-tab' | 'open-window' | 'copy-id';
   label: string;
-  icon: ComponentType<{ className?: string }>;
   run: () => void;
 };
 
@@ -89,19 +88,16 @@ export function chatRowActions(target: ChatRowActionTarget): ChatRowAction[] {
     {
       key: 'open-tab',
       label: chatRowCopy.menu.openInNewTab,
-      icon: MessageSquare,
       run: target.openInNewTab,
     },
     {
       key: 'open-window',
       label: chatRowCopy.menu.openInNewWindow,
-      icon: NewWindow,
       run: () => openChatInNewWindow(target.sessionId, target.workingDir),
     },
     {
       key: 'copy-id',
       label: chatRowCopy.menu.copyId,
-      icon: Copy,
       run: () => void copyConversationId(target.sessionId),
     },
   ];
