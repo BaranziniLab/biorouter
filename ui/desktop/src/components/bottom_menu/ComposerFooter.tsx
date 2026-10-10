@@ -1,3 +1,4 @@
+import './pickers.css';
 import type { ModelCostRow, SessionCosts } from '../../hooks/useCostTracking';
 import { COST_TRACKING_ENABLED } from '../../updates';
 import { cn } from '../../utils';
@@ -58,13 +59,9 @@ export function ComposerFooter({
 }: ComposerFooterProps) {
   const inChat = sessionId !== null;
   return (
-    <div
-      data-testid="composer-footer"
-      className={cn('flex min-w-0 items-center justify-between gap-4', className)}
-    >
-      <div className="flex min-w-0 items-center">
+    <div data-testid="composer-footer" className={cn('br-footline', className)}>
+      <div className="br-footline__side">
         <DirSwitcher
-          className="mr-0"
           sessionId={sessionId ?? undefined}
           locked={workingDirLocked}
           workingDir={workingDir}
@@ -74,7 +71,7 @@ export function ComposerFooter({
         />
       </div>
       {inChat && (
-        <div className="flex flex-shrink-0 items-center gap-1.5">
+        <div className="br-footline__side" data-side="end">
           <ContextWindowIndicator
             totalTokens={totalTokens}
             tokenLimit={tokenLimit}

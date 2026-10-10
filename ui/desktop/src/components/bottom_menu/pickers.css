@@ -1,0 +1,253 @@
+/*
+ * WS-PICKERS (spec 3.7): the composer's Tools chip and model chip inside the
+ * card, the Tools popover's lists, and the footer line under the card.
+ *
+ * Authored CSS keyed on classes, because a newly written Tailwind utility can
+ * silently fail to generate under BIOROUTER_NO_HMR (CLAUDE.md, "Desktop shell
+ * geometry"). These rules are unlayered, so they win over the Tailwind
+ * utilities a primitive brings with it (CommandItem's row height, for one).
+ * Hover is neutral everywhere (principle 7); only the lock badge and the
+ * switches carry the accent, and both come from their own primitives.
+ */
+
+/* A chip in the card's control row: ghost, 28px, 13/18, muted at rest. */
+.br-picker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--control-sm);
+  padding: 0 8px;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-picker-chip:hover,
+.br-picker-chip[data-state='open'] {
+  background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+.br-picker-chip:active {
+  background: var(--overlay-pressed);
+}
+
+.br-picker-chip__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-picker-chip__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.br-picker-chip__chevron {
+  flex: none;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+  transition: transform var(--dur-fast-max) var(--ease-out);
+}
+
+.br-picker-chip[data-state='open'] .br-picker-chip__chevron {
+  transform: rotate(180deg);
+}
+
+.br-picker-chip__badge {
+  flex: none;
+  display: inline-flex;
+}
+
+/* The Tools popover: one column, the segmented control on top. */
+.br-picker-popover {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  max-height: min(480px, 70vh);
+  padding: 0;
+  overflow: hidden;
+}
+
+.br-picker-popover__tabs {
+  flex: none;
+  padding: 8px 8px 4px;
+}
+
+.br-picker-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+}
+
+/* The scope line under the search: label and InfoTip left, bulk action right. */
+.br-picker-panel__bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: var(--control-sm);
+  padding: 2px 4px 2px 12px;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-picker-panel__scope {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.br-picker-panel__list {
+  max-height: 320px;
+}
+
+.br-picker-panel__empty {
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+/* A list row: the menu recipe (32px, 13/18), a name, then the switch. */
+.br-picker-row {
+  height: auto;
+  min-height: var(--control-md);
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-radius: var(--radius-element);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 400;
+}
+
+.br-picker-row__text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.br-picker-row__title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-default);
+}
+
+.br-picker-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-picker-row__meta,
+.br-picker-row__note {
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-picker-row__meta {
+  flex: none;
+}
+
+.br-picker-row__switch {
+  flex: none;
+  display: inline-flex;
+  pointer-events: none;
+}
+
+/* The footer line under the card: 12px muted, readouts on the right. */
+.br-footline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  min-height: var(--control-compact);
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-footline__side {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.br-footline__side[data-side='end'] {
+  flex: none;
+}
+
+/* Folder, ring and cost: 24px hit areas that read as text until hovered. */
+.br-footline__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: var(--control-compact);
+  padding: 0 6px;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transition:
+    background-color var(--dur-fast-min) var(--ease-out),
+    color var(--dur-fast-min) var(--ease-out);
+}
+
+button.br-footline__item {
+  cursor: pointer;
+}
+
+button.br-footline__item:hover,
+.br-footline__item[data-state='open'] {
+  background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+button.br-footline__item:disabled {
+  cursor: progress;
+  opacity: 0.5;
+}
+
+.br-footline__item > svg {
+  flex: none;
+  width: var(--icon-chip);
+  height: var(--icon-chip);
+}
+
+/* A folder name, never a path: the path is in the tooltip. */
+.br-footline__name {
+  min-width: 0;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-picker-chip,
+  .br-picker-chip__chevron,
+  .br-footline__item {
+    transition: none;
+  }
+}

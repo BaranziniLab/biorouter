@@ -1,13 +1,16 @@
+import './pickers.css';
 import React, { useState } from 'react';
-import { FolderDot } from '../icons/app-icons';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
+import { Folder } from '../icons/app-icons';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { cn } from '../../utils';
 import { updateWorkingDir } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { toastError } from '../../toasts';
 import { ChatState } from '../../types/chatState';
 
 interface DirSwitcherProps {
-  className: string;
+  /** Layout only. */
+  className?: string;
   sessionId: string | undefined;
   workingDir: string;
   /**
@@ -161,48 +164,35 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
     }
   };
 
-  // #44: once the chat has messages the working dir is immutable — the chip
-  // becomes a read-only label (basename, full path on hover) with no chooser
-  // affordance. Only the TRIGGER differs between the two states.
+  // #44: once the chat has messages the working dir is immutable, so the chip
+  // becomes a read-only label with no chooser affordance. Only the TRIGGER
+  // differs between the two states.
   //
-  // `text-supporting` (12px), NOT the `text-secondary` that main.css's type
-  // scale prescribes for a dense control. That override is deliberate and is
-  // explained once, in ChatInput.tsx — search "THE RAILS' TYPE". Do not raise it
-  // back without reading that note.
+  // Both show the folder's NAME in the footer's sans (spec 3.7, principle 10:
+  // names, not paths); the full path is in the tooltip, in mono, because a path
+  // is a machine string. `<bdi>` keeps a right-to-left folder name from
+  // reordering the line around it.
+  const name = (
+    <span className="br-footline__name">
+      <bdi>{workingDirLabel(workingDir)}</bdi>
+    </span>
+  );
   const trigger = locked ? (
-    <span
-      data-testid="dir-switcher-locked"
-      className={`z-[100] h-7 min-w-0 rounded-md px-1 text-text-default/70 text-supporting flex items-center select-none [&>svg]:size-4 ${className}`}
-    >
-      <FolderDot className="mr-0.5" size={16} />
-      <div className="max-w-[112px] min-w-0 truncate font-mono">{workingDirLabel(workingDir)}</div>
+    <span data-testid="dir-switcher-locked" className={cn('br-footline__item', className)}>
+      <Folder aria-hidden="true" />
+      {name}
     </span>
   ) : (
     <button
-      className={`z-[100] h-7 min-w-0 rounded-md px-1 ${isDirectoryChooserOpen ? 'opacity-50' : 'hover:cursor-pointer hover:bg-background-medium hover:text-text-default'} text-text-default/70 text-supporting flex items-center transition-colors [&>svg]:size-4 ${className}`}
+      type="button"
+      data-testid="dir-switcher"
+      className={cn('br-footline__item', className)}
       onClick={handleDirectoryClick}
       disabled={isDirectoryChooserOpen}
+      aria-label={`Working folder: ${workingDir}`}
     >
-      <FolderDot className="mr-0.5" size={16} />
-      {/* The path is WIDER here than the locked chip's basename, and the two
-          caps are deliberately different rather than one number shared: while
-          the directory is still choosable the full path is what the user is
-          deciding on, and 112px (~14 characters of 12px mono) truncates
-          `/Users/wgu/Downloads` — a path short enough that no one should have
-          to hover to read it.
-
-          `biorouter-dir-chip-path` carries the cap, the RTL box that clips the
-          HEAD rather than the tail, and the `<bdi>` LTR isolate that stops the
-          path's leading separator being reordered to the visual right end (it
-          rendered `…wgu/Downloads/`, a trailing slash the real path does not
-          have). All three are authored CSS in `main.css`, together, with the
-          reasoning — a newly written Tailwind arbitrary value can silently
-          fail to generate, and these three must never drift apart. `min-w-0`
-          stays so flex can still shrink the chip under pressure; the counts
-          across the strip are `flex-shrink-0` and never give way. */}
-      <div className="biorouter-dir-chip-path min-w-0 truncate font-mono">
-        <bdi>{workingDir}</bdi>
-      </div>
+      <Folder aria-hidden="true" />
+      {name}
     </button>
   );
 
@@ -213,21 +203,18 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
   // warns about and which later shows up as a stuck-open tooltip. Control is
   // needed regardless, so the native directory chooser can force it shut.
   return (
-    <TooltipProvider>
-      <Tooltip
-        open={isTooltipOpen && !isDirectoryChooserOpen}
-        onOpenChange={(open) => {
-          if (!isDirectoryChooserOpen) setIsTooltipOpen(open);
-        }}
-      >
-        <TooltipTrigger asChild>{trigger}</TooltipTrigger>
-        <TooltipContent side="top">
-          {/* `ui/Tooltip.tsx` pins `font-sans` on the content box, so the
-              override has to sit on a child. RecentChats.tsx does exactly
-              this for the same value; copied rather than reinvented. */}
-          <span className="font-mono">{workingDir}</span>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Tooltip
+      open={isTooltipOpen && !isDirectoryChooserOpen}
+      onOpenChange={(open) => {
+        if (!isDirectoryChooserOpen) setIsTooltipOpen(open);
+      }}
+    >
+      <TooltipTrigger asChild>{trigger}</TooltipTrigger>
+      <TooltipContent side="top">
+        {/* `ui/Tooltip.tsx` pins the sans face on the content box, so the
+            path's mono sits on a child. */}
+        <span className="font-mono">{workingDir}</span>
+      </TooltipContent>
+    </Tooltip>
   );
 };

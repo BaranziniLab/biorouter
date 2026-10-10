@@ -80,58 +80,34 @@ describe('workingDirLabel', () => {
 });
 
 /**
- * The unlocked chip shows the FULL path, left-truncated, so the directory is
- * readable while it is still being chosen. Two facts about it are assertable
- * here; the third is not.
- *
- * ⚠ **jsdom cannot see either the width cap or the bidi ordering** — it has no
- * layout engine and does not implement the Unicode bidirectional algorithm, so
- * `textContent` reads back the logical string whether the box is 112px or 46ch
- * and whether the leading separator is drawn at the far end or not. What is
- * assertable here is the DOM contract: the exact string reaches the chip
- * unmangled, and it reaches it inside the isolation element the stylesheet
- * selects. The width and the visual glyph order are pinned at the source in
- * `styles/dirChipPath.test.ts` and were measured in a real browser.
+ * Spec 3.7: the footer names the FOLDER, never the path, in both states (names,
+ * not IDs or paths, principle 10). The path is one hover away, in the tooltip.
+ * The name sits in a `<bdi>` so a right-to-left folder name cannot reorder the
+ * line around it.
  */
-describe('the chip renders the whole path, inside its bidi isolate', () => {
-  const chipPath = (container: HTMLElement) =>
-    container.querySelector<HTMLElement>('.biorouter-dir-chip-path');
-
+describe('the chip names the folder, inside its bidi isolate', () => {
   it.each([
-    ['an ordinary path', '/Users/wgu/Downloads'],
-    // A path whose trailing slash is REAL must keep it, and one without a
-    // trailing slash must not grow one — the shipped RTL box reordered the
-    // LEADING separator to the visual right end and made these two
-    // indistinguishable, showing `…wgu/Downloads/` for the path below.
-    ['a path with a real trailing slash', '/Users/wgu/Downloads/'],
-    ['a leading-slash root', '/'],
-    // Backslashes are bidi-neutral too: `C:\` rendered `\:C`, fully reversed.
-    ['a Windows path', 'C:\\Users\\wgu\\Desktop'],
-    ['a Windows drive root', 'C:\\'],
-  ])('shows %s exactly as it is, inside a <bdi>', (_label, dir) => {
+    ['an ordinary path', '/Users/wgu/Downloads', 'Downloads'],
+    ['a path with a trailing slash', '/Users/wgu/Downloads/', 'Downloads'],
+    ['a leading-slash root', '/', '/'],
+    ['a Windows path', 'C:\\Users\\wgu\\Desktop', 'Desktop'],
+    ['a Windows drive root', 'C:\\', 'C:\\'],
+  ])('shows %s by its name', (_label, dir, name) => {
     const { container } = render(
-      <DirSwitcher className="" sessionId={undefined} workingDir={dir} locked={false} />
+      <DirSwitcher sessionId={undefined} workingDir={dir} locked={false} />
     );
-
-    const path = chipPath(container);
-    expect(path).not.toBeNull();
-    expect(path!.textContent).toBe(dir);
-
-    // The stylesheet's LTR isolate is `.biorouter-dir-chip-path > bdi`; without
-    // the element the rule matches nothing and the separators reorder again.
-    const bdi = path!.querySelector('bdi');
-    expect(bdi).not.toBeNull();
-    expect(bdi!.textContent).toBe(dir);
+    const chip = screen.getByRole('button');
+    expect(chip).toHaveTextContent(name);
+    expect(chip).toHaveAccessibleName(`Working folder: ${dir}`);
+    expect(container.querySelector('bdi')?.textContent).toBe(name);
   });
 
-  it('leaves the locked chip on its basename, with no isolate and no head clipping', () => {
+  it('shows the same name on the locked chip', () => {
     const { container } = render(
-      <DirSwitcher className="" sessionId="session-1" workingDir="/Users/wgu/Downloads" locked />
+      <DirSwitcher sessionId="session-1" workingDir="/Users/wgu/Downloads" locked />
     );
-
     expect(screen.getByTestId('dir-switcher-locked')).toHaveTextContent('Downloads');
-    expect(chipPath(container)).toBeNull();
-    expect(container.querySelector('bdi')).toBeNull();
+    expect(container.querySelector('bdi')?.textContent).toBe('Downloads');
   });
 });
 
@@ -198,7 +174,6 @@ describe('DirSwitcher while the chat is empty', () => {
     const onWorkingDirChange = vi.fn();
     render(
       <DirSwitcher
-        className=""
         sessionId="session-1"
         workingDir={WORKING_DIR}
         locked={false}
@@ -206,9 +181,10 @@ describe('DirSwitcher while the chat is empty', () => {
       />
     );
 
-    // Interactive chip: a real button showing the full path.
+    // Interactive chip: a real button naming the folder; the path is its name.
     const chip = screen.getByRole('button');
-    expect(chip).toHaveTextContent(WORKING_DIR);
+    expect(chip).toHaveTextContent('Desktop');
+    expect(chip).toHaveAccessibleName(`Working folder: ${WORKING_DIR}`);
     fireEvent.click(chip);
 
     // throwOnError is required: without it the generated client resolves with
@@ -233,7 +209,6 @@ describe('DirSwitcher while the chat is empty', () => {
     const onRestartEnd = vi.fn();
     render(
       <DirSwitcher
-        className=""
         sessionId="session-1"
         workingDir={WORKING_DIR}
         locked={false}
@@ -260,7 +235,6 @@ describe('DirSwitcher while the chat is empty', () => {
     const onWorkingDirChange = vi.fn();
     render(
       <DirSwitcher
-        className=""
         sessionId={undefined}
         workingDir={WORKING_DIR}
         onWorkingDirChange={onWorkingDirChange}
@@ -277,9 +251,7 @@ describe('DirSwitcher while the chat is empty', () => {
 describe('DirSwitcher once the chat has messages (locked, #44)', () => {
   it('renders a read-only basename label with the full path on hover', async () => {
     const user = userEvent.setup();
-    render(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
-    );
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     // Basename only, and no interactive affordance at all.
     const label = screen.getByTestId('dir-switcher-locked');
@@ -296,7 +268,6 @@ describe('DirSwitcher once the chat has messages (locked, #44)', () => {
     const onWorkingDirChange = vi.fn();
     render(
       <DirSwitcher
-        className=""
         sessionId="session-1"
         workingDir={WORKING_DIR}
         locked={true}
@@ -327,16 +298,12 @@ describe('DirSwitcher tooltip control mode (#50)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const { rerender } = render(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
+      <DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
     );
     // The chat gets its first message: the same chip becomes read-only.
-    rerender(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
-    );
+    rerender(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
     // ...and a later unlock (new empty session in the same chip) must not flip back.
-    rerender(
-      <DirSwitcher className="" sessionId="session-2" workingDir={WORKING_DIR} locked={false} />
-    );
+    rerender(<DirSwitcher sessionId="session-2" workingDir={WORKING_DIR} locked={false} />);
 
     await waitFor(() => expect(screen.getByRole('button')).toBeInTheDocument());
 
@@ -351,53 +318,31 @@ describe('DirSwitcher tooltip control mode (#50)', () => {
   it('still reveals the full path on hover once locked', async () => {
     const user = userEvent.setup();
     const { rerender } = render(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
+      <DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
     );
-    rerender(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
-    );
+    rerender(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
     expect(await screen.findByRole('tooltip')).toHaveTextContent(WORKING_DIR);
   });
 });
 
-/// A working directory is a PATH, and paths are monospace across the app:
-/// RecentChats.tsx (the sidebar tooltip), SessionHistoryView.tsx and
-/// SharedSessionView.tsx all set this same value in `font-mono`. The composer
-/// chip was the one body-font holdout — and it sits on screen at the same time
-/// as the sidebar, so hovering a recent chat showed a mono path inches from a
-/// body-font one.
-///
-/// jsdom never runs Tailwind, so a computed-font assertion would pass whatever
-/// the class says. These assert the CLASS on the element, and walk ancestors
-/// where the face could be inherited instead.
-describe('DirSwitcher — the working directory is a path, so it is monospace', () => {
-  it('sets the unlocked chip in monospace', () => {
-    render(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
+/// The footer is sans (principle 3: mono is for machine strings). The PATH is a
+/// machine string, so the tooltip that shows it is mono, as it is in the
+/// sidebar and in History. jsdom never runs Tailwind, so these assert classes.
+describe('DirSwitcher — the folder name is sans, the path in its tooltip is mono', () => {
+  it('sets neither chip in monospace', () => {
+    const { rerender } = render(
+      <DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={false} />
     );
-    // The path sits one level deeper than it used to — inside the `<bdi>` that
-    // isolates it as LTR — so the face is inherited from the chip rather than
-    // carried on the text's own element. `closest` is the "walk ancestors"
-    // case this block's comment already allows for; asserting on the innermost
-    // element would fail while the chip is correctly monospace.
-    expect(screen.getByText(WORKING_DIR).closest('.font-mono')).not.toBeNull();
-  });
-
-  it('sets the locked basename label in monospace', () => {
-    render(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
-    );
-    // Same component, so the face must not flip when the chat locks.
-    expect(screen.getByText('Desktop').className).toMatch(/font-mono/);
+    expect(screen.getByText('Desktop').closest('.font-mono')).toBeNull();
+    rerender(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
+    expect(screen.getByText('Desktop').closest('.font-mono')).toBeNull();
   });
 
   it('sets the hover tooltip in monospace, overriding the tooltip font-sans', async () => {
     const user = userEvent.setup();
-    render(
-      <DirSwitcher className="" sessionId="session-1" workingDir={WORKING_DIR} locked={true} />
-    );
+    render(<DirSwitcher sessionId="session-1" workingDir={WORKING_DIR} locked={true} />);
 
     await user.hover(screen.getByTestId('dir-switcher-locked'));
     const tooltip = await screen.findByRole('tooltip');

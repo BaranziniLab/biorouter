@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aggregateModelRowsCost,
   costEstimateSummary,
+  costIsWorthShowing,
   formatCostEstimate,
   formatTooltipMoney,
   sessionTokensSummary,
@@ -79,5 +80,17 @@ describe('cost estimates', () => {
 
     expect(estimate).toEqual({ amount: null, partial: true });
     expect(formatCostEstimate(estimate)).toBe('Unavailable');
+  });
+});
+
+describe('costIsWorthShowing (spec 3.7: a cost appears only above $0)', () => {
+  it.each([
+    [{ amount: 0, partial: false }, false],
+    [{ amount: null, partial: true }, false],
+    [{ amount: Number.NaN, partial: false }, false],
+    [{ amount: 0.004, partial: true }, true],
+    [{ amount: 1.25, partial: false }, true],
+  ])('%o -> %s', (estimate, shown) => {
+    expect(costIsWorthShowing(estimate)).toBe(shown);
   });
 });

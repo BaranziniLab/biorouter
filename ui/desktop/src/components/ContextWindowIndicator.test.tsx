@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
+import { FOOTER_COPY } from './bottom_menu/copy';
 
 // The gauge reads and writes the auto-compact threshold through ConfigContext
 // (never straight to the API — see ContextWindowIndicator.configCache.test.tsx,
@@ -92,32 +93,77 @@ describe('ContextWindowGauge compaction control', () => {
     expect(onCompact).toHaveBeenCalledTimes(1);
   });
 
-  it('uses a compact multiline context tooltip', async () => {
+  it('states the window in one tooltip line, the same words as its name', async () => {
     const user = userEvent.setup();
     render(
       <ContextWindowIndicator
-        totalTokens={0}
-        tokenLimit={1_100_000}
+        totalTokens={92_000}
+        tokenLimit={128_000}
         isTokenLimitLoaded
         onCompact={vi.fn()}
       />
     );
 
-    const button = screen.getByRole('button', {
-      name: 'Context window usage. 1.1M of 1.1M tokens remaining. 100% remaining, 0% used',
-    });
+    const line = FOOTER_COPY.contextTooltip(28, '92k', '128k');
+    expect(line).toBe('28% context left · 92k of 128k');
+    const button = screen.getByRole('button', { name: line });
     await user.hover(button);
-
     await screen.findByRole('tooltip');
     const tooltip = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]');
-    expect(tooltip).toHaveClass('w-52', 'text-left');
-    const [titleLine, remainingLine, usageLine] = Array.from(tooltip!.children);
-    expect(titleLine).toHaveClass('block', 'font-medium');
-    expect(titleLine).toHaveTextContent('Context window usage');
-    expect(remainingLine).toHaveClass('block');
-    expect(remainingLine).toHaveTextContent('1.1M of 1.1M tokens remaining');
-    expect(usageLine).toHaveClass('block');
-    expect(usageLine).toHaveTextContent('100% remaining, 0% used');
+    expect(tooltip).toHaveTextContent(line);
+    // One line: no stacked blocks.
+    expect(tooltip!.querySelectorAll('.block')).toHaveLength(0);
+  });
+
+  it('draws the ring at the chip size with a 2px stroke, and no mono', () => {
+    render(
+      <ContextWindowIndicator
+        totalTokens={10_000}
+        tokenLimit={128_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+        showRemainingPercent
+      />
+    );
+    const button = screen.getByTestId('context-window-indicator');
+    expect(button).toHaveClass('br-footline__item');
+    const circles = button.querySelectorAll('circle');
+    expect(circles).toHaveLength(2);
+    circles.forEach((circle) => expect(circle).toHaveAttribute('stroke-width', '2'));
+    expect(button.querySelector('.font-mono')).toBeNull();
+  });
+
+  it.each([
+    [10_000, false],
+    [64_000, false],
+    [65_000, true],
+    [120_000, true],
+  ])('with %i of 128k used, prints the figure: %s', (used, shown) => {
+    render(
+      <ContextWindowIndicator
+        totalTokens={used}
+        tokenLimit={128_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+        showRemainingPercent
+      />
+    );
+    const remaining = Math.round(((128_000 - used) / 128_000) * 100);
+    const figure = screen.queryByText(FOOTER_COPY.contextLeft(remaining));
+    if (shown) expect(figure).toBeInTheDocument();
+    else expect(figure).toBeNull();
+  });
+
+  it('never prints the figure unless asked to', () => {
+    render(
+      <ContextWindowIndicator
+        totalTokens={120_000}
+        tokenLimit={128_000}
+        isTokenLimitLoaded
+        onCompact={vi.fn()}
+      />
+    );
+    expect(screen.queryByText(/% left$/)).toBeNull();
   });
 });
 
@@ -145,7 +191,7 @@ describe('with no model bound', () => {
       />
     );
     expect(container).toBeEmptyDOMElement();
-    expect(screen.queryByText(/tokens remaining/)).toBeNull();
+    expect(screen.queryByText(/context left/)).toBeNull();
   });
 
   it('renders nothing in the popover-body gauge either', () => {
@@ -182,9 +228,7 @@ describe('with no model bound', () => {
       />
     );
     expect(
-      screen.getByRole('button', {
-        name: 'Context window usage. 128k of 128k tokens remaining. 100% remaining, 0% used',
-      })
+      screen.getByRole('button', { name: '100% context left · 0 of 128k' })
     ).toBeInTheDocument();
   });
 });
