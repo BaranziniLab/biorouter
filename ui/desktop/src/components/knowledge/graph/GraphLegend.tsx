@@ -287,7 +287,7 @@ function ExtraRows({
           Referenced, no page yet
         </span>
       )}
-      {model.hasUnrecognisedTypes && <Badge tone="warning">Unrecognised type</Badge>}
+      {model.hasUnrecognisedTypes && <Badge tone="warning">Unrecognized type</Badge>}
       {model.untyped && (
         <Badge
           asChild
