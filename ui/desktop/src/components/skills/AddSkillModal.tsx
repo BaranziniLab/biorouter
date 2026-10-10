@@ -187,6 +187,9 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         <div className="flex gap-2">
           <Input
             id="skill-source-url"
+            // First focus lands on the field, not on the help glyph beside its
+            // label (Radix keeps a focus already inside the dialog).
+            autoFocus
             type="text"
             placeholder={ADD_SKILL_COPY.repositoryPlaceholder}
             aria-describedby={repositoryHelpId}

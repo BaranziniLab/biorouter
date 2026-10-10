@@ -35,7 +35,7 @@ describe('CustomSkillModal', () => {
 });
 
 describe('CustomSkillModal: one line of guidance', () => {
-  it('states the requirement and keeps where the file goes in the help', () => {
+  it('states the requirement and keeps where the file goes in the help', async () => {
     render(<CustomSkillModal onClose={() => {}} onSaved={() => {}} />);
 
     expect(

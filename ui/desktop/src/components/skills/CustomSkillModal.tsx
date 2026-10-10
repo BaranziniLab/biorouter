@@ -111,6 +111,8 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
           the one text-field skin. */}
       <Textarea
         aria-label={CUSTOM_SKILL_COPY.editorLabel}
+        // First focus lands in the editor, not on the help glyph in the header.
+        autoFocus
         rows={14}
         className="resize-none p-3 font-mono text-code"
         value={content}

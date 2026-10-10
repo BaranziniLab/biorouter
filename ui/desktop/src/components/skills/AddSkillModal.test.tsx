@@ -208,6 +208,15 @@ describe('AddSkillModal: help on demand, not on the page', () => {
     ).toBeInTheDocument();
   });
 
+  it('puts first focus in the URL field, not on the help glyph', async () => {
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('textbox', { name: ADD_SKILL_COPY.repositoryLabel })
+      )
+    );
+  });
+
   it('makes the drop zone one line that the keyboard can reach', () => {
     render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
 
