@@ -332,13 +332,29 @@ describe('the schedule list is rows and hairlines, not boxes', () => {
     renderSchedules();
 
     const open = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
-    const lines = open.querySelectorAll('h3, p');
+    const row = open.closest('[data-testid="schedule-row"]') as HTMLElement;
+    const lines = row.querySelectorAll('h3, p');
     expect(lines).toHaveLength(2);
+    // The name's button is the heading's content: one control, nothing else inside it.
+    expect(lines[0]).toContainElement(open);
+    expect(open.querySelectorAll('button, [tabindex]')).toHaveLength(0);
     const meta = lines[1] as HTMLElement;
     expect(meta).toHaveTextContent(/^Scheduled · .+ · Last run /);
     expect(meta).toHaveClass('tabular-nums');
     expect(meta.querySelector('.font-mono')).toBeNull();
-    expect(open.querySelector('svg')).toBeNull();
+    expect(row.querySelector('h3 svg, p svg')).toBeNull();
+  });
+
+  it('opens the detail on a click of the row, but not of its own controls', async () => {
+    renderSchedules();
+    const open = await screen.findByRole('button', { name: 'View schedule nightly-cohort' });
+    const row = open.closest('[data-testid="schedule-row"]') as HTMLElement;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause nightly-cohort' }));
+    expect(row).toBeInTheDocument();
+
+    fireEvent.click(row.querySelector('p') as HTMLElement);
+    expect(row).not.toBeInTheDocument();
   });
 
   it('puts each schedule on the shared hairline row, with no card around the list', async () => {

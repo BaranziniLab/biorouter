@@ -59,6 +59,13 @@ const errorText = (error: unknown, fallback: string) =>
  * The cron as words, with the expression itself one hover away (spec 3.10: "the full cron goes
  * in the tooltip of the cron phrase").
  */
+/**
+ * What a row click must ignore: a click on one of the row's own controls (the name's button,
+ * Built-in's help, Pause, `⋯`) is that control's.
+ */
+const ROW_CONTROL_SELECTOR =
+  'button, a[href], input, [role="menuitem"], [tabindex]:not([tabindex="-1"])';
+
 function CronPhrase({ cron }: { cron: string }) {
   return (
     <Tooltip>
@@ -159,18 +166,39 @@ const ScheduleRow: React.FC<{
 
   return (
     <RowContextMenu items={menu}>
-      <div className="biorouter-list-row flex items-center gap-3" data-testid="schedule-row">
+      {/* The name is the row's keyboard path to the detail view (a button inside the
+          heading); a click anywhere else on the row's surface goes there too. Built-in sits
+          OUTSIDE that button: its help is a focusable trigger of its own, and a control
+          inside a button is two controls in one. */}
+      <div
+        className="biorouter-list-row flex cursor-pointer items-center gap-3"
+        data-testid="schedule-row"
+        onClick={(event) => {
+          // React delivers clicks from portalled menus through the row too; only a click on
+          // the row's own surface, and not on one of its controls, opens the detail.
+          const row = event.currentTarget;
+          const target = event.target;
+          if (!(target instanceof Node) || !row.contains(target)) return;
+          const control = target instanceof Element ? target.closest(ROW_CONTROL_SELECTOR) : null;
+          if (control && control !== row && row.contains(control)) return;
+          onNavigateToDetail(job.id);
+        }}
+      >
         <ScheduleStatusDot job={job} className="shrink-0" />
-        <button
-          type="button"
-          className="min-w-0 flex-1 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-          onClick={() => onNavigateToDetail(job.id)}
-          aria-label={copy.view(name)}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <h3 className="min-w-0 truncate text-label">{name}</h3>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h3 className="min-w-0 truncate text-label">
+              <button
+                type="button"
+                className="max-w-full cursor-pointer truncate rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+                onClick={() => onNavigateToDetail(job.id)}
+                aria-label={copy.view(name)}
+              >
+                {name}
+              </button>
+            </h3>
             {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
-          </span>
+          </div>
           {failed ? (
             <p className="truncate text-supporting text-text-danger">
               {words.join(' · ')} · {job.last_error}
@@ -187,7 +215,7 @@ const ScheduleRow: React.FC<{
               )}
             </p>
           )}
-        </button>
+        </div>
         <RowActions primary={primary} menu={menu} menuLabel={copy.moreActionsNamed(name)} />
       </div>
     </RowContextMenu>
