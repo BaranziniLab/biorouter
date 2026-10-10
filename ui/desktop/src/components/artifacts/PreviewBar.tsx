@@ -69,15 +69,25 @@ export function PreviewBarScope({ children }: { children: ReactNode }) {
 }
 
 /**
- * Wrap a layer that is on its way out (a tab switch keeps the outgoing tab's DOM
- * for one 125ms fade). Its `PreviewBarMeta` and `PreviewBarActions` portal into
- * the bar, which is OUTSIDE the layer, so without this the bar would show the
- * outgoing tab's count, Copy and view switch beside the incoming tab's for those
- * frames (measured: two Copy buttons and two switches at once). Inside this
- * wrapper they render nothing: the bar belongs to the tab being shown.
+ * Wraps every layer of the body, and gives the bar to the layer being shown.
+ * A tab switch keeps the outgoing tab's DOM for one 125ms fade, and its
+ * `PreviewBarMeta` and `PreviewBarActions` portal into the bar, which is OUTSIDE
+ * the layer: without this the bar held the outgoing tab's count, Copy and view
+ * switch beside the incoming tab's for those frames (measured: two Copy buttons
+ * and two switches at once). A `detached` layer puts nothing into the bar.
+ *
+ * It is rendered for the current layer too, with `detached` false, so a layer
+ * that turns from current to outgoing changes a context value and nothing else:
+ * its subtree keeps the same shape, so React does not remount it, and a frame
+ * does not reload or a page re-render while it fades.
  */
-export function PreviewBarDetached({ children }: { children: ReactNode }) {
-  return <PreviewBarScopeContext.Provider value={null}>{children}</PreviewBarScopeContext.Provider>;
+export function PreviewBarGate({ detached, children }: { detached: boolean; children: ReactNode }) {
+  const scope = useContext(PreviewBarScopeContext);
+  return (
+    <PreviewBarScopeContext.Provider value={detached ? null : scope}>
+      {children}
+    </PreviewBarScopeContext.Provider>
+  );
 }
 
 /** The content's metadata (`300 lines`, `500 of 620 rows`), shown in the bar. */

@@ -83,7 +83,7 @@ import { PREVIEW_COPY } from './copy';
 import {
   PreviewBar,
   PreviewBarActions,
-  PreviewBarDetached,
+  PreviewBarGate,
   PreviewBarMeta,
   PreviewBarScope,
   PreviewIconButton,
@@ -1553,12 +1553,9 @@ export default function ArtifactViewer({
         // `inert` keeps a fading layer out of the tab order and the pointer's way.
         {...(role === 'outgoing' ? { inert: true } : {})}
       >
-        {role === 'outgoing' ? (
-          // The bar is the incoming tab's: a fading layer puts nothing into it.
-          <PreviewBarDetached>{body}</PreviewBarDetached>
-        ) : (
-          body
-        )}
+        {/* The bar is the incoming tab's: a fading layer puts nothing into it. The
+            gate wraps BOTH roles, so a layer going out is not remounted. */}
+        <PreviewBarGate detached={role === 'outgoing'}>{body}</PreviewBarGate>
       </div>
     );
   };

@@ -146,7 +146,7 @@ describe('ArtifactViewer: switching tabs', () => {
       }),
     });
     const { rerender } = render(viewer(file('a.txt')));
-    await screen.findByText('Preview of a.txt', { exact: false });
+    const oldText = await screen.findByText('Preview of a.txt', { exact: false });
     expect(barCopyButtons()).toHaveLength(1);
 
     const slow = deferred();
@@ -158,6 +158,10 @@ describe('ArtifactViewer: switching tabs', () => {
 
     // The old tab is still fading out beneath the new one…
     expect(document.querySelector('[data-preview-layer="outgoing"]')).not.toBeNull();
+    // …as the very DOM it was showing, not a copy rebuilt for the exit: a frame
+    // inside it would reload and a page would re-render while it faded.
+    expect(oldText.isConnected).toBe(true);
+    expect(oldText.closest('[data-preview-layer="outgoing"]')).not.toBeNull();
     // …but the bar is already the new tab's: it names it and holds nothing of a.txt's.
     expect(document.querySelector('.br-preview-bar__name')).toHaveTextContent('b.txt');
     expect(barCopyButtons()).toHaveLength(0);
