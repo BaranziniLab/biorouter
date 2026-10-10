@@ -362,11 +362,13 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
             y=44 and runs the sidebar's full width (the container has no padding
             of its own), giving the window one continuous top edge. `h-chrome`:
             this band, BaseChat's header and the artifact strip read
-            `--chrome-height` and move together or not at all. */}
+            `--chrome-height` and move together or not at all. The hairline is
+            `--border-subtle`, the chat header's own token, so the edge does not
+            step in colour where the two meet at x=288 (vision V1-L8). */}
         <div
           data-testid="sidebar-titlebar-band"
           aria-hidden="true"
-          className="h-chrome shrink-0 border-b border-sidebar-border"
+          className="h-chrome shrink-0 border-b border-border-subtle"
         />
 
         {/* Brand row: 8px above and 4px below a 32px row, the wordmark 20px

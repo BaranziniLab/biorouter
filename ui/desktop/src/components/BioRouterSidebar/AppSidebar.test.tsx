@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
@@ -123,7 +125,7 @@ describe('AppSidebar chat navigation', () => {
     // strip all read `--chrome-height` (44px) so they can never drift apart at
     // the seam they share. The container has no padding now, so the band starts
     // at y=0 with no `-mt-2` to cancel one.
-    expect(titlebarBand).toHaveClass('h-chrome', 'border-b', 'border-sidebar-border');
+    expect(titlebarBand).toHaveClass('h-chrome', 'border-b', 'border-border-subtle');
     expect(titlebarBand).not.toHaveClass('-mt-2');
     expect(titlebarBand.compareDocumentPosition(wordmark)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
@@ -460,5 +462,24 @@ describe('AppSidebar in the overlay, by keyboard', () => {
     expect(sidebarState()).toBe('collapsed');
     expect(screen.getByRole('main')).toHaveFocus();
     expect(toggle()).not.toHaveFocus();
+  });
+});
+
+/**
+ * Vision V1-L8. The sidebar's band and the chat header meet at x=288 on one line at y=44, and
+ * each drew its hairline in a different token (`--sidebar-border` and `--border-subtle`), so the
+ * edge stepped in colour at the seam in both modes. Both name the chat header's token now. Read
+ * at the source: jsdom resolves no colour, and the header lives in `BaseChat.tsx`.
+ */
+describe('the band and the chat header draw one hairline', () => {
+  it('uses the chat header’s border token for the band', () => {
+    const baseChat = readFileSync(join(__dirname, '../BaseChat.tsx'), 'utf8');
+    const header = baseChat.split('\n').find((line) => line.includes('flex h-chrome'));
+    expect(header, 'BaseChat’s h-chrome header line').toBeDefined();
+    const token = header!.match(/border-b (border-[a-z-]+)/)?.[1];
+    expect(token).toBe('border-border-subtle');
+
+    const sidebar = readFileSync(join(__dirname, 'AppSidebar.tsx'), 'utf8');
+    expect(sidebar).toContain(`className="h-chrome shrink-0 border-b ${token}"`);
   });
 });

@@ -91,7 +91,7 @@ function page(css: string, width: number): string {
     '</style></head><body>' +
     `<div id="sidebar" style="display:flex;flex-direction:column;width:${width}px;height:760px">` +
     // The band: `h-chrome border-b`, the container now has no padding of its own.
-    '<div id="band" style="flex:none;height:var(--chrome-height);border-bottom:1px solid var(--sidebar-border)"></div>' +
+    '<div id="band" style="flex:none;height:var(--chrome-height);border-bottom:1px solid var(--border-subtle)"></div>' +
     '<div class="br-sidebar-brand" id="brand"><div class="br-sidebar-brand-row" id="brand-row">' +
     '<svg class="br-sidebar-wordmark" id="wordmark" viewBox="0 0 120 24"></svg></div></div>' +
     '<div class="br-nav-group"><ul class="br-nav-list" id="nav">' +
