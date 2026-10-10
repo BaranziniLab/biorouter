@@ -3214,6 +3214,17 @@ references are at `f2ff06132`.
 40. Owner decisions gained the visible costs of 6.1 (two rail pitches on `/crew`) and 6.3 (the rail
     hides whenever a preview is open below about 2560px), and three new rows, 6.13 to 6.15.
 
+## 8. Coordinator rulings on section 6 (2026-10-09, binding)
+
+- 6.1 to 6.10 and 6.12 to 6.15: the defaults stand.
+- **6.11 is overridden for the header:** the owner's standing September 2026 website decision is
+  "Slack is very visible: in the header on every page, plus a band on each page". Keep "Join
+  Slack" in the site header on every page AND the Community band. "Download" may sit beside it in
+  the header if it fits at 1440 and collapses gracefully at 390. Do NOT delete the docs sidebar
+  Slack block unless it duplicates the header on the same screen; prefer keeping it. About shows
+  the newest 5 updates plus an "Earlier updates" disclosure that still contains all of them.
+- Sidebar active row: keep the 2px coral rail (principle 7) even though Codex has none.
+
 ## Related documentation
 
 - `/Users/wgu/biorouter-runs/redesign-2026-10-09/REQUIREMENTS.md`
@@ -3225,14 +3236,3 @@ references are at `f2ff06132`.
   `docs/desktop-ui/preview-panel/narrow-panes.md`, `docs/security/privacy-tiers.md` §13.5
 - `docs/design/codex-simplicity-redesign/{requirements-and-plan,progress}.md` (R-01 to R-24, the
   live tracker)
-
-## 8. Coordinator rulings on section 6 (2026-10-09, binding)
-
-- 6.1 to 6.10 and 6.12 to 6.15: the defaults stand.
-- **6.11 is overridden for the header:** the owner's standing September 2026 website decision is
-  "Slack is very visible: in the header on every page, plus a band on each page". Keep "Join
-  Slack" in the site header on every page AND the Community band. "Download" may sit beside it in
-  the header if it fits at 1440 and collapses gracefully at 390. Do NOT delete the docs sidebar
-  Slack block unless it duplicates the header on the same screen; prefer keeping it. About shows
-  the newest 5 updates plus an "Earlier updates" disclosure that still contains all of them.
-- Sidebar active row: keep the 2px coral rail (principle 7) even though Codex has none.
