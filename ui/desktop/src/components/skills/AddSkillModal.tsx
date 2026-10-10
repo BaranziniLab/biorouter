@@ -145,6 +145,9 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       // while a preview or an install is in flight.
       purpose={busy ? 'required' : 'form'}
       title={ADD_SKILL_COPY.title}
+      // A preview, a choice or an error appears under the drop zone; anchored at the top the
+      // dialog grows downward, so the field and the Look up button stay under the pointer.
+      anchor="top"
       scrollBody
       bodyClassName="flex flex-col gap-4 py-4"
       footer={

@@ -217,6 +217,13 @@ describe('AddSkillModal: help on demand, not on the page', () => {
     );
   });
 
+  it('is the 640px dialog, anchored at the top so a preview or an error grows it downward', () => {
+    render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('data-size', 'lg');
+    expect(dialog).toHaveAttribute('data-anchor', 'top');
+  });
+
   it('makes the drop zone one line that the keyboard can reach', () => {
     render(<AddSkillModal onClose={() => {}} onSaved={() => {}} />);
 

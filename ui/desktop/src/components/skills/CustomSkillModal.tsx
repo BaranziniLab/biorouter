@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
 import { Note } from '../ui/note';
-import { InfoTip } from '../ui/info-tip';
+import { Field } from '../ui/field';
 import { Textarea } from '../ui/textarea';
 import { ModalShell } from '../ModalShell';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
@@ -88,12 +88,9 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
       // write in flight.
       purpose={isSaving ? 'required' : 'form'}
       title={CUSTOM_SKILL_COPY.title}
-      subtitle={
-        <span className="inline-flex flex-wrap items-center gap-x-1">
-          <span>{CUSTOM_SKILL_COPY.subtitle}</span>
-          <InfoTip label={CUSTOM_SKILL_COPY.title.toLowerCase()} help={CUSTOM_SKILL_COPY.help} />
-        </span>
-      }
+      // The dialog grows by one note when a save is refused; anchored at the top
+      // it grows downward, so the editor and the buttons do not move under the pointer.
+      anchor="top"
       scrollBody
       bodyClassName="flex flex-col gap-3 py-4"
       footer={
@@ -108,17 +105,24 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
       }
     >
       {/* The SKILL.md source is code, so the mono face earns its place here, on
-          the one text-field skin. */}
-      <Textarea
-        aria-label={CUSTOM_SKILL_COPY.editorLabel}
-        // First focus lands in the editor, not on the help glyph in the header.
-        autoFocus
-        rows={14}
-        className="resize-none p-3 font-mono text-code"
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        spellCheck={false}
-      />
+          the one text-field skin. The label is the only visible text: what the
+          file needs and where it is saved are the InfoTip beside it, and the
+          error below says it again when a save is refused. */}
+      <Field
+        id="custom-skill-md"
+        label={CUSTOM_SKILL_COPY.editorLabel}
+        info={CUSTOM_SKILL_COPY.help}
+      >
+        <Textarea
+          // First focus lands in the editor, not on the help glyph beside its label.
+          autoFocus
+          rows={14}
+          className="resize-none p-3 font-mono text-code"
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          spellCheck={false}
+        />
+      </Field>
       {error && (
         <Note tone="danger" role="alert">
           {error}

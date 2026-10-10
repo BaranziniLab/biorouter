@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { isMacPlatform } from '../ui/copy';
 import SkillsView from './SkillsView';
 import { SKILLS_COPY } from './copy';
 import type { CatalogBundle, CatalogSkill, CatalogView } from '../../api';
@@ -42,6 +43,13 @@ vi.mock('../Layout/MainPanelLayout', () => ({
 }));
 vi.mock('../Layout/ReadableContent', () => ({
   ReadableContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+}));
+// Radix's ScrollArea needs a ResizeObserver jsdom does not have, and the view only needs the
+// children (the same stand-in the Workflows and Scheduler tests use).
+vi.mock('../ui/scroll-area', () => ({
+  ScrollArea: ({ children }: { children: React.ReactNode }) => (
+    <div data-testid="list-scroller">{children}</div>
+  ),
 }));
 vi.mock('../baam/BrowseSkillsModal', () => ({ default: () => null }));
 vi.mock('./AddSkillModal', () => ({ default: () => null }));
@@ -404,6 +412,26 @@ describe('SkillsView', () => {
     render(<SkillsView />);
     await screen.findByText('my-skill');
     expect(screen.getByRole('heading', { level: 1, name: 'Skills' })).toBeInTheDocument();
+  });
+
+  /**
+   * The band is the window's drag region on this route, so it must not scroll
+   * away with a long list: it sits outside the scroller, which holds the rows.
+   */
+  it('keeps the band outside the scroller, so a long list never scrolls it away', async () => {
+    render(<SkillsView />);
+    const scroller = await screen.findByTestId('list-scroller');
+    const band = screen.getByTestId('page-header');
+    expect(scroller).not.toContainElement(band);
+    expect(scroller).toContainElement(await screen.findByText('my-skill'));
+  });
+
+  it('focuses the filter on the find shortcut', async () => {
+    render(<SkillsView />);
+    await screen.findByText('my-skill');
+    const mac = isMacPlatform();
+    fireEvent.keyDown(window, { key: 'f', metaKey: mac, ctrlKey: !mac });
+    expect(filterField()).toHaveFocus();
   });
 
   /**

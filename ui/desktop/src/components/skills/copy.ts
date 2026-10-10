@@ -87,8 +87,7 @@ export const ADD_SKILL_COPY = {
 
 export const CUSTOM_SKILL_COPY = {
   title: 'Write a skill',
-  subtitle: 'Name and description are required.',
-  help: 'Saved as a folder with SKILL.md in Biorouter Skills.',
+  help: 'Name and description are required. Saved as a folder with SKILL.md in Biorouter Skills.',
   editorLabel: 'SKILL.md',
   invalid: 'Add YAML frontmatter with a name and a description.',
   cancel: 'Cancel',

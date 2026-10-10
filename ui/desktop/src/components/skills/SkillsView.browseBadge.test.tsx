@@ -66,8 +66,8 @@ vi.mock('../Layout/MainPanelLayout', () => ({
 vi.mock('../Layout/ReadableContent', () => ({
   ReadableContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
-vi.mock('../conversation/SearchView', () => ({
-  SearchView: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+vi.mock('../ui/scroll-area', () => ({
+  ScrollArea: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 vi.mock('./AddSkillModal', () => ({ default: () => null }));
 vi.mock('./CustomSkillModal', () => ({ default: () => null }));

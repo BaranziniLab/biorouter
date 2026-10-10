@@ -8,6 +8,7 @@ import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
 import { FilterInput } from '../ui/filter-input';
 import { Note } from '../ui/note';
+import { ScrollArea } from '../ui/scroll-area';
 import { Skeleton } from '../ui/skeleton';
 import {
   RowActionMenuItems,
@@ -200,10 +201,17 @@ export default function SkillsView() {
 
   return (
     <MainPanelLayout removeTopPadding>
-      <div className="relative flex min-w-0 flex-1 flex-col overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* The band (spec 3.11): title, help, count, the filter and one Add
             menu. It sits OUTSIDE the reading column, so its hairline runs edge
-            to edge; only the body below takes the column. */}
+            to edge; only the body below takes the column.
+
+            ⚠ **It also sits OUTSIDE the scroller.** A band inside the scrolling
+            box leaves with the first screenful of a long list, and the band IS
+            the window's drag region on this route (`routeOwnsTopBand`): with it
+            gone there is nothing to drag the window by, and the filter and the
+            Add menu go with it. Workflows and the Scheduler pin theirs the same
+            way. */}
         <PageHeader
           title={SKILLS_COPY.title}
           info={SKILLS_COPY.info}
@@ -226,95 +234,100 @@ export default function SkillsView() {
           }
         />
 
-        <ReadableContent size="chat" className="px-6 py-4">
-          {catalog.error && (
-            <Note tone="danger" role="alert" className="mb-4">
-              {catalog.error}
-            </Note>
-          )}
+        <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6">
+          <ScrollArea className="h-full">
+            <div className="relative py-4">
+              {catalog.error && (
+                <Note tone="danger" role="alert" className="mb-4">
+                  {catalog.error}
+                </Note>
+              )}
 
-          {/* ⚠ Guarded on an EMPTY list, not on `loading` alone. `reload` sets
-              `loading` after every install, delete and `catalog:changed`
-              rescan as well as on first load, so a bare `loading` branch would
-              swap the whole list for skeletons every time a switch was
-              flipped. The three branches stay mutually exclusive without it:
-              skeletons and the empty state both require `total === 0`, and the
-              empty state additionally requires the load to have finished. */}
-          {catalog.loading && !catalog.error && total === 0 && (
-            <div className="biorouter-list-shell" aria-hidden>
-              <SkillRowSkeleton />
-              <SkillRowSkeleton />
-              <SkillRowSkeleton />
+              {/* ⚠ Guarded on an EMPTY list, not on `loading` alone. `reload` sets
+                  `loading` after every install, delete and `catalog:changed`
+                  rescan as well as on first load, so a bare `loading` branch
+                  would swap the whole list for skeletons every time a switch
+                  was flipped. The three branches stay mutually exclusive
+                  without it: skeletons and the empty state both require
+                  `total === 0`, and the empty state additionally requires the
+                  load to have finished. */}
+              {catalog.loading && !catalog.error && total === 0 && (
+                <div className="biorouter-list-shell" aria-hidden>
+                  <SkillRowSkeleton />
+                  <SkillRowSkeleton />
+                  <SkillRowSkeleton />
+                </div>
+              )}
+
+              <div className="flex flex-col gap-6">
+                {groups.map((group) => (
+                  <SkillGroup key={group.key} title={group.title} count={group.entries.length}>
+                    {group.entries.map((entry) => {
+                      // ⚠ Per ENTRY, not per group. A skill an installed
+                      // extension supplies is not the user's to delete (the
+                      // extension would put it back), and under a query every
+                      // provenance is in one "Matches" list, so a flag on the
+                      // group would offer Delete on rows that must not have it.
+                      const fromExtension = sourceOf(entry).kind === 'extension';
+                      return entry.kind === 'bundle' ? (
+                        <BundleRow
+                          key={entry.key}
+                          bundle={entry.bundle}
+                          skills={catalog.skills}
+                          enabled={entry.enabled}
+                          expanded={expanded.has(entry.key)}
+                          onExpandToggle={() =>
+                            setExpanded((current) => {
+                              const next = new Set(current);
+                              if (next.has(entry.key)) next.delete(entry.key);
+                              else next.add(entry.key);
+                              return next;
+                            })
+                          }
+                          onOpen={() => openFolder(entry.bundle.directory)}
+                          onDelete={fromExtension ? undefined : () => setPendingDelete(entry)}
+                          onToggle={(enabled) => void toggle(entry, enabled)}
+                        />
+                      ) : (
+                        <SkillItem
+                          key={entry.key}
+                          skill={entry.skill}
+                          enabled={entry.enabled}
+                          onOpen={() => openFolder(entry.skill.directory)}
+                          onDelete={fromExtension ? undefined : () => setPendingDelete(entry)}
+                          onShare={() => void copySkill(entry.skill)}
+                          onToggle={(enabled) => void toggle(entry, enabled)}
+                        />
+                      );
+                    })}
+                  </SkillGroup>
+                ))}
+              </div>
+
+              {!catalog.loading &&
+                !catalog.error &&
+                total === 0 &&
+                (searchTerm ? (
+                  <EmptyState
+                    icon={ENTITY_ICONS.skill}
+                    title={SKILLS_COPY.noMatchTitle}
+                    description={SKILLS_COPY.noMatchDescription}
+                    compact
+                  />
+                ) : (
+                  <EmptyState
+                    icon={ENTITY_ICONS.skill}
+                    title={SKILLS_COPY.emptyTitle}
+                    description={SKILLS_COPY.emptyDescription}
+                    actions={
+                      <Button variant="link" onClick={() => setIsBrowseModalOpen(true)}>
+                        {SKILLS_COPY.browse}
+                      </Button>
+                    }
+                  />
+                ))}
             </div>
-          )}
-
-          <div className="flex flex-col gap-6">
-            {groups.map((group) => (
-              <SkillGroup key={group.key} title={group.title} count={group.entries.length}>
-                {group.entries.map((entry) => {
-                  // ⚠ Per ENTRY, not per group. A skill an installed
-                  // extension supplies is not the user's to delete (the
-                  // extension would put it back), and under a query every
-                  // provenance is in one "Matches" list, so a flag on the
-                  // group would offer Delete on rows that must not have it.
-                  const fromExtension = sourceOf(entry).kind === 'extension';
-                  return entry.kind === 'bundle' ? (
-                    <BundleRow
-                      key={entry.key}
-                      bundle={entry.bundle}
-                      skills={catalog.skills}
-                      enabled={entry.enabled}
-                      expanded={expanded.has(entry.key)}
-                      onExpandToggle={() =>
-                        setExpanded((current) => {
-                          const next = new Set(current);
-                          if (next.has(entry.key)) next.delete(entry.key);
-                          else next.add(entry.key);
-                          return next;
-                        })
-                      }
-                      onOpen={() => openFolder(entry.bundle.directory)}
-                      onDelete={fromExtension ? undefined : () => setPendingDelete(entry)}
-                      onToggle={(enabled) => void toggle(entry, enabled)}
-                    />
-                  ) : (
-                    <SkillItem
-                      key={entry.key}
-                      skill={entry.skill}
-                      enabled={entry.enabled}
-                      onOpen={() => openFolder(entry.skill.directory)}
-                      onDelete={fromExtension ? undefined : () => setPendingDelete(entry)}
-                      onShare={() => void copySkill(entry.skill)}
-                      onToggle={(enabled) => void toggle(entry, enabled)}
-                    />
-                  );
-                })}
-              </SkillGroup>
-            ))}
-          </div>
-
-          {!catalog.loading &&
-            !catalog.error &&
-            total === 0 &&
-            (searchTerm ? (
-              <EmptyState
-                icon={ENTITY_ICONS.skill}
-                title={SKILLS_COPY.noMatchTitle}
-                description={SKILLS_COPY.noMatchDescription}
-                compact
-              />
-            ) : (
-              <EmptyState
-                icon={ENTITY_ICONS.skill}
-                title={SKILLS_COPY.emptyTitle}
-                description={SKILLS_COPY.emptyDescription}
-                actions={
-                  <Button variant="link" onClick={() => setIsBrowseModalOpen(true)}>
-                    {SKILLS_COPY.browse}
-                  </Button>
-                }
-              />
-            ))}
+          </ScrollArea>
         </ReadableContent>
       </div>
 
