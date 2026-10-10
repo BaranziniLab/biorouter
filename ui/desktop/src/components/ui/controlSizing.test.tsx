@@ -60,6 +60,14 @@ describe('text fields rest on the control edge', () => {
     expect(CSS).not.toMatch(/\n\.br-field \{/);
   });
 
+  it('layers the Textarea defaults too, so a caller’s resize-none or min-h still wins', () => {
+    // Inside the same `@layer components` block as `.br-field`, not a rule of its own.
+    expect(CSS).not.toMatch(/\n\.br-textarea \{/);
+    const rule = body('.br-textarea');
+    expect(rule).toMatch(/min-block-size:\s*calc\(3 \* /);
+    expect(rule).toMatch(/resize:\s*vertical/);
+  });
+
   it('puts Input and Textarea on .br-field with no faint edge utility', () => {
     render(
       <>

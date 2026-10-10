@@ -5087,11 +5087,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   .br-field[aria-invalid='true'] {
     border-color: var(--border-danger);
   }
-}
 
-.br-textarea {
-  min-block-size: calc(3 * var(--text-body--line-height, 20px) + 14px);
-  resize: vertical;
+  /* Textarea's defaults, layered with the edge above for the same reason: a caller's own
+     `min-h-*`, `h-*` or `resize-none` must win. Unlayered, this rule outranked every utility on
+     the element and a `resize-none` was ignored (the workflow editors measured 74px in an 800px
+     dialog; MessageQueue and the hints editor kept their resize handle). */
+  .br-textarea {
+    min-block-size: calc(3 * var(--text-body--line-height, 20px) + 14px);
+    resize: vertical;
+  }
 }
 
 /* Tabs (`ui/tabs.tsx`): one underline that travels under the active trigger. Until the list

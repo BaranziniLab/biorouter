@@ -217,9 +217,10 @@ describe('Workflows in a real layout engine (spec 3.10, 5.7)', () => {
 
   it('keeps the editors’ text areas tall against the primitive’s own min-block-size', async (ctx) => {
     if (!browser) return ctx.skip();
-    // The `.br-textarea` rule exactly as main.css declares it: unlayered, so it outranks a layered
-    // Tailwind utility on the same element whatever the utility's specificity.
-    const textareaRule = MAIN_CSS.match(/\n\.br-textarea \{[^}]*\}/)?.[0];
+    // The `.br-textarea` rule exactly as main.css declares it, here injected UNLAYERED so it
+    // reproduces what it used to do to a layered Tailwind utility (it is now in
+    // `@layer components`, where a caller's utility wins; WS-PRIMITIVES layered it).
+    const textareaRule = MAIN_CSS.match(/\n\s*\.br-textarea \{[^}]*\}/)?.[0];
     if (!textareaRule) throw new Error('main.css has no `.br-textarea` rule');
     const measure = async (css: string) => {
       const tab = await browser!.newPage({ viewport: { width: 900, height: 700 } });
