@@ -142,13 +142,27 @@ describe('artifact panel paper', () => {
 
   // A narrow CSV used to stretch its columns across the whole column.
   it('packs table columns and lets a filler cell take the slack', () => {
-    expect(ruleBody('.br-paper-table td')).toContain('width: 1px;');
-    expect(ruleBody('.br-paper-table th')).toContain('width: 1px;');
-    expect(ruleBody('.br-paper-table .br-paper-fill')).toContain('width: auto;');
+    expect(ruleBody('.br-paper-table.br-md-table td')).toContain('width: 1px;');
+    expect(ruleBody('.br-paper-table.br-md-table th')).toContain('width: 1px;');
+    expect(ruleBody('.br-paper-table.br-md-table .br-paper-fill')).toContain('width: auto;');
     expect(ruleBody('.br-paper-table')).toContain('width: max-content;');
     expect(ruleBody('.br-paper-table')).toContain(
-      'min-width: min( calc(var(--paper-column) + var(--paper-rownum-width)), calc(100cqw - var(--paper-lead) - var(--paper-gutter)) );'
+      'min-width: min(var(--paper-column), calc(100cqw - var(--paper-lead) - var(--paper-gutter)));'
     );
+  });
+
+  // One table look (spec section 0): the CSV wears the shared recipe, and only
+  // undoes the corner clip so its header can stick.
+  it('puts a CSV on the shared table recipe with a sticky header', () => {
+    const source = readFileSync('src/components/artifacts/DelimitedTable.tsx', 'utf-8');
+    expect(source).toContain('className="br-md-table br-paper-table"');
+    expect(ruleBody('.br-paper-table.br-md-table')).toContain('overflow: visible;');
+    const head = ruleBody('.br-paper-table.br-md-table th');
+    expect(head).toContain('position: sticky;');
+    expect(head).toContain('box-shadow: inset 0 -1px 0 var(--border-subtle);');
+    // The frame sits on the column edge the bar's name and the prose share.
+    expect(ruleBody('.br-paper-table-frame')).toContain('min(var(--paper-inset),');
+    expect(flat).not.toContain('.br-paper-table-note');
   });
 
   // The gutter stays put while a long line scrolls under it; it must stick to
@@ -293,5 +307,26 @@ describe('the preview panel stylesheet', () => {
     const code = panelCss.replace(/\/\*[\s\S]*?\*\//g, '');
     expect(code.replace(/animation-delay: 200ms;/g, '')).not.toMatch(/\d+ms/);
     expect(code).not.toMatch(/cubic-bezier/);
+  });
+});
+
+describe('the document front matter and the fold chevron', () => {
+  it('sets the front-matter title on the title role, at 400', () => {
+    const title = ruleBody('.br-paper-title');
+    expect(title).toContain('font-size: var(--text-title);');
+    expect(title).toContain('font-weight: var(--text-title--font-weight);');
+    expect(title).not.toMatch(/700|28px/);
+    expect(ruleBody('.br-paper-subtitle')).toContain('font-size: var(--text-body);');
+    expect(ruleBody('.br-paper-byline')).toContain('font-size: var(--text-supporting);');
+  });
+
+  it('turns the fold chevron outside the motion-free rung-2 block', () => {
+    const resizing = css.indexOf('body.biorouter-window-resizing .biorouter-sidebar-inset-depth');
+    const turn = css.indexOf('.br-preview-fold-toggle > svg {');
+    expect(resizing).toBeGreaterThan(0);
+    expect(turn).toBeGreaterThan(resizing);
+    expect(ruleBody('.br-preview-fold-toggle > svg')).toContain(
+      'transition: rotate var(--dur-fast) var(--ease-out);'
+    );
   });
 });

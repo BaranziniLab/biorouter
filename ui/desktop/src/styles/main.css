@@ -6751,77 +6751,87 @@ code [class~='token'] {
   container-type: inline-size;
 }
 
-/* Left: the column edge less the row index, so the first DATA column sits on
-   the column edge and the index hangs in the margin — yielding only as far as a
-   wide table needs to show its last column, and never closer than the lead to
-   the panel. `--paper-table-width` is the table's measured width (a
-   ResizeObserver in DelimitedTable); without it this is the column edge. */
+/* @ws WS-PREVIEW begin: csv on the shared table */
+/* THE ONE TABLE (spec 3.8 and section 0). A CSV wears `.br-md-table`, Crew's
+   recipe that chat, documents and notebook DataFrames share: a 1px frame at
+   radius 8, top rules only, a 12px muted header on the muted ground, 8px 12px
+   cells, 13/18 type and tabular numbers. What the panel adds is what a data file
+   needs and a chat table does not: a header that sticks while 500 rows scroll
+   under it, a quiet row index as the first column, and packed columns.
+
+   The frame sits on the column edge, the left edge the bar's name and a
+   report's prose share, yielding only as far as a wide table needs to show its
+   last column, and never closer than the lead to the panel.
+   `--paper-table-width` is the table's measured width (a ResizeObserver in
+   DelimitedTable); without it this is the column edge. */
 .br-paper-table-frame {
   box-sizing: border-box;
   width: max-content;
   min-width: 100%;
-  padding-block: 20px 56px;
+  padding-block: 16px 32px;
   padding-right: var(--paper-gutter);
   padding-left: max(
     var(--paper-lead),
-    min(
-      calc(var(--paper-inset) - var(--paper-rownum-width)),
-      calc(100cqw - var(--paper-table-width, 0px) - var(--paper-gutter))
-    )
+    min(var(--paper-inset), calc(100cqw - var(--paper-table-width, 0px) - var(--paper-gutter)))
   );
 }
 
 /* Columns never stretch. Every data cell is `width: 1px` (it shrinks to its
    content) and a trailing `.br-paper-fill` cell absorbs the slack, so a
-   three-column CSV stays packed on the left while its rules still span the
-   whole column. `max-content` so a wide table is as wide as its content, never
-   squeezed into wrapping.
-
-   The rules span the column PLUS the hanging index — but never more than the
-   panel has room for once the lead and the right gutter are taken. Below about
-   870px the inset is narrower than the index, so the index can no longer hang
-   in it; an unclamped `column + index` then made every narrow CSV wider than
-   its panel, so it scrolled sideways by 20-35px for nothing and ran its rules
-   off the right edge under a hint claiming more columns. artifactPaper.test.ts
-   evaluates this against the frame at every panel width. */
+   three-column CSV stays packed on the left while its frame still spans the
+   column. `max-content` so a wide table is as wide as its content, never
+   squeezed into wrapping. The frame spans the column, but never more than the
+   panel has room for once the lead and the right gutter are taken, so a narrow
+   CSV never scrolls sideways for nothing. */
 .br-paper-table {
   width: max-content;
-  min-width: min(
-    calc(var(--paper-column) + var(--paper-rownum-width)),
-    calc(100cqw - var(--paper-lead) - var(--paper-gutter))
-  );
-  border-collapse: separate;
-  border-spacing: 0;
+  min-width: min(var(--paper-column), calc(100cqw - var(--paper-lead) - var(--paper-gutter)));
   color: var(--text-default);
-  font-size: 13px;
-  line-height: 20px;
-  font-variant-numeric: tabular-nums;
 }
 
-.br-paper-table th {
+/* The recipe clips its corners with `overflow: hidden`, which would make the
+   table a scroll container and stop the header sticking; the corner cells
+   round themselves instead (radius 8 less the 1px frame). */
+.br-paper-table.br-md-table {
+  overflow: visible;
+}
+
+.br-paper-table.br-md-table th {
   position: sticky;
   top: 0;
   z-index: 1;
   width: 1px;
-  padding: 10px 24px 8px 0;
   /* A box-shadow, not a border: a sticky cell's border scrolls away with the
-     table, and this rule has to stay with the header. */
-  box-shadow: inset 0 -1px 0 var(--border-strong);
-  background-color: var(--background-default);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 600;
-  text-align: left;
+     table, and the header's bottom rule has to stay with it. */
+  box-shadow: inset 0 -1px 0 var(--border-subtle);
   vertical-align: bottom;
   white-space: nowrap;
 }
 
-.br-paper-table td {
+.br-paper-table.br-md-table td {
   width: 1px;
-  padding: 7px 24px 7px 0;
-  border-bottom: 1px solid var(--border-subtle);
-  vertical-align: top;
   white-space: nowrap;
+}
+
+/* The header's own rule is the first row's top edge. */
+.br-paper-table.br-md-table tbody tr:first-child > td {
+  border-block-start: 0;
+}
+
+.br-paper-table.br-md-table thead th:first-child {
+  border-start-start-radius: calc(var(--radius-element) - 1px);
+}
+
+.br-paper-table.br-md-table thead th:last-child {
+  border-start-end-radius: calc(var(--radius-element) - 1px);
+}
+
+.br-paper-table.br-md-table tbody tr:last-child > td:first-child {
+  border-end-start-radius: calc(var(--radius-element) - 1px);
+}
+
+.br-paper-table.br-md-table tbody tr:last-child > td:last-child {
+  border-end-end-radius: calc(var(--radius-element) - 1px);
 }
 
 .br-paper-table [data-numeric] {
@@ -6832,21 +6842,18 @@ code [class~='token'] {
   color: var(--text-subtle);
 }
 
-.br-paper-table .br-paper-fill {
+.br-paper-table.br-md-table .br-paper-fill {
   width: auto;
   padding: 0;
 }
 
 /* The overflow hint through the sticky header. The scroller's hint is a
-   BACKGROUND, and the header row has to be opaque so rows can scroll under it —
-   so the header painted over the hint and left a notch in the shadow exactly at
-   the header row. The header's filler cell carries its own copy instead: it
-   sticks to the scroller's right edge (`right: 0`) whenever the table runs past
-   that edge, and a scroll-state query shows its shadow only while it is stuck
-   there. Not stuck — the table fits, or it is scrolled to its end — means no
-   shadow, the same two cases the background's cover handles for the rows.
-   Where scroll-state queries are unsupported the header keeps the notch and
-   nothing else changes. */
+   BACKGROUND, and the header row has to be opaque so rows can scroll under it,
+   so the header would paint over the hint and notch it at the header row. The
+   header's filler cell carries its own copy: it sticks to the scroller's right
+   edge (`right: 0`) whenever the table runs past that edge, and a scroll-state
+   query shows its shadow only while it is stuck there. Where scroll-state
+   queries are unsupported the header keeps the notch and nothing else changes. */
 .br-paper-table th.br-paper-fill {
   right: 0;
   container-type: scroll-state;
@@ -6869,18 +6876,15 @@ code [class~='token'] {
   }
 }
 
-/* The row index: quiet mono in the margin, the way the code gutter hangs. No
-   rule, no hover fill, not selectable, and not sticky sideways — it is a
-   reading aid, not a frozen column. */
-.br-paper-table .br-paper-rownum {
+/* The row index: quiet mono, the first column, not selectable and not sticky
+   sideways. A reading aid, not a frozen column. */
+.br-paper-table.br-md-table .br-paper-rownum {
   box-sizing: border-box;
   width: var(--paper-rownum-width);
   min-width: var(--paper-rownum-width);
-  padding: 7px 14px 7px 0;
-  border-bottom: 0;
-  box-shadow: none;
+  padding-inline: 12px 8px;
   color: var(--text-subtle);
-  font: 12px/20px var(--font-mono);
+  font: var(--text-supporting) / var(--text-secondary--line-height) var(--font-mono);
   font-variant-numeric: tabular-nums;
   text-align: right;
   user-select: none;
@@ -6896,15 +6900,11 @@ code [class~='token'] {
   text-overflow: ellipsis;
 }
 
-.br-paper-table tbody tr:hover td:not(.br-paper-rownum) {
-  background-color: var(--background-muted);
+/* Hover is neutral (principle 7). */
+.br-paper-table tbody tr:hover td {
+  background-color: var(--overlay-hover);
 }
-
-.br-paper-table-note {
-  margin: 16px 0 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
+/* @ws WS-PREVIEW end: csv on the shared table */
 
 /* ── Code view (CodeBlock in ArtifactViewer.tsx) ── */
 .br-paper-code {
@@ -7019,6 +7019,17 @@ code [class~='token'] {
 .br-paper-nb-figure {
   padding: 6px 16px;
 }
+
+/* @ws WS-PREVIEW begin: notebook figure edge */
+/* A figure output is an image on the page: the well's radius and a hairline
+   ring, so a plot with a white ground still has an edge on the paper (spec 3.8).
+   A ring, not a border, so the image keeps its own pixel size. */
+.br-paper-nb-figure > img {
+  display: block;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--border-subtle);
+}
+/* @ws WS-PREVIEW end: notebook figure edge */
 
 /* A `sandbox=""` frame cannot be measured from here, so a short DataFrame
    keeps the frame's `min-h-40` floor and leaves some air under it. Sizing it

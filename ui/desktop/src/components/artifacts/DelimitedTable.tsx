@@ -4,26 +4,29 @@ import { analyzeDelimitedColumns, isMissingCell } from './artifactUtils';
 /**
  * A written CSV/TSV as a data table on the panel's paper.
  *
+ * - It wears the app's one table (`.br-md-table`, Crew's recipe, which chat,
+ *   documents and notebook DataFrames share; spec 3.8), with a header that
+ *   sticks while the rows scroll under it.
  * - Columns never stretch: every data cell shrinks to its content and a
- *   trailing `.br-paper-fill` cell takes the slack, so the rules still span the
+ *   trailing `.br-paper-fill` cell takes the slack, so the frame still spans the
  *   760px column while a three-column file stays packed on the left.
- * - A quiet mono row index hangs in the left margin, the way the code gutter
- *   does, so the first data column sits on the same edge as a report's prose.
+ * - A quiet mono row index is the first column.
  * - Every row is one line: numbers right-align in tabular figures, a sentence
  *   column is clipped with its full value as the title, and a missing value
  *   (`NA`, `null`, …) recedes.
+ * - Past the cap, the bar above says "500 of 620 rows" and its InfoTip says
+ *   why; the table itself carries no note.
  *
  * All of it is authored CSS in main.css ("Delimited table"), keyed on the
  * classes and data attributes below.
  */
 export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; maxRows: number }) {
-  const { header, shown, hidden, columns } = useMemo(() => {
+  const { header, shown, columns } = useMemo(() => {
     const [head = [], ...body] = rows;
     const visible = body.slice(0, maxRows);
     return {
       header: head,
       shown: visible,
-      hidden: body.length - visible.length,
       // Typed from the rows that are SHOWN, so a hint never describes a cell the
       // reader cannot see.
       columns: analyzeDelimitedColumns(head, visible),
@@ -59,7 +62,7 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
     // the column edge while letting a wide table run past the column's right.
     <div className="br-paper-table-scroll" data-preview-scroller="">
       <div ref={frameRef} className="br-paper-table-frame">
-        <table ref={tableRef} className="br-paper-table" data-preview-intrinsic="">
+        <table ref={tableRef} className="br-md-table br-paper-table" data-preview-intrinsic="">
           <thead>
             <tr>
               <th className="br-paper-rownum" aria-hidden="true" />
@@ -111,12 +114,6 @@ export default function DelimitedTable({ rows, maxRows }: { rows: string[][]; ma
             ))}
           </tbody>
         </table>
-        {hidden > 0 && (
-          <p className="br-paper-table-note">
-            {hidden.toLocaleString()} more row{hidden === 1 ? '' : 's'} not shown. Open the raw view
-            for the full file.
-          </p>
-        )}
       </div>
     </div>
   );

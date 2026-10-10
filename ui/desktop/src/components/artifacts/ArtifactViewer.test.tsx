@@ -1256,6 +1256,10 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       expect(screen.getByRole('heading', { name: 'Findings' })).toBeInTheDocument();
     });
     expect(screen.getByText('FDR < 0.05').tagName).toBe('STRONG');
+    // No front matter, so the body's `# Findings` is the document's title.
+    expect(document.querySelector('.br-paper-doc > .br-paper-prose')).not.toHaveAttribute(
+      'data-demote-h1'
+    );
 
     // Raw shows the markdown source itself. The syntax highlighter splits it
     // across token spans, so assert on the rendered text as a whole.
@@ -1593,6 +1597,11 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     const disclosure = screen.getByText('Front matter').closest('details');
     expect(disclosure).not.toBeNull();
     expect(disclosure!.open).toBe(false);
+    // The title is the front matter's, so the body's first `# H1` takes the h2
+    // step rather than reading as a second title (spec 2.1).
+    expect(container.querySelector('.br-paper-doc > .br-paper-prose')).toHaveAttribute(
+      'data-demote-h1'
+    );
     const chunk = container.querySelector('.br-paper-doc > .br-paper-prose .biorouter-md-code');
     expect(chunk).not.toBeNull();
     expect(chunk!.querySelector('.token')).not.toBeNull();

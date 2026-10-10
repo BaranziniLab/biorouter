@@ -2662,9 +2662,11 @@ function CodeBlock({
           // The inline edges come from the paper CSS variables (main.css,
           // `.br-paper`): unnumbered code starts on the column edge; numbered code
           // starts at the scroller's edge because each line carries the margin.
+          // 16px under the bar and 32px of run-out (spec 3.8): the bar already
+          // separates the code from the strip, so it needs no deep top margin.
           padding: numbered
-            ? '28px var(--paper-gutter) 48px 0'
-            : '28px var(--paper-gutter) 48px var(--paper-inset)',
+            ? '16px var(--paper-gutter) 32px 0'
+            : '16px var(--paper-gutter) 32px var(--paper-inset)',
           minHeight: '100%',
           width: 'max-content',
           minWidth: '100%',
