@@ -163,7 +163,10 @@ export function GroupedExtensionLoadingToast({
   const builtinFailureNames = builtinFailures.map(formatExtensionName);
 
   // Summary line. On success we deliberately say "All extensions loaded" rather
-  // than a count (the all-success case has no meaningful denominator). On
+  // than a count (the all-success case has no meaningful denominator); the
+  // toast service no longer raises a clean run at all (vision V2-14, see
+  // `toastService.extensionLoading`), so that line only shows in a direct
+  // render. On
   // PARTIAL failure a bare "N failed" hides how much still works, so we lead
   // with what landed — "3 of 4 extensions loaded" — and name the casualties
   // underneath.

@@ -148,7 +148,7 @@ describe('which toasts interrupt a screen reader', () => {
     expect(optionsOf(mocks.warning)).toMatchObject({ role: 'alert' });
   });
 
-  it('lets the grouped extension report interrupt only when something failed', () => {
+  it('lets the grouped extension report interrupt only when something failed', async () => {
     const loading = [{ name: 'developer', status: 'loading' as const }];
     toastService.extensionLoading(loading, 1, false);
     expect(mocks.toast.mock.calls[0][1]).toMatchObject({ role: 'status' });
@@ -160,9 +160,58 @@ describe('which toasts interrupt a screen reader', () => {
     toastService.extensionLoading(failed, 1, true);
     expect(mocks.update.mock.calls[0][1]).toMatchObject({ type: 'error', role: 'alert' });
 
+    // A clean load arriving now does not overwrite the failure report.
+    const { toast } = await import('react-toastify');
     const loaded = [{ name: 'developer', status: 'success' as const }];
     toastService.extensionLoading(loaded, 1, true);
-    expect(mocks.update.mock.calls[1][1]).toMatchObject({ type: 'success', role: 'status' });
+    expect(mocks.update).toHaveBeenCalledTimes(1);
+    expect(toast.dismiss).not.toHaveBeenCalled();
+  });
+});
+
+// Vision V2-14: "All extensions loaded" landed over the docked summary rail on a
+// new chat's first turn, reporting a load the person did not ask for.
+describe('a clean extension load raises no toast', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mocks.isActive.mockReturnValue(false);
+    toastService.configure({ silent: false });
+    const { toast } = await import('react-toastify');
+    (toast.dismiss as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it('raises nothing when every extension loaded', () => {
+    const loaded = [
+      { name: 'developer', status: 'success' as const },
+      { name: 'memory', status: 'success' as const },
+    ];
+    toastService.extensionLoading(loaded, 2, true);
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it('takes down a progress report that ends cleanly', async () => {
+    const { toast } = await import('react-toastify');
+    toastService.extensionLoading([{ name: 'developer', status: 'loading' as const }], 1, false);
+    expect(mocks.toast).toHaveBeenCalledTimes(1);
+
+    mocks.isActive.mockReturnValue(true);
+    toastService.extensionLoading([{ name: 'developer', status: 'success' as const }], 1, true);
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(toast.dismiss).toHaveBeenCalledWith('extension-loading');
+  });
+
+  it('still reports a failure, assertively and until dismissed', () => {
+    toastService.extensionLoading(
+      [{ name: 'developer', status: 'error' as const, error: 'boom' }],
+      1,
+      true
+    );
+    expect(mocks.toast.mock.calls[0][1]).toMatchObject({
+      type: 'error',
+      role: 'alert',
+      autoClose: false,
+    });
   });
 });
 

@@ -28,6 +28,8 @@ const EXTENSION_TOAST_ID = 'extension-loading';
 class ToastService {
   private silent: boolean = false;
   private shouldThrow: boolean = false;
+  /** Whether the grouped extension toast last raised was reporting a failure. */
+  private extensionToastHasErrors: boolean = false;
 
   // Create a singleton instance
   private static instance: ToastService;
@@ -121,6 +123,20 @@ class ToastService {
     // while loading, a green check when all loaded, the error theme on failure.
     const hasErrors =
       extensions.some((ext) => ext.status === 'error') || builtinFailures.length > 0;
+
+    // A clean load is not news (vision V2-14, and the toast rule: never notify
+    // for something the person did not do). Every caller reports a chat's own
+    // extension load, which runs when a chat opens or starts its first turn,
+    // and "All extensions loaded" then sat over the docked summary rail for 5s.
+    // So nothing is raised for it, and a progress report still on screen is
+    // taken down. A failure report is left alone: it has its one announcement
+    // to make and a "View details" to keep open.
+    if (isComplete && !hasErrors) {
+      if (toast.isActive(toastId) && !this.extensionToastHasErrors) toast.dismiss(toastId);
+      return toastId;
+    }
+    this.extensionToastHasErrors = hasErrors;
+
     const type: 'success' | 'error' | 'default' = !isComplete
       ? 'default'
       : hasErrors
