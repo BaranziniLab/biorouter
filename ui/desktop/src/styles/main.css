@@ -2442,13 +2442,22 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-TOKENS end: fade-slide-up utility */
 
-/* Tool-call cards otherwise pop into the transcript with zero motion when a tool
-   is invoked mid-stream. A short, small, opacity-forward entrance settles them in
-   without drawing attention (they appear very frequently). Reduced-motion is
-   handled globally by the prefers-reduced-motion reset above. */
+/* @ws WS-TOOLS begin: tool row entrance */
+/* A tool row that arrives while the person watches rises 4px and fades in over
+   `--dur-fast-max` (the same travel and duration as `.br-enter`; the keyframes
+   keep their name because Crew's timeline uses them too). A row that mounts
+   because of a history load, a tab switch or a reload appears at rest
+   (principle 9): the transcript marks such a message `data-motion-still`.
+   Reduced motion is handled by the global reset. */
 .biorouter-message-tool {
-  animation: biorouter-tool-enter 160ms var(--ease-out) both;
+  animation: biorouter-tool-enter var(--dur-fast-max) var(--ease-out) both;
 }
+
+[data-motion-still] .biorouter-message-tool,
+.biorouter-message-tool[data-motion-still] {
+  animation: none;
+}
+/* @ws WS-TOOLS end: tool row entrance */
 
 .biorouter-modal-overlay {
   /* --scrim, not a literal. This used to be a hardcoded warm-brown rgba() with
