@@ -62,11 +62,25 @@ const folderComponents = (folder: string) =>
         .map((f) => `${folder}/${f}`)
     : [];
 
+/** The rest of the composer: the card, its queue and mention menu, Home, the readouts. */
+const COMPOSER = [
+  'ChatInput.tsx',
+  'MessageQueue.tsx',
+  'MentionPopover.tsx',
+  'Hub.tsx',
+  'ContextWindowIndicator.tsx',
+  'copilot/CopilotControl.tsx',
+  'settings/models/bottom_bar/ModelsBottomBar.tsx',
+];
+
 const sources: { label: string; path: string }[] = [
   ...popups.map((f) => ({ label: `bottom_menu/${f}`, path: join(DIR, f) })),
-  ...[...TRANSCRIPT, ...folderComponents('subagent'), ...folderComponents('transcript')].map(
-    (f) => ({ label: f, path: join(COMPONENTS, f) })
-  ),
+  ...[
+    ...COMPOSER,
+    ...TRANSCRIPT,
+    ...folderComponents('subagent'),
+    ...folderComponents('transcript'),
+  ].map((f) => ({ label: f, path: join(COMPONENTS, f) })),
 ];
 
 /**
@@ -107,7 +121,9 @@ describe('composer popup typography', () => {
   });
 
   it('reads every transcript file it names, so a rename cannot empty the list', () => {
-    expect(TRANSCRIPT.filter((f) => !existsSync(join(COMPONENTS, f)))).toEqual([]);
+    expect([...COMPOSER, ...TRANSCRIPT].filter((f) => !existsSync(join(COMPONENTS, f)))).toEqual(
+      []
+    );
     expect(folderComponents('subagent').length).toBeGreaterThan(0);
   });
 
@@ -138,8 +154,7 @@ describe('composer popup typography', () => {
   const MONO_ALLOWED: Record<string, number> = { 'DirSwitcher.tsx': 1 };
   const composerSurfaces = [
     ...popups.map((file) => join(DIR, file)),
-    join(DIR, '..', 'ContextWindowIndicator.tsx'),
-    join(DIR, '..', 'settings', 'models', 'bottom_bar', 'ModelsBottomBar.tsx'),
+    ...COMPOSER.map((file) => join(COMPONENTS, file)),
   ];
 
   it.each(composerSurfaces)('%s draws no visible text in mono', (path) => {
