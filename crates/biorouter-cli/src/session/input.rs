@@ -242,56 +242,67 @@ fn get_input_prompt_string() -> String {
     }
 }
 
+/// `/help`'s table: (command, description) pairs rendered as two aligned
+/// columns. Hand-written rather than generated from `list_commands()` because
+/// most rows are classic-CLI-only, so a test pins the agent commands into it.
+const HELP_ROWS: &[(&str, &str)] = &[
+    ("/exit, /quit", "Exit the chat"),
+    ("/t", "Toggle Light / Dark / Ansi theme"),
+    ("/t <name>", "Set theme directly (light, dark, ansi)"),
+    ("/r", "Toggle full (untruncated) tool output"),
+    (
+        "/extension <cmd>",
+        "Add a stdio extension (ENV1=val1 command args…)",
+    ),
+    (
+        "/builtin <names>",
+        "Add builtin extensions by name (comma-separated)",
+    ),
+    (
+        "/mode <name>",
+        "Set mode: auto, approve, chat, smart_approve",
+    ),
+    (
+        "/plan [message]",
+        "Enter plan mode, then optionally act on the plan",
+    ),
+    ("/endplan", "Exit plan mode, return to normal mode"),
+    ("/workflow [file.yaml]", "Save the chat as a workflow"),
+    ("/compact", "Compact the chat to reclaim context"),
+    ("/clear", "Clear the current chat history"),
+    (
+        "/diverge [name]",
+        "Diverge this chat into a new Biorouter window (keeps full history)",
+    ),
+    ("/rename <name>", "Rename the current chat"),
+    (
+        "/goal <condition>",
+        "Keep working until the condition is met (/goal clear to stop)",
+    ),
+    (
+        "/loop <interval> <prompt>",
+        "Run a prompt on an interval, e.g. /loop 5m … (/loop stop <id>)",
+    ),
+    (
+        "/schedule <spec> <prompt>",
+        "Schedule a recurring prompt: 5m, @daily, or a quoted cron",
+    ),
+    (
+        "/effort quick|normal|deep",
+        "Set how hard the model thinks (no argument shows it)",
+    ),
+    (
+        "/bug [description]",
+        "Report a Biorouter bug: investigate, draft, you approve the text",
+    ),
+    ("/help, /?", "Show this help message"),
+];
+
 fn print_help() {
     use console::{style, Color};
     const ACCENT: Color = Color::Color256(137);
 
-    // (command, description) pairs rendered as an aligned two-column table.
-    let commands: &[(&str, &str)] = &[
-        ("/exit, /quit", "Exit the chat"),
-        ("/t", "Toggle Light / Dark / Ansi theme"),
-        ("/t <name>", "Set theme directly (light, dark, ansi)"),
-        ("/r", "Toggle full (untruncated) tool output"),
-        (
-            "/extension <cmd>",
-            "Add a stdio extension (ENV1=val1 command args…)",
-        ),
-        (
-            "/builtin <names>",
-            "Add builtin extensions by name (comma-separated)",
-        ),
-        (
-            "/mode <name>",
-            "Set mode: auto, approve, chat, smart_approve",
-        ),
-        (
-            "/plan [message]",
-            "Enter plan mode, then optionally act on the plan",
-        ),
-        ("/endplan", "Exit plan mode, return to normal mode"),
-        ("/workflow [file.yaml]", "Save the chat as a workflow"),
-        ("/compact", "Compact the chat to reclaim context"),
-        ("/clear", "Clear the current chat history"),
-        (
-            "/diverge [name]",
-            "Diverge this chat into a new Biorouter window (keeps full history)",
-        ),
-        ("/rename <name>", "Rename the current chat"),
-        (
-            "/goal <condition>",
-            "Keep working until the condition is met (/goal clear to stop)",
-        ),
-        (
-            "/loop <interval> <prompt>",
-            "Run a prompt on an interval, e.g. /loop 5m … (/loop stop <id>)",
-        ),
-        (
-            "/schedule <spec> <prompt>",
-            "Schedule a recurring prompt: 5m, @daily, or a quoted cron",
-        ),
-        ("/help, /?", "Show this help message"),
-    ];
-
+    let commands = HELP_ROWS;
     let width = commands.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
 
     println!();
@@ -456,6 +467,34 @@ mod tests {
     fn test_diverge_is_in_completion_registry() {
         // Keep the parser and the autocomplete list in sync.
         assert!(super::super::completion::SLASH_COMMANDS.contains(&"/diverge"));
+    }
+
+    #[test]
+    fn agent_commands_fall_through_to_the_agent() {
+        // No local arm: `execute_command` handles these, and a parser arm here
+        // would stop the text from ever reaching it.
+        for input in [
+            "/bug",
+            "/bug x",
+            "/bug the chart panel is blank",
+            "/effort deep",
+        ] {
+            assert!(handle_slash_command(input).is_none(), "{input}");
+        }
+    }
+
+    #[test]
+    fn help_lists_every_agent_command() {
+        for def in biorouter::agents::execute_commands::list_commands() {
+            let command = format!("/{}", def.name);
+            assert!(
+                HELP_ROWS.iter().any(|(row, _)| row
+                    .split([' ', ','])
+                    .next()
+                    .is_some_and(|first| first == command)),
+                "/help does not list {command}"
+            );
+        }
     }
 
     // Test whitespace handling
