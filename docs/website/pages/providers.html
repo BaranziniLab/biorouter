@@ -3,13 +3,13 @@
 <p class="doc-lede">Biorouter runs local models, models your institution hosts, and public cloud models. Each chat has its own model, and you can change it; a private chat can switch only among private models.</p>
 
 <h2 id="providers-tabs">The three tabs</h2>
-<p>Open <strong>Settings → Models → Configure providers</strong>. Every provider sits on one of three tabs, always in this order. Each tab opens with a heading and a note, quoted here in the app's own words.</p>
+<p>Open <strong>Settings → Models</strong> and choose <strong>Manage…</strong> beside Providers. Every provider sits on one of three tabs, always in this order. A one line note under the tabs gives the tab's privacy, quoted here in the app's own words.</p>
 <div class="doc-table-scroll"><table>
-  <thead><tr><th>Tab</th><th>Holds</th><th>The app's heading and note</th></tr></thead>
+  <thead><tr><th>Tab</th><th>Holds</th><th>The note under the tab</th></tr></thead>
   <tbody>
-    <tr><td><strong>Local</strong></td><td>Llama Server, Ollama</td><td><strong>Private · Local</strong><br>“Private because inference runs on this machine. Nothing leaves it.”</td></tr>
-    <tr><td><strong>Institutional</strong></td><td>UCSF's Versa API Azure and Versa API Bedrock</td><td><strong>Private · Institutional</strong><br>“Private because Biorouter recognizes this institutional gateway endpoint.”</td></tr>
-    <tr><td><strong>Public</strong></td><td>Claude Code and Codex, then the API providers</td><td><strong>Public · Commercial</strong><br>“Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.”</td></tr>
+    <tr><td><strong>Local</strong></td><td>Llama Server, Ollama</td><td>“Private because inference runs on this machine. Nothing leaves it.”</td></tr>
+    <tr><td><strong>Institutional</strong></td><td>UCSF's Versa API Azure and Versa API Bedrock</td><td>“Private because Biorouter recognizes this institutional gateway endpoint.”</td></tr>
+    <tr><td><strong>Public</strong></td><td>Claude Code and Codex, then the API providers</td><td>“Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.”</td></tr>
   </tbody>
 </table></div>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
@@ -125,7 +125,7 @@ npm install -g @openai/codex@latest</code></pre></li>
 <p>Custom providers are listed as public, because Biorouter cannot verify where a custom endpoint points. One exception: an Ollama Compatible provider on this computer (localhost) runs as private, so its chats become private. An OpenAI Compatible or Anthropic Compatible provider stays public even on localhost; ticking <strong>This is a local model (no auth required)</strong> only removes the API key.</p>
 
 <h2 id="providers-switching">Switch models</h2>
-<p><strong>In a chat.</strong> Choose the model chip under the message box, then a provider and model in <strong>Switch models</strong>. The change applies to that chat only. Tick <strong>Also use for new chats</strong> to make it the model new chats start on. A private chat lists public models as unavailable; see <a href="#privacy">Private and public</a>.</p>
+<p><strong>In a chat.</strong> Choose the model chip in the composer, then <strong>Change model…</strong>, then a provider and model in <strong>Switch models</strong>. The change applies to that chat only. Tick <strong>Also use for new chats</strong> to make it the model new chats start on. A private chat lists public models as unavailable; see <a href="#privacy">Private and public</a>.</p>
 <p><strong>In a terminal.</strong> <code>biorouter models set</code> changes the default provider and model, and the same flags on <code>biorouter session</code> or <code>biorouter run</code> change them for one chat. Name only a provider other than your default, and it runs its own default model:</p>
 <pre><code>biorouter models set --provider ollama --model qwen3
 biorouter session --provider llamacpp --model gemma4

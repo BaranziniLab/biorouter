@@ -44,12 +44,12 @@
 <h2 id="extensions-add">Add an extension</h2>
 <h3>From BAAM</h3>
 <ol class="steps">
-  <li><strong>Open the marketplace</strong> Choose <strong>Extensions</strong> in the sidebar, then <strong>Browse extensions</strong>.</li>
+  <li><strong>Open the marketplace</strong> Choose <strong>Extensions</strong> in the sidebar, then <strong>Add → Browse marketplace</strong>.</li>
   <li><strong>Choose Add</strong> Biorouter downloads the extension and shows its name, publisher, version, privacy tier and what it contains. Nothing is installed yet.</li>
   <li><strong>Enter any credentials, then install</strong> If the extension needs a key, passcode or login, the next step asks for it. Values it marks as secret are kept with your model keys; see <a href="#vaulting">Security</a>. Choose <strong>Install extension</strong> to finish.</li>
 </ol>
 <div class="note"><p>Never paste a credential into a chat. A credential typed there is not used to set anything up, and every model that reads the chat would see it.</p></div>
-<p>You can also download a <code>.brxt</code> file from <a href="baam.html">BAAM</a> and drop it on <strong>Extensions → Add extension</strong>. In a terminal, the first command below installs one and asks for its credentials, hiding what you type for any value marked secret. The second asks for them again later.</p>
+<p>You can also download a <code>.brxt</code> file from <a href="baam.html">BAAM</a> and add it with <strong>Extensions → Add → Install from file (.brxt)</strong>, which also takes the file dropped on it. In a terminal, the first command below installs one and asks for its credentials, hiding what you type for any value marked secret. The second asks for them again later.</p>
 <pre><code>biorouter extension install \
   ./cdwagent.brxt
 
@@ -57,7 +57,7 @@ biorouter extension configure cdwagent</code></pre>
 <p>The agent can install one for you. When a task needs a tool you do not have, the Extension Manager finds it on BAAM and asks you to approve that exact package before anything downloads. A chat on a public model cannot install a private extension this way.</p>
 
 <h3>A custom extension</h3>
-<p>Choose <strong>Extensions → Add custom extension</strong> and pick a type.</p>
+<p>Choose <strong>Extensions → Add → Custom extension…</strong> and pick a type.</p>
 <ul>
   <li><strong>Standard IO (STDIO)</strong> is a program Biorouter starts on this computer, usually an MCP server run with <code>npx</code> or <code>uvx</code>. Enter the command with its arguments, and any environment variables it needs.</li>
   <li><strong>Streamable HTTP</strong> is a server that already runs somewhere else. Enter its endpoint URL, and any request headers.</li>
@@ -95,12 +95,12 @@ biorouter session \
   <tbody>
     <tr><td>The switch beside an extension on the <strong>Extensions</strong> page</td><td>Whether new chats start with it.</td></tr>
     <tr><td><strong>Settings → Chat → Capabilities</strong></td><td>Which built-in extensions new chats start with. Crew is the exception: its switch is on the Extensions page.</td></tr>
-    <tr><td>The extensions button under the text box, <strong>Manage extensions</strong></td><td>This chat only. The choice is saved with the chat. The built-in extensions under Capabilities are not in this list.</td></tr>
+    <tr><td>The <strong>Tools</strong> chip in the composer, on its <strong>Extensions</strong> list</td><td>This chat only. The choice is saved with the chat. The built-in extensions under Capabilities are not in this list.</td></tr>
     <tr><td>The Extension Manager, when the agent attaches one</td><td>This chat only, until it ends.</td></tr>
     <tr><td><code>biorouter configure</code>, then <strong>Toggle Extensions</strong></td><td>Whether new chats start with it, from a terminal.</td></tr>
   </tbody>
 </table></div>
-<p>A change to what new chats start with leaves chats already open as they were. In a chat on a public model, a private extension stays in the <strong>Manage extensions</strong> list, greyed out, with the note “Unavailable in this chat (public model)”. Hovering it explains that a private extension needs a private model.</p>
+<p>A change to what new chats start with leaves chats already open as they were. In a chat on a public model, a private extension stays in the <strong>Extensions</strong> list of the Tools chip, greyed out, with the note “Unavailable in this chat (public model)”. Hovering it explains that a private extension needs a private model.</p>
 
 <h2>Extension agents in the marketplace</h2>
 <p>BAAM lists extensions for biomedical data, lab systems, literature and everyday research tools. Each installs as a <code>.brxt</code> bundle, and six of them are below.</p>
@@ -132,9 +132,9 @@ description: RNA-seq quality checks.
 
 <h3>Install a skill</h3>
 <ul>
-  <li><strong>From BAAM.</strong> Choose <strong>Skills</strong> in the sidebar, then <strong>Browse skills</strong>. Tick the ones you want and choose the install button, which shows the count, such as <strong>Install 3 skills</strong>. BAAM publishes more than 120 skills in three groups: core, developer and biomedical.</li>
-  <li><strong>From a repository or a .zip.</strong> Choose <strong>Skills → Add skill</strong>. Paste a repository URL and choose <strong>Look up</strong>, or drop a <code>.zip</code>.</li>
-  <li><strong>Write your own.</strong> Choose <strong>Skills → Add custom skill</strong>, fill in the <code>SKILL.md</code> it opens, and save. It goes in Biorouter's skills folder.</li>
+  <li><strong>From BAAM.</strong> Choose <strong>Skills</strong> in the sidebar, then <strong>Add → Browse marketplace</strong>. Tick the ones you want and choose the install button, which shows the count, such as <strong>Install 3 skills</strong>. BAAM publishes more than 120 skills in three groups: core, developer and biomedical.</li>
+  <li><strong>From a repository or a .zip.</strong> Choose <strong>Skills → Add → From a repository or .zip…</strong>. Paste a repository URL and choose <strong>Look up</strong>, or drop a <code>.zip</code>.</li>
+  <li><strong>Write your own.</strong> Choose <strong>Skills → Add → Write a skill…</strong>, fill in the <code>SKILL.md</code> it opens, and save. It goes in Biorouter's skills folder.</li>
   <li><strong>From a terminal.</strong> Run <code>biorouter skill install</code> with a repository URL or the path to a <code>.zip</code>.</li>
 </ul>
 <p>The agent can install skills from BAAM or a URL as well. Each install or removal waits for you to approve it in the app; a reply in the chat cannot approve it.</p>
@@ -148,7 +148,7 @@ description: RNA-seq quality checks.
 </ul>
 
 <h3>Turn skills on and off</h3>
-<p>The skills button under the text box, <strong>Manage skills</strong>, turns a skill or a whole package on or off for this chat only. The switches on the <strong>Skills</strong> page, and <code>biorouter skill enable</code> or <code>disable</code> in a terminal, set the default for every chat. A choice made in a chat wins over the default.</p>
+<p>The <strong>Tools</strong> chip in the composer, on its <strong>Skills</strong> list, turns a skill or a whole package on or off for this chat only. The switches on the <strong>Skills</strong> page, and <code>biorouter skill enable</code> or <code>disable</code> in a terminal, set the default for every chat. A choice made in a chat wins over the default.</p>
 <p>A few skills ship with Biorouter and are called Contexts: Word, PowerPoint, Excel and PDF documents, Knowledge, and a few about Biorouter itself. Turn them on or off in <strong>Settings → Chat → Contexts</strong>. They cannot be deleted, and the office ones load only for a matching task.</p>
 
 <h3>Where skills live</h3>

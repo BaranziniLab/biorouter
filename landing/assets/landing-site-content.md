@@ -1,31 +1,35 @@
 # Biorouter Landing Site — Content & Requirements Tracker
 
 ## Overview
-Landing site for UCSF Biorouter. Design: Material Design with OpenAI aesthetics — minimalist, dark theme, mobile/tablet/desktop responsive.
+Landing site for UCSF Biorouter. Design: the desktop app's own look on the web. White paper, warm ink, hairlines instead of boxes, one coral accent, mobile/tablet/desktop responsive, light only.
 
-**Color palette:** UCSF teal (#18A3AC), UCSF navy (#052049), dark background (#0a0a0a)
-**Font:** Inter (body), JetBrains Mono (code)
-**Version:** v1.92.1 (September 2026)
+**Color palette:** white paper (#ffffff), warm ink (#2a2520), coral (#b85a32, rails #cf6d47), UCSF navy (#052049). The values mirror the app's Parchment light tokens in `site.css`.
+**Font:** Arial first, the app's interface stack (`--font`); Inter 600 only for the wordmark and the BR mark; one monospace stack for code. The type scale is shared with the app: 12, 13, 14, 17 and 24 plus a 16px reading size and two clamps for titles (`--fs-*` in `site.css`).
+**Version:** v1.92.1 (October 2026)
 
 ---
 
 ## File Structure
 
 ```
-Biorouter Landing/
-├── index.html          # Main entry — redirects to intro.html
-├── intro.html          # Tab 1: Introduction
+landing/
+├── index.html          # Tab 1: Introduction
 ├── download.html       # Tab 2: Download
-├── docs.html           # Tab 3: Documentation
-├── baam.html           # Tab 4: BAAM (Agent Marketplace)
-├── about.html          # Tab 5: About
-├── shared.css          # Shared styles across all pages
-├── icon.png            # Biorouter logo (copied from ui/desktop/src/images/)
-└── landing-site-content.md  # This file
+├── docs.html           # Tab 3: Documentation (assembled, never edited by hand)
+├── baam.html           # Tab 4: BAAM (Agent Marketplace); its cards generate registry.json
+├── about.html          # Tab 5: About (team, inspirations, updates)
+├── intro.html          # Redirects to index.html
+├── skills.html         # Redirects to baam.html
+├── site.css            # Tokens, type scale and parts shared by every page
+├── home.css, download.css, docs.css, baam.css, about.css   # One stylesheet per page
+├── art/                # The small product animations on the Introduction page
+├── registry.json       # The marketplace catalog, generated from baam.html
+├── scripts/            # Consistency checks, the registry generator, the docs assembler
+└── assets/landing-site-content.md  # This file
 ```
 
-Source icon: `/Users/wgu/Desktop/biorouter/ui/desktop/src/images/icon.png`
-Source docs: `/Users/wgu/Desktop/biorouter/documentation/`
+Docs source: `docs/website/` (a shell and one fragment per page). `node landing/scripts/assemble-docs.mjs` writes `landing/docs.html` from it.
+Icon: `landing/icon.svg`, `icon-transparent.svg`, `icon.png` (copied from `ui/desktop/src/images/`).
 GitHub: https://github.com/BaranziniLab/biorouter
 
 ---
@@ -98,9 +102,9 @@ Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthr
 ## Tab 2 — Download (`download.html`)
 
 ### Hero
-- Version badge: "v1.92.1 · September 2026"
-- Title: "Download Biorouter"
-- Subtitle: "Native installers for every major platform. Open source and free."
+- Title: "Biorouter for your computer." (the second line in the quiet ink)
+- Buttons: the installer for this computer, then "All platforms"
+- Meta line: "Free and open source · v1.92.1 · the release date from GitHub · Release notes"
 
 ### Smart OS Detection
 JavaScript detects the visitor's OS and shows the recommended download button prominently.
@@ -347,24 +351,24 @@ Each card contains:
 ## Design Requirements
 
 ### General
-- [x] Material Design with OpenAI aesthetics
-- [x] Dark theme (#0a0a0a background)
-- [x] UCSF teal (#18A3AC) as accent color
-- [x] Minimalist, clean, lots of whitespace
-- [x] Mobile/tablet/desktop responsive
-- [x] Biorouter logo in banner (with glow/shadow)
+- [x] The app's look on the web: white paper, warm ink, hairlines, one coral accent, UCSF navy
+- [x] Light only (a test fails if a page follows the system dark mode)
+- [x] One type scale shared with the app, weights 400 (700 only for strong in the docs)
+- [x] Buttons 32px for small actions and 40px for the one call to action of a view
+- [x] Mobile/tablet/desktop responsive, no horizontal overflow at 390px
+- [x] Slack in the header of every page and in a Community band on every page
 - [x] No emoji unless UI icons
 
 ### Navigation
-- [x] Fixed top navbar
-- [x] Active tab indicator
-- [x] Mobile hamburger menu
-- [x] Glassmorphism navbar (backdrop blur)
+- [x] Sticky header, one 1240px measure on every page so the brand never moves
+- [x] The current page is underlined in coral
+- [x] Menu button under 760px
+- [x] Blurred header with a hairline once the page scrolls
 
 ### Introduction Tab
-- [x] Animated hero banner
-- [x] Feature cards (6)
-- [x] Provider ecosystem chips
+- [x] Hero with the product animation inside the first 900px at 1440 wide
+- [x] Three principles, each beside its animation
+- [x] Capabilities (6)
 - [x] Links to About, Release Notes, Baranzini Lab
 
 ### Download Tab
@@ -376,7 +380,7 @@ Each card contains:
 
 ### Documentation Tab
 - [x] Sidebar navigation
-- [x] Multiple doc pages (8 total)
+- [x] Fourteen doc pages, assembled from `docs/website/`
 - [x] UCSF-specific setup
 - [x] Code blocks with proper monospace font
 - [x] Data tables
@@ -386,7 +390,7 @@ Each card contains:
 - [x] Search functionality (real-time filter)
 - [x] Agent cards with: name, org, description, command, GitHub link, tags
 - [x] Copy-to-clipboard for commands
-- [x] 4 agents: UCSFOMOPAgent, SPOKEAgent, MedCP, Playwright MCP
+- [x] Extensions, skills and workflows, with privacy and institution badges, generated into `registry.json`
 
 ### About Tab
 - [x] News cards with dates

@@ -40,7 +40,7 @@
 <p>A <a href="#apps">built app</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the app's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the app's <code>.vault/</code> folder, and the app refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported app leaves <code>.vault/</code> behind.</p>
 
 <h2 id="vaulting-modes">Permission modes</h2>
-<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Mode</strong>, with <code>/mode</code> at the classic terminal prompt, or in the settings menu of <code>biorouter configure</code>. It is stored as <code class="code-token">BIOROUTER_MODE</code>.</p>
+<p>The permission mode sets how much the agent does without asking. Choose it in <strong>Settings → Chat → Approvals</strong>, with <code>/mode</code> at the classic terminal prompt, or in the settings menu of <code>biorouter configure</code>. It is stored as <code class="code-token">BIOROUTER_MODE</code>.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Mode</th><th>Value</th><th>What the agent does</th></tr></thead>
   <tbody>

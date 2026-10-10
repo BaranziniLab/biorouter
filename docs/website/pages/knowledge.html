@@ -37,7 +37,7 @@
 <p>Every base is visible to a chat unless you hide it. When the agent searches without naming a base, it searches all the visible bases and says which base each result came from.</p>
 <p>One visible base is the <strong>primary</strong>: where the agent writes when no base is named, the base it reads by default, and the base the Knowledge view shows. Soul is the primary until you choose another.</p>
 <ul>
-  <li><strong>Hide a base from a chat.</strong> Choose the knowledge chip under the text box. Each base has a switch, and <strong>Hide all</strong> or <strong>Show all</strong> sets them together. A hidden base stays on disk.</li>
+  <li><strong>Hide a base from a chat.</strong> Open the <strong>Tools</strong> chip in the composer and choose its <strong>Knowledge</strong> list. Each base has a switch, and <strong>Hide all</strong> or <strong>Show all</strong> sets them together. A hidden base stays on disk.</li>
   <li><strong>Change the primary.</strong> In the Knowledge view, choose the base's name at the top and pick another base. <strong>Manage bases…</strong> lists every base with its format, its privacy and a switch that includes it in the chat.</li>
   <li><strong>Point one message at a base.</strong> Type <code>/</code> in the composer and pick it, or write <code>/kb:ID</code>.</li>
 </ul>
@@ -121,7 +121,7 @@
 <h2 id="knowledge-soul">Soul</h2>
 <p><strong>Soul</strong> (id <code>soul</code>) ships with Biorouter and starts empty. It collects lasting facts about you: how you approach research questions, the tools and commands you use, and the name, role and preferences you mention.</p>
 <p>A schedule named <strong>Daily Meditation</strong> keeps it current. Every day at 3:00 AM, while Biorouter's background service is running, it runs the Meditation workflow, which uses the <code style="white-space: nowrap">update-soul</code> skill to read up to three recent chats and add what matters. It skips scheduled runs and small talk, and makes no change when there is nothing new. You can see and pause it in Scheduler.</p>
-<p>The agent cannot delete Soul, and if you delete it Biorouter creates it again. <strong>Settings → App → Reset → Knowledge &amp; memory</strong> deletes every base, creates an empty Soul and clears saved memory.</p>
+<p>The agent cannot delete Soul, and if you delete it Biorouter creates it again. <strong>Settings → App → Danger zone → Reset data → Knowledge &amp; memory</strong> deletes every base, creates an empty Soul and clears saved memory.</p>
 
 <h2 id="knowledge-privacy">Private and public bases</h2>
 <p>A new base is public. It becomes private the first time a private chat writes to it, and it stays private until you make it public. A private base shows a padlock and the word Private beside its name. A public model that tries to read it is refused, and the refusal names the base.</p>
