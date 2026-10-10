@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 import { Note } from '../ui/note';
 import { AlertTriangle, ArrowRight, Check } from '../icons/app-icons';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
@@ -187,14 +188,15 @@ export default function CommercialSetupCard({
         <label htmlFor="commercial-provider-api-key" className="sr-only">
           Commercial provider API key
         </label>
-        <input
+        <Input
           id="commercial-provider-api-key"
           ref={inputRef}
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste your API key here…"
-          className="h-9 min-w-0 rounded-md border border-border-subtle bg-background-default px-3 text-body text-text-default transition-colors duration-150 placeholder:text-text-muted focus:border-border-strong"
+          // The same 36px as the button beside it.
+          className="h-9 min-w-0"
           disabled={isLoading}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) testApiKey();

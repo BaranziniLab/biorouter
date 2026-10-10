@@ -114,8 +114,14 @@ describe('InstitutionalSetupCard', () => {
   it('offers the endpoint and API version in Advanced, and no deployment', () => {
     render(<InstitutionalSetupCard onSuccess={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: /Advanced/i }));
-    expect(screen.getByText('VERSA_AZURE_ENDPOINT')).toBeInTheDocument();
-    expect(screen.getByText('VERSA_AZURE_API_VERSION')).toBeInTheDocument();
+    // Fields named in words; the config key each one writes is the label's InfoTip, so a screen
+    // reader still hears it when it reaches the field.
+    expect(screen.getByLabelText('Endpoint')).toHaveAccessibleDescription(
+      'Saved as VERSA_AZURE_ENDPOINT.'
+    );
+    expect(screen.getByLabelText('API version')).toHaveAccessibleDescription(
+      'Saved as VERSA_AZURE_API_VERSION.'
+    );
     // Neither a field nor a mention in the collapsed label.
     expect(screen.queryAllByText(/deployment/i)).toHaveLength(0);
   });

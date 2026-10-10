@@ -4,7 +4,9 @@ import { checkProvider } from '../../api';
 import { checkCandidateCredentials } from '../settings/providers/modal/subcomponents/handlers/DefaultSubmitHandler';
 import { Button } from '../ui/button';
 import { ArrowRight } from '../icons/app-icons';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
+import { Disclosure } from '../ui/disclosure';
+import { Field } from '../ui/field';
+import { Input } from '../ui/input';
 import { Note } from '../ui/note';
 import OnboardingCardShell, { type OnboardingCardChrome } from './OnboardingCardShell';
 import { SegmentedControl } from '../ui/segmented-control';
@@ -58,12 +60,6 @@ const TABS: { id: VersaFlavor; label: string }[] = [
  * not be offered under another institution's heading.
  */
 export const INSTITUTIONAL_SETUP_PROVIDER_IDS: readonly string[] = ['versa_azure', 'versa_bedrock'];
-
-const inputClass =
-  'w-full h-9 px-3 text-body border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
-
-const advancedInputClass =
-  'w-full h-8 px-3 text-supporting border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-strong';
 
 export default function InstitutionalSetupCard({
   onSuccess,
@@ -163,130 +159,104 @@ export default function InstitutionalSetupCard({
       </div>
 
       {flavor === 'azure' ? (
-        <div>
-          <label htmlFor="versa-azure-api-key" className="mb-1.5 block text-chip text-text-default">
-            API Key
-          </label>
-          <input
-            id="versa-azure-api-key"
+        <Field id="versa-azure-api-key" label="API key">
+          <Input
             type="password"
             value={azureApiKey}
             onChange={(e) => setAzureApiKey(e.target.value)}
-            placeholder="VERSA_AZURE_API_KEY"
-            className={inputClass}
             disabled={isLoading}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && canSubmit) handleSubmit();
             }}
           />
-        </div>
+        </Field>
       ) : (
-        <div className="space-y-3">
-          <div>
-            <label
-              htmlFor="versa-bedrock-access-key"
-              className="mb-1.5 block text-chip text-text-default"
-            >
-              Access Key ID
-            </label>
-            <input
-              id="versa-bedrock-access-key"
+        <div className="flex flex-col gap-3">
+          <Field id="versa-bedrock-access-key" label="Access key ID">
+            <Input
               type="password"
               value={bedrockAccessKey}
               onChange={(e) => setBedrockAccessKey(e.target.value)}
-              placeholder="VERSA_BEDROCK_ACCESS_KEY_ID"
-              className={inputClass}
               disabled={isLoading}
             />
-          </div>
-          <div>
-            <label
-              htmlFor="versa-bedrock-secret-key"
-              className="mb-1.5 block text-chip text-text-default"
-            >
-              Secret Access Key
-            </label>
-            <input
-              id="versa-bedrock-secret-key"
+          </Field>
+          <Field id="versa-bedrock-secret-key" label="Secret access key">
+            <Input
               type="password"
               value={bedrockSecretKey}
               onChange={(e) => setBedrockSecretKey(e.target.value)}
-              placeholder="VERSA_BEDROCK_SECRET_ACCESS_KEY"
-              className={inputClass}
               disabled={isLoading}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && canSubmit) handleSubmit();
               }}
             />
-          </div>
+          </Field>
         </div>
       )}
 
-      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-3">
-        <CollapsibleTrigger className="flex items-center gap-1.5 text-supporting text-text-muted hover:text-text-default transition-colors duration-150">
-          <span>{advancedOpen ? '▾' : '▸'}</span>
-          <span>
-            Advanced ({flavor === 'azure' ? 'endpoint, API version' : 'endpoint, region'})
-          </span>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="mt-2.5 pl-3.5 space-y-2.5 border-l border-border-default">
+      {/* The two overrides most people never touch. The config key each one writes is machine
+          text, so it sits behind the label's InfoTip rather than being the label. */}
+      <Disclosure
+        label="Advanced"
+        summary={flavor === 'azure' ? 'Endpoint, API version' : 'Endpoint, region'}
+        open={advancedOpen}
+        onOpenChange={setAdvancedOpen}
+        className="mt-3"
+      >
+        <div className="flex flex-col gap-3 pt-2">
           {flavor === 'azure' ? (
             <>
-              <div>
-                <label className="block text-supporting text-text-muted mb-1">
-                  VERSA_AZURE_ENDPOINT
-                </label>
-                <input
+              <Field
+                id="versa-azure-endpoint"
+                label="Endpoint"
+                info="Saved as VERSA_AZURE_ENDPOINT."
+              >
+                <Input
                   type="text"
                   value={azureEndpoint}
                   onChange={(e) => setAzureEndpoint(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
-              <div>
-                <label className="block text-supporting text-text-muted mb-1">
-                  VERSA_AZURE_API_VERSION
-                </label>
-                <input
+              </Field>
+              <Field
+                id="versa-azure-api-version"
+                label="API version"
+                info="Saved as VERSA_AZURE_API_VERSION."
+              >
+                <Input
                   type="text"
                   value={azureApiVersion}
                   onChange={(e) => setAzureApiVersion(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
+              </Field>
             </>
           ) : (
             <>
-              <div>
-                <label className="block text-supporting text-text-muted mb-1">
-                  VERSA_BEDROCK_ENDPOINT
-                </label>
-                <input
+              <Field
+                id="versa-bedrock-endpoint"
+                label="Endpoint"
+                info="Saved as VERSA_BEDROCK_ENDPOINT."
+              >
+                <Input
                   type="text"
                   value={bedrockEndpoint}
                   onChange={(e) => setBedrockEndpoint(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
-              <div>
-                <label className="block text-supporting text-text-muted mb-1">
-                  VERSA_BEDROCK_REGION
-                </label>
-                <input
+              </Field>
+              <Field id="versa-bedrock-region" label="Region" info="Saved as VERSA_BEDROCK_REGION.">
+                <Input
                   type="text"
                   value={bedrockRegion}
                   onChange={(e) => setBedrockRegion(e.target.value)}
-                  className={advancedInputClass}
                   disabled={isLoading}
                 />
-              </div>
+              </Field>
             </>
           )}
-        </CollapsibleContent>
-      </Collapsible>
+        </div>
+      </Disclosure>
 
       <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
         <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 w-full px-4 sm:w-auto">

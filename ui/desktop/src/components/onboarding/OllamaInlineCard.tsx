@@ -218,15 +218,16 @@ export default function OllamaInlineCard({ onSuccess, chrome = 'card' }: OllamaI
                 <span>Waiting for Ollama to start…</span>
               </div>
             ) : (
-              <a
-                href={getOllamaDownloadUrl()}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={handleInstallClick}
-                className="inline-flex h-9 w-full items-center justify-center rounded-md bg-background-medium px-4 text-body text-text-default transition-colors hover:bg-background-strong sm:w-auto"
-              >
-                Install Ollama
-              </a>
+              <Button asChild variant="secondary" className="h-9 w-full px-4 sm:w-auto">
+                <a
+                  href={getOllamaDownloadUrl()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={handleInstallClick}
+                >
+                  Install Ollama
+                </a>
+              </Button>
             )}
           </div>
         </div>

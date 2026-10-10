@@ -378,7 +378,7 @@ export default function LlamaServerInlineCard({
             <div className="min-w-0">
               <label
                 htmlFor="llamacpp-model-select"
-                className="mb-1.5 block text-chip text-text-default"
+                className="mb-1.5 block text-label text-text-default"
               >
                 Model
               </label>
@@ -388,7 +388,7 @@ export default function LlamaServerInlineCard({
                 onChange={(e) => setSelectedModel(e.target.value)}
                 disabled={isStarting || isConnecting}
                 data-testid="llamacpp-model-select"
-                className="block h-9 w-full min-w-0 max-w-full rounded-md border border-border-subtle bg-background-default px-2 text-body text-text-default transition-colors duration-150 focus:border-border-strong"
+                className="br-field block h-control-md w-full min-w-0 max-w-full rounded-element border bg-background-default px-2 text-label text-text-default"
               >
                 {catalog.map((m) => (
                   <option key={m.name} value={m.name}>

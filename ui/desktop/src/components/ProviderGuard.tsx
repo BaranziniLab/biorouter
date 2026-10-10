@@ -203,7 +203,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           type="button"
           onClick={() => void handleSkip()}
           data-testid={`onboarding-skip-${placement}`}
-          className="text-body text-text-muted transition-colors duration-150 hover:text-text-default"
+          className="text-body text-text-muted transition-colors hover:text-text-default"
         >
           Explore Biorouter first →
         </button>
