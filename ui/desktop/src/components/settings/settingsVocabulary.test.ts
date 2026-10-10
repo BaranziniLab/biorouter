@@ -298,4 +298,15 @@ describe('the settings vocabulary', () => {
     }
     expect(uses).toEqual([]);
   });
+
+  /**
+   * V10. One control per job (spec 2.6, principle 5): a choice of 2 to 4 short options is the
+   * `SegmentedControl`, four or more (or options that need a line each) is the settings select,
+   * and radio rows live only inside dialogs as `CustomRadio`. A native `<input type="radio">`
+   * drew the OS's own disc, white in dark mode, and was the third look for one job on the App
+   * tab. `ui/` is outside every root here, so the primitive itself is not caught.
+   */
+  it('draws no native radio', () => {
+    expect(offenders(/type=["']radio["']/)).toEqual([]);
+  });
 });
