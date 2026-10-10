@@ -174,4 +174,26 @@ describe('ExtensionsSection — the groups and the row menu', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
+
+  it('gives focus back to the row’s ⋯ button when the dialog closes, whichever way it closes', async () => {
+    // The menu item that opened the dialog is gone by then, so without this a keyboard user is
+    // left on the page and begins again at the top of the list.
+    const user = userEvent.setup({ delay: null });
+    render(<ExtensionsSection />);
+
+    const more = await screen.findByRole('button', { name: 'More actions' });
+    await user.click(more);
+    await user.click(await screen.findByRole('menuitem', { name: 'Configure…' }));
+    await screen.findByRole('dialog', { name: 'Update extension' });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'More actions' })).toHaveFocus());
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Remove…' }));
+    await screen.findByRole('dialog', { name: 'Remove "medcp"?' });
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'More actions' })).toHaveFocus());
+  });
 });

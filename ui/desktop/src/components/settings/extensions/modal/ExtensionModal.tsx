@@ -32,6 +32,11 @@ interface ExtensionModalProps {
    * dialog starts on the question and Cancel closes it rather than showing a form.
    */
   startAtRemoval?: boolean;
+  /**
+   * Radix's close-focus hook for the dialog (call `event.preventDefault()` to take focus
+   * somewhere else). The row that opened it passes one, because the menu item that did is gone.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 export default function ExtensionModal({
@@ -43,6 +48,7 @@ export default function ExtensionModal({
   submitLabel,
   modalType,
   startAtRemoval = false,
+  onCloseAutoFocus,
 }: ExtensionModalProps) {
   const [formData, setFormData] = useState<ExtensionFormData>(initialData);
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(startAtRemoval);
@@ -346,6 +352,7 @@ export default function ExtensionModal({
           if (!open) handleClose();
         }}
         size="lg"
+        onCloseAutoFocus={onCloseAutoFocus}
         // A form: Escape and the × still leave (through the unsaved-changes guard), but a
         // misclick on the scrim cannot throw away what was typed.
         purpose="form"
