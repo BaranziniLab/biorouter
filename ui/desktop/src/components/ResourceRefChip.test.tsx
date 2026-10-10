@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { ResourceRefChip, ResourceRefText } from './ResourceRefChip';
+import { CommandChip, ResourceRefChip, ResourceRefText } from './ResourceRefChip';
 import { labelledRefTag, refTag } from '../utils/resourceRefs';
 
 const span = (kind: 'skill' | 'extension' | 'knowledge_base', value: string, label?: string) => ({
@@ -151,5 +151,63 @@ describe('ResourceRefText', () => {
   it('passes plain text through unchanged', () => {
     render(<ResourceRefText text={'line one\nline two'} />);
     expect(document.body.textContent).toBe('line one\nline two');
+  });
+});
+
+describe('ResourceRefText with a leading chip command', () => {
+  it('draws /bug as the command chip and keeps the prose and references', () => {
+    render(<ResourceRefText text={`/bug the panel is blank ${refTag('skill', 'rna-qc')}`} />);
+
+    expect(screen.getByTestId('command-chip')).toHaveAttribute('data-command', 'bug');
+    expect(screen.getByTestId('resource-ref-chip-name')).toHaveTextContent('rna-qc');
+    expect(document.body.textContent).toContain('the panel is blank');
+    // The typed command is gone from the prose; only the chip (and its words for
+    // a screen reader) says it.
+    const outsideChip = document.body.textContent!.replace(
+      screen.getByTestId('command-chip').textContent!,
+      ''
+    );
+    expect(outsideChip).not.toContain('/bug');
+    expect(document.body.textContent).not.toContain('biorouter-ref');
+  });
+
+  it('draws the command chip before anything else', () => {
+    const { container } = render(<ResourceRefText text="/bug x" />);
+    expect(container.firstElementChild).toBe(screen.getByTestId('command-chip'));
+  });
+
+  it('says what the chip is to a screen reader', () => {
+    render(<ResourceRefText text="/bug" />);
+    expect(screen.getByTestId('command-chip').querySelector('.sr-only')?.textContent).toContain(
+      '/bug'
+    );
+  });
+
+  it('leaves text that only looks like the command alone', () => {
+    for (const text of ['/bugs', '/Bug x', 'see /bug', ' /bug x']) {
+      const { unmount } = render(<ResourceRefText text={text} />);
+      expect(screen.queryByTestId('command-chip'), text).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+});
+
+describe('CommandChip', () => {
+  it('offers a remove control only when asked to', async () => {
+    const onRemove = vi.fn();
+    const { rerender } = render(<CommandChip command="bug" />);
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+
+    rerender(<CommandChip command="bug" onRemove={onRemove} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Remove command /bug' }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+  });
+
+  it('wears the reference chip look', () => {
+    render(<CommandChip command="bug" />);
+    const chip = screen.getByTestId('command-chip');
+    expect(chip.querySelector('svg')).not.toBeNull();
+    expect(chip.className).toContain('max-w-full');
+    expect(screen.getByTestId('command-chip-name').className).toContain('text-text-default');
   });
 });

@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { diagnostics, getSession } from '../../api';
+import { diagnostics, getSession, systemInfo } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
 import { DiagnosticsModal } from './Diagnostics';
@@ -22,6 +24,7 @@ vi.mock('../../utils/userAction', () => ({
 
 const diagnosticsMock = vi.mocked(diagnostics);
 const getSessionMock = vi.mocked(getSession);
+const systemInfoMock = vi.mocked(systemInfo);
 const toastErrorMock = vi.mocked(toastError);
 const toastSuccessMock = vi.mocked(toastSuccess);
 const userActionHeadersMock = vi.mocked(userActionHeaders);
@@ -207,6 +210,48 @@ describe('DiagnosticsModal', () => {
     // nobody reads by the third time, which costs the private case its warning.
     rerender(<DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" />);
     expect(screen.queryByTestId('diagnostics-private-warning')).toBeNull();
+  });
+
+  it('points at the in-chat reporter, by its slash command and in words', () => {
+    render(<DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" />);
+
+    const hint = screen.getByTestId('diagnostics-agent-hint');
+    expect(hint).toHaveTextContent('/bug');
+    expect(hint).toHaveTextContent('report a bug');
+    expect(hint.textContent).not.toMatch(/[—–]/);
+  });
+
+  // The body is a hand copy of `.github/ISSUE_TEMPLATE/bug_report.md`, so a
+  // section added there (as **Suspected cause** was) is missing here until
+  // someone notices. Read the template and compare the headings.
+  it("files a body with the repository template's sections, in its order", async () => {
+    systemInfoMock.mockResolvedValue({
+      data: {
+        os: 'macOS',
+        os_version: '15.6',
+        architecture: 'aarch64',
+        app_version: '1.92.1',
+        provider: 'versa_azure',
+        model: 'gpt-5.6-sol',
+        enabled_extensions: ['developer'],
+      },
+    } as unknown as Awaited<ReturnType<typeof systemInfo>>);
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+    render(<DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" />);
+    fireEvent.click(screen.getByRole('button', { name: 'File Bug on GitHub' }));
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+
+    const body = new URL(String(open.mock.calls[0][0])).searchParams.get('body') ?? '';
+    const template = readFileSync(
+      join(__dirname, '../../../../../.github/ISSUE_TEMPLATE/bug_report.md'),
+      'utf8'
+    );
+    const headings = (text: string) =>
+      [...text.matchAll(/^\*\*([^*]+)\*\*\s*$/gm)].map((match) => match[1]);
+    expect(headings(template)).toContain('Suspected cause');
+    expect(headings(body)).toEqual(headings(template));
+    open.mockRestore();
   });
 
   it('shows a server refusal instead of replacing it with a generic error', async () => {

@@ -276,7 +276,8 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Help &amp; Feedback</h2>
           <p className="text-supporting text-text-muted">
-            Report a problem, or ask for something Biorouter does not do yet
+            Report a problem, or ask for something Biorouter does not do yet. To report a bug from a
+            chat, type /bug there.
           </p>
         </div>
         <div className="biorouter-settings-control-strip">

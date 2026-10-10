@@ -173,6 +173,11 @@ A clear and concise description of what you expected to happen.
 
 ---
 
+**Suspected cause**
+If you have an idea where the problem is (a file, a setting, a step that behaves differently from the documentation), describe it here. Optional.
+
+---
+
 **Screenshots**
 If applicable, add screenshots to help explain your problem.
 
@@ -255,8 +260,8 @@ Add any other context about the problem here.
           )}
           <p>If you file a bug, consider attaching the diagnostics report to it.</p>
           <p data-testid="diagnostics-agent-hint">
-            You can also just say{' '}
-            <strong className="text-text-default">&ldquo;report a bug&rdquo;</strong> in the chat.
+            You can also type <strong className="text-text-default">/bug</strong> in the chat, or
+            just say <strong className="text-text-default">&ldquo;report a bug&rdquo;</strong>.
             Biorouter will work out what went wrong, write the report, remove paths and credentials
             from it, and show you the exact text before anything is published.
           </p>
