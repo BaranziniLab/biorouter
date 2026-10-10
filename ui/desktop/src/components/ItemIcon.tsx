@@ -5,6 +5,7 @@ import {
   Image,
   Video,
   Music,
+  Package,
   Archive,
   FileText,
   Palette,
@@ -13,7 +14,6 @@ import {
   Settings,
   SquareSlash,
   Terminal,
-  Wrench,
 } from './icons/app-icons';
 import { ENTITY_ICONS } from './icons/entity-icons';
 import { DisplayItem } from './MentionPopover';
@@ -146,9 +146,10 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
         return { Icon: FileText, color: CURRENT };
       }
 
-      // Executable files
+      // Executables and installers: a package. Not the wrench, which means
+      // "a tool call nothing recognises" and nothing else.
       if (['exe', 'app', 'deb', 'rpm', 'dmg', 'pkg', 'msi'].includes(ext || '')) {
-        return { Icon: Wrench, color: CURRENT };
+        return { Icon: Package, color: CURRENT };
       }
 
       // Script files

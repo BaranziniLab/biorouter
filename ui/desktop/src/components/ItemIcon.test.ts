@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SquareSlash } from './icons/app-icons';
+import { Package, SquareSlash, Wrench } from './icons/app-icons';
 import { ENTITY_ICONS } from './icons/entity-icons';
 import { getItemIcon } from './ItemIcon';
 import type { DisplayItem } from './MentionPopover';
@@ -26,6 +26,14 @@ describe('getItemIcon', () => {
    * Skill glyph now) and not a shell. */
   it('draws a built-in command as the slash-command mark', () => {
     expect(getItemIcon(item('Builtin', '/compact')).Icon).toBe(SquareSlash);
+  });
+
+  /** The wrench means an unknown tool call; an installer is a package. */
+  it('draws an installer as a package, never the wrench', () => {
+    for (const name of ['setup.exe', 'Biorouter.dmg', 'biorouter_1.0_amd64.deb']) {
+      expect(getItemIcon(item('File', name)).Icon, name).toBe(Package);
+      expect(getItemIcon(item('File', name)).Icon, name).not.toBe(Wrench);
+    }
   });
 
   it('keeps every glyph monochrome', () => {
