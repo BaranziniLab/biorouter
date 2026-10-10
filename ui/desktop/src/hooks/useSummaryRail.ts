@@ -226,10 +226,20 @@ export function useSummaryRail({
     observerRef.current = observer;
   });
 
-  useEffect(
+  // The teardown FORGETS what it observed as well as disconnecting it. StrictMode
+  // (the renderer runs in it) unmounts every effect once and mounts it again; a
+  // teardown that only disconnected left the attach effect above looking at "the
+  // same element" with no observer behind it, so the rail never measured again
+  // after mount (V2-01): it kept its width while the window, the sidebar and the
+  // preview moved, and never came back after a hide. A layout effect, so it
+  // pairs with the layout effect that attaches.
+  useLayoutEffect(
     () => () => {
       observerRef.current?.disconnect();
+      observerRef.current = null;
+      observedRef.current = null;
       if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
     },
     []
   );

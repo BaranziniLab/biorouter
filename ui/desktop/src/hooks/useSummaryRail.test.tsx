@@ -1,5 +1,5 @@
 import { act, render } from '@testing-library/react';
-import { useRef } from 'react';
+import { StrictMode, useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SUMMARY_RAIL_EXIT_FALLBACK_MS,
@@ -10,7 +10,10 @@ import {
 } from './useSummaryRail';
 import { resetSummaryRailPreferenceForTests } from '../components/Layout/summaryRailPreference';
 
-let observers: Array<() => void> = [];
+// Every observer the hook made, and whether it is still connected: a callback
+// that fires on a disconnected observer would hide the bug StrictMode exposed
+// (V2-01), where the only observer had been disconnected by the simulated unmount.
+let observers: Array<{ callback: () => void; connected: boolean }> = [];
 const originalResizeObserver = globalThis.ResizeObserver;
 const pane = { width: 1152 };
 
@@ -44,14 +47,22 @@ const defaults: HarnessProps = {
   previewWidth: 0,
 };
 
-function mount(over: Partial<HarnessProps> = {}) {
+function mount(over: Partial<HarnessProps> = {}, { strict = false } = {}) {
   const props = { ...defaults, ...over };
-  const view = render(<Harness {...props} />);
+  const tree = () =>
+    strict ? (
+      <StrictMode>
+        <Harness {...props} />
+      </StrictMode>
+    ) : (
+      <Harness {...props} />
+    );
+  const view = render(tree());
   return {
     ...view,
     update: (next: Partial<HarnessProps>) => {
       Object.assign(props, next);
-      view.rerender(<Harness {...props} />);
+      view.rerender(tree());
     },
   };
 }
@@ -59,7 +70,7 @@ function mount(over: Partial<HarnessProps> = {}) {
 function resizeTo(width: number) {
   pane.width = width;
   act(() => {
-    for (const callback of observers) callback();
+    for (const observer of observers) if (observer.connected) observer.callback();
   });
 }
 
@@ -70,11 +81,17 @@ beforeEach(() => {
   window.localStorage.clear();
   resetSummaryRailPreferenceForTests();
   class FakeResizeObserver {
+    private entry: { callback: () => void; connected: boolean };
     constructor(callback: () => void) {
-      observers.push(callback);
+      this.entry = { callback, connected: false };
+      observers.push(this.entry);
     }
-    observe() {}
-    disconnect() {}
+    observe() {
+      this.entry.connected = true;
+    }
+    disconnect() {
+      this.entry.connected = false;
+    }
     unobserve() {}
   }
   globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
@@ -260,6 +277,47 @@ describe('useSummaryRail', () => {
     expect(latest.preference).toBe('open');
     expect(commits.some((c) => c.rendered && !c.still)).toBe(true);
     expect(onGlide).toHaveBeenCalledWith(140, 'open');
+  });
+
+  describe('under StrictMode (the renderer mounts in it, renderer.tsx)', () => {
+    // V2-01: the simulated unmount ran the observer's teardown, and the attach
+    // effect then saw the same element and kept the dead observer, so the rail
+    // never re-measured after mount: it kept a stale width while the window,
+    // the sidebar and the preview moved under it.
+    it('keeps exactly one live observer after the simulated unmount', () => {
+      mount({}, { strict: true });
+      expect(observers.filter((o) => o.connected)).toHaveLength(1);
+    });
+
+    it('still hides at once when the pane narrows, and shows again after the settle', () => {
+      vi.useFakeTimers();
+      mount({}, { strict: true });
+      expect(latest.shown).toBe(true);
+      resizeTo(1032);
+      expect(latest.shown).toBe(false);
+      expect(latest.rendered).toBe(false);
+      resizeTo(1152);
+      act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+    });
+
+    it('shows once a pane measured too narrow at mount widens (the sidebar collapsing after a reload)', () => {
+      vi.useFakeTimers();
+      pane.width = 812;
+      mount({}, { strict: true });
+      expect(latest.shown).toBe(false);
+      resizeTo(1100);
+      act(() => vi.advanceTimersByTime(SUMMARY_RAIL_SHOW_SETTLE_MS));
+      expect(latest.shown).toBe(true);
+      expect(latest.width).toBe(280);
+    });
+
+    it('disconnects its observer on a real unmount', () => {
+      const view = mount({}, { strict: true });
+      view.unmount();
+      expect(observers.filter((o) => o.connected)).toHaveLength(0);
+    });
   });
 
   it('does not glide back for a rail the grid already dropped mid-exit', () => {
