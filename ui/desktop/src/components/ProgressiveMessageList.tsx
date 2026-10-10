@@ -23,11 +23,22 @@ import { SystemNotificationInline } from './context_management/SystemNotificatio
 import { NotificationEvent } from '../types/message';
 import LoadingBioRouter from './LoadingBioRouter';
 import { ChatType } from '../types/chat';
-import { identifyConsecutiveToolCalls, isInChain } from '../utils/toolCallChaining';
 import TurnActivityIndicator from './TurnActivityIndicator';
 import { deriveTrailingActivity, type PendingSteer } from '../utils/trailingActivity';
 import { ChatState } from '../types/chatState';
 import type { ArtifactSource } from './artifacts/artifactTypes';
+import { cn } from '../utils';
+import {
+  isToolResponseOnly,
+  messageGaps,
+  ROW_GAP_CLASS,
+  trailingGap,
+} from './transcript/transcriptRhythm';
+import { useLiveRows } from './transcript/useLiveRows';
+import { transcriptCopy } from './transcript/copy';
+
+/** A row's key: its id, or its place and time for a row the daemon has not named yet. */
+const rowKey = (message: Message, index: number) => message.id ?? `msg-${index}-${message.created}`;
 
 interface ProgressiveMessageListProps {
   messages: Message[];
@@ -143,8 +154,6 @@ export default function ProgressiveMessageList({
   // that tripped React's depth limit.
   const onRenderingCompleteRef = useRef(onRenderingComplete);
   onRenderingCompleteRef.current = onRenderingComplete;
-  const hasOnlyToolResponses = (message: Message) =>
-    message.content.every((c) => c.type === 'toolResponse');
 
   const hasInlineSystemNotification = (message: Message): boolean => {
     return message.content.some(
@@ -260,8 +269,16 @@ export default function ProgressiveMessageList({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isLoading, messages.length]);
 
-  // Detect tool call chains
-  const toolCallChains = useMemo(() => identifyConsecutiveToolCalls(messages), [messages]);
+  // One gap per row (24px between turns, 8px between blocks, 4px between tool
+  // rows), and the `.br-enter` entrance only for rows appended live: a history
+  // load, a tab switch and a reload draw at rest (spec 3.6).
+  const gaps = useMemo(() => messageGaps(messages, isUserMessage), [messages, isUserMessage]);
+  const rowKeys = useMemo(() => messages.map(rowKey), [messages]);
+  const liveRows = useLiveRows(
+    rowKeys,
+    chatState !== undefined,
+    chatState === ChatState.LoadingConversation
+  );
 
   // Pure, memoised on the same identities the list already re-renders for, so
   // it adds no scan the list was not already paying for.
@@ -298,12 +315,28 @@ export default function ProgressiveMessageList({
           return null;
         }
 
+        const key = rowKey(message, index);
+        const live = liveRows.has(key);
+        const rowClassName = cn(
+          'relative',
+          ROW_GAP_CLASS[gaps[index] ?? 'block'],
+          live && 'br-enter'
+        );
+        // A row that is not live also holds its tool rows still: a tool row
+        // rises 4px when it is appended to a live answer, and mounts at rest
+        // from history, a tab switch or a reload (principle 9; WS-TOOLS reads
+        // `[data-motion-still] .biorouter-message-tool`).
+        const motionStill = live ? undefined : '';
+
         // System notifications are never user messages, handle them first
         if (hasInlineSystemNotification(message)) {
           return (
             <div
-              key={message.id ?? `msg-${index}-${message.created}`}
-              className={`relative ${index === 0 ? 'mt-0' : 'mt-4'} assistant`}
+              key={key}
+              className={rowClassName}
+              data-role="assistant"
+              data-first-message={gaps[index] === 'first' ? '' : undefined}
+              data-motion-still={motionStill}
               data-testid="message-container"
             >
               <SystemNotificationInline message={message} />
@@ -312,16 +345,18 @@ export default function ProgressiveMessageList({
         }
 
         const isUser = isUserMessage(message);
-        const messageIsInChain = isInChain(index, toolCallChains);
 
         return (
           <div
-            key={message.id ?? `msg-${index}-${message.created}`}
-            className={`relative ${index === 0 ? 'mt-0' : 'mt-4'} ${isUser ? 'user' : 'assistant'} ${messageIsInChain ? 'in-chain' : ''}`}
+            key={key}
+            className={rowClassName}
+            data-role={isUser ? 'user' : 'assistant'}
+            data-first-message={gaps[index] === 'first' ? '' : undefined}
+            data-motion-still={motionStill}
             data-testid="message-container"
           >
             {isUser ? (
-              !hasOnlyToolResponses(message) && (
+              !isToolResponseOnly(message) && (
                 <UserMessage
                   message={message}
                   onMessageUpdate={recoveryIds.has(message.id) ? undefined : onMessageUpdate}
@@ -335,7 +370,6 @@ export default function ProgressiveMessageList({
                 message={message}
                 messages={messages}
                 messageIndex={index}
-                toolCallChains={toolCallChains}
                 toolCallNotifications={toolCallNotifications}
                 turnActive={isStreamingMessage}
                 isStreaming={
@@ -363,13 +397,14 @@ export default function ProgressiveMessageList({
     toolCallNotifications,
     isStreamingMessage,
     onMessageUpdate,
-    toolCallChains,
     submitElicitationResponse,
     onOpenArtifact,
     onRunInTerminal,
     workingDir,
     onSendAgain,
     recoveryIds,
+    gaps,
+    liveRows,
   ]);
 
   return (
@@ -381,18 +416,21 @@ export default function ProgressiveMessageList({
           The wrapper classes mirror the message wrapper above so the vertical
           rhythm matches exactly. */}
       {trailingActivity && (
-        <div className="relative mt-4 assistant" data-testid="trailing-activity-container">
+        <div
+          className={cn('relative', ROW_GAP_CLASS[trailingGap(messages, isUserMessage)])}
+          data-role="assistant"
+          data-testid="trailing-activity-container"
+        >
           <TurnActivityIndicator activity={trailingActivity} canStopHere={canStopTurn} />
         </div>
       )}
 
-      {/* Loading indicator when progressively rendering */}
+      {/* While a long chat renders in batches: one quiet line. ⌘F still
+          renders everything at once (the handler above); the tip that said so
+          belongs to the find bar's own help. */}
       {isLoading && (
-        <div className="flex flex-col items-center justify-center py-8">
-          <LoadingBioRouter message={`Loading messages... (${renderedCount}/${messages.length})`} />
-          <div className="text-xs text-text-muted mt-2">
-            Press Cmd/Ctrl+F to load all messages immediately for search
-          </div>
+        <div className="mt-6 flex justify-center">
+          <LoadingBioRouter message={transcriptCopy.activity.loadingMessages} />
         </div>
       )}
     </>

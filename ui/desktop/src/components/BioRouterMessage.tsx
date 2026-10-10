@@ -7,7 +7,6 @@ import { formatMessageTimestamp } from '../utils/timeUtils';
 import MarkdownContent from './MarkdownContent';
 import ToolCallWithResponse from './ToolCallWithResponse';
 import {
-  getTextContent,
   getToolRequests,
   getToolResponses,
   getToolConfirmationContent,
@@ -21,10 +20,12 @@ import ElicitationRequest from './ElicitationRequest';
 import SecretRequestCard from './SecretRequestCard';
 import MessageCopyLink from './MessageCopyLink';
 import MessageDivergeLink from './MessageDivergeLink';
-import { MessageMeta } from './MessageMeta';
-import { ChevronRight } from './icons/app-icons';
+import { MessageActions } from './MessageMeta';
+import { Brain } from './icons/app-icons';
+import { TranscriptRow } from './TranscriptRow';
+import { transcriptCopy } from './transcript/copy';
 import { cn } from '../utils';
-import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
+import { splitAssistantText } from './transcript/transcriptRhythm';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
   filePathLookupFromPaths,
@@ -46,11 +47,10 @@ interface BioRouterMessageProps {
    */
   turnActive?: boolean;
   // Precomputed by the parent list once per render and passed down to avoid each
-  // message recomputing O(n) scans over the whole conversation (which made the
-  // list O(n²) per streaming frame). Both fall back to local computation when
-  // omitted, so the component still works standalone.
+  // message recomputing an O(n) scan over the whole chat (which made the list
+  // O(n²) per streaming frame). Falls back to a local scan when omitted, so the
+  // component still works standalone.
   messageIndex?: number;
-  toolCallChains?: ReturnType<typeof identifyConsecutiveToolCalls>;
   submitElicitationResponse?: (
     elicitationId: string,
     userData: Record<string, unknown>
@@ -78,7 +78,6 @@ export default function BioRouterMessage({
   isStreaming = false,
   turnActive = false,
   messageIndex: messageIndexProp,
-  toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
   onOpenArtifact,
   onRunInTerminal,
@@ -89,30 +88,13 @@ export default function BioRouterMessage({
   // you opened stays open as the turn continues below it.
   const [thinkingOpen, setThinkingOpen] = useState(false);
 
-  let textContent = getTextContent(message);
-
-  // Strip injected context blocks that are meant for the model, not the user.
-  // The trailing (\s*\\?") also consumes any closing \" the model places after </info-msg>
-  // to wrap a quoted echo — which Markdown would otherwise render as a stray \.
-  textContent = textContent.replace(/<info-msg>[\s\S]*?<\/info-msg>(\s*\\?")?/gi, '').trim();
-
-  const splitChainOfThought = (text: string): { visibleText: string; cotText: string | null } => {
-    const regex = /<think>([\s\S]*?)<\/think>/i;
-    const match = text.match(regex);
-    if (!match) {
-      return { visibleText: text, cotText: null };
-    }
-
-    const cotRaw = match[1].trim();
-    const visibleText = text.replace(regex, '').trim();
-
-    return {
-      visibleText,
-      cotText: cotRaw || null,
-    };
-  };
-
-  const { visibleText, cotText } = splitChainOfThought(textContent);
+  // Injected context blocks (`<info-msg>`, model-only) are stripped and the
+  // chain of thought is split off, by the same function the list's rhythm
+  // reads, so the two can never disagree about whether a message starts with
+  // prose.
+  const { visibleText, cotText } = splitAssistantText(message);
+  // The thought is all there is so far: the answer has not started.
+  const thinkingNow = isStreaming && !visibleText;
   const imagePaths = extractImagePaths(visibleText);
   const displayText =
     imagePaths.length > 0 ? removeImagePathsFromText(visibleText, imagePaths) : visibleText;
@@ -147,16 +129,6 @@ export default function BioRouterMessage({
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);
   const secretRequestContent = getSecretRequestContent(message);
-  // Prefer the parent's single precomputed chain map; only recompute locally
-  // (the old O(n)-per-message cost) when not provided.
-  const toolCallChains = useMemo(
-    () => toolCallChainsProp ?? identifyConsecutiveToolCalls(messages),
-    [toolCallChainsProp, messages]
-  );
-  const hideTimestamp = useMemo(
-    () => shouldHideTimestamp(messageIndex, toolCallChains),
-    [messageIndex, toolCallChains]
-  );
   const hasToolConfirmation = toolConfirmationContent !== undefined;
   const hasElicitation = elicitationContent !== undefined;
 
@@ -185,41 +157,49 @@ export default function BioRouterMessage({
   const quotedSelection = useTextSelection(contentRef, `${sessionId}:${message.id}`);
 
   return (
-    <div className="biorouter-message br-message-meta-scope flex w-full justify-start min-w-0">
+    <div className="biorouter-message flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
-        {/* Chain of thought is a disclosure, not a card. It used to be a native
-            `<details>` on a filled, bordered 4px box with the browser's own
-            triangle — the one control in the transcript the USER AGENT drew
-            rather than the app, so it could not take the app's chevron, its
-            32px row, its motion or its type role, and it was the last place a
-            marker rotated with no transition. It is now the same disclosure the
-            tool rows use: a 32px line, a 16px chevron VISIBLE AT REST (a marker
-            that appears on hover teaches nobody that the row opens), and a body
-            indented 24px to the left edge that chevron establishes. */}
+        {/* Chain of thought is a transcript row, the same line a tool call is
+            (WS-TOOLS' TranscriptRow): a 16px Brain, "Thinking" while the
+            thought is all there is so far and "Thought" once the answer has
+            started, and a chevron that opens the thought indented 24px under
+            the label. It stays open while mounted once opened, so a thought
+            you are reading does not shut as the turn continues below it. */}
         {cotText && (
-          <div className="mb-2">
-            <button
-              type="button"
-              onClick={() => setThinkingOpen((open) => !open)}
-              aria-expanded={thinkingOpen}
-              className="flex h-8 cursor-pointer items-center gap-2 rounded-element text-secondary text-text-muted transition-colors hover:text-text-default"
-            >
-              <ChevronRight
-                aria-hidden="true"
-                className={cn('size-4 shrink-0 transition-transform', thinkingOpen && 'rotate-90')}
-              />
-              <span>{thinkingOpen ? 'Hide thinking' : 'Show thinking'}</span>
-            </button>
-            {thinkingOpen && (
-              <div className="pl-6">
-                <MarkdownContent content={cotText} />
-              </div>
-            )}
-          </div>
+          <TranscriptRow
+            className="mb-2"
+            icon={Brain}
+            glyph="thinking"
+            label={thinkingNow ? transcriptCopy.activity.thinking : transcriptCopy.activity.thought}
+            running={thinkingNow}
+            body="plain"
+            open={thinkingOpen}
+            onOpenChange={setThinkingOpen}
+          >
+            <MarkdownContent content={cotText} />
+          </TranscriptRow>
         )}
 
         {displayText && (
-          <div className="flex flex-col group">
+          // The answer is the actions' scope: hovering or focusing anything in
+          // it shows the floating cluster at its top right (Crew's row
+          // actions). It comes BEFORE the words in the DOM so Tab reaches it
+          // first; nothing in the flow is reserved for it.
+          <div className="br-message-actions-scope flex flex-col">
+            {toolRequests.length === 0 && !isStreaming && (
+              <MessageActions timestamp={timestamp}>
+                {message.content.every((content) => content.type === 'text') && (
+                  <>
+                    <MessageCopyLink text={displayText} contentRef={contentRef} />
+                    <MessageDivergeLink
+                      sessionId={sessionId}
+                      truncateAfterMs={message.created}
+                      truncateAfterId={message.id ?? undefined}
+                    />
+                  </>
+                )}
+              </MessageActions>
+            )}
             <QuotedTextSelection
               source={{
                 sessionId,
@@ -243,7 +223,7 @@ export default function BioRouterMessage({
             </QuotedTextSelection>
 
             {imagePaths.length > 0 && (
-              <div className="mt-4">
+              <div className="mt-2">
                 {imagePaths.map((imagePath, index) => (
                   <ImagePreview key={index} src={imagePath} />
                 ))}
@@ -252,7 +232,7 @@ export default function BioRouterMessage({
 
             {/* Render structured ImageContent blocks (new sessions) */}
             {imageContentBlocks.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-4">
+              <div className="flex flex-wrap gap-2 mt-2">
                 {imageContentBlocks.map((block, idx) =>
                   block.type === 'image' ? (
                     <InlineImage
@@ -265,46 +245,29 @@ export default function BioRouterMessage({
                 )}
               </div>
             )}
-
-            {toolRequests.length === 0 && !isStreaming && (
-              <MessageMeta timestamp={timestamp}>
-                {message.content.every((content) => content.type === 'text') && (
-                  <>
-                    <MessageCopyLink text={displayText} contentRef={contentRef} />
-                    <MessageDivergeLink
-                      sessionId={sessionId}
-                      truncateAfterMs={message.created}
-                      truncateAfterId={message.id ?? undefined}
-                    />
-                  </>
-                )}
-              </MessageMeta>
-            )}
           </div>
         )}
 
+        {/* Tool rows are lines 4px apart (a 32px pitch for 28px rows), and the
+            block sits 8px under any prose above it. A tool-only message keeps
+            no time row of its own: the answer that ends the turn carries it. */}
         {toolRequests.length > 0 && (
-          <div className={cn(displayText && 'mt-2')}>
-            <div className="relative flex flex-col w-full">
-              <div className="flex flex-col gap-3">
-                {toolRequests.map((toolRequest) => (
-                  <div className="biorouter-message-tool" key={toolRequest.id}>
-                    <ToolCallWithResponse
-                      sessionId={sessionId}
-                      isCancelledMessage={false}
-                      toolRequest={toolRequest}
-                      toolResponse={toolResponsesMap.get(toolRequest.id)}
-                      notifications={toolCallNotifications.get(toolRequest.id)}
-                      isStreamingMessage={isStreaming}
-                      turnActive={turnActive}
-                      onOpenArtifact={onOpenArtifact}
-                      workingDir={workingDir}
-                    />
-                  </div>
-                ))}
+          <div className={cn('flex w-full flex-col gap-1', displayText && 'mt-2')}>
+            {toolRequests.map((toolRequest) => (
+              <div className="biorouter-message-tool" key={toolRequest.id}>
+                <ToolCallWithResponse
+                  sessionId={sessionId}
+                  isCancelledMessage={false}
+                  toolRequest={toolRequest}
+                  toolResponse={toolResponsesMap.get(toolRequest.id)}
+                  notifications={toolCallNotifications.get(toolRequest.id)}
+                  isStreamingMessage={isStreaming}
+                  turnActive={turnActive}
+                  onOpenArtifact={onOpenArtifact}
+                  workingDir={workingDir}
+                />
               </div>
-              {!isStreaming && !hideTimestamp && <MessageMeta timestamp={timestamp} />}
-            </div>
+            ))}
           </div>
         )}
 

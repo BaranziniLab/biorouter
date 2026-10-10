@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import UserMessage from './UserMessage';
 import type { Message } from '../api';
+import { transcriptCopy } from './transcript/copy';
 
 const message: Message = {
   id: 'message-1',
@@ -32,22 +33,62 @@ describe('UserMessage edit actions', () => {
     expect(bubble.closest('.message')?.querySelector('[data-message-meta="end"]')).not.toBeNull();
   });
 
-  it('uses Diverge copy and emits the diverge action', () => {
+  it('edits in one card: Cancel, Save as new chat, and Save, each saying what it does', () => {
     const onMessageUpdate = vi.fn();
     render(<UserMessage message={message} onMessageUpdate={onMessageUpdate} />);
 
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
 
-    expect(screen.getAllByText('Diverge')).toHaveLength(2);
+    // No line explaining the buttons any more: their tooltips do.
+    expect(screen.queryByText(/updates this chat/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel editing' })).toBeInTheDocument();
     expect(screen.queryByText(/Fork/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Branch/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
       target: { value: 'updated prompt' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
-
+    fireEvent.click(screen.getByRole('button', { name: transcriptCopy.edit.saveAsNew }));
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
+  });
+
+  it('saves in place from the filled button and from Cmd+Enter', () => {
+    const onMessageUpdate = vi.fn();
+    const { rerender } = render(
+      <UserMessage message={message} onMessageUpdate={onMessageUpdate} />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
+      target: { value: 'updated prompt' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: transcriptCopy.edit.save }));
+    expect(onMessageUpdate).toHaveBeenLastCalledWith('message-1', 'updated prompt', 'edit');
+
+    rerender(
+      <UserMessage message={{ ...message, id: 'message-9' }} onMessageUpdate={onMessageUpdate} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
+    const box = screen.getByRole('textbox', { name: 'Edit message content' });
+    fireEvent.change(box, { target: { value: 'again' } });
+    fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
+    expect(onMessageUpdate).toHaveBeenLastCalledWith('message-9', 'again', 'edit');
+  });
+
+  it('floats its actions over the bubble instead of reserving a row under it', () => {
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+
+    const cluster = document.querySelector('[data-message-meta="end"]')!;
+    expect(cluster).toHaveClass('br-message-actions');
+    // Anchored to the bubble's column, so its right edge is the bubble's.
+    expect(cluster.parentElement).toHaveClass('br-message-actions-anchor');
+    // Two glyph buttons, named; their words are tooltips, not text.
+    const edit = screen.getByRole('button', { name: /edit message:/i });
+    const copy = screen.getByRole('button', { name: transcriptCopy.message.copyMessage });
+    for (const button of [edit, copy]) {
+      expect(cluster).toContainElement(button);
+      expect(button.textContent?.trim()).toBe('');
+    }
   });
 
   it('labels a message another agent injected (BR-71 §5)', () => {

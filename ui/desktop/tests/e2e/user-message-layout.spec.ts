@@ -238,6 +238,9 @@ test('clamp, resource, attachment, and intentionally wide edit states remain int
 
   const edit = page.locator('[data-case="edit"]');
   const normalWidth = (await geometry(page, 'edit')).bubble.width;
+  // The message's actions float over the bubble and appear on hover (Crew's
+  // row actions), so the pointer reaches the message before its Edit.
+  await edit.getByTestId('user-message-bubble').hover();
   await edit.getByRole('button', { name: /edit message:/i }).click();
   await expect(edit.getByRole('textbox', { name: 'Edit message content' })).toBeVisible();
   await expect(edit.getByTestId('user-message-bubble')).toHaveCount(0);

@@ -2,58 +2,51 @@ import './message-meta.css';
 import * as React from 'react';
 import { cn } from '../utils';
 
-/** Shared message footer. Space stays reserved while hover/focus reveals it. */
-interface MessageMetaProps {
-  /** Preformatted timestamp. Omitted for a row that is only actions. */
+/**
+ * A message's floating action cluster (Crew's row actions; `message-meta.css`).
+ *
+ * It holds 24px icon-only actions (`TranscriptIconButton`) and the message's
+ * time as a 12px muted label. It is absolutely positioned at the top right of
+ * the nearest `.br-message-actions-anchor` (or scope), so nothing in the flow is
+ * reserved for it, and it is revealed by hovering or focusing anything inside
+ * the nearest `.br-message-actions-scope`.
+ *
+ * `data-message-meta` stays: the user-message layout e2e measures the bubble's
+ * right edge against this box (`tests/e2e/user-message-layout.spec.ts`).
+ */
+interface MessageActionsProps {
+  /** Preformatted time, shown first. Omitted for a cluster that is only actions. */
   timestamp?: React.ReactNode;
-  /**
-   * Which edge the row hugs. `end` also reverses the order so the timestamp
-   * stays nearest the edge the bubble is aligned to and the actions read
-   * inward — the same relationship `start` has, mirrored.
-   */
+  /** The edge the message hugs; the cluster is always at its right. */
   align?: 'start' | 'end';
   className?: string;
-  /** Actions — `MessageMetaAction`s, or anything of the same height. */
+  /** The actions: `TranscriptIconButton`s or a menu trigger built on one. */
   children?: React.ReactNode;
 }
 
-export function MessageMeta({ timestamp, align = 'start', className, children }: MessageMetaProps) {
-  const time = timestamp ? (
-    <span className="text-supporting text-text-muted tabular-nums">{timestamp}</span>
-  ) : null;
-
+export function MessageActions({
+  timestamp,
+  align = 'start',
+  className,
+  children,
+}: MessageActionsProps) {
   return (
-    <div
-      data-message-meta={align}
-      className={cn(
-        'mt-2 flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1',
-        align === 'end' ? 'justify-end' : 'justify-start',
-        className
-      )}
-    >
-      {align === 'end' ? (
-        <>
-          {children}
-          {time}
-        </>
-      ) : (
-        <>
-          {time}
-          {children}
-        </>
-      )}
+    <div data-message-meta={align} className={cn('br-message-actions', className)}>
+      {timestamp ? (
+        <span className="br-message-actions-time text-supporting text-text-muted tabular-nums">
+          {timestamp}
+        </span>
+      ) : null}
+      {children}
     </div>
   );
 }
 
 /**
- * One action inside a `MessageMeta` row — Copy, Diverge, Edit.
- *
- * The three were byte-similar 40-character class strings that had already
- * drifted (one carried `rounded`, one did not; one had a disabled state, two did
- * not). Here they are one recipe: `supporting` ink, a 14px glyph, muted at rest
- * and full ink on hover, and no motion at all — the row does not move, so
- * nothing has to animate out of the way.
+ * An action that stays in the flow under a message because it is about the
+ * message's content, not an action on it: "Show more" on a long message, "Send
+ * again" on a steer nobody read. A 12px label with a 14px glyph, muted at rest
+ * and full ink on hover; nothing moves.
  */
 interface MessageMetaActionProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   icon: React.ReactNode;

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import UserMessage from './UserMessage';
+import { transcriptCopy } from './transcript/copy';
 import type { Message } from '../api';
 import { labelledRefTag, refTag } from '../utils/resourceRefs';
 
@@ -91,7 +92,7 @@ describe('editing a sent message', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
       target: { value: 'hello there' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
+    fireEvent.click(screen.getByRole('button', { name: transcriptCopy.edit.saveAsNew }));
 
     expect(onMessageUpdate).toHaveBeenCalledWith(
       'message-1',
@@ -111,7 +112,7 @@ describe('editing a sent message', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
     fireEvent.click(screen.getByRole('button', { name: /^remove/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
+    fireEvent.click(screen.getByRole('button', { name: transcriptCopy.edit.saveAsNew }));
 
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'hello', 'diverge');
   });

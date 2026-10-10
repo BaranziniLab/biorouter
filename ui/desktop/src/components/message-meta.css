@@ -1,25 +1,80 @@
-[data-message-meta] {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--motion-fast) var(--ease-out);
+/* @ws WS-TRANSCRIPT begin: message actions */
+/* A message's actions float: Crew's row-action cluster (`.crew-row-actions`,
+   crew/timeline/timeline.css), copied rather than borrowed.
+
+   It sits at the message's top right, 12px above it, on the popover ground with
+   a popover shadow and an inset hairline. Nothing is reserved for it in the
+   flow, so the 28px meta row that used to sit under every message, invisible
+   until hover, is gone with the gap it made (spec 3.6). It shows on hover, on
+   focus inside the message and while its menu is open; only its opacity
+   changes, so its buttons stay in the tab order. Without a hover pointer it
+   sits in the flow under the message, always shown. */
+.br-message-actions-scope {
+  position: relative;
 }
 
-.br-message-meta-scope:hover [data-message-meta],
-.br-message-meta-scope:focus-within [data-message-meta],
-[data-message-meta]:focus-within {
+/* The box the cluster is measured against (the user bubble's column). */
+.br-message-actions-anchor {
+  position: relative;
+}
+
+.br-message-actions {
+  position: absolute;
+  top: -12px;
+  right: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  padding: 2px;
+  border-radius: var(--radius-element);
+  background-color: var(--background-default);
+  box-shadow: var(--shadow-popover), var(--inset-hairline);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast-min) var(--ease-out);
+}
+
+/* The time label inside the cluster: 12px muted tabular, inset like a button's
+   glyph so the cluster's edges stay even. */
+.br-message-actions-time {
+  padding: 0 6px;
+}
+
+.br-message-actions-scope:hover .br-message-actions,
+.br-message-actions-scope:focus-within .br-message-actions,
+.br-message-actions:has([data-state='open']) {
   opacity: 1;
   pointer-events: auto;
 }
 
+/* The first message sits at the top of the scroll area, which would clip a
+   cluster that rises above it, so there it drops inside the message (Crew does
+   the same under a day band). */
+[data-first-message] .br-message-actions {
+  top: 4px;
+}
+
 @media (hover: none) {
-  [data-message-meta] {
+  /* It comes BEFORE the message in the DOM (so Tab reaches it first); `order`
+     places it under the message all the same. Both hosts are flex columns. */
+  .br-message-actions {
+    position: static;
+    order: 1;
+    align-self: flex-end;
+    margin-top: 4px;
+    background-color: transparent;
+    box-shadow: none;
     opacity: 1;
     pointer-events: auto;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-message-meta] {
+  .br-message-actions {
     transition: none;
   }
 }
+/* @ws WS-TRANSCRIPT end: message actions */

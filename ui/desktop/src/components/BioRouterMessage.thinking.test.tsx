@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import BioRouterMessage from './BioRouterMessage';
 import type { Message } from '../api';
+import { transcriptCopy } from './transcript/copy';
 
 // The transcript is no longer a display surface for artifacts — it can only hand
 // one to the panel — so `onOpenArtifact` is required all the way down the chain.
@@ -22,50 +23,41 @@ function thinkingMessage(): Message {
   };
 }
 
-describe('BioRouterMessage chain-of-thought disclosure', () => {
-  it("is the app's own control, not the browser's <details>", () => {
-    const { container } = render(
-      <BioRouterMessage
-        sessionId="s1"
-        message={thinkingMessage()}
-        messages={[thinkingMessage()]}
-        toolCallNotifications={new Map()}
-        onRunInTerminal={null}
-        onOpenArtifact={noopOpenArtifact}
-      />
-    );
+function renderMessage(message: Message, isStreaming = false) {
+  return render(
+    <BioRouterMessage
+      sessionId="s1"
+      message={message}
+      messages={[message]}
+      toolCallNotifications={new Map()}
+      isStreaming={isStreaming}
+      onRunInTerminal={null}
+      onOpenArtifact={noopOpenArtifact}
+    />
+  );
+}
 
-    // A native <details> could not take the app's chevron, its 32px row, its
-    // type role or its motion — the marker was drawn by the user agent. It is a
-    // button now, so all four are ours.
+describe('BioRouterMessage chain-of-thought disclosure', () => {
+  it("is the transcript's own row, not the browser's <details>", () => {
+    const { container } = renderMessage(thinkingMessage());
+
+    // A native <details> could not take the app's chevron, its row, its type
+    // role or its motion: the marker was drawn by the user agent. It is the
+    // one transcript row now (TranscriptRow), the same line a tool call is.
     expect(container.querySelector('details')).toBeNull();
-    expect(screen.getByRole('button', { name: /thinking/i })).toHaveAttribute(
-      'aria-expanded',
-      'false'
-    );
+    const toggle = screen.getByRole('button', { name: transcriptCopy.activity.thought });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle.closest('.br-transcript-row')).not.toBeNull();
+    expect(container.querySelector('[data-tool-glyph="thinking"]')).not.toBeNull();
   });
 
-  it('keeps the chevron visible at rest and rotates it on open', async () => {
-    render(
-      <BioRouterMessage
-        sessionId="s1"
-        message={thinkingMessage()}
-        messages={[thinkingMessage()]}
-        toolCallNotifications={new Map()}
-        onRunInTerminal={null}
-        onOpenArtifact={noopOpenArtifact}
-      />
-    );
+  it('keeps the chevron visible at rest and shows the thought only when asked', async () => {
+    renderMessage(thinkingMessage());
 
-    const toggle = screen.getByRole('button', { name: 'Show thinking' });
-    const chevron = toggle.querySelector('svg')!;
-    // Visible at rest — the whole point. A marker that only appears on hover
-    // teaches nobody that the row opens.
-    expect(chevron.getAttribute('class')).not.toMatch(/opacity-0/);
-    expect(chevron.getAttribute('class')).not.toMatch(/rotate-90/);
-    // 16px, the row's icon size — the tool-call chevron beside it is the same,
-    // so the transcript never shows two chevron scales (§3.8b).
-    expect(chevron.getAttribute('class')).toMatch(/size-4/);
+    const toggle = screen.getByRole('button', { name: transcriptCopy.activity.thought });
+    // Visible at rest: a marker that only appears on hover teaches nobody that
+    // the row opens.
+    expect(toggle.querySelector('.br-transcript-row-chevron')).not.toBeNull();
 
     // The thought itself is not in the DOM until it is asked for.
     expect(screen.queryByText('weighing two options')).not.toBeInTheDocument();
@@ -73,11 +65,28 @@ describe('BioRouterMessage chain-of-thought disclosure', () => {
     await userEvent.click(toggle);
 
     expect(screen.getByText('weighing two options')).toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('says "Thinking" and breathes while the thought is all there is', () => {
+    const message: Message = {
+      ...thinkingMessage(),
+      content: [{ type: 'text', text: '<think>weighing two options</think>' }],
+    };
+    const { container } = renderMessage(message, true);
+
     expect(
-      screen
-        .getByRole('button', { name: 'Hide thinking' })
-        .querySelector('svg')!
-        .getAttribute('class')
-    ).toMatch(/rotate-90/);
+      screen.getByRole('button', { name: transcriptCopy.activity.thinking })
+    ).toBeInTheDocument();
+    expect(container.querySelector('.br-transcript-row')).toHaveAttribute('data-running');
+  });
+
+  it('says "Thought", at rest, once the answer has started', () => {
+    const { container } = renderMessage(thinkingMessage(), true);
+
+    expect(
+      screen.getByRole('button', { name: transcriptCopy.activity.thought })
+    ).toBeInTheDocument();
+    expect(container.querySelector('.br-transcript-row')).not.toHaveAttribute('data-running');
   });
 });

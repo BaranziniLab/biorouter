@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({ toastError: vi.fn() }));
 vi.mock('../toasts', () => ({ toastError: mocks.toastError }));
 
 import MessageCopyLink from './MessageCopyLink';
+import { transcriptCopy } from './transcript/copy';
 
 /** No rich node, so the component takes the plain-text path. */
 const noContent = { current: null };
@@ -50,11 +51,15 @@ describe('MessageCopyLink', () => {
     stubClipboard(() => Promise.reject(new Error('denied')));
     render(<MessageCopyLink text="hello" contentRef={noContent} />);
 
-    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+    await user.click(screen.getByRole('button', { name: transcriptCopy.message.copyMessage }));
 
-    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Copy failed'));
+    await waitFor(() =>
+      expect(screen.getByRole('button')).toHaveAccessibleName(transcriptCopy.message.copyFailed)
+    );
     expect(mocks.toastError).toHaveBeenCalledTimes(1);
     expect(mocks.toastError.mock.calls[0][0]).toMatchObject({ title: 'Copy failed' });
+    // Icon only: the words are the name and the tooltip, never the button's text.
+    expect(screen.getByRole('button').textContent?.trim()).toBe('');
   });
 
   it('copies through the document before it gives up', async () => {
@@ -68,9 +73,11 @@ describe('MessageCopyLink', () => {
     Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true });
     render(<MessageCopyLink text="hello" contentRef={noContent} />);
 
-    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+    await user.click(screen.getByRole('button', { name: transcriptCopy.message.copyMessage }));
 
-    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Copied!'));
+    await waitFor(() =>
+      expect(screen.getByRole('button')).toHaveAccessibleName(transcriptCopy.message.copied)
+    );
     expect(execCommand).toHaveBeenCalledWith('copy');
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
@@ -80,9 +87,11 @@ describe('MessageCopyLink', () => {
     stubClipboard(() => Promise.resolve());
     render(<MessageCopyLink text="hello" contentRef={noContent} />);
 
-    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+    await user.click(screen.getByRole('button', { name: transcriptCopy.message.copyMessage }));
 
-    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Copied!'));
+    await waitFor(() =>
+      expect(screen.getByRole('button')).toHaveAccessibleName(transcriptCopy.message.copied)
+    );
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
@@ -96,9 +105,11 @@ describe('MessageCopyLink', () => {
     contentRef.current.textContent = 'hello';
     render(<MessageCopyLink text="hello" contentRef={contentRef} />);
 
-    await user.click(screen.getByRole('button', { name: 'Copy message' }));
+    await user.click(screen.getByRole('button', { name: transcriptCopy.message.copyMessage }));
 
-    await waitFor(() => expect(screen.getByRole('button')).toHaveTextContent('Copied!'));
+    await waitFor(() =>
+      expect(screen.getByRole('button')).toHaveAccessibleName(transcriptCopy.message.copied)
+    );
     expect(mocks.toastError).not.toHaveBeenCalled();
   });
 });

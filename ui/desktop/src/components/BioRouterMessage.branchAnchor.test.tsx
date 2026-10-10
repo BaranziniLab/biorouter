@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import BioRouterMessage from './BioRouterMessage';
+import { transcriptCopy } from './transcript/copy';
 import type { Message } from '../api';
 
 const mockDivergeSession = vi.fn();
@@ -58,7 +59,15 @@ describe('Branch control anchors (issue #167)', () => {
     // interaction from a click to keyboard activation. Either side alone loses
     // the other: the click version stops covering keyboard users, and a
     // /branch/i matcher finds nothing once the control is renamed.
-    screen.getByRole('button', { name: /diverge/i }).focus();
+    // The answer's ⋯ holds "Diverge from here" now (Crew's row actions: Copy
+    // in the cluster, the rest behind ⋯). Reached from the keyboard: the
+    // trigger takes focus and Enter opens it, Enter again chooses.
+    screen.getByRole('button', { name: transcriptCopy.message.more }).focus();
+    await userEvent.keyboard('{Enter}');
+    const item = await screen.findByRole('menuitem', {
+      name: transcriptCopy.message.divergeFromHere,
+    });
+    item.focus();
     await userEvent.keyboard('{Enter}');
 
     await waitFor(() =>

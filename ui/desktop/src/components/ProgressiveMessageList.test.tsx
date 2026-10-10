@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import ProgressiveMessageList from './ProgressiveMessageList';
 import { ChatState } from '../types/chatState';
 import type { Message } from '../api';
+import { transcriptCopy } from './transcript/copy';
 
 // The transcript is no longer a display surface for artifacts — it can only hand
 // one to the panel — so `onOpenArtifact` is required all the way down the chain.
@@ -83,7 +84,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
     );
 
     expect(screen.getByTestId('turn-activity-indicator')).toBeInTheDocument();
-    expect(screen.getAllByText('Working on the result').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(transcriptCopy.activity.thinking).length).toBeGreaterThan(0);
   });
 
   it('removes the indicator the moment the turn goes idle', () => {
@@ -138,9 +139,9 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
     expect(indicatorIndex).toBeGreaterThan(lastMessageIndex);
   });
 
-  it("hands the indicator whether this tab can stop the turn, so the nudge can't lie", () => {
-    // Past the 45 s nudge threshold on a live turn. Desktop (the default)
-    // points at the composer; a subagent's tab in a browser has none (SD-8).
+  it('never adds a "still working" nudge to a long wait, on any surface', () => {
+    // The 45 s nudge is gone (spec 3.6). `canStopTurn` is still accepted from
+    // BaseChat and changes nothing.
     const longAgo = Date.now() - 46_000;
     const { rerender } = render(
       <ProgressiveMessageList
@@ -151,7 +152,7 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         onOpenArtifact={noopOpenArtifact}
       />
     );
-    expect(screen.getByText(/stop the turn from the composer/)).toBeInTheDocument();
+    expect(screen.queryByText(/Still working/)).toBeNull();
 
     rerender(
       <ProgressiveMessageList
@@ -163,8 +164,8 @@ describe('ProgressiveMessageList trailing activity indicator', () => {
         onOpenArtifact={noopOpenArtifact}
       />
     );
-    expect(screen.getByText('Still working.')).toBeInTheDocument();
-    expect(screen.queryByText(/stop the turn from the composer/)).toBeNull();
+    expect(screen.queryByText(/Still working/)).toBeNull();
+    expect(screen.getByTestId('turn-activity-indicator')).toBeInTheDocument();
   });
 
   it('shows no indicator while the assistant is streaming visible prose', () => {
@@ -243,5 +244,157 @@ describe('ProgressiveMessageList render stability', () => {
 
     errorSpy.mockRestore();
     expect(depthErrors).toEqual([]);
+  });
+});
+
+const text = (id: string, role: 'user' | 'assistant', words: string): Message =>
+  ({
+    id,
+    role,
+    created: 1_700_000_100,
+    metadata: { userVisible: true, agentVisible: true },
+    content: [{ type: 'text', text: words }],
+  }) as Message;
+
+const toolCall = (id: string, toolId: string): Message =>
+  ({
+    id,
+    role: 'assistant',
+    created: 1_700_000_100,
+    metadata: { userVisible: true, agentVisible: true },
+    content: [
+      {
+        type: 'toolRequest',
+        id: toolId,
+        toolCall: { status: 'success', value: { name: 'developer__shell', arguments: {} } },
+      },
+    ],
+  }) as Message;
+
+const toolResult = (id: string, toolId: string): Message =>
+  ({
+    id,
+    role: 'user',
+    created: 1_700_000_100,
+    metadata: { userVisible: true, agentVisible: true },
+    content: [
+      {
+        type: 'toolResponse',
+        id: toolId,
+        toolResult: { status: 'success', value: { content: [] } },
+      },
+    ],
+  }) as Message;
+
+const rows = (container: HTMLElement) =>
+  Array.from(container.querySelectorAll<HTMLElement>('[data-testid="message-container"]'));
+
+describe('ProgressiveMessageList rhythm (spec 3.6)', () => {
+  it('puts 24px between turns, 8px between blocks and 4px between tool rows', () => {
+    const { container } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[
+          text('u1', 'user', 'question'),
+          toolCall('a1', 't1'),
+          toolResult('r1', 't1'),
+          toolCall('a2', 't2'),
+          toolResult('r2', 't2'),
+          text('a3', 'assistant', 'answer'),
+          text('u2', 'user', 'follow-up'),
+        ]}
+        isUserMessage={(m: Message) => m.role === 'user'}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const gaps = rows(container).map((row) => row.className.match(/\bmt-\d\b/)?.[0]);
+    // question, tool, (result), tool, (result), answer, follow-up
+    expect(gaps).toEqual(['mt-0', 'mt-6', 'mt-0', 'mt-1', 'mt-0', 'mt-2', 'mt-6']);
+  });
+
+  it('draws a saved chat at rest: no entrance on rows that were there at mount', () => {
+    const { container } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[text('u1', 'user', 'question'), text('a1', 'assistant', 'answer')]}
+        chatState={ChatState.Idle}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(container.querySelector('.br-enter')).toBeNull();
+    // ...and so are their tool rows (WS-TOOLS' `[data-motion-still]` rest).
+    expect(rows(container).every((row) => row.hasAttribute('data-motion-still'))).toBe(true);
+  });
+
+  it('plays the entrance only on a row appended live', () => {
+    const before = [text('u1', 'user', 'question'), text('a1', 'assistant', 'answer')];
+    const { container, rerender } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={before}
+        chatState={ChatState.Idle}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    rerender(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[...before, text('u2', 'user', 'follow-up')]}
+        isStreamingMessage
+        chatState={ChatState.Thinking}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const entered = rows(container).filter((row) => row.classList.contains('br-enter'));
+    expect(entered).toHaveLength(1);
+    expect(entered[0]).toHaveTextContent('follow-up');
+    // The live row lets its tool rows rise; the rows that were there stay still.
+    const moving = rows(container).filter((row) => !row.hasAttribute('data-motion-still'));
+    expect(moving).toEqual(entered);
+  });
+
+  it('draws a chat that arrives while loading at rest, and a replay never animates', () => {
+    const history = [text('u1', 'user', 'question'), text('a1', 'assistant', 'answer')];
+    const { container, rerender } = render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={[]}
+        chatState={ChatState.LoadingConversation}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    rerender(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={history}
+        chatState={ChatState.LoadingConversation}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(container.querySelector('.br-enter')).toBeNull();
+
+    // A read-only replay passes no chat state at all.
+    const replay = render(
+      <ProgressiveMessageList {...liveProps} messages={[]} onOpenArtifact={noopOpenArtifact} />
+    );
+    replay.rerender(
+      <ProgressiveMessageList {...liveProps} messages={history} onOpenArtifact={noopOpenArtifact} />
+    );
+    expect(replay.container.querySelector('.br-enter')).toBeNull();
+  });
+
+  it('says one quiet line while a long chat renders in batches', () => {
+    render(
+      <ProgressiveMessageList
+        {...liveProps}
+        messages={Array.from({ length: 60 }, (_, i) =>
+          text(`m${i}`, i % 2 ? 'assistant' : 'user', `m${i}`)
+        )}
+        showLoadingThreshold={50}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    expect(screen.getByText(transcriptCopy.activity.loadingMessages)).toBeInTheDocument();
+    expect(screen.queryByText(/Cmd\/Ctrl\+F/)).toBeNull();
   });
 });

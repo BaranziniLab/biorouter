@@ -16,6 +16,11 @@ export const transcriptCopy = {
     editNamed: (text: string) =>
       `Edit message: ${text.length > 50 ? `${text.substring(0, 50)}…` : text}`,
     copy: 'Copy',
+    /**
+     * The message Copy's name at rest. A code block in the same answer has its
+     * own "Copy", so the message's says what it copies; its tooltip says "Copy".
+     */
+    copyMessage: 'Copy message',
     copied: 'Copied',
     copyFailed: 'Copy failed',
     copyFailedHelp:
@@ -23,7 +28,6 @@ export const transcriptCopy = {
     more: 'More actions',
     divergeFromHere: 'Diverge from here',
     diverging: 'Diverging…',
-    divergeHelp: 'Opens a new chat in a new window with the history up to here.',
     /** The time label, with the edit folded into it. */
     edited: (time: string) => (time ? `Edited · ${time}` : 'Edited'),
     showMore: 'Show more',

@@ -1,10 +1,17 @@
 import { useState } from 'react';
-import { GitBranch } from './icons/app-icons';
+import { MoreHorizontal } from './icons/app-icons';
 import { useDiverge } from '../hooks/useDiverge';
-import { MessageMetaAction } from './MessageMeta';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+import { TranscriptIconButton } from './transcript/TranscriptIconButton';
+import { transcriptCopy } from './transcript/copy';
 
 interface MessageDivergeLinkProps {
-  /** The session this message belongs to — the conversation that will be branched. */
+  /** The session this message belongs to — the chat that will be branched. */
   sessionId: string;
   /** `created` timestamp (ms) of this assistant message. The branch is trimmed
    * to end exactly at this answer. */
@@ -15,13 +22,13 @@ interface MessageDivergeLinkProps {
 }
 
 /**
- * "Diverge" action shown next to Copy on a finished assistant message.
+ * The ⋯ on a finished assistant message, holding its second-tier action:
+ * "Diverge from here" (Crew's pattern: the cluster shows the one everyday action,
+ * Copy, and everything else goes behind ⋯).
  *
- * Branches the current conversation into a brand-new session that inherits the
- * full history (so the new conversation resumes from exactly here) while the
- * original session stays untouched and ready to keep chatting.
- *
- * The branch opens in a new Biorouter desktop window.
+ * Diverging branches the chat into a brand-new session that inherits the full
+ * history up to this answer, so the new chat resumes from exactly here while
+ * the original stays untouched. The branch opens in a new Biorouter window.
  */
 export default function MessageDivergeLink({
   sessionId,
@@ -42,14 +49,18 @@ export default function MessageDivergeLink({
   };
 
   return (
-    <MessageMetaAction
-      onClick={handleDiverge}
-      disabled={busy}
-      icon={<GitBranch />}
-      aria-label="Diverge this chat into a new window"
-      title="Diverge this chat into a new window (keeps full history)"
-    >
-      {busy ? 'Diverging…' : 'Diverge'}
-    </MessageMetaAction>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <TranscriptIconButton
+          label={transcriptCopy.message.more}
+          icon={<MoreHorizontal aria-hidden="true" />}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem disabled={busy} onSelect={() => void handleDiverge()}>
+          {busy ? transcriptCopy.message.diverging : transcriptCopy.message.divergeFromHere}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
