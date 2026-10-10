@@ -22,6 +22,8 @@ export const EXTENSION_ROW_COPY = {
   /** The ⋯ menu behind a row (and the same items on right-click). */
   configure: 'Configure…',
   remove: 'Remove…',
+  /** The ⋯ button's name: the row it belongs to, so twelve of them are not twelve "More actions". */
+  moreActionsNamed: (title: string) => `More actions for ${title}`,
 
   /** The Privacy badge's InfoTip name. */
   privacy: 'Privacy',

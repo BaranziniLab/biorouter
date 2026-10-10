@@ -159,13 +159,13 @@ describe('ExtensionsSection — the groups and the row menu', () => {
     const user = userEvent.setup({ delay: null });
     render(<ExtensionsSection />);
 
-    await user.click(await screen.findByRole('button', { name: 'More actions' }));
+    await user.click(await screen.findByRole('button', { name: 'More actions for Medcp' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Configure…' }));
     expect(await screen.findByRole('dialog', { name: 'Update extension' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
-    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('button', { name: 'More actions for Medcp' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Remove…' }));
     // The dialog starts on the question, not on the form the person did not ask for.
     expect(await screen.findByRole('dialog', { name: 'Remove "medcp"?' })).toBeInTheDocument();
@@ -181,19 +181,23 @@ describe('ExtensionsSection — the groups and the row menu', () => {
     const user = userEvent.setup({ delay: null });
     render(<ExtensionsSection />);
 
-    const more = await screen.findByRole('button', { name: 'More actions' });
+    const more = await screen.findByRole('button', { name: 'More actions for Medcp' });
     await user.click(more);
     await user.click(await screen.findByRole('menuitem', { name: 'Configure…' }));
     await screen.findByRole('dialog', { name: 'Update extension' });
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'More actions' })).toHaveFocus());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'More actions for Medcp' })).toHaveFocus()
+    );
 
-    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('button', { name: 'More actions for Medcp' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Remove…' }));
     await screen.findByRole('dialog', { name: 'Remove "medcp"?' });
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    await waitFor(() => expect(screen.getByRole('button', { name: 'More actions' })).toHaveFocus());
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'More actions for Medcp' })).toHaveFocus()
+    );
   });
 });

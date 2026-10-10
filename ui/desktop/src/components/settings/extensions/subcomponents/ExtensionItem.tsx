@@ -171,6 +171,8 @@ export default function ExtensionItem({
         id={`extension-${kebabCase(extension.name)}`}
         className="biorouter-list-row flex items-center gap-3 px-3 py-2.5"
         data-extension-row=""
+        // How the list finds this row's switch again after the row has moved to the other group.
+        data-extension-name={extension.name}
       >
         <Glyph className="br-ext-glyph" aria-hidden="true" />
         <div className="br-ext-text">
@@ -220,7 +222,9 @@ export default function ExtensionItem({
             </p>
           )}
         </div>
-        {menu.length > 0 && <RowActions menu={menu} />}
+        {menu.length > 0 && (
+          <RowActions menu={menu} menuLabel={EXTENSION_ROW_COPY.moreActionsNamed(title)} />
+        )}
         {/* Named by the row's title, the same in both states. */}
         <Switch
           checked={isToggling ? visuallyEnabled : extension.enabled}

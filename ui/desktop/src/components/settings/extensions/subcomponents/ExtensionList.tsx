@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useLayoutEffect, useRef, useState } from 'react';
 import ExtensionItem from './ExtensionItem';
 import builtInExtensionsData from '../../../../built-in-extensions.json';
 import { ExtensionConfig } from '../../../../api';
@@ -44,6 +44,24 @@ export default function ExtensionList({
   catalog,
   catalogFreshness,
 }: ExtensionListProps) {
+  /**
+   * A toggle moves its row to the other group, and two things must not go wrong when it does
+   * (spec principle 9: layout snaps, and a row never moves under the pointer).
+   *
+   * 1. **While the pointer is in the list, groups stay as they were when it came in.** The switch
+   *    shows the new state at once (the row is handed the live data) and the row relocates when
+   *    the pointer leaves, so the rows below it never slide under a pointer that is about to
+   *    click one of them. Without a pointer in the list (the keyboard), it moves straight away.
+   * 2. **A row that moves keeps the keyboard where it was.** It is re-created under the other
+   *    group, which removes the focused switch from the page and, until this, dropped the person
+   *    at the top of the document after every Space.
+   */
+  const [held, setHeld] = useState<ReadonlyMap<string, boolean> | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const focusMemo = useRef<{ name: string; scroll: boolean } | null>(null);
+  const groupedEnabled = (extension: FixedExtensionEntry): boolean =>
+    held?.get(extension.name) ?? extension.enabled;
+
   const matchesSearch = (extension: FixedExtensionEntry): boolean => {
     if (!searchTerm) return true;
 
@@ -59,8 +77,8 @@ export default function ExtensionList({
   };
 
   // Separate enabled and disabled extensions, then filter by search term
-  const enabledExtensions = extensions.filter((ext) => ext.enabled && matchesSearch(ext));
-  const disabledExtensions = extensions.filter((ext) => !ext.enabled && matchesSearch(ext));
+  const enabledExtensions = extensions.filter((ext) => groupedEnabled(ext) && matchesSearch(ext));
+  const disabledExtensions = extensions.filter((ext) => !groupedEnabled(ext) && matchesSearch(ext));
 
   // Sort each group alphabetically by their friendly title
   const sortedEnabledExtensions = [...enabledExtensions].sort((a, b) =>
@@ -79,8 +97,75 @@ export default function ExtensionList({
     },
   ].filter((group) => group.entries.length > 0);
 
+  /** Remember which row's switch holds focus, just before something that can move that row. */
+  const rememberFocus = () => {
+    const active = document.activeElement;
+    focusMemo.current = null;
+    if (!(active instanceof HTMLElement) || !listRef.current?.contains(active)) return;
+    if (!active.matches('[role="switch"]')) return;
+    const name = active.closest<HTMLElement>('[data-extension-name]')?.dataset.extensionName;
+    if (!name) return;
+    // Scrolling the row back into view is for someone who can no longer see where the keyboard
+    // went. A pointer user has just looked away from the list: it must not jump under them.
+    let keyboard = false;
+    try {
+      keyboard = active.matches(':focus-visible');
+    } catch {
+      /* a host without :focus-visible: treat as pointer */
+    }
+    focusMemo.current = { name, scroll: keyboard };
+  };
+
+  // After the rows have been re-created in their new groups: give the switch its focus back,
+  // unless focus has gone somewhere real since (the person moved on, or the row kept it).
+  const layoutKey = groups
+    .map((group) => `${group.key}:${group.entries.map((entry) => entry.name).join(',')}`)
+    .join('|');
+  useLayoutEffect(() => {
+    const memo = focusMemo.current;
+    if (!memo) return;
+    focusMemo.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const row = Array.from(
+      listRef.current?.querySelectorAll<HTMLElement>('[data-extension-name]') ?? []
+    ).find((element) => element.dataset.extensionName === memo.name);
+    row?.querySelector<HTMLElement>('[role="switch"]')?.focus({ preventScroll: !memo.scroll });
+  }, [layoutKey]);
+
+  const handleToggle = (extension: FixedExtensionEntry) => {
+    rememberFocus();
+    const result = onToggle(extension);
+    // A toggle that failed moves nothing, so there is nothing to give focus back for.
+    Promise.resolve(result).catch(() => {
+      focusMemo.current = null;
+    });
+    return result;
+  };
+
+  const releaseHeldGroups = () => {
+    // Only a pointer that leaves with a move waiting needs the focus remembered; a stale memo
+    // would take focus back at some later, unrelated move.
+    const pending = held
+      ? extensions.some((ext) => held.has(ext.name) && held.get(ext.name) !== ext.enabled)
+      : false;
+    if (pending) rememberFocus();
+    setHeld(null);
+  };
+
   return (
-    <div className="flex flex-col gap-6">
+    <div
+      ref={listRef}
+      className="flex flex-col gap-6"
+      onPointerEnter={(event) => {
+        // A help bubble or a menu opened from a row is portalled out of the list's DOM but is
+        // still its React child, so React reports the pointer "entering" the list when it is
+        // really over the bubble. Only a pointer on the list's own DOM holds the groups.
+        if (!event.currentTarget.contains(event.target as Node)) return;
+        setHeld(new Map(extensions.map((ext) => [ext.name, ext.enabled])));
+      }}
+      onPointerLeave={releaseHeldGroups}
+    >
       {groups.map((group, index) => (
         <ExtensionGroup
           key={group.key}
@@ -94,7 +179,7 @@ export default function ExtensionList({
             <ExtensionItem
               key={extension.name}
               extension={extension}
-              onToggle={onToggle}
+              onToggle={handleToggle}
               onConfigure={onConfigure}
               onRemove={onRemove}
               isStatic={isStatic}

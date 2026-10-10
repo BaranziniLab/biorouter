@@ -143,11 +143,14 @@ describe('ExtensionItem', () => {
       />
     );
 
-    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    // Named for its row, so a list of twelve is not twelve buttons called "More actions".
+    const more = COPY.moreActionsNamed('Spokeagent');
+    expect(more).toBe('More actions for Spokeagent');
+    await user.click(screen.getByRole('button', { name: more }));
     await user.click(await screen.findByRole('menuitem', { name: COPY.configure }));
     expect(onConfigure).toHaveBeenCalledWith(external);
 
-    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('button', { name: more }));
     await user.click(await screen.findByRole('menuitem', { name: COPY.remove }));
     expect(onRemove).toHaveBeenCalledWith(external);
   });
@@ -162,7 +165,7 @@ describe('ExtensionItem', () => {
         onRemove={vi.fn()}
       />
     );
-    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('button', { name: COPY.moreActionsNamed('Example') }));
     expect(await screen.findByRole('menuitem', { name: COPY.configure })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: COPY.remove })).toBeNull();
     unmount();
@@ -175,6 +178,6 @@ describe('ExtensionItem', () => {
         onRemove={vi.fn()}
       />
     );
-    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^More actions/ })).toBeNull();
   });
 });
