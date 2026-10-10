@@ -2107,6 +2107,22 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 }
 /* @ws WS-TOKENS end: resize rule */
 
+/* @ws WS-TOKENS begin: theme switch */
+/* ── A theme change lands in one frame (vision finding V4-15) ──────────────
+   `suspendTransitionsForThemeChange()` in `styles/motion.ts` puts this class
+   on <html> just before the light/dark class or `data-theme` flips and takes it
+   off two frames later. Without it the grounds snapped while every control that
+   eases its colour (95 to 125ms) walked there from the old theme: a dark button
+   on a white page, 2:1 sidebar text. `styles/motion.test.ts` pins the rule and
+   `themeSwitch.browser.test.ts` measures it in Chromium. */
+:root.biorouter-theme-switching,
+:root.biorouter-theme-switching *,
+:root.biorouter-theme-switching *::before,
+:root.biorouter-theme-switching *::after {
+  transition: none !important;
+}
+/* @ws WS-TOKENS end: theme switch */
+
 /* animations */
 @keyframes appear {
   from {
@@ -5492,15 +5508,22 @@ input[type='radio']:checked ~ .br-radio-dot {
    (175ms): a transition runs with the duration of the state it is going TO, so
    the collapsed state carries the shorter one. One curve, `--ease-out`. The
    three boxes that move are the gap (its width, a named exception in principle
-   9), the panel (transform) and the inset (its margin). Each carries
+   9), the panel (its `translate`) and the inset (its margin). Each carries
    `data-motion-layout`, so the resize rule above stops all three during a
-   window or sidebar drag, and the global reduced-motion reset nulls them. */
+   window or sidebar drag, and the global reduced-motion reset nulls them.
+   ⚠ The panel moves by `translate`, not `transform`: Tailwind v4's
+   `translate-x-[-100%]` writes the individual `translate` property, so a
+   transition on `transform` alone never ran and the panel jumped while the
+   gap beside it eased (vision V1-H3). Both are listed, so a future utility
+   that moves it by `transform` eases too. */
 [data-slot='sidebar-gap'] {
   transition: width var(--dur-med) var(--ease-out);
 }
 
 [data-slot='sidebar-container'] {
-  transition: transform var(--dur-med) var(--ease-out);
+  transition-property: translate, transform;
+  transition-duration: var(--dur-med);
+  transition-timing-function: var(--ease-out);
 }
 
 [data-slot='sidebar-inset'] {
@@ -5727,10 +5750,23 @@ body.biorouter-sidebar-compact [data-slot='sidebar-inset'] {
 /* A collapsed sidebar overlays the canvas, so it is a floating surface.
    The old shadow used rgba(15,23,42,…) — Tailwind's cold slate-900, foreign to
    the warm ramp. */
+/* @ws WS-SIDEBAR begin: overlay shadow only while open */
+/* The shadow belongs to the OPEN overlay only. The closed panel is translated
+   to x=-288 but stays painted above the page (`--z-sticky`), so a shadow on it
+   bled a 12px grey band down the window's left edge on every view (vision
+   V1-M1, V3-24). Closed, it wears nothing: not the shadow, and not the docked
+   shell's 1px `--sidebar-border` line either, which would sit at x=0. */
 body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   z-index: var(--z-sticky);
+  box-shadow: none;
+}
+
+body.biorouter-sidebar-compact
+  [data-slot='sidebar'][data-state='expanded']
+  > [data-slot='sidebar-container'] {
   box-shadow: var(--shadow-popover);
 }
+/* @ws WS-SIDEBAR end: overlay shadow only while open */
 
 /* …and it has an EDGE where it meets the page (QA Q3-60). The rule above
    replaces the docked column's `--sidebar-border` hairline with the popover
