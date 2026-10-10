@@ -221,6 +221,69 @@ describe('CopilotSetup', () => {
   });
 });
 
+// A `disabled` button that held keyboard focus hands it to <body>: a person who pressed Enter on
+// "Check setup" was thrown back to the top of the page (measured in Chromium). The buttons stay
+// focusable and say they are busy instead, and a second press is ignored.
+describe('a check in flight', () => {
+  const ready = {
+    status: 'ready',
+    permissions: { accessibility: true, screen_recording: true },
+  };
+
+  it('keeps the row button focused and ignores a second press while it runs', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.setup.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+    );
+    render(<CopilotSetup />);
+    const trigger = checkButton();
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const busy = await screen.findByRole('button', { name: copilotSetupCopy.checking });
+    expect(busy).toBe(trigger);
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    expect(busy).not.toBeDisabled();
+    expect(document.activeElement).toBe(busy);
+    fireEvent.click(busy);
+    expect(mocks.setup).toHaveBeenCalledTimes(1);
+
+    finish(ready);
+    await screen.findByText('Runtime ready');
+    expect(trigger).not.toHaveAttribute('aria-disabled');
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps "Check again" focused and ignores a second press while it runs', async () => {
+    mocks.setup.mockResolvedValueOnce(ready);
+    render(<CopilotSetup />);
+    fireEvent.click(checkButton());
+    const again = await screen.findByRole('button', { name: copilotSetupCopy.checkAgain });
+
+    let finish!: (value: unknown) => void;
+    mocks.setup.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      })
+    );
+    again.focus();
+    fireEvent.click(again);
+    await waitFor(() => expect(again).toHaveAttribute('aria-busy', 'true'));
+    expect(again).toHaveAttribute('aria-disabled', 'true');
+    expect(again).not.toBeDisabled();
+    expect(document.activeElement).toBe(again);
+    fireEvent.click(again);
+    expect(mocks.setup).toHaveBeenCalledTimes(2);
+
+    finish(ready);
+    await waitFor(() => expect(again).not.toHaveAttribute('aria-busy', 'true'));
+    expect(document.activeElement).toBe(again);
+  });
+});
+
 describe('permission repair controls', () => {
   it('keeps probe failure separate from permission denial and shows recovery', async () => {
     mocks.setup.mockResolvedValue({

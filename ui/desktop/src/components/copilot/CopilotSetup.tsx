@@ -282,16 +282,24 @@ export function CopilotSetupTrigger({
         ? copilotSetupCopy.hide
         : copilotSetupCopy.show;
   return (
+    // ⚠ `aria-disabled`, not `disabled`, while a check runs. A `disabled` button that held keyboard
+    // focus loses it (the browser moves focus to <body>), so pressing Enter on "Check setup" threw
+    // a keyboard user back to the top of the page; measured in Chromium. The press is ignored in
+    // JS, the spinner and `aria-busy` say it is working, and the dimming is the same 50% the
+    // `disabled` look had.
     <Button
       type="button"
       size="sm"
       variant="secondary"
-      disabled={loading}
+      aria-disabled={loading || undefined}
       aria-busy={loading}
       aria-expanded={runtime ? expanded : undefined}
       aria-controls={runtime ? COPILOT_SETUP_PANEL_ID : undefined}
       aria-describedby={describedBy}
-      onClick={toggle}
+      className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+      onClick={() => {
+        if (!loading) toggle();
+      }}
     >
       {loading && <Spinner />}
       {label}

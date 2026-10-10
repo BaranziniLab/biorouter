@@ -43,12 +43,18 @@ export function PermissionCheckButton({
   const showResult = !checking && checked && verdict !== undefined;
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {/* `aria-disabled`, not `disabled`: a disabled button that held focus hands it to <body>, so a
+          keyboard user who pressed Enter here lost their place. The press is ignored while the
+          check runs; `aria-busy` and the spinner say so. */}
       <Button
         size="sm"
         variant="secondary"
-        disabled={checking}
+        aria-disabled={checking || undefined}
         aria-busy={checking}
-        onClick={onCheck}
+        className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+        onClick={() => {
+          if (!checking) onCheck();
+        }}
       >
         {checking && <Spinner />}
         {checking ? copilotSetupCopy.checking : label}

@@ -108,12 +108,12 @@ const STUBS: Array<{ filter: RegExp; contents: string }> = [
   {
     filter: /\/copilotApi$/,
     contents: `
-      export const copilotSetup = async () => ({
+      export const copilotSetup = async () => new Promise((resolve) => setTimeout(() => resolve({
         status: 'os_permission_required', runtime_version: '0.3.5', target: 'darwin-arm64',
         permissions: { accessibility: true, screen_recording: false },
         executable: '/Applications/Biorouter.app/Contents/Resources/computer-use/ocu',
         message: 'Screen Recording permission is required.',
-      });
+      }), 120));
     `,
   },
   {
@@ -296,6 +296,40 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
       expect(after.next!.top).toBeGreaterThanOrEqual(after.panel!.bottom - EPSILON);
       // Inset like the rows' own text, not the full width of the list.
       near(after.panel!.left - after.row.left, 12, 'result block inset');
+    } finally {
+      await tab.close();
+    }
+  });
+
+  // A `disabled` button that held keyboard focus hands it to <body>, so a person who pressed Enter
+  // on "Check setup" was thrown back to the top of the page. jsdom does not run that focus fixup.
+  it('keeps keyboard focus on the Copilot check button while the check runs and after it', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const focused = () =>
+        tab.evaluate(() => {
+          const el = document.activeElement;
+          return el && el !== document.body
+            ? { text: el.textContent?.trim(), busy: el.getAttribute('aria-busy') }
+            : null;
+        });
+      await tab.getByRole('button', { name: 'Check setup' }).focus();
+      await tab.keyboard.press('Enter');
+      // Mid-check: the button says it is working and still holds focus.
+      await tab.waitForSelector('#caps button[aria-busy="true"]');
+      expect(await focused()).toEqual({ text: 'Checking…', busy: 'true' });
+      await tab.waitForSelector('#copilot-setup-details');
+      await settle(tab);
+      expect(await focused()).toEqual({ text: 'Hide setup', busy: 'false' });
+
+      // And "Check again" inside the result keeps it too.
+      await tab.getByRole('button', { name: 'Check again' }).focus();
+      await tab.keyboard.press('Enter');
+      await tab.waitForSelector('#copilot-setup-details button[aria-busy="true"]');
+      expect((await focused())?.busy).toBe('true');
+      await tab.waitForSelector('#copilot-setup-details button[aria-busy="false"]');
+      expect((await focused())?.text).toBe('Check again');
     } finally {
       await tab.close();
     }
