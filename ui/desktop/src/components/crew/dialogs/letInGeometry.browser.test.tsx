@@ -104,6 +104,15 @@ const UTILITIES: Record<string, string> = {
   'w-2.5': 'width: 10px',
   // A team's button: the control ladder's `sm` rung (main.css `--control-sm`).
   'h-control-sm': 'height: 28px',
+  // The shared Checkbox at `main.css`'s `.br-checkbox*` values (spec 2.6): a 24px target whose
+  // parts sit inside it, so only the target lays out.
+  'br-checkbox':
+    'position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px',
+  'br-checkbox-input':
+    'position: absolute; inset: 0; margin: 0; width: 100%; height: 100%; appearance: none; opacity: 0',
+  'br-checkbox-box': 'position: absolute; inset: 4px',
+  'br-checkbox-check': 'position: relative; width: 10px; height: 10px',
+  'br-checkbox-bar': 'position: absolute; width: 8px; height: 2px',
 };
 
 /** Classes that only paint, or that `dialogs.css` itself lays out. */

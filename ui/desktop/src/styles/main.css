@@ -2698,10 +2698,16 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
 /* The preview panel nests its tablist inside the strip for a11y, so the scroll
    box is the tablist rather than `.br-tabstrip` itself. Same rule, same look:
    scroll past the floor, never wrap, and never show a scrollbar in a 52px bar. */
+/* @ws WS-MOTION begin: tab strip scroll padding */
+/* `scroll-padding-inline` keeps a tab that the panel scrolls into view 8px clear
+   of the strip's edges, so the active preview tab never touches the ▾ overflow
+   button (spec 3.16, requested by the preview panel). */
 .br-tabstrip__scroll {
   flex-wrap: nowrap;
   scrollbar-width: none;
+  scroll-padding-inline: 8px;
 }
+/* @ws WS-MOTION end: tab strip scroll padding */
 
 .br-tabstrip__scroll::-webkit-scrollbar {
   display: none;
@@ -2724,10 +2730,70 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  /* @ws WS-MOTION begin: overflow button motion */
   transition:
-    background-color var(--motion-fast) var(--ease-out),
-    color var(--motion-fast) var(--ease-out);
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+  /* @ws WS-MOTION end: overflow button motion */
 }
+
+/* @ws WS-MOTION begin: tab overflow menu filter */
+/* The ▾ menu's filter (spec 3.16, "searching tabs"): from eight tabs the menu
+   opens with this field focused. It is a 28px field on the menu's own ground,
+   pinned to the top of the menu while the rows under it scroll. Results replace
+   at once; only the "No tabs match" line fades in, over `--dur-fast-max`. */
+.br-tabstrip__menu-filter {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  margin: -4px -4px 4px;
+  padding: 0 12px;
+  background: var(--background-default);
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-container) var(--radius-container) 0 0;
+  color: var(--text-muted);
+}
+
+.br-tabstrip__menu-filter-icon {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+}
+
+.br-tabstrip__menu-filter-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-default);
+  font-family: var(--font-sans);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+}
+
+.br-tabstrip__menu-filter-field::placeholder {
+  color: var(--text-muted);
+}
+
+.br-tabstrip__menu-filter-field::-webkit-search-cancel-button {
+  display: none;
+}
+
+.br-tabstrip__menu-empty {
+  margin: 0;
+  padding: 6px 12px 8px;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  animation: br-fade-in var(--dur-fast-max) var(--ease-out) both;
+}
+/* @ws WS-MOTION end: tab overflow menu filter */
 
 .br-tabstrip__overflow:hover,
 .br-tabstrip__overflow[data-state='open'] {
@@ -2938,7 +3004,10 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
+  /* @ws WS-MOTION begin: tab gap */
+  /* 8px, the one icon-label gap (spec 3.16; it was 7px). */
+  gap: 8px;
+  /* @ws WS-MOTION end: tab gap */
   /* ONE TAB, THREE STRIPS. The chat header, the artifact panel and the terminal
      dock all draw this same object at the same size, and `--tab-height` is what
      guarantees it — it was authored for exactly this ("chat, artifact and dock
@@ -2991,11 +3060,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
      name. Mono for data, sans for chrome. 13px = §3.2 "Secondary / metadata";
      the -0.01em tracking was a mono-only correction and goes with it. */
   font-family: var(--font-sans);
-  font-size: 13px;
+  /* @ws WS-MOTION begin: tab type and motion */
+  font-size: var(--text-secondary);
   cursor: pointer;
   transition:
-    background-color var(--motion-fast) var(--ease-out),
-    color var(--motion-fast) var(--ease-out);
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+  /* @ws WS-MOTION end: tab type and motion */
 }
 
 /* `--sm` NO LONGER RESIZES THE TAB. It used to drop the dock's tabs to 28px on
@@ -3048,11 +3119,15 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   background-size: calc(100% - 22px) 2px;
   background-position: 50% 100%;
   color: var(--text-default);
-  font-weight: 500;
-  /* The drop shadow is the original pill lift — now the system's micro
-     elevation tier (A-07) rather than a literal, so a family can re-point it
-     instead of inheriting Parchment's warm ink. Same value, one name. */
-  box-shadow: var(--shadow-raised);
+  /* @ws WS-MOTION begin: active tab is flat and bold */
+  /* ONE active weight, 600 (Arial draws it bold): the 500/600 split between
+     the shared rule and the chat strip's override read as one weight anyway,
+     because Arial renders 500 as 400. And FLAT: the fill and the 2px accent
+     underline mark the active tab; the `--shadow-raised` lift is gone (spec
+     3.16, shared with the preview strip). Borders before shadows. */
+  font-weight: 600;
+  box-shadow: none;
+  /* @ws WS-MOTION end: active tab is flat and bold */
   /* Selection settles with a small spring (#37). The keyframes animate the
      STANDALONE `scale` property, never `transform`: when closing the active
      tab, the successor gains data-active (starting this animation) in the same
@@ -3067,7 +3142,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
      and scale compose cleanly: the slide stays exact while the tab scales.
      Re-runs whenever data-active lands on a tab; suppressed under
      prefers-reduced-motion below. */
-  animation: br-tab-select var(--motion-base) var(--ease-spring);
+  /* @ws WS-MOTION begin: tab select motion */
+  animation: br-tab-select var(--dur-fast-max) var(--ease-spring);
+  /* @ws WS-MOTION end: tab select motion */
 }
 
 /* There is no `.dark .br-tab[data-active]` box-shadow override any more: it
@@ -3085,6 +3162,40 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
     scale: 1;
   }
 }
+
+/* @ws WS-MOTION begin: tab entrance */
+/* A tab that OPENS grows in from its left edge (spec 3.16): opacity 0 and the
+   individual `scale` 0.96 to 1 over `--dur-fast-max` on `--ease-out`, not the
+   spring (the spring belongs to the select settle and the slides). The
+   individual `scale`, never `transform`, for the reason the select rule above
+   gives: the FLIP slide rides `translate`, and the two compose cleanly.
+
+   `ChatTabStrip` sets `data-tab-entering` on a tab that was not in the strip a
+   pass ago, and never on the tabs a strip MOUNTS with (a reload restoring
+   them, a window opening with them, a tear-off): mounting is not opening. It is
+   later in the cascade than the active rule with the same specificity, so
+   enter wins over select on the new tab, which is usually the active one. The
+   attribute stays on an active tab until it stops being active, so its
+   `animation` never changes to `br-tab-select` and settles a second time. */
+.br-tab[data-tab-entering='true'] {
+  transform-origin: left center;
+  /* `backwards`, not `both`: a finished entrance must hold nothing, or its
+     `opacity: 1` would outrank the dragged tab's 35% for as long as the
+     attribute stays on the active tab. */
+  animation: br-tab-enter var(--dur-fast-max) var(--ease-out) backwards;
+}
+
+@keyframes br-tab-enter {
+  from {
+    opacity: 0;
+    scale: 0.96;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+/* @ws WS-MOTION end: tab entrance */
 
 /* Active group. Only the FOCUSED group's active tab is the painted pill; an
    unfocused group's active tab keeps a neutral fill and drops the pill shadow.
@@ -3120,7 +3231,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   width: 1px;
   background: var(--border-strong);
   opacity: 0.5;
-  transition: opacity var(--motion-fast) var(--ease-out);
+  /* @ws WS-MOTION begin: tab divider motion */
+  transition: opacity var(--dur-fast) var(--ease-out);
+  /* @ws WS-MOTION end: tab divider motion */
 }
 
 /* …and it retracts around whatever you are pointing at, so the thing under
@@ -3191,13 +3304,17 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   /* Pick-up spring (#37): mount-only, transform-only (rotate/scale — NEVER
      left/top, which are set per-pointermove in JS and must not lag the
      cursor). The ghost springs from flat to its 2deg lift as it comes up. */
-  animation: br-tab-ghost-lift var(--motion-base) var(--ease-spring);
+  /* @ws WS-MOTION begin: tab ghost motion */
+  animation: br-tab-ghost-lift var(--dur-fast-max) var(--ease-spring);
+  /* @ws WS-MOTION end: tab ghost motion */
   /* Detach is a state change on a MOUNTED element, so it is a transition, not
      an animation — the lift above is mount-only and would re-run. Same
      prohibition as the lift: never `left`/`top`. */
+  /* @ws WS-MOTION begin: tab ghost detach motion */
   transition:
-    transform var(--motion-fast) var(--ease-spring),
-    outline-color var(--motion-fast) var(--ease-out);
+    transform var(--dur-fast) var(--ease-spring),
+    outline-color var(--dur-fast) var(--ease-out);
+  /* @ws WS-MOTION end: tab ghost detach motion */
 }
 
 /* Outside the window, where the drop would make a new one (tear-off D7).
@@ -3241,7 +3358,11 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   height: 7px;
   border-radius: 50%;
   background: var(--text-accent);
-  animation: br-tab-pulse 1.8s var(--ease-out) infinite;
+  /* @ws WS-MOTION begin: running dot loop */
+  /* An ambient loop runs on a multiple of the slow tier (spec 2.4), the same
+     period as the tool row's pulse. */
+  animation: br-tab-pulse calc(var(--dur-slow) * 4) var(--ease-out) infinite;
+  /* @ws WS-MOTION end: running dot loop */
 }
 
 /* Private: a still dot beside the tab's leading glyph (issue #56, R10).
@@ -3324,6 +3445,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   .br-tab-ghost {
     transition: none;
   }
+
+  /* @ws WS-MOTION begin: tab entrance rest */
+  /* Reduced motion: the new tab fades in, it does not grow. */
+  .br-tab[data-tab-entering='true'] {
+    animation: br-fade-in var(--dur-fast) var(--ease-out) backwards;
+  }
+  /* @ws WS-MOTION end: tab entrance rest */
 }
 
 /* ============================================================
@@ -3369,7 +3497,9 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   flex: 0 0 1px;
   background: var(--border-subtle);
   cursor: row-resize;
-  transition: background-color var(--motion-fast) var(--ease-out);
+  /* @ws WS-MOTION begin: splitter motion */
+  transition: background-color var(--dur-fast) var(--ease-out);
+  /* @ws WS-MOTION end: splitter motion */
 }
 
 .br-group-splitter--row {
@@ -3975,30 +4105,60 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
    point; keeping it working would have preserved a fix for a defect that no
    longer exists. */
 
+/* @ws WS-USAGE begin: home */
 .biorouter-home-content {
   container-name: biorouter-home-content;
   container-type: size;
 }
 
-/* The heatmap is never folded away (it scales its cells instead — see
-   UsageHeatmap). As the window gets short, only the hero compacts, then
-   yields entirely so the heatmap keeps a legible box. */
+/* Home (spec 3.9): the greeting, then the usage card, as one group centred in
+   the space above the composer. `margin: auto` never clips: when the window is
+   too short the margins collapse to 0 and the content scrolls. The rails are
+   the composer wrapper's (Hub.tsx: 16px, 24px from 640px), and the column is
+   the chat measure, so the card's edges are the composer card's edges. */
+.biorouter-home-insights {
+  display: flex;
+  min-block-size: 100%;
+  flex-direction: column;
+  padding-inline: 16px;
+}
+
+@media (min-width: 640px) {
+  .biorouter-home-insights {
+    padding-inline: 24px;
+  }
+}
+
+.biorouter-home-column {
+  inline-size: 100%;
+  max-inline-size: var(--measure-chat);
+  margin: auto;
+  padding-block-end: 24px;
+}
+
+/* 17px = the composer card's 1px edge plus its 16px text inset, so the
+   greeting, the usage card's content and the composer's text share one left
+   edge. */
+.biorouter-home-hero {
+  padding: 64px 17px 20px;
+}
+
+.biorouter-home-greeting {
+  text-wrap: balance;
+}
+
+/* The card is never folded away. As the window gets short only the hero
+   compacts, then yields, and below that Home scrolls. */
 @container biorouter-home-content (max-height: 720px) {
   .biorouter-home-hero {
-    padding-top: 56px;
-    padding-bottom: 16px;
-  }
-
-  .biorouter-home-activity {
-    padding-bottom: 16px;
+    padding-block: 56px 16px;
   }
 }
 
 @container biorouter-home-content (max-height: 560px) {
   .biorouter-home-hero {
-    /* Keep clear of the floating titlebar/sidebar controls at top-left. */
-    padding-top: 44px;
-    padding-bottom: 12px;
+    /* Keep clear of the floating titlebar and sidebar controls at top-left. */
+    padding-block: 44px 12px;
   }
 }
 
@@ -4007,12 +4167,13 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
     display: none;
   }
 
-  /* With the hero gone the heatmap is the first content: keep its header
-     clear of the floating titlebar/sidebar controls at top-left. */
-  .biorouter-home-activity {
-    padding-top: 44px;
+  /* With the hero gone the card is the first content: keep it clear of the
+     floating titlebar and sidebar controls at top-left. */
+  .biorouter-home-column {
+    padding-block-start: 44px;
   }
 }
+/* @ws WS-USAGE end: home */
 
 .biorouter-settings-tabs {
   background: transparent;
@@ -4671,6 +4832,52 @@ body.biorouter-sidebar-resizing [data-motion-layout] {
   resize: vertical;
 }
 
+/* Tabs (`ui/tabs.tsx`): one underline that travels under the active trigger. Until the list
+   has measured it (`data-placed='false'`: jsdom, a hidden ancestor, the first paint), each
+   trigger's own `::after` bar is the underline; afterwards the bars stand down and the
+   indicator moves by `translate` and `width` over `--dur-fast-max` (a named exception in
+   principle 9). Keyboard focus firms it from 2px to 3px, as it firmed the trigger's bar. */
+/* A default a caller's `sticky` (Crew's details pane) must be able to replace, hence the layer. */
+@layer components {
+  .br-tabs-list {
+    position: relative;
+  }
+}
+
+.br-tabs-list[data-placed='true'] > [role='tab']::after {
+  background-color: transparent;
+}
+
+.br-tabs-indicator {
+  position: absolute;
+  inset-inline-start: 0;
+  bottom: -1px;
+  block-size: 2px;
+  background-color: var(--accent-bar);
+  pointer-events: none;
+  transition:
+    translate var(--dur-fast-max) var(--ease-out),
+    width var(--dur-fast-max) var(--ease-out),
+    block-size var(--dur-fast) var(--ease-out);
+}
+
+.br-tabs-indicator[data-placed='false'] {
+  display: none;
+}
+
+.br-tabs-indicator[data-motion-still] {
+  transition: none;
+}
+
+.br-tabs-list:has(> [role='tab']:focus-visible) > .br-tabs-indicator {
+  block-size: 3px;
+}
+
+.br-tabs-content {
+  --tw-duration: var(--dur-fast-max);
+  --tw-ease: var(--ease-out);
+}
+
 /* Checkbox (`ui/Checkbox.tsx`): a 16px box (radius 4, a 1.5px `--border-control` edge) inside a
    24px hit target; checked or indeterminate, an accent fill carrying a 10px check or an 8×2 bar
    in `--text-on-accent`. The fill eases over `--dur-fast-min`. The transparent input on top is
@@ -4815,6 +5022,7 @@ input[type='radio']:checked ~ .br-radio-dot {
 
   .br-switch,
   .br-switch-thumb,
+  .br-tabs-indicator,
   .br-checkbox-box,
   .br-checkbox-check,
   .br-checkbox-bar,
@@ -6724,25 +6932,148 @@ code [class~='token'] {
   padding: 16px 12px;
 }
 
-@keyframes biorouter-heatmap-loading {
-  0%,
-  100% {
-    background-color: var(--heat-0);
-    opacity: 0.72;
+/* @ws WS-USAGE begin: heatmap */
+/* The usage heatmap (spec 3.9): FLUID, as in Codex. One column per week of the
+   fetched window (`--heat-weeks`, set inline: 53 for the 371-day window),
+   seven square rows, a 3px gap, radius 2, the heat ramp. Nothing is measured
+   in JS any more, so there is no cell-size ladder and no label font that
+   shrinks with the cells. Authored rather than utilities: the template reads a
+   custom property, and the reveal needs keyframes and a reduced-motion rest. */
+.biorouter-heatmap {
+  --heat-gap: 3px;
+  display: flex;
+  min-inline-size: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The month row shares the grid's column template, so a label sits over its
+   week. Each row is its own grid on the same template (an ARIA grid is rows of
+   cells), which keeps every column the same width. */
+.biorouter-heatmap-months,
+.biorouter-heatmap-row {
+  display: grid;
+  grid-template-columns: repeat(var(--heat-weeks, 53), minmax(1px, 1fr));
+  column-gap: var(--heat-gap);
+}
+
+/* 12px at every width. A label overflows its ~11px column on purpose: months
+   are four or five columns apart, so two labels never meet. */
+.biorouter-heatmap-months {
+  min-block-size: 16px;
+  color: var(--text-muted);
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  white-space: nowrap;
+}
+
+.biorouter-heatmap-months > span {
+  min-inline-size: 0;
+  overflow: visible;
+}
+
+.biorouter-heatmap-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--heat-gap);
+}
+
+.biorouter-heatmap-cell {
+  display: block;
+  min-inline-size: 0;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  transition: transform var(--dur-fast-min) var(--ease-out);
+}
+
+.biorouter-heatmap-cell[role='gridcell']:hover {
+  z-index: 1;
+  transform: scale(1.2);
+}
+
+/* A cell's fill IS its data, so focus cannot be the app's focus fill: it is an
+   outline outside the cell. */
+.biorouter-heatmap-cell:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+/* The current streak: an inset ring in ink, on its cells and on the
+   footnote's glyph alike. */
+.biorouter-heatmap-cell[data-streak='true'],
+.biorouter-heatmap-swatch[data-streak='true'] {
+  box-shadow: inset 0 0 0 1.5px var(--text-default);
+}
+
+/* The first heatmap a session shows reveals column by column (`--heat-delay`
+   is `col * 8 + row * 12` ms, set inline only then). `backwards` holds the
+   first frame through the delay and lets go at the end, so the hover scale
+   works afterwards. A named exception to the 5-item stagger cap (spec 3.9). */
+.biorouter-heatmap[data-reveal='true'] .biorouter-heatmap-cell {
+  animation: biorouter-heatmap-reveal var(--dur-med) var(--ease-out) backwards;
+  animation-delay: var(--heat-delay, 0ms);
+}
+
+@keyframes biorouter-heatmap-reveal {
+  from {
+    opacity: 0;
+    transform: scale(0.85);
   }
-  50% {
-    background-color: var(--heat-1);
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The loading grid breathes in opacity only, on the ambient period. */
+.biorouter-heatmap-loading-cell,
+.biorouter-heatmap-loading-line {
+  animation: biorouter-heatmap-breathe calc(var(--dur-slow) * 4) var(--ease-out) infinite
+    alternate;
+}
+
+@keyframes biorouter-heatmap-breathe {
+  from {
+    opacity: 0.55;
+  }
+  to {
     opacity: 1;
   }
 }
 
-.biorouter-heatmap-loading-cell {
-  animation: biorouter-heatmap-loading 1.8s ease-in-out infinite;
+/* `Less ■■■■■ More` and the streak glyph: 12px squares at the cells' radius. */
+.biorouter-heatmap-legend {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
 }
 
-.biorouter-heatmap-loading-line {
-  animation: breathe 1.8s ease-in-out infinite;
+.biorouter-heatmap-swatch {
+  display: block;
+  flex: none;
+  inline-size: 12px;
+  block-size: 12px;
+  border-radius: 2px;
 }
+
+.biorouter-heatmap-tooltip-note {
+  max-inline-size: 240px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-heatmap-cell {
+    transition: none;
+  }
+
+  .biorouter-heatmap[data-reveal='true'] .biorouter-heatmap-cell,
+  .biorouter-heatmap-loading-cell,
+  .biorouter-heatmap-loading-line {
+    animation: none;
+  }
+}
+/* @ws WS-USAGE end: heatmap */
 
 @keyframes biorouter-history-loading {
   0%,
@@ -6766,29 +7097,6 @@ code [class~='token'] {
   .biorouter-history-loading-cell {
     animation: none;
   }
-}
-
-/* The heatmap must never make the page scroll sideways; shrink the cells.
-   The live heatmap fits itself precisely via inline vars (UsageHeatmap's
-   ResizeObserver); this coarse breakpoint covers the loading skeleton and any
-   context that renders before measurement. */
-@media (max-width: 860px) {
-  .biorouter-heatmap {
-    --heat-cell: 15px;
-    --heat-gap: 4px;
-    --heat-labels: 28px;
-  }
-}
-
-/* Label typography rides the fitted cell size (vars set inline by
-   UsageHeatmap) so a shrunken grid can never have labels taller than its
-   rows; the fallbacks are the historical fixed sizes. */
-.biorouter-heatmap-days {
-  font-size: var(--heat-day-font, 10px);
-}
-
-.biorouter-heatmap-months {
-  font-size: var(--heat-month-font, 11px);
 }
 
 /* The grid settles immediately; only the existing content layer animates. */
