@@ -53,3 +53,12 @@
   font: inherit;
   font-weight: 400;
 }
+
+/* Tab content (spec 3.16): after a tab opens or switches, its transcript fades
+   in once, opacity only, over `--dur-fast`. `ChatGroupPane` sets the attribute
+   in the same commit as the new chat and drops it when this fade ends; the
+   messages themselves draw at rest (a tab switch is not a live arrival). Under
+   reduced motion the global reset shortens it to nothing. */
+[data-tab-content='switched'] [data-preview-transcript] {
+  animation: br-fade-in var(--dur-fast) var(--ease-out) backwards;
+}

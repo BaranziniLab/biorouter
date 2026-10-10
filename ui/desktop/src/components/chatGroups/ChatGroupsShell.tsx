@@ -1,5 +1,14 @@
 import { isTabKeyboardFocusPending } from './chatTabKeyboardFocus';
-import { useCallback, useMemo, useState, useEffect, useRef, Fragment, ReactElement } from 'react';
+import {
+  useCallback,
+  useMemo,
+  useState,
+  useEffect,
+  useRef,
+  Fragment,
+  ReactElement,
+  type AnimationEvent,
+} from 'react';
 import BaseChat from '../BaseChat';
 import InAppTerminalDock from '../InAppTerminalDock';
 import { ChatType } from '../../types/chat';
@@ -1543,6 +1552,25 @@ function ChatGroupPane({
     }
   }, [isActiveGroup, sessionId]);
 
+  // Tab content (spec 3.16): after a tab opens or switches, the transcript
+  // fades in once over `--dur-fast` (`chat-tabs.css`). Derived during render
+  // (React's "state from props" pattern), so the attribute lands in the SAME
+  // commit as the new tab's chat and its first frame is already faded out. The
+  // pane's first mount (a reload, a new window, a split) appears at rest, and
+  // the attribute leaves when the fade ends, so a chat that later swaps its
+  // empty state for a transcript does not fade a second time.
+  const [shownTabKey, setShownTabKey] = useState(tabKey);
+  const [tabSwitched, setTabSwitched] = useState(false);
+  if (shownTabKey !== tabKey) {
+    setShownTabKey(tabKey);
+    setTabSwitched(true);
+  }
+  const onTabContentAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
+    if (!tabSwitched) return;
+    const target = event.target as HTMLElement;
+    if (target.hasAttribute('data-preview-transcript')) setTabSwitched(false);
+  };
+
   return (
     <div
       // The drag hit-test looks for exactly this attribute
@@ -1564,7 +1592,11 @@ function ChatGroupPane({
       onPointerDownCapture={() => onFocusGroup(groupId)}
       onFocusCapture={() => onFocusGroup(groupId)}
     >
-      <div className="flex min-h-0 min-w-0 flex-1">
+      <div
+        className="flex min-h-0 min-w-0 flex-1"
+        data-tab-content={tabSwitched ? 'switched' : undefined}
+        onAnimationEnd={onTabContentAnimationEnd}
+      >
         <BaseChat
           key={tabKey}
           // Scopes this tab's terminal. Same id as the React key, so the terminal
